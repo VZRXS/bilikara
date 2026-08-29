@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class ListFlipFrontendTest(unittest.TestCase):
+class QueueHistoryFrontendTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.node = shutil.which("node")
@@ -18,114 +18,76 @@ class ListFlipFrontendTest(unittest.TestCase):
             raise unittest.SkipTest("node is unavailable")
         cls.source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
-        start = cls.source.index("function parseCssTimeMs")
-        end = cls.source.index("function activeScrollableList", start)
-        cls.flip_source = cls.source[start:end]
+        cls.markup = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        cls.i18n = json.loads(
+            (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
+        )["languages"]
 
     def run_node(self, body: str) -> dict:
-        script = """
-const state = {
-  listView: "queue",
-  listStageView: "",
-  listFlipTimer: null,
-  listFlipFrame: null,
-  listFlipGeneration: 0,
-  listFlipTransitionCleanup: null,
-};
-const listFlipFallbackPaddingMs = 80;
-
+        start = self.source.index("function renderHostWorkspaceSelection")
+        end = self.source.index("function closeHostWorkspaceOverlay", start)
+        workspace_source = self.source[start:end]
+        script = (
+            """
 class FakeClassList {
   constructor() { this.values = new Set(); }
-  add(...names) { names.forEach((name) => this.values.add(name)); }
-  remove(...names) { names.forEach((name) => this.values.delete(name)); }
   contains(name) { return this.values.has(name); }
-  toggle(name, force) {
-    const enabled = force === undefined ? !this.values.has(name) : Boolean(force);
+  toggle(name, enabled) {
     if (enabled) this.values.add(name); else this.values.delete(name);
-    return enabled;
   }
 }
-
-class FakeInner {
-  constructor() {
-    this.transform = "matrix(1, 0, 0, 1, 0, 0)";
-    this.transitionProperty = "transform";
-    this.transitionDuration = "420ms";
-    this.transitionDelay = "0s";
-    this.listeners = new Map();
+class FakeElement {
+  constructor(workspace = "", panel = false) {
+    this.dataset = workspace
+      ? (panel ? { hostWorkspacePanel: workspace } : { hostWorkspace: workspace })
+      : {};
+    this.attributes = new Map();
+    this.classList = new FakeClassList();
+    this.hidden = false;
+    this.inert = false;
+    this.tabIndex = -1;
+    this.scrollTop = 0;
+    this.focused = false;
+    this.heading = { focused: false, focus() { this.focused = true; } };
   }
-  addEventListener(eventName, listener) {
-    const listeners = this.listeners.get(eventName) || [];
-    listeners.push(listener);
-    this.listeners.set(eventName, listeners);
-  }
-  removeEventListener(eventName, listener) {
-    const listeners = this.listeners.get(eventName) || [];
-    this.listeners.set(eventName, listeners.filter((candidate) => candidate !== listener));
-  }
-  dispatchTransitionEnd(propertyName = "transform") {
-    for (const listener of [...(this.listeners.get("transitionend") || [])]) {
-      listener({ target: this, propertyName });
-    }
-  }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  focus() { this.focused = true; }
+  querySelector() { return this.heading; }
 }
-
-const inner = new FakeInner();
-const stage = {
-  classList: new FakeClassList(),
-  querySelector(selector) { return selector === ".list-stage-inner" ? inner : null; },
+const workspaces = ["queue", "history", "request", "random", "users"];
+const buttons = workspaces.map((workspace) => new FakeElement(workspace));
+const panels = workspaces.map((workspace) => new FakeElement(workspace, true));
+const queueButton = buttons[0];
+const historyButton = buttons[1];
+const elements = {
+  appShell: new FakeElement(),
+  hostWorkspaceRegion: new FakeElement(),
+  hostWorkspaceButtons: buttons,
+  hostWorkspacePanels: panels,
+  hostWorkspaceBackdrop: new FakeElement(),
+  playlist: new FakeElement(),
+  historyList: new FakeElement(),
 };
-const elements = { listStage: stage };
-
-function setClassToggle(element, className, enabled) {
-  element?.classList.toggle(className, Boolean(enabled));
-}
-
-let nextCallbackId = 1;
-const animationFrames = new Map();
-const timers = new Map();
-global.window = global;
-window.requestAnimationFrame = (callback) => {
-  const id = nextCallbackId++;
-  animationFrames.set(id, callback);
-  return id;
+const state = {
+  activeHostWorkspace: "queue",
+  focusedHostWorkspace: "queue",
+  hostWorkspaceOverlayOpen: false,
+  hostWorkspaceScrollPositions: {},
 };
-window.cancelAnimationFrame = (id) => animationFrames.delete(id);
-window.setTimeout = (callback, delay) => {
-  const id = nextCallbackId++;
-  timers.set(id, { callback, delay });
-  return id;
-};
-window.clearTimeout = (id) => timers.delete(id);
-window.getComputedStyle = (element) => ({
-  transform: element.transform,
-  transitionProperty: element.transitionProperty,
-  transitionDuration: element.transitionDuration,
-  transitionDelay: element.transitionDelay,
-});
-
-function runNextFrame() {
-  const entry = animationFrames.entries().next().value;
-  if (!entry) throw new Error("no animation frame is pending");
-  const [id, callback] = entry;
-  animationFrames.delete(id);
-  callback();
-  return id;
-}
-
-function ownership() {
-  return {
-    front: stage.classList.contains("flip-show-front"),
-    back: stage.classList.contains("flip-show-back"),
-    flipping: stage.classList.contains("is-flipping"),
-    history: stage.classList.contains("is-history-view"),
-  };
-}
-""" + self.flip_source + """
-(async () => {
-""" + body + """
-})().catch((error) => { console.error(error); process.exit(1); });
+let closeCalls = 0;
+let loadCalls = 0;
+function closeOpenMenus() { closeCalls += 1; }
+function loadPlayedSessions() { loadCalls += 1; return Promise.resolve(true); }
+function closeRequestDetailForNavigation() {}
+function rememberRequestScrollPosition() {}
+function syncRequestSubviewSelection() {}
+function restoreRequestScrollPosition() {}
 """
+            + workspace_source
+            + "\n"
+            + body
+        )
         completed = subprocess.run(
             [self.node, "-"],
             input=script,
@@ -138,248 +100,212 @@ function ownership() {
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_initial_queue_render_has_one_face_and_no_animation_artifacts(self):
+    def test_direct_workspaces_are_stable_accessible_and_preserve_scroll(self):
         result = self.run_node(
             """
-syncListStageView();
+elements.playlist.scrollTop = 91;
+elements.historyList.scrollTop = 173;
+const queueNode = panels[0];
+const historyNode = panels[1];
+renderHostWorkspaceSelection();
+const initial = {
+  queueSelected: queueButton.getAttribute("aria-selected"),
+  historySelected: historyButton.getAttribute("aria-selected"),
+  queueHidden: panels[0].hidden,
+  historyHidden: panels[1].hidden,
+  historyInert: panels[1].inert,
+};
+activateHostWorkspace("history", { inputOrigin: "pointer" });
+const history = {
+  queueSelected: queueButton.getAttribute("aria-selected"),
+  historySelected: historyButton.getAttribute("aria-selected"),
+  queueHidden: panels[0].hidden,
+  queueInert: panels[0].inert,
+  historyHidden: panels[1].hidden,
+  focused: historyButton.focused,
+};
+activateHostWorkspace("queue", { inputOrigin: "pointer" });
 console.log(JSON.stringify({
-  ownership: ownership(),
-  frames: animationFrames.size,
-  timers: timers.size,
-  transitionListeners: (inner.listeners.get("transitionend") || []).length,
+  initial,
+  history,
+  stableNodes: queueNode === panels[0] && historyNode === panels[1],
+  scroll: [elements.playlist.scrollTop, elements.historyList.scrollTop],
+  closeCalls,
+  loadCalls,
 }));
 """
         )
         self.assertEqual(
-            result,
+            result["initial"],
             {
-                "ownership": {
-                    "front": True,
-                    "back": False,
-                    "flipping": False,
-                    "history": False,
-                },
-                "frames": 0,
-                "timers": 0,
-                "transitionListeners": 0,
+                "queueSelected": "true",
+                "historySelected": "false",
+                "queueHidden": False,
+                "historyHidden": True,
+                "historyInert": True,
             },
         )
+        self.assertEqual(
+            result["history"],
+            {
+                "queueSelected": "false",
+                "historySelected": "true",
+                "queueHidden": True,
+                "queueInert": True,
+                "historyHidden": False,
+                "focused": True,
+            },
+        )
+        self.assertTrue(result["stableNodes"])
+        self.assertEqual(result["scroll"], [91, 173])
+        self.assertEqual(result["closeCalls"], 2)
+        self.assertEqual(result["loadCalls"], 1)
 
-    def test_queue_to_history_hands_face_ownership_over_at_midpoint(self):
+    def test_rail_keyboard_wraps_and_supports_home_end(self):
         result = self.run_node(
             """
-syncListStageView();
-state.listView = "history";
-syncListStageView();
-const beforeAnimation = ownership();
-
-inner.transform = "matrix(0.707, 0, 0, 1, 0, 0)";
-runNextFrame();
-const beforeMidpoint = ownership();
-
-inner.transform = "matrix(0, 0, 0, 1, 0, 0)";
-runNextFrame();
-const atMidpoint = ownership();
-
-inner.transform = "matrix(-0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-const afterMidpoint = ownership();
-
-inner.dispatchTransitionEnd();
-const afterTransition = ownership();
-console.log(JSON.stringify({
-  beforeAnimation,
-  beforeMidpoint,
-  atMidpoint,
-  afterMidpoint,
-  afterTransition,
-  frames: animationFrames.size,
-  timers: timers.size,
-}));
+function key(target, value) {
+  handleHostWorkspaceRailKeydown({
+    currentTarget: target,
+    key: value,
+    preventDefault() {},
+  });
+  return state.focusedHostWorkspace;
+}
+const sequence = [
+  key(queueButton, "ArrowUp"),
+  key(buttons[4], "ArrowDown"),
+  key(queueButton, "End"),
+  key(buttons[4], "Home"),
+];
+console.log(JSON.stringify({ sequence }));
 """
         )
-        self.assertEqual(
-            result["beforeAnimation"],
-            {"front": True, "back": False, "flipping": True, "history": False},
-        )
-        self.assertEqual(
-            result["beforeMidpoint"],
-            {"front": True, "back": False, "flipping": True, "history": True},
-        )
-        self.assertEqual(
-            result["atMidpoint"],
-            {"front": False, "back": True, "flipping": True, "history": True},
-        )
-        self.assertEqual(
-            result["afterMidpoint"],
-            {"front": False, "back": True, "flipping": True, "history": True},
-        )
-        self.assertEqual(
-            result["afterTransition"],
-            {"front": False, "back": True, "flipping": False, "history": True},
-        )
-        self.assertEqual(result["frames"], 0)
-        self.assertEqual(result["timers"], 0)
+        self.assertEqual(result["sequence"], ["users", "queue", "users", "queue"])
 
-    def test_history_to_queue_uses_inverse_face_ownership(self):
-        result = self.run_node(
-            """
-state.listView = "history";
-inner.transform = "matrix(-1, 0, 0, 1, 0, 0)";
-syncListStageView();
-state.listView = "queue";
-syncListStageView();
-const beforeAnimation = ownership();
+    def test_markup_places_actions_on_their_final_owners(self):
+        player_panel = self.markup[
+            self.markup.index('<section class="player-panel">') : self.markup.index(
+                '<div class="player-frame" id="player-frame">'
+            )
+        ]
+        request_workspace = self.markup[
+            self.markup.index('id="host-workspace-request"') : self.markup.index(
+                'id="session-users-panel"'
+            )
+        ]
+        queue_workspace = self.markup[
+            self.markup.index('id="host-workspace-queue"') : self.markup.index(
+                "</aside>", self.markup.index('id="host-workspace-queue"')
+            )
+        ]
 
-inner.transform = "matrix(-0.707, 0, 0, 1, 0, 0)";
-runNextFrame();
-const beforeMidpoint = ownership();
+        self.assertEqual(self.markup.count('id="next-button"'), 1)
+        self.assertIn('id="next-button"', player_panel)
+        self.assertNotIn('id="next-button"', queue_workspace)
+        self.assertEqual(self.markup.count('id="resort-playlist-button"'), 1)
+        self.assertIn('id="resort-playlist-button"', queue_workspace)
+        self.assertNotIn('id="resort-playlist-button"', request_workspace)
+        self.assertNotIn('id="queue-view-tabs"', queue_workspace)
+        self.assertNotIn('data-list-view=', self.markup)
+        self.assertEqual(self.markup.count('data-host-workspace="history"'), 1)
+        self.assertEqual(self.markup.count('data-host-workspace-panel="history"'), 1)
+        self.assertNotIn('id="history-toggle-button"', self.markup)
 
-inner.transform = "matrix(0, 0, 0, 1, 0, 0)";
-runNextFrame();
-const atMidpoint = ownership();
+    def test_old_flip_and_manual_wheel_seam_are_removed(self):
+        self.assertNotIn("listFlip", self.source)
+        self.assertNotIn("syncListStageView", self.source)
+        self.assertNotIn('elements.listStage.addEventListener("wheel"', self.source)
+        self.assertNotIn("list-stage-inner", self.markup)
+        self.assertNotIn("list-face", self.markup)
 
-inner.transform = "matrix(0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-const afterMidpoint = ownership();
-inner.dispatchTransitionEnd("-webkit-transform");
-const afterTransition = ownership();
-console.log(JSON.stringify({ beforeAnimation, beforeMidpoint, atMidpoint, afterMidpoint, afterTransition }));
-"""
-        )
+        list_css = self.styles[
+            self.styles.index(".list-stage {") : self.styles.index(
+                ".queue-card-head h2", self.styles.index(".list-stage {")
+            )
+        ]
+        self.assertNotIn("perspective", list_css)
+        self.assertNotIn("rotateY", list_css)
+        self.assertNotIn("backface-visibility", list_css)
+        self.assertIn("overflow: hidden", list_css)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr)", list_css)
+
+        list_scroll_css = self.styles[
+            self.styles.index(".playlist,") : self.styles.index(
+                ".queue-empty", self.styles.index(".playlist,")
+            )
+        ]
+        self.assertIn("overflow: auto", list_scroll_css)
+        self.assertIn("overscroll-behavior: contain", list_scroll_css)
+
+    def test_all_direct_tools_share_one_width_per_shell_state(self):
+        self.assertNotIn("--host-workspace-width", self.styles)
+        self.assertNotIn("data-request-subview", self.styles)
+        self.assertIn("--host-tool-card-width: 536px", self.styles)
+        self.assertIn("--host-tool-card-width: 500px", self.styles)
+        self.assertIn("--host-rail-width", self.styles)
+
+    def test_reorder_actions_use_one_confirmed_exact_index_command(self):
+        self.assertEqual(self.markup.count('data-action="move-up"'), 1)
+        self.assertEqual(self.markup.count('data-action="move-down"'), 1)
+        self.assertIn('data-i18n-aria-label="common.moveUp"', self.markup)
+        self.assertIn('data-i18n-aria-label="common.moveDown"', self.markup)
         self.assertEqual(
-            result["beforeAnimation"],
-            {"front": False, "back": True, "flipping": True, "history": True},
+            self.source.count('apiPostStateSnapshot("/api/playlist/reorder"'), 1
         )
-        self.assertEqual(
-            result["beforeMidpoint"],
-            {"front": False, "back": True, "flipping": True, "history": False},
+        self.assertIn('moveUpButton.disabled = index === 0', self.source)
+        self.assertIn(
+            'moveDownButton.disabled = index === playlist.length - 1', self.source
         )
-        self.assertEqual(
-            result["atMidpoint"],
-            {"front": True, "back": False, "flipping": True, "history": False},
+        move_action_start = self.source.index(
+            'if (button.dataset.action === "move-up"'
         )
-        self.assertEqual(
-            result["afterMidpoint"],
-            {"front": True, "back": False, "flipping": True, "history": False},
+        move_action_end = self.source.index(
+            'if (button.dataset.action === "remove")', move_action_start
         )
-        self.assertEqual(
-            result["afterTransition"],
-            {"front": True, "back": False, "flipping": False, "history": False},
-        )
+        self.assertIn("targetIndex,", self.source[move_action_start:move_action_end])
+        self.assertIn('if (accepted) {', self.source)
+        self.assertIn('focusPlaylistItemMenuTrigger(intent.focusItemId)', self.source)
+        self.assertIn('elements.confirmCancel.focus({ preventScroll: true })', self.source)
 
-    def test_rapid_reverse_ignores_stale_midpoint_and_cleanup_callbacks(self):
-        result = self.run_node(
-            """
-syncListStageView();
-state.listView = "history";
-syncListStageView();
-const staleTimer = [...timers.values()][0].callback;
-inner.transform = "matrix(0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-inner.transform = "matrix(-0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-const staleMidpoint = [...animationFrames.values()][0];
-const historyAfterMidpoint = ownership();
-
-state.listView = "queue";
-syncListStageView();
-const reverseGeneration = state.listFlipGeneration;
-const reverseFrame = state.listFlipFrame;
-const reverseStart = ownership();
-
-staleMidpoint();
-staleTimer();
-const afterStaleCallbacks = {
-  ownership: ownership(),
-  generation: state.listFlipGeneration,
-  framePreserved: state.listFlipFrame === reverseFrame,
-};
-
-inner.transform = "matrix(-0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-inner.transform = "matrix(0.5, 0, 0, 1, 0, 0)";
-runNextFrame();
-inner.dispatchTransitionEnd();
-console.log(JSON.stringify({
-  historyAfterMidpoint,
-  reverseStart,
-  reverseGeneration,
-  afterStaleCallbacks,
-  final: ownership(),
-}));
-"""
+    def test_escape_uses_one_authoritative_layer_before_row_menus(self):
+        self.assertEqual(self.markup.count('aria-haspopup="menu" aria-expanded="false"'), 2)
+        self.assertEqual(self.markup.count('class="song-actions menu-content hidden" role="menu"'), 1)
+        self.assertEqual(self.markup.count('class="history-actions menu-content hidden" role="menu"'), 1)
+        escape_start = self.source.index('document.addEventListener("keydown", (event) => {')
+        escape_end = self.source.index(
+            'document.addEventListener("visibilitychange"', escape_start
         )
-        self.assertEqual(
-            result["historyAfterMidpoint"],
-            {"front": False, "back": True, "flipping": True, "history": True},
+        escape_source = self.source[escape_start:escape_end]
+        ordered_layers = (
+            "if (state.confirmIntent)",
+            "closeOrdinaryPopoverForEscape()",
+            "if (state.stageControlTrayOpen)",
+            'closeOpenMenus({ restoreFocus: true })',
         )
-        self.assertEqual(
-            result["reverseStart"],
-            {"front": False, "back": True, "flipping": True, "history": True},
-        )
-        self.assertEqual(result["afterStaleCallbacks"]["generation"], result["reverseGeneration"])
-        self.assertTrue(result["afterStaleCallbacks"]["framePreserved"])
-        self.assertEqual(result["afterStaleCallbacks"]["ownership"], result["reverseStart"])
-        self.assertEqual(
-            result["final"],
-            {"front": True, "back": False, "flipping": False, "history": False},
-        )
+        positions = [escape_source.index(layer) for layer in ordered_layers]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('state.openRowMenuTrigger = toggle', self.source)
+        self.assertIn('trigger.focus({ preventScroll: true })', self.source)
 
-    def test_transition_duration_drives_bounded_cleanup_fallback(self):
-        result = self.run_node(
-            """
-syncListStageView();
-state.listView = "history";
-syncListStageView();
-const fallback = [...timers.values()][0];
-inner.transform = "matrix(-1, 0, 0, 1, 0, 0)";
-fallback.callback();
-console.log(JSON.stringify({ delay: fallback.delay, final: ownership() }));
-"""
-        )
-        self.assertEqual(result["delay"], 500)
-        self.assertEqual(
-            result["final"],
-            {"front": False, "back": True, "flipping": False, "history": True},
-        )
-
-    def test_css_uses_explicit_visibility_and_scoped_compositing(self):
-        list_face_start = self.styles.index(".list-face {")
-        list_face_end = self.styles.index(".queue-card-head h2", list_face_start)
-        list_face_css = self.styles[list_face_start:list_face_end]
-        self.assertIn("-webkit-backface-visibility: hidden", list_face_css)
-        self.assertIn("visibility: hidden", list_face_css)
-        self.assertIn(".list-stage.flip-show-front .list-face-front", list_face_css)
-        self.assertIn(".list-stage.flip-show-back .list-face-back", list_face_css)
-        self.assertIn("content-visibility: hidden", list_face_css)
-
-        queue_current_start = self.styles.index(".queue-current {")
-        queue_current_end = self.styles.index(".queue-current.hidden", queue_current_start)
-        queue_current_css = self.styles[queue_current_start:queue_current_end]
-        self.assertNotIn("translateZ(0)", queue_current_css)
-        self.assertNotIn("will-change: transform", queue_current_css)
-
-    def test_non_webkit_uses_the_same_visible_face_phases(self):
-        result = self.run_node(
-            """
-global.navigator = { userAgent: "Mozilla/5.0 Chrome/120 Safari/537.36" };
-syncListStageView();
-state.listView = "history";
-syncListStageView();
-inner.transform = "matrix(0.25, 0, 0, 1, 0, 0)";
-runNextFrame();
-const frontPhase = ownership();
-inner.transform = "matrix(-0.25, 0, 0, 1, 0, 0)";
-runNextFrame();
-const backPhase = ownership();
-console.log(JSON.stringify({ frontPhase, backPhase }));
-"""
-        )
-        self.assertTrue(result["frontPhase"]["front"])
-        self.assertFalse(result["frontPhase"]["back"])
-        self.assertFalse(result["backPhase"]["front"])
-        self.assertTrue(result["backPhase"]["back"])
+    def test_clear_copy_and_new_accessibility_labels_exist_in_every_language(self):
+        expected_clear_phrases = {
+            "zh": "当前正在播放的歌曲不会受影响",
+            "en": "currently playing song will not be affected",
+            "ja": "現在再生中の曲には影響しません",
+        }
+        for language, translations in self.i18n.items():
+            with self.subTest(language=language):
+                self.assertIn(expected_clear_phrases[language], translations["list.clearConfirm"])
+                for key in (
+                    "shell.history",
+                    "list.scrollLabel",
+                    "history.scrollLabel",
+                    "list.movedPosition",
+                    "common.moveUp",
+                    "common.moveDown",
+                ):
+                    self.assertTrue(translations[key])
 
 
 if __name__ == "__main__":

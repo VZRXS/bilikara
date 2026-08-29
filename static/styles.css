@@ -1962,34 +1962,42 @@ h2 {
 }
 
 .player-panel>.panel-head {
-  --player-fullscreen-button-space: clamp(112px, 18ch, 190px);
+  --player-stage-actions-space: clamp(210px, 30ch, 310px);
   position: relative;
   display: block;
   min-height: 44px;
-  padding-right: var(--player-fullscreen-button-space);
+  padding-right: var(--player-stage-actions-space);
 }
 
 .player-panel>.panel-head>div {
   min-width: 0;
 }
 
-.player-panel>.panel-head #player-fullscreen-button {
+.player-panel>.panel-head .stage-actions {
   position: absolute;
   top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 8px);
+}
+
+.player-panel>.panel-head #player-fullscreen-button {
+  position: static;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: max-content;
   min-width: 96px;
-  max-width: calc(100% - 8px);
 }
 
-.player-panel>.panel-head #player-rating-button {
-  right: clamp(104px, 15ch, 168px);
-}
-
-.player-panel>.panel-head #player-fullscreen-button {
-  right: 0;
+.stage-next-button {
+  min-width: 76px;
+  min-height: 40px;
+  padding: 10px 14px;
 }
 
 .player-panel:fullscreen,
@@ -2104,10 +2112,18 @@ body.is-tauri-fullscreen-active {
 .player-panel:fullscreen #player-fullscreen-button,
 .player-panel:-webkit-full-screen #player-fullscreen-button,
 .player-panel.is-tauri-fullscreen #player-fullscreen-button {
+  position: static;
+  z-index: 6;
+  pointer-events: auto;
+}
+
+.player-panel:fullscreen .stage-actions,
+.player-panel:-webkit-full-screen .stage-actions,
+.player-panel.is-tauri-fullscreen .stage-actions {
   position: fixed;
   top: 16px;
   right: 16px;
-  z-index: 6;
+  z-index: 7;
   pointer-events: auto;
   max-width: calc(100vw - 32px);
 }
@@ -3333,63 +3349,10 @@ select:disabled {
   margin-top: 14px;
   flex: 1;
   min-height: 0;
-  perspective: 1800px;
-}
-
-.list-stage-inner {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  transform-style: preserve-3d;
-  transition: transform 420ms ease;
-}
-
-.list-stage.is-history-view .list-stage-inner {
-  transform: rotateY(180deg);
-}
-
-.list-face {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  -webkit-backface-visibility: hidden;
-  backface-visibility: hidden;
-  visibility: hidden;
-  content-visibility: hidden;
-  pointer-events: none;
-}
-
-.list-face-front {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
-  visibility: visible;
-  content-visibility: visible;
-  pointer-events: auto;
-}
-
-.list-face-back {
-  transform: rotateY(180deg);
-}
-
-.list-stage.flip-show-front .list-face-front {
-  visibility: visible;
-  content-visibility: visible;
-  pointer-events: auto;
-}
-
-.list-stage.flip-show-front .list-face-back,
-.list-stage.flip-show-back .list-face-front {
-  visibility: hidden;
-  content-visibility: hidden;
-  pointer-events: none;
-}
-
-.list-stage.flip-show-back .list-face-back {
-  visibility: visible;
-  content-visibility: visible;
-  pointer-events: auto;
+  overflow: hidden;
 }
 
 .queue-card-head h2 {
@@ -3398,6 +3361,27 @@ select:disabled {
   align-items: baseline;
   flex-wrap: wrap;
 }
+
+.queue-card-head {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.queue-card-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+}
+
+.queue-card-heading .section-tag,
+.queue-card-heading h2 {
+  grid-column: 1;
+}
+
 
 .queue-count {
   font-family: var(--font-sans);
@@ -3408,18 +3392,19 @@ select:disabled {
 
 .queue-toolbar {
   display: flex;
-  gap: 10px;
   align-items: center;
-  flex-wrap: wrap;
   justify-content: flex-end;
   overflow: visible;
-  isolation: isolate;
+  min-width: 0;
 }
 
-.queue-toolbar .toolbar-button {
-  backface-visibility: hidden;
-  transform: translateZ(0);
-  will-change: transform;
+.queue-subview-actions {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .history-export-button,
@@ -3427,11 +3412,6 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.queue-toolbar .toolbar-button:hover,
-.queue-toolbar .toolbar-button:focus-visible {
-  transform: translateY(-1px) translateZ(0);
 }
 
 .queue-current {
@@ -3442,8 +3422,7 @@ select:disabled {
   background: var(--current-song-bg);
   border: var(--current-song-border);
   border-radius: 20px;
-  /* 恢复为 20px 以对齐下方 tab */
-  margin-bottom: 8px;
+  margin-bottom: 0;
   position: relative;
   overflow: hidden;
   box-shadow: 0 4px 20px rgba(88, 56, 30, 0.04);
@@ -3768,20 +3747,6 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.queue-current-next {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: fit-content;
-  height: 32px;
-  min-width: 0;
-  padding: 0 16px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
-}
-
 .playlist,
 .history-list {
   flex: 1;
@@ -3793,6 +3758,8 @@ select:disabled {
   gap: 10px;
   padding-top: 2px;
   padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .queue-empty {
@@ -4973,6 +4940,13 @@ select:disabled {
   min-height: 32px;
   padding: 0;
   flex-shrink: 0;
+}
+
+.menu-content .queue-move-button {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+  font-size: 16px;
 }
 
 .history-actions .icon-button {
@@ -8216,8 +8190,10 @@ body {
   top: auto;
   width: 100%;
   height: 100%;
+  min-height: 0;
   max-height: none;
   align-self: stretch;
+  overflow: hidden;
 }
 
 .host-workspace-backdrop {
@@ -8336,8 +8312,18 @@ body {
 @media (pointer: coarse) {
   .work-rail-button,
   .topbar .remote-mini-trigger,
-  .topbar .status-chip-toggle {
+  .topbar .status-chip-toggle,
+  .queue-view-tab,
+  .stage-next-button,
+  .menu-toggle,
+  .menu-content .queue-move-button {
     min-height: 44px;
+  }
+
+  .menu-toggle,
+  .menu-content .queue-move-button {
+    width: 44px;
+    min-width: 44px;
   }
 }
 

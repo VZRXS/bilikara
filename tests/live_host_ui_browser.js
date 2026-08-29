@@ -131,6 +131,7 @@ async function run() {
     const shellConsoleErrors = [];
     const shellPageErrors = [];
     const shellPlayerRequests = [];
+    const shellPlayedSessionRequests = [];
     await shellPage.addInitScript(() => {
       const nativeSetInterval = window.setInterval.bind(window);
       window.__hostShellIntervalIds = [];
@@ -147,8 +148,12 @@ async function run() {
     });
     shellPage.on("pageerror", (error) => shellPageErrors.push(error.message));
     shellPage.on("request", (request) => {
-      if (new URL(request.url()).pathname.startsWith("/api/player/")) {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname.startsWith("/api/player/")) {
         shellPlayerRequests.push(request.url());
+      }
+      if (pathname === "/api/played-sessions") {
+        shellPlayedSessionRequests.push(request.url());
       }
     });
     await shellPage.route("**/api/app/update/check", (route) => route.fulfill({
@@ -215,7 +220,7 @@ async function run() {
     );
     assert(shellInitial.toolbarHeight < 102, "global toolbar was not materially compacted", shellInitial);
     assert(
-      Math.abs(shellInitial.railWidth - 104) <= 2
+      shellInitial.railWidth >= 67 && shellInitial.railWidth <= 69
         && shellInitial.railTargetHeights.every((height) => height >= 40),
       "wide work rail did not preserve its intended width and fine-pointer targets",
       shellInitial,
@@ -237,25 +242,81 @@ async function run() {
     );
     assert(shellInitial.retiredLayoutSelector === 0, "retired Host Basic/Full UI remained visible", shellInitial);
 
-    const queueNodeBeforeFlip = await shellPage.locator(".queue-card").evaluate((element) => {
-      window.__hostShellQueueBeforeFlip = element;
-      return Boolean(element);
+    const directListInitial = await shellPage.evaluate(() => {
+      window.__hostShellQueueNodes = {
+        queue: document.querySelector("#host-workspace-queue"),
+        history: document.querySelector("#host-workspace-history"),
+        playlist: elements.playlist,
+        historyList: elements.historyList,
+      };
+      return {
+        workspace: state.activeHostWorkspace,
+        selected: Array.from(elements.hostWorkspaceButtons || [])
+          .filter((button) => button.getAttribute("aria-selected") === "true")
+          .map((button) => button.dataset.hostWorkspace),
+        queueVisible: !document.querySelector("#host-workspace-queue").hidden,
+        historyHidden: document.querySelector("#host-workspace-history").hidden
+          && document.querySelector("#host-workspace-history").inert,
+        nextInStage: Boolean(document.querySelector(".player-panel #next-button")),
+        nextCount: document.querySelectorAll("#next-button").length,
+      };
     });
-    await shellPage.locator("#history-toggle-button").click();
-    await shellPage.waitForTimeout(520);
     assert(
-      queueNodeBeforeFlip
-        && await shellPage.evaluate(() => state.listView === "history"
-          && document.querySelector(".queue-card") === window.__hostShellQueueBeforeFlip),
-      "Queue workspace did not retain its existing History flip on the same card",
+      directListInitial.workspace === "queue"
+        && directListInitial.selected.join(",") === "queue"
+        && directListInitial.queueVisible
+        && directListInitial.historyHidden
+        && directListInitial.nextInStage
+        && directListInitial.nextCount === 1,
+      "Queue was not the one accessible default direct list workspace",
+      directListInitial,
     );
-    await shellPage.locator("#history-toggle-button").click();
-    await shellPage.waitForTimeout(520);
+    await shellPage.locator("#work-rail-history").click();
+    await shellPage.waitForTimeout(80);
+    const directHistory = await shellPage.evaluate(() => ({
+      workspace: state.activeHostWorkspace,
+      selected: Array.from(elements.hostWorkspaceButtons || [])
+        .filter((button) => button.getAttribute("aria-selected") === "true")
+        .map((button) => button.dataset.hostWorkspace),
+      queueHidden: document.querySelector("#host-workspace-queue").hidden
+        && document.querySelector("#host-workspace-queue").inert,
+      historyVisible: !document.querySelector("#host-workspace-history").hidden,
+      stableNodes: document.querySelector("#host-workspace-queue") === window.__hostShellQueueNodes.queue
+        && document.querySelector("#host-workspace-history") === window.__hostShellQueueNodes.history
+        && elements.playlist === window.__hostShellQueueNodes.playlist
+        && elements.historyList === window.__hostShellQueueNodes.historyList,
+    }));
     assert(
-      await shellPage.evaluate(() => state.listView === "queue"
-        && document.querySelector(".queue-card") === window.__hostShellQueueBeforeFlip),
-      "History did not return to Queue on the existing feature node",
+      directHistory.workspace === "history"
+        && directHistory.selected.join(",") === "history"
+        && directHistory.queueHidden
+        && directHistory.historyVisible
+        && directHistory.stableNodes,
+      "History was not an immediate stable direct rail workspace",
+      directHistory,
     );
+    await shellPage.locator("#work-rail-queue").click();
+    await shellPage.locator("#work-rail-history").click();
+    await shellPage.waitForTimeout(80);
+    assert(
+      shellPlayedSessionRequests.length === 1,
+      "History direct switching repeated its bounded lazy session load",
+      shellPlayedSessionRequests,
+    );
+    await shellPage.locator("#work-rail-queue").focus();
+    await shellPage.keyboard.press("ArrowDown");
+    assert(
+      await shellPage.evaluate(() => state.activeHostWorkspace === "history"
+        && document.activeElement === document.querySelector("#work-rail-history")),
+      "Queue/History direct rail keyboard operation did not move focus",
+    );
+    await shellPage.keyboard.press("Enter");
+    assert(
+      await shellPage.evaluate(() => state.activeHostWorkspace === "history"
+        && document.activeElement?.id === "workspace-history-heading"),
+      "History direct rail keyboard activation did not focus its heading",
+    );
+    await shellPage.locator("#work-rail-queue").click();
 
     await shellPage.locator("#work-rail-queue").focus();
     await shellPage.keyboard.press("ArrowDown");
@@ -268,8 +329,8 @@ async function run() {
     }));
     assert(
       navigationState.active === "queue"
-        && navigationState.focused === "request"
-        && navigationState.roving.join(",") === "request",
+        && navigationState.focused === "history"
+        && navigationState.roving.join(",") === "history",
       "ArrowDown activated instead of only moving manual rail focus",
       navigationState,
     );
@@ -326,7 +387,7 @@ async function run() {
         return nativeFetch(...args);
       };
       for (let cycle = 0; cycle < 20; cycle += 1) {
-        for (const workspace of ["queue", "request", "random", "users", "queue"]) {
+        for (const workspace of ["queue", "history", "request", "random", "users", "queue"]) {
           activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
         }
       }
@@ -344,7 +405,7 @@ async function run() {
       }
       initializeHostShell();
       const visibleByWorkspace = {};
-      for (const workspace of ["queue", "request", "random", "users"]) {
+      for (const workspace of ["queue", "history", "request", "random", "users"]) {
         activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
         visibleByWorkspace[workspace] = Array.from(elements.hostWorkspacePanels || [])
           .filter((panel) => !panel.hidden)
@@ -598,30 +659,478 @@ async function run() {
       shellPlayerRequests,
     );
 
+    const queueSeed = await shellPage.evaluate(() => {
+      const makeItem = (index, overrides = {}) => ({
+        id: `queue-${index}`,
+        item_incarnation_id: `queue-incarnation-${index}`,
+        title: `Queue song ${index}`,
+        display_title: `Queue song ${index}`,
+        original_url: `https://www.bilibili.com/video/BVQUEUE${index}`,
+        resolved_url: `https://www.bilibili.com/video/BVQUEUE${index}`,
+        requester_name: `Singer ${index % 4}`,
+        owner_name: `Owner ${index}`,
+        cache_status: "ready",
+        cache_progress: 1,
+        cache_size_bytes: 2048 + index,
+        requested_at: 1_700_000_000 + index,
+        request_count: index + 1,
+        key: `history-${index}`,
+        ...overrides,
+      });
+      const currentItem = {
+        ...state.data.current_item,
+        display_title: "Browser shell current song",
+        requester_name: "Current singer",
+        owner_name: "Current owner",
+        cache_status: "ready",
+        cache_progress: 1,
+        cache_size_bytes: 4096,
+      };
+      state.data = {
+        ...state.data,
+        current_item: currentItem,
+        playlist: Array.from({ length: 28 }, (_, index) => makeItem(index)),
+        history: Array.from({ length: 32 }, (_, index) => makeItem(index + 100)),
+        state_revision: Number(state.data.state_revision || 0) + 1,
+        player_settings: {
+          ...(state.data.player_settings || {}),
+          advance_delay_seconds: 0,
+        },
+      };
+      state.listHeaderRenderSignature = "";
+      state.historyRenderSignature = "";
+      state.playlistEmptyRenderSignature = "";
+      render();
+      window.__queueAcceptance = {
+        currentItem,
+        playlist: [...state.data.playlist],
+        history: [...state.data.history],
+        originalApiPostStateSnapshot: apiPostStateSnapshot,
+        originalApiPostExactStateCommand: apiPostExactStateCommand,
+        originalRequestNextTrack: requestNextTrack,
+        commands: [],
+        nextCalls: [],
+        reorderAccepted: true,
+        session: state.hostPlaybackSession,
+        frame: elements.playerFrame,
+        video: state.hostPlaybackSession?.video,
+        audio: state.hostPlaybackSession?.audio,
+      };
+      apiPostStateSnapshot = async (path, payload = {}) => {
+        window.__queueAcceptance.commands.push({ path, payload });
+        if (path === "/api/playlist/reorder") {
+          if (!window.__queueAcceptance.reorderAccepted) {
+            return false;
+          }
+          const items = [...state.data.playlist];
+          const sourceIndex = items.findIndex((item) => item.id === payload.item_id);
+          if (sourceIndex >= 0) {
+            const [item] = items.splice(sourceIndex, 1);
+            items.splice(Math.max(0, Math.min(payload.index, items.length)), 0, item);
+            state.data.playlist = items;
+          }
+          return true;
+        }
+        return true;
+      };
+      apiPostExactStateCommand = async (path, payload = {}) => {
+        window.__queueAcceptance.commands.push({ path, payload });
+        return { snapshotAccepted: true, commandApplied: true };
+      };
+      requestNextTrack = async (expectedPlaybackGeneration = null) => {
+        window.__queueAcceptance.nextCalls.push({
+          expectedPlaybackGeneration,
+          workspace: state.activeHostWorkspace,
+          button: elements.nextButton,
+        });
+        return true;
+      };
+      return {
+        queueRows: elements.playlist.querySelectorAll(".song-item").length,
+        historyRows: elements.historyList.querySelectorAll(".history-item").length,
+        currentVisible: !elements.queueCurrent.classList.contains("hidden"),
+        nextOwner: elements.nextButton.closest(".player-panel") === elements.playerPanel,
+        resortOwner: elements.resortPlaylistButton.closest("#host-workspace-queue")
+          === document.querySelector("#host-workspace-queue"),
+        requestHasResort: Boolean(document.querySelector("#host-workspace-request-direct #resort-playlist-button")),
+      };
+    });
+    assert(
+      queueSeed.queueRows === 28
+        && queueSeed.historyRows === 32
+        && queueSeed.currentVisible
+        && queueSeed.nextOwner
+        && queueSeed.resortOwner
+        && !queueSeed.requestHasResort,
+      "long Queue/History data did not render on the final action owners",
+      queueSeed,
+    );
+
+    const queueFixedBefore = await shellPage.evaluate(() => ({
+      headerTop: document.querySelector(".queue-card-head").getBoundingClientRect().top,
+      currentTop: elements.queueCurrent.getBoundingClientRect().top,
+      workspaceScrollTop: elements.hostWorkspaceRegion.scrollTop,
+      cardScrollTop: document.querySelector(".queue-card").scrollTop,
+      playlistClientHeight: elements.playlist.clientHeight,
+      playlistScrollHeight: elements.playlist.scrollHeight,
+    }));
+    const queueWheelScrollTop = {};
+    for (const selector of [".song-title", ".song-progress-badge", ".menu-toggle"]) {
+      await shellPage.locator("#playlist").evaluate((element) => { element.scrollTop = 0; });
+      await shellPage.locator(`#playlist ${selector}`).first().hover();
+      await shellPage.mouse.wheel(0, 260);
+      await shellPage.waitForTimeout(60);
+      queueWheelScrollTop[selector] = await shellPage.locator("#playlist").evaluate((element) => element.scrollTop);
+    }
+    await shellPage.locator("#playlist").evaluate((element) => { element.scrollTop = 0; });
+    await shellPage.locator("#playlist .menu-toggle").first().click();
+    await shellPage.locator("#playlist .menu-content:not(.hidden) [data-action='play-now']").hover();
+    await shellPage.mouse.wheel(0, 260);
+    await shellPage.waitForTimeout(60);
+    queueWheelScrollTop.action = await shellPage.locator("#playlist").evaluate((element) => element.scrollTop);
+    await shellPage.keyboard.press("Escape");
+    await shellPage.locator("#playlist").evaluate((element) => { element.scrollTop = 0; });
+    const firstRowBox = await shellPage.locator("#playlist .song-item").first().boundingBox();
+    const secondRowBox = await shellPage.locator("#playlist .song-item").nth(1).boundingBox();
+    assert(firstRowBox && secondRowBox, "Queue rows did not have rendered geometry");
+    await shellPage.mouse.move(
+      firstRowBox.x + (firstRowBox.width / 2),
+      (firstRowBox.y + firstRowBox.height + secondRowBox.y) / 2,
+    );
+    await shellPage.mouse.wheel(0, 260);
+    await shellPage.waitForTimeout(60);
+    queueWheelScrollTop.gap = await shellPage.locator("#playlist").evaluate((element) => element.scrollTop);
+    const queueFixedAfter = await shellPage.evaluate(() => ({
+      headerTop: document.querySelector(".queue-card-head").getBoundingClientRect().top,
+      currentTop: elements.queueCurrent.getBoundingClientRect().top,
+      workspaceScrollTop: elements.hostWorkspaceRegion.scrollTop,
+      cardScrollTop: document.querySelector(".queue-card").scrollTop,
+      playlistScrollTop: elements.playlist.scrollTop,
+      bodyScrollY: window.scrollY,
+    }));
+    assert(
+      queueFixedBefore.playlistScrollHeight > queueFixedBefore.playlistClientHeight
+        && Object.values(queueWheelScrollTop).every((scrollTop) => scrollTop > 0)
+        && queueFixedAfter.headerTop === queueFixedBefore.headerTop
+        && queueFixedAfter.currentTop === queueFixedBefore.currentTop
+        && queueFixedAfter.workspaceScrollTop === 0
+        && queueFixedAfter.cardScrollTop === 0
+        && queueFixedAfter.bodyScrollY === 0,
+      "Queue did not keep one native local list scroll owner below fixed content",
+      { queueFixedBefore, queueFixedAfter, queueWheelScrollTop },
+    );
+
+    const directListScroll = await shellPage.evaluate(() => {
+      elements.playlist.scrollTop = 311;
+      activateHostWorkspace("history", { inputOrigin: "programmatic" });
+      elements.historyList.scrollTop = 227;
+      activateHostWorkspace("queue", { inputOrigin: "programmatic" });
+      const queueRestored = elements.playlist.scrollTop;
+      for (const workspace of ["history", "request", "random", "users", "queue"]) {
+        activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
+      }
+      const roundTripQueue = elements.playlist.scrollTop;
+      activateHostWorkspace("history", { inputOrigin: "programmatic" });
+      const historyRestored = elements.historyList.scrollTop;
+      render();
+      render();
+      const repeatedHistory = elements.historyList.scrollTop;
+      activateHostWorkspace("queue", { inputOrigin: "programmatic" });
+      const repeatedQueue = elements.playlist.scrollTop;
+      return {
+        queueRestored,
+        roundTripQueue,
+        historyRestored,
+        repeatedQueue,
+        repeatedHistory,
+        activeWorkspace: state.activeHostWorkspace,
+        sameQueue: elements.playlist === window.__hostShellQueueNodes.playlist,
+        sameHistory: elements.historyList === window.__hostShellQueueNodes.historyList,
+      };
+    });
+    assert(
+      directListScroll.queueRestored === 311
+        && directListScroll.roundTripQueue === 311
+        && directListScroll.historyRestored === 227
+        && directListScroll.repeatedQueue === 311
+        && directListScroll.repeatedHistory === 227
+        && directListScroll.activeWorkspace === "queue"
+        && directListScroll.sameQueue
+        && directListScroll.sameHistory,
+      "Queue/History independent scroll state did not survive direct workspace and render round trips",
+      directListScroll,
+    );
+
+    await shellPage.locator("#work-rail-history").click();
+    const historyMenuTrigger = shellPage.locator("#history-list .menu-toggle").first();
+    await historyMenuTrigger.click();
+    await shellPage.keyboard.press("Escape");
+    assert(
+      await historyMenuTrigger.evaluate((element) => document.activeElement === element
+        && element.getAttribute("aria-expanded") === "false")
+        && !await shellPage.locator("#history-list .menu-content").first().isVisible(),
+      "History row menu Escape did not close first and restore its trigger",
+    );
+    await historyMenuTrigger.click();
+    await shellPage.locator("#work-rail-queue").click();
+    assert(
+      !await shellPage.locator("#history-list .menu-content").first().isVisible(),
+      "hidden History retained an interactive row menu",
+    );
+
+    const clearQueueCurrentId = await shellPage.evaluate(() => state.data.current_item?.id || "");
+    await shellPage.locator("#clear-playlist-button").click();
+    const clearQueueConfirmation = await shellPage.evaluate((currentId) => ({
+      text: elements.confirmText.textContent,
+      currentId,
+      stillCurrent: state.data.current_item?.id === currentId,
+      queueSize: state.data.playlist.length,
+    }), clearQueueCurrentId);
+    assert(
+      await shellPage.locator("#confirm-popover").isVisible()
+        && clearQueueConfirmation.text.includes("当前")
+        && (clearQueueConfirmation.text.includes("保留")
+          || clearQueueConfirmation.text.includes("不会受影响"))
+        && clearQueueConfirmation.stillCurrent
+        && clearQueueConfirmation.queueSize === 28,
+      "Clear Queue confirmation did not explicitly preserve the current song",
+      clearQueueConfirmation,
+    );
+    await shellPage.locator("#confirm-cancel").click();
+
+    await shellPage.locator("#resort-playlist-button").click();
+    const resortEvidence = await shellPage.evaluate(() => ({
+      calls: window.__queueAcceptance.commands.filter((entry) => entry.path === "/api/playlist/resort"),
+      busy: elements.resortPlaylistButton.getAttribute("aria-busy"),
+      disabled: elements.resortPlaylistButton.disabled,
+    }));
+    assert(
+      resortEvidence.calls.length === 1
+        && resortEvidence.busy === null
+        && !resortEvidence.disabled,
+      "Queue-owned Resort did not preserve one guarded command",
+      resortEvidence,
+    );
+
+    const firstMoveUp = shellPage.locator("#playlist .song-item").first().locator("[data-action='move-up']");
+    const lastMoveDown = shellPage.locator("#playlist .song-item").last().locator("[data-action='move-down']");
+    assert(await firstMoveUp.isDisabled() && await lastMoveDown.isDisabled(), "Queue reorder boundaries were enabled");
+    const movingId = await shellPage.locator("#playlist .song-item").nth(1).getAttribute("data-id");
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).click();
+    assert(
+      await shellPage.locator("#confirm-cancel").evaluate((element) => document.activeElement === element),
+      "keyboard Queue move did not place focus inside its confirmation",
+    );
+    await shellPage.locator("#confirm-cancel").click();
+    assert(
+      await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`)
+        .evaluate((element) => document.activeElement === element)
+        && await shellPage.evaluate(() => window.__queueAcceptance.commands
+          .filter((entry) => entry.path === "/api/playlist/reorder").length) === 0,
+      "cancelled Queue move did not restore local focus without sending a command",
+    );
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-down']`).click();
+    await shellPage.locator("#confirm-ok").click();
+    await shellPage.waitForTimeout(60);
+    const moveAccepted = await shellPage.evaluate((itemId) => ({
+      orderIndex: state.data.playlist.findIndex((item) => item.id === itemId),
+      call: window.__queueAcceptance.commands.filter((entry) => entry.path === "/api/playlist/reorder").at(-1),
+      focusId: document.activeElement?.closest(".song-item")?.dataset.id || "",
+      focusAction: document.activeElement?.dataset.action || "",
+      announcement: elements.appToast.textContent,
+    }), movingId);
+    assert(
+      moveAccepted.orderIndex === 2
+        && moveAccepted.call?.payload?.item_id === movingId
+        && moveAccepted.call?.payload?.index === 2
+        && moveAccepted.focusId === movingId
+        && moveAccepted.focusAction === "toggle-menu"
+        && moveAccepted.announcement.includes("3"),
+      "Move down did not send one exact target index, restore focus, and announce acceptance",
+      moveAccepted,
+    );
+    await shellPage.evaluate(() => {
+      window.__queueAcceptance.reorderAccepted = false;
+      setAppMessage("");
+    });
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).click();
+    await shellPage.locator("#confirm-ok").click();
+    await shellPage.waitForTimeout(60);
+    const moveRejected = await shellPage.evaluate((itemId) => ({
+      orderIndex: state.data.playlist.findIndex((item) => item.id === itemId),
+      reorderCalls: window.__queueAcceptance.commands.filter((entry) => entry.path === "/api/playlist/reorder").length,
+      focusId: document.activeElement?.closest(".song-item")?.dataset.id || "",
+      announcement: elements.appToast.textContent,
+      toastHidden: elements.appToast.classList.contains("hidden"),
+    }), movingId);
+    assert(
+      moveRejected.orderIndex === 2
+        && moveRejected.reorderCalls === 2
+        && moveRejected.focusId === movingId
+        && moveRejected.toastHidden
+        && moveRejected.announcement === "",
+      "rejected Queue reorder mutated order or announced false success",
+      moveRejected,
+    );
+
+    await shellPage.evaluate(() => { window.__queueAcceptance.reorderAccepted = true; });
+    const dragSource = shellPage.locator("#playlist .song-item").first().locator(".song-badge-column");
+    const dragTarget = shellPage.locator("#playlist .song-item").nth(2);
+    await dragSource.dragTo(dragTarget, { targetPosition: { x: 80, y: 70 } });
+    assert(await shellPage.locator("#confirm-popover").isVisible(), "pointer drag did not retain reorder confirmation");
+    await shellPage.locator("#confirm-ok").click();
+    await shellPage.waitForTimeout(60);
+    assert(
+      await shellPage.evaluate(() => window.__queueAcceptance.commands
+        .filter((entry) => entry.path === "/api/playlist/reorder").length) === 3,
+      "pointer drag reorder did not share the single reorder command",
+    );
+
+    const retryEvidence = await shellPage.evaluate(() => {
+      state.data.current_item.cache_status = "failed";
+      state.data.current_item.cache_message = "browser retry proof";
+      state.queueCurrentRenderSignature = "";
+      renderQueueCurrent(state.data.current_item);
+      return {
+        visible: !elements.queueCurrentRetry.classList.contains("hidden"),
+        id: elements.queueCurrentRetry.dataset.id,
+        incarnation: elements.queueCurrentRetry.dataset.itemIncarnationId,
+      };
+    });
+    assert(retryEvidence.visible, "current failed cache did not expose retry", retryEvidence);
+    await shellPage.locator("#queue-current-retry").click();
+    const retryCall = await shellPage.evaluate(() => window.__queueAcceptance.commands
+      .filter((entry) => entry.path === "/api/cache/retry").at(-1));
+    assert(
+      retryCall?.payload?.item_id === retryEvidence.id
+        && retryCall?.payload?.expected_item_incarnation_id === retryEvidence.incarnation
+        && retryCall?.payload?.force === true,
+      "current retry lost exact item-incarnation targeting",
+      retryCall,
+    );
+    await shellPage.evaluate(() => {
+      state.data.current_item.cache_status = "ready";
+      state.data.current_item.cache_message = "";
+      state.queueCurrentRenderSignature = "";
+      renderQueueCurrent(state.data.current_item);
+    });
+
+    const nextButtonNode = await shellPage.locator("#next-button").evaluate((element) => {
+      window.__queueNextButton = element;
+      return Boolean(element.closest(".player-panel"));
+    });
+    assert(nextButtonNode, "Next was not Stage-owned");
+    const nextVisibility = {};
+    await shellPage.locator("#work-rail-queue").click();
+    await shellPage.locator("#next-button").click();
+    for (const workspace of ["queue", "history", "request", "random", "users"]) {
+      await shellPage.locator(`#work-rail-${workspace}`).click();
+      nextVisibility[workspace] = await shellPage.locator("#next-button").isVisible();
+    }
+    const nextEvidence = await shellPage.evaluate(() => ({
+      calls: window.__queueAcceptance.nextCalls.map((entry) => entry.workspace),
+      oneButton: document.querySelectorAll("#next-button").length,
+      sameButton: elements.nextButton === window.__queueNextButton,
+      sameSession: state.hostPlaybackSession === window.__queueAcceptance.session,
+      sameFrame: elements.playerFrame === window.__queueAcceptance.frame,
+      sameVideo: state.hostPlaybackSession?.video === window.__queueAcceptance.video,
+      sameAudio: state.hostPlaybackSession?.audio === window.__queueAcceptance.audio,
+    }));
+    assert(
+      nextEvidence.calls.join(",") === "queue"
+        && Object.values(nextVisibility).every(Boolean)
+        && nextEvidence.oneButton === 1
+        && nextEvidence.sameButton
+        && nextEvidence.sameSession
+        && nextEvidence.sameFrame
+        && nextEvidence.sameVideo
+        && nextEvidence.sameAudio,
+      "Stage Next was duplicated, hidden by a tool, or changed playback identity",
+      nextEvidence,
+    );
+
+    const emptyQueueEvidence = await shellPage.evaluate(() => {
+      activateHostWorkspace("queue", { inputOrigin: "programmatic" });
+      const current = state.data.current_item;
+      state.data.playlist = [];
+      state.playlistEmptyRenderSignature = "";
+      renderQueueCurrent(current);
+      renderPlaylist([], current, state.data.cache_policy);
+      const currentOnly = {
+        currentVisible: !elements.queueCurrent.classList.contains("hidden"),
+        emptyText: elements.playlist.textContent,
+      };
+      state.data.current_item = null;
+      state.queueCurrentRenderSignature = "";
+      state.playlistEmptyRenderSignature = "";
+      renderQueueCurrent(null);
+      renderPlaylist([], null, state.data.cache_policy);
+      const noCurrent = {
+        currentHidden: elements.queueCurrent.classList.contains("hidden"),
+        emptyText: elements.playlist.textContent,
+      };
+      state.data.current_item = current;
+      state.data.playlist = [...window.__queueAcceptance.playlist];
+      state.queueCurrentRenderSignature = "";
+      state.playlistEmptyRenderSignature = "";
+      renderQueueCurrent(current);
+      renderPlaylist(state.data.playlist, current, state.data.cache_policy);
+      return { currentOnly, noCurrent };
+    });
+    assert(
+      emptyQueueEvidence.currentOnly.currentVisible
+        && emptyQueueEvidence.currentOnly.emptyText.length > 0
+        && emptyQueueEvidence.noCurrent.currentHidden
+        && emptyQueueEvidence.noCurrent.emptyText.length > 0
+        && emptyQueueEvidence.currentOnly.emptyText !== emptyQueueEvidence.noCurrent.emptyText,
+      "current-only and no-current Queue states were not distinct and honest",
+      emptyQueueEvidence,
+    );
+
+    const queueAcceptance = await shellPage.evaluate(() => {
+      const evidence = {
+        commands: window.__queueAcceptance.commands,
+        nextCalls: window.__queueAcceptance.nextCalls.length,
+        sameSession: state.hostPlaybackSession === window.__queueAcceptance.session,
+        sameFrame: elements.playerFrame === window.__queueAcceptance.frame,
+        sameVideo: state.hostPlaybackSession?.video === window.__queueAcceptance.video,
+        sameAudio: state.hostPlaybackSession?.audio === window.__queueAcceptance.audio,
+        bodyScrollY: window.scrollY,
+      };
+      apiPostStateSnapshot = window.__queueAcceptance.originalApiPostStateSnapshot;
+      apiPostExactStateCommand = window.__queueAcceptance.originalApiPostExactStateCommand;
+      requestNextTrack = window.__queueAcceptance.originalRequestNextTrack;
+      return evidence;
+    });
+    assert(
+      queueAcceptance.sameSession
+        && queueAcceptance.sameFrame
+        && queueAcceptance.sameVideo
+        && queueAcceptance.sameAudio
+        && queueAcceptance.bodyScrollY === 0,
+      "Queue/History acceptance changed exact playback identity or body scroll",
+      queueAcceptance,
+    );
+
     const wideWidths = {};
-    for (const workspace of ["queue", "request", "random", "users"]) {
+    for (const workspace of ["queue", "history", "request", "random", "users"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
       wideWidths[workspace] = await shellPage.evaluate(() => ({
         workspace: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
         stage: document.querySelector(".left-column")?.getBoundingClientRect().width || 0,
-        railIndependent: document.querySelector(".layout > .work-rail")?.parentElement
-          === document.querySelector(".layout"),
-        railGap: document.querySelector(".work-rail").getBoundingClientRect().left
-          - elements.hostWorkspaceRegion.getBoundingClientRect().right,
-        stageToolGap: elements.hostWorkspaceRegion.getBoundingClientRect().left
-          - elements.playerPanel.getBoundingClientRect().right,
         sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
       }));
     }
     assert(
       Object.values(wideWidths).every((entry) => Math.abs(entry.workspace - 536) <= 2)
-        && Object.values(wideWidths).every((entry) => entry.railIndependent
-          && Math.abs(entry.railGap - 12) <= 1
-          && Math.abs(entry.stageToolGap - 12) <= 1)
         && Object.values(wideWidths).every((entry) => entry.stage >= 760 && entry.sameFrame),
       "wide shell did not preserve one stable tool-card width and a useful persistent Stage",
       wideWidths,
     );
+    const wideRequestSubviews = {};
 
     const draftAndScroll = await shellPage.evaluate(() => {
       document.querySelector("#url-input").value = "BV-DRAFT-REQUEST";
@@ -697,35 +1206,161 @@ async function run() {
     await shellPage.locator("#work-rail-queue").click();
     await shellPage.locator("#display-settings-toggle").click();
     assert(await shellPage.locator("#display-settings-panel").isVisible(), "compact toolbar lost Display settings");
-    await shellPage.locator("#display-settings-toggle").click();
+    await shellPage.keyboard.press("Escape");
     await shellPage.locator("#cache-settings-toggle").click();
     assert(await shellPage.locator("#cache-panel").isVisible(), "compact toolbar lost Service settings");
-    await shellPage.locator("#cache-settings-toggle").click();
+    await shellPage.keyboard.press("Escape");
 
     const shellWideScreenshotPath = suffixedPath(screenshotPath, "-wide");
     const shellMediumScreenshotPath = suffixedPath(screenshotPath, "-medium");
     const shellNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow");
+    const queueWideScreenshotPath = suffixedPath(screenshotPath, "-wide-queue");
+    const historyWideScreenshotPath = suffixedPath(screenshotPath, "-wide-history");
+    const queueMediumScreenshotPath = suffixedPath(screenshotPath, "-medium-queue");
+    const queueNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-queue");
+    const historyNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-history");
+    const narrowControlsScreenshotPath = suffixedPath(screenshotPath, "-narrow-controls");
     if (shellWideScreenshotPath) {
+      await shellPage.locator("#work-rail-queue").click();
+      await shellPage.screenshot({ path: queueWideScreenshotPath, fullPage: false });
+      await shellPage.locator("#work-rail-history").click();
+      await shellPage.screenshot({ path: historyWideScreenshotPath, fullPage: false });
       await shellPage.locator("#work-rail-request").click();
       await shellPage.screenshot({ path: shellWideScreenshotPath, fullPage: false });
     }
 
+    async function collectResponsiveFrame(label, width, height) {
+      await shellPage.setViewportSize({ width, height });
+      await shellPage.waitForTimeout(120);
+      const tools = {};
+      for (const workspace of ["queue", "history", "request", "random", "users"]) {
+        await shellPage.locator(`#work-rail-${workspace}`).click();
+        tools[workspace] = await shellPage.evaluate((name) => {
+          const regionElement = elements.hostWorkspaceRegion;
+          const railElement = document.querySelector(".work-rail");
+          const region = regionElement.getBoundingClientRect();
+          const rail = railElement.getBoundingClientRect();
+          const stage = document.querySelector(".left-column").getBoundingClientRect();
+          const playerCard = elements.playerPanel.getBoundingClientRect();
+          return {
+            active: state.activeHostWorkspace,
+            visible: Array.from(elements.hostWorkspacePanels || [])
+              .filter((panel) => !panel.hidden)
+              .every((panel) => panel.dataset.hostWorkspacePanel === name),
+            contentWidth: region.width,
+            railWidth: rail.width,
+            dockRight: rail.right,
+            railGap: rail.left - region.right,
+            railIndependent: railElement.parentElement?.classList.contains("layout")
+              && regionElement.parentElement?.classList.contains("host-content-region"),
+            stageWidth: stage.width,
+            stageHeight: stage.height,
+            stageToolGap: window.matchMedia("(max-width: 1039px)").matches
+              ? region.top - playerCard.bottom
+              : region.left - playerCard.right,
+            mode: elements.appShell.dataset.stageMode,
+            sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+            sameVideo: state.hostPlaybackSession?.video === window.__hostShellNodes.video,
+            sameAudio: state.hostPlaybackSession?.audio === window.__hostShellNodes.audio,
+          };
+        }, workspace);
+      }
+      const shell = await shellPage.evaluate(() => {
+        const toolbar = document.querySelector(".topbar").getBoundingClientRect();
+        const rail = document.querySelector(".work-rail").getBoundingClientRect();
+        const left = document.querySelector(".left-column");
+        return {
+          toolbarHeight: toolbar.height,
+          rightEdgeDelta: Math.abs(toolbar.right - rail.right),
+          bodyScrollX: window.scrollX,
+          bodyScrollY: window.scrollY,
+          pageHorizontalScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          pageVerticalScroll: document.documentElement.scrollHeight > document.documentElement.clientHeight,
+          stageMode: elements.appShell.dataset.stageMode,
+          stageClientHeight: left.clientHeight,
+          stageScrollHeight: left.scrollHeight,
+          trayClosed: elements.stageControlTray.hidden && elements.stageControlTray.inert,
+        };
+      });
+      const toolValues = Object.values(tools);
+      const contentWidth = toolValues[0].contentWidth;
+      assert(
+        toolValues.every((entry) => entry.active
+          && entry.visible
+          && Math.abs(entry.contentWidth - contentWidth) <= 1
+          && entry.railGap >= 8
+          && entry.stageToolGap >= 8
+          && entry.railIndependent
+          && entry.stageHeight >= 180
+          && entry.sameFrame
+          && entry.sameVideo
+          && entry.sameAudio),
+        `${label} changed tool geometry or media identity while switching direct tools`,
+        { tools, shell },
+      );
+      assert(
+        shell.toolbarHeight >= 52
+          && shell.toolbarHeight <= 64
+          && shell.rightEdgeDelta <= 1
+          && shell.bodyScrollX === 0
+          && shell.bodyScrollY === 0
+          && !shell.pageHorizontalScroll
+          && !shell.pageVerticalScroll
+          && shell.stageScrollHeight <= shell.stageClientHeight + 1,
+        `${label} violated toolbar alignment, page-scroll, or fitted Stage geometry`,
+        { tools, shell },
+      );
+      return { width, height, tools, shell };
+    }
+
+    const responsiveFrames = {};
+    for (const [label, width, height] of [
+      ["wide1600", 1600, 900],
+      ["wide1536", 1536, 1024],
+      ["wide1496", 1496, 992],
+      ["medium1240", 1240, 800],
+      ["default1024", 1024, 700],
+      ["narrow840", 840, 760],
+      ["short1280", 1280, 640],
+      ["minimum700", 700, 700],
+    ]) {
+      responsiveFrames[label] = await collectResponsiveFrame(label, width, height);
+      if (label === "medium1240" && shellMediumScreenshotPath) {
+        await shellPage.screenshot({ path: shellMediumScreenshotPath, fullPage: false });
+      }
+      if (label === "narrow840" && shellNarrowScreenshotPath) {
+        await shellPage.screenshot({ path: shellNarrowScreenshotPath, fullPage: false });
+      }
+    }
+    assert(
+      Math.abs(responsiveFrames.wide1600.tools.queue.contentWidth - 536) <= 2
+        && Math.abs(responsiveFrames.wide1536.tools.queue.contentWidth - 536) <= 2
+        && Math.abs(responsiveFrames.medium1240.tools.queue.contentWidth - 500) <= 2
+        && Math.abs(responsiveFrames.wide1600.tools.queue.railWidth - 104) <= 2
+        && Math.abs(responsiveFrames.medium1240.tools.queue.railWidth - 100) <= 2,
+      "wide/medium states did not keep one stable tool-card width beside the independent rail",
+      responsiveFrames,
+    );
+
     await shellPage.setViewportSize({ width: 1240, height: 800 });
     await shellPage.locator("#work-rail-queue").click();
     const mediumQueue = await shellPage.evaluate(() => ({
-      railWidth: document.querySelector(".work-rail")?.getBoundingClientRect().width || 0,
-      workspaceWidth: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
-      stageWidth: document.querySelector(".left-column")?.getBoundingClientRect().width || 0,
+      mode: elements.appShell.dataset.stageMode,
+      listClientHeight: elements.playlist.clientHeight,
+      listScrollHeight: elements.playlist.scrollHeight,
+      nextVisible: Boolean(elements.nextButton.offsetWidth || elements.nextButton.offsetHeight),
+      bodyScrollY: window.scrollY,
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
     }));
-    assert(
-      Math.abs(mediumQueue.railWidth - 100) <= 2
-        && Math.abs(mediumQueue.workspaceWidth - 500) <= 2
-        && mediumQueue.stageWidth >= 580
-        && mediumQueue.sameFrame,
-      "medium Queue did not remain docked beside a useful Stage",
-      mediumQueue,
-    );
+    assert(mediumQueue.listClientHeight > 40
+      && mediumQueue.listScrollHeight > mediumQueue.listClientHeight
+      && mediumQueue.nextVisible
+      && mediumQueue.bodyScrollY === 0
+      && mediumQueue.sameFrame,
+    "medium Queue lost its fixed actions or useful local list owner", mediumQueue);
+    if (queueMediumScreenshotPath) {
+      await shellPage.screenshot({ path: queueMediumScreenshotPath, fullPage: false });
+    }
     await shellPage.locator("#work-rail-request").click();
     const mediumRequestOpen = await shellPage.evaluate(() => ({
       active: state.activeHostWorkspace,
@@ -733,8 +1368,6 @@ async function run() {
         && hostRequestWorkspaceUsesOverlay(),
       width: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
-      sameSearch: document.querySelector("#search-panel") === window.__hostShellNodes.search,
-      draft: document.querySelector("#url-input").value,
       bodyScrollY: window.scrollY,
     }));
     assert(
@@ -742,51 +1375,67 @@ async function run() {
         && !mediumRequestOpen.overlayOpen
         && Math.abs(mediumRequestOpen.width - 500) <= 2
         && mediumRequestOpen.sameFrame
-        && mediumRequestOpen.sameSearch
-        && mediumRequestOpen.draft === "BV-DRAFT-REQUEST"
         && mediumRequestOpen.bodyScrollY === 0,
       "medium Request did not use the same stable direct tool-card geometry",
       mediumRequestOpen,
     );
-    if (shellMediumScreenshotPath) {
-      await shellPage.screenshot({ path: shellMediumScreenshotPath, fullPage: false });
-    }
+    const mediumRequestSubviews = {};
     const mediumRequestClosed = { overlayOpen: false, directDock: true };
 
     await shellPage.setViewportSize({ width: 840, height: 760 });
+    await shellPage.waitForTimeout(120);
     await shellPage.locator("#work-rail-queue").click();
-    const narrowInitial = await shellPage.evaluate(() => ({
-      mode: elements.appShell?.dataset.stageMode,
+    const narrowInitial = responsiveFrames.narrow840.shell;
+    const narrowQueue = await shellPage.evaluate(() => ({
+      workspace: state.activeHostWorkspace,
+      listClientHeight: elements.playlist.clientHeight,
+      listScrollHeight: elements.playlist.scrollHeight,
+      nextVisible: Boolean(elements.nextButton.offsetWidth || elements.nextButton.offsetHeight),
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
-      bodyScrollY: window.scrollY,
-      bodyOverflow: getComputedStyle(document.body).overflow,
-      stageClientHeight: document.querySelector(".left-column")?.clientHeight || 0,
-      stageScrollHeight: document.querySelector(".left-column")?.scrollHeight || 0,
-      railIndependent: document.querySelector(".layout > .work-rail")?.parentElement
-        === document.querySelector(".layout"),
     }));
-    assert(
-      narrowInitial.mode === "narrow"
-        && narrowInitial.sameFrame
-        && narrowInitial.bodyScrollY === 0
-        && narrowInitial.bodyOverflow === "hidden"
-        && narrowInitial.stageScrollHeight <= narrowInitial.stageClientHeight + 1
-        && narrowInitial.railIndependent,
-      "narrow shell did not keep a bounded Stage beside its independent rail",
-      narrowInitial,
-    );
+    assert(narrowQueue.workspace === "queue"
+      && narrowQueue.listClientHeight > 40
+      && narrowQueue.listScrollHeight > narrowQueue.listClientHeight
+      && narrowQueue.nextVisible
+      && narrowQueue.sameFrame,
+    "narrow Queue lost direct actions or its local list owner", narrowQueue);
+    if (queueNarrowScreenshotPath) {
+      await shellPage.screenshot({ path: queueNarrowScreenshotPath, fullPage: false });
+    }
+    await shellPage.locator("#work-rail-history").click();
+    const narrowHistory = await shellPage.evaluate(() => ({
+      workspace: state.activeHostWorkspace,
+      listClientHeight: elements.historyList.clientHeight,
+      listScrollHeight: elements.historyList.scrollHeight,
+      actionsVisible: Boolean(elements.clearHistoryButton.offsetWidth || elements.clearHistoryButton.offsetHeight),
+      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+    }));
+    assert(narrowHistory.workspace === "history"
+      && narrowHistory.listClientHeight > 40
+      && narrowHistory.listScrollHeight > narrowHistory.listClientHeight
+      && narrowHistory.actionsVisible
+      && narrowHistory.sameFrame,
+    "narrow History lost direct actions or its local list owner", narrowHistory);
+    if (historyNarrowScreenshotPath) {
+      await shellPage.screenshot({ path: historyNarrowScreenshotPath, fullPage: false });
+    }
     await shellPage.locator("#stage-controls-toggle").click();
     await shellPage.waitForTimeout(180);
     const narrowControlEvidence = await shellPage.evaluate(() => ({
+      mode: elements.appShell.dataset.stageMode,
       open: !elements.stageControlTray.hidden && !elements.stageControlTray.inert,
       backdrop: !elements.stageControlBackdrop.hidden && !elements.stageControlBackdrop.inert,
+      opacity: Number(getComputedStyle(elements.stageControlTray).opacity),
       focusAtClose: document.activeElement === elements.stageControlsClose,
+      activeElement: document.activeElement?.id || document.activeElement?.tagName || "",
       oneDeck: document.querySelectorAll("#stage-extended-controls").length,
       controls: ["#av-offset-input", "#volume-slider", "#key-shift-input"].map((selector) => {
         const control = document.querySelector(selector);
         return Boolean(control?.offsetWidth || control?.offsetHeight || control?.getClientRects().length);
       }),
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+      sameVideo: state.hostPlaybackSession?.video === window.__hostShellNodes.video,
+      sameAudio: state.hostPlaybackSession?.audio === window.__hostShellNodes.audio,
       geometry: (() => {
         const player = elements.playerPanel.getBoundingClientRect();
         const trigger = elements.stageControlsToggle.getBoundingClientRect();
@@ -800,55 +1449,57 @@ async function run() {
         };
       })(),
     }));
+    assert(narrowControlEvidence.mode === "narrow"
+      && narrowControlEvidence.open
+      && narrowControlEvidence.backdrop
+      && narrowControlEvidence.opacity === 1
+      && narrowControlEvidence.focusAtClose
+      && narrowControlEvidence.oneDeck === 1
+      && narrowControlEvidence.controls.every(Boolean)
+      && Object.values(narrowControlEvidence.geometry).every(Boolean)
+      && narrowControlEvidence.sameFrame
+      && narrowControlEvidence.sameVideo
+      && narrowControlEvidence.sameAudio,
+    "narrow bounded control tray did not expose the one existing control deck", narrowControlEvidence);
+    if (narrowControlsScreenshotPath) {
+      await shellPage.screenshot({ path: narrowControlsScreenshotPath, fullPage: false });
+    }
+    await shellPage.keyboard.press("Shift+Tab");
     assert(
-      narrowControlEvidence.open
-        && narrowControlEvidence.backdrop
-        && narrowControlEvidence.focusAtClose
-        && narrowControlEvidence.oneDeck === 1
-        && narrowControlEvidence.controls.every(Boolean)
-        && Object.values(narrowControlEvidence.geometry).every(Boolean)
-        && narrowControlEvidence.sameFrame,
-      "narrow floating playback panel did not expose the one existing control deck",
-      narrowControlEvidence,
+      await shellPage.evaluate(() => elements.stageControlTray.contains(document.activeElement)),
+      "Stage tray did not contain backward keyboard focus",
     );
     await shellPage.locator("#stage-control-backdrop").click({ position: { x: 4, y: 4 } });
     assert(await shellPage.evaluate(() => elements.stageControlTray.hidden
       && elements.stageControlBackdrop.hidden
       && document.activeElement === elements.stageControlsToggle),
-    "Stage control backdrop did not close the panel and restore its opener");
-    const narrowWorkspaces = {};
-    for (const workspace of ["queue", "request", "random", "users"]) {
-      await shellPage.locator(`#work-rail-${workspace}`).click();
-      narrowWorkspaces[workspace] = await shellPage.evaluate((name) => ({
-        active: state.activeHostWorkspace,
-        visible: Array.from(elements.hostWorkspacePanels || [])
-          .filter((panel) => !panel.hidden)
-          .every((panel) => panel.dataset.hostWorkspacePanel === name),
-        bodyScrollY: window.scrollY,
-        sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
-        requestOverlay: state.hostWorkspaceOverlayOpen && hostRequestWorkspaceUsesOverlay(),
-      }), workspace);
-    }
-    assert(
-      Object.entries(narrowWorkspaces).every(([workspace, entry]) => entry.active === workspace
-        && entry.visible
-        && entry.bodyScrollY === 0
-        && entry.sameFrame
-        && !entry.requestOverlay),
-      "not every workspace remained reachable in the interim narrow shell",
-      narrowWorkspaces,
-    );
+    "Stage tray backdrop did not close the floating layer and restore its opener");
+    await shellPage.locator("#stage-controls-toggle").click();
+    await shellPage.locator("#stage-controls-close").click();
+    assert(await shellPage.evaluate(() => elements.stageControlTray.hidden
+      && elements.stageControlBackdrop.hidden
+      && document.activeElement === elements.stageControlsToggle),
+    "Stage tray close button did not close the floating layer and restore its opener");
+    await shellPage.locator("#stage-controls-toggle").click();
+    await shellPage.keyboard.press("Escape");
+    assert(await shellPage.evaluate(() => elements.stageControlTray.hidden
+      && elements.stageControlBackdrop.hidden
+      && elements.stageControlTray.inert
+      && document.activeElement === elements.stageControlsToggle),
+    "Stage tray Escape did not close one layer and restore its opener");
+    const narrowWorkspaces = responsiveFrames.narrow840.tools;
+    const narrowRequestSubviews = {};
     const narrowLocalScroll = await shellPage.evaluate(() => {
       activateHostWorkspace("random", { inputOrigin: "programmatic" });
       const spacer = document.createElement("div");
       spacer.style.height = "1500px";
       spacer.style.flex = "0 0 1500px";
-      document.querySelector("#gatcha-main-view").appendChild(spacer);
-      elements.gatchaStage.scrollTop = 360;
+      document.querySelector("#gatcha-panel").appendChild(spacer);
+      elements.hostWorkspaceRegion.scrollTop = 360;
       const evidence = {
-        workspaceScrollTop: elements.gatchaStage.scrollTop,
-        workspaceClientHeight: elements.gatchaStage.clientHeight,
-        workspaceScrollHeight: elements.gatchaStage.scrollHeight,
+        workspaceScrollTop: elements.hostWorkspaceRegion.scrollTop,
+        workspaceClientHeight: elements.hostWorkspaceRegion.clientHeight,
+        workspaceScrollHeight: elements.hostWorkspaceRegion.scrollHeight,
         bodyScrollY: window.scrollY,
       };
       spacer.remove();
@@ -887,6 +1538,23 @@ async function run() {
       legacyLayoutEvidence,
       playerIdentity,
       playerRequestCount: shellPlayerRequests.length - playerRequestsBeforeSwitching,
+      queueHistory: {
+        initial: directListInitial,
+        history: directHistory,
+        lazyHistoryRequests: shellPlayedSessionRequests.length,
+        seed: queueSeed,
+        fixedBefore: queueFixedBefore,
+        wheel: queueWheelScrollTop,
+        scrollRestoration: directListScroll,
+        clearConfirmation: clearQueueConfirmation,
+        resort: resortEvidence,
+        moveAccepted,
+        moveRejected,
+        retry: retryCall,
+        next: nextEvidence,
+        emptyStates: emptyQueueEvidence,
+        playbackInvariant: queueAcceptance,
+      },
       wideWidths,
       draftAndScroll,
       bannerEvidence,
@@ -894,6 +1562,8 @@ async function run() {
       mediumRequestOpen,
       mediumRequestClosed,
       narrowInitial,
+      narrowQueue,
+      narrowHistory,
       narrowControlEvidence,
       narrowWorkspaces,
       narrowLocalScroll,
@@ -903,6 +1573,12 @@ async function run() {
         wide: shellWideScreenshotPath,
         medium: shellMediumScreenshotPath,
         narrow: shellNarrowScreenshotPath,
+        queueWide: queueWideScreenshotPath,
+        historyWide: historyWideScreenshotPath,
+        queueMedium: queueMediumScreenshotPath,
+        queueNarrow: queueNarrowScreenshotPath,
+        historyNarrow: historyNarrowScreenshotPath,
+        narrowControls: narrowControlsScreenshotPath,
       },
     };
     await shellPage.close();
@@ -1049,8 +1725,6 @@ async function run() {
       { larkSearchRequests },
     );
     await page.locator("#work-rail-queue").click();
-    await page.locator("#stage-controls-toggle").click();
-    await page.waitForTimeout(180);
     const playbackInfoRegions = page.locator(".playback-contextual-info-region");
     const playbackInfoButtons = page.locator(".playback-contextual-info-button");
     assert(await playbackInfoButtons.count() === 2, "Host A/V and Key did not expose exactly two information triggers");
@@ -1103,8 +1777,9 @@ async function run() {
       avTooltipBox && avPanelBox
         && avTooltipBox.x >= 0 && avTooltipBox.y >= 0
         && avTooltipBox.x + avTooltipBox.width <= playbackViewport.width
-        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height,
-      "Host A/V information was not bounded within the compact control tray viewport",
+        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height
+        && avTooltipBox.y + avTooltipBox.height <= avPanelBox.y,
+      "Host A/V information was not bounded above its control panel",
       { avTooltipBox, avPanelBox, playbackViewport },
     );
     await avTooltip.hover();
@@ -1169,7 +1844,6 @@ async function run() {
       { before: hostPlayerRequestCountBeforeInfo, requests: hostPlayerRequests },
     );
 
-    await page.locator("#stage-controls-close").click();
     await page.locator("#cache-settings-toggle").click();
     await page.locator("#cache-panel-advanced-trigger").click();
     const cachePanel = page.locator("#cache-panel");
@@ -1411,24 +2085,8 @@ async function run() {
     await page.locator("#cache-panel-advanced-trigger").click();
 
     await renderUpdateState(installableUpdate);
-    const installablePrecondition = await page.evaluate(() => ({
-      eligible: isEligibleCurrentChannelUpdate(),
-      update: state.data.app_update,
-      previewEnabled: state.updatePreviewEnabled,
-      panelOpen: state.cacheSettingsOpen,
-      buttonDisabled: elements.updateCheckButton.disabled,
-    }));
-    assert(installablePrecondition.eligible, "known installable update lost its deterministic action precondition", installablePrecondition);
     await page.locator("#update-check-button").click();
-    assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation", {
-      installablePrecondition,
-      after: await page.evaluate(() => ({
-        eligible: isEligibleCurrentChannelUpdate(),
-        update: state.data.app_update,
-        confirmIntent: state.confirmIntent,
-        confirmHidden: elements.confirmPopover.classList.contains("hidden"),
-      })),
-    });
+    assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation");
     assert(updateInstallRequests.length === 0, "update action installed before explicit confirmation");
     await page.locator("#confirm-ok").click();
     await page.waitForTimeout(100);
@@ -1904,8 +2562,6 @@ async function run() {
         }
       });
     });
-    await coarsePage.locator("#stage-controls-toggle").click();
-    await coarsePage.waitForTimeout(180);
     const coarsePlaybackInfo = coarsePage.locator(".playback-contextual-info-button").first();
     await coarsePlaybackInfo.scrollIntoViewIfNeeded();
     const coarsePlaybackMetrics = await coarsePlaybackInfo.evaluate((button) => {
@@ -1938,9 +2594,9 @@ async function run() {
       await coarsePage.evaluate(() => window.__coarsePlaybackInfoActions) === 0,
       "Host playback touch tap activated an adjacent playback control",
     );
-    await coarsePage.locator("#stage-control-tray-title").tap();
+    await coarsePage.locator("#current-title").tap();
     assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
-    await coarsePage.locator("#stage-controls-close").click();
+    await coarsePage.locator("#stage-controls-close").tap();
     await coarsePage.locator("#cache-settings-toggle").click();
     await coarsePage.locator("#cache-panel-advanced-trigger").click();
     await coarsePage.locator('label[for="update-automatic-checkbox"]').tap();

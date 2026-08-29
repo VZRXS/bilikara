@@ -18,7 +18,6 @@ const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
-const listFlipFallbackPaddingMs = 80;
 const defaultSongAdvanceDelaySeconds = 3;
 const maxSongAdvanceDelaySeconds = 30;
 const appUpdateCheckTimeoutMs = 10000;
@@ -149,12 +148,6 @@ const state = {
   openRowMenuTrigger: null,
   playedSessionsLoaded: false,
   playedSessionsLoadPromise: null,
-  listView: "queue",
-  listStageView: "",
-  listFlipTimer: null,
-  listFlipFrame: null,
-  listFlipGeneration: 0,
-  listFlipTransitionCleanup: null,
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
   remoteQrPinned: false,
@@ -525,7 +518,6 @@ const elements = {
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
-  historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
   historyExportButton: document.getElementById("history-export-button"),
   clearHistoryButton: document.getElementById("clear-history-button"),
@@ -963,6 +955,7 @@ function invalidateLanguageSensitiveRenderCache() {
   state.historyRenderSignature = "";
   state.audioVariantBarRenderSignature = "";
   state.volumeControlsRenderSignature = "";
+  state.playedSessionsLoaded = false;
 }
 
 function setLanguage(language) {
@@ -1029,10 +1022,27 @@ async function loadTranslations() {
   renderLanguageSwitch();
 }
 
-function closeOpenMenus() {
+function closeOpenMenus({ restoreFocus = false } = {}) {
+  const trigger = state.openRowMenuTrigger;
+  let closed = false;
   document.querySelectorAll(".menu-content").forEach((menu) => {
+    if (!menu.classList.contains("hidden")) {
+      closed = true;
+    }
     menu.classList.add("hidden");
+    menu.closest(".song-actions-wrap, .history-actions-wrap")
+      ?.querySelector('[data-action="toggle-menu"]')
+      ?.setAttribute("aria-expanded", "false");
   });
+  state.openRowMenuTrigger = null;
+  if (
+    restoreFocus
+    && trigger?.isConnected
+    && !trigger.closest("[hidden], [inert]")
+  ) {
+    trigger.focus({ preventScroll: true });
+  }
+  return closed;
 }
 
 function selectedRequesterName() {
@@ -2760,7 +2770,7 @@ function renderHostWorkspaceSelection() {
 
 function normalizeHostWorkspaceName(value, fallback = "queue") {
   const candidate = String(value || "").trim().toLowerCase();
-  return ["queue", "request", "random", "users"].includes(candidate)
+  return ["queue", "history", "request", "random", "users"].includes(candidate)
     ? candidate
     : fallback;
 }
@@ -2816,6 +2826,11 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
   state.focusedHostWorkspace = nextWorkspace;
   state.hostWorkspaceOverlayOpen = nextWorkspace === "request";
   renderHostWorkspaceSelection();
+  if (nextWorkspace === "history") {
+    loadPlayedSessions().catch((error) => {
+      console.warn("加载历史场次失败:", error);
+    });
+  }
   restoreHostWorkspaceScrollPosition(nextWorkspace);
 
   const trigger = hostWorkspaceButton(nextWorkspace);
@@ -2851,7 +2866,7 @@ function handleHostWorkspaceRailKeydown(event) {
     event.currentTarget?.dataset?.hostWorkspace,
     state.focusedHostWorkspace,
   );
-  const workspaces = ["queue", "request", "random", "users"];
+  const workspaces = ["queue", "history", "request", "random", "users"];
   const currentIndex = Math.max(0, workspaces.indexOf(currentWorkspace));
   let targetIndex = null;
   if (event.key === "ArrowDown") {
@@ -2903,46 +2918,6 @@ function hostWorkspaceHasHigherEscapeLayer() {
     || state.presentationSettingsOpen
     || state.remoteQrPinned
   );
-}
-
-function closeOrdinaryPopoverForEscape() {
-  const infoTrigger = document.querySelector(
-    ".cache-advanced-info.is-visible .cache-advanced-info-button",
-  );
-  if (closeCacheAdvancedInfo()) {
-    infoTrigger?.focus({ preventScroll: true });
-    return true;
-  }
-  if (state.remoteQrPinned) {
-    setRemoteQrPinned(false, { dismissTransient: true });
-    elements.remoteMiniTrigger?.focus({ preventScroll: true });
-    elements.remoteMiniControl?.classList.add("is-qr-dismissed");
-    return true;
-  }
-  if (state.cacheSettingsOpen) {
-    state.cacheSettingsOpen = false;
-    syncCachePanelVisibility();
-    elements.cacheSettingsToggle?.focus({ preventScroll: true });
-    return true;
-  }
-  if (state.displaySettingsOpen) {
-    state.displaySettingsOpen = false;
-    syncDisplayPanelVisibility();
-    elements.displaySettingsToggle?.focus({ preventScroll: true });
-    return true;
-  }
-  if (state.presentationSettingsOpen) {
-    state.presentationSettingsOpen = false;
-    syncPresentationPanelVisibility();
-    elements.presentationSettingsToggle?.focus({ preventScroll: true });
-    return true;
-  }
-  if (elements.catalogAdvancedMenu?.open) {
-    elements.catalogAdvancedMenu.open = false;
-    elements.catalogAdvancedMenu.querySelector("summary")?.focus({ preventScroll: true });
-    return true;
-  }
-  return false;
 }
 
 function positionStageControlTray() {
@@ -6733,7 +6708,6 @@ function render() {
     data.playlist.length,
     Boolean(data.session_flags?.auto_restored_backup),
   );
-  syncListStageView();
   renderSearchCookieFace();
   if (elements.favlistBrowserView && !elements.favlistBrowserView.classList.contains("hidden")) {
     renderFavlistBrowse();
@@ -6744,178 +6718,6 @@ function render() {
   state.lastPollRenderSignature = renderSignatureForData(data);
 }
 
-function parseCssTimeMs(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  const amount = Number.parseFloat(normalized);
-  if (!Number.isFinite(amount)) {
-    return 0;
-  }
-  return normalized.endsWith("ms") ? amount : amount * 1000;
-}
-
-function transitionTotalMsForProperty(element, propertyName) {
-  if (!element || typeof window.getComputedStyle !== "function") {
-    return 0;
-  }
-  const style = window.getComputedStyle(element);
-  const properties = String(style.transitionProperty || "all").split(",");
-  const durations = String(style.transitionDuration || "0s").split(",");
-  const delays = String(style.transitionDelay || "0s").split(",");
-  let longestMs = 0;
-  properties.forEach((property, index) => {
-    const normalizedProperty = property.trim();
-    if (normalizedProperty !== "all" && normalizedProperty !== propertyName) {
-      return;
-    }
-    const durationMs = parseCssTimeMs(durations[index % durations.length]);
-    const delayMs = parseCssTimeMs(delays[index % delays.length]);
-    longestMs = Math.max(longestMs, durationMs + delayMs);
-  });
-  return longestMs;
-}
-
-function setListFlipFaceOwnership(view) {
-  const showBack = view === "history";
-  setClassToggle(elements.listStage, "flip-show-front", !showBack);
-  setClassToggle(elements.listStage, "flip-show-back", showBack);
-}
-
-function listFlipViewFromTransform(inner, midpointView) {
-  if (!inner || typeof window.getComputedStyle !== "function") {
-    return midpointView;
-  }
-  const transform = String(window.getComputedStyle(inner).transform || "");
-  const matrix3d = transform.match(/^matrix3d\(([^)]+)\)$/);
-  const matrix2d = transform.match(/^matrix\(([^)]+)\)$/);
-  const values = (matrix3d || matrix2d)?.[1]
-    ?.split(",")
-    .map((value) => Number.parseFloat(value.trim()));
-  const horizontalScale = values?.[0];
-  if (!Number.isFinite(horizontalScale) || Math.abs(horizontalScale) < 0.0001) {
-    return midpointView;
-  }
-  return horizontalScale < 0 ? "history" : "queue";
-}
-
-function clearListFlipCallbacks() {
-  if (state.listFlipTimer) {
-    window.clearTimeout(state.listFlipTimer);
-    state.listFlipTimer = null;
-  }
-  if (state.listFlipFrame) {
-    window.cancelAnimationFrame(state.listFlipFrame);
-    state.listFlipFrame = null;
-  }
-  if (state.listFlipTransitionCleanup) {
-    state.listFlipTransitionCleanup();
-    state.listFlipTransitionCleanup = null;
-  }
-}
-
-function finishListStageFlip(generation, nextView) {
-  if (generation !== state.listFlipGeneration) {
-    return false;
-  }
-  clearListFlipCallbacks();
-  setClassToggle(elements.listStage, "is-history-view", nextView === "history");
-  setListFlipFaceOwnership(nextView);
-  elements.listStage?.classList.remove("is-flipping");
-  return true;
-}
-
-function monitorListFlipFaceOwnership(inner, nextView, generation) {
-  if (generation !== state.listFlipGeneration) {
-    return;
-  }
-  setListFlipFaceOwnership(listFlipViewFromTransform(inner, nextView));
-  let monitorFrame = null;
-  monitorFrame = window.requestAnimationFrame(() => {
-    if (
-      generation !== state.listFlipGeneration
-      || state.listFlipFrame !== monitorFrame
-    ) {
-      return;
-    }
-    state.listFlipFrame = null;
-    monitorListFlipFaceOwnership(inner, nextView, generation);
-  });
-  state.listFlipFrame = monitorFrame;
-}
-
-function syncListStageView() {
-  const nextView = state.listView === "history" ? "history" : "queue";
-  const isInitialRender = !state.listStageView;
-  if (state.listStageView === nextView) {
-    return;
-  }
-  state.listStageView = nextView;
-  state.listFlipGeneration += 1;
-  const generation = state.listFlipGeneration;
-  clearListFlipCallbacks();
-
-  if (isInitialRender) {
-    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
-    setListFlipFaceOwnership(nextView);
-    elements.listStage?.classList.remove("is-flipping");
-    return;
-  }
-
-  const inner = elements.listStage?.querySelector(".list-stage-inner");
-  if (!elements.listStage || !inner) {
-    finishListStageFlip(generation, nextView);
-    return;
-  }
-
-  const currentView = elements.listStage.classList.contains("is-history-view")
-    ? "history"
-    : "queue";
-  setListFlipFaceOwnership(listFlipViewFromTransform(inner, currentView));
-  elements.listStage?.classList.add("is-flipping");
-  const transitionMs = transitionTotalMsForProperty(inner, "transform");
-
-  const handleTransitionEnd = (event) => {
-    if (
-      event.target === inner
-      && (event.propertyName === "transform" || event.propertyName === "-webkit-transform")
-    ) {
-      finishListStageFlip(generation, nextView);
-    }
-  };
-  inner.addEventListener("transitionend", handleTransitionEnd);
-  state.listFlipTransitionCleanup = () => {
-    inner.removeEventListener("transitionend", handleTransitionEnd);
-  };
-
-  state.listFlipFrame = window.requestAnimationFrame(() => {
-    if (generation !== state.listFlipGeneration) {
-      return;
-    }
-    state.listFlipFrame = null;
-    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
-    if (transitionMs <= 0) {
-      finishListStageFlip(generation, nextView);
-      return;
-    }
-    monitorListFlipFaceOwnership(inner, nextView, generation);
-  });
-  state.listFlipTimer = window.setTimeout(() => {
-    finishListStageFlip(generation, nextView);
-  }, transitionMs + listFlipFallbackPaddingMs);
-}
-
-function activeScrollableList() {
-  return state.listView === "history" ? elements.historyList : elements.playlist;
-}
-
-function normalizeWheelDelta(event, container) {
-  if (event.deltaMode === 1) {
-    return event.deltaY * 18;
-  }
-  if (event.deltaMode === 2) {
-    return event.deltaY * container.clientHeight;
-  }
-  return event.deltaY;
-}
 function renderRequesterSelect(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
   const signature = JSON.stringify(users);
@@ -7160,11 +6962,6 @@ async function copyRemoteUrl() {
 }
 
 function renderListHeader(playlist, history) {
-  const isHistoryView = state.listView === "history";
-  const listTag = isHistoryView ? t("history.tag") : t("list.tag");
-  const listTitle = isHistoryView ? t("history.title") : t("list.title");
-  const queueCount = isHistoryView ? t("history.count", { count: history.length }) : t("list.count", { count: playlist.length });
-  const historyButtonText = isHistoryView ? t("list.title") : t("history.title");
   const signature = JSON.stringify({
     queueCount: playlist.length,
     historyCount: history.length,
@@ -7176,14 +6973,11 @@ function renderListHeader(playlist, history) {
   }
   state.listHeaderRenderSignature = signature;
 
-  setTextContent(elements.listTag, listTag);
-  setTextContent(elements.listTitle, listTitle);
-  setTextContent(elements.queueCount, queueCount);
-  setTextContent(elements.historyToggleButton, historyButtonText);
-  setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
-  setClassToggle(elements.historyExportButton, "hidden", !isHistoryView);
-  setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
-  setClassToggle(elements.nextButton, "hidden", isHistoryView);
+  setTextContent(elements.listTag, t("list.tag"));
+  setTextContent(elements.listTitle, t("list.title"));
+  setTextContent(elements.queueCount, t("list.count", { count: playlist.length }));
+  setTextContent(elements.historyCount, t("history.count", { count: history.length }));
+  setClassToggle(elements.clearHistoryButton, "hidden", !history.length);
 }
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
@@ -12479,6 +12273,8 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const sizeLabel = node.querySelector(".song-size-label");
     const readyIndicator = node.querySelector(".song-badge-check");
     const retryButton = node.querySelector(".song-retry-button");
+    const moveUpButton = node.querySelector('[data-action="move-up"]');
+    const moveDownButton = node.querySelector('[data-action="move-down"]');
     const note = node.querySelector(".song-note");
     const titleNode = node.querySelector(".song-title");
     const requesterNode = node.querySelector(".song-requester");
@@ -12542,6 +12338,14 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       setClassToggle(note, "hidden", !noteText);
     }
     syncRetryButton(retryButton, item);
+    if (moveUpButton) {
+      moveUpButton.disabled = index === 0;
+      moveUpButton.dataset.targetIndex = String(index - 1);
+    }
+    if (moveDownButton) {
+      moveDownButton.disabled = index === playlist.length - 1;
+      moveDownButton.dataset.targetIndex = String(index + 1);
+    }
 
     const referenceNode = elements.playlist.children[index] || null;
     if (node !== referenceNode) {
@@ -12551,6 +12355,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   });
 
   existingNodes.forEach((node) => {
+    if (node.contains(state.openRowMenuTrigger)) {
+      closeOpenMenus({ restoreFocus: false });
+    }
     node.remove();
   });
 }
@@ -12674,6 +12481,9 @@ function renderHistory(history) {
     return;
   }
   state.historyRenderSignature = signature;
+  if (elements.historyList.contains(state.openRowMenuTrigger)) {
+    closeOpenMenus({ restoreFocus: false });
+  }
   elements.historyList.replaceChildren();
 
   if (!history.length) {
@@ -13252,6 +13062,21 @@ function escapeSelector(value) {
     return window.CSS.escape(value);
   }
   return String(value).replaceAll('"', '\\"');
+}
+
+function focusPlaylistItemMenuTrigger(itemId) {
+  const normalizedId = String(itemId || "");
+  if (!normalizedId) {
+    return false;
+  }
+  const trigger = elements.playlist.querySelector(
+    `.song-item[data-id="${escapeSelector(normalizedId)}"] [data-action="toggle-menu"]`,
+  );
+  if (!trigger) {
+    return false;
+  }
+  trigger.focus({ preventScroll: true });
+  return true;
 }
 
 function syncDropIndicators() {
@@ -14043,8 +13868,8 @@ function updateConfirmHistoryExportPageSize() {
   state.confirmPopoverRenderSignature = "";
 }
 
-async function loadPlayedSessions() {
-  if (!elements.confirmSource) return;
+async function fetchPlayedSessions() {
+  if (!elements.confirmSource) return false;
   try {
     const response = await fetch("/api/played-sessions", {
       headers: clientHeaders(),
@@ -14174,9 +13999,31 @@ async function loadPlayedSessions() {
       if ([...elements.confirmSource.options].some(opt => opt.value === currentVal)) {
         elements.confirmSource.value = currentVal;
       }
+      return true;
     }
   } catch (error) {
     console.error("加载场次列表失败:", error);
+  }
+  return false;
+}
+
+async function loadPlayedSessions() {
+  if (state.playedSessionsLoaded) {
+    return true;
+  }
+  if (state.playedSessionsLoadPromise) {
+    return state.playedSessionsLoadPromise;
+  }
+  const request = fetchPlayedSessions();
+  state.playedSessionsLoadPromise = request;
+  try {
+    const loaded = await request;
+    state.playedSessionsLoaded = Boolean(loaded);
+    return state.playedSessionsLoaded;
+  } finally {
+    if (state.playedSessionsLoadPromise === request) {
+      state.playedSessionsLoadPromise = null;
+    }
   }
 }
 
@@ -14759,8 +14606,9 @@ async function handleLocalPlaybackEnded(
 }
 
 async function reorderPlaylist(itemId, index) {
-  await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index });
+  const accepted = await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index });
   render();
+  return accepted;
 }
 
 async function resortPlaylistByCycle() {
@@ -15170,7 +15018,7 @@ async function handlePlaylistAction(button) {
       });
     }
     if (action === "play-now" || action === "move-next") {
-      closeOpenMenus();
+      closeOpenMenus({ restoreFocus: true });
     }
     render();
   } catch (error) {
@@ -16166,15 +16014,6 @@ elements.historyExportButton?.addEventListener("click", (event) => {
   });
 });
 
-elements.historyToggleButton.addEventListener("click", () => {
-  state.listView = state.listView === "history" ? "queue" : "history";
-  render();
-  if (state.listView === "history") {
-    loadPlayedSessions().catch((err) => {
-      console.warn("加载历史场次失败:", err);
-    });
-  }
-});
 elements.playerFullscreenButton?.addEventListener("click", async () => {
   await togglePlayerFullscreen();
   renderPlayerFullscreenButton();
@@ -16484,12 +16323,40 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
 
 elements.playlist.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
-  if (!button) {
+  if (!button || button.disabled) {
+    return;
+  }
+  if (button.dataset.action === "move-up" || button.dataset.action === "move-down") {
+    event.stopPropagation();
+    const itemId = button.dataset.id || "";
+    const targetIndex = Number.parseInt(button.dataset.targetIndex || "", 10);
+    const item = state.data?.playlist?.find((candidate) => candidate.id === itemId);
+    if (!itemId || !Number.isInteger(targetIndex) || !item) {
+      return;
+    }
+    const point = anchorPointForEvent(event, button);
+    closeOpenMenus({ restoreFocus: false });
+    openConfirm({
+      type: "reorder-item",
+      itemId,
+      targetIndex,
+      focusItemId: itemId,
+      announcePosition: targetIndex + 1,
+      x: point.x,
+      y: point.y,
+      message: t("remote.queueOrderMessage", {
+        title: item.display_title || t("request.thisSong"),
+        index: targetIndex + 1,
+      }),
+      primaryLabel: t("remote.queueOrderConfirm"),
+    });
+    elements.confirmCancel.focus({ preventScroll: true });
     return;
   }
   if (button.dataset.action === "remove") {
     event.stopPropagation();
     const point = anchorPointForEvent(event, button);
+    closeOpenMenus({ restoreFocus: false });
     openConfirm({
       type: "remove-item",
       itemId: button.dataset.id,
@@ -16540,12 +16407,16 @@ elements.historyList.addEventListener("click", async (event) => {
     button.disabled = false;
     button.removeAttribute("aria-busy");
     button.textContent = prevText;
-    closeOpenMenus();
+    closeOpenMenus({ restoreFocus: true });
   }
 });
 
 elements.confirmCancel.addEventListener("click", () => {
+  const intent = state.confirmIntent;
   closeConfirm();
+  if (intent?.type === "reorder-item" && intent.focusItemId) {
+    focusPlaylistItemMenuTrigger(intent.focusItemId);
+  }
 });
 
 elements.confirmSource?.addEventListener("change", () => {
@@ -16765,9 +16636,16 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "reorder-item" && intent.itemId && Number.isInteger(intent.targetIndex)) {
-      await reorderPlaylist(intent.itemId, intent.targetIndex);
+      const accepted = await reorderPlaylist(intent.itemId, intent.targetIndex);
       closeConfirm();
-      setAppMessage(t("remote.queueOrderUpdated"));
+      if (intent.focusItemId) {
+        focusPlaylistItemMenuTrigger(intent.focusItemId);
+      }
+      if (accepted) {
+        setAppMessage(intent.announcePosition
+          ? t("list.movedPosition", { index: intent.announcePosition })
+          : t("remote.queueOrderUpdated"));
+      }
       return;
     }
     if (intent.type === "gatcha-uid-add" && intent.uid) {
@@ -16883,10 +16761,14 @@ document.addEventListener("click", (event) => {
     const menu = wrap?.querySelector(".menu-content");
     if (menu) {
       const isHidden = menu.classList.contains("hidden");
-      // Close all other menus first
-      closeOpenMenus();
+      closeOpenMenus({ restoreFocus: false });
       if (isHidden) {
         menu.classList.remove("hidden");
+        toggle.setAttribute("aria-expanded", "true");
+        state.openRowMenuTrigger = toggle;
+        menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+      } else {
+        toggle.focus({ preventScroll: true });
       }
       event.stopPropagation();
       return;
@@ -16895,7 +16777,7 @@ document.addEventListener("click", (event) => {
 
   // Close menus if clicking outside
   if (!event.target.closest(".menu-content")) {
-    closeOpenMenus();
+    closeOpenMenus({ restoreFocus: true });
   }
 });
 
@@ -17109,29 +16991,6 @@ elements.playlist.addEventListener("drop", async (event) => {
   });
   render();
 });
-
-elements.listStage.addEventListener("wheel", (event) => {
-  const list = activeScrollableList();
-  if (!list) {
-    return;
-  }
-
-  const deltaY = normalizeWheelDelta(event, list);
-  if (!deltaY || list.scrollHeight <= list.clientHeight) {
-    return;
-  }
-
-  const nextScrollTop = list.scrollTop + deltaY;
-  const maxScrollTop = list.scrollHeight - list.clientHeight;
-  const clampedScrollTop = Math.max(0, Math.min(nextScrollTop, maxScrollTop));
-
-  if (clampedScrollTop === list.scrollTop) {
-    return;
-  }
-
-  event.preventDefault();
-  list.scrollTop = clampedScrollTop;
-}, { passive: false });
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
