@@ -307,20 +307,20 @@
                   <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
                     aria-live="polite"></p>
                 </div>
+                <label class="cache-preview-field cache-update-upper-field" for="update-preview-checkbox"
+                  title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
+                  <span data-i18n="service.previewRelease">预览版</span>
+                  <input id="update-preview-checkbox" type="checkbox" />
+                  <span class="cache-preview-switch" aria-hidden="true">
+                    <span class="cache-preview-switch-thumb"></span>
+                  </span>
+                </label>
                 <div class="cache-update-control">
                   <div class="cache-update-preferences">
-                    <label class="cache-preview-field" for="update-automatic-checkbox" title="启动时自动检查更新"
-                      data-i18n-title="service.autoCheckUpdatesTitle">
+                    <label class="cache-preview-field" for="update-automatic-checkbox"
+                      title="启动时自动检查更新" data-i18n-title="service.autoCheckUpdatesTitle">
                       <span data-i18n="service.autoCheckUpdates">自动检查更新</span>
                       <input id="update-automatic-checkbox" type="checkbox" checked />
-                      <span class="cache-preview-switch" aria-hidden="true">
-                        <span class="cache-preview-switch-thumb"></span>
-                      </span>
-                    </label>
-                    <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release"
-                      data-i18n-title="service.previewTitle">
-                      <span data-i18n="service.previewRelease">预览版</span>
-                      <input id="update-preview-checkbox" type="checkbox" />
                       <span class="cache-preview-switch" aria-hidden="true">
                         <span class="cache-preview-switch-thumb"></span>
                       </span>
@@ -472,6 +472,7 @@
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
             </svg>
+            <span data-i18n="player.controls">播放控制</span>
           </button>
           <div class="stage-control-backdrop" id="stage-control-backdrop" hidden inert aria-hidden="true"></div>
           <div class="stage-control-tray" id="stage-control-tray" role="dialog" aria-modal="true"

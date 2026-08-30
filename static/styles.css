@@ -20,6 +20,7 @@
   --toast-error-border: rgba(177, 69, 69, 0.22);
   --status-failed-bg: rgba(177, 69, 69, 0.14);
   --shadow: 0 24px 60px rgba(88, 56, 30, 0.14);
+  --tool-sheet-shadow: 0 -10px 28px rgba(64, 45, 32, 0.12);
   --action-button-width: 96px;
   --top-controls-width: 628px;
   --status-chip-width: 164px;
@@ -39,7 +40,7 @@
   --chip-bg: rgba(255, 255, 255, 0.56);
   --chip-border: 1px solid rgba(255, 255, 255, 0.9);
 
-  --settings-panel-bg: rgba(255, 250, 244, 0.96);
+  --settings-panel-bg: #fffaf4;
   --settings-panel-border: 1px solid rgba(208, 90, 63, 0.16);
 
   --switch-bg: rgba(255, 255, 255, 0.72);
@@ -753,7 +754,6 @@ p {
 
 .toolbar-button:disabled,
 .next-button:disabled,
-.next-button[aria-disabled="true"],
 .primary-button:disabled {
   opacity: 0.48;
   cursor: not-allowed;
@@ -911,12 +911,12 @@ h2 {
 
 .remote-mini-popover-card {
   position: relative;
-  background: rgb(255, 250, 244);
+  background: var(--settings-panel-bg);
   box-shadow: var(--shadow);
 }
 
 .remote-mini-popover .remote-mini-popover-card {
-  background: rgb(255, 250, 244);
+  background: var(--settings-panel-bg);
 }
 
 .remote-mini-popover-qr-wrap {
@@ -1071,7 +1071,7 @@ h2 {
   background: var(--settings-panel-bg);
   border: var(--settings-panel-border);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
+  backdrop-filter: none;
   z-index: 120;
 }
 
@@ -1350,8 +1350,8 @@ h2 {
 
 .bbdown-login-panel {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 6px;
+  padding: 10px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid rgba(87, 63, 43, 0.08);
@@ -1364,10 +1364,12 @@ h2 {
 .bbdown-login-qr {
   display: grid;
   place-items: center;
-  min-height: 132px;
+  gap: 3px;
+  min-height: 0;
+  padding: 4px 0 0;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.72);
-  overflow: hidden;
+  background: transparent;
+  overflow: visible;
 }
 
 .bbdown-login-qr-image {
@@ -1392,7 +1394,7 @@ h2 {
 }
 
 .bbdown-login-message {
-  padding: 8px;
+  padding: 2px 0 0;
   text-align: center;
   font-size: 12px;
   line-height: 1.4;
@@ -1419,7 +1421,7 @@ h2 {
 
 .cache-panel-update-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   gap: 10px;
   padding: 10px;
@@ -1438,6 +1440,11 @@ h2 {
   min-width: 0;
 }
 
+.cache-update-upper-field {
+  align-self: start;
+  justify-self: end;
+}
+
 .cache-app-update-heading {
   display: flex;
   align-items: center;
@@ -1448,15 +1455,15 @@ h2 {
 .app-update-version-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
-  padding: 3px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--accent-deep);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -1544,6 +1551,7 @@ h2 {
 }
 
 .cache-update-control {
+  grid-column: 1 / -1;
   display: inline-flex;
   width: 100%;
   align-items: flex-end;
@@ -6708,6 +6716,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --accent-deep: #b24733;
   --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --tool-sheet-shadow: 0 -10px 28px rgba(0, 0, 0, 0.26);
   --danger-btn-color: var(--red);
   --danger-btn-bg: rgba(177, 69, 69, 0.14);
   --danger-btn-hover-bg: rgba(177, 69, 69, 0.22);
@@ -6738,7 +6747,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --chip-bg: rgba(30, 26, 23, 0.6);
   --chip-border: 1px solid rgba(246, 241, 235, 0.12);
 
-  --settings-panel-bg: rgba(30, 26, 23, 0.96);
+  --settings-panel-bg: #1e1a17;
   --settings-panel-border: 1px solid rgba(246, 241, 235, 0.15);
 
   --switch-bg: rgba(19, 17, 15, 0.72);
@@ -6895,6 +6904,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --green: #34d399;
   --red: #fb7185;
   --shadow: 0 24px 70px rgba(2, 8, 23, 0.58);
+  --tool-sheet-shadow: 0 -10px 28px rgba(0, 0, 0, 0.3);
   --av-lock-unlocked-bg: var(--sync-btn-bg);
   --av-lock-unlocked-border: var(--sync-btn-border);
   --av-lock-unlocked-color: var(--muted);
@@ -6916,7 +6926,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
   --chip-bg: rgba(8, 18, 32, 0.62);
   --chip-border: 1px solid rgba(148, 202, 233, 0.16);
-  --settings-panel-bg: rgba(8, 18, 32, 0.96);
+  --settings-panel-bg: #081220;
   --settings-panel-border: 1px solid rgba(56, 189, 248, 0.2);
   --switch-bg: rgba(2, 6, 23, 0.72);
   --switch-border: 1px solid rgba(148, 202, 233, 0.18);
@@ -7091,6 +7101,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --green: #00ffa3;
   --red: #ff3366;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --tool-sheet-shadow: 0 -10px 28px rgba(0, 0, 0, 0.3);
   --av-lock-unlocked-bg: var(--sync-btn-bg);
   --av-lock-unlocked-border: var(--sync-btn-border);
   --av-lock-unlocked-color: var(--muted);
@@ -7112,7 +7123,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
   --chip-bg: rgba(17, 25, 40, 0.62);
   --chip-border: 1px solid rgba(255, 255, 255, 0.1);
-  --settings-panel-bg: rgba(17, 25, 40, 0.96);
+  --settings-panel-bg: #111928;
   --settings-panel-border: 1px solid rgba(255, 255, 255, 0.12);
   --switch-bg: rgba(5, 8, 16, 0.72);
   --switch-border: 1px solid rgba(255, 255, 255, 0.14);
@@ -8264,7 +8275,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .host-workspace-region {
+  .host-workspace-region,
+  .app-shell[data-active-workspace="request"] .host-workspace-region {
     transition: none;
   }
 }
@@ -8499,7 +8511,7 @@ body[data-tauri-platform="macos"] .topbar {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(176px, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 10px;
   padding: 16px;
   overflow: hidden;
@@ -8512,54 +8524,54 @@ body[data-tauri-platform="macos"] .topbar {
 
 .left-column .player-frame {
   min-height: 0;
-  height: 100%;
-  aspect-ratio: auto;
+  width: min(100%, var(--stage-frame-inline-size, 100%));
+  height: auto;
+  aspect-ratio: 16 / 9;
+  align-self: start;
+  justify-self: start;
+  margin: 0;
   object-fit: contain;
 }
 
 .stage-controls-toggle {
-  position: absolute;
-  z-index: 62;
-  left: 26px;
-  bottom: 26px;
-  width: 52px;
-  min-width: 52px;
-  height: 52px;
-  min-height: 52px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent-deep) 34%, transparent);
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
-  color: var(--on-accent, #fff);
-  box-shadow: 0 6px 18px rgba(35, 26, 20, 0.24);
+  position: relative;
+  z-index: 6;
+  width: max-content;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent-deep) 24%, var(--line));
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  box-shadow: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
   cursor: pointer;
 }
 
 .stage-controls-toggle svg {
-  width: 23px;
-  height: 23px;
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
 }
 
 .stage-controls-toggle:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 22px rgba(35, 26, 20, 0.3);
+  border-color: color-mix(in srgb, var(--accent-deep) 42%, var(--line));
+  box-shadow: 0 5px 14px rgba(35, 26, 20, 0.12);
 }
 
 .stage-controls-toggle:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
   outline-offset: 3px;
-}
-
-.app-shell[data-stage-mode="compact"] .stage-controls-toggle,
-.app-shell[data-stage-mode="narrow"] .stage-controls-toggle {
-  left: 20px;
-  bottom: 20px;
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
-  min-height: 48px;
 }
 
 .stage-control-backdrop {
@@ -8594,6 +8606,10 @@ body[data-tauri-platform="macos"] .topbar {
   transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
 }
 
+.stage-control-tray[data-popover-direction="down"] {
+  transform: translate(-8px, -8px) scale(0.96);
+}
+
 .stage-control-tray[hidden] {
   display: none;
 }
@@ -8617,6 +8633,39 @@ body[data-tauri-platform="macos"] .topbar {
   visibility: visible;
   pointer-events: auto;
   transform: translate(0, 0) scale(1);
+}
+
+.stage-control-tray.is-measuring {
+  position: fixed !important;
+  display: block !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: none !important;
+  max-height: none !important;
+}
+
+.app-shell[data-stage-controls-layout="inline"] .stage-control-backdrop {
+  display: none !important;
+}
+
+.app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
+  position: relative;
+  z-index: 4;
+  width: 100%;
+  max-height: none;
+  padding: 12px;
+  overflow: visible;
+  border-color: var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft));
+  box-shadow: none;
+  transform: none;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+.app-shell[data-stage-controls-layout="inline"] .stage-control-tray.is-open {
+  transform: none;
 }
 
 .host-workspace-region {
@@ -8648,6 +8697,48 @@ body[data-tauri-platform="macos"] .topbar {
   max-height: none;
   padding: 18px;
   overflow: hidden;
+}
+
+.host-workspace-region .queue-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: center;
+}
+
+.host-workspace-region .queue-card-heading {
+  display: contents;
+}
+
+.host-workspace-region .queue-card-heading .section-tag {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.host-workspace-region .queue-card-heading h2 {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.host-workspace-region .queue-toolbar {
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+  align-self: center;
+  justify-content: flex-end;
+}
+
+.host-workspace-region .queue-subview-actions {
+  flex-wrap: nowrap;
+}
+
+.host-workspace-region .queue-toolbar button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .host-workspace-region .list-stage {
@@ -8762,6 +8853,21 @@ body[data-tauri-platform="macos"] .topbar {
   color: var(--red);
 }
 
+.bbdown-login-qr .bbdown-login-message,
+.bbdown-login-qr .bbdown-login-message.is-error {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root:is([data-theme="dark"], [data-theme="blue"]) .bbdown-login-qr {
+  background: transparent;
+}
+
 .session-user-empty {
   height: auto;
   min-height: 52px;
@@ -8826,6 +8932,11 @@ body[data-tauri-platform="macos"] .topbar {
     width: 44px;
     padding: 0;
   }
+
+  .topbar #presentation-settings-toggle,
+  .topbar #cache-settings-toggle {
+    width: 60px;
+  }
 }
 
 @media (max-width: 1039px) {
@@ -8835,22 +8946,46 @@ body[data-tauri-platform="macos"] .topbar {
   }
 
   .host-content-region {
+    position: relative;
+    isolation: isolate;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: clamp(190px, 34%, 280px) minmax(0, 1fr);
-    gap: 10px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    overflow: hidden;
   }
 
   .left-column {
     grid-column: 1;
     grid-row: 1;
+    z-index: 1;
+    height: 100%;
     padding-right: 0;
   }
 
-  .host-workspace-region {
+  .host-workspace-region,
+  .app-shell[data-active-workspace="request"] .host-workspace-region {
+    position: absolute;
+    z-index: 20;
+    inset: auto 0 0;
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
     width: 100%;
-    height: 100%;
+    height: clamp(360px, 68%, 520px);
+    max-height: 100%;
+    padding: 0;
+    overflow: hidden !important;
+    pointer-events: auto;
+    opacity: 1;
+    box-shadow: var(--tool-sheet-shadow);
+    transform: translateY(0);
+    transition: transform 160ms ease, opacity 160ms ease;
+  }
+
+  .app-shell.host-tool-sheet-closed .host-workspace-region,
+  .app-shell.host-tool-sheet-closed[data-active-workspace="request"] .host-workspace-region {
+    opacity: 0;
+    transform: translateY(calc(100% + 8px));
+    pointer-events: none;
   }
 
   .layout > .work-rail {
@@ -8881,6 +9016,42 @@ body[data-tauri-platform="macos"] .topbar {
   .host-workspace-region .gatcha-panel,
   .host-workspace-region .list-card {
     border-radius: 16px;
+    border: 1px solid var(--line);
+    background: var(--settings-panel-bg);
+  }
+
+  .host-workspace-region .queue-card,
+  .host-workspace-region .history-card {
+    padding: 14px;
+  }
+
+  .host-workspace-region .gatcha-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: 10px;
+    row-gap: 4px;
+    align-items: center;
+  }
+
+  .host-workspace-region .gatcha-head > div:first-child {
+    display: contents;
+  }
+
+  .host-workspace-region .gatcha-head .section-tag {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .host-workspace-region .gatcha-head h2 {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .host-workspace-region .gatcha-head-actions {
+    grid-column: 2;
+    grid-row: 2;
+    flex-wrap: nowrap;
   }
 
   .work-rail {
@@ -8899,7 +9070,9 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stage-control-tray {
+  .stage-control-tray,
+  .host-workspace-region,
+  .app-shell[data-active-workspace="request"] .host-workspace-region {
     transition: none !important;
   }
 }

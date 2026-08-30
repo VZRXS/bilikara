@@ -140,6 +140,8 @@ const state = {
   localPlayerControlsHideGeneration: 0,
   localWebKitStartRetryDone: false,
   stageControlTrayOpen: false,
+  stageControlInlineCollapsed: false,
+  stageControlTrayDirection: "up",
   stageControlTrayFocusHandler: null,
   stageResizeObserver: null,
   stageMeasureFrame: null,
@@ -354,6 +356,7 @@ const state = {
   startupUpdateCheckScheduled: false,
   updateCheckRequestInFlight: false,
   manualUpdateCheck: null,
+  updateManualVisibleChannel: "",
   updatePreviewEnabled: false,
   ratingPromptElement: null,
   ratingPromptItem: null,
@@ -406,6 +409,7 @@ const state = {
   activeHostWorkspace: "queue",
   focusedHostWorkspace: "queue",
   hostWorkspaceOverlayOpen: false,
+  hostNarrowToolSheetActive: false,
   hostWorkspaceScrollPositions: {
     queue: 0,
     request: 0,
@@ -3175,12 +3179,22 @@ function renderHostWorkspaceSelection() {
   const requestOverlayClosed = activeWorkspace === "request"
     && !state.hostWorkspaceOverlayOpen
     && hostRequestWorkspaceUsesOverlay();
+  const narrowToolSheet = hostNarrowToolSheetUsesOverlay();
+  if (narrowToolSheet && !state.hostNarrowToolSheetActive) {
+    state.hostWorkspaceOverlayOpen = true;
+  } else if (!narrowToolSheet) {
+    state.hostWorkspaceOverlayOpen = false;
+  }
+  state.hostNarrowToolSheetActive = narrowToolSheet;
+  const narrowToolSheetClosed = narrowToolSheet && !state.hostWorkspaceOverlayOpen;
 
   state.activeHostWorkspace = activeWorkspace;
   state.focusedHostWorkspace = focusedWorkspace;
   if (elements.appShell) {
     elements.appShell.dataset.activeWorkspace = activeWorkspace;
     elements.appShell.classList.toggle("host-workspace-overlay-open", requestOverlay);
+    elements.appShell.classList.toggle("host-tool-sheet-open", narrowToolSheet && !narrowToolSheetClosed);
+    elements.appShell.classList.toggle("host-tool-sheet-closed", narrowToolSheetClosed);
   }
   if (elements.hostWorkspaceRegion) {
     elements.hostWorkspaceRegion.dataset.activeWorkspace = activeWorkspace;
@@ -3188,16 +3202,25 @@ function renderHostWorkspaceSelection() {
       "aria-labelledby",
       `work-rail-${activeWorkspace}`,
     );
+    elements.hostWorkspaceRegion.inert = narrowToolSheetClosed;
+    elements.hostWorkspaceRegion.setAttribute("aria-hidden", String(narrowToolSheetClosed));
   }
   elements.hostWorkspaceButtons?.forEach((button) => {
     const workspace = normalizeHostWorkspaceName(button.dataset.hostWorkspace, "");
     const selected = workspace === activeWorkspace;
     button.setAttribute("aria-selected", String(selected));
+    if (narrowToolSheet) {
+      button.setAttribute("aria-expanded", String(selected && !narrowToolSheetClosed));
+    } else {
+      button.removeAttribute?.("aria-expanded");
+    }
     button.tabIndex = workspace === focusedWorkspace ? 0 : -1;
   });
   elements.hostWorkspacePanels?.forEach((panel) => {
     const workspace = normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, "");
-    const visible = workspace === activeWorkspace && !requestOverlayClosed;
+    const visible = workspace === activeWorkspace
+      && !requestOverlayClosed
+      && !narrowToolSheetClosed;
     panel.hidden = !visible;
     panel.inert = !visible;
     panel.setAttribute("aria-hidden", String(!visible));
@@ -3218,6 +3241,11 @@ function normalizeHostWorkspaceName(value, fallback = "queue") {
 
 function hostRequestWorkspaceUsesOverlay() {
   return false;
+}
+
+function hostNarrowToolSheetUsesOverlay() {
+  return typeof window !== "undefined"
+    && Boolean(window.matchMedia?.("(max-width: 1039px)")?.matches);
 }
 
 function hostWorkspaceButton(workspace) {
@@ -3261,6 +3289,8 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     rememberRequestScrollPosition();
   }
   const changed = state.activeHostWorkspace !== nextWorkspace;
+  const interactiveActivation = inputOrigin === "pointer" || inputOrigin === "keyboard";
+  const previousToolSheetOpen = state.hostWorkspaceOverlayOpen;
   if (changed) {
     if (typeof closeOpenMenus === "function") {
       closeOpenMenus({ restoreFocus: false });
@@ -3273,7 +3303,13 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
   }
   state.activeHostWorkspace = nextWorkspace;
   state.focusedHostWorkspace = nextWorkspace;
-  state.hostWorkspaceOverlayOpen = nextWorkspace === "request";
+  if (hostNarrowToolSheetUsesOverlay()) {
+    state.hostWorkspaceOverlayOpen = !changed && interactiveActivation
+      ? !state.hostWorkspaceOverlayOpen
+      : true;
+  } else {
+    state.hostWorkspaceOverlayOpen = false;
+  }
   renderHostWorkspaceSelection();
   if (nextWorkspace === "request" && typeof syncRequestSubviewSelection === "function") {
     syncRequestSubviewSelection();
@@ -3299,7 +3335,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
       ?.querySelector("[data-host-workspace-heading]");
     heading?.focus({ preventScroll: true });
   }
-  return changed;
+  return changed || previousToolSheetOpen !== state.hostWorkspaceOverlayOpen;
 }
 
 function focusHostWorkspaceRailItem(workspace) {
@@ -3345,6 +3381,15 @@ function handleHostWorkspaceRailKeydown(event) {
 }
 
 function closeHostWorkspaceOverlay({ restoreFocus = true } = {}) {
+  if (hostNarrowToolSheetUsesOverlay() && state.hostWorkspaceOverlayOpen) {
+    rememberHostWorkspaceScrollPosition();
+    state.hostWorkspaceOverlayOpen = false;
+    renderHostWorkspaceSelection();
+    if (restoreFocus) {
+      focusHostWorkspaceRailItem(state.activeHostWorkspace);
+    }
+    return true;
+  }
   if (
     state.activeHostWorkspace !== "request"
     || !state.hostWorkspaceOverlayOpen
@@ -3437,62 +3482,118 @@ function closeOrdinaryPopoverForEscape() {
   return false;
 }
 
+function stageControlsAreInline() {
+  return elements.appShell?.dataset.stageControlsLayout === "inline";
+}
+
+function measureStageControlTrayNaturalSize(width) {
+  if (!elements.stageControlTray) {
+    return { width: 0, height: 0 };
+  }
+  const tray = elements.stageControlTray;
+  const previousStyle = tray.getAttribute("style");
+  const previousHidden = tray.hidden;
+  tray.classList.add("is-measuring");
+  tray.hidden = false;
+  tray.style.width = `${Math.max(280, Math.round(width))}px`;
+  tray.style.maxHeight = "none";
+  const size = {
+    width: Math.ceil(tray.scrollWidth || width),
+    height: Math.ceil(tray.scrollHeight || 0),
+  };
+  tray.classList.remove("is-measuring");
+  tray.hidden = previousHidden;
+  if (previousStyle === null) {
+    tray.removeAttribute("style");
+  } else {
+    tray.setAttribute("style", previousStyle);
+  }
+  return size;
+}
+
+function clearStageControlTrayPosition() {
+  if (!elements.stageControlTray) {
+    return;
+  }
+  for (const property of ["left", "top", "width", "maxHeight", "transformOrigin"]) {
+    elements.stageControlTray.style[property] = "";
+  }
+  delete elements.stageControlTray.dataset.popoverDirection;
+}
+
 function positionStageControlTray() {
-  if (!elements.stageControlTray || !elements.stageControlsToggle) {
+  if (!elements.stageControlTray || !elements.stageControlsToggle || stageControlsAreInline()) {
+    clearStageControlTrayPosition();
     return;
   }
   const anchor = elements.stageControlsToggle.getBoundingClientRect();
   const toolbar = elements.topbar?.getBoundingClientRect();
-  const rail = document.querySelector(".layout > .work-rail")?.getBoundingClientRect();
   const viewportInset = 12;
+  const popupGap = 10;
   const topBoundary = Math.max(viewportInset, Number(toolbar?.bottom || 0) + 8);
-  const rightBoundary = Math.min(
-    window.innerWidth - viewportInset,
-    Number(rail?.left || window.innerWidth) - viewportInset,
+  const availableWidth = Math.max(280, window.innerWidth - (viewportInset * 2));
+  const width = Math.min(860, availableWidth);
+  const naturalHeight = measureStageControlTrayNaturalSize(width).height || 520;
+  const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - viewportInset - popupGap);
+  const spaceAbove = Math.max(0, anchor.top - topBoundary - popupGap);
+  const direction = spaceBelow >= naturalHeight ? "down" : "up";
+  const directionSpace = direction === "down" ? spaceBelow : spaceAbove;
+  const maxHeight = Math.max(120, Math.min(naturalHeight, directionSpace));
+  const left = Math.max(
+    viewportInset,
+    Math.min(anchor.left, window.innerWidth - viewportInset - width),
   );
-  const left = Math.max(viewportInset, Math.min(anchor.left, rightBoundary - 280));
-  const width = Math.max(280, Math.min(680, rightBoundary - left));
-  const maxHeight = Math.max(220, window.innerHeight - topBoundary - viewportInset);
-  const naturalHeight = Math.min(560, maxHeight, elements.stageControlTray.scrollHeight || maxHeight);
-  const top = Math.max(topBoundary, anchor.top - 10 - naturalHeight);
-  const originY = Math.max(24, Math.min(naturalHeight - 24, anchor.top + (anchor.height / 2) - top));
+  const top = direction === "down"
+    ? anchor.bottom + popupGap
+    : Math.max(topBoundary, anchor.top - popupGap - maxHeight);
+  state.stageControlTrayDirection = direction;
+  elements.stageControlTray.dataset.popoverDirection = direction;
   elements.stageControlTray.style.left = `${Math.round(left)}px`;
   elements.stageControlTray.style.top = `${Math.round(top)}px`;
   elements.stageControlTray.style.width = `${Math.round(width)}px`;
   elements.stageControlTray.style.maxHeight = `${Math.round(maxHeight)}px`;
-  elements.stageControlTray.style.transformOrigin = `0 ${Math.round(originY)}px`;
+  elements.stageControlTray.style.transformOrigin = direction === "down" ? "0 0" : "0 100%";
 }
 
-function setStageControlTrayOpen(open, { restoreFocus = false } = {}) {
+function setStageControlTrayOpen(open, { restoreFocus = false, moveFocus = true } = {}) {
   if (state.stageControlTrayFocusHandler && elements.stageControlTray) {
     elements.stageControlTray.removeEventListener("transitionend", state.stageControlTrayFocusHandler);
     state.stageControlTrayFocusHandler = null;
   }
   state.stageControlTrayOpen = Boolean(open);
+  const inline = stageControlsAreInline();
   if (state.stageControlTrayOpen) {
-    closeCacheAdvancedInfo();
-    setRemoteQrPinned(false, { dismissTransient: true });
-    state.cacheSettingsOpen = false;
-    state.displaySettingsOpen = false;
-    state.presentationSettingsOpen = false;
-    syncCachePanelVisibility();
-    syncDisplayPanelVisibility();
-    syncPresentationPanelVisibility();
+    if (!inline) {
+      closeCacheAdvancedInfo();
+      setRemoteQrPinned(false, { dismissTransient: true });
+      state.cacheSettingsOpen = false;
+      state.displaySettingsOpen = false;
+      state.presentationSettingsOpen = false;
+      syncCachePanelVisibility();
+      syncDisplayPanelVisibility();
+      syncPresentationPanelVisibility();
+    }
     if (elements.stageControlTray) {
       elements.stageControlTray.hidden = false;
       elements.stageControlTray.inert = false;
       elements.stageControlTray.setAttribute("aria-hidden", "false");
+      elements.stageControlTray.setAttribute("role", inline ? "region" : "dialog");
+      if (inline) {
+        elements.stageControlTray.removeAttribute("aria-modal");
+      } else {
+        elements.stageControlTray.setAttribute("aria-modal", "true");
+      }
     }
     if (elements.stageControlBackdrop) {
-      elements.stageControlBackdrop.hidden = false;
-      elements.stageControlBackdrop.inert = false;
-      elements.stageControlBackdrop.setAttribute("aria-hidden", "false");
+      elements.stageControlBackdrop.hidden = inline;
+      elements.stageControlBackdrop.inert = inline;
+      elements.stageControlBackdrop.setAttribute("aria-hidden", String(inline));
     }
     positionStageControlTray();
   }
   elements.stageControlTray?.classList.toggle("is-open", state.stageControlTrayOpen);
   elements.stageControlsToggle?.setAttribute("aria-expanded", String(state.stageControlTrayOpen));
-  if (state.stageControlTrayOpen) {
+  if (state.stageControlTrayOpen && !inline && moveFocus) {
     const focusCloseAfterOpen = (event) => {
       if (event.target !== elements.stageControlTray || event.propertyName !== "opacity") {
         return;
@@ -3511,6 +3612,9 @@ function setStageControlTrayOpen(open, { restoreFocus = false } = {}) {
         elements.stageControlsClose?.focus({ preventScroll: true });
       }
     });
+    return;
+  }
+  if (state.stageControlTrayOpen) {
     return;
   }
   if (elements.stageControlTray) {
@@ -3533,20 +3637,55 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
-  const available = elements.leftColumn.getBoundingClientRect();
+  const panelStyle = window.getComputedStyle(elements.playerPanel);
+  const panelPaddingInline = (parseFloat(panelStyle.paddingLeft) || 0)
+    + (parseFloat(panelStyle.paddingRight) || 0);
+  const panelPaddingBlock = (parseFloat(panelStyle.paddingTop) || 0)
+    + (parseFloat(panelStyle.paddingBottom) || 0);
+  const panelGap = parseFloat(panelStyle.rowGap || panelStyle.gap) || 0;
+  const innerWidth = Math.max(0, elements.playerPanel.clientWidth - panelPaddingInline);
+  const innerHeight = Math.max(0, elements.playerPanel.clientHeight - panelPaddingBlock);
   const headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || 0;
-  const playerWidth = Math.max(0, available.width - 32);
-  const fittedPlayerHeight = Math.max(176, Math.min(480, playerWidth * (9 / 16)));
-  const measuredFullHeight = headerHeight + fittedPlayerHeight + 26;
+  const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect().height || 40;
+  const fullFrameWidth = innerWidth;
+  const fullFrameHeight = fullFrameWidth * (9 / 16);
+  const trayMeasureWidth = Math.min(860, Math.max(280, innerWidth));
+  const trayHeight = measureStageControlTrayNaturalSize(trayMeasureWidth).height;
+  const inlineFrameHeight = innerHeight
+    - headerHeight
+    - toggleHeight
+    - trayHeight
+    - (panelGap * 3);
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1039px)")?.matches);
+  const inlineControls = !narrowShell
+    && innerWidth >= 760
+    && trayHeight > 0
+    && inlineFrameHeight >= 240;
+  const controlLayout = inlineControls ? "inline" : "popup";
+  const reservedControlsHeight = headerHeight + toggleHeight + (panelGap * 2)
+    + (inlineControls ? trayHeight + panelGap : 0);
+  const frameHeight = Math.max(0, Math.min(fullFrameHeight, innerHeight - reservedControlsHeight));
+  const frameWidth = Math.max(0, Math.min(fullFrameWidth, frameHeight * (16 / 9)));
   const mode = narrowShell
     ? "narrow"
-    : available.width >= 720 && available.height >= measuredFullHeight
+    : inlineControls
       ? "full"
       : "compact";
   const previousMode = elements.appShell.dataset.stageMode;
+  const previousLayout = elements.appShell.dataset.stageControlsLayout;
   elements.appShell.dataset.stageMode = mode;
-  if (state.stageControlTrayOpen && previousMode !== mode) {
+  elements.appShell.dataset.stageControlsLayout = controlLayout;
+  elements.playerPanel.style.setProperty("--stage-frame-inline-size", `${Math.floor(frameWidth)}px`);
+  if (previousLayout !== controlLayout) {
+    if (inlineControls) {
+      clearStageControlTrayPosition();
+      setStageControlTrayOpen(!state.stageControlInlineCollapsed, { moveFocus: false });
+    } else {
+      setStageControlTrayOpen(false, { moveFocus: false });
+    }
+  } else if (inlineControls && !state.stageControlInlineCollapsed && !state.stageControlTrayOpen) {
+    setStageControlTrayOpen(true, { moveFocus: false });
+  } else if (state.stageControlTrayOpen && previousMode !== mode) {
     positionStageControlTray();
   }
   return mode;
@@ -3599,7 +3738,7 @@ function initializeWindowChrome() {
 function initializeHostShell() {
   state.activeHostWorkspace = "queue";
   state.focusedHostWorkspace = "queue";
-  state.hostWorkspaceOverlayOpen = false;
+  state.hostWorkspaceOverlayOpen = true;
   state.requestSubview = "search";
   state.focusedRequestSubview = "search";
   state.searchMode = "shared";
@@ -6440,12 +6579,7 @@ function renderMaintenanceView() {
     button.className = "next-button";
     button.dataset.maintenanceJob = definition.job;
     const isRunning = state.maintenanceJobRunning === definition.job;
-    button.disabled = Boolean(state.maintenanceJobRunning) && !isRunning;
-    if (state.maintenanceJobRunning) {
-      button.setAttribute("aria-disabled", "true");
-    } else {
-      button.removeAttribute("aria-disabled");
-    }
+    button.disabled = Boolean(state.maintenanceJobRunning);
     if (isRunning) {
       button.setAttribute("aria-busy", "true");
     } else {
@@ -6512,6 +6646,9 @@ async function triggerMaintenanceJob(job) {
     state.maintenanceJobRunning = "";
     if (state.catalogAdvancedTool === "maintenance") {
       renderMaintenanceView();
+      elements.catalogAdvancedContent
+        ?.querySelector(`[data-maintenance-job="${job}"]`)
+        ?.focus({ preventScroll: true });
     }
   }
 }
@@ -7960,6 +8097,18 @@ function isEligibleCurrentChannelUpdate(update = appUpdateStatus()) {
   );
 }
 
+function selectedUpdateChannel() {
+  return state.updatePreviewEnabled ? "preview" : "stable";
+}
+
+function shouldPresentCurrentChannelUpdate(update = appUpdateStatus()) {
+  if (!isEligibleCurrentChannelUpdate(update)) {
+    return false;
+  }
+  return state.updateAutomaticEnabled
+    || state.updateManualVisibleChannel === selectedUpdateChannel();
+}
+
 function appUpdateProgressPercent(update = appUpdateStatus()) {
   const totalBytes = Number(update?.total_bytes || 0);
   const downloadedBytes = Number(update?.downloaded_bytes || 0);
@@ -7990,10 +8139,10 @@ function appUpdateButtonText(update = appUpdateStatus()) {
   if (stateValue === "restarting") {
     return t("service.updateRestarting");
   }
-  if (isEligibleCurrentChannelUpdate(update)) {
+  if (shouldPresentCurrentChannelUpdate(update)) {
     const version = String(update?.latest_version || "").trim();
     return update?.auto_update_supported
-      ? t("service.updateToVersion", { version })
+      ? t("service.update")
       : t("service.viewVersion", { version });
   }
   return t("service.checkUpdate");
@@ -8002,7 +8151,7 @@ function appUpdateButtonText(update = appUpdateStatus()) {
 function updateIndicatorAccessibleText(update = appUpdateStatus()) {
   const version = String(update?.latest_version || "").trim();
   const action = update?.auto_update_supported
-    ? t("service.updateToVersion", { version })
+    ? t("service.update")
     : t("service.viewVersion", { version });
   return t("service.updateAvailableAction", { version, action });
 }
@@ -8031,6 +8180,9 @@ function maybeReportManualUpdateCheckOutcome(update) {
     return;
   }
   state.manualUpdateCheck = null;
+  state.updateManualVisibleChannel = isEligibleCurrentChannelUpdate(update)
+    ? selectedUpdateChannel()
+    : "";
   if (String(update?.state || "") === "failed") {
     setAppMessage(update?.error || update?.message || t("service.updateFailed"), true);
     return;
@@ -8046,8 +8198,9 @@ function maybeReportManualUpdateCheckOutcome(update) {
 
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
+  maybeReportManualUpdateCheckOutcome(update);
   const busy = state.updateCheckRequestInFlight || isAppUpdateBusy(update);
-  const eligible = isEligibleCurrentChannelUpdate(update);
+  const eligible = shouldPresentCurrentChannelUpdate(update);
   const accessibleText = eligible ? updateIndicatorAccessibleText(update) : "";
   if (elements.updateAutomaticCheckbox) {
     elements.updateAutomaticCheckbox.checked = state.updateAutomaticEnabled;
@@ -8098,7 +8251,11 @@ function renderUpdatePreviewControl() {
   }
   if (elements.appUpdateStatus) {
     let statusText = "";
-    if (!appUpdateMatchesSelectedChannel(update) && String(update?.state || "") !== "idle") {
+    if (eligible) {
+      statusText = "";
+    } else if (!state.updateAutomaticEnabled && !state.manualUpdateCheck) {
+      statusText = "";
+    } else if (!appUpdateMatchesSelectedChannel(update) && String(update?.state || "") !== "idle") {
       statusText = t("service.updateChannelNeedsRecheck");
     } else if (String(update?.state || "") === "checking") {
       statusText = t("status.checking");
@@ -8107,7 +8264,6 @@ function renderUpdatePreviewControl() {
     }
     setTextContent(elements.appUpdateStatus, statusText);
   }
-  maybeReportManualUpdateCheckOutcome(update);
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -15324,13 +15480,13 @@ async function resetPlayerState() {
   }
 }
 
-async function requestAppUpdateCheck({ automatic = false } = {}) {
+async function requestAppUpdateCheck({ automatic = false, force = false } = {}) {
   const includePreview = Boolean(state.updatePreviewEnabled);
   const channel = includePreview ? "preview" : "stable";
   if (automatic) {
     if (
       !state.updateAutomaticEnabled
-      || state.updateAutomaticAttemptedChannels.has(channel)
+      || (!force && state.updateAutomaticAttemptedChannels.has(channel))
     ) {
       return false;
     }
@@ -15346,6 +15502,7 @@ async function requestAppUpdateCheck({ automatic = false } = {}) {
 
   state.updateCheckRequestInFlight = true;
   if (!automatic) {
+    state.updateManualVisibleChannel = "";
     state.manualUpdateCheck = {
       includePreview,
       startedAt: Number(currentUpdate?.updated_at || 0),
@@ -15403,12 +15560,11 @@ async function checkAppUpdate(event) {
     return;
   }
   const update = appUpdateStatus();
-  if (!isEligibleCurrentChannelUpdate(update)) {
+  if (!shouldPresentCurrentChannelUpdate(update)) {
     await requestAppUpdateCheck({ automatic: false });
     return;
   }
 
-  const version = String(update?.latest_version || "").trim();
   if (!update?.auto_update_supported) {
     const releaseUrl = safeHttpUrl(update?.release_url);
     if (releaseUrl) {
@@ -15429,7 +15585,7 @@ async function checkAppUpdate(event) {
     message: t("service.installUpdatePrompt", {
       message: update?.message || t("service.updateFoundPrompt"),
     }),
-    primaryLabel: t("service.updateToVersion", { version }),
+    primaryLabel: t("service.update"),
     ...point,
     anchorElementId: button?.id || "update-check-button",
     anchorAlign: "end",
@@ -16787,10 +16943,16 @@ elements.hostWorkspaceButtons?.forEach((button) => {
 
 elements.stageControlsToggle?.addEventListener("click", (event) => {
   event.preventDefault();
+  if (stageControlsAreInline()) {
+    state.stageControlInlineCollapsed = state.stageControlTrayOpen;
+  }
   setStageControlTrayOpen(!state.stageControlTrayOpen);
 });
 
 elements.stageControlsClose?.addEventListener("click", () => {
+  if (stageControlsAreInline()) {
+    state.stageControlInlineCollapsed = true;
+  }
   setStageControlTrayOpen(false, { restoreFocus: true });
 });
 
@@ -16799,7 +16961,7 @@ elements.stageControlBackdrop?.addEventListener("click", () => {
 });
 
 elements.stageControlTray?.addEventListener("keydown", (event) => {
-  if (event.key !== "Tab" || !state.stageControlTrayOpen) {
+  if (event.key !== "Tab" || !state.stageControlTrayOpen || stageControlsAreInline()) {
     return;
   }
   const focusable = [...elements.stageControlTray.querySelectorAll(
@@ -16975,17 +17137,30 @@ elements.resetOffsetCheckbox?.addEventListener("change", async (event) => {
   );
 });
 
-elements.updatePreviewCheckbox?.addEventListener("change", (event) => {
+elements.updatePreviewCheckbox?.addEventListener("change", async (event) => {
+  const hadVisibleUpdate = shouldPresentCurrentChannelUpdate();
   state.updatePreviewEnabled = Boolean(event.target.checked);
   writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
   state.manualUpdateCheck = null;
+  state.updateManualVisibleChannel = "";
   renderUpdatePreviewControl();
+  if (hadVisibleUpdate) {
+    await requestAppUpdateCheck({
+      automatic: state.updateAutomaticEnabled,
+      force: true,
+    });
+  }
 });
 
-elements.updateAutomaticCheckbox?.addEventListener("change", (event) => {
+elements.updateAutomaticCheckbox?.addEventListener("change", async (event) => {
   state.updateAutomaticEnabled = Boolean(event.target.checked);
   writeLocalPreference(storageKeys.updateAutomatic, state.updateAutomaticEnabled);
+  state.manualUpdateCheck = null;
+  state.updateManualVisibleChannel = "";
   renderUpdatePreviewControl();
+  if (state.updateAutomaticEnabled) {
+    await requestAppUpdateCheck({ automatic: true, force: true });
+  }
 });
 
 elements.diagnosticCopyButton?.addEventListener("click", copyDiagnosticsMarkdown);
@@ -17940,9 +18115,16 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (state.stageControlTrayOpen) {
-    setStageControlTrayOpen(false, { restoreFocus: true });
-    event.preventDefault();
-    return;
+    const stageControlsOwnFocus = elements.stageControlTray?.contains(document.activeElement)
+      || document.activeElement === elements.stageControlsToggle;
+    if (!stageControlsAreInline() || stageControlsOwnFocus) {
+      if (stageControlsAreInline()) {
+        state.stageControlInlineCollapsed = true;
+      }
+      setStageControlTrayOpen(false, { restoreFocus: true });
+      event.preventDefault();
+      return;
+    }
   }
   if (closeHostWorkspaceOverlay()) {
     event.preventDefault();

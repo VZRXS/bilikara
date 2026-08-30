@@ -344,6 +344,8 @@ class UpdateChannelDecisionTest(unittest.TestCase):
 (async () => {{
   const state = {{
     updateCheckRequestInFlight: false,
+    updateAutomaticEnabled: true,
+    updateManualVisibleChannel: "",
     updatePreviewEnabled: false,
     data: {{ app_update: {{ state: "idle", include_preview: false }} }},
   }};

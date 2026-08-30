@@ -47,9 +47,16 @@ class AppUpdateFrontendTest(unittest.TestCase):
         self.assertIn('id="update-version-badge"', self.html)
         self.assertIn('id="app-update-status"', self.html)
         self.assertIn('class="service-status-ring"', self.html)
+        self.assertIn('class="cache-preview-field cache-update-upper-field"', self.html)
+        self.assertLess(
+            self.html.index('for="update-preview-checkbox"'),
+            self.html.index('for="update-automatic-checkbox"'),
+        )
         self.assertIn(".service-status-ring.has-update", self.css)
         self.assertIn(".app-update-indicator", self.css)
+        self.assertIn(".bbdown-login-qr .bbdown-login-message", self.css)
         self.assertIn('"service.autoCheckUpdates"', self.i18n)
+        self.assertIn('"service.update"', self.i18n)
 
     def test_startup_and_manual_paths_use_check_only_without_installing(self):
         self.assertIn('apiPost("/api/app/update/check"', self.source)
@@ -66,7 +73,10 @@ class AppUpdateFrontendTest(unittest.TestCase):
 
     def test_known_results_render_explicit_actions_and_current_channel_badges(self):
         self.assertIn("function isEligibleCurrentChannelUpdate", self.source)
-        self.assertIn('t("service.updateToVersion"', self.source)
+        self.assertIn("function shouldPresentCurrentChannelUpdate", self.source)
+        self.assertNotIn('t("service.updateToVersion"', self.source)
+        self.assertNotIn('"service.updateToVersion"', self.i18n)
+        self.assertIn('t("service.update")', self.source)
         self.assertIn('t("service.viewVersion"', self.source)
         self.assertIn('t("service.newVersionBadge"', self.source)
         self.assertIn("update.include_preview === state.updatePreviewEnabled", self.source)
@@ -90,6 +100,7 @@ const state = {{
   updateAutomaticEnabled: true, updatePreviewEnabled: false,
   updateAutomaticAttemptedChannels: new Set(), startupUpdateCheckScheduled: false,
   updateCheckRequestInFlight: false, manualUpdateCheck: null,
+  updateManualVisibleChannel: "",
   hasValidStateResponse: true, data: {{ app_update: {{ state: "idle", updated_at: 1, include_preview: false }} }},
 }};
 const elements = {{ updateCheckButton: null, cacheSettings: null }};
@@ -188,6 +199,7 @@ const state = {{
   data: {{ app_update: {{ state: "idle", include_preview: false, updated_at: 1 }} }},
   updateAutomaticEnabled: true, updatePreviewEnabled: false,
   updateCheckRequestInFlight: false, manualUpdateCheck: null,
+  updateManualVisibleChannel: "",
   updateAutomaticAttemptedChannels: new Set(), startupUpdateCheckScheduled: true,
   hasValidStateResponse: true,
 }};
@@ -216,6 +228,7 @@ function indicatorState() {{
     row: elements.appUpdateRow.classList.contains("has-update"),
     badge: !elements.updateVersionBadge.classList.contains("hidden"),
     button: elements.updateCheckButton.textContent,
+    status: elements.appUpdateStatus.textContent,
   }};
 }}
 
@@ -234,6 +247,16 @@ function indicatorState() {{
     renderUpdatePreviewControl();
     states[name] = indicatorState();
   }}
+  state.updateAutomaticEnabled = false;
+  state.updateManualVisibleChannel = "";
+  state.data.app_update = {{ state: "available", include_preview: false, updated_at: 8.5, update_action: "normal_upgrade", eligible_update: true, latest_version: "v0.8.3", auto_update_supported: true }};
+  renderUpdatePreviewControl();
+  states.automaticOff = indicatorState();
+  state.updateManualVisibleChannel = "stable";
+  renderUpdatePreviewControl();
+  states.manualVisible = indicatorState();
+  state.updateAutomaticEnabled = true;
+  state.updateManualVisibleChannel = "";
   const messagesBeforeActions = messages.length;
 
   state.data.app_update = {{ state: "idle", include_preview: false, updated_at: 9 }};
@@ -262,8 +285,14 @@ function indicatorState() {{
                 self.assertTrue(result["states"][name]["advanced"])
                 self.assertTrue(result["states"][name]["row"])
                 self.assertTrue(result["states"][name]["badge"])
-        self.assertEqual(result["states"]["installable"]["button"], "service.updateToVersion:v0.8.1")
+        self.assertEqual(result["states"]["installable"]["button"], "service.update:")
+        self.assertEqual(result["states"]["installable"]["status"], "")
         self.assertEqual(result["states"]["viewOnly"]["button"], "service.viewVersion:v0.8.2")
+        self.assertFalse(result["states"]["automaticOff"]["service"])
+        self.assertFalse(result["states"]["automaticOff"]["badge"])
+        self.assertEqual(result["states"]["automaticOff"]["button"], "service.checkUpdate:")
+        self.assertTrue(result["states"]["manualVisible"]["service"])
+        self.assertEqual(result["states"]["manualVisible"]["status"], "")
         self.assertEqual(result["messagesBeforeActions"], 0)
         self.assertEqual([post["path"] for post in result["posts"]], [
             "/api/app/update/check",

@@ -73,13 +73,46 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn("data-request-subview", self.styles)
         self.assertIn("--host-tool-card-width", self.styles)
         self.assertNotIn("--host-tool-dock-width", self.styles)
-        self.assertIn('data-stage-mode="compact"', self.styles)
-        self.assertIn('data-stage-mode="narrow"', self.styles)
+        self.assertIn('"compact"', self.script)
+        self.assertIn('"narrow"', self.script)
+        self.assertIn('data-stage-controls-layout="inline"', self.styles)
         self.assertIn('id="stage-controls-toggle"', self.markup)
         self.assertIn('id="stage-control-backdrop"', self.markup)
         self.assertIn('id="stage-control-tray"', self.markup)
         self.assertIn("ResizeObserver", self.script)
         self.assertIn("measurePersistentStage", self.script)
+        player_frame_rule = re.findall(
+            r"\.left-column \.player-frame\s*\{([^}]*)\}", self.styles
+        )[-1]
+        self.assertIn("aspect-ratio: 16 / 9", player_frame_rule)
+        self.assertNotIn("aspect-ratio: auto", player_frame_rule)
+        self.assertIn("--stage-frame-inline-size", player_frame_rule)
+        self.assertIn('data-i18n="player.controls"', self.markup)
+        self.assertIn("stageControlTrayDirection", self.script)
+        self.assertIn("spaceBelow", self.script)
+
+    def test_narrow_tool_card_overlays_the_full_height_stage_from_the_bottom(self):
+        narrow_rules = self.styles[self.styles.rindex("@media (max-width: 1039px)") :]
+        self.assertIn("grid-template-rows: minmax(0, 1fr)", narrow_rules)
+        self.assertIn("position: absolute", narrow_rules)
+        self.assertIn("inset: auto 0 0", narrow_rules)
+        self.assertIn("height: clamp(360px, 68%, 520px)", narrow_rules)
+        self.assertIn("z-index: 20", narrow_rules)
+        self.assertNotIn("grid-template-rows: clamp(190px, 34%, 280px)", narrow_rules)
+
+    def test_queue_and_history_actions_share_the_title_row(self):
+        card_head_rules = re.findall(
+            r"\.host-workspace-region \.queue-card-head\s*\{([^}]*)\}",
+            self.styles,
+        )[-1]
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto", card_head_rules)
+        self.assertIn("grid-template-rows: auto auto", card_head_rules)
+        toolbar_rules = re.findall(
+            r"\.host-workspace-region \.queue-toolbar\s*\{([^}]*)\}",
+            self.styles,
+        )[-1]
+        self.assertIn("grid-column: 2", toolbar_rules)
+        self.assertIn("grid-row: 2", toolbar_rules)
 
     def test_toolbar_badge_messages_and_product_copy_match_review(self):
         self.assertIn('class="global-action-icon"', self.markup)

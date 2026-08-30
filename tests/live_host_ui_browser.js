@@ -1635,6 +1635,8 @@ async function run() {
     const queueNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-queue");
     const historyNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-history");
     const narrowControlsScreenshotPath = suffixedPath(screenshotPath, "-narrow-controls");
+    const controlsUpScreenshotPath = suffixedPath(screenshotPath, "-controls-up");
+    const controlsDownScreenshotPath = suffixedPath(screenshotPath, "-controls-down");
     if (shellWideScreenshotPath) {
       await shellPage.locator("#work-rail-queue").click();
       await shellPage.screenshot({ path: queueWideScreenshotPath, fullPage: false });
@@ -1650,13 +1652,58 @@ async function run() {
       const tools = {};
       for (const workspace of ["queue", "history", "request", "random", "users"]) {
         await shellPage.locator(`#work-rail-${workspace}`).click();
+        if (width <= 1039) {
+          const expanded = await shellPage.locator(`#work-rail-${workspace}`).getAttribute("aria-expanded");
+          if (expanded !== "true") {
+            await shellPage.locator(`#work-rail-${workspace}`).click();
+          }
+          await shellPage.waitForTimeout(180);
+        }
         tools[workspace] = await shellPage.evaluate((name) => {
+          const colorAlpha = (value) => {
+            const color = String(value || "");
+            const slashAlpha = color.match(/\/\s*([\d.]+)%?\s*\)$/);
+            if (slashAlpha) {
+              return color.includes("%")
+                ? Number(slashAlpha[1]) / 100
+                : Number(slashAlpha[1]);
+            }
+            const commaParts = color.replace(/rgba?\(|\)/g, "").split(",");
+            return commaParts.length >= 4 ? Number(commaParts[3].trim()) : 1;
+          };
           const regionElement = elements.hostWorkspaceRegion;
           const railElement = document.querySelector(".work-rail");
           const region = regionElement.getBoundingClientRect();
           const rail = railElement.getBoundingClientRect();
           const stage = document.querySelector(".left-column").getBoundingClientRect();
+          const content = regionElement.parentElement.getBoundingClientRect();
           const playerCard = elements.playerPanel.getBoundingClientRect();
+          const playerFrame = elements.playerFrame.getBoundingClientRect();
+          const controlsToggle = elements.stageControlsToggle.getBoundingClientRect();
+          const playerStyle = getComputedStyle(elements.playerPanel);
+          const playerInnerHeight = elements.playerPanel.clientHeight
+            - (parseFloat(playerStyle.paddingTop) || 0)
+            - (parseFloat(playerStyle.paddingBottom) || 0);
+          const trayNaturalHeight = measureStageControlTrayNaturalSize(Math.min(860, playerFrame.width || 760)).height;
+          const activePanel = Array.from(elements.hostWorkspacePanels || [])
+            .find((panel) => panel.dataset.hostWorkspacePanel === name);
+          const activePanelBackground = getComputedStyle(activePanel).backgroundColor;
+          const headerSelectors = {
+            queue: ["#workspace-queue-heading", "#host-workspace-queue .queue-toolbar"],
+            history: ["#workspace-history-heading", "#host-workspace-history .queue-toolbar"],
+            request: ["#workspace-request-heading", "#host-workspace-request .request-subview-tabs"],
+            random: ["#gatcha-title", "#gatcha-panel .gatcha-head-actions"],
+          };
+          const [headingSelector, actionsSelector] = headerSelectors[name] || [];
+          const headingRect = headingSelector
+            ? document.querySelector(headingSelector).getBoundingClientRect()
+            : null;
+          const actionsRect = actionsSelector
+            ? document.querySelector(actionsSelector).getBoundingClientRect()
+            : null;
+          const stageHeading = document.querySelector("#current-title").getBoundingClientRect();
+          const stageActions = document.querySelector(".player-panel > .panel-head .stage-actions")
+            .getBoundingClientRect();
           return {
             active: state.activeHostWorkspace,
             visible: Array.from(elements.hostWorkspacePanels || [])
@@ -1670,9 +1717,33 @@ async function run() {
               && regionElement.parentElement?.classList.contains("host-content-region"),
             stageWidth: stage.width,
             stageHeight: stage.height,
-            stageToolGap: window.matchMedia("(max-width: 1039px)").matches
-              ? region.top - playerCard.bottom
-              : region.left - playerCard.right,
+            narrowBottomSheet: window.matchMedia("(max-width: 1039px)").matches,
+            workspaceOverlapsStage: region.top < playerCard.bottom - 1
+              && region.bottom > playerCard.top + 1,
+            workspaceBottomAnchored: Math.abs(region.bottom - content.bottom) <= 1,
+            stageFillsContentHeight: Math.abs(playerCard.top - content.top) <= 1
+              && Math.abs(playerCard.bottom - content.bottom) <= 1,
+            workspaceAboveStage: Number.parseInt(getComputedStyle(regionElement).zIndex || "0", 10)
+              > Number.parseInt(getComputedStyle(document.querySelector(".left-column")).zIndex || "0", 10),
+            toolSheetShadow: getComputedStyle(regionElement).boxShadow,
+            toolSurfaceBackground: activePanelBackground,
+            toolSurfaceAlpha: colorAlpha(activePanelBackground),
+            headerActionsShareTitleLine: !headingRect || !actionsRect
+              || Math.min(headingRect.bottom, actionsRect.bottom)
+                - Math.max(headingRect.top, actionsRect.top) > 0,
+            headerActionsFit: !actionsRect || actionsRect.right <= region.right + 1,
+            stageActionsShareTitleLine: Math.min(stageHeading.bottom, stageActions.bottom)
+              - Math.max(stageHeading.top, stageActions.top) > 0,
+            playerFrameWidth: playerFrame.width,
+            playerFrameHeight: playerFrame.height,
+            playerFrameRatio: playerFrame.height > 0 ? playerFrame.width / playerFrame.height : 0,
+            controlsBelowFrame: controlsToggle.top >= playerFrame.bottom - 1,
+            controlsLeftAligned: Math.abs(controlsToggle.left - playerFrame.left) <= 1,
+            controlLayout: elements.appShell.dataset.stageControlsLayout,
+            controlsOpen: state.stageControlTrayOpen,
+            playerInnerHeight,
+            trayNaturalHeight,
+            stageToolGap: region.left - playerCard.right,
             mode: elements.appShell.dataset.stageMode,
             sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
             sameVideo: state.hostPlaybackSession?.video === window.__hostShellNodes.video,
@@ -1700,6 +1771,9 @@ async function run() {
           stageClientHeight: left.clientHeight,
           stageScrollHeight: left.scrollHeight,
           trayClosed: elements.stageControlTray.hidden && elements.stageControlTray.inert,
+          controlLayout: elements.appShell.dataset.stageControlsLayout,
+          presentationActionWidth: elements.presentationSettingsToggle.getBoundingClientRect().width,
+          serviceActionWidth: elements.cacheSettingsToggle.getBoundingClientRect().width,
         };
       });
       const toolValues = Object.values(tools);
@@ -1709,9 +1783,23 @@ async function run() {
           && entry.visible
           && Math.abs(entry.contentWidth - contentWidth) <= 1
           && entry.railGap >= 8
-          && entry.stageToolGap >= 8
+          && (entry.narrowBottomSheet
+            ? entry.workspaceOverlapsStage
+              && entry.workspaceBottomAnchored
+              && entry.stageFillsContentHeight
+              && entry.workspaceAboveStage
+              && entry.toolSurfaceAlpha >= 0.99
+              && entry.toolSheetShadow !== "none"
+            : entry.stageToolGap >= 8)
           && entry.railIndependent
           && entry.stageHeight >= 180
+          && Math.abs(entry.playerFrameRatio - (16 / 9)) <= 0.01
+          && entry.controlsBelowFrame
+          && entry.controlsLeftAligned
+          && entry.headerActionsShareTitleLine
+          && entry.headerActionsFit
+          && entry.stageActionsShareTitleLine
+          && ["inline", "popup"].includes(entry.controlLayout)
           && entry.sameFrame
           && entry.sameVideo
           && entry.sameAudio),
@@ -1744,6 +1832,13 @@ async function run() {
         `${label} violated toolbar alignment, page-scroll, or fitted Stage geometry`,
         { tools, requestSubviews, shell },
       );
+      if (width <= 1230) {
+        assert(
+          shell.presentationActionWidth >= 59 && shell.serviceActionWidth >= 59,
+          `${label} left the two indicator-bearing toolbar actions cramped`,
+          shell,
+        );
+      }
       return { width, height, tools, requestSubviews, shell };
     }
 
@@ -1781,11 +1876,21 @@ async function run() {
       "wide/medium states did not keep one stable tool-card width beside the independent rail",
       responsiveFrames,
     );
+    const inlineControlFrames = Object.entries(responsiveFrames)
+      .filter(([, frame]) => frame.tools.queue.controlLayout === "inline");
+    assert(
+      inlineControlFrames.length >= 1
+        && inlineControlFrames.every(([, frame]) => frame.tools.queue.controlsOpen),
+      "no width-and-height-fit frame expanded the one control deck inline by default",
+      responsiveFrames,
+    );
 
     await shellPage.setViewportSize({ width: 1240, height: 800 });
     await shellPage.locator("#work-rail-queue").click();
     const mediumQueue = await shellPage.evaluate(() => ({
       mode: elements.appShell.dataset.stageMode,
+      controlLayout: elements.appShell.dataset.stageControlsLayout,
+      direction: elements.stageControlTray.dataset.popoverDirection,
       listClientHeight: elements.playlist.clientHeight,
       listScrollHeight: elements.playlist.scrollHeight,
       nextVisible: Boolean(elements.nextButton.offsetWidth || elements.nextButton.offsetHeight),
@@ -1808,18 +1913,28 @@ async function run() {
     await shellPage.setViewportSize({ width: 840, height: 760 });
     await shellPage.waitForTimeout(120);
     await shellPage.locator("#work-rail-queue").click();
+    if (await shellPage.locator("#work-rail-queue").getAttribute("aria-expanded") !== "true") {
+      await shellPage.locator("#work-rail-queue").click();
+    }
+    await shellPage.waitForTimeout(180);
     const narrowInitial = responsiveFrames.narrow840.shell;
     const narrowQueue = await shellPage.evaluate(() => ({
       workspace: state.activeHostWorkspace,
       listClientHeight: elements.playlist.clientHeight,
       listScrollHeight: elements.playlist.scrollHeight,
       nextVisible: Boolean(elements.nextButton.offsetWidth || elements.nextButton.offsetHeight),
+      titleActionCenterDelta: Math.abs(
+        document.querySelector("#workspace-queue-heading").getBoundingClientRect().top
+          + (document.querySelector("#workspace-queue-heading").getBoundingClientRect().height / 2)
+          - (document.querySelector("#host-workspace-queue .queue-toolbar").getBoundingClientRect().top
+            + (document.querySelector("#host-workspace-queue .queue-toolbar").getBoundingClientRect().height / 2))),
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
     }));
     assert(narrowQueue.workspace === "queue"
       && narrowQueue.listClientHeight > 40
       && narrowQueue.listScrollHeight > narrowQueue.listClientHeight
       && narrowQueue.nextVisible
+      && narrowQueue.titleActionCenterDelta <= 2
       && narrowQueue.sameFrame,
     "narrow Queue lost direct actions or its local list owner", narrowQueue);
     if (queueNarrowScreenshotPath) {
@@ -1831,22 +1946,75 @@ async function run() {
       listClientHeight: elements.historyList.clientHeight,
       listScrollHeight: elements.historyList.scrollHeight,
       actionsVisible: Boolean(elements.clearHistoryButton.offsetWidth || elements.clearHistoryButton.offsetHeight),
+      titleActionCenterDelta: Math.abs(
+        document.querySelector("#workspace-history-heading").getBoundingClientRect().top
+          + (document.querySelector("#workspace-history-heading").getBoundingClientRect().height / 2)
+          - (document.querySelector("#host-workspace-history .queue-toolbar").getBoundingClientRect().top
+            + (document.querySelector("#host-workspace-history .queue-toolbar").getBoundingClientRect().height / 2))),
       sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
     }));
     assert(narrowHistory.workspace === "history"
       && narrowHistory.listClientHeight > 40
       && narrowHistory.listScrollHeight > narrowHistory.listClientHeight
       && narrowHistory.actionsVisible
+      && narrowHistory.titleActionCenterDelta <= 2
       && narrowHistory.sameFrame,
     "narrow History lost direct actions or its local list owner", narrowHistory);
     if (historyNarrowScreenshotPath) {
       await shellPage.screenshot({ path: historyNarrowScreenshotPath, fullPage: false });
     }
 
+    await shellPage.locator("#work-rail-random").click();
+    const narrowGatchaHeader = await shellPage.evaluate(() => {
+      const title = document.querySelector("#gatcha-title").getBoundingClientRect();
+      const actions = document.querySelector("#gatcha-panel .gatcha-head-actions").getBoundingClientRect();
+      return {
+        centerDelta: Math.abs((title.top + (title.height / 2)) - (actions.top + (actions.height / 2))),
+        sameRow: actions.left >= title.right - 1,
+        fitsCard: actions.right <= elements.hostWorkspaceRegion.getBoundingClientRect().right + 1,
+      };
+    });
+    assert(
+      narrowGatchaHeader.centerDelta <= 2
+        && narrowGatchaHeader.sameRow
+        && narrowGatchaHeader.fitsCard,
+      "narrow Gatcha dedicated a second header row to management actions",
+      narrowGatchaHeader,
+    );
+
+    await shellPage.locator("#work-rail-random").click();
+    await shellPage.waitForTimeout(180);
+    const narrowSheetCollapsed = await shellPage.evaluate(() => {
+      const trigger = elements.stageControlsToggle.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        trigger.left + (trigger.width / 2),
+        trigger.top + (trigger.height / 2),
+      );
+      return {
+        closedClass: elements.appShell.classList.contains("host-tool-sheet-closed"),
+        regionHidden: elements.hostWorkspaceRegion.getAttribute("aria-hidden") === "true",
+        regionInert: elements.hostWorkspaceRegion.inert,
+        railExpanded: document.querySelector("#work-rail-random").getAttribute("aria-expanded"),
+        stageTriggerOwnsPoint: hit === elements.stageControlsToggle
+          || elements.stageControlsToggle.contains(hit),
+      };
+    });
+    assert(
+      narrowSheetCollapsed.closedClass
+        && narrowSheetCollapsed.regionHidden
+        && narrowSheetCollapsed.regionInert
+        && narrowSheetCollapsed.railExpanded === "false"
+        && narrowSheetCollapsed.stageTriggerOwnsPoint,
+      "lowering the narrow tool sheet did not restore direct Stage control access",
+      narrowSheetCollapsed,
+    );
+
     await shellPage.locator("#stage-controls-toggle").click();
     await shellPage.waitForTimeout(180);
     const narrowControlEvidence = await shellPage.evaluate(() => ({
       mode: elements.appShell.dataset.stageMode,
+      controlLayout: elements.appShell.dataset.stageControlsLayout,
+      direction: elements.stageControlTray.dataset.popoverDirection,
       open: !elements.stageControlTray.hidden && !elements.stageControlTray.inert,
       backdrop: !elements.stageControlBackdrop.hidden && !elements.stageControlBackdrop.inert,
       opacity: Number(getComputedStyle(elements.stageControlTray).opacity),
@@ -1862,25 +2030,37 @@ async function run() {
       sameAudio: state.hostPlaybackSession?.audio === window.__hostShellNodes.audio,
       geometry: (() => {
         const player = elements.playerPanel.getBoundingClientRect();
+        const frame = elements.playerFrame.getBoundingClientRect();
         const trigger = elements.stageControlsToggle.getBoundingClientRect();
         const tray = elements.stageControlTray.getBoundingClientRect();
         return {
-          triggerAtLowerLeft: trigger.left - player.left <= 32
-            && player.bottom - trigger.bottom <= 32,
-          expandsRightAndUp: tray.right > trigger.right && tray.top < trigger.top,
+          frameRatio: frame.height > 0 ? frame.width / frame.height : 0,
+          triggerBelowFrame: trigger.top >= frame.bottom - 1,
+          triggerLeftAligned: Math.abs(trigger.left - frame.left) <= 1,
+          labelledTrigger: Boolean(elements.stageControlsToggle.textContent.trim()),
+          expandsRight: tray.right > trigger.right,
+          verticalDirectionMatches: elements.stageControlTray.dataset.popoverDirection === "down"
+            ? tray.top >= trigger.bottom
+            : tray.top < trigger.top,
+          trayWiderThanFrame: tray.width > frame.width,
           trayInsideViewport: tray.left >= 0 && tray.top >= 0
             && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
         };
       })(),
     }));
     assert(narrowControlEvidence.mode === "narrow"
+      && narrowControlEvidence.controlLayout === "popup"
+      && ["up", "down"].includes(narrowControlEvidence.direction)
       && narrowControlEvidence.open
       && narrowControlEvidence.backdrop
       && narrowControlEvidence.opacity === 1
       && narrowControlEvidence.focusAtClose
       && narrowControlEvidence.oneDeck === 1
       && narrowControlEvidence.controls.every(Boolean)
-      && Object.values(narrowControlEvidence.geometry).every(Boolean)
+      && Math.abs(narrowControlEvidence.geometry.frameRatio - (16 / 9)) <= 0.01
+      && Object.entries(narrowControlEvidence.geometry)
+        .filter(([key]) => key !== "frameRatio")
+        .every(([, value]) => Boolean(value))
       && narrowControlEvidence.sameFrame
       && narrowControlEvidence.sameVideo
       && narrowControlEvidence.sameAudio,
@@ -1911,6 +2091,70 @@ async function run() {
       && elements.stageControlTray.inert
       && document.activeElement === elements.stageControlsToggle),
     "Stage tray Escape did not close one layer and restore its opener");
+    await shellPage.setViewportSize({ width: 1280, height: 640 });
+    await shellPage.waitForTimeout(120);
+    await shellPage.locator("#stage-controls-toggle").click();
+    await shellPage.waitForTimeout(180);
+    const upwardControlEvidence = await shellPage.evaluate(() => {
+      const frame = elements.playerFrame.getBoundingClientRect();
+      const trigger = elements.stageControlsToggle.getBoundingClientRect();
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      return {
+        layout: elements.appShell.dataset.stageControlsLayout,
+        direction: elements.stageControlTray.dataset.popoverDirection,
+        above: tray.top < trigger.top,
+        right: tray.right > trigger.right,
+        widerThanFrame: tray.width > frame.width,
+        insideViewport: tray.left >= 0 && tray.top >= 0
+          && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
+      };
+    });
+    assert(
+      upwardControlEvidence.layout === "popup"
+        && upwardControlEvidence.direction === "up"
+        && Object.entries(upwardControlEvidence)
+          .filter(([key]) => !["layout", "direction"].includes(key))
+          .every(([, value]) => Boolean(value)),
+      "a short Stage did not open the unsqueezed tray up-and-right",
+      upwardControlEvidence,
+    );
+    if (controlsUpScreenshotPath) {
+      await shellPage.screenshot({ path: controlsUpScreenshotPath, fullPage: false });
+    }
+    await shellPage.locator("#stage-controls-close").click();
+    await shellPage.setViewportSize({ width: 1240, height: 1000 });
+    await shellPage.waitForTimeout(120);
+    await shellPage.locator("#stage-controls-toggle").click();
+    await shellPage.waitForTimeout(180);
+    const downwardControlEvidence = await shellPage.evaluate(() => {
+      const frame = elements.playerFrame.getBoundingClientRect();
+      const trigger = elements.stageControlsToggle.getBoundingClientRect();
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      return {
+        layout: elements.appShell.dataset.stageControlsLayout,
+        direction: elements.stageControlTray.dataset.popoverDirection,
+        below: tray.top >= trigger.bottom,
+        right: tray.right > trigger.right,
+        widerThanFrame: tray.width > frame.width,
+        insideViewport: tray.left >= 0 && tray.top >= 0
+          && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
+      };
+    });
+    assert(
+      downwardControlEvidence.layout === "popup"
+        && downwardControlEvidence.direction === "down"
+        && Object.entries(downwardControlEvidence)
+          .filter(([key]) => !["layout", "direction"].includes(key))
+          .every(([, value]) => Boolean(value)),
+      "a Stage with enough space below did not open the unsqueezed tray down-and-right",
+      downwardControlEvidence,
+    );
+    if (controlsDownScreenshotPath) {
+      await shellPage.screenshot({ path: controlsDownScreenshotPath, fullPage: false });
+    }
+    await shellPage.locator("#stage-controls-close").click();
+    await shellPage.setViewportSize({ width: 840, height: 760 });
+    await shellPage.waitForTimeout(120);
     const narrowWorkspaces = responsiveFrames.narrow840.tools;
     const narrowRequestSubviews = responsiveFrames.narrow840.requestSubviews;
     const narrowLocalScroll = await shellPage.evaluate(() => {
@@ -2794,6 +3038,7 @@ async function run() {
       return {
         classification: elements.appShell.dataset.stageMode,
         regionTop: region.top,
+        regionBottom: region.bottom,
         stageBottom: stage.bottom,
         regionWidth: region.width,
         headerHeight: header.height,
@@ -2809,7 +3054,8 @@ async function run() {
     });
     assert(
       gatchaNarrow.classification === "narrow"
-        && gatchaNarrow.regionTop >= gatchaNarrow.stageBottom - 1
+        && gatchaNarrow.regionTop < gatchaNarrow.stageBottom - 1
+        && Math.abs(gatchaNarrow.regionBottom - gatchaNarrow.stageBottom) <= 1
         && gatchaNarrow.regionWidth > 700
         && gatchaNarrow.headerHeight < gatchaNarrow.regionHeight
         && gatchaNarrow.retryReachable
@@ -3004,6 +3250,8 @@ async function run() {
       narrowQueue,
       narrowHistory,
       narrowControlEvidence,
+      upwardControlEvidence,
+      downwardControlEvidence,
       narrowWorkspaces,
       narrowRequestSubviews,
       narrowLocalScroll,
@@ -3022,6 +3270,8 @@ async function run() {
         queueNarrow: queueNarrowScreenshotPath,
         historyNarrow: historyNarrowScreenshotPath,
         narrowControls: narrowControlsScreenshotPath,
+        controlsUp: controlsUpScreenshotPath,
+        controlsDown: controlsDownScreenshotPath,
         gatchaWide: gatchaWideScreenshotPath,
         gatchaError: gatchaErrorScreenshotPath,
         gatchaPool: gatchaPoolScreenshotPath,
@@ -3445,27 +3695,22 @@ async function run() {
     await monthlyButton.click();
     await monthlyRequestSeen;
     await page.waitForFunction(() => state.maintenanceJobRunning === "monthly-d1-refresh");
-    await page.waitForFunction(() => (
-      document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.getAttribute("aria-disabled") === "true"
-    ));
+    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
     const monthlyBusy = await page.evaluate(() => {
       const button = document.querySelector('[data-maintenance-job="monthly-d1-refresh"]');
       button?.click();
       button?.click();
       return {
         disabled: Boolean(button?.disabled),
-        ariaDisabled: button?.getAttribute("aria-disabled"),
         ariaBusy: button?.getAttribute("aria-busy"),
         label: button?.textContent,
         focus: document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || "",
       };
     });
-    await page.waitForFunction(() => (
-      document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.getAttribute("aria-disabled") === "true"
-    ));
+    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
     assert(
       maintenanceRequests.filter((request) => request.job === "monthly-d1-refresh").length === 1
-        && (monthlyBusy.disabled || monthlyBusy.ariaDisabled === "true")
+        && monthlyBusy.disabled
         && monthlyBusy.ariaBusy === "true",
       "monthly maintenance did not enter an accessible single-request busy state",
       { maintenanceRequests, monthlyBusy },
@@ -3513,14 +3758,13 @@ async function run() {
       button?.click();
       return {
         disabled: Boolean(button?.disabled),
-        ariaDisabled: button?.getAttribute("aria-disabled"),
         ariaBusy: button?.getAttribute("aria-busy"),
         focus: document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || "",
       };
     });
     assert(
       maintenanceRequests.filter((request) => request.job === "tagger-yomi").length === 1
-        && (taggerBusy.disabled || taggerBusy.ariaDisabled === "true")
+        && taggerBusy.disabled
         && taggerBusy.ariaBusy === "true",
       "tagger-yomi maintenance did not preserve focus during its single request",
       { maintenanceRequests, taggerBusy },
@@ -3587,14 +3831,10 @@ async function run() {
     };
     assert(
       monthlyFocusBefore === "monthly-d1-refresh"
-        && !monthlyBusy.disabled
-        && monthlyBusy.ariaDisabled === "true"
-        && monthlyBusy.focus === "monthly-d1-refresh"
+        && monthlyBusy.disabled
         && monthlyFocusAfter === "monthly-d1-refresh"
         && taggerFocusBefore === "tagger-yomi"
-        && !taggerBusy.disabled
-        && taggerBusy.ariaDisabled === "true"
-        && taggerBusy.focus === "tagger-yomi"
+        && taggerBusy.disabled
         && taggerFocusAfter === "tagger-yomi"
         && languageFocus === "monthly-d1-refresh",
       "Maintenance actions did not preserve logical focus across request and language rerenders",
@@ -3830,9 +4070,11 @@ async function run() {
     await page.waitForTimeout(250);
     assert(
       await detail.evaluate((element) => element.classList.contains("hidden"))
-        && await page.evaluate(() => state.hostWorkspaceOverlayOpen)
+        && await page.evaluate(() => state.activeHostWorkspace === "request"
+          && !elements.requestWorkspace.hidden
+          && !elements.requestWorkspace.inert)
         && await layeredDetailOpener.evaluate((element) => document.activeElement === element),
-      "song-detail Escape did not close only detail above Request overlay and restore its result",
+      "song-detail Escape did not close only detail above the direct Request workspace and restore its result",
     );
 
     await page.locator('[data-request-view="sources"]').click();
@@ -3852,9 +4094,11 @@ async function run() {
     await page.keyboard.press("Escape");
     assert(
       !await page.locator("#binding-modal").isVisible()
-        && await page.evaluate(() => state.hostWorkspaceOverlayOpen)
+        && await page.evaluate(() => state.activeHostWorkspace === "request"
+          && !elements.requestWorkspace.hidden
+          && !elements.requestWorkspace.inert)
         && await page.locator("#modal-add-follow-uid-button").evaluate((element) => document.activeElement === element),
-      "source/page task Escape did not close only the task above Request overlay and restore its opener",
+      "source/page task Escape did not close only the task above direct Request and restore its opener",
     );
 
     await page.locator("#work-rail-random").click();
@@ -4160,9 +4404,16 @@ async function run() {
       if (state.appToastTimer) window.clearTimeout(state.appToastTimer);
       state.appToastTimer = null;
     });
-    const renderUpdateState = async (update, previewEnabled = false) => page.evaluate(
-      ({ nextUpdate, preview }) => {
+    const renderUpdateState = async (
+      update,
+      previewEnabled = false,
+      automaticEnabled = true,
+      manualVisibleChannel = "",
+    ) => page.evaluate(
+      ({ nextUpdate, preview, automatic, manualChannel }) => {
         state.updatePreviewEnabled = preview;
+        state.updateAutomaticEnabled = automatic;
+        state.updateManualVisibleChannel = manualChannel;
         state.updateCheckRequestInFlight = false;
         state.manualUpdateCheck = null;
         state.data.app_update = nextUpdate;
@@ -4176,10 +4427,20 @@ async function run() {
             : elements.updateVersionBadge.textContent,
           buttonText: elements.updateCheckButton.textContent,
           statusText: elements.appUpdateStatus.textContent,
+          automaticChecked: elements.updateAutomaticCheckbox.checked,
           serviceAccessible: elements.serviceUpdateIndicator.getAttribute("aria-label"),
+          versionBadgeBorder: getComputedStyle(elements.updateVersionBadge).borderTopWidth,
+          versionBadgeBackground: getComputedStyle(elements.updateVersionBadge).backgroundColor,
+          previewTop: elements.updatePreviewCheckbox.closest("label").getBoundingClientRect().top,
+          automaticTop: elements.updateAutomaticCheckbox.closest("label").getBoundingClientRect().top,
         };
       },
-      { nextUpdate: update, preview: previewEnabled },
+      {
+        nextUpdate: update,
+        preview: previewEnabled,
+        automatic: automaticEnabled,
+        manualChannel: manualVisibleChannel,
+      },
     );
     const noBadgeStates = {
       unknown: { state: "idle", include_preview: false, updated_at: 10 },
@@ -4213,13 +4474,18 @@ async function run() {
       message: "available",
     };
     const installableRendered = await renderUpdateState(installableUpdate);
+    const shortUpdateLabel = await page.evaluate(() => t("service.update"));
     assert(
       installableRendered.serviceRing && installableRendered.advancedIndicator
         && installableRendered.rowHighlighted
         && installableRendered.versionBadge.includes("v0.8.1")
-        && installableRendered.buttonText.includes("v0.8.1")
+        && installableRendered.buttonText === shortUpdateLabel
+        && installableRendered.statusText === ""
+        && installableRendered.versionBadgeBorder === "0px"
+        && installableRendered.versionBadgeBackground === "rgba(0, 0, 0, 0)"
+        && installableRendered.previewTop < installableRendered.automaticTop
         && installableRendered.serviceAccessible?.includes("v0.8.1"),
-      "eligible installable update did not ring Service health and show its detailed action",
+      "eligible installable update did not ring Service health, show the exact version, and keep a short action",
       installableRendered,
     );
     assert(
@@ -4234,6 +4500,10 @@ async function run() {
     await renderUpdateState(installableUpdate);
     await page.locator("#update-check-button").click();
     assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation");
+    assert(
+      (await page.locator("#confirm-ok").textContent()).trim() === shortUpdateLabel,
+      "update confirmation kept the overlong version-specific button label",
+    );
     assert(updateInstallRequests.length === 0, "update action installed before explicit confirmation");
     await page.locator("#confirm-ok").click();
     await page.waitForTimeout(100);
@@ -4291,20 +4561,50 @@ async function run() {
     });
 
     await renderUpdateState(installableUpdate);
-    await page.locator('label[for="update-preview-checkbox"]').click();
-    assert(await page.locator("#update-preview-checkbox").isChecked(), "preview preference was not keyboard/touch-accessible");
+    const automaticChecksBeforeDisable = updateCheckRequests.length;
+    await page.locator('label[for="update-automatic-checkbox"]').click();
+    const automaticOffRendered = await page.evaluate(() => ({
+      automatic: state.updateAutomaticEnabled,
+      ring: elements.serviceUpdateIndicator.classList.contains("has-update"),
+      row: elements.appUpdateRow.classList.contains("has-update"),
+      badgeHidden: elements.updateVersionBadge.classList.contains("hidden"),
+      status: elements.appUpdateStatus.textContent,
+      button: elements.updateCheckButton.textContent,
+    }));
     assert(
-      !await page.locator("#service-update-indicator").evaluate((element) => element.classList.contains("has-update")),
-      "stable result remained current after selecting preview",
+      !automaticOffRendered.automatic
+        && !automaticOffRendered.ring
+        && !automaticOffRendered.row
+        && automaticOffRendered.badgeHidden
+        && !automaticOffRendered.status
+        && automaticOffRendered.button === await page.evaluate(() => t("service.checkUpdate"))
+        && updateCheckRequests.length === automaticChecksBeforeDisable,
+      "disabling automatic checks did not restore the non-highlighted manual default",
+      automaticOffRendered,
     );
+    await page.locator('label[for="update-automatic-checkbox"]').click();
+    await page.waitForFunction(() => !state.updateCheckRequestInFlight);
+    assert(
+      updateCheckRequests.length === automaticChecksBeforeDisable + 1
+        && updateCheckRequests.at(-1).include_preview === false,
+      "re-enabling automatic checks did not evaluate the selected stable channel",
+      updateCheckRequests,
+    );
+
+    await renderUpdateState(installableUpdate);
     const updateChecksBeforePreview = updateCheckRequests.length;
-    await page.locator("#update-check-button").click();
-    await page.waitForTimeout(100);
+    await page.locator('label[for="update-preview-checkbox"]').click();
+    await page.waitForFunction(() => !state.updateCheckRequestInFlight);
+    assert(await page.locator("#update-preview-checkbox").isChecked(), "preview preference was not keyboard/touch-accessible");
     assert(
       updateCheckRequests.length === updateChecksBeforePreview + 1
         && updateCheckRequests.at(-1).include_preview === true,
-      "preview selection did not produce an explicit preview check-only request",
+      "switching from a visible stable update did not automatically re-evaluate the preview channel",
       updateCheckRequests,
+    );
+    assert(
+      !await page.locator("#service-update-indicator").evaluate((element) => element.classList.contains("has-update")),
+      "stable result remained highlighted while the preview channel was being re-evaluated",
     );
     assert(updateInstallRequests.length === 1, "preview toggle caused automatic installation");
     const previewRendered = await renderUpdateState({
@@ -4322,6 +4622,37 @@ async function run() {
       updated_at: 18,
       latest_version: "v0.9.0-preview.1",
     }, true);
+    const qrMessageEvidence = await page.evaluate(() => {
+      elements.bbdownLoginPanel.classList.remove("hidden");
+      elements.bbdownLoginQrImage.classList.remove("hidden");
+      elements.bbdownLoginQrText.classList.add("hidden");
+      elements.bbdownLoginQrImage.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='168' height='168'%3E%3Crect width='168' height='168' fill='white'/%3E%3Cpath d='M12 12h48v48H12zM108 12h48v48h-48zM12 108h48v48H12zM78 78h18v18H78zM108 90h48v18h-48zM84 120h18v36H84z' fill='black'/%3E%3C/svg%3E";
+      elements.bbdownLoginMessage.textContent = "请使用哔哩哔哩 App 扫码登录";
+      const messageStyle = getComputedStyle(elements.bbdownLoginMessage);
+      const qr = elements.bbdownLoginPanel.querySelector(".bbdown-login-qr");
+      const qrStyle = getComputedStyle(qr);
+      const imageRect = elements.bbdownLoginQrImage.getBoundingClientRect();
+      const messageRect = elements.bbdownLoginMessage.getBoundingClientRect();
+      const qrRect = qr.getBoundingClientRect();
+      return {
+        borderTop: messageStyle.borderTopWidth,
+        background: messageStyle.backgroundColor,
+        paddingTop: messageStyle.paddingTop,
+        messageHeight: messageRect.height,
+        qrHeight: qrRect.height,
+        imageHeight: imageRect.height,
+        blankHeight: qrRect.height - imageRect.height - messageRect.height,
+        qrBackground: qrStyle.backgroundColor,
+      };
+    });
+    assert(
+      qrMessageEvidence.borderTop === "0px"
+        && qrMessageEvidence.background === "rgba(0, 0, 0, 0)"
+        && qrMessageEvidence.qrBackground === "rgba(0, 0, 0, 0)"
+        && qrMessageEvidence.blankHeight <= 12,
+      "BBDown QR guidance retained a nested message card or excessive blank block",
+      qrMessageEvidence,
+    );
     const updateScreenshotPath = screenshotPath
       ? screenshotPath.replace(/(\.[^./]+)$/, "-update$1")
       : "";
@@ -4366,6 +4697,33 @@ async function run() {
     assert(!await remotePopover.isVisible(), "a second QR trigger click did not close the pinned popup");
     await remoteTrigger.click();
     assert(await remotePopover.isVisible(), "QR popup did not reopen after a repeated trigger click");
+    const floatingSurfaceEvidence = await page.evaluate(() => {
+      const alpha = (value) => {
+        const color = String(value || "");
+        const slashAlpha = color.match(/\/\s*([\d.]+)%?\s*\)$/);
+        if (slashAlpha) {
+          return color.includes("%") ? Number(slashAlpha[1]) / 100 : Number(slashAlpha[1]);
+        }
+        const commaParts = color.replace(/rgba?\(|\)/g, "").split(",");
+        return commaParts.length >= 4 ? Number(commaParts[3].trim()) : 1;
+      };
+      const serviceStyle = getComputedStyle(elements.cachePanel);
+      const remoteStyle = getComputedStyle(document.querySelector(".remote-mini-popover-card"));
+      return {
+        serviceBackground: serviceStyle.backgroundColor,
+        serviceAlpha: alpha(serviceStyle.backgroundColor),
+        serviceBackdropFilter: serviceStyle.backdropFilter || serviceStyle.webkitBackdropFilter || "none",
+        remoteBackground: remoteStyle.backgroundColor,
+        remoteAlpha: alpha(remoteStyle.backgroundColor),
+      };
+    });
+    assert(
+      floatingSurfaceEvidence.serviceAlpha >= 0.99
+        && floatingSurfaceEvidence.remoteAlpha >= 0.99
+        && floatingSurfaceEvidence.serviceBackdropFilter === "none",
+      "toolbar popovers remained translucent or depended on a large backdrop blur",
+      floatingSurfaceEvidence,
+    );
     await remotePopover.locator(".remote-mini-popover-card").click({ position: { x: 12, y: 12 } });
     assert(await remotePopover.isVisible(), "clicking inside the QR popup closed it");
     assert(await cachePanel.isVisible(), "QR popup interaction closed parent service settings");
@@ -4749,6 +5107,10 @@ async function run() {
       coarsePoolMetrics,
     );
     await coarsePage.locator("#gatcha-pool-config-modal-cancel").tap();
+    if (await coarseRailTrigger.getAttribute("aria-expanded") === "true") {
+      await coarseRailTrigger.tap();
+      await coarsePage.waitForTimeout(180);
+    }
     if (await coarsePage.locator("#stage-controls-toggle").isVisible()) {
       await coarsePage.locator("#stage-controls-toggle").tap();
     }
@@ -4910,6 +5272,9 @@ async function run() {
         advancedInfoCount: await advancedInfoButtons.count(),
         layeredConfirmActions: true,
         qrPinning: true,
+        qrMessage: qrMessageEvidence,
+        automaticOff: automaticOffRendered,
+        previewRecheck: updateCheckRequests.at(-1),
         updateScreenshotPath,
       },
       sessionUsers: {

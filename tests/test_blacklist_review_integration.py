@@ -56,6 +56,11 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
         self.assertIn('elements.catalogAdvancedContent.textContent = ""', frontend)
         self.assertIn('["review", "blacklist", "maintenance"]', frontend)
         self.assertIn('route == "/api/admin-maintenance/trigger"', server)
+        self.assertIn(
+            "button.disabled = Boolean(state.maintenanceJobRunning);",
+            frontend,
+        )
+        self.assertNotIn('button.setAttribute("aria-disabled", "true")', frontend)
 
     def test_maintenance_translations_exist_in_all_languages(self):
         payload = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))

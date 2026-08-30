@@ -13,19 +13,36 @@ Corrected contract
   header and nowhere in Queue or another tool.
 * The shell is Stage plus a stable tool card plus an independent fixed
   right-side tool rail. The rail is a separate persistent surface with its own
-  border and gap; it is never fused to either card, including narrow mode.
+  border and gap; it is never fused to either card, including narrow mode. In
+  narrow mode the Stage retains the complete shell-body height underneath and
+  the stable tool card is a bottom-anchored layer above it, rather than a
+  second grid row that takes height away from the Stage. The right rail remains
+  full-height and independent beside both layers.
 * There is one stable tool width in each responsive state. Tool and Request
   subview selection never changes width or dock/overlay policy.
 * Full, compact and narrow are width-and-height measured Stage modes. One
-  ResizeObserver measures the actual Stage container. Every mode keeps the one
-  existing extended-control subtree collapsed behind a 52px circular button at
-  the Stage's lower-left corner. Its bounded floating panel prefers an
-  upper-right expansion, clamps to the available viewport, and closes from its
-  backdrop, close button or Escape; no media or controls are cloned or
-  reparented.
+  ResizeObserver measures the actual Stage container. The playback frame is
+  always a 16:9 rectangle outside native fullscreen. One labelled Controls
+  button sits immediately below its lower-left edge. When inline and block
+  space fit the unsqueezed deck, the one existing extended-control subtree is
+  expanded inline by default. Otherwise that same subtree opens as a floating
+  panel: down-and-right when its measured height fits below the button, and
+  up-and-right otherwise. The panel may extend beyond the playback-frame width,
+  clamps only to the application viewport, and closes from its backdrop, close
+  button or Escape; no media or controls are cloned or reparented.
 * The top surface is a one-line icon-plus-label global toolbar. Constrained
   widths use accessible icon-only actions. Update availability is a theme-color
   ring around the existing Service health check, not a second marker slot.
+  The Preview switch sits at the update row's upper right and Automatic Check
+  sits below it. Disabling Automatic Check immediately returns the presentation
+  to the manual-check default and hides any result produced by automatic
+  checking. A manual result may still expose its exact version once, as plain
+  theme-color text without a badge capsule or a duplicate gray version row.
+  Changing Stable/Preview while a visible result exists checks the newly
+  selected channel again. Install buttons use the short Update label while
+  accessible status and confirmation retain version context. The Presentation
+  and Service toolbar actions reserve one extra indicator-width at constrained
+  sizes so their status glyphs do not crowd the action icons.
 * Platform-specific integrated window chrome uses a frameless toolbar drag
   region and native window commands on Windows; macOS retains traffic lights,
   native behavior and an overlay titlebar with content inset. Browser and Linux
@@ -40,6 +57,30 @@ Composition and order
   +-----------------------------------------------------------------------+
   | persistent Stage | stable active tool card | gap | fixed right rail |
   +-----------------------------------------------------------------------+
+
+Narrow composition keeps the same DOM and keyboard order but changes only
+stacking geometry:
+
+  +-----------------------------------------------+------------------+
+  | full-height persistent Stage (underlay)       | fixed right rail |
+  |       +---------------------------------------+                  |
+  |       | bottom-anchored active tool card      |                  |
+  +-------+---------------------------------------+------------------+
+
+The narrow tool card owns a bounded height, is anchored to the shell bottom,
+and overlaps the Stage. It never participates in a two-row height allocation.
+A restrained upward-only edge shadow communicates that layering without
+casting or clipping a bottom rectangular band.
+Activating a different rail destination opens the sheet for that tool;
+activating the selected destination again or pressing Escape lowers it and
+returns pointer/touch access to the Stage. The selected rail destination stays
+available to reopen it, while a lowered tool subtree is hidden and inert.
+Queue and History actions share the title row at its upper right; their local
+list owners receive the saved vertical space. The same audit applies to every
+direct workspace header: Stage and Gatcha actions also remain on their title
+rows, Request keeps its subview navigation beside its title when the supported
+width permits, and only controls that include an input/form or represent a
+second navigation level retain a separate row.
 
 DOM/Tab order is toolbar, Stage, active tool content, then the right rail. The
 rail is a vertical roving tab stop: Up/Down/Home/End move focus and Enter/Space
@@ -71,7 +112,7 @@ Song detail                             .song-detail-body
 Binding / favorites task sheet          active .selection-option-list
 Pool configuration task sheet           #gatcha-pool-source-list
 Developer task-sheet options            .developer-tag-reset-fields
-Floating Stage control panel            #stage-control-tray
+Stage controls (inline or floating)      #stage-control-tray
 
 Horizontal tabs and category strips may scroll inline but never own the
 vertical wheel. Owners contain overscroll so body and Stage never become
@@ -83,17 +124,29 @@ Stage and ownership
 
 Full mode requires both enough measured inline space and enough measured block
 space for the real header and a useful fitted player row. Compact is selected
-when either dimension cannot fit. Narrow always uses a bounded compact Stage
-band while the tool card receives the remaining height; the independent rail
-continues to span the shell body at the far right.
+when either dimension cannot fit. Narrow keeps a full-height compact Stage as
+the underlay and bottom-anchors the bounded tool card above it; neither surface
+reduces the other's measured height. The independent rail continues to span
+the shell body at the far right.
 
-The floating panel contains the existing audio variants, AV delay, volume and
-Key controls. Its transparent surrounding backdrop and close button close it;
-Escape closes it and restores its opener. The one
+The one control deck contains the existing audio variants, AV delay, volume and
+Key controls. In full fit it is inline and expanded by default. In compact and
+narrow fit its transparent surrounding backdrop and close button close the
+floating panel; Escape closes it and restores its opener. Its popup width is
+measured for the uncompressed controls and is independent of the 16:9 player
+width. The one
 `state.hostPlaybackSession`, `#player-frame`, video and audio retain identity;
 tray and pure navigation changes issue zero player commands.
 
+The BBDown login QR keeps its status sentence directly below the image without
+a nested card border/background or fixed message-row height. Loading and error
+semantics remain live and readable while the login panel loses the unnecessary
+blank block around that sentence.
+
 Persistent Stage, tool and rail surfaces use borders and tonal separation, not
 large clipped shadows or persistent backdrop filters. Strong shadows are for
-floating layers. Empty, status, loading, error and inline-help messages share
-bounded padding, wrapping, readable line-height and honest height.
+floating layers. The narrow tool sheet uses an opaque theme surface rather
+than showing Stage text through its content; top-toolbar popovers use the same
+opaque surface without a large backdrop blur. Empty, status, loading, error
+and inline-help messages share bounded padding, wrapping, readable line-height
+and honest height.
