@@ -342,6 +342,9 @@ const state = {
   blacklistSeq: 0,
   blacklistMessage: "",
   blacklistError: "",
+  maintenanceJobRunning: "",
+  maintenanceJobMessage: "",
+  maintenanceJobError: "",
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
@@ -1032,6 +1035,9 @@ function setLanguage(language) {
   applyStaticI18n();
   renderLanguageSwitch();
   render();
+  if (state.catalogAdvancedTool === "maintenance") {
+    renderMaintenanceView();
+  }
 }
 
 function applyTheme(theme) {
@@ -3381,9 +3387,7 @@ function closeHighestRequestTaskLayerForEscape() {
     state.catalogAdvancedTool = "";
     syncDiscoverModeSelection();
     restoreRequestScrollPosition();
-    Array.from(elements.discoverModeButtons || [])
-      .find((button) => button.dataset.discoverMode === state.discoverMode)
-      ?.focus({ preventScroll: true });
+    elements.catalogAdvancedMenu?.querySelector("summary")?.focus({ preventScroll: true });
     return true;
   }
   if (state.ratingPromptElement) {
@@ -4630,6 +4634,9 @@ function setDeveloperMode(enabled) {
     state.blacklistSeq += 1;
     state.blacklistMessage = "";
     state.blacklistError = "";
+    state.maintenanceJobRunning = "";
+    state.maintenanceJobMessage = "";
+    state.maintenanceJobError = "";
     state.catalogAdvancedTool = "";
     elements.catalogAdvancedMenu?.removeAttribute("open");
     if (state.requestSubview === "discover") {
@@ -6373,6 +6380,127 @@ async function loadBlacklistItems({ force = false, query = state.blacklistQuery,
     if (state.blacklistSeq === seq) {
       state.blacklistLoading = false;
       renderBlacklistView();
+    }
+  }
+}
+
+const maintenanceJobDefinitions = [
+  {
+    job: "monthly-d1-refresh",
+    titleKey: "maintenance.monthlyTitle",
+    descriptionKey: "maintenance.monthlyDescription",
+  },
+  {
+    job: "tagger-yomi",
+    titleKey: "maintenance.taggerYomiTitle",
+    descriptionKey: "maintenance.taggerYomiDescription",
+  },
+];
+
+function boundedMaintenanceMessage(value, limit = 360) {
+  return String(value || "").trim().slice(0, limit);
+}
+
+function renderMaintenanceView() {
+  if (!elements.catalogAdvancedContent) {
+    return;
+  }
+  const scrollTop = Math.max(0, Number(elements.catalogAdvancedView?.scrollTop || 0));
+  elements.catalogAdvancedContent.textContent = "";
+
+  const view = document.createElement("section");
+  view.className = "maintenance-browser";
+  view.dataset.maintenanceView = "1";
+
+  const heading = document.createElement("div");
+  heading.className = "maintenance-browser-head";
+  const title = document.createElement("h2");
+  title.textContent = t("maintenance.title");
+  const description = document.createElement("p");
+  description.textContent = t("maintenance.description");
+  heading.append(title, description);
+
+  const jobs = document.createElement("div");
+  jobs.className = "maintenance-job-list";
+  maintenanceJobDefinitions.forEach((definition) => {
+    const card = document.createElement("article");
+    card.className = "maintenance-job-card";
+    const copy = document.createElement("div");
+    const jobTitle = document.createElement("h3");
+    jobTitle.textContent = t(definition.titleKey);
+    const jobDescription = document.createElement("p");
+    jobDescription.textContent = t(definition.descriptionKey);
+    copy.append(jobTitle, jobDescription);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "next-button";
+    button.dataset.maintenanceJob = definition.job;
+    const isRunning = state.maintenanceJobRunning === definition.job;
+    button.disabled = Boolean(state.maintenanceJobRunning);
+    if (isRunning) {
+      button.setAttribute("aria-busy", "true");
+    } else {
+      button.removeAttribute("aria-busy");
+    }
+    button.textContent = isRunning ? t("maintenance.starting") : t("maintenance.start");
+    card.append(copy, button);
+    jobs.appendChild(card);
+  });
+
+  const message = document.createElement("p");
+  message.className = "gatcha-message maintenance-job-message";
+  message.setAttribute("role", "status");
+  message.setAttribute("aria-live", "polite");
+  message.textContent = state.maintenanceJobError || state.maintenanceJobMessage;
+  message.classList.toggle("is-error", Boolean(state.maintenanceJobError));
+  view.append(heading, jobs, message);
+  elements.catalogAdvancedContent.appendChild(view);
+  if (elements.catalogAdvancedView) {
+    elements.catalogAdvancedView.scrollTop = scrollTop;
+  }
+}
+
+async function triggerMaintenanceJob(job) {
+  if (state.maintenanceJobRunning || !state.developerMode || !state.bilikaraSecret) {
+    return;
+  }
+  const definition = maintenanceJobDefinitions.find((item) => item.job === job);
+  if (!definition) {
+    return;
+  }
+  state.maintenanceJobRunning = job;
+  state.maintenanceJobMessage = t("maintenance.starting");
+  state.maintenanceJobError = "";
+  renderMaintenanceView();
+  try {
+    const result = await apiPost("/api/admin-maintenance/trigger", {
+      job,
+      BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+      requested_by: boundedMaintenanceMessage(
+        selectedRequesterName() || developerModeRequesterName,
+        120,
+      ),
+    });
+    if (!state.developerMode || !state.bilikaraSecret) {
+      return;
+    }
+    state.maintenanceJobMessage = boundedMaintenanceMessage(t("maintenance.started", {
+      job: t(definition.titleKey),
+      id: boundedMaintenanceMessage(result?.instance_id || "-", 120),
+    }));
+    state.maintenanceJobError = "";
+  } catch (error) {
+    if (state.developerMode && state.bilikaraSecret) {
+      state.maintenanceJobError = boundedMaintenanceMessage(
+        error?.message || t("error.requestFailed"),
+      );
+      state.maintenanceJobMessage = "";
+    }
+  } finally {
+    state.maintenanceJobRunning = "";
+    if (state.catalogAdvancedTool === "maintenance") {
+      renderMaintenanceView();
     }
   }
 }
@@ -18046,12 +18174,18 @@ elements.catalogToolButtons?.forEach((button) => {
     if (!state.developerMode) {
       return;
     }
+    const tool = String(button.dataset.catalogTool || "");
+    if (!["review", "blacklist", "maintenance"].includes(tool)) {
+      return;
+    }
     closeRequestDetailForNavigation();
     rememberRequestScrollPosition();
-    state.catalogAdvancedTool = button.dataset.catalogTool === "blacklist" ? "blacklist" : "review";
+    state.catalogAdvancedTool = tool;
     elements.catalogAdvancedMenu?.removeAttribute("open");
     syncDiscoverModeSelection();
-    if (state.catalogAdvancedTool === "blacklist") {
+    if (tool === "maintenance") {
+      renderMaintenanceView();
+    } else if (tool === "blacklist") {
       state.blacklistLoaded || state.blacklistLoading
         ? renderBlacklistView()
         : loadBlacklistItems({ force: true, offset: 0 });
@@ -18067,9 +18201,7 @@ elements.catalogAdvancedBack?.addEventListener("click", () => {
   state.catalogAdvancedTool = "";
   syncDiscoverModeSelection();
   restoreRequestScrollPosition();
-  Array.from(elements.discoverModeButtons || [])
-    .find((button) => button.dataset.discoverMode === state.discoverMode)
-    ?.focus({ preventScroll: true });
+  elements.catalogAdvancedMenu?.querySelector("summary")?.focus({ preventScroll: true });
 });
 
 elements.manageSourcesButton?.addEventListener("click", () => {
@@ -18169,6 +18301,11 @@ elements.requestWorkspace?.addEventListener("submit", (event) => {
 });
 
 elements.requestWorkspace?.addEventListener("click", (event) => {
+  const maintenanceButton = event.target.closest("[data-maintenance-job]");
+  if (maintenanceButton && elements.requestWorkspace.contains(maintenanceButton)) {
+    void triggerMaintenanceJob(maintenanceButton.dataset.maintenanceJob || "");
+    return;
+  }
   const blacklistRefreshButton = event.target.closest("[data-blacklist-refresh]");
   if (blacklistRefreshButton && elements.requestWorkspace.contains(blacklistRefreshButton)) {
     loadBlacklistItems({ force: true });

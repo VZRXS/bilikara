@@ -1319,6 +1319,52 @@ def verify_cloudflare_bilikara_secret(secret: str) -> dict:
     }
 
 
+def trigger_cloudflare_maintenance_job(
+    job: str,
+    secret: str,
+    *,
+    requested_by: str = "",
+) -> dict:
+    normalized_job = str(job or "").strip().lower()
+    paths = {
+        "tagger-yomi": "/admin/jobs/tagger-yomi",
+    }
+    path = paths.get(normalized_job)
+    normalized_secret = str(secret or "").strip()
+    if path is None:
+        return {"success": False, "job": normalized_job, "error": "invalid maintenance job"}
+    if not normalized_secret:
+        return {"success": False, "job": normalized_job, "error": "missing secret"}
+
+    user_agent = f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)"
+    try:
+        response = rust_runtime.cloudflare_service_request(
+            "request",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=user_agent,
+            timeout=15,
+            method="POST",
+            path=path,
+            payload={"requested_by": str(requested_by or "").strip()[:120]},
+            authorization=f"Bearer {normalized_secret}",
+        )
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
+        return {"success": False, "job": normalized_job, "error": str(exc)}
+
+    payload = response.get("payload") if isinstance(response, dict) else None
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "job": normalized_job,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    result = dict(payload)
+    result["success"] = bool(result.get("success"))
+    result["job"] = normalized_job
+    result.setdefault("error", "" if result["success"] else "maintenance job start failed")
+    return result
+
+
 def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
     normalized_bvid = str(bvid or "").strip()
     normalized_secret = str(secret or "").strip()

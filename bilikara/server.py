@@ -21,6 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from monthly_gatcha_d1_refresh import start_monthly_refresh_in_background
+
 from . import rust_runtime
 from .bilibili import (
     BilibiliError,
@@ -64,6 +66,7 @@ from .lark_pool_client import (
     search_lark_pool,
     search_lark_pool_table,
     submit_cloudflare_song_rating,
+    trigger_cloudflare_maintenance_job,
     verify_cloudflare_bilikara_secret,
 )
 from .cache import CacheManager
@@ -1904,6 +1907,54 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     )
                     return
                 self._write_json({"ok": True, "data": {"verified": True}})
+                return
+            if route == "/api/admin-maintenance/trigger":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                job = str(body.get("job") or "").strip().lower()
+                if job not in {"monthly-d1-refresh", "tagger-yomi"}:
+                    self._write_json(
+                        {"ok": False, "error": "invalid maintenance job"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                requested_by = str(body.get("requested_by") or "")
+                try:
+                    if job == "monthly-d1-refresh":
+                        result = start_monthly_refresh_in_background(
+                            bilikara_secret,
+                            requested_by=requested_by,
+                        )
+                    else:
+                        result = trigger_cloudflare_maintenance_job(
+                            job,
+                            bilikara_secret,
+                            requested_by=requested_by,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    message = str(exc or "maintenance job start failed").strip()[:360]
+                    self._write_json(
+                        {"ok": False, "error": message or "maintenance job start failed"},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                if not isinstance(result, dict):
+                    self._write_json(
+                        {"ok": False, "error": "maintenance job returned an invalid result"},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                if not result.get("success"):
+                    message = str(result.get("error") or "maintenance job start failed").strip()[:360]
+                    if "already running locally" in message:
+                        status = HTTPStatus.CONFLICT
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result}, status=HTTPStatus.ACCEPTED)
                 return
             if route == "/api/admin-review/pending":
                 bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()

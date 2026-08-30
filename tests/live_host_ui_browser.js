@@ -31,6 +31,11 @@ async function run() {
   const sourceBrowseRequests = [];
   const sourceUidPreviewRequests = [];
   const sourceUidAddRequests = [];
+  const maintenanceRequests = [];
+  let releaseMonthlyMaintenance;
+  const monthlyMaintenanceGate = new Promise((resolve) => {
+    releaseMonthlyMaintenance = resolve;
+  });
   let pendingStartupUpdateRoute = null;
   let resolveStartupUpdateSeen;
   const startupUpdateSeen = new Promise((resolve) => { resolveStartupUpdateSeen = resolve; });
@@ -226,6 +231,32 @@ async function run() {
           cache: { mode: "incremental", added_count: 1, total_count: 1 },
         },
       }),
+    });
+  });
+  await page.route("**/api/admin-maintenance/trigger", async (route) => {
+    const payload = route.request().postDataJSON();
+    maintenanceRequests.push(payload);
+    if (payload?.job === "monthly-d1-refresh") {
+      await monthlyMaintenanceGate;
+      return route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            success: true,
+            job: "monthly-d1-refresh",
+            instance_id: "local-browser-1",
+            status: "running",
+            execution: "local",
+          },
+        }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: "workflow unavailable" }),
     });
   });
 
@@ -3374,6 +3405,132 @@ async function run() {
     );
     await page.setViewportSize({ width: 1200, height: 1000 });
 
+    const maintenancePlayerRequestsBefore = hostPlayerRequests.length;
+    await page.evaluate(() => {
+      window.__maintenancePlaybackNodes = {
+        session: state.hostPlaybackSession,
+        frame: elements.playerFrame,
+        video: state.hostPlaybackSession?.video,
+        audio: state.hostPlaybackSession?.audio,
+        language: state.language,
+      };
+      state.bilikaraSecret = "verified-secret";
+      setDeveloperMode(true);
+    });
+    const advancedMenu = page.locator("#catalog-advanced-menu");
+    const advancedSummary = advancedMenu.locator("summary");
+    const maintenanceAction = advancedMenu.locator('[data-catalog-tool="maintenance"]');
+    assert(await advancedMenu.isVisible() && await maintenanceAction.count() === 1,
+      "developer mode did not expose exactly one current-catalog Maintenance action");
+
+    await advancedSummary.click();
+    await maintenanceAction.click();
+    const monthlyButton = page.locator('[data-maintenance-job="monthly-d1-refresh"]');
+    const monthlyRequestSeen = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === "/api/admin-maintenance/trigger"
+        && request.postDataJSON()?.job === "monthly-d1-refresh"
+    ));
+    await monthlyButton.click();
+    await monthlyRequestSeen;
+    await page.waitForFunction(() => state.maintenanceJobRunning === "monthly-d1-refresh");
+    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
+    const monthlyBusy = await page.evaluate(() => {
+      const button = document.querySelector('[data-maintenance-job="monthly-d1-refresh"]');
+      button?.click();
+      button?.click();
+      return {
+        disabled: Boolean(button?.disabled),
+        ariaBusy: button?.getAttribute("aria-busy"),
+        label: button?.textContent,
+      };
+    });
+    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
+    assert(
+      maintenanceRequests.filter((request) => request.job === "monthly-d1-refresh").length === 1
+        && monthlyBusy.disabled
+        && monthlyBusy.ariaBusy === "true",
+      "monthly maintenance did not enter an accessible single-request busy state",
+      { maintenanceRequests, monthlyBusy },
+    );
+    releaseMonthlyMaintenance();
+    await page.waitForFunction(() => !state.maintenanceJobRunning);
+    const monthlySuccess = await page.locator(".maintenance-job-message").textContent();
+    assert(
+      monthlySuccess.includes("local-browser-1")
+        && await monthlyButton.getAttribute("aria-busy") === null,
+      "monthly maintenance did not restore its control and expose bounded success copy",
+      { monthlySuccess },
+    );
+    await page.locator("#catalog-advanced-back").click();
+    assert(
+      await advancedSummary.evaluate((element) => document.activeElement === element),
+      "Maintenance Back did not restore focus to the advanced-menu summary",
+    );
+
+    await advancedSummary.click();
+    await maintenanceAction.click();
+    const taggerRequestSeen = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === "/api/admin-maintenance/trigger"
+        && request.postDataJSON()?.job === "tagger-yomi"
+    ));
+    await page.locator('[data-maintenance-job="tagger-yomi"]').click();
+    await taggerRequestSeen;
+    await page.waitForFunction(() => !state.maintenanceJobRunning && Boolean(state.maintenanceJobError));
+    const taggerError = await page.locator(".maintenance-job-message.is-error").textContent();
+    assert(
+      maintenanceRequests.filter((request) => request.job === "tagger-yomi").length === 1
+        && taggerError.includes("workflow unavailable"),
+      "tagger-yomi did not send exactly one workflow request and expose error copy",
+      { maintenanceRequests, taggerError },
+    );
+    await page.keyboard.press("Escape");
+    assert(
+      await advancedSummary.evaluate((element) => document.activeElement === element),
+      "Maintenance Escape did not restore focus to the advanced-menu summary",
+    );
+
+    await advancedSummary.click();
+    await maintenanceAction.click();
+    const maintenanceRequestsBeforeNavigation = maintenanceRequests.length;
+    await page.evaluate(() => setLanguage("en"));
+    assert(
+      await page.locator(".maintenance-browser h2").textContent() === "D1 Maintenance"
+        && maintenanceRequests.length === maintenanceRequestsBeforeNavigation,
+      "language switching did not rerender Maintenance copy without a backend request",
+    );
+    await page.evaluate(() => setLanguage(window.__maintenancePlaybackNodes.language));
+    await page.locator('[data-request-view="sources"]').click();
+    await page.locator('[data-request-view="discover"]').click();
+    const maintenancePlaybackEvidence = await page.evaluate(() => ({
+      tool: state.catalogAdvancedTool,
+      visible: !elements.catalogAdvancedView.hidden,
+      sameSession: state.hostPlaybackSession === window.__maintenancePlaybackNodes.session,
+      sameFrame: elements.playerFrame === window.__maintenancePlaybackNodes.frame,
+      sameVideo: state.hostPlaybackSession?.video === window.__maintenancePlaybackNodes.video,
+      sameAudio: state.hostPlaybackSession?.audio === window.__maintenancePlaybackNodes.audio,
+    }));
+    assert(
+      maintenanceRequests.length === maintenanceRequestsBeforeNavigation
+        && maintenancePlaybackEvidence.tool === "maintenance"
+        && maintenancePlaybackEvidence.visible
+        && maintenancePlaybackEvidence.sameSession
+        && maintenancePlaybackEvidence.sameFrame
+        && maintenancePlaybackEvidence.sameVideo
+        && maintenancePlaybackEvidence.sameAudio
+        && hostPlayerRequests.length === maintenancePlayerRequestsBefore,
+      "Maintenance navigation reran a job, requested player work, or remounted playback identity",
+      { maintenanceRequests, maintenancePlaybackEvidence, hostPlayerRequests },
+    );
+    await page.locator("#catalog-advanced-back").click();
+    await page.evaluate(() => setDeveloperMode(false));
+    assert(
+      await page.evaluate(() => !state.maintenanceJobRunning
+        && !state.maintenanceJobMessage
+        && !state.maintenanceJobError
+        && !state.catalogAdvancedTool),
+      "disabling developer mode did not reset Maintenance state",
+    );
+
     await page.locator('[data-request-view="sources"]').click();
     await page.locator('[data-sources-mode="uids"]').click();
     const sourcesBeforeOpen = sourceBrowseRequests.length;
@@ -4663,6 +4820,10 @@ async function run() {
       wheelScrollTop,
       backgroundScrollTop,
       detailHidden,
+      maintenance: {
+        requests: maintenanceRequests,
+        playbackIdentity: maintenancePlaybackEvidence,
+      },
       shell: shellEvidence,
       settings: {
         advancedInfoCount: await advancedInfoButtons.count(),
