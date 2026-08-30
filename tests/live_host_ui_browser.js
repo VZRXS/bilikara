@@ -19,6 +19,7 @@ function suffixedPath(path, suffix) {
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
+  const maintenanceBusyScreenshotPath = suffixedPath(screenshotPath, "-maintenance-busy");
   const consoleErrors = [];
   const pageErrors = [];
   const hostPlayerRequests = [];
@@ -35,6 +36,10 @@ async function run() {
   let releaseMonthlyMaintenance;
   const monthlyMaintenanceGate = new Promise((resolve) => {
     releaseMonthlyMaintenance = resolve;
+  });
+  let releaseTaggerMaintenance;
+  const taggerMaintenanceGate = new Promise((resolve) => {
+    releaseTaggerMaintenance = resolve;
   });
   let pendingStartupUpdateRoute = null;
   let resolveStartupUpdateSeen;
@@ -253,6 +258,7 @@ async function run() {
         }),
       });
     }
+    await taggerMaintenanceGate;
     return route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -3426,6 +3432,12 @@ async function run() {
     await advancedSummary.click();
     await maintenanceAction.click();
     const monthlyButton = page.locator('[data-maintenance-job="monthly-d1-refresh"]');
+    await monthlyButton.focus();
+    const monthlyFocusBefore = await monthlyButton.evaluate((element) => (
+      document.activeElement === element ? element.dataset.maintenanceJob : ""
+    ));
+    assert(monthlyFocusBefore === "monthly-d1-refresh",
+      "monthly maintenance action was not focused before activation");
     const monthlyRequestSeen = page.waitForRequest((request) => (
       new URL(request.url()).pathname === "/api/admin-maintenance/trigger"
         && request.postDataJSON()?.job === "monthly-d1-refresh"
@@ -3433,33 +3445,45 @@ async function run() {
     await monthlyButton.click();
     await monthlyRequestSeen;
     await page.waitForFunction(() => state.maintenanceJobRunning === "monthly-d1-refresh");
-    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
+    await page.waitForFunction(() => (
+      document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.getAttribute("aria-disabled") === "true"
+    ));
     const monthlyBusy = await page.evaluate(() => {
       const button = document.querySelector('[data-maintenance-job="monthly-d1-refresh"]');
       button?.click();
       button?.click();
       return {
         disabled: Boolean(button?.disabled),
+        ariaDisabled: button?.getAttribute("aria-disabled"),
         ariaBusy: button?.getAttribute("aria-busy"),
         label: button?.textContent,
+        focus: document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || "",
       };
     });
-    await page.waitForFunction(() => document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.disabled);
+    await page.waitForFunction(() => (
+      document.querySelector('[data-maintenance-job="monthly-d1-refresh"]')?.getAttribute("aria-disabled") === "true"
+    ));
     assert(
       maintenanceRequests.filter((request) => request.job === "monthly-d1-refresh").length === 1
-        && monthlyBusy.disabled
+        && (monthlyBusy.disabled || monthlyBusy.ariaDisabled === "true")
         && monthlyBusy.ariaBusy === "true",
       "monthly maintenance did not enter an accessible single-request busy state",
       { maintenanceRequests, monthlyBusy },
     );
+    if (maintenanceBusyScreenshotPath) {
+      await page.screenshot({ path: maintenanceBusyScreenshotPath, fullPage: false });
+    }
     releaseMonthlyMaintenance();
     await page.waitForFunction(() => !state.maintenanceJobRunning);
     const monthlySuccess = await page.locator(".maintenance-job-message").textContent();
+    const monthlyFocusAfter = await page.evaluate(() => (
+      document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || ""
+    ));
     assert(
       monthlySuccess.includes("local-browser-1")
         && await monthlyButton.getAttribute("aria-busy") === null,
       "monthly maintenance did not restore its control and expose bounded success copy",
-      { monthlySuccess },
+      { monthlySuccess, monthlyFocusAfter },
     );
     await page.locator("#catalog-advanced-back").click();
     assert(
@@ -3473,15 +3497,45 @@ async function run() {
       new URL(request.url()).pathname === "/api/admin-maintenance/trigger"
         && request.postDataJSON()?.job === "tagger-yomi"
     ));
-    await page.locator('[data-maintenance-job="tagger-yomi"]').click();
+    const taggerButton = page.locator('[data-maintenance-job="tagger-yomi"]');
+    await taggerButton.focus();
+    const taggerFocusBefore = await taggerButton.evaluate((element) => (
+      document.activeElement === element ? element.dataset.maintenanceJob : ""
+    ));
+    assert(taggerFocusBefore === "tagger-yomi",
+      "tagger-yomi maintenance action was not focused before activation");
+    await taggerButton.click();
     await taggerRequestSeen;
+    await page.waitForFunction(() => state.maintenanceJobRunning === "tagger-yomi");
+    const taggerBusy = await page.evaluate(() => {
+      const button = document.querySelector('[data-maintenance-job="tagger-yomi"]');
+      button?.click();
+      button?.click();
+      return {
+        disabled: Boolean(button?.disabled),
+        ariaDisabled: button?.getAttribute("aria-disabled"),
+        ariaBusy: button?.getAttribute("aria-busy"),
+        focus: document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || "",
+      };
+    });
+    assert(
+      maintenanceRequests.filter((request) => request.job === "tagger-yomi").length === 1
+        && (taggerBusy.disabled || taggerBusy.ariaDisabled === "true")
+        && taggerBusy.ariaBusy === "true",
+      "tagger-yomi maintenance did not preserve focus during its single request",
+      { maintenanceRequests, taggerBusy },
+    );
+    releaseTaggerMaintenance();
     await page.waitForFunction(() => !state.maintenanceJobRunning && Boolean(state.maintenanceJobError));
     const taggerError = await page.locator(".maintenance-job-message.is-error").textContent();
+    const taggerFocusAfter = await page.evaluate(() => (
+      document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || ""
+    ));
     assert(
       maintenanceRequests.filter((request) => request.job === "tagger-yomi").length === 1
         && taggerError.includes("workflow unavailable"),
       "tagger-yomi did not send exactly one workflow request and expose error copy",
-      { maintenanceRequests, taggerError },
+      { maintenanceRequests, taggerError, taggerFocusAfter },
     );
     await page.keyboard.press("Escape");
     assert(
@@ -3492,11 +3546,16 @@ async function run() {
     await advancedSummary.click();
     await maintenanceAction.click();
     const maintenanceRequestsBeforeNavigation = maintenanceRequests.length;
+    await page.locator('[data-maintenance-job="monthly-d1-refresh"]').focus();
     await page.evaluate(() => setLanguage("en"));
+    const languageFocus = await page.evaluate(() => (
+      document.activeElement?.dataset?.maintenanceJob || document.activeElement?.tagName || ""
+    ));
     assert(
       await page.locator(".maintenance-browser h2").textContent() === "D1 Maintenance"
         && maintenanceRequests.length === maintenanceRequestsBeforeNavigation,
       "language switching did not rerender Maintenance copy without a backend request",
+      { languageFocus, maintenanceRequests },
     );
     await page.evaluate(() => setLanguage(window.__maintenancePlaybackNodes.language));
     await page.locator('[data-request-view="sources"]').click();
@@ -3520,6 +3579,26 @@ async function run() {
         && hostPlayerRequests.length === maintenancePlayerRequestsBefore,
       "Maintenance navigation reran a job, requested player work, or remounted playback identity",
       { maintenanceRequests, maintenancePlaybackEvidence, hostPlayerRequests },
+    );
+    const maintenanceFocusEvidence = {
+      monthly: { before: monthlyFocusBefore, during: monthlyBusy.focus, after: monthlyFocusAfter },
+      tagger: { before: taggerFocusBefore, during: taggerBusy.focus, after: taggerFocusAfter },
+      language: languageFocus,
+    };
+    assert(
+      monthlyFocusBefore === "monthly-d1-refresh"
+        && !monthlyBusy.disabled
+        && monthlyBusy.ariaDisabled === "true"
+        && monthlyBusy.focus === "monthly-d1-refresh"
+        && monthlyFocusAfter === "monthly-d1-refresh"
+        && taggerFocusBefore === "tagger-yomi"
+        && !taggerBusy.disabled
+        && taggerBusy.ariaDisabled === "true"
+        && taggerBusy.focus === "tagger-yomi"
+        && taggerFocusAfter === "tagger-yomi"
+        && languageFocus === "monthly-d1-refresh",
+      "Maintenance actions did not preserve logical focus across request and language rerenders",
+      maintenanceFocusEvidence,
     );
     await page.locator("#catalog-advanced-back").click();
     await page.evaluate(() => setDeveloperMode(false));
@@ -4822,7 +4901,9 @@ async function run() {
       detailHidden,
       maintenance: {
         requests: maintenanceRequests,
+        focus: maintenanceFocusEvidence,
         playbackIdentity: maintenancePlaybackEvidence,
+        screenshotPath: maintenanceBusyScreenshotPath,
       },
       shell: shellEvidence,
       settings: {

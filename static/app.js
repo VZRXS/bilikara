@@ -6405,6 +6405,9 @@ function renderMaintenanceView() {
   if (!elements.catalogAdvancedContent) {
     return;
   }
+  const focusedJob = elements.catalogAdvancedContent.contains(document.activeElement)
+    ? String(document.activeElement?.dataset?.maintenanceJob || "")
+    : "";
   const scrollTop = Math.max(0, Number(elements.catalogAdvancedView?.scrollTop || 0));
   elements.catalogAdvancedContent.textContent = "";
 
@@ -6437,7 +6440,12 @@ function renderMaintenanceView() {
     button.className = "next-button";
     button.dataset.maintenanceJob = definition.job;
     const isRunning = state.maintenanceJobRunning === definition.job;
-    button.disabled = Boolean(state.maintenanceJobRunning);
+    button.disabled = Boolean(state.maintenanceJobRunning) && !isRunning;
+    if (state.maintenanceJobRunning) {
+      button.setAttribute("aria-disabled", "true");
+    } else {
+      button.removeAttribute("aria-disabled");
+    }
     if (isRunning) {
       button.setAttribute("aria-busy", "true");
     } else {
@@ -6458,6 +6466,9 @@ function renderMaintenanceView() {
   elements.catalogAdvancedContent.appendChild(view);
   if (elements.catalogAdvancedView) {
     elements.catalogAdvancedView.scrollTop = scrollTop;
+  }
+  if (focusedJob) {
+    view.querySelector(`[data-maintenance-job="${focusedJob}"]`)?.focus({ preventScroll: true });
   }
 }
 
