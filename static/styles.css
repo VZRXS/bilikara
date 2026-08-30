@@ -7916,11 +7916,86 @@ body {
   position: relative;
 }
 
+#catalog-advanced-content {
+  min-width: 0;
+}
+
 .catalog-advanced-back {
   position: sticky;
   z-index: 3;
   top: 0;
   margin-bottom: 12px;
+}
+
+.maintenance-browser {
+  display: grid;
+  gap: 22px;
+  width: min(760px, 100%);
+  min-width: 0;
+  margin: 0 auto;
+  padding: 8px 0 28px;
+  overflow: visible;
+}
+
+.maintenance-browser-head,
+.maintenance-job-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.maintenance-browser-head h2,
+.maintenance-job-card h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-browser-head p,
+.maintenance-job-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-job-list {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.maintenance-job-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-soft, rgba(255, 255, 255, 0.55));
+}
+
+.maintenance-job-card > div {
+  min-width: 0;
+}
+
+.maintenance-job-card .next-button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-job-message {
+  min-height: 1.5em;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .maintenance-job-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .maintenance-job-card .next-button {
+    width: 100%;
+  }
 }
 
 .source-mode-panel {

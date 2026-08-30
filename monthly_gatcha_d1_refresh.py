@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -14,12 +15,15 @@ from typing import Any
 
 import bilikara.bilibili as bilibili
 import bilikara.lark_pool_client as pool_client
+from bilikara.config import DATA_DIR
 from bilikara.lark_pool_client import append_cloudflare_pool_entries
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_UIDS_PATH = ROOT_DIR / "data" / "gatcha_uids.json"
+DEFAULT_UIDS_PATH = DATA_DIR / "gatcha_uids.json"
 VALID_BVID_RE = re.compile(r"^BV[0-9A-Za-z]{10}$")
+_LOCAL_RUN_LOCK = threading.Lock()
+_LOCAL_RUN_ACTIVE = False
 
 
 def _normalize_uid(value: object) -> str:
@@ -220,7 +224,7 @@ def _combine_uids(local_uids: list[str], d1_mids: set[str], *, uid_mode: str) ->
     return _dedupe_ordered([*local_uids, *sorted(d1_mids, key=lambda value: int(value) if value.isdigit() else value)])
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, secret_override: str = "") -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Monthly full-UID D1 refresh: export D1 once, probe each UID's first Bilibili page, "
@@ -269,12 +273,18 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="Refresh and upload every UID without first-page D1 comparison.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and decide, but do not upload to D1.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     uid_source = Path(args.uid_source).expanduser()
-    local_uids = _load_configured_uids(uid_source)
+    if uid_source.exists():
+        local_uids = _load_configured_uids(uid_source)
+    elif args.uid_mode == "local":
+        print(f"UID source does not exist: {uid_source}", file=sys.stderr)
+        return 2
+    else:
+        local_uids = []
 
-    secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+    secret = str(secret_override or os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
     api_url = str(args.api_url or "").rstrip("/")
     try:
         records = _export_d1_records(api_url=api_url, secret=secret, limit=args.export_limit, timeout=args.export_timeout)
@@ -398,6 +408,71 @@ def main() -> int:
             print(f"  {mid}: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def start_monthly_refresh_in_background(
+    secret: str,
+    *,
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Start the restored v0.7 maintenance script inside the local Host."""
+
+    global _LOCAL_RUN_ACTIVE
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        return {
+            "success": False,
+            "job": "monthly-d1-refresh",
+            "error": "missing secret",
+        }
+    with _LOCAL_RUN_LOCK:
+        if _LOCAL_RUN_ACTIVE:
+            return {
+                "success": False,
+                "job": "monthly-d1-refresh",
+                "error": "monthly D1 refresh is already running locally",
+            }
+        _LOCAL_RUN_ACTIVE = True
+
+    instance_id = f"local-monthly-{int(time.time())}"
+
+    def run() -> None:
+        global _LOCAL_RUN_ACTIVE
+        try:
+            requester = str(requested_by or "").strip()[:120]
+            if requester:
+                print(f"Monthly D1 refresh requested locally by {requester}.", flush=True)
+            exit_code = main([], secret_override=normalized_secret)
+            if exit_code:
+                print(f"Monthly D1 refresh exited with code {exit_code}.", file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Monthly D1 refresh failed: {exc}", file=sys.stderr, flush=True)
+        finally:
+            with _LOCAL_RUN_LOCK:
+                _LOCAL_RUN_ACTIVE = False
+
+    worker = threading.Thread(
+        target=run,
+        daemon=True,
+        name="bilikara-monthly-d1-refresh",
+    )
+    try:
+        worker.start()
+    except Exception as exc:  # noqa: BLE001
+        with _LOCAL_RUN_LOCK:
+            _LOCAL_RUN_ACTIVE = False
+        return {
+            "success": False,
+            "job": "monthly-d1-refresh",
+            "error": f"failed to start local monthly D1 refresh: {str(exc)[:240]}",
+        }
+    return {
+        "success": True,
+        "job": "monthly-d1-refresh",
+        "instance_id": instance_id,
+        "status": "running",
+        "execution": "local",
+    }
 
 
 if __name__ == "__main__":

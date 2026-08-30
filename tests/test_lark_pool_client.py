@@ -575,6 +575,65 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertEqual(payload, {"BILIKARA_ADMIN_SECRET": "bilikara-secret"})
         self.assertEqual(timeout, 10)
 
+    def test_trigger_cloudflare_maintenance_job_uses_admin_header(self):
+        requests = []
+
+        def fake_cloudflare(operation, **request):
+            requests.append((operation, request))
+            return {
+                "payload": {
+                    "success": True,
+                    "job": "tagger-yomi",
+                    "instance_id": "workflow-123",
+                    "status": "queued",
+                }
+            }
+
+        with patch.object(
+            lark_pool.rust_runtime,
+            "cloudflare_service_request",
+            side_effect=fake_cloudflare,
+        ):
+            result = lark_pool.trigger_cloudflare_maintenance_job(
+                "tagger-yomi",
+                "bilikara-secret",
+                requested_by="VZRXS",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["instance_id"], "workflow-123")
+        self.assertEqual(len(requests), 1)
+        operation, request = requests[0]
+        self.assertEqual(operation, "request")
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(request["path"], "/admin/jobs/tagger-yomi")
+        self.assertEqual(request["authorization"], "Bearer bilikara-secret")
+        self.assertEqual(request["payload"], {"requested_by": "VZRXS"})
+
+    def test_trigger_cloudflare_maintenance_job_rejects_local_monthly_job(self):
+        with patch.object(lark_pool.rust_runtime, "cloudflare_service_request") as cloudflare:
+            result = lark_pool.trigger_cloudflare_maintenance_job("monthly-d1-refresh", "secret")
+
+        cloudflare.assert_not_called()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "invalid maintenance job")
+
+    def test_trigger_cloudflare_maintenance_job_bounds_requester_and_validates_payload(self):
+        with patch.object(
+            lark_pool.rust_runtime,
+            "cloudflare_service_request",
+            return_value={"unexpected": True},
+        ) as cloudflare:
+            result = lark_pool.trigger_cloudflare_maintenance_job(
+                "tagger-yomi",
+                "secret",
+                requested_by="x" * 200,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "Cloudflare returned an invalid payload")
+        self.assertEqual(cloudflare.call_args.kwargs["payload"], {"requested_by": "x" * 120})
+
     def test_reset_cloudflare_video_tags_posts_bvid_and_secret(self):
         requests = []
 

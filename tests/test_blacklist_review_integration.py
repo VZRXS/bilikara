@@ -41,6 +41,41 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
             with self.subTest(locale=locale):
                 self.assertTrue(required.issubset(payload["languages"][locale]))
 
+    def test_developer_mode_exposes_maintenance_workflow_triggers(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        server = (ROOT / "bilikara" / "server.py").read_text(encoding="utf-8")
+
+        self.assertEqual(html.count('data-catalog-tool="maintenance"'), 1)
+        self.assertNotIn('data-target="maintenance"', html)
+        self.assertEqual(html.count('data-catalog-tool="review"'), 1)
+        self.assertEqual(html.count('data-catalog-tool="blacklist"'), 1)
+        self.assertIn('id="catalog-advanced-content"', html)
+        self.assertNotIn('id="search-modal-other-view"', html)
+        self.assertIn('apiPost("/api/admin-maintenance/trigger"', frontend)
+        self.assertIn('elements.catalogAdvancedContent.textContent = ""', frontend)
+        self.assertIn('["review", "blacklist", "maintenance"]', frontend)
+        self.assertIn('route == "/api/admin-maintenance/trigger"', server)
+
+    def test_maintenance_translations_exist_in_all_languages(self):
+        payload = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))
+        required = {
+            "maintenance.browse",
+            "maintenance.title",
+            "maintenance.description",
+            "maintenance.monthlyTitle",
+            "maintenance.monthlyDescription",
+            "maintenance.taggerYomiTitle",
+            "maintenance.taggerYomiDescription",
+            "maintenance.start",
+            "maintenance.starting",
+            "maintenance.started",
+        }
+
+        for locale in ("zh", "en", "ja"):
+            with self.subTest(locale=locale):
+                self.assertTrue(required.issubset(payload["languages"][locale]))
+
     def test_tauri_packages_the_shared_frontend_and_python_backend(self):
         tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
         backend_source = (

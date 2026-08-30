@@ -2493,6 +2493,150 @@ class MediaRangeEvidenceTest(unittest.TestCase):
         self.assertEqual(released, [lease])
 
 class UpdateRouteTest(unittest.TestCase):
+    def test_monthly_maintenance_trigger_starts_local_script(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/admin-maintenance/trigger"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "job": "monthly-d1-refresh",
+            "BILIKARA_ADMIN_SECRET": "local-secret",
+            "requested_by": "VZRXS",
+        }
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch("bilikara.server.CONTEXT", context), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch(
+            "bilikara.server.start_monthly_refresh_in_background",
+            return_value={
+                "success": True,
+                "job": "monthly-d1-refresh",
+                "instance_id": "local-monthly-123",
+            },
+        ) as trigger:
+            handler.do_POST()
+
+        trigger.assert_called_once_with("local-secret", requested_by="VZRXS")
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.ACCEPTED)
+        self.assertEqual(writes[0]["payload"]["data"]["instance_id"], "local-monthly-123")
+
+    def test_maintenance_trigger_starts_cloudflare_workflow(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/admin-maintenance/trigger"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "job": "tagger-yomi",
+            "BILIKARA_ADMIN_SECRET": "local-secret",
+            "requested_by": "VZRXS",
+        }
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch("bilikara.server.CONTEXT", context), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch(
+            "bilikara.server.trigger_cloudflare_maintenance_job",
+            return_value={"success": True, "job": "tagger-yomi", "instance_id": "workflow-123"},
+        ) as trigger:
+            handler.do_POST()
+
+        trigger.assert_called_once_with("tagger-yomi", "local-secret", requested_by="VZRXS")
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.ACCEPTED)
+        self.assertEqual(writes[0]["payload"]["data"]["instance_id"], "workflow-123")
+
+    def test_maintenance_trigger_rejects_invalid_job_without_starting_backend(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        handler.path = "/api/admin-maintenance/trigger"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "job": "unknown",
+            "BILIKARA_ADMIN_SECRET": "local-secret",
+        }
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch(
+            "bilikara.server.CONTEXT",
+            SimpleNamespace(touch_client=lambda client_id, is_host=True: None),
+        ), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch("bilikara.server.start_monthly_refresh_in_background") as monthly, patch(
+            "bilikara.server.trigger_cloudflare_maintenance_job"
+        ) as cloudflare:
+            handler.do_POST()
+
+        monthly.assert_not_called()
+        cloudflare.assert_not_called()
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.BAD_REQUEST)
+
+    def test_monthly_maintenance_duplicate_returns_conflict(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        handler.path = "/api/admin-maintenance/trigger"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "job": "monthly-d1-refresh",
+            "BILIKARA_ADMIN_SECRET": "local-secret",
+        }
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch(
+            "bilikara.server.CONTEXT",
+            SimpleNamespace(touch_client=lambda client_id, is_host=True: None),
+        ), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch(
+            "bilikara.server.start_monthly_refresh_in_background",
+            return_value={
+                "success": False,
+                "job": "monthly-d1-refresh",
+                "error": "monthly D1 refresh is already running locally",
+            },
+        ):
+            handler.do_POST()
+
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.CONFLICT)
+
+    def test_maintenance_backend_start_failure_returns_bad_gateway(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        handler.path = "/api/admin-maintenance/trigger"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "job": "tagger-yomi",
+            "BILIKARA_ADMIN_SECRET": "local-secret",
+        }
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch(
+            "bilikara.server.CONTEXT",
+            SimpleNamespace(touch_client=lambda client_id, is_host=True: None),
+        ), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch(
+            "bilikara.server.trigger_cloudflare_maintenance_job",
+            side_effect=RuntimeError("workflow unavailable"),
+        ):
+            handler.do_POST()
+
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.BAD_GATEWAY)
+        self.assertEqual(writes[0]["payload"]["error"], "workflow unavailable")
+
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
