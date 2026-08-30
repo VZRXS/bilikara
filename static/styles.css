@@ -9,6 +9,7 @@
   --line: rgba(87, 63, 43, 0.12);
   --accent: #d05a3f;
   --accent-deep: #a33621;
+  --update-available-dot: var(--accent);
   --on-accent: #ffffff;
   --green: #2b7b60;
   --red: #b14545;
@@ -1481,10 +1482,10 @@ h2 {
   width: 10px;
   height: 10px;
   flex: 0 0 10px;
-  border: 2px solid color-mix(in srgb, var(--accent) 72%, var(--panel));
+  border: 2px solid color-mix(in srgb, var(--update-available-dot) 72%, var(--panel));
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 28%, var(--panel));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--update-available-dot) 28%, var(--panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--update-available-dot) 10%, transparent);
 }
 
 .cache-panel-menu-adornment {
@@ -1642,7 +1643,10 @@ h2 {
 .cache-update-button {
   background: var(--accent);
   color: white;
-  min-width: 72px;
+  width: max-content;
+  min-width: 0;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .cache-retry-current-button {
@@ -1980,7 +1984,7 @@ h2 {
 }
 
 .player-panel>.panel-head {
-  --player-stage-actions-space: clamp(210px, 30ch, 310px);
+  --player-stage-actions-space: clamp(112px, 15ch, 160px);
   position: relative;
   display: block;
   min-height: 44px;
@@ -2010,12 +2014,6 @@ h2 {
   justify-content: center;
   width: max-content;
   min-width: 96px;
-}
-
-.stage-next-button {
-  min-width: 76px;
-  min-height: 40px;
-  padding: 10px 14px;
 }
 
 .player-panel:fullscreen,
@@ -3765,6 +3763,20 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.queue-current-next {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: fit-content;
+  height: 32px;
+  min-width: 0;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .playlist,
 .history-list {
   flex: 1;
@@ -5206,7 +5218,7 @@ select:disabled {
 .presentation-panel-heading {
   min-height: 82px;
   padding: 18px 20px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
 }
 
 .presentation-panel-heading-main {
@@ -7386,7 +7398,7 @@ body {
 .app-shell {
   --host-shell-padding-inline: 12px;
   --host-shell-gap: 12px;
-  --host-tool-card-width: 536px;
+  --host-tool-card-width: minmax(380px, 1fr);
   --host-rail-width: 104px;
   width: 100%;
   height: 100vh;
@@ -7641,7 +7653,7 @@ body {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--host-tool-card-width);
+  grid-template-columns: minmax(0, 1.82fr) var(--host-tool-card-width);
   gap: 14px;
   overflow: clip;
 }
@@ -8100,14 +8112,13 @@ body {
   display: none;
 }
 
-@media (min-width: 1040px) and (max-width: 1439px) {
+@media (min-width: 1180px) and (max-width: 1439px) {
   .app-shell {
-    --host-tool-card-width: 500px;
     --host-rail-width: 100px;
   }
 }
 
-@media (max-width: 1039px) {
+@media (max-width: 1179px) {
   .app-shell {
     --host-rail-width: 100px;
     --host-tool-card-width: 100%;
@@ -8238,7 +8249,7 @@ body {
   .topbar .remote-mini-trigger,
   .topbar .status-chip-toggle,
   .queue-view-tab,
-  .stage-next-button,
+  .queue-current-next,
   .menu-toggle,
   .menu-content .queue-move-button {
     min-height: 44px;
@@ -8290,8 +8301,8 @@ body {
   margin-bottom: 8px;
   padding: 0;
   gap: 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
+  border-bottom: 0;
+  background: transparent;
   box-shadow: none;
   backdrop-filter: none;
 }
@@ -8404,22 +8415,14 @@ body[data-tauri-platform="macos"] .window-drag-region {
   flex-basis: 10px;
 }
 
-.service-status-ring {
-  width: 16px;
-  height: 16px;
+.service-status-wrap {
+  width: 10px;
+  height: 10px;
   display: inline-grid;
   place-items: center;
-  box-sizing: border-box;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  transition: border-color 140ms ease;
 }
 
-.service-status-ring.has-update {
-  border-color: var(--accent);
-}
-
-.service-status-ring .tool-status-indicator {
+.service-status-wrap .tool-status-indicator {
   width: 10px;
   height: 10px;
   flex: none;
@@ -8492,7 +8495,7 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 .host-content-region {
-  grid-template-columns: minmax(0, 1fr) var(--host-tool-card-width);
+  grid-template-columns: minmax(0, 1.82fr) var(--host-tool-card-width);
   gap: var(--host-shell-gap);
 }
 
@@ -8545,10 +8548,10 @@ body[data-tauri-platform="macos"] .topbar {
   justify-content: center;
   justify-self: start;
   gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent-deep) 24%, var(--line));
+  border: 1px solid var(--accent);
   border-radius: 11px;
-  background: var(--accent-soft);
-  color: var(--accent-deep);
+  background: var(--accent);
+  color: var(--on-accent);
   box-shadow: none;
   font: inherit;
   font-size: 13px;
@@ -8565,7 +8568,8 @@ body[data-tauri-platform="macos"] .topbar {
 
 .stage-controls-toggle:hover {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--accent-deep) 42%, var(--line));
+  border-color: var(--accent-deep);
+  background: var(--accent-deep);
   box-shadow: 0 5px 14px rgba(35, 26, 20, 0.12);
 }
 
@@ -8625,7 +8629,50 @@ body[data-tauri-platform="macos"] .topbar {
 .stage-extended-controls {
   min-width: 0;
   display: grid;
-  gap: 10px;
+  gap: 0;
+  padding: 0 14px;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft));
+}
+
+.stage-extended-controls > .av-sync-panel,
+.stage-extended-controls > .volume-panel {
+  margin: 0;
+  padding: 13px 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  contain: none;
+  isolation: auto;
+}
+
+.stage-extended-controls > .av-sync-panel + .volume-panel,
+.stage-extended-controls > .volume-panel + .av-sync-panel {
+  border-top: 1px solid var(--line);
+}
+
+.stage-extended-controls .av-sync-controls,
+.stage-extended-controls .volume-controls {
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  justify-self: end;
+  flex-wrap: nowrap;
+}
+
+.stage-extended-controls .av-sync-step-button {
+  flex: 0 0 auto;
+}
+
+.stage-extended-controls .volume-slider {
+  width: 220px;
+  flex: 0 1 220px;
 }
 
 .stage-control-tray.is-open {
@@ -8649,19 +8696,41 @@ body[data-tauri-platform="macos"] .topbar {
   display: none !important;
 }
 
+.app-shell[data-stage-controls-layout="popup"] .left-column > .player-panel {
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+
+.app-shell[data-stage-controls-layout="inline"] .left-column > .player-panel {
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+
+.app-shell[data-stage-controls-layout="inline"] .stage-controls-toggle,
+.app-shell[data-stage-controls-layout="inline"] .stage-control-tray-head {
+  display: none;
+}
+
 .app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
   position: relative;
-  z-index: 4;
+  z-index: 7;
   width: 100%;
   max-height: none;
-  padding: 12px;
+  padding: 0;
   overflow: visible;
-  border-color: var(--line);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
   transform: none;
   transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+.gatcha-icon svg {
+  display: block;
+  width: 34px;
+  height: 34px;
+  color: var(--accent);
 }
 
 .app-shell[data-stage-controls-layout="inline"] .stage-control-tray.is-open {
@@ -8669,7 +8738,7 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 .host-workspace-region {
-  width: var(--host-tool-card-width);
+  width: 100%;
   height: 100%;
   overflow: hidden !important;
   transition: none;
@@ -8741,6 +8810,15 @@ body[data-tauri-platform="macos"] .topbar {
   white-space: nowrap;
 }
 
+.host-workspace-region .request-quick-view .compact-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.host-workspace-region .request-quick-view #requester-select,
+.host-workspace-region .request-quick-view #url-input {
+  grid-column: 1 / -1;
+}
+
 .host-workspace-region .list-stage {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -8764,6 +8842,18 @@ body[data-tauri-platform="macos"] .topbar {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+.host-workspace-region .playlist {
+  overflow-y: hidden;
+  padding-right: 0;
+  scrollbar-gutter: auto;
+}
+
+.host-workspace-region .playlist.is-scrollable {
+  overflow-y: auto;
+  padding-right: 4px;
   scrollbar-gutter: stable;
 }
 
@@ -8939,7 +9029,7 @@ body[data-tauri-platform="macos"] .topbar {
   }
 }
 
-@media (max-width: 1039px) {
+@media (max-width: 1179px) {
   .app-shell {
     --host-rail-width: 100px;
     --host-tool-card-width: 100%;
@@ -8973,6 +9063,7 @@ body[data-tauri-platform="macos"] .topbar {
     height: clamp(360px, 68%, 520px);
     max-height: 100%;
     padding: 0;
+    border-radius: 16px;
     overflow: hidden !important;
     pointer-events: auto;
     opacity: 1;
@@ -8986,6 +9077,32 @@ body[data-tauri-platform="macos"] .topbar {
     opacity: 0;
     transform: translateY(calc(100% + 8px));
     pointer-events: none;
+  }
+
+  .app-shell[data-narrow-tool-layout="resident"] .host-content-region {
+    grid-template-rows: minmax(0, var(--narrow-stage-resident-height)) minmax(300px, 1fr);
+    gap: var(--host-shell-gap);
+  }
+
+  .app-shell[data-narrow-tool-layout="resident"] .left-column {
+    grid-row: 1;
+    height: 100%;
+    z-index: 30;
+  }
+
+  .app-shell[data-narrow-tool-layout="resident"] .host-workspace-region,
+  .app-shell[data-narrow-tool-layout="resident"][data-active-workspace="request"] .host-workspace-region {
+    position: relative;
+    inset: auto;
+    z-index: 2;
+    grid-row: 2;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 16px;
+    box-shadow: none;
+    opacity: 1;
+    transform: none;
   }
 
   .layout > .work-rail {

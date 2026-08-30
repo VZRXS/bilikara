@@ -38,7 +38,7 @@ class AppUpdateFrontendTest(unittest.TestCase):
         start_index = self.source.index(start)
         return self.source[start_index : self.source.index(end, start_index)]
 
-    def test_update_preferences_and_service_health_ring_markup(self):
+    def test_update_preferences_keep_marker_inside_service_menu(self):
         self.assertIn('updateAutomatic: "bilikara.update.automatic"', self.source)
         self.assertIn("updateAutomaticEnabled: true", self.source)
         self.assertIn('id="update-automatic-checkbox"', self.html)
@@ -46,14 +46,25 @@ class AppUpdateFrontendTest(unittest.TestCase):
         self.assertIn('id="advanced-update-indicator"', self.html)
         self.assertIn('id="update-version-badge"', self.html)
         self.assertIn('id="app-update-status"', self.html)
-        self.assertIn('class="service-status-ring"', self.html)
+        self.assertIn('class="service-status-wrap"', self.html)
+        self.assertNotIn('class="service-status-ring"', self.html)
         self.assertIn('class="cache-preview-field cache-update-upper-field"', self.html)
         self.assertLess(
             self.html.index('for="update-preview-checkbox"'),
             self.html.index('for="update-automatic-checkbox"'),
         )
-        self.assertIn(".service-status-ring.has-update", self.css)
+        self.assertNotIn(".service-status-ring.has-update", self.css)
         self.assertIn(".app-update-indicator", self.css)
+        self.assertIn("--update-available-dot: var(--accent)", self.css)
+        update_button_rule = self.css[
+            self.css.index(".cache-update-button {") : self.css.index(
+                "}", self.css.index(".cache-update-button {")
+            )
+        ]
+        self.assertIn("width: max-content", update_button_rule)
+        self.assertIn("min-width: 0", update_button_rule)
+        self.assertIn("white-space: nowrap", update_button_rule)
+        self.assertNotIn("min-width: 72px", update_button_rule)
         self.assertIn(".bbdown-login-qr .bbdown-login-message", self.css)
         self.assertIn('"service.autoCheckUpdates"', self.i18n)
         self.assertIn('"service.update"', self.i18n)
@@ -281,7 +292,7 @@ function indicatorState() {{
                 self.assertFalse(result["states"][name]["badge"])
         for name in ("installable", "viewOnly"):
             with self.subTest(name=name):
-                self.assertTrue(result["states"][name]["service"])
+                self.assertFalse(result["states"][name]["service"])
                 self.assertTrue(result["states"][name]["advanced"])
                 self.assertTrue(result["states"][name]["row"])
                 self.assertTrue(result["states"][name]["badge"])
@@ -291,7 +302,8 @@ function indicatorState() {{
         self.assertFalse(result["states"]["automaticOff"]["service"])
         self.assertFalse(result["states"]["automaticOff"]["badge"])
         self.assertEqual(result["states"]["automaticOff"]["button"], "service.checkUpdate:")
-        self.assertTrue(result["states"]["manualVisible"]["service"])
+        self.assertFalse(result["states"]["manualVisible"]["service"])
+        self.assertTrue(result["states"]["manualVisible"]["advanced"])
         self.assertEqual(result["states"]["manualVisible"]["status"], "")
         self.assertEqual(result["messagesBeforeActions"], 0)
         self.assertEqual([post["path"] for post in result["posts"]], [

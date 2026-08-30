@@ -202,8 +202,9 @@ console.log(JSON.stringify({ sequence }));
         ]
 
         self.assertEqual(self.markup.count('id="next-button"'), 1)
-        self.assertIn('id="next-button"', player_panel)
-        self.assertNotIn('id="next-button"', queue_workspace)
+        self.assertNotIn('id="next-button"', player_panel)
+        self.assertIn('id="next-button"', queue_workspace)
+        self.assertIn('class="next-button queue-current-next"', queue_workspace)
         self.assertEqual(self.markup.count('id="resort-playlist-button"'), 1)
         self.assertIn('id="resort-playlist-button"', queue_workspace)
         self.assertNotIn('id="resort-playlist-button"', request_workspace)
@@ -238,6 +239,17 @@ console.log(JSON.stringify({ sequence }));
         ]
         self.assertIn("overflow: auto", list_scroll_css)
         self.assertIn("overscroll-behavior: contain", list_scroll_css)
+        self.assertIn("function syncQueueScrollOwnership()", self.source)
+        self.assertIn('playlist.classList.toggle("is-scrollable", scrollable)', self.source)
+        self.assertIn('playlist.classList.toggle("is-content-fit", !scrollable)', self.source)
+        self.assertRegex(
+            self.styles,
+            r"(?s)\.host-workspace-region \.playlist\s*\{[^}]*overflow-y: hidden;[^}]*scrollbar-gutter: auto;",
+        )
+        self.assertRegex(
+            self.styles,
+            r"(?s)\.host-workspace-region \.playlist\.is-scrollable\s*\{[^}]*overflow-y: auto;[^}]*scrollbar-gutter: stable;",
+        )
 
     def test_request_discover_uses_one_direct_accessible_workspace(self):
         self.assertEqual(self.markup.count('id="host-workspace-request"'), 1)
@@ -276,6 +288,13 @@ console.log(JSON.stringify({ sequence }));
             self.assertEqual(request_workspace.count(f'data-discover-mode="{mode}"'), 1)
         for mode in ("uids", "favorites"):
             self.assertEqual(request_workspace.count(f'data-sources-mode="{mode}"'), 1)
+        source_uid_tab = request_workspace[
+            request_workspace.index('data-sources-mode="uids"') : request_workspace.index(
+                "</button>", request_workspace.index('data-sources-mode="uids"')
+            )
+        ]
+        self.assertIn('data-i18n="sources.addUid">添加 UID', source_uid_tab)
+        self.assertNotIn('data-i18n="sources.addedUids"', source_uid_tab)
 
         expected_labels = {
             "request.quickTab": {"zh": "快速点歌", "en": "Quick Request", "ja": "クイック予約"},
@@ -284,7 +303,7 @@ console.log(JSON.stringify({ sequence }));
             "request.sourcesTab": {"zh": "来源", "en": "Sources", "ja": "ソース"},
             "search.sharedCatalog": {"zh": "共享曲库", "en": "Shared catalog", "ja": "共有カタログ"},
             "search.localLibrary": {"zh": "本地曲库", "en": "Local library", "ja": "ローカルライブラリ"},
-            "sources.addedUids": {"zh": "已添加 UID", "en": "Added UIDs", "ja": "追加済み UID"},
+            "sources.addUid": {"zh": "添加 UID", "en": "Add UID", "ja": "UID を追加"},
             "sources.favorites": {"zh": "收藏夹", "en": "Favorites", "ja": "お気に入り"},
         }
         for key, labels in expected_labels.items():
@@ -295,8 +314,8 @@ console.log(JSON.stringify({ sequence }));
     def test_all_tools_and_request_subviews_share_one_width_per_shell_state(self):
         self.assertNotIn("--host-workspace-width", self.styles)
         self.assertNotIn("data-request-subview", self.styles)
-        self.assertIn("--host-tool-card-width: 536px", self.styles)
-        self.assertIn("--host-tool-card-width: 500px", self.styles)
+        self.assertIn("--host-tool-card-width: minmax(380px, 1fr)", self.styles)
+        self.assertNotIn("--host-tool-card-width: 500px", self.styles)
         self.assertIn("--host-rail-width", self.styles)
 
     def test_request_removes_host_search_flip_modal_and_source_duplicates(self):
@@ -484,7 +503,7 @@ console.log(JSON.stringify({ sequence }));
             "closeHighestRequestTaskLayerForEscape()",
             "searchDetailController?.isOpen?.()",
             "closeOrdinaryPopoverForEscape()",
-            "if (state.stageControlTrayOpen)",
+            "if (state.stageControlTrayOpen && !stageControlsAreInline())",
             "closeHostWorkspaceOverlay()",
             'closeOpenMenus({ restoreFocus: true })',
         )

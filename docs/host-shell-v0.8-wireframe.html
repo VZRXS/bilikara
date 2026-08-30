@@ -123,8 +123,8 @@
       align-items: center;
       gap: 14px;
       padding: 0 14px 0 18px;
-      background: rgba(255, 253, 249, .98);
-      border-bottom: 1px solid var(--line);
+      background: transparent;
+      border-bottom: 0;
       position: relative;
       z-index: 80;
     }
@@ -649,7 +649,7 @@
   <header class="review-bar" aria-label="Wireframe review controls">
     <div class="review-title">
       <strong>Bilikara v0.8 Host shell wireframe · historical</strong>
-      <span>Superseded by <a href="host-shell-v0.8-build-review-addendum.txt">the packaged-build review addendum</a>: Stage Next, independent fixed right rail, opaque narrow bottom-overlay tool card, title-row tool actions, opaque toolbar popovers, Service update ring, 16:9 Stage and adaptive lower-left Controls button · no API</span>
+      <span>Superseded by <a href="host-shell-v0.8-build-review-addendum.txt">the packaged-build review addendum</a>: Queue-current Next, proportional Stage-priority split, independent fixed right rail, measured resident-or-overlay narrow tool geometry without a partial-control blank row, overflow-only Queue gutter, distinct Service gear, Remote-matched themed Controls icon, title-row tool actions, menu-only themed update dot and 16:9 Stage · no API</span>
     </div>
     <div class="review-group" role="group" aria-label="Representative frame">
       <span class="review-group-label">Frame</span>
@@ -707,8 +707,8 @@
               <button class="secondary-button mock-action" type="button">Presentation output</button>
             </section>
           </div>
-          <button id="service-trigger" class="toolbar-action" type="button" aria-label="Service health good; update 0.8 available">
-            <span class="toolbar-icon" aria-hidden="true">◉</span><span class="toolbar-label">Healthy</span><span class="update-badge">1</span>
+          <button id="service-trigger" class="toolbar-action" type="button" aria-label="Service health good">
+            <span class="toolbar-icon" aria-hidden="true">◉</span><span class="toolbar-label">Healthy</span>
           </button>
           <button id="settings-trigger" class="toolbar-action" type="button" aria-haspopup="dialog" aria-expanded="false">
             <span class="toolbar-icon" aria-hidden="true">⚙</span><span class="toolbar-label">Settings</span>
@@ -745,7 +745,6 @@
               <div class="essential-controls" aria-label="Essential playback controls">
                 <button class="transport-button" type="button" aria-label="Mute">⌁</button>
                 <button class="transport-button primary mock-action" type="button" aria-label="Pause playback">Ⅱ</button>
-                <button class="transport-button next mock-action" type="button">Next ›</button>
                 <button class="transport-button mock-action" type="button" aria-label="Fullscreen">⛶</button>
                 <button class="transport-button controls-trigger" type="button" aria-expanded="false" aria-controls="control-tray">Controls</button>
               </div>
@@ -786,7 +785,7 @@
             <div class="workspace-body">
               <section class="workspace-panel" data-workspace-panel="queue">
                 <div class="queue-panel">
-                  <div class="queue-current"><p class="eyebrow">Current song</p><div class="queue-current-row"><span class="current-art"></span><span class="queue-current-copy"><strong>夜に駆ける · YOASOBI</strong><span>小熊软糖 · cached 100%</span></span><button class="small-button mock-action" type="button">Retry</button></div><div class="progress-line"><span></span></div></div>
+                  <div class="queue-current"><p class="eyebrow">Current song</p><div class="queue-current-row"><span class="current-art"></span><span class="queue-current-copy"><strong>夜に駆ける · YOASOBI</strong><span>小熊软糖 · cached 100%</span></span><button class="small-button mock-action" type="button">Retry</button><button class="primary-button mock-action" type="button">Next ›</button></div><div class="progress-line"><span></span></div></div>
                   <div id="queue-scroll" class="scroll-region" tabindex="0" aria-label="Queued songs; local scroll owner"><div class="scroll-owner-label">Scroll owner · queue list</div></div>
                 </div>
               </section>

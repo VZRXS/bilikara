@@ -3,10 +3,18 @@ PACKAGED-BUILD REVIEW SUPERSESSION
 
 The authoritative correction is
 `docs/host-shell-v0.8-build-review-addendum.txt`. It records that Queue and History are direct destinations,
-Next is Stage-owned Next, the shell uses a stable tool card plus an independent fixed right-side tool rail,
-every responsive state has stable tool width, and the implementation has width-and-height measured Stage modes
-with one lower-left floating control button, the Service update
-state rings its existing health check, the shell keeps a one-line icon-plus-label global toolbar,
+Next is owned by Queue's Now Playing card, the shell uses a proportional stable tool card. Its independent fixed right-side tool rail stays separate; every tool has the same width at a fixed viewport, and the implementation has
+width-and-height measured Stage modes with one lower-left control button. Below the split threshold a measured
+tall shell keeps a useful resident tool row before testing inline playback controls; only a short shell uses the
+lowered bottom overlay. A partial control deck reserves no blank Stage row: the complete deck expands or all
+remaining height returns to the tool. Auto-inline hides the redundant Controls trigger and tray title/close row,
+and retains the exact same uncompressed internal grid used by the manual popup. Its three rows share one compact
+surface with inset separators, naturally sized labels and intrinsic-width control groups aligned to the right.
+The title area is transparent to the shell background and draws no separate bottom line or color fill. Service uses a gear while Host Controls reuses Remote's console glyph on a
+theme button. A fitted Queue uses its full width without a scrollbar gutter, enabling its list owner only
+after real overflow. Service update availability appears only as a theme-token dot inside the Service menu,
+the shell keeps a one-line icon-plus-label global toolbar. Chinese retains the reviewed 试试运气 product name
+and an SVG die identifies the entertainment/random destination,
 and desktop builds use platform-specific integrated window chrome.
 Its exact Scroll-owner table and corrected Request/Gatcha naming supersede every
 conflicting historical statement below. The original freeze remains for audit
@@ -127,7 +135,7 @@ F04 | Correct A/V sync, reset or lock it | AV-delay +/-200/+/-50, number, reset,
 F05 | Set/mute playback volume | mute, range and percentage | H | AppState plus localStorage volume/muted; /api/player/volume | A+P | C/S | none | Y | mute always visible; full slider in deck/tray | hydration remains narrow existing logic
 F06 | Shift karaoke key | -1, numeric -6..6, +1, reset | H | AppState; /api/player/key-shift | A | C/S | none | Y | full control deck/tray | none
 F07 | Enter/leave audience fullscreen | Stage fullscreen button and player double-click | H | UI Fullscreen API/Tauri fullscreen | T | C/S | none | Y | essential transport strip | presentation composition remains separate
-F08 | Advance safely to the next song and understand transitions | queue Next, advance-delay countdown, incoming-request toast, transition overlay, manual-start/recovery surface | VH | AppState /api/player/next; UI clocks/overlays; server transition state | A+T | W/S | none | Y except transient toast | Next in Stage transport; status in Stage; recovery banner/layer | do not duplicate Next in Queue
+F08 | Advance safely to the next song and understand transitions | Queue current-song Next, advance-delay countdown, incoming-request toast, transition overlay, manual-start/recovery surface | VH | AppState /api/player/next; UI clocks/overlays; server transition state | A+T | W/S | none | Y except transient toast | Next in Queue current-song card; status in Stage; recovery banner/layer | do not duplicate Next outside Queue
 F09 | See active item, cache/progress and retry | queue current-item block | VH | AppState snapshot; /api/cache/retry | A | C/S | Queue header fixed | Y | Queue fixed current section | none
 F10 | Inspect upcoming queue | right sticky playlist face | VH | AppState playlist/cache projections | A | C/H | playlist list | Y | Queue list | none
 F11 | Sort/reorder and act on queued items | Resort; drag order; play now/move next/remove/retry menus | H | AppState playlist commands | A | C/H | playlist list | Y | Queue list rows/header | keyboard/touch reorder needs an accessible non-drag affordance
@@ -333,9 +341,10 @@ Decision
   currently return bounded result arrays; the UI must not fake pagination.
 * Discover is adjacent to Search because category/name/artist browse the same
   shared catalog but use browse intents rather than free-text scope switching.
-* Sources distinguishes management from content search. Added UIDs and fetched
-  Favorites are persistent source records. Search reads their cached metadata;
-  Add UID, Refresh and Fetch collections alter the source set.
+* Sources distinguishes management from content search. Its visible mode tabs
+  are Add UID and Favorites; configured UIDs and fetched Favorites are the
+  persistent source records. Search reads their cached metadata; Add UID,
+  Refresh and Fetch collections alter the source set.
 * Add UID exists once: Sources > Added UIDs. Random shows “Manage sources” as a
   navigation link to that location, never a second Add UID form.
 * “Refresh videos” is an explicit action on Added UIDs. “Fetch collections” is
@@ -437,8 +446,8 @@ fixed header/actions cannot fit.
 Breakpoints use available shell inline size, not user-agent or device name.
 
   Wide:   >=1440px
-  Medium: 1040-1439px
-  Narrow: 700-1039px (v0.8 Host minimum design range)
+  Medium: 1180-1439px
+  Narrow: 700-1179px (v0.8 Host minimum design range)
 
 Height and Stage inline size independently select full/collapsed controls;
 width labels alone never force a less usable control set.
@@ -784,7 +793,7 @@ Slice 2 -- Queue / History
   State to preserve: current item/cache progress, ordering, selected subview,
   row menu, queue/history scroll, export selection and confirmation origin.
   Acceptance: F09-F14 and F48 exist once; Queue/History share one compact
-  workspace; Next exists once in Stage; keyboard reorder/action alternatives
+  workspace; Next exists once in Queue's current-song card; keyboard reorder/action alternatives
   and one list scroll owner work.
   Exclusions: no search/request move, queue policy change, export backend work,
   or duplicated Next/clear implementations.

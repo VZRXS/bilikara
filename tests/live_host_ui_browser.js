@@ -19,6 +19,15 @@ function suffixedPath(path, suffix) {
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
+  await page.addInitScript(() => {
+    const nativeSetInterval = window.setInterval.bind(window);
+    window.__hostAcceptanceIntervalIds = [];
+    window.setInterval = (...args) => {
+      const intervalId = nativeSetInterval(...args);
+      window.__hostAcceptanceIntervalIds.push(intervalId);
+      return intervalId;
+    };
+  });
   const maintenanceBusyScreenshotPath = suffixedPath(screenshotPath, "-maintenance-busy");
   const consoleErrors = [];
   const pageErrors = [];
@@ -374,6 +383,11 @@ async function run() {
       "same-revision startup readiness or delayed QR success/failure required user interaction",
       startupReadinessEvidence,
     );
+    await page.evaluate(() => {
+      for (const intervalId of window.__hostAcceptanceIntervalIds || []) {
+        window.clearInterval(intervalId);
+      }
+    });
 
     const shellPage = await browser.newPage({ viewport: { width: 1600, height: 900 } });
     const shellConsoleErrors = [];
@@ -500,6 +514,15 @@ async function run() {
             labelSize: Number.parseFloat(getComputedStyle(action.querySelector(".control-label")).fontSize),
           };
         }),
+        serviceUsesGear: document.querySelectorAll("#cache-settings-toggle .global-action-icon circle").length === 1
+          && document.querySelector("#cache-settings-toggle .global-action-icon path")
+            ?.getAttribute("d")?.startsWith("M12.22 2h-.44"),
+        stageControlIconPath: elements.stageControlsToggle.querySelector("path")?.getAttribute("d") || "",
+        stageControlTheme: {
+          background: getComputedStyle(elements.stageControlsToggle).backgroundColor,
+          color: getComputedStyle(elements.stageControlsToggle).color,
+          accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+        },
         railWidth: document.querySelector(".work-rail")?.getBoundingClientRect().width || 0,
         railTargetHeights: buttons.map((button) => button.getBoundingClientRect().height),
         bodyScrollY: window.scrollY,
@@ -542,6 +565,14 @@ async function run() {
       shellInitial.globalActions,
     );
     assert(
+      shellInitial.serviceUsesGear
+        && shellInitial.stageControlIconPath === "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
+        && shellInitial.stageControlTheme.background !== "rgba(0, 0, 0, 0)"
+        && shellInitial.stageControlTheme.background !== shellInitial.stageControlTheme.color,
+      "Host Service did not use a distinct gear or playback Controls did not reuse the Remote icon on a theme button",
+      shellInitial,
+    );
+    assert(
       shellInitial.railWidth >= 99 && shellInitial.railWidth <= 105
         && shellInitial.railTargetHeights.every((height) => height >= 40),
       "wide work rail did not preserve its intended width and fine-pointer targets",
@@ -579,6 +610,7 @@ async function run() {
         queueVisible: !document.querySelector("#host-workspace-queue").hidden,
         historyHidden: document.querySelector("#host-workspace-history").hidden
           && document.querySelector("#host-workspace-history").inert,
+        nextInQueueCurrent: Boolean(document.querySelector("#queue-current #next-button")),
         nextInStage: Boolean(document.querySelector(".player-panel #next-button")),
         nextCount: document.querySelectorAll("#next-button").length,
       };
@@ -588,7 +620,8 @@ async function run() {
         && directListInitial.selected.join(",") === "queue"
         && directListInitial.queueVisible
         && directListInitial.historyHidden
-        && directListInitial.nextInStage
+        && directListInitial.nextInQueueCurrent
+        && !directListInitial.nextInStage
         && directListInitial.nextCount === 1,
       "Queue was not the one accessible default direct list workspace",
       directListInitial,
@@ -1071,7 +1104,7 @@ async function run() {
         queueRows: elements.playlist.querySelectorAll(".song-item").length,
         historyRows: elements.historyList.querySelectorAll(".history-item").length,
         currentVisible: !elements.queueCurrent.classList.contains("hidden"),
-        nextOwner: elements.nextButton.closest(".player-panel") === elements.playerPanel,
+        nextOwner: elements.nextButton.closest("#queue-current") === elements.queueCurrent,
         resortOwner: elements.resortPlaylistButton.closest("#host-workspace-queue")
           === document.querySelector("#host-workspace-queue"),
         requestHasResort: Boolean(document.querySelector("#host-workspace-request #resort-playlist-button")),
@@ -1086,6 +1119,62 @@ async function run() {
         && !queueSeed.requestHasResort,
       "long Queue/History data did not render on the final action owners",
       queueSeed,
+    );
+
+    const queueFitBeforeWheel = await shellPage.evaluate(async () => {
+      const fullPlaylist = [...state.data.playlist];
+      state.data.playlist = fullPlaylist.slice(0, 2);
+      render();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const firstRow = elements.playlist.querySelector(".song-item").getBoundingClientRect();
+      const list = elements.playlist.getBoundingClientRect();
+      window.__queueAcceptance.playlist = fullPlaylist;
+      return {
+        className: elements.playlist.className,
+        overflowY: getComputedStyle(elements.playlist).overflowY,
+        scrollbarGutter: getComputedStyle(elements.playlist).scrollbarGutter,
+        clientHeight: elements.playlist.clientHeight,
+        scrollHeight: elements.playlist.scrollHeight,
+        rowRightDelta: Math.abs(firstRow.right - list.right),
+        scrollTop: elements.playlist.scrollTop,
+      };
+    });
+    await shellPage.locator("#playlist .song-item").first().hover();
+    await shellPage.mouse.wheel(0, 260);
+    await shellPage.waitForTimeout(60);
+    queueFitBeforeWheel.afterWheel = await shellPage.locator("#playlist")
+      .evaluate((element) => element.scrollTop);
+    assert(
+      queueFitBeforeWheel.className.includes("is-content-fit")
+        && !queueFitBeforeWheel.className.includes("is-scrollable")
+        && queueFitBeforeWheel.overflowY === "hidden"
+        && queueFitBeforeWheel.scrollbarGutter === "auto"
+        && queueFitBeforeWheel.scrollHeight <= queueFitBeforeWheel.clientHeight + 1
+        && queueFitBeforeWheel.rowRightDelta <= 1
+        && queueFitBeforeWheel.scrollTop === 0
+        && queueFitBeforeWheel.afterWheel === 0,
+      "a fitted Queue reserved a scrollbar gutter or accepted wheel scrolling",
+      queueFitBeforeWheel,
+    );
+    await shellPage.evaluate(async () => {
+      state.data.playlist = [...window.__queueAcceptance.playlist];
+      render();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    const queueOverflowOwnership = await shellPage.evaluate(() => ({
+      className: elements.playlist.className,
+      overflowY: getComputedStyle(elements.playlist).overflowY,
+      scrollbarGutter: getComputedStyle(elements.playlist).scrollbarGutter,
+      clientHeight: elements.playlist.clientHeight,
+      scrollHeight: elements.playlist.scrollHeight,
+    }));
+    assert(
+      queueOverflowOwnership.className.includes("is-scrollable")
+        && queueOverflowOwnership.overflowY === "auto"
+        && queueOverflowOwnership.scrollbarGutter === "stable"
+        && queueOverflowOwnership.scrollHeight > queueOverflowOwnership.clientHeight,
+      "an overflowing Queue did not enable its one local scroll owner and gutter",
+      queueOverflowOwnership,
     );
 
     const queueFixedBefore = await shellPage.evaluate(() => ({
@@ -1269,12 +1358,14 @@ async function run() {
       resortEvidence,
     );
 
+    await shellPage.evaluate(() => { elements.playlist.scrollTop = 0; });
     const firstMoveUp = shellPage.locator("#playlist .song-item").first().locator("[data-action='move-up']");
     const lastMoveDown = shellPage.locator("#playlist .song-item").last().locator("[data-action='move-down']");
     assert(await firstMoveUp.isDisabled() && await lastMoveDown.isDisabled(), "Queue reorder boundaries were enabled");
     const movingId = await shellPage.locator("#playlist .song-item").nth(1).getAttribute("data-id");
     await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
-    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).focus();
+    await shellPage.keyboard.press("Enter");
     assert(
       await shellPage.locator("#confirm-cancel").evaluate((element) => document.activeElement === element),
       "keyboard Queue move did not place focus inside its confirmation",
@@ -1288,7 +1379,8 @@ async function run() {
       "cancelled Queue move did not restore local focus without sending a command",
     );
     await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
-    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-down']`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-down']`).focus();
+    await shellPage.keyboard.press("Enter");
     await shellPage.locator("#confirm-ok").click();
     await shellPage.waitForTimeout(60);
     const moveAccepted = await shellPage.evaluate((itemId) => ({
@@ -1313,7 +1405,8 @@ async function run() {
       setAppMessage("");
     });
     await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] .menu-toggle`).click();
-    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).click();
+    await shellPage.locator(`#playlist .song-item[data-id='${movingId}'] [data-action='move-up']`).focus();
+    await shellPage.keyboard.press("Enter");
     await shellPage.locator("#confirm-ok").click();
     await shellPage.waitForTimeout(60);
     const moveRejected = await shellPage.evaluate((itemId) => ({
@@ -1375,13 +1468,13 @@ async function run() {
       renderQueueCurrent(state.data.current_item);
     });
 
+    await shellPage.locator("#work-rail-queue").click();
     const nextButtonNode = await shellPage.locator("#next-button").evaluate((element) => {
       window.__queueNextButton = element;
-      return Boolean(element.closest(".player-panel"));
+      return Boolean(element.closest("#queue-current"));
     });
-    assert(nextButtonNode, "Next was not Stage-owned");
+    assert(nextButtonNode, "Next was not owned by Queue's current-song card");
     const nextVisibility = {};
-    await shellPage.locator("#work-rail-queue").click();
     await shellPage.locator("#next-button").click();
     for (const workspace of ["queue", "history", "request", "random", "users"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
@@ -1398,14 +1491,15 @@ async function run() {
     }));
     assert(
       nextEvidence.calls.join(",") === "queue"
-        && Object.values(nextVisibility).every(Boolean)
+        && nextVisibility.queue
+        && ["history", "request", "random", "users"].every((workspace) => !nextVisibility[workspace])
         && nextEvidence.oneButton === 1
         && nextEvidence.sameButton
         && nextEvidence.sameSession
         && nextEvidence.sameFrame
         && nextEvidence.sameVideo
         && nextEvidence.sameAudio,
-      "Stage Next was duplicated, hidden by a tool, or changed playback identity",
+      "Queue current-song Next was duplicated, exposed in another tool, or changed playback identity",
       nextEvidence,
     );
 
@@ -1515,9 +1609,13 @@ async function run() {
     }
     assert(
       Object.values(wideWidths).every((entry) => Math.abs(entry.workspace - wideWidths.queue.workspace) <= 1)
-        && Math.abs(wideWidths.queue.workspace + shellInitial.railWidth - 640) <= 2
-        && Object.values(wideWidths).every((entry) => entry.stage >= 760 && entry.sameFrame),
-      "wide shell did not preserve one 640px tool-dock width and a useful persistent Stage",
+        && Object.values(wideWidths).every((entry) => {
+          const toolShare = entry.workspace / (entry.workspace + entry.stage);
+          return toolShare >= 0.345 && toolShare <= 0.365
+            && entry.stage >= entry.workspace * 1.8
+            && entry.sameFrame;
+        }),
+      "wide shell did not preserve one proportional tool width and a Stage-priority split",
       wideWidths,
     );
     await shellPage.locator("#work-rail-request").click();
@@ -1628,15 +1726,18 @@ async function run() {
     const shellMediumScreenshotPath = suffixedPath(screenshotPath, "-medium");
     const shellNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow");
     const shellDefaultScreenshotPath = suffixedPath(screenshotPath, "-default-1024x700");
+    const shellTallNarrowScreenshotPath = suffixedPath(screenshotPath, "-tall-narrow-1024x1100");
+    const shellReviewScreenshotPath = suffixedPath(screenshotPath, "-review-1200x1000");
     const shellShortScreenshotPath = suffixedPath(screenshotPath, "-short-1280x640");
     const queueWideScreenshotPath = suffixedPath(screenshotPath, "-wide-queue");
     const historyWideScreenshotPath = suffixedPath(screenshotPath, "-wide-history");
     const queueMediumScreenshotPath = suffixedPath(screenshotPath, "-medium-queue");
+    const queueReviewScreenshotPath = suffixedPath(screenshotPath, "-review-1200x1000-queue");
     const queueNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-queue");
     const historyNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-history");
     const narrowControlsScreenshotPath = suffixedPath(screenshotPath, "-narrow-controls");
     const controlsUpScreenshotPath = suffixedPath(screenshotPath, "-controls-up");
-    const controlsDownScreenshotPath = suffixedPath(screenshotPath, "-controls-down");
+    const controlsInlineTallScreenshotPath = suffixedPath(screenshotPath, "-controls-inline-tall");
     if (shellWideScreenshotPath) {
       await shellPage.locator("#work-rail-queue").click();
       await shellPage.screenshot({ path: queueWideScreenshotPath, fullPage: false });
@@ -1649,10 +1750,17 @@ async function run() {
     async function collectResponsiveFrame(label, width, height) {
       await shellPage.setViewportSize({ width, height });
       await shellPage.waitForTimeout(120);
+      const initialToolSheet = await shellPage.evaluate(() => ({
+        narrow: window.matchMedia("(max-width: 1179px)").matches,
+        layout: elements.appShell.dataset.narrowToolLayout,
+        closed: elements.appShell.classList.contains("host-tool-sheet-closed"),
+        hidden: elements.hostWorkspaceRegion.getAttribute("aria-hidden") === "true",
+        inert: elements.hostWorkspaceRegion.inert,
+      }));
       const tools = {};
       for (const workspace of ["queue", "history", "request", "random", "users"]) {
         await shellPage.locator(`#work-rail-${workspace}`).click();
-        if (width <= 1039) {
+        if (initialToolSheet.layout === "overlay") {
           const expanded = await shellPage.locator(`#work-rail-${workspace}`).getAttribute("aria-expanded");
           if (expanded !== "true") {
             await shellPage.locator(`#work-rail-${workspace}`).click();
@@ -1680,6 +1788,14 @@ async function run() {
           const playerCard = elements.playerPanel.getBoundingClientRect();
           const playerFrame = elements.playerFrame.getBoundingClientRect();
           const controlsToggle = elements.stageControlsToggle.getBoundingClientRect();
+          const controlLayout = elements.appShell.dataset.stageControlsLayout;
+          const controlTray = elements.stageControlTray.getBoundingClientRect();
+          const controlsToggleVisible = Boolean(
+            elements.stageControlsToggle.offsetWidth || elements.stageControlsToggle.offsetHeight,
+          );
+          const inlineHeadHidden = getComputedStyle(
+            elements.stageControlTray.querySelector(".stage-control-tray-head"),
+          ).display === "none";
           const playerStyle = getComputedStyle(elements.playerPanel);
           const playerInnerHeight = elements.playerPanel.clientHeight
             - (parseFloat(playerStyle.paddingTop) || 0)
@@ -1717,15 +1833,18 @@ async function run() {
               && regionElement.parentElement?.classList.contains("host-content-region"),
             stageWidth: stage.width,
             stageHeight: stage.height,
-            narrowBottomSheet: window.matchMedia("(max-width: 1039px)").matches,
+            narrowBottomSheet: elements.appShell.dataset.narrowToolLayout === "overlay",
+            narrowResident: elements.appShell.dataset.narrowToolLayout === "resident",
             workspaceOverlapsStage: region.top < playerCard.bottom - 1
               && region.bottom > playerCard.top + 1,
+            workspaceBelowStage: region.top >= playerCard.bottom + 8,
             workspaceBottomAnchored: Math.abs(region.bottom - content.bottom) <= 1,
             stageFillsContentHeight: Math.abs(playerCard.top - content.top) <= 1
               && Math.abs(playerCard.bottom - content.bottom) <= 1,
             workspaceAboveStage: Number.parseInt(getComputedStyle(regionElement).zIndex || "0", 10)
               > Number.parseInt(getComputedStyle(document.querySelector(".left-column")).zIndex || "0", 10),
             toolSheetShadow: getComputedStyle(regionElement).boxShadow,
+            toolSheetRadius: Number.parseFloat(getComputedStyle(regionElement).borderTopLeftRadius),
             toolSurfaceBackground: activePanelBackground,
             toolSurfaceAlpha: colorAlpha(activePanelBackground),
             headerActionsShareTitleLine: !headingRect || !actionsRect
@@ -1737,9 +1856,18 @@ async function run() {
             playerFrameWidth: playerFrame.width,
             playerFrameHeight: playerFrame.height,
             playerFrameRatio: playerFrame.height > 0 ? playerFrame.width / playerFrame.height : 0,
-            controlsBelowFrame: controlsToggle.top >= playerFrame.bottom - 1,
-            controlsLeftAligned: Math.abs(controlsToggle.left - playerFrame.left) <= 1,
-            controlLayout: elements.appShell.dataset.stageControlsLayout,
+            controlsBelowFrame: controlLayout === "inline"
+              ? !controlsToggleVisible
+              : controlsToggle.top >= playerFrame.bottom - 1,
+            controlsLeftAligned: controlLayout === "inline"
+              ? !controlsToggleVisible
+              : Math.abs(controlsToggle.left - playerFrame.left) <= 1,
+            inlineChromeHidden: controlLayout !== "inline"
+              || (!controlsToggleVisible && inlineHeadHidden),
+            unusedStageAfterControls: playerCard.bottom
+              - (controlLayout === "inline" ? controlTray.bottom : controlsToggle.bottom)
+              - (parseFloat(playerStyle.paddingBottom) || 0),
+            controlLayout,
             controlsOpen: state.stageControlTrayOpen,
             playerInnerHeight,
             trayNaturalHeight,
@@ -1790,12 +1918,19 @@ async function run() {
               && entry.workspaceAboveStage
               && entry.toolSurfaceAlpha >= 0.99
               && entry.toolSheetShadow !== "none"
-            : entry.stageToolGap >= 8)
+              && entry.toolSheetRadius >= 15
+            : entry.narrowResident
+              ? entry.workspaceBelowStage
+                && !entry.workspaceOverlapsStage
+                && entry.contentWidth > 0
+                && entry.toolSheetShadow === "none"
+              : entry.stageToolGap >= 8)
           && entry.railIndependent
           && entry.stageHeight >= 180
           && Math.abs(entry.playerFrameRatio - (16 / 9)) <= 0.01
           && entry.controlsBelowFrame
           && entry.controlsLeftAligned
+          && entry.inlineChromeHidden
           && entry.headerActionsShareTitleLine
           && entry.headerActionsFit
           && entry.stageActionsShareTitleLine
@@ -1839,16 +1974,19 @@ async function run() {
           shell,
         );
       }
-      return { width, height, tools, requestSubviews, shell };
+      return { width, height, initialToolSheet, tools, requestSubviews, shell };
     }
 
     const responsiveFrames = {};
     for (const [label, width, height] of [
       ["wide1600", 1600, 900],
+      ["fit1600x1100", 1600, 1100],
       ["wide1536", 1536, 1024],
       ["wide1496", 1496, 992],
       ["medium1240", 1240, 800],
+      ["review1200", 1200, 1000],
       ["default1024", 1024, 700],
+      ["tallNarrow1024", 1024, 1100],
       ["narrow840", 840, 760],
       ["short1280", 1280, 640],
       ["minimum700", 700, 700],
@@ -1860,6 +1998,14 @@ async function run() {
       if (label === "default1024" && shellDefaultScreenshotPath) {
         await shellPage.screenshot({ path: shellDefaultScreenshotPath, fullPage: false });
       }
+      if (label === "tallNarrow1024" && shellTallNarrowScreenshotPath) {
+        await shellPage.screenshot({ path: shellTallNarrowScreenshotPath, fullPage: false });
+      }
+      if (label === "review1200" && shellReviewScreenshotPath) {
+        await shellPage.screenshot({ path: shellReviewScreenshotPath, fullPage: false });
+        await shellPage.locator("#work-rail-queue").click();
+        await shellPage.screenshot({ path: queueReviewScreenshotPath, fullPage: false });
+      }
       if (label === "narrow840" && shellNarrowScreenshotPath) {
         await shellPage.screenshot({ path: shellNarrowScreenshotPath, fullPage: false });
       }
@@ -1867,14 +2013,55 @@ async function run() {
         await shellPage.screenshot({ path: shellShortScreenshotPath, fullPage: false });
       }
     }
+    const proportionalSplitFrames = [
+      responsiveFrames.wide1600,
+      responsiveFrames.wide1536,
+      responsiveFrames.wide1496,
+      responsiveFrames.short1280,
+      responsiveFrames.medium1240,
+      responsiveFrames.review1200,
+    ];
     assert(
-      Math.abs(responsiveFrames.wide1600.tools.queue.contentWidth - 536) <= 2
-        && Math.abs(responsiveFrames.wide1536.tools.queue.contentWidth - 536) <= 2
-        && Math.abs(responsiveFrames.medium1240.tools.queue.contentWidth - 500) <= 2
+      proportionalSplitFrames.every((frame) => {
+        const tool = frame.tools.queue.contentWidth;
+        const stage = frame.tools.queue.stageWidth;
+        const toolShare = tool / (tool + stage);
+        return toolShare >= 0.345 && toolShare <= 0.385 && stage >= tool * 1.6;
+      })
+        && proportionalSplitFrames.every((frame, index, frames) => index === 0
+          || (frame.tools.queue.contentWidth <= frames[index - 1].tools.queue.contentWidth + 1
+            && frame.tools.queue.stageWidth <= frames[index - 1].tools.queue.stageWidth + 1))
         && Math.abs(responsiveFrames.wide1600.tools.queue.railWidth - 104) <= 2
         && Math.abs(responsiveFrames.medium1240.tools.queue.railWidth - 100) <= 2,
-      "wide/medium states did not keep one stable tool-card width beside the independent rail",
+      "wide/medium Stage and tool cards did not narrow proportionally with Stage priority",
       responsiveFrames,
+    );
+    assert(
+      responsiveFrames.default1024.initialToolSheet.narrow
+        && responsiveFrames.default1024.initialToolSheet.layout === "overlay"
+        && responsiveFrames.default1024.initialToolSheet.closed
+        && responsiveFrames.default1024.initialToolSheet.hidden
+        && responsiveFrames.default1024.initialToolSheet.inert,
+      "crossing below the split threshold did not lower the tool sheet by default",
+      responsiveFrames.default1024.initialToolSheet,
+    );
+    assert(
+      responsiveFrames.tallNarrow1024.initialToolSheet.narrow
+        && responsiveFrames.tallNarrow1024.initialToolSheet.layout === "resident"
+        && !responsiveFrames.tallNarrow1024.initialToolSheet.closed
+        && !responsiveFrames.tallNarrow1024.initialToolSheet.hidden
+        && !responsiveFrames.tallNarrow1024.initialToolSheet.inert
+        && Object.values(responsiveFrames.tallNarrow1024.tools).every((entry) => (
+          entry.narrowResident
+          && entry.workspaceBelowStage
+          && !entry.workspaceOverlapsStage
+          && entry.controlLayout === "inline"
+          && entry.controlsOpen
+          && entry.inlineChromeHidden
+          && entry.unusedStageAfterControls <= 4
+        )),
+      "the compact control surface did not expand inside a tall resident narrow shell without wasting height",
+      responsiveFrames.tallNarrow1024,
     );
     const inlineControlFrames = Object.entries(responsiveFrames)
       .filter(([, frame]) => frame.tools.queue.controlLayout === "inline");
@@ -1995,6 +2182,10 @@ async function run() {
         regionHidden: elements.hostWorkspaceRegion.getAttribute("aria-hidden") === "true",
         regionInert: elements.hostWorkspaceRegion.inert,
         railExpanded: document.querySelector("#work-rail-random").getAttribute("aria-expanded"),
+        controlLayout: elements.appShell.dataset.stageControlsLayout,
+        inlineControlsAccessible: elements.appShell.dataset.stageControlsLayout === "inline"
+          && !elements.stageControlTray.hidden
+          && !elements.stageControlTray.inert,
         stageTriggerOwnsPoint: hit === elements.stageControlsToggle
           || elements.stageControlsToggle.contains(hit),
       };
@@ -2004,11 +2195,14 @@ async function run() {
         && narrowSheetCollapsed.regionHidden
         && narrowSheetCollapsed.regionInert
         && narrowSheetCollapsed.railExpanded === "false"
-        && narrowSheetCollapsed.stageTriggerOwnsPoint,
+        && (narrowSheetCollapsed.inlineControlsAccessible
+          || narrowSheetCollapsed.stageTriggerOwnsPoint),
       "lowering the narrow tool sheet did not restore direct Stage control access",
       narrowSheetCollapsed,
     );
 
+    await shellPage.setViewportSize({ width: 840, height: 480 });
+    await shellPage.waitForTimeout(120);
     await shellPage.locator("#stage-controls-toggle").click();
     await shellPage.waitForTimeout(180);
     const narrowControlEvidence = await shellPage.evaluate(() => ({
@@ -2091,7 +2285,7 @@ async function run() {
       && elements.stageControlTray.inert
       && document.activeElement === elements.stageControlsToggle),
     "Stage tray Escape did not close one layer and restore its opener");
-    await shellPage.setViewportSize({ width: 1280, height: 640 });
+    await shellPage.setViewportSize({ width: 1280, height: 520 });
     await shellPage.waitForTimeout(120);
     await shellPage.locator("#stage-controls-toggle").click();
     await shellPage.waitForTimeout(180);
@@ -2099,12 +2293,25 @@ async function run() {
       const frame = elements.playerFrame.getBoundingClientRect();
       const trigger = elements.stageControlsToggle.getBoundingClientRect();
       const tray = elements.stageControlTray.getBoundingClientRect();
+      const avPanel = elements.stageControlTray.querySelector(".av-sync-panel");
+      const avCopy = avPanel.querySelector(".av-sync-copy").getBoundingClientRect();
+      const avControls = avPanel.querySelector(".av-sync-controls").getBoundingClientRect();
+      const combined = elements.stageExtendedControls.getBoundingClientRect();
+      const volumePanel = elements.volumePanel.getBoundingClientRect();
       return {
         layout: elements.appShell.dataset.stageControlsLayout,
         direction: elements.stageControlTray.dataset.popoverDirection,
         above: tray.top < trigger.top,
         right: tray.right > trigger.right,
         widerThanFrame: tray.width > frame.width,
+        controlsShareRow: Math.min(avCopy.bottom, avControls.bottom)
+          - Math.max(avCopy.top, avControls.top) > 0,
+        controlsTrailCopy: avControls.left >= avCopy.right - 1,
+        naturalLabelColumn: avCopy.width < 160 && avControls.width > avCopy.width,
+        controlsRightAligned: Math.abs(avControls.right - (combined.right - 15)) <= 2,
+        insetDivider: volumePanel.left > combined.left
+          && volumePanel.right < combined.right
+          && parseFloat(getComputedStyle(elements.volumePanel).borderTopWidth) >= 1,
         insideViewport: tray.left >= 0 && tray.top >= 0
           && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
       };
@@ -2122,37 +2329,55 @@ async function run() {
       await shellPage.screenshot({ path: controlsUpScreenshotPath, fullPage: false });
     }
     await shellPage.locator("#stage-controls-close").click();
-    await shellPage.setViewportSize({ width: 1240, height: 1000 });
+    await shellPage.setViewportSize({ width: 1600, height: 1100 });
     await shellPage.waitForTimeout(120);
-    await shellPage.locator("#stage-controls-toggle").click();
-    await shellPage.waitForTimeout(180);
-    const downwardControlEvidence = await shellPage.evaluate(() => {
+    const tallInlineControlEvidence = await shellPage.evaluate(() => {
       const frame = elements.playerFrame.getBoundingClientRect();
-      const trigger = elements.stageControlsToggle.getBoundingClientRect();
       const tray = elements.stageControlTray.getBoundingClientRect();
+      const avPanel = elements.stageControlTray.querySelector(".av-sync-panel");
+      const avCopy = avPanel.querySelector(".av-sync-copy").getBoundingClientRect();
+      const avControls = avPanel.querySelector(".av-sync-controls").getBoundingClientRect();
+      const combined = elements.stageExtendedControls.getBoundingClientRect();
+      const volumePanel = elements.volumePanel.getBoundingClientRect();
+      const labelledButtons = [...elements.stageControlTray.querySelectorAll("button")]
+        .filter((button) => !button.hidden && (button.offsetWidth || button.offsetHeight));
       return {
         layout: elements.appShell.dataset.stageControlsLayout,
-        direction: elements.stageControlTray.dataset.popoverDirection,
-        below: tray.top >= trigger.bottom,
-        right: tray.right > trigger.right,
-        widerThanFrame: tray.width > frame.width,
-        insideViewport: tray.left >= 0 && tray.top >= 0
-          && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
+        open: state.stageControlTrayOpen && !elements.stageControlTray.hidden,
+        below: tray.top >= frame.bottom - 1,
+        noBackdrop: elements.stageControlBackdrop.hidden,
+        triggerHidden: !elements.stageControlsToggle.offsetWidth
+          && !elements.stageControlsToggle.offsetHeight,
+        trayHeadHidden: getComputedStyle(
+          elements.stageControlTray.querySelector(".stage-control-tray-head"),
+        ).display === "none",
+        controlsShareRow: Math.min(avCopy.bottom, avControls.bottom)
+          - Math.max(avCopy.top, avControls.top) > 0,
+        controlsTrailCopy: avControls.left >= avCopy.right - 1,
+        naturalLabelColumn: avCopy.width < 160 && avControls.width > avCopy.width,
+        controlsRightAligned: Math.abs(avControls.right - (combined.right - 15)) <= 2,
+        insetDivider: volumePanel.left > combined.left
+          && volumePanel.right < combined.right
+          && parseFloat(getComputedStyle(elements.volumePanel).borderTopWidth) >= 1,
+        horizontalFit: elements.stageControlTray.scrollWidth <= elements.stageControlTray.clientWidth + 1,
+        buttonsUnsqueezed: labelledButtons.every((button) => button.scrollWidth <= button.clientWidth + 1),
+        frameRatio: frame.height > 0 ? frame.width / frame.height : 0,
+        insideStage: tray.left >= elements.playerPanel.getBoundingClientRect().left
+          && tray.right <= elements.playerPanel.getBoundingClientRect().right + 1,
       };
     });
     assert(
-      downwardControlEvidence.layout === "popup"
-        && downwardControlEvidence.direction === "down"
-        && Object.entries(downwardControlEvidence)
-          .filter(([key]) => !["layout", "direction"].includes(key))
+      tallInlineControlEvidence.layout === "inline"
+        && Math.abs(tallInlineControlEvidence.frameRatio - (16 / 9)) <= 0.01
+        && Object.entries(tallInlineControlEvidence)
+          .filter(([key]) => !["layout", "frameRatio"].includes(key))
           .every(([, value]) => Boolean(value)),
-      "a Stage with enough space below did not open the unsqueezed tray down-and-right",
-      downwardControlEvidence,
+      "a tall proportional Stage kept the unsqueezed control deck collapsed despite fitting below",
+      tallInlineControlEvidence,
     );
-    if (controlsDownScreenshotPath) {
-      await shellPage.screenshot({ path: controlsDownScreenshotPath, fullPage: false });
+    if (controlsInlineTallScreenshotPath) {
+      await shellPage.screenshot({ path: controlsInlineTallScreenshotPath, fullPage: false });
     }
-    await shellPage.locator("#stage-controls-close").click();
     await shellPage.setViewportSize({ width: 840, height: 760 });
     await shellPage.waitForTimeout(120);
     const narrowWorkspaces = responsiveFrames.narrow840.tools;
@@ -3031,6 +3256,8 @@ async function run() {
 
     await shellPage.setViewportSize({ width: 840, height: 760 });
     await shellPage.waitForTimeout(120);
+    await shellPage.locator("#work-rail-random").click();
+    await shellPage.waitForTimeout(180);
     const gatchaNarrow = await shellPage.evaluate(() => {
       const region = elements.hostWorkspaceRegion.getBoundingClientRect();
       const stage = document.querySelector(".left-column").getBoundingClientRect();
@@ -3227,6 +3454,8 @@ async function run() {
         seed: queueSeed,
         fixedBefore: queueFixedBefore,
         wheel: queueWheelScrollTop,
+        fitWithoutGutter: queueFitBeforeWheel,
+        overflowOwnership: queueOverflowOwnership,
         scrollRestoration: directListScroll,
         clearConfirmation: clearQueueConfirmation,
         resort: resortEvidence,
@@ -3251,7 +3480,7 @@ async function run() {
       narrowHistory,
       narrowControlEvidence,
       upwardControlEvidence,
-      downwardControlEvidence,
+      tallInlineControlEvidence,
       narrowWorkspaces,
       narrowRequestSubviews,
       narrowLocalScroll,
@@ -3263,15 +3492,18 @@ async function run() {
         medium: shellMediumScreenshotPath,
         narrow: shellNarrowScreenshotPath,
         default1024x700: shellDefaultScreenshotPath,
+        tallNarrow1024x1100: shellTallNarrowScreenshotPath,
+        review1200x1000: shellReviewScreenshotPath,
         short1280x640: shellShortScreenshotPath,
         queueWide: queueWideScreenshotPath,
         historyWide: historyWideScreenshotPath,
         queueMedium: queueMediumScreenshotPath,
+        queueReview1200x1000: queueReviewScreenshotPath,
         queueNarrow: queueNarrowScreenshotPath,
         historyNarrow: historyNarrowScreenshotPath,
         narrowControls: narrowControlsScreenshotPath,
         controlsUp: controlsUpScreenshotPath,
-        controlsDown: controlsDownScreenshotPath,
+        controlsInlineTall: controlsInlineTallScreenshotPath,
         gatchaWide: gatchaWideScreenshotPath,
         gatchaError: gatchaErrorScreenshotPath,
         gatchaPool: gatchaPoolScreenshotPath,
@@ -4111,7 +4343,12 @@ async function run() {
       "Random Manage sources did not route to the unified Sources subview",
     );
     await page.locator("#work-rail-queue").click();
-    if (await page.locator("#stage-controls-toggle").isVisible()) {
+    await page.evaluate(() => {
+      if (hostNarrowToolSheetUsesOverlay() && state.hostWorkspaceOverlayOpen) {
+        closeHostWorkspaceOverlay({ restoreFocus: false });
+      }
+    });
+    if (!await page.evaluate(() => state.stageControlTrayOpen)) {
       await page.locator("#stage-controls-toggle").click();
     }
     const playbackInfoRegions = page.locator(".playback-contextual-info-region");
@@ -4173,7 +4410,7 @@ async function run() {
     await avTooltip.hover();
     await page.waitForTimeout(140);
     assert(await avTooltip.isVisible(), "moving into Host A/V information dismissed it");
-    await page.locator("#stage-control-tray-title").hover();
+    await page.mouse.move(4, 4);
     await page.waitForTimeout(330);
     assert(!await avTooltip.isVisible(), "Host A/V pointer leave did not dismiss transient information");
 
@@ -4185,7 +4422,7 @@ async function run() {
     await avInfo.click();
     assert(await avTooltip.isVisible() && await page.locator(".cache-advanced-info.is-visible").count() === 1,
       "Host playback click did not pin exactly one explanation");
-    await page.locator("#stage-control-tray-title").hover();
+    await page.mouse.move(4, 4);
     assert(await avTooltip.isVisible(), "Host playback pointer leave cleared pinned information");
     await keyInfo.click();
     await page.waitForTimeout(180);
@@ -4201,7 +4438,7 @@ async function run() {
       "Host playback information did not transfer one-visible ownership",
       playbackInfoTransfer,
     );
-    await page.locator("#stage-control-tray-title").click();
+    await page.locator("#stage-control-tray-title").dispatchEvent("click");
     await page.waitForTimeout(180);
     assert(!await keyTooltip.isVisible(), "Host playback outside click did not close contextual information");
     await keyInfo.click();
@@ -4419,7 +4656,7 @@ async function run() {
         state.data.app_update = nextUpdate;
         renderUpdatePreviewControl();
         return {
-          serviceRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
+          outerUpdateRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
           advancedIndicator: !elements.advancedUpdateIndicator.classList.contains("hidden"),
           rowHighlighted: elements.appUpdateRow.classList.contains("has-update"),
           versionBadge: elements.updateVersionBadge.classList.contains("hidden")
@@ -4428,11 +4665,15 @@ async function run() {
           buttonText: elements.updateCheckButton.textContent,
           statusText: elements.appUpdateStatus.textContent,
           automaticChecked: elements.updateAutomaticCheckbox.checked,
-          serviceAccessible: elements.serviceUpdateIndicator.getAttribute("aria-label"),
+          menuIndicatorAccessible: elements.advancedUpdateIndicator.getAttribute("aria-label"),
           versionBadgeBorder: getComputedStyle(elements.updateVersionBadge).borderTopWidth,
           versionBadgeBackground: getComputedStyle(elements.updateVersionBadge).backgroundColor,
           previewTop: elements.updatePreviewCheckbox.closest("label").getBoundingClientRect().top,
           automaticTop: elements.updateAutomaticCheckbox.closest("label").getBoundingClientRect().top,
+          buttonWidth: elements.updateCheckButton.getBoundingClientRect().width,
+          buttonHeight: elements.updateCheckButton.getBoundingClientRect().height,
+          peerButtonHeight: elements.dataResetButton.getBoundingClientRect().height,
+          buttonTextFits: elements.updateCheckButton.scrollWidth <= elements.updateCheckButton.clientWidth + 1,
         };
       },
       {
@@ -4451,7 +4692,7 @@ async function run() {
     for (const [name, update] of Object.entries(noBadgeStates)) {
       const rendered = await renderUpdateState(update);
       assert(
-        !rendered.serviceRing && !rendered.advancedIndicator
+        !rendered.outerUpdateRing && !rendered.advancedIndicator
           && !rendered.rowHighlighted && !rendered.versionBadge,
         `${name} update state showed an availability badge`,
         rendered,
@@ -4476,7 +4717,7 @@ async function run() {
     const installableRendered = await renderUpdateState(installableUpdate);
     const shortUpdateLabel = await page.evaluate(() => t("service.update"));
     assert(
-      installableRendered.serviceRing && installableRendered.advancedIndicator
+      !installableRendered.outerUpdateRing && installableRendered.advancedIndicator
         && installableRendered.rowHighlighted
         && installableRendered.versionBadge.includes("v0.8.1")
         && installableRendered.buttonText === shortUpdateLabel
@@ -4484,8 +4725,10 @@ async function run() {
         && installableRendered.versionBadgeBorder === "0px"
         && installableRendered.versionBadgeBackground === "rgba(0, 0, 0, 0)"
         && installableRendered.previewTop < installableRendered.automaticTop
-        && installableRendered.serviceAccessible?.includes("v0.8.1"),
-      "eligible installable update did not ring Service health, show the exact version, and keep a short action",
+        && Math.abs(installableRendered.buttonHeight - installableRendered.peerButtonHeight) <= 1
+        && installableRendered.buttonTextFits
+        && installableRendered.menuIndicatorAccessible?.includes("v0.8.1"),
+      "eligible installable update did not keep its marker inside Service, show the exact version, and keep a short action",
       installableRendered,
     );
     assert(
@@ -4495,6 +4738,26 @@ async function run() {
     await page.locator("#cache-panel-advanced-trigger").click();
     assert(!await page.locator("#cache-advanced-inline-view").isVisible(), "advanced settings did not collapse for indicator proof");
     assert(await page.locator("#advanced-update-indicator").isVisible(), "collapsed advanced entry hid the update indicator");
+    const updateDotThemeEvidence = await page.evaluate(() => {
+      const previousTheme = document.documentElement.dataset.theme || "light";
+      const colors = {};
+      for (const theme of ["light", "dark", "blue"]) {
+        document.documentElement.dataset.theme = theme;
+        const rootStyle = getComputedStyle(document.documentElement);
+        colors[theme] = {
+          token: rootStyle.getPropertyValue("--update-available-dot").trim(),
+          rendered: getComputedStyle(elements.advancedUpdateIndicator).backgroundColor,
+        };
+      }
+      document.documentElement.dataset.theme = previousTheme;
+      return colors;
+    });
+    assert(
+      Object.values(updateDotThemeEvidence).every(({ token, rendered }) => token && rendered)
+        && new Set(Object.values(updateDotThemeEvidence).map(({ rendered }) => rendered)).size === 3,
+      "Service-menu update dot did not follow the active theme token",
+      updateDotThemeEvidence,
+    );
     await page.locator("#cache-panel-advanced-trigger").click();
 
     await renderUpdateState(installableUpdate);
@@ -4506,7 +4769,8 @@ async function run() {
     );
     assert(updateInstallRequests.length === 0, "update action installed before explicit confirmation");
     await page.locator("#confirm-ok").click();
-    await page.waitForTimeout(100);
+    await page.waitForFunction(() => elements.confirmPopover.classList.contains("hidden")
+      && !elements.confirmOk.hasAttribute("aria-busy"));
     assert(updateInstallRequests.length === 1, "explicit update confirmation did not invoke the install route");
 
     await page.evaluate(() => {
@@ -4522,6 +4786,13 @@ async function run() {
     };
     const viewRendered = await renderUpdateState(viewOnlyUpdate);
     assert(viewRendered.buttonText.includes("v0.8.2"), "unsupported update did not show a version-specific view action");
+    assert(
+      viewRendered.buttonWidth > installableRendered.buttonWidth
+        && Math.abs(viewRendered.buttonHeight - installableRendered.buttonHeight) <= 1
+        && viewRendered.buttonTextFits,
+      "the update action did not preserve peer-button height while expanding to fit changed text",
+      { installableRendered, viewRendered },
+    );
     await page.locator("#update-check-button").click();
     const openedUpdateReleaseUrls = await page.evaluate(() => window.__openedUpdateReleaseUrls);
     assert(
@@ -4565,7 +4836,8 @@ async function run() {
     await page.locator('label[for="update-automatic-checkbox"]').click();
     const automaticOffRendered = await page.evaluate(() => ({
       automatic: state.updateAutomaticEnabled,
-      ring: elements.serviceUpdateIndicator.classList.contains("has-update"),
+      outerRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
+      menuDot: !elements.advancedUpdateIndicator.classList.contains("hidden"),
       row: elements.appUpdateRow.classList.contains("has-update"),
       badgeHidden: elements.updateVersionBadge.classList.contains("hidden"),
       status: elements.appUpdateStatus.textContent,
@@ -4573,7 +4845,8 @@ async function run() {
     }));
     assert(
       !automaticOffRendered.automatic
-        && !automaticOffRendered.ring
+        && !automaticOffRendered.outerRing
+        && !automaticOffRendered.menuDot
         && !automaticOffRendered.row
         && automaticOffRendered.badgeHidden
         && !automaticOffRendered.status
@@ -4613,9 +4886,15 @@ async function run() {
       updated_at: 18,
       latest_version: "v0.9.0-preview.1",
     }, true);
-    assert(previewRendered.serviceRing, "eligible preview result did not become current on the preview channel");
+    assert(
+      !previewRendered.outerUpdateRing && previewRendered.advancedIndicator,
+      "eligible preview result did not become current inside the Service menu",
+    );
     const staleStableRendered = await renderUpdateState(installableUpdate, true);
-    assert(!staleStableRendered.serviceRing, "stale stable result overwrote the selected preview channel");
+    assert(
+      !staleStableRendered.outerUpdateRing && !staleStableRendered.advancedIndicator,
+      "stale stable result overwrote the selected preview channel",
+    );
     await renderUpdateState({
       ...installableUpdate,
       include_preview: true,
@@ -5025,6 +5304,15 @@ async function run() {
       isMobile: true,
     });
     const coarsePage = await coarseContext.newPage();
+    await coarsePage.addInitScript(() => {
+      const nativeSetInterval = window.setInterval.bind(window);
+      window.__coarseAcceptanceIntervalIds = [];
+      window.setInterval = (...args) => {
+        const intervalId = nativeSetInterval(...args);
+        window.__coarseAcceptanceIntervalIds.push(intervalId);
+        return intervalId;
+      };
+    });
     const coarseUpdateChecks = [];
     await coarsePage.route("**/api/app/update/check", (route) => {
       const payload = route.request().postDataJSON();
@@ -5051,6 +5339,11 @@ async function run() {
     }));
     await coarsePage.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await coarsePage.waitForTimeout(700);
+    await coarsePage.evaluate(() => {
+      for (const intervalId of window.__coarseAcceptanceIntervalIds || []) {
+        window.clearInterval(intervalId);
+      }
+    });
     assert(
       coarseUpdateChecks.length === 1 && coarseUpdateChecks[0].include_preview === false,
       "coarse Host startup did not keep the stable-only automatic check",
@@ -5154,11 +5447,38 @@ async function run() {
       coarsePlaybackMetrics,
     );
     const coarsePlaybackBox = await coarsePlaybackInfo.boundingBox();
+    const coarsePlaybackHitBefore = await coarsePage.evaluate(({ x, y }) => {
+      const hit = document.elementFromPoint(x, y);
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      return {
+        hitTag: hit?.tagName || "",
+        hitId: hit?.id || "",
+        hitClass: hit?.className || "",
+        hitInsideButton: Boolean(hit?.closest?.(".playback-contextual-info-button")),
+        tray: { left: tray.left, top: tray.top, right: tray.right, bottom: tray.bottom },
+        trayOpen: state.stageControlTrayOpen,
+        trayHidden: elements.stageControlTray.hidden,
+        trayScrollTop: elements.stageControlTray.scrollTop,
+      };
+    }, {
+      x: coarsePlaybackBox.x + (coarsePlaybackBox.width / 2),
+      y: coarsePlaybackBox.y + (coarsePlaybackBox.height / 2),
+    });
     await coarsePage.touchscreen.tap(
       coarsePlaybackBox.x + (coarsePlaybackBox.width / 2),
       coarsePlaybackBox.y + (coarsePlaybackBox.height / 2),
     );
-    assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "true", "Host playback touch tap did not pin information");
+    const coarsePlaybackHitAfter = await coarsePage.evaluate(() => ({
+      expanded: document.querySelector(".playback-contextual-info-button")?.getAttribute("aria-expanded"),
+      visibleCount: document.querySelectorAll(".cache-advanced-info.is-visible").length,
+      pinnedCount: document.querySelectorAll(".cache-advanced-info.is-pinned").length,
+      activeClass: document.activeElement?.className || "",
+    }));
+    assert(
+      coarsePlaybackHitBefore.hitInsideButton && coarsePlaybackHitAfter.expanded === "true",
+      "Host playback touch tap did not pin information",
+      { coarsePlaybackMetrics, coarsePlaybackBox, coarsePlaybackHitBefore, coarsePlaybackHitAfter },
+    );
     assert(
       await coarsePage.evaluate(() => window.__coarsePlaybackInfoActions) === 0,
       "Host playback touch tap activated an adjacent playback control",

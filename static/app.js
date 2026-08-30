@@ -145,6 +145,8 @@ const state = {
   stageControlTrayFocusHandler: null,
   stageResizeObserver: null,
   stageMeasureFrame: null,
+  queueScrollResizeObserver: null,
+  queueScrollMeasureFrame: null,
   openRowMenuTrigger: null,
   playedSessionsLoaded: false,
   playedSessionsLoadPromise: null,
@@ -466,6 +468,7 @@ Object.defineProperty(state, "localPlaybackStartState", {
 const elements = {
   appShell: document.getElementById("app-shell"),
   topbar: document.querySelector(".topbar"),
+  hostContentRegion: document.querySelector(".host-content-region"),
   leftColumn: document.querySelector(".left-column"),
   hostWorkspaceRegion: document.getElementById("host-workspace-region"),
   hostWorkspaceButtons: document.querySelectorAll("[data-host-workspace]"),
@@ -3168,6 +3171,7 @@ function handleHorizontalTabKeydown(event, values, activate) {
 }
 
 function renderHostWorkspaceSelection() {
+  syncNarrowToolLayout();
   const activeWorkspace = normalizeHostWorkspaceName(state.activeHostWorkspace, "queue");
   const focusedWorkspace = normalizeHostWorkspaceName(
     state.focusedHostWorkspace,
@@ -3181,7 +3185,7 @@ function renderHostWorkspaceSelection() {
     && hostRequestWorkspaceUsesOverlay();
   const narrowToolSheet = hostNarrowToolSheetUsesOverlay();
   if (narrowToolSheet && !state.hostNarrowToolSheetActive) {
-    state.hostWorkspaceOverlayOpen = true;
+    state.hostWorkspaceOverlayOpen = false;
   } else if (!narrowToolSheet) {
     state.hostWorkspaceOverlayOpen = false;
   }
@@ -3230,6 +3234,9 @@ function renderHostWorkspaceSelection() {
     elements.hostWorkspaceBackdrop.inert = !requestOverlay;
     elements.hostWorkspaceBackdrop.setAttribute("aria-hidden", String(!requestOverlay));
   }
+  if (typeof scheduleQueueScrollOwnershipSync === "function") {
+    scheduleQueueScrollOwnershipSync();
+  }
 }
 
 function normalizeHostWorkspaceName(value, fallback = "queue") {
@@ -3243,9 +3250,82 @@ function hostRequestWorkspaceUsesOverlay() {
   return false;
 }
 
-function hostNarrowToolSheetUsesOverlay() {
+function narrowHostViewport() {
   return typeof window !== "undefined"
-    && Boolean(window.matchMedia?.("(max-width: 1039px)")?.matches);
+    && Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
+}
+
+function syncNarrowToolLayout() {
+  if (!elements.appShell) {
+    return "wide";
+  }
+  if (!narrowHostViewport()) {
+    elements.appShell.dataset.narrowToolLayout = "wide";
+    elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
+    return "wide";
+  }
+  const contentRect = elements.hostContentRegion?.getBoundingClientRect?.();
+  const canReadComputedStyle = typeof window.getComputedStyle === "function";
+  const panelStyle = elements.playerPanel && canReadComputedStyle
+    ? window.getComputedStyle(elements.playerPanel)
+    : null;
+  const contentWidth = Math.max(0, Number(contentRect?.width || 0));
+  const contentHeight = Math.max(0, Number(contentRect?.height || 0));
+  const panelPaddingInline = (parseFloat(panelStyle?.paddingLeft) || 0)
+    + (parseFloat(panelStyle?.paddingRight) || 0);
+  const panelPaddingBlock = (parseFloat(panelStyle?.paddingTop) || 0)
+    + (parseFloat(panelStyle?.paddingBottom) || 0);
+  const panelGap = parseFloat(panelStyle?.rowGap || panelStyle?.gap) || 10;
+  const headerHeight = elements.playerPanel
+    ?.querySelector(".panel-head")
+    ?.getBoundingClientRect?.().height || 42;
+  const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect?.().height || 40;
+  const frameWidth = Math.max(0, contentWidth - panelPaddingInline);
+  const frameHeight = frameWidth * (9 / 16);
+  const compactStageHeight = Math.ceil(
+    panelPaddingBlock + headerHeight + toggleHeight + frameHeight + (panelGap * 2),
+  );
+  const shellGap = canReadComputedStyle
+    ? parseFloat(
+      window.getComputedStyle(elements.appShell).getPropertyValue("--host-shell-gap"),
+    ) || 12
+    : 12;
+  const minimumResidentToolHeight = 300;
+  const availableStageHeight = Math.floor(
+    contentHeight - minimumResidentToolHeight - shellGap,
+  );
+  const resident = contentWidth > 0
+    && contentHeight > 0
+    && availableStageHeight >= compactStageHeight;
+  if (!resident) {
+    elements.appShell.dataset.narrowToolLayout = "overlay";
+    elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
+    return "overlay";
+  }
+  const inlineTraySize = measureStageControlTrayNaturalSize(
+    Math.max(280, frameWidth),
+    { layout: "inline" },
+  );
+  const inlineTrayHeight = inlineTraySize.height;
+  const inlineTrayFitsWidth = inlineTraySize.width <= frameWidth + 1
+    && inlineTraySize.contentFits;
+  const fullStageHeight = Math.ceil(
+    panelPaddingBlock + headerHeight + frameHeight + inlineTrayHeight + (panelGap * 2),
+  );
+  const residentStageHeight = inlineTrayFitsWidth && availableStageHeight >= fullStageHeight
+    ? fullStageHeight
+    : compactStageHeight;
+  elements.appShell.dataset.narrowToolLayout = "resident";
+  elements.appShell.style?.setProperty?.(
+    "--narrow-stage-resident-height",
+    `${Math.max(1, Math.floor(residentStageHeight))}px`,
+  );
+  return "resident";
+}
+
+function hostNarrowToolSheetUsesOverlay() {
+  return narrowHostViewport()
+    && elements.appShell?.dataset.narrowToolLayout !== "resident";
 }
 
 function hostWorkspaceButton(workspace) {
@@ -3486,20 +3566,51 @@ function stageControlsAreInline() {
   return elements.appShell?.dataset.stageControlsLayout === "inline";
 }
 
-function measureStageControlTrayNaturalSize(width) {
+function measureStageControlTrayNaturalSize(width, { layout = "" } = {}) {
   if (!elements.stageControlTray) {
-    return { width: 0, height: 0 };
+    return { width: 0, height: 0, contentFits: false };
   }
   const tray = elements.stageControlTray;
+  const previousLayout = elements.appShell?.dataset.stageControlsLayout;
   const previousStyle = tray.getAttribute("style");
   const previousHidden = tray.hidden;
+  if (layout && elements.appShell) {
+    elements.appShell.dataset.stageControlsLayout = layout;
+  }
   tray.classList.add("is-measuring");
   tray.hidden = false;
   tray.style.width = `${Math.max(280, Math.round(width))}px`;
   tray.style.maxHeight = "none";
+  const visibleChildren = (container) => [...(container?.children || [])]
+    .filter((child) => !child.hidden && (child.offsetWidth || child.offsetHeight));
+  const controlsStayOnOneRow = [
+    ...tray.querySelectorAll(".av-sync-controls, .volume-controls"),
+  ].every((controls) => {
+    const children = visibleChildren(controls);
+    if (children.length < 2) {
+      return true;
+    }
+    const centers = children.map((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.top + (rect.height / 2);
+    });
+    return Math.max(...centers) - Math.min(...centers) <= 2;
+  });
+  const panelColumnsStayAligned = [...tray.querySelectorAll(".av-sync-panel")]
+    .every((panel) => {
+      const copy = panel.querySelector(".av-sync-copy")?.getBoundingClientRect?.();
+      const controls = panel.querySelector(".av-sync-controls")?.getBoundingClientRect?.();
+      return copy && controls
+        && controls.left >= copy.right - 1
+        && Math.min(copy.bottom, controls.bottom) - Math.max(copy.top, controls.top) > 0;
+    });
+  const labelledButtonsFit = [...tray.querySelectorAll("button")]
+    .filter((button) => !button.hidden && (button.offsetWidth || button.offsetHeight))
+    .every((button) => button.scrollWidth <= button.clientWidth + 1);
   const size = {
     width: Math.ceil(tray.scrollWidth || width),
     height: Math.ceil(tray.scrollHeight || 0),
+    contentFits: controlsStayOnOneRow && panelColumnsStayAligned && labelledButtonsFit,
   };
   tray.classList.remove("is-measuring");
   tray.hidden = previousHidden;
@@ -3507,6 +3618,13 @@ function measureStageControlTrayNaturalSize(width) {
     tray.removeAttribute("style");
   } else {
     tray.setAttribute("style", previousStyle);
+  }
+  if (elements.appShell) {
+    if (previousLayout === undefined) {
+      delete elements.appShell.dataset.stageControlsLayout;
+    } else {
+      elements.appShell.dataset.stageControlsLayout = previousLayout;
+    }
   }
   return size;
 }
@@ -3649,21 +3767,30 @@ function measurePersistentStage() {
   const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect().height || 40;
   const fullFrameWidth = innerWidth;
   const fullFrameHeight = fullFrameWidth * (9 / 16);
-  const trayMeasureWidth = Math.min(860, Math.max(280, innerWidth));
-  const trayHeight = measureStageControlTrayNaturalSize(trayMeasureWidth).height;
+  const trayMeasureWidth = Math.max(280, innerWidth);
+  const inlineTraySize = measureStageControlTrayNaturalSize(
+    trayMeasureWidth,
+    { layout: "inline" },
+  );
+  const trayHeight = inlineTraySize.height;
   const inlineFrameHeight = innerHeight
     - headerHeight
-    - toggleHeight
     - trayHeight
-    - (panelGap * 3);
-  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1039px)")?.matches);
-  const inlineControls = !narrowShell
-    && innerWidth >= 760
+    - (panelGap * 2);
+  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
+  const minimumUsefulFrameHeight = Math.min(
+    fullFrameHeight,
+    Math.max(180, innerHeight * 0.3),
+  );
+  const inlineControls = trayMeasureWidth <= innerWidth + 1
+    && inlineTraySize.width <= trayMeasureWidth + 1
+    && inlineTraySize.contentFits
     && trayHeight > 0
-    && inlineFrameHeight >= 240;
+    && inlineFrameHeight >= minimumUsefulFrameHeight;
   const controlLayout = inlineControls ? "inline" : "popup";
-  const reservedControlsHeight = headerHeight + toggleHeight + (panelGap * 2)
-    + (inlineControls ? trayHeight + panelGap : 0);
+  const reservedControlsHeight = inlineControls
+    ? headerHeight + trayHeight + (panelGap * 2)
+    : headerHeight + toggleHeight + (panelGap * 2);
   const frameHeight = Math.max(0, Math.min(fullFrameHeight, innerHeight - reservedControlsHeight));
   const frameWidth = Math.max(0, Math.min(fullFrameWidth, frameHeight * (16 / 9)));
   const mode = narrowShell
@@ -3678,12 +3805,14 @@ function measurePersistentStage() {
   elements.playerPanel.style.setProperty("--stage-frame-inline-size", `${Math.floor(frameWidth)}px`);
   if (previousLayout !== controlLayout) {
     if (inlineControls) {
+      state.stageControlInlineCollapsed = false;
       clearStageControlTrayPosition();
-      setStageControlTrayOpen(!state.stageControlInlineCollapsed, { moveFocus: false });
+      setStageControlTrayOpen(true, { moveFocus: false });
     } else {
       setStageControlTrayOpen(false, { moveFocus: false });
     }
-  } else if (inlineControls && !state.stageControlInlineCollapsed && !state.stageControlTrayOpen) {
+  } else if (inlineControls && !state.stageControlTrayOpen) {
+    state.stageControlInlineCollapsed = false;
     setStageControlTrayOpen(true, { moveFocus: false });
   } else if (state.stageControlTrayOpen && previousMode !== mode) {
     positionStageControlTray();
@@ -3704,8 +3833,13 @@ function initializePersistentStageFitting() {
     state.stageResizeObserver = new ResizeObserver(schedulePersistentStageMeasurement);
     state.stageResizeObserver.observe(elements.leftColumn);
     state.stageResizeObserver.observe(elements.playerPanel);
+    state.queueScrollResizeObserver?.disconnect?.();
+    state.queueScrollResizeObserver = new ResizeObserver(scheduleQueueScrollOwnershipSync);
+    state.queueScrollResizeObserver.observe(elements.listStage);
+    state.queueScrollResizeObserver.observe(elements.playlist);
   }
   schedulePersistentStageMeasurement();
+  scheduleQueueScrollOwnershipSync();
 }
 
 function initializeWindowChrome() {
@@ -3738,7 +3872,7 @@ function initializeWindowChrome() {
 function initializeHostShell() {
   state.activeHostWorkspace = "queue";
   state.focusedHostWorkspace = "queue";
-  state.hostWorkspaceOverlayOpen = true;
+  state.hostWorkspaceOverlayOpen = false;
   state.requestSubview = "search";
   state.focusedRequestSubview = "search";
   state.searchMode = "shared";
@@ -8225,13 +8359,9 @@ function renderUpdatePreviewControl() {
         : t("service.checkUpdateTitle"),
     );
   }
-  setClassToggle(elements.serviceUpdateIndicator, "has-update", eligible);
   if (elements.serviceUpdateIndicator) {
-    if (eligible) {
-      elements.serviceUpdateIndicator.setAttribute("aria-label", accessibleText);
-    } else {
-      elements.serviceUpdateIndicator.removeAttribute("aria-label");
-    }
+    elements.serviceUpdateIndicator.classList.toggle("has-update", false);
+    elements.serviceUpdateIndicator.removeAttribute("aria-label");
   }
   syncUpdateIndicator(elements.advancedUpdateIndicator, eligible, accessibleText);
   setClassToggle(elements.appUpdateRow, "has-update", eligible);
@@ -13293,6 +13423,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     hint.textContent = state.data?.current_item ? t("list.emptyWithCurrentHint") : t("list.emptyHint");
     emptyNode.append(title, hint);
     elements.playlist.replaceChildren(emptyNode);
+    scheduleQueueScrollOwnershipSync();
     return;
   }
 
@@ -13407,6 +13538,29 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     }
     node.remove();
   });
+  scheduleQueueScrollOwnershipSync();
+}
+
+function syncQueueScrollOwnership() {
+  state.queueScrollMeasureFrame = null;
+  const playlist = elements.playlist;
+  if (!playlist || playlist.clientHeight <= 0) {
+    return false;
+  }
+  const scrollable = playlist.scrollHeight > playlist.clientHeight + 1;
+  playlist.classList.toggle("is-scrollable", scrollable);
+  playlist.classList.toggle("is-content-fit", !scrollable);
+  if (!scrollable && playlist.scrollTop !== 0) {
+    playlist.scrollTop = 0;
+  }
+  return scrollable;
+}
+
+function scheduleQueueScrollOwnershipSync() {
+  if (state.queueScrollMeasureFrame !== null) {
+    return;
+  }
+  state.queueScrollMeasureFrame = window.requestAnimationFrame(syncQueueScrollOwnership);
 }
 
 function badgeStateForItem(item, index, currentItem, cachePolicy) {
@@ -16944,14 +17098,14 @@ elements.hostWorkspaceButtons?.forEach((button) => {
 elements.stageControlsToggle?.addEventListener("click", (event) => {
   event.preventDefault();
   if (stageControlsAreInline()) {
-    state.stageControlInlineCollapsed = state.stageControlTrayOpen;
+    return;
   }
   setStageControlTrayOpen(!state.stageControlTrayOpen);
 });
 
 elements.stageControlsClose?.addEventListener("click", () => {
   if (stageControlsAreInline()) {
-    state.stageControlInlineCollapsed = true;
+    return;
   }
   setStageControlTrayOpen(false, { restoreFocus: true });
 });
@@ -18114,17 +18268,10 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (state.stageControlTrayOpen) {
-    const stageControlsOwnFocus = elements.stageControlTray?.contains(document.activeElement)
-      || document.activeElement === elements.stageControlsToggle;
-    if (!stageControlsAreInline() || stageControlsOwnFocus) {
-      if (stageControlsAreInline()) {
-        state.stageControlInlineCollapsed = true;
-      }
-      setStageControlTrayOpen(false, { restoreFocus: true });
-      event.preventDefault();
-      return;
-    }
+  if (state.stageControlTrayOpen && !stageControlsAreInline()) {
+    setStageControlTrayOpen(false, { restoreFocus: true });
+    event.preventDefault();
+    return;
   }
   if (closeHostWorkspaceOverlay()) {
     event.preventDefault();

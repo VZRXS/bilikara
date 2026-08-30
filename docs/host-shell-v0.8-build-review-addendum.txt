@@ -9,17 +9,21 @@ Corrected contract
 
 * Queue and History are direct destinations. Product order is Queue, History,
   Request, Gatcha, Session Users.
-* Next is Stage-owned Next: the one command button lives in the Now Playing
-  header and nowhere in Queue or another tool.
+* Next belongs to Queue's Now Playing card, matching the pre-shell web layout.
+  The one command button is visible only with Queue's current-song surface and
+  never occupies the Stage heading or another tool.
 * The shell is Stage plus a stable tool card plus an independent fixed
   right-side tool rail. The rail is a separate persistent surface with its own
   border and gap; it is never fused to either card, including narrow mode. In
-  narrow mode the Stage retains the complete shell-body height underneath and
-  the stable tool card is a bottom-anchored layer above it, rather than a
-  second grid row that takes height away from the Stage. The right rail remains
-  full-height and independent beside both layers.
-* There is one stable tool width in each responsive state. Tool and Request
-  subview selection never changes width or dock/overlay policy.
+  narrow mode the right rail remains full-height and independent. When the
+  measured block size can preserve a useful 300px tool region, Stage and tool
+  are resident independent rows; when it cannot, the Stage retains the complete
+  shell-body height underneath and the tool becomes a bottom-anchored layer.
+* The split shell keeps an approximately 64.5:35.5 Stage/tool ratio while both
+  cards narrow, with one clamped tool width shared by every tool and Request
+  subview. Below 1180 logical pixels measured height, not width alone, selects
+  the resident or overlay policy. A short overlay starts lowered; selecting a
+  rail destination raises it.
 * Full, compact and narrow are width-and-height measured Stage modes. One
   ResizeObserver measures the actual Stage container. The playback frame is
   always a 16:9 rectangle outside native fullscreen. One labelled Controls
@@ -30,25 +34,37 @@ Corrected contract
   up-and-right otherwise. The panel may extend beyond the playback-frame width,
   clamps only to the application viewport, and closes from its backdrop, close
   button or Escape; no media or controls are cloned or reparented.
+  The Controls button uses the same slider-console glyph as Remote, but is a
+  labelled theme-accent button rather than a floating orb.
 * The top surface is a one-line icon-plus-label global toolbar. Constrained
-  widths use accessible icon-only actions. Update availability is a theme-color
-  ring around the existing Service health check, not a second marker slot.
+  widths use accessible icon-only actions. Update availability never modifies
+  the outer Service health glyph. It appears only as the small circular marker
+  inside the Service menu, colored by the active theme's update-dot token.
   The Preview switch sits at the update row's upper right and Automatic Check
   sits below it. Disabling Automatic Check immediately returns the presentation
   to the manual-check default and hides any result produced by automatic
   checking. A manual result may still expose its exact version once, as plain
   theme-color text without a badge capsule or a duplicate gray version row.
   Changing Stable/Preview while a visible result exists checks the newly
-  selected channel again. Install buttons use the short Update label while
+  selected channel again. Update actions share the maintenance-button height
+  and size their width to their current text. Install buttons use the short Update label while
   accessible status and confirmation retain version context. The Presentation
   and Service toolbar actions reserve one extra indicator-width at constrained
   sizes so their status glyphs do not crowd the action icons.
+  Service uses a gear icon, deliberately distinct from the Remote-derived
+  slider-console icon used by playback Controls.
+  The integrated brand/title area is transparent to the shell background and
+  has no bottom frame line or independent color fill, so it cannot read as a
+  second native titlebar.
 * Platform-specific integrated window chrome uses a frameless toolbar drag
   region and native window commands on Windows; macOS retains traffic lights,
   native behavior and an overlay titlebar with content inset. Browser and Linux
   show no fake controls or dead titlebar gap.
-* Product labels are Request / 点歌 / リクエスト and Gatcha. Discover remains
-  an internal Request subview; internal `random` identifiers may remain.
+* Product labels are Request / 点歌 / リクエスト. The Gatcha destination keeps
+  its reviewed Chinese product name 试试运气, while English and Japanese use
+  Gatcha. Its rail and empty-state artwork use a restrained SVG die rather than
+  an emoji or the earlier generic grid. Discover remains an internal Request
+  subview; internal `random` identifiers may remain.
 
 Composition and order
 ---------------------
@@ -58,8 +74,16 @@ Composition and order
   | persistent Stage | stable active tool card | gap | fixed right rail |
   +-----------------------------------------------------------------------+
 
-Narrow composition keeps the same DOM and keyboard order but changes only
-stacking geometry:
+Narrow composition keeps the same DOM and keyboard order. With enough measured
+height, tool residency has priority over expanding the control deck:
+
+  +-----------------------------------------------+------------------+
+  | bounded 16:9 Stage and Controls button        | fixed right rail |
+  +-----------------------------------------------+                  |
+  | resident active tool card (at least 300px)    |                  |
+  +-----------------------------------------------+------------------+
+
+When that allocation cannot fit, stacking changes without changing the DOM:
 
   +-----------------------------------------------+------------------+
   | full-height persistent Stage (underlay)       | fixed right rail |
@@ -67,20 +91,35 @@ stacking geometry:
   |       | bottom-anchored active tool card      |                  |
   +-------+---------------------------------------+------------------+
 
-The narrow tool card owns a bounded height, is anchored to the shell bottom,
-and overlaps the Stage. It never participates in a two-row height allocation.
-A restrained upward-only edge shadow communicates that layering without
-casting or clipping a bottom rectangular band.
-Activating a different rail destination opens the sheet for that tool;
+The short narrow tool card owns a bounded height, is anchored to the shell
+bottom, and overlaps the Stage. The tall narrow tool is instead a resident
+second row, does not overlap Stage and cannot be collapsed from the rail.
+A restrained upward-only edge shadow on the same rounded outer surface
+communicates that layering without rectangular corners or a clipped bottom
+band. On first entry to narrow mode the sheet is lowered rather than covering
+the Stage before the user selects a tool.
+In short-overlay mode, activating a different rail destination opens the sheet for that tool;
 activating the selected destination again or pressing Escape lowers it and
 returns pointer/touch access to the Stage. The selected rail destination stays
 available to reopen it, while a lowered tool subtree is hidden and inert.
+When width and height fit the full control deck, that same deck is embedded
+open below the 16:9 frame. Auto-inline mode removes the redundant Controls
+trigger and tray title/close row; it does not expose a second way to collapse
+content that fit measurement has made persistent. Its AV delay, volume and Key
+rows use the exact same internal grid as the manually opened popup. All three
+rows share one bounded surface, separated by inset horizontal rules; labels
+take only their natural width instead of reserving a 260px column, while each
+intrinsic-width control group remains aligned to the right without stretching
+its buttons across the row. If that
+uncompressed popup grid does not fit, the Stage stays in popup mode instead of
+switching to a narrower Remote-like arrangement.
 Queue and History actions share the title row at its upper right; their local
 list owners receive the saved vertical space. The same audit applies to every
-direct workspace header: Stage and Gatcha actions also remain on their title
-rows, Request keeps its subview navigation beside its title when the supported
-width permits, and only controls that include an input/form or represent a
-second navigation level retain a separate row.
+direct workspace header: the Stage keeps only Fullscreen on its title row,
+Gatcha actions remain on its title row, Request keeps its subview navigation
+beside its title when the supported width permits, and only controls that
+include an input/form or represent a second navigation level retain a separate
+row.
 
 DOM/Tab order is toolbar, Stage, active tool content, then the right rail. The
 rail is a vertical roving tab stop: Up/Down/Home/End move focus and Enter/Space
@@ -95,7 +134,7 @@ owner use visible vertical overflow.
 
 Surface / level                         Vertical scroll owner
 --------------------------------------  ------------------------------------
-Queue upcoming rows                     #playlist
+Queue upcoming rows (only on overflow)  #playlist; otherwise non-scrolling full width
 History rows                            #history-list
 Search / Shared                         #lark-search-results
 Search / Local                          #search-results
@@ -119,15 +158,31 @@ vertical wheel. Owners contain overscroll so body and Stage never become
 fallbacks. Queue, History, Request modes and hierarchical parent levels keep
 independent scroll state; Back restores the exact recorded parent level.
 
+The visible UID source-mode action is labelled Add UID / 添加 UID / UID を追加.
+It and Favorites remain the two modes inside the single Sources subview. A
+rendered width inventory rejected flattening them into the Request title-row
+tabs: with the reviewed 14px labels and padding the five-button strip alone is
+about 350px in Chinese, 477px in English, and 516px in Japanese. Adding the
+Request title, 14px header gap, and 40px horizontal padding does not fit every
+language in the approximately 513px Wide tool card and is still less viable at
+Medium. Keeping one stable IA without clipped titles or a hidden horizontal tab
+therefore takes precedence over a Chinese-only fit.
+
 Stage and ownership
 -------------------
 
 Full mode requires both enough measured inline space and enough measured block
-space for the real header and a useful fitted player row. Compact is selected
-when either dimension cannot fit. Narrow keeps a full-height compact Stage as
-the underlay and bottom-anchors the bounded tool card above it; neither surface
-reduces the other's measured height. The independent rail continues to span
-the shell body at the far right.
+space for the real header, the unsqueezed control content and a useful fitted
+player row. The control deck stacks its labelled rows when that preserves full
+button labels, so a tall Stage is not forced closed by the retired fixed 760px
+width gate. Compact is selected when either measured dimension cannot fit.
+Narrow keeps a full-height compact Stage as
+the underlay only when Stage plus a 300px useful tool cannot fit. When both fit,
+the tool remains resident first; only the remaining Stage height is then tested
+for the complete inline deck. The allocation is discrete: if the entire deck
+does not fit, Stage ends immediately after the lower-left Controls button and
+all otherwise blank height returns to the resident tool. The independent rail
+continues to span the shell body at the far right in either case.
 
 The one control deck contains the existing audio variants, AV delay, volume and
 Key controls. In full fit it is inline and expanded by default. In compact and

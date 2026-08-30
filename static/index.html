@@ -162,10 +162,11 @@
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
               </svg>
               <span class="control-label" data-i18n="service.title">服务设置</span>
-              <span class="service-status-ring" id="service-update-indicator" role="status">
+              <span class="service-status-wrap" id="service-update-indicator">
                 <span class="tool-status-indicator is-loading" id="service-status-indicator" aria-hidden="true"></span>
               </span>
             </span>
@@ -451,8 +452,6 @@
               <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
             </div>
             <span class="stage-actions">
-              <button type="button" class="next-button stage-next-button" id="next-button"
-                data-i18n="player.nextSong">切歌</button>
               <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false" disabled>
                 全屏显示
               </button>
@@ -468,9 +467,8 @@
           <button type="button" id="stage-controls-toggle" class="stage-controls-toggle"
             aria-expanded="false" aria-controls="stage-control-tray" aria-label="播放控制" title="播放控制"
             data-i18n-aria-label="player.controls" data-i18n-title="player.controls">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" fill="currentColor"></path>
             </svg>
             <span data-i18n="player.controls">播放控制</span>
           </button>
@@ -697,7 +695,7 @@
                   data-i18n-aria-label="sources.modeSelector">
                   <button type="button" role="tab" data-sources-mode="uids"
                     aria-controls="request-sources-uids" aria-selected="true" tabindex="0"
-                    data-i18n="sources.addedUids">已添加 UID</button>
+                    data-i18n="sources.addUid">添加 UID</button>
                   <button type="button" role="tab" data-sources-mode="favorites"
                     aria-controls="request-sources-favorites" aria-selected="false" tabindex="-1"
                     data-i18n="sources.favorites">收藏夹</button>
@@ -858,9 +856,9 @@
             role="tabpanel" aria-labelledby="work-rail-random" data-host-workspace-panel="random" hidden inert>
             <div class="request-head gatcha-head">
               <div>
-                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha</p>
+                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">GATCHA</p>
                 <h2 id="gatcha-title" data-host-workspace-heading tabindex="-1"
-                  data-i18n="gatcha.title">Gatcha</h2>
+                  data-i18n="gatcha.title">试试运气</h2>
               </div>
               <div class="gatcha-head-actions">
                 <button type="button" id="gatcha-pool-config-toggle"
@@ -879,13 +877,33 @@
               <div class="gatcha-stage-inner">
                 <div id="gatcha-main-view" class="gatcha-main-view">
                   <section id="gatcha-init-view" class="gatcha-state-view" data-gatcha-view="idle">
-                    <div class="gatcha-icon">🎲</div>
+                    <div class="gatcha-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect>
+                        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle>
+                      </svg>
+                    </div>
                     <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
                   </section>
 
                   <section id="gatcha-drawing-view" class="gatcha-state-view" data-gatcha-view="drawing"
                     hidden inert aria-hidden="true">
-                    <div class="gatcha-icon" aria-hidden="true">🎲</div>
+                    <div class="gatcha-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect>
+                        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle>
+                      </svg>
+                    </div>
                     <p class="gatcha-desc" data-i18n="gatcha.drawing">正在寻找幸运投稿...</p>
                   </section>
 
@@ -972,6 +990,8 @@
                 <p class="queue-current-requester hidden" id="queue-current-requester"></p>
                 <p class="queue-current-cache-detail hidden" id="queue-current-cache-detail"></p>
               </div>
+              <button type="button" class="next-button queue-current-next" id="next-button"
+                data-i18n="player.nextSong">切歌</button>
           </section>
           <div id="playlist" class="playlist" tabindex="0" aria-label="排队歌曲"
             data-i18n-aria-label="list.scrollLabel"></div>
@@ -1028,8 +1048,8 @@
         <button type="button" class="work-rail-button" id="work-rail-random" role="tab"
           data-host-workspace="random" aria-controls="gatcha-panel" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"></path><circle cx="7" cy="7" r=".8" fill="currentColor"></circle><circle cx="17" cy="7" r=".8" fill="currentColor"></circle><circle cx="7" cy="17" r=".8" fill="currentColor"></circle><circle cx="17" cy="17" r=".8" fill="currentColor"></circle></svg>
-          <span class="work-rail-label" data-i18n="shell.random">Gatcha</span>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle></svg>
+          <span class="work-rail-label" data-i18n="shell.random">试试运气</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-users" role="tab"
           data-host-workspace="users" aria-controls="session-users-panel" aria-selected="false" tabindex="-1">
