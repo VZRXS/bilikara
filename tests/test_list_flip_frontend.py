@@ -288,13 +288,25 @@ console.log(JSON.stringify({ sequence }));
             self.assertEqual(request_workspace.count(f'data-discover-mode="{mode}"'), 1)
         for mode in ("uids", "favorites"):
             self.assertEqual(request_workspace.count(f'data-sources-mode="{mode}"'), 1)
+        self.assertNotIn('data-sources-mode="followed"', request_workspace)
         source_uid_tab = request_workspace[
             request_workspace.index('data-sources-mode="uids"') : request_workspace.index(
                 "</button>", request_workspace.index('data-sources-mode="uids"')
             )
         ]
-        self.assertIn('data-i18n="sources.addUid">添加 UID', source_uid_tab)
+        self.assertIn('data-i18n="sources.ownerList">UP 主列表', source_uid_tab)
         self.assertNotIn('data-i18n="sources.addedUids"', source_uid_tab)
+        owner_panel = request_workspace[
+            request_workspace.index('id="request-sources-uids"') : request_workspace.index(
+                'id="request-sources-favorites"'
+            )
+        ]
+        self.assertIn('id="modal-follow-uid-form"', owner_panel)
+        self.assertIn('id="request-sources-followed-scroll"', owner_panel)
+        self.assertIn('id="follow-up-grid"', owner_panel)
+        self.assertNotIn('id="request-sources-followed"', request_workspace)
+        self.assertNotIn('id="open-added-uids-button"', request_workspace)
+        self.assertNotIn('id="open-favorites-button"', request_workspace)
 
         expected_labels = {
             "request.quickTab": {"zh": "快速点歌", "en": "Quick Request", "ja": "クイック予約"},
@@ -304,6 +316,7 @@ console.log(JSON.stringify({ sequence }));
             "search.sharedCatalog": {"zh": "共享曲库", "en": "Shared catalog", "ja": "共有カタログ"},
             "search.localLibrary": {"zh": "本地曲库", "en": "Local library", "ja": "ローカルライブラリ"},
             "sources.addUid": {"zh": "添加 UID", "en": "Add UID", "ja": "UID を追加"},
+            "sources.ownerList": {"zh": "UP 主列表", "en": "Uploader List", "ja": "UP 主一覧"},
             "sources.favorites": {"zh": "收藏夹", "en": "Favorites", "ja": "お気に入り"},
         }
         for key, labels in expected_labels.items():
@@ -356,12 +369,12 @@ console.log(JSON.stringify({ sequence }));
         self.assertNotIn('id="gatcha-uid-form"', random_workspace)
         self.assertNotIn('id="refresh-gatcha-cache-button"', random_workspace)
         self.assertNotIn('id="pull-gatcha-favlist-button"', random_workspace)
-        self.assertEqual(random_workspace.count('id="manage-sources-button"'), 1)
+        self.assertNotIn('id="manage-sources-button"', random_workspace)
 
     def test_gatcha_is_one_direct_state_workspace_with_local_scroll(self):
         self.assertEqual(self.markup.count('id="gatcha-panel"'), 1)
         self.assertEqual(self.markup.count('id="gatcha-pool-config-modal"'), 1)
-        self.assertEqual(self.markup.count('id="manage-sources-button"'), 1)
+        self.assertEqual(self.markup.count('id="manage-sources-button"'), 0)
         self.assertEqual(self.markup.count('id="gatcha-button"'), 1)
         self.assertEqual(self.markup.count('id="gatcha-retry-button"'), 1)
         self.assertEqual(self.markup.count('id="gatcha-confirm-button"'), 1)

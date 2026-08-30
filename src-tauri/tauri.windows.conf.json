@@ -12,7 +12,8 @@
         "visible": false,
         "dragDropEnabled": false,
         "decorations": false,
-        "shadow": false
+        "transparent": true,
+        "shadow": true
       }
     ]
   }

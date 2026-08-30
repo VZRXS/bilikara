@@ -85,6 +85,14 @@ console.log(JSON.stringify({{
     def test_host_places_bvid_after_rating(self):
         self.assert_metadata_order("static/app.js", remote=False)
 
+    def test_empty_cover_ellipsis_does_not_clip_rating_stars(self):
+        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('fallback.className = "search-result-cover-fallback"', script)
+        self.assertIn("#host-workspace-request .search-result-cover-fallback", styles)
+        self.assertIn(".request-workspace .search-result-cover-fallback", styles)
+        self.assertNotIn(".search-result-cover.is-empty span", styles)
+
     def test_host_history_icon_button_matches_other_history_actions(self):
         css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         menu_rule = css.index(".menu-content .icon-button {")
@@ -912,6 +920,20 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertIn("width: 100%;", cover_rule)
         self.assertIn("min-width: 0;", cover_rule)
         self.assertIn("aspect-ratio: 16 / 9;", cover_rule)
+
+    def test_host_tool_detail_uses_its_container_width_instead_of_viewport_width(self):
+        host_css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        hero_rule = re.search(
+            r"\.request-workspace \.song-detail-hero\s*\{([^}]*)\}",
+            host_css,
+        ).group(1)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", hero_rule)
+        card_rule = re.search(
+            r"\.request-workspace \.song-detail-card\s*\{([^}]*)\}",
+            host_css,
+        ).group(1)
+        self.assertIn("width: 100%", card_rule)
+        self.assertIn("min-width: 0", card_rule)
 
     def test_detail_cover_fallback_layering_is_behind_image(self):
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")

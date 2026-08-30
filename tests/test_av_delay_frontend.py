@@ -57,13 +57,19 @@ class AvDelayFrontendTest(unittest.TestCase):
             self.host_html.index('id="cache-advanced-inline-view"') :
             self.host_html.index('class="cache-panel-footer"')
         ]
-        self.assertEqual(advanced.count('class="cache-advanced-info-button"'), 2)
-        self.assertEqual(advanced.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
+        self.assertEqual(advanced.count('class="cache-advanced-info-button"'), 4)
+        self.assertEqual(advanced.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 4)
+        self.assertEqual(advanced.count('data-i18n-aria-label="common.moreInfo"'), 4)
+        self.assertEqual(advanced.count('aria-describedby="cache-advanced-'), 4)
+        self.assertEqual(advanced.count('role="tooltip"'), 4)
         self.assertNotIn('aria-hidden="true">?</span>', advanced)
         self.assertNotIn("service.releaseOnlyHint", advanced)
         self.assertNotIn("service.dataCleanupHint", advanced)
-        self.assertIn('class="cache-panel-hint cache-data-cleanup-scope"', advanced)
+        self.assertIn('data-i18n="service.restartApplicationHint"', advanced)
+        self.assertIn('data-i18n="service.playbackRepairHint"', advanced)
         self.assertIn('data-i18n="service.dataCleanupScope"', advanced)
+        self.assertIn('data-i18n="service.diagnosticsHint"', advanced)
+        self.assertNotIn('class="cache-panel-hint cache-data-cleanup-scope"', advanced)
 
         floating_controls = self.remote_html[
             self.remote_html.index('id="floating-control-overlay"') :

@@ -33,6 +33,9 @@
   --queue-badge-size: 48px;
   --queue-badge-ring-inset: 4px;
   --queue-badge-ring-width: 1.8px;
+  --request-song-card-min-inline-size: 220px;
+  --host-peer-panel-padding: 16px;
+  --host-peer-request-head-padding: 16px;
   --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
     sans-serif;
   --font-display: "Avenir Next", "Trebuchet MS", "Noto Sans SC", sans-serif;
@@ -205,6 +208,7 @@
   --scrollbar-track-bg: rgba(67, 53, 41, 0.05);
   --scrollbar-thumb-bg: rgba(143, 49, 29, 0.24);
   --scrollbar-thumb-hover-bg: rgba(143, 49, 29, 0.36);
+  --tool-ready-bg: rgba(43, 123, 96, 0.14);
   --category-scrollbar-track-bg: rgba(255, 255, 255, 0.05);
   --category-scrollbar-thumb-border: 2px solid rgba(255, 250, 244, 0.92);
   --category-scrollbar-thumb-bg: linear-gradient(180deg, rgba(143, 49, 29, 0.32), rgba(202, 91, 60, 0.24));
@@ -224,6 +228,30 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--scrollbar-track-bg);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb-bg);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover-bg);
+  background-clip: padding-box;
 }
 
 html,
@@ -1427,14 +1455,6 @@ h2 {
   gap: 10px;
   padding: 10px;
   margin: -10px;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  transition: border-color 180ms ease, background 180ms ease;
-}
-
-.cache-panel-update-row.has-update {
-  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .cache-app-update-copy {
@@ -1448,19 +1468,19 @@ h2 {
 
 .cache-app-update-heading {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 .app-update-version-badge {
   display: inline-flex;
   align-items: center;
   min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
   color: var(--accent-deep);
   font-size: 12px;
   font-weight: 800;
@@ -2633,13 +2653,37 @@ body.is-tauri-fullscreen-active {
 }
 
 .audio-variant-bar {
-  margin-top: 14px;
-  padding-top: 2px;
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 0;
   display: flex;
   gap: 8px;
-  align-items: flex-start;
+  align-items: center;
   position: relative;
   z-index: 10;
+}
+
+.audio-variant-anchor {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.audio-variant-anchor[hidden],
+.audio-variant-backdrop[hidden] {
+  display: none;
+}
+
+.audio-variant-backdrop {
+  position: fixed;
+  z-index: 1170;
+  inset: 0;
+  background: rgba(20, 15, 12, 0.12);
 }
 
 .audio-variant-list {
@@ -2647,16 +2691,41 @@ body.is-tauri-fullscreen-active {
   min-width: 0;
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   overflow: hidden;
 }
 
 .audio-variant-bar.is-collapsed .audio-variant-list {
-  max-height: var(--audio-variant-collapsed-height, 44px);
+  max-height: 38px;
+}
+
+.audio-variant-bar.is-expanded {
+  position: fixed;
+  z-index: 1180;
+  min-width: 320px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--settings-panel-bg);
+  box-shadow: 0 18px 46px rgba(35, 26, 20, 0.24);
+}
+
+.audio-variant-bar.is-expanded .audio-variant-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  overflow: visible;
+}
+
+.audio-variant-bar.is-expanded .audio-variant-button {
+  width: 100%;
 }
 
 .audio-variant-toggle {
   flex: 0 0 auto;
+  margin-left: auto;
   width: 34px;
   height: 34px;
   border: var(--variant-toggle-border);
@@ -2677,11 +2746,6 @@ body.is-tauri-fullscreen-active {
 
 .audio-variant-toggle span {
   display: inline-block;
-  transition: transform 180ms ease;
-}
-
-.audio-variant-toggle.is-expanded span {
-  transform: rotate(180deg);
 }
 
 .audio-variant-toggle.hidden {
@@ -2717,12 +2781,15 @@ body.is-tauri-fullscreen-active {
 
 .player-panel:fullscreen .av-sync-panel,
 .player-panel:fullscreen .volume-panel,
+.player-panel:fullscreen .audio-variant-anchor,
 .player-panel:fullscreen .audio-variant-bar,
 .player-panel:-webkit-full-screen .av-sync-panel,
 .player-panel:-webkit-full-screen .volume-panel,
+.player-panel:-webkit-full-screen .audio-variant-anchor,
 .player-panel:-webkit-full-screen .audio-variant-bar,
 .player-panel.is-tauri-fullscreen .av-sync-panel,
 .player-panel.is-tauri-fullscreen .volume-panel,
+.player-panel.is-tauri-fullscreen .audio-variant-anchor,
 .player-panel.is-tauri-fullscreen .audio-variant-bar {
   display: none;
 }
@@ -3048,7 +3115,7 @@ body.is-tauri-fullscreen-active {
 .audio-variant-button.active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 10px 22px var(--audio-variant-active-shadow);
+  box-shadow: none;
 }
 
 .audio-variant-button:hover {
@@ -3130,6 +3197,10 @@ select:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
+}
+
+.session-user-form + .message-surface {
+  margin-top: 10px;
 }
 
 .session-user-stage {
@@ -3233,8 +3304,8 @@ select:disabled {
 
 .session-user-trash {
   position: absolute;
-  bottom: 0;
-  right: 0;
+  bottom: 8px;
+  right: 8px;
   width: 48px;
   height: 48px;
   border-radius: 50%;
@@ -3272,6 +3343,32 @@ select:disabled {
   background: var(--red);
   color: white;
   transform: scale(1.15);
+}
+
+.session-user-drag-image {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  z-index: -1;
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  min-height: var(--session-user-row-height, 36px);
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--session-user-badge-color);
+  box-shadow: none;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.session-user-drag-image .session-user-order-number {
+  margin-left: 0;
 }
 
 .remote-panel {
@@ -5452,6 +5549,7 @@ body.is-presentation-stage-only .player-panel {
 
 body.is-presentation-stage-only .player-panel::before,
 body.is-presentation-stage-only .player-panel > .panel-head,
+body.is-presentation-stage-only #audio-variant-anchor,
 body.is-presentation-stage-only #audio-variant-bar,
 body.is-presentation-stage-only #av-sync-panel,
 body.is-presentation-stage-only #volume-panel,
@@ -5533,8 +5631,11 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 /* Expanded search results */
 #host-workspace-request .search-results {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr)
+  );
+  gap: 10px;
   align-items: start;
   align-content: start;
   justify-items: stretch;
@@ -5580,7 +5681,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   object-fit: cover;
 }
 
-#host-workspace-request .search-result-cover.is-empty span {
+#host-workspace-request .search-result-cover-fallback {
   max-width: calc(100% - 20px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6178,8 +6279,8 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 #host-workspace-request .follow-up-grid,
 .request-workspace .follow-up-grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 208px), 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr));
+  gap: 10px;
   align-content: start;
   grid-auto-rows: max-content;
   max-height: none;
@@ -6187,30 +6288,30 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 #host-workspace-request .follow-up-button,
 .request-workspace .follow-up-button {
-  min-height: 144px;
-  gap: 12px;
-  padding: 20px;
-  border-radius: 18px;
+  min-height: 76px;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 16px;
 }
 
 #host-workspace-request .follow-up-avatar,
 .request-workspace .follow-up-avatar {
-  right: 16px;
-  bottom: 12px;
-  width: 64px;
-  height: 64px;
+  right: 8px;
+  bottom: 6px;
+  width: 32px;
+  height: 32px;
 }
 
 #host-workspace-request .follow-up-name,
 .request-workspace .follow-up-name {
-  font-size: 28px;
-  line-height: 1.18;
+  font-size: 14px;
+  line-height: 1.25;
 }
 
 #host-workspace-request .follow-up-count,
 .request-workspace .follow-up-count {
-  font-size: 22px;
-  line-height: 1.2;
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 #host-workspace-request .follow-up-items-view,
@@ -6220,8 +6321,11 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 .request-workspace .search-results {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr)
+  );
+  gap: 10px;
   align-content: start;
   justify-items: stretch;
   grid-auto-rows: max-content;
@@ -6272,7 +6376,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   object-fit: cover;
 }
 
-.request-workspace .search-result-cover.is-empty span {
+.request-workspace .search-result-cover-fallback {
   max-width: calc(100% - 20px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6392,34 +6496,37 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   }
 
   #host-workspace-request .search-results {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    grid-template-columns: repeat(
+      auto-fill,
+      minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr)
+    );
   }
 
   #host-workspace-request .follow-up-grid,
   .request-workspace .follow-up-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 104px), 1fr));
   }
 
   #host-workspace-request .follow-up-button,
   .request-workspace .follow-up-button {
-    min-height: 124px;
-    padding: 16px;
+    min-height: 72px;
+    padding: 10px;
   }
 
   #host-workspace-request .follow-up-name,
   .request-workspace .follow-up-name {
-    font-size: 22px;
+    font-size: 14px;
   }
 
   #host-workspace-request .follow-up-count,
   .request-workspace .follow-up-count {
-    font-size: 17px;
+    font-size: 12px;
   }
 
   #host-workspace-request .follow-up-avatar,
   .request-workspace .follow-up-avatar {
-    width: 54px;
-    height: 54px;
+    width: 32px;
+    height: 32px;
   }
 
   .request-workspace .search-results {
@@ -7404,7 +7511,7 @@ body {
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  padding: 10px var(--host-shell-padding-inline) 12px;
+  padding: 0 var(--host-shell-padding-inline) 12px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 0;
@@ -7719,6 +7826,8 @@ body {
   border-radius: 18px;
   background: var(--panel);
   box-shadow: 0 14px 34px rgba(80, 52, 32, 0.1);
+  container-name: request-workspace;
+  container-type: inline-size;
 }
 
 .request-workspace-head {
@@ -8061,14 +8170,57 @@ body {
 
 .request-sources-view .follow-up-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 208px), 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr));
+  gap: 10px;
+}
+
+.source-followed-panel {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .request-workspace > .song-detail-view {
   position: absolute;
   z-index: 80;
   inset: 0;
+}
+
+.request-workspace .song-detail-view {
+  padding: 22px 14px;
+}
+
+.request-workspace .song-detail-card {
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+}
+
+.request-workspace .song-detail-hero {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.request-workspace .song-detail-facts {
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.request-workspace .song-detail-metrics {
+  justify-content: flex-start;
+  margin-top: 0;
+}
+
+@container request-workspace (min-width: 500px) {
+  .request-workspace .song-detail-hero {
+    grid-template-columns: minmax(0, 1.45fr) minmax(150px, 0.85fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .request-workspace .song-detail-facts {
+    padding: 2px 0;
+  }
 }
 
 :root:is([data-theme="dark"], [data-theme="blue"]) .request-subview-tabs,
@@ -8122,7 +8274,7 @@ body {
   .app-shell {
     --host-rail-width: 100px;
     --host-tool-card-width: 100%;
-    padding: 8px 9px 9px;
+    padding: 0 9px 9px;
   }
 
   .topbar {
@@ -8296,11 +8448,13 @@ body {
    and one persistent Stage/control tree. */
 .topbar {
   width: 100%;
-  height: 58px;
-  min-height: 58px;
-  margin-bottom: 8px;
-  padding: 0;
+  height: 52px;
+  min-height: 52px;
+  margin-bottom: 10px;
+  padding: 0 0 0 17px;
   gap: 10px;
+  flex-direction: row;
+  align-items: center;
   border-bottom: 0;
   background: transparent;
   box-shadow: none;
@@ -8319,7 +8473,7 @@ body {
 }
 
 .host-brand h1 {
-  font-size: 22px;
+  font-size: 28px;
   line-height: 1;
 }
 
@@ -8348,7 +8502,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
 
 .top-controls {
   width: auto;
-  height: 46px;
+  height: 42px;
   margin-left: auto;
   gap: 6px;
   overflow: visible;
@@ -8358,8 +8512,8 @@ body[data-tauri-platform="macos"] .window-drag-region {
 .topbar .status-chip {
   width: auto !important;
   min-width: 0 !important;
-  height: 44px;
-  min-height: 44px;
+  height: 40px;
+  min-height: 40px;
   flex: 0 0 auto !important;
   padding: 0;
   border: 1px solid var(--line);
@@ -8373,7 +8527,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
 .topbar .status-chip-toggle {
   width: auto;
   min-width: 40px;
-  min-height: 42px;
+  min-height: 40px;
   padding: 0 12px;
   display: inline-flex;
   flex-direction: row;
@@ -8430,8 +8584,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
 }
 
 .window-controls {
-  height: 58px;
-  margin-right: calc(-1 * var(--host-shell-padding-inline));
+  height: 52px;
   display: flex;
   align-self: stretch;
 }
@@ -8598,7 +8751,7 @@ body[data-tauri-platform="macos"] .topbar {
   padding: 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
   border: 1px solid var(--line-strong);
   border-radius: 18px;
   background: var(--settings-panel-bg);
@@ -8634,7 +8787,7 @@ body[data-tauri-platform="macos"] .topbar {
   overflow: visible;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft));
+  background: var(--bottom-panel-bg);
 }
 
 .stage-extended-controls > .av-sync-panel,
@@ -8983,13 +9136,36 @@ body[data-tauri-platform="macos"] .topbar {
 .request-discover-view > .request-mode-panel,
 .source-browse-scroll {
   min-height: 0;
+}
+
+.request-discover-view > .request-mode-panel {
+  overflow: hidden;
+}
+
+.request-discover-view .category-browser,
+.request-discover-view .tag-browser {
+  height: 100%;
+  overflow: hidden;
+}
+
+.source-browse-scroll {
   overflow-y: auto;
 }
 
 .request-discover-view .category-browser-home,
-.request-discover-view .category-browser-detail,
 .request-discover-view .tag-browser-tags,
-.request-discover-view .search-results,
+.request-discover-view .category-browser-results,
+.request-discover-view [data-d1-browse-results] {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+.request-discover-view .category-browser-detail {
+  overflow: hidden;
+}
+
 .request-sources-view .follow-browser,
 .request-sources-view .favlist-browser,
 .request-sources-view .follow-up-list-view,
@@ -9000,6 +9176,10 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 @media (max-width: 1230px) {
+  .topbar {
+    padding-left: 13px;
+  }
+
   .host-brand .project-link span,
   .topbar .control-label {
     position: absolute;
@@ -9033,6 +9213,10 @@ body[data-tauri-platform="macos"] .topbar {
   .app-shell {
     --host-rail-width: 100px;
     --host-tool-card-width: 100%;
+    /* Match peer tool headings/actions to the compact Stage's 12px axis while
+       reclaiming sheet space without adding a second responsive policy. */
+    --host-peer-panel-padding: 10px 12px;
+    --host-peer-request-head-padding: 10px 12px;
   }
 
   .host-content-region {
@@ -9120,12 +9304,7 @@ body[data-tauri-platform="macos"] .topbar {
   }
 
   .left-column .panel-head .section-tag {
-    display: none;
-  }
-
-  .left-column .panel-head h2 {
-    font-size: 17px;
-    line-height: 1.2;
+    display: block;
   }
 
   .host-workspace-region .request-workspace,
@@ -9213,4 +9392,613 @@ body.is-presentation-stage-only .left-column {
   margin: 0;
   padding: 0;
   overflow: hidden;
+}
+
+/* Build-review refinement: peer tools and same-scale dialogs share one title
+   and action geometry instead of inheriting their historical card layouts. */
+:root,
+.app-shell {
+  --host-peer-eyebrow-size: 12px;
+  --host-peer-title-size: 24px;
+  --host-peer-action-height: 40px;
+  --host-peer-action-font-size: 14px;
+  --host-peer-head-padding-inline: 16px;
+  --host-control-height: 48px;
+  --host-control-font-size: 14px;
+  --host-control-radius: 14px;
+  --source-action-control-height: var(--host-control-height);
+  --source-card-min-inline-size: 104px;
+}
+
+.app-shell {
+  padding: 0 var(--host-shell-padding-inline) 12px;
+}
+
+.panel-head,
+.host-workspace-region .queue-card-head,
+.request-workspace-head,
+.host-workspace-region .request-head,
+.selection-modal-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 3px;
+  align-items: center;
+  min-height: 45px;
+}
+
+.host-peer-head .host-peer-heading,
+.host-workspace-region .queue-card-head .host-peer-heading {
+  display: contents;
+}
+
+.host-peer-head .section-tag,
+.host-workspace-region .queue-card-head .section-tag {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  margin: 0;
+  font-size: var(--host-peer-eyebrow-size);
+  line-height: 1.2;
+}
+
+.host-peer-head h2,
+.host-workspace-region .queue-card-head h2 {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--host-peer-title-size);
+  line-height: 1.15;
+}
+
+.host-peer-head > :not(.host-peer-heading),
+.host-workspace-region .queue-card-head > :not(.host-peer-heading) {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: center;
+  justify-self: end;
+}
+
+.player-panel > .panel-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  min-height: 0;
+  padding-right: 0;
+}
+
+.player-panel > .panel-head .stage-actions {
+  position: static;
+  inset: auto;
+  width: auto;
+  height: auto;
+}
+
+.request-workspace-head {
+  gap: 12px;
+  padding: var(--host-peer-request-head-padding);
+  align-items: center;
+}
+
+.host-workspace-region .queue-card,
+.host-workspace-region .history-card,
+.host-workspace-region .gatcha-panel,
+.host-workspace-region .session-users-panel {
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+  padding: var(--host-peer-panel-padding);
+}
+
+.host-workspace-region,
+.host-workspace-region[data-active-workspace="users"] {
+  scrollbar-gutter: auto;
+}
+
+.host-workspace-region .session-users-panel {
+  align-self: stretch;
+}
+
+.host-peer-head .toolbar-button,
+.host-peer-head .next-button,
+.host-workspace-region .queue-card-head .toolbar-button,
+.host-workspace-region .queue-card-head .next-button,
+.selection-modal-head .banner-close {
+  min-height: var(--host-peer-action-height);
+  height: var(--host-peer-action-height);
+  padding-block: 0;
+  font-size: var(--host-peer-action-font-size);
+  line-height: 1;
+}
+
+.selection-modal-head .banner-close {
+  width: var(--host-peer-action-height);
+  min-width: var(--host-peer-action-height);
+  padding-inline: 0;
+}
+
+.request-subview-tabs,
+.request-mode-tabs {
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.request-subview-tabs button,
+.request-mode-tabs button {
+  min-height: var(--host-peer-action-height);
+  height: var(--host-peer-action-height);
+  padding: 0 12px;
+  font-size: var(--host-peer-action-font-size);
+  border-radius: 9px;
+}
+
+.queue-count {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.session-user-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+/* Sources are direct compact browsers: the action row and its result owner are
+   one view, and cards never stretch into oversized single-column tiles. */
+#request-sources-uids {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+#request-sources-favorites {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.source-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+#request-sources-favorites .source-action-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.source-action-row .modal-uid-form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.source-action-row input,
+.source-action-row button {
+  height: var(--source-action-control-height);
+  min-height: var(--source-action-control-height);
+  padding-block: 0;
+  font-size: var(--host-control-font-size);
+  border-radius: var(--host-control-radius);
+}
+
+.source-action-row input {
+  padding-inline: 13px;
+}
+
+.source-action-row button {
+  padding-inline: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.request-quick-view .compact-form input,
+.request-quick-view .compact-form select,
+.request-quick-view .compact-form button,
+.request-query-form input,
+.request-query-form button,
+.request-sources-view .follow-search-form input,
+.request-sources-view .follow-search-form button,
+.session-user-form input,
+.session-user-form button {
+  height: var(--host-control-height);
+  min-height: var(--host-control-height);
+  border-radius: var(--host-control-radius);
+  font-size: var(--host-control-font-size);
+  line-height: 1;
+}
+
+.request-workspace .modal-favlist-pull-form {
+  padding-right: 0;
+}
+
+.request-sources-view .follow-up-grid,
+#host-workspace-request .follow-up-grid {
+  width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--source-card-min-inline-size)), 1fr));
+  justify-content: stretch;
+  gap: 10px;
+  padding-right: 0;
+}
+
+.request-sources-view .follow-up-button,
+#host-workspace-request .follow-up-button {
+  width: 100%;
+  max-width: none;
+  min-height: 72px;
+  padding: 10px;
+  gap: 5px;
+  border-radius: 14px;
+}
+
+.request-sources-view .follow-up-name,
+#host-workspace-request .follow-up-name {
+  font-size: 13px;
+}
+
+.request-sources-view .follow-up-count,
+#host-workspace-request .follow-up-count {
+  font-size: 12px;
+}
+
+.source-browse-scroll {
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+/* The web workspace used a friendly dice glyph and a compact vertical rhythm. */
+.gatcha-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.gatcha-stage-inner {
+  min-height: 0;
+  display: block;
+}
+
+.gatcha-main-view {
+  min-height: 0;
+}
+
+.gatcha-state-view {
+  flex: 0 0 auto;
+  min-height: 144px;
+}
+
+.gatcha-actions {
+  margin-top: 0;
+}
+
+/* The pool probability uses the same filled range treatment as Host volume. */
+#gatcha-pool-weight-slider.pool-config-weight-slider {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: none;
+}
+
+.pool-config-head-actions .toolbar-button {
+  min-height: var(--host-peer-action-height);
+  height: var(--host-peer-action-height);
+  padding: 0 12px;
+  font-size: var(--host-peer-action-font-size);
+}
+
+/* Three density passes preserve complete labels before controls collapse into
+   the explicit popover: normal spacing, compact spacing, then no arrow glyphs. */
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls {
+  padding-inline: 10px;
+}
+
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls > .av-sync-panel,
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls > .volume-panel {
+  gap: 12px;
+}
+
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls .av-sync-step-button,
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls .av-sync-reset-button,
+.app-shell[data-stage-control-density="compact"] .stage-extended-controls .av-sync-lock-button {
+  padding-inline: 7px;
+}
+
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls {
+  padding-inline: 8px;
+}
+
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls > .av-sync-panel,
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls > .volume-panel {
+  gap: 8px;
+}
+
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-step-button,
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-reset-button,
+.app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-lock-button {
+  padding-inline: 5px;
+}
+
+.app-shell[data-stage-control-density="plain"] .av-sync-step-symbol {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .session-user-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .source-action-row,
+  .source-action-row .modal-uid-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .source-action-row,
+  .source-action-row .modal-uid-form,
+  .session-user-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (pointer: coarse) {
+  :root,
+  .app-shell {
+    --host-peer-action-height: 44px;
+  }
+}
+
+/* v0.8 ultra-narrow toolbar popover repair: these desktop menus are already
+   smaller than the supported Host window, so do not revive the retired mobile
+   card stack merely because the shell approaches its minimum width. */
+.topbar .cache-panel {
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  right: 0;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+
+.remote-mini-popover-card,
+.stage-control-tray,
+.selection-modal-card,
+.gatcha-panel {
+  box-sizing: border-box;
+}
+
+.remote-mini-popover-card {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 10px;
+  padding: 14px;
+}
+
+.remote-mini-popover-card .remote-copy {
+  width: 100%;
+  text-align: left;
+}
+
+@media (max-width: 840px) {
+  .topbar .remote-mini-popover,
+  .topbar .cache-panel {
+    position: fixed;
+    top: 64px;
+    right: 12px;
+    left: auto;
+    max-width: calc(100vw - 24px);
+  }
+
+  .topbar .remote-mini-popover {
+    width: min(360px, calc(100vw - 24px));
+  }
+
+  .topbar .cache-panel {
+    width: min(340px, calc(100vw - 24px));
+  }
+
+  body[data-tauri-platform="windows"] .topbar .remote-mini-popover,
+  body[data-tauri-platform="windows"] .topbar .cache-panel {
+    top: 96px;
+  }
+}
+
+.topbar .cache-panel-row,
+.topbar .cache-panel-row-stack {
+  flex-direction: row;
+}
+
+.topbar .cache-panel-row {
+  align-items: flex-start;
+}
+
+.topbar .cache-panel-row-stack {
+  align-items: flex-end;
+}
+
+.topbar .cache-policy-row {
+  align-items: center;
+}
+
+.service-status-wrap {
+  width: 20px;
+  height: 20px;
+}
+
+.service-status-wrap .tool-status-indicator {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+  font-size: 18px;
+}
+
+.service-status-wrap .tool-status-indicator.is-ready,
+.cache-panel-tool-indicator.is-ready {
+  background: var(--tool-ready-bg);
+  color: var(--green);
+}
+
+.topbar .cache-panel .cache-panel-tool-indicator {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+  font-size: 12px;
+}
+
+/* v0.8 Windows application frame: Tauri/DWM owns the external shadow and
+   resize edge. The application paints only its one-pixel border and corners;
+   maximized, fullscreen, and presentation-only surfaces stay flush. */
+html[data-tauri-platform="windows"],
+body[data-tauri-platform="windows"] {
+  background: transparent;
+}
+
+body[data-tauri-platform="windows"] .app-shell {
+  --window-frame-radius: 14px;
+  --window-frame-border: color-mix(in srgb, var(--ink) 18%, transparent);
+  width: 100%;
+  height: 100dvh;
+  margin: 0;
+  border: 1px solid var(--window-frame-border);
+  border-radius: var(--window-frame-radius);
+  background:
+    radial-gradient(circle at top left, var(--bg-glow), transparent 28%),
+    linear-gradient(140deg, var(--bg) 0%, var(--bg-middle) 45%, var(--bg-deep) 100%);
+  box-shadow: none;
+  overflow: clip;
+}
+
+/* Windows chrome always owns a separate system-control row so native window
+   commands never consume the Host global-toolbar row at any width. */
+body[data-tauri-platform="windows"] .topbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: 32px 52px;
+  width: calc(100% + (2 * var(--host-shell-padding-inline)));
+  height: 84px;
+  min-height: 84px;
+  margin-left: calc(-1 * var(--host-shell-padding-inline));
+  padding: 0;
+  column-gap: 10px;
+  row-gap: 0;
+  align-items: center;
+}
+
+body[data-tauri-platform="windows"] .window-drag-region {
+  grid-column: 1 / 3;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+}
+
+body[data-tauri-platform="windows"] .window-controls {
+  grid-column: 3;
+  grid-row: 1;
+  height: 32px;
+  align-self: stretch;
+  justify-self: end;
+}
+
+body[data-tauri-platform="windows"] .host-brand {
+  grid-column: 1;
+  grid-row: 2;
+  margin-left: calc(var(--host-shell-padding-inline) + 13px);
+}
+
+body[data-tauri-platform="windows"] .top-controls {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  margin-left: 0;
+  margin-right: var(--host-shell-padding-inline);
+  justify-self: end;
+}
+
+body[data-tauri-platform="windows"] .topbar .control-label {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: nowrap;
+  border: 0;
+}
+
+body[data-tauri-platform="windows"] .topbar .remote-mini-trigger,
+body[data-tauri-platform="windows"] .topbar .status-chip-toggle,
+body[data-tauri-platform="windows"] .topbar #presentation-settings-toggle,
+body[data-tauri-platform="windows"] .topbar #cache-settings-toggle {
+  width: auto;
+  padding-inline: 10px;
+}
+
+body[data-tauri-platform="windows"].is-tauri-maximized .app-shell,
+body[data-tauri-platform="windows"].is-tauri-fullscreen-active .app-shell,
+body[data-tauri-platform="windows"].is-presentation-stage-only .app-shell {
+  width: 100%;
+  height: 100dvh;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Player fullscreen must win over the later persistent-Stage card geometry.
+   WebKit/Tauri may fall back to a window-fullscreen class instead of promoting
+   the element into the Fullscreen API top layer, so also remove every ancestor
+   inset and clipping surface for that path. */
+body.is-tauri-fullscreen-active .app-shell {
+  width: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+body.is-tauri-fullscreen-active .shell-body,
+body.is-tauri-fullscreen-active .layout,
+body.is-tauri-fullscreen-active .host-content-region,
+body.is-tauri-fullscreen-active .left-column {
+  overflow: visible;
+}
+
+.left-column > .player-panel:fullscreen,
+.left-column > .player-panel:-webkit-full-screen,
+.left-column > .player-panel.is-tauri-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.left-column > .player-panel:fullscreen .stage-controls-toggle,
+.left-column > .player-panel:fullscreen .stage-control-backdrop,
+.left-column > .player-panel:fullscreen .stage-control-tray,
+.left-column > .player-panel:fullscreen .audio-variant-backdrop,
+.left-column > .player-panel:-webkit-full-screen .stage-controls-toggle,
+.left-column > .player-panel:-webkit-full-screen .stage-control-backdrop,
+.left-column > .player-panel:-webkit-full-screen .stage-control-tray,
+.left-column > .player-panel:-webkit-full-screen .audio-variant-backdrop,
+.left-column > .player-panel.is-tauri-fullscreen .stage-controls-toggle,
+.left-column > .player-panel.is-tauri-fullscreen .stage-control-backdrop,
+.left-column > .player-panel.is-tauri-fullscreen .stage-control-tray,
+.left-column > .player-panel.is-tauri-fullscreen .audio-variant-backdrop {
+  display: none;
 }

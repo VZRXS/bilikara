@@ -174,6 +174,7 @@ const state = {
   audioVariantSwitchTimer: null,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
+  audioVariantPopoverDirection: "down",
   backupBannerShown: false,
   backupBannerDismissed: false,
   backupBannerMode: "",
@@ -262,8 +263,8 @@ const state = {
   },
   requestScrollRestoring: false,
   requestScrollRestoreToken: 0,
-  sourceParentScrollPositions: { uids: 0, favorites: 0 },
-  sourceItemScrollPositions: { uids: 0, favorites: 0 },
+  sourceParentScrollPositions: { followed: 0, favorites: 0 },
+  sourceItemScrollPositions: { followed: 0, favorites: 0 },
   searchModeState: {
     shared: { draft: "", submitted: "", items: [], error: "", message: "", seq: 0 },
     local: { draft: "", submitted: "", items: [], error: "", message: "", seq: 0 },
@@ -274,7 +275,7 @@ const state = {
     categories: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
     name: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
     artist: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
-    uids: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
+    followed: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
     favorites: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
   },
   activeRequestDetailOriginKey: "",
@@ -529,7 +530,10 @@ const elements = {
   stageControlTray: document.getElementById("stage-control-tray"),
   stageExtendedControls: document.getElementById("stage-extended-controls"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
+  audioVariantAnchor: document.getElementById("audio-variant-anchor"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
+  audioVariantToggle: document.getElementById("audio-variant-toggle"),
+  audioVariantBackdrop: document.getElementById("audio-variant-backdrop"),
   avSyncPanel: document.getElementById("av-sync-panel"),
   avOffsetInput: document.getElementById("av-offset-input"),
   avOffsetResetButton: document.getElementById("av-offset-reset-button"),
@@ -674,10 +678,8 @@ const elements = {
   catalogToolButtons: document.querySelectorAll("[data-catalog-tool]"),
   sourcesModeButtons: document.querySelectorAll("[data-sources-mode]"),
   sourcesModePanels: document.querySelectorAll("[data-sources-panel]"),
-  sourcesUidScroll: document.getElementById("request-sources-uids-scroll"),
+  sourcesFollowedScroll: document.getElementById("request-sources-followed-scroll"),
   sourcesFavoritesScroll: document.getElementById("request-sources-favorites-scroll"),
-  openAddedUidsButton: document.getElementById("open-added-uids-button"),
-  openFavoritesButton: document.getElementById("open-favorites-button"),
   favlistBrowserView: document.getElementById("favlist-browser-view"),
   bilikaraSecretModal: document.getElementById("bilikara-secret-modal"),
   bilikaraSecretBackdrop: document.getElementById("bilikara-secret-backdrop"),
@@ -703,7 +705,6 @@ const elements = {
   gatchaStage: document.getElementById("gatcha-stage"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
-  manageSourcesButton: document.getElementById("manage-sources-button"),
   gatchaMainView: document.getElementById("gatcha-main-view"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
@@ -2840,16 +2841,24 @@ function activeRequestScrollOwner() {
       return elements.catalogAdvancedView;
     }
     const mode = normalizeDiscoverMode(state.discoverMode);
-    return mode === "categories"
-      ? elements.discoverCategoriesPanel
-      : mode === "artist"
-        ? elements.discoverArtistPanel
-        : elements.discoverNamePanel;
+    if (mode === "categories") {
+      return state.categoryBrowseLevel === "detail"
+        ? elements.discoverCategoriesPanel?.querySelector("[data-category-browse-results]")
+        : elements.discoverCategoriesPanel?.querySelector("[data-category-browser-home]");
+    }
+    const panel = mode === "artist"
+      ? elements.discoverArtistPanel
+      : elements.discoverNamePanel;
+    return normalizedD1BrowseLevel(d1BrowseModeState(mode).level) === "items"
+      ? panel?.querySelector("[data-d1-browse-results]")
+      : panel?.querySelector("[data-d1-browse-tags]");
   }
   if (subview === "sources") {
-    return normalizeSourcesMode(state.sourcesMode) === "favorites"
-      ? elements.sourcesFavoritesScroll
-      : elements.sourcesUidScroll;
+    const mode = normalizeSourcesMode(state.sourcesMode);
+    if (mode === "favorites") {
+      return elements.sourcesFavoritesScroll;
+    }
+    return elements.sourcesFollowedScroll;
   }
   return null;
 }
@@ -3005,8 +3014,17 @@ function syncSourcesModeSelection() {
   });
   if (activeMode === "uids") {
     renderFollowBrowse();
-  } else {
+  } else if (activeMode === "favorites") {
     renderFavlistBrowse();
+  }
+}
+
+function ensureActiveSourcesLoaded() {
+  const activeMode = normalizeSourcesMode(state.sourcesMode);
+  if (activeMode === "uids" && !state.followBrowseData && !state.followBrowseLoading) {
+    void loadFollowBrowse({ uid: "", query: state.followBrowseQuery });
+  } else if (activeMode === "favorites" && !state.favlistBrowseData && !state.favlistBrowseLoading) {
+    void loadFavlistBrowse({ folderId: "", query: state.favlistBrowseQuery });
   }
 }
 
@@ -3065,6 +3083,9 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
   state.requestSubview = nextSubview;
   state.focusedRequestSubview = nextSubview;
   syncRequestSubviewSelection();
+  if (nextSubview === "sources") {
+    ensureActiveSourcesLoaded();
+  }
   restoreRequestScrollPosition();
   if (focusTab) {
     Array.from(elements.requestSubviewButtons || [])
@@ -3135,6 +3156,7 @@ function activateSourcesMode(mode, { focusTab = false } = {}) {
   state.sourcesMode = nextMode;
   state.focusedSourcesMode = nextMode;
   syncSourcesModeSelection();
+  ensureActiveSourcesLoaded();
   restoreRequestScrollPosition();
   if (focusTab) {
     Array.from(elements.sourcesModeButtons || [])
@@ -3279,11 +3301,16 @@ function syncNarrowToolLayout() {
   const headerHeight = elements.playerPanel
     ?.querySelector(".panel-head")
     ?.getBoundingClientRect?.().height || 42;
+  const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
+    ? elements.audioVariantAnchor.getBoundingClientRect?.().height || 0
+    : 0;
   const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect?.().height || 40;
   const frameWidth = Math.max(0, contentWidth - panelPaddingInline);
   const frameHeight = frameWidth * (9 / 16);
+  const persistentRowGapCount = variantHeight > 0 ? 3 : 2;
   const compactStageHeight = Math.ceil(
-    panelPaddingBlock + headerHeight + toggleHeight + frameHeight + (panelGap * 2),
+    panelPaddingBlock + headerHeight + variantHeight + toggleHeight + frameHeight
+      + (panelGap * persistentRowGapCount),
   );
   const shellGap = canReadComputedStyle
     ? parseFloat(
@@ -3302,15 +3329,14 @@ function syncNarrowToolLayout() {
     elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
     return "overlay";
   }
-  const inlineTraySize = measureStageControlTrayNaturalSize(
-    Math.max(280, frameWidth),
-    { layout: "inline" },
-  );
+  const inlineFit = findStageControlFit(frameWidth, { layout: "inline" });
+  const inlineTraySize = inlineFit.size;
   const inlineTrayHeight = inlineTraySize.height;
   const inlineTrayFitsWidth = inlineTraySize.width <= frameWidth + 1
     && inlineTraySize.contentFits;
   const fullStageHeight = Math.ceil(
-    panelPaddingBlock + headerHeight + frameHeight + inlineTrayHeight + (panelGap * 2),
+    panelPaddingBlock + headerHeight + variantHeight + frameHeight + inlineTrayHeight
+      + (panelGap * persistentRowGapCount),
   );
   const residentStageHeight = inlineTrayFitsWidth && availableStageHeight >= fullStageHeight
     ? fullStageHeight
@@ -3566,16 +3592,20 @@ function stageControlsAreInline() {
   return elements.appShell?.dataset.stageControlsLayout === "inline";
 }
 
-function measureStageControlTrayNaturalSize(width, { layout = "" } = {}) {
+function measureStageControlTrayNaturalSize(width, { layout = "", density = "" } = {}) {
   if (!elements.stageControlTray) {
     return { width: 0, height: 0, contentFits: false };
   }
   const tray = elements.stageControlTray;
   const previousLayout = elements.appShell?.dataset.stageControlsLayout;
+  const previousDensity = elements.appShell?.dataset.stageControlDensity;
   const previousStyle = tray.getAttribute("style");
   const previousHidden = tray.hidden;
   if (layout && elements.appShell) {
     elements.appShell.dataset.stageControlsLayout = layout;
+  }
+  if (density && elements.appShell) {
+    elements.appShell.dataset.stageControlDensity = density;
   }
   tray.classList.add("is-measuring");
   tray.hidden = false;
@@ -3590,11 +3620,18 @@ function measureStageControlTrayNaturalSize(width, { layout = "" } = {}) {
     if (children.length < 2) {
       return true;
     }
+    const controlsRect = controls.getBoundingClientRect();
     const centers = children.map((child) => {
       const rect = child.getBoundingClientRect();
       return rect.top + (rect.height / 2);
     });
-    return Math.max(...centers) - Math.min(...centers) <= 2;
+    const childrenStayInside = children.every((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.left >= controlsRect.left - 1 && rect.right <= controlsRect.right + 1;
+    });
+    return Math.max(...centers) - Math.min(...centers) <= 2
+      && controls.scrollWidth <= controls.clientWidth + 1
+      && childrenStayInside;
   });
   const panelColumnsStayAligned = [...tray.querySelectorAll(".av-sync-panel")]
     .every((panel) => {
@@ -3625,8 +3662,27 @@ function measureStageControlTrayNaturalSize(width, { layout = "" } = {}) {
     } else {
       elements.appShell.dataset.stageControlsLayout = previousLayout;
     }
+    if (previousDensity === undefined) {
+      delete elements.appShell.dataset.stageControlDensity;
+    } else {
+      elements.appShell.dataset.stageControlDensity = previousDensity;
+    }
   }
   return size;
+}
+
+function findStageControlFit(width, { layout = "" } = {}) {
+  const availableWidth = Math.max(0, Number(width || 0));
+  const densities = ["full", "compact", "plain"];
+  let fallback = { density: "plain", size: { width: 0, height: 0, contentFits: false } };
+  for (const density of densities) {
+    const size = measureStageControlTrayNaturalSize(availableWidth, { layout, density });
+    fallback = { density, size };
+    if (size.contentFits && size.width <= availableWidth + 1) {
+      return fallback;
+    }
+  }
+  return fallback;
 }
 
 function clearStageControlTrayPosition() {
@@ -3651,7 +3707,11 @@ function positionStageControlTray() {
   const topBoundary = Math.max(viewportInset, Number(toolbar?.bottom || 0) + 8);
   const availableWidth = Math.max(280, window.innerWidth - (viewportInset * 2));
   const width = Math.min(860, availableWidth);
-  const naturalHeight = measureStageControlTrayNaturalSize(width).height || 520;
+  const popupFit = findStageControlFit(width, { layout: "popup" });
+  if (elements.appShell) {
+    elements.appShell.dataset.stageControlDensity = popupFit.density;
+  }
+  const naturalHeight = popupFit.size.height || 520;
   const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - viewportInset - popupGap);
   const spaceAbove = Math.max(0, anchor.top - topBoundary - popupGap);
   const direction = spaceBelow >= naturalHeight ? "down" : "up";
@@ -3764,33 +3824,34 @@ function measurePersistentStage() {
   const innerWidth = Math.max(0, elements.playerPanel.clientWidth - panelPaddingInline);
   const innerHeight = Math.max(0, elements.playerPanel.clientHeight - panelPaddingBlock);
   const headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || 0;
+  const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
+    ? elements.audioVariantAnchor.getBoundingClientRect().height
+    : 0;
+  const persistentRowGapCount = variantHeight > 0 ? 3 : 2;
   const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect().height || 40;
   const fullFrameWidth = innerWidth;
   const fullFrameHeight = fullFrameWidth * (9 / 16);
-  const trayMeasureWidth = Math.max(280, innerWidth);
-  const inlineTraySize = measureStageControlTrayNaturalSize(
-    trayMeasureWidth,
-    { layout: "inline" },
-  );
+  const inlineFit = findStageControlFit(innerWidth, { layout: "inline" });
+  const inlineTraySize = inlineFit.size;
   const trayHeight = inlineTraySize.height;
-  const inlineFrameHeight = innerHeight
-    - headerHeight
-    - trayHeight
-    - (panelGap * 2);
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
-  const minimumUsefulFrameHeight = Math.min(
-    fullFrameHeight,
-    Math.max(180, innerHeight * 0.3),
-  );
-  const inlineControls = trayMeasureWidth <= innerWidth + 1
-    && inlineTraySize.width <= trayMeasureWidth + 1
+  const fullFrameWithInlineControlsFits = inlineTraySize.width <= innerWidth + 1
     && inlineTraySize.contentFits
     && trayHeight > 0
-    && inlineFrameHeight >= minimumUsefulFrameHeight;
+    && innerHeight >= headerHeight
+      + variantHeight
+      + fullFrameHeight
+      + trayHeight
+      + (panelGap * persistentRowGapCount);
+  const inlineControls = fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
+  const popupFit = inlineControls
+    ? inlineFit
+    : findStageControlFit(Math.min(860, Math.max(280, window.innerWidth - 24)), { layout: "popup" });
+  const controlDensity = popupFit.density;
   const reservedControlsHeight = inlineControls
-    ? headerHeight + trayHeight + (panelGap * 2)
-    : headerHeight + toggleHeight + (panelGap * 2);
+    ? headerHeight + variantHeight + trayHeight + (panelGap * persistentRowGapCount)
+    : headerHeight + variantHeight + toggleHeight + (panelGap * persistentRowGapCount);
   const frameHeight = Math.max(0, Math.min(fullFrameHeight, innerHeight - reservedControlsHeight));
   const frameWidth = Math.max(0, Math.min(fullFrameWidth, frameHeight * (16 / 9)));
   const mode = narrowShell
@@ -3802,6 +3863,7 @@ function measurePersistentStage() {
   const previousLayout = elements.appShell.dataset.stageControlsLayout;
   elements.appShell.dataset.stageMode = mode;
   elements.appShell.dataset.stageControlsLayout = controlLayout;
+  elements.appShell.dataset.stageControlDensity = controlDensity;
   elements.playerPanel.style.setProperty("--stage-frame-inline-size", `${Math.floor(frameWidth)}px`);
   if (previousLayout !== controlLayout) {
     if (inlineControls) {
@@ -3817,6 +3879,7 @@ function measurePersistentStage() {
   } else if (state.stageControlTrayOpen && previousMode !== mode) {
     positionStageControlTray();
   }
+  syncAudioVariantOverflow();
   return mode;
 }
 
@@ -3833,6 +3896,9 @@ function initializePersistentStageFitting() {
     state.stageResizeObserver = new ResizeObserver(schedulePersistentStageMeasurement);
     state.stageResizeObserver.observe(elements.leftColumn);
     state.stageResizeObserver.observe(elements.playerPanel);
+    if (elements.audioVariantAnchor) {
+      state.stageResizeObserver.observe(elements.audioVariantAnchor);
+    }
     state.queueScrollResizeObserver?.disconnect?.();
     state.queueScrollResizeObserver = new ResizeObserver(scheduleQueueScrollOwnershipSync);
     state.queueScrollResizeObserver.observe(elements.listStage);
@@ -3851,22 +3917,46 @@ function initializeWindowChrome() {
     : /Macintosh|Mac OS X/i.test(userAgent)
       ? "macos"
       : "linux";
-  document.body.dataset.tauriPlatform = appWindow ? platform : "browser";
+  const renderedPlatform = appWindow ? platform : "browser";
+  document.documentElement.dataset.tauriPlatform = renderedPlatform;
+  document.body.dataset.tauriPlatform = renderedPlatform;
   if (!appWindow) {
     return;
   }
+  const syncWindowFrameState = () => {
+    if (platform !== "windows" || typeof appWindow.isMaximized !== "function") {
+      return Promise.resolve();
+    }
+    return appWindow.isMaximized()
+      .then((maximized) => {
+        document.body.classList.toggle("is-tauri-maximized", Boolean(maximized));
+      })
+      .catch(() => {});
+  };
+  const toggleWindowMaximize = () => appWindow.toggleMaximize()
+    .then(syncWindowFrameState)
+    .catch(() => {});
   if (platform === "windows") {
     elements.windowControls.hidden = false;
     elements.windowMinimize?.addEventListener("click", () => appWindow.minimize().catch(() => {}));
-    elements.windowMaximize?.addEventListener("click", () => appWindow.toggleMaximize().catch(() => {}));
+    elements.windowMaximize?.addEventListener("click", toggleWindowMaximize);
     elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
+    syncWindowFrameState();
+    const resizeListener = appWindow.onResized?.(syncWindowFrameState);
+    resizeListener?.catch?.(() => {});
   }
-  elements.windowDragRegion?.addEventListener("dblclick", (event) => {
-    if (event.button !== 0 || platform !== "windows") {
+  elements.topbar?.addEventListener("dblclick", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      event.button !== 0
+      || platform !== "windows"
+      || target?.closest("button, a, input, select, textarea, [role='button']")
+    ) {
       return;
     }
-    appWindow.toggleMaximize().catch(() => {});
-  });
+    event.preventDefault();
+    toggleWindowMaximize();
+  }, true);
 }
 
 function initializeHostShell() {
@@ -5550,7 +5640,7 @@ function requestDetailOriginForContainer(container, source = "") {
     return { key: "local", subview: "search", mode: "local", source: source || "search" };
   }
   if (container === elements.followSongResults || container.closest?.("#request-sources-uids")) {
-    return { key: "uids", subview: "sources", mode: "uids", source: source || "modalFollow" };
+    return { key: "followed", subview: "sources", mode: "uids", source: source || "modalFollow" };
   }
   if (container === elements.favlistSongResults || container.closest?.("#request-sources-favorites")) {
     return { key: "favorites", subview: "sources", mode: "favorites", source: source || "modalFavlist" };
@@ -5591,7 +5681,7 @@ function requestResultContainerForOrigin(originKey) {
     categories: elements.discoverCategoriesPanel?.querySelector?.("[data-category-browse-results]"),
     name: elements.discoverNamePanel?.querySelector?.("[data-d1-browse-results]"),
     artist: elements.discoverArtistPanel?.querySelector?.("[data-d1-browse-results]"),
-    uids: elements.followSongResults,
+    followed: elements.followSongResults,
     favorites: elements.favlistSongResults,
   };
   return containers[originKey] || null;
@@ -5605,6 +5695,10 @@ function requestModeControlForOrigin(originKey) {
   if (["categories", "name", "artist"].includes(originKey)) {
     return Array.from(elements.discoverModeButtons || [])
       .find((button) => button.dataset.discoverMode === originKey) || null;
+  }
+  if (originKey === "followed") {
+    return Array.from(elements.sourcesModeButtons || [])
+      .find((button) => button.dataset.sourcesMode === "uids") || null;
   }
   return Array.from(elements.sourcesModeButtons || [])
     .find((button) => button.dataset.sourcesMode === originKey) || null;
@@ -5653,6 +5747,7 @@ function createSearchResultItem(item, options = {}) {
     cover.appendChild(image);
   } else {
     const fallback = document.createElement("span");
+    fallback.className = "search-result-cover-fallback";
     fallback.textContent = String(item?.bvid || "Bili");
     cover.appendChild(fallback);
     cover.classList.add("is-empty");
@@ -8364,7 +8459,6 @@ function renderUpdatePreviewControl() {
     elements.serviceUpdateIndicator.removeAttribute("aria-label");
   }
   syncUpdateIndicator(elements.advancedUpdateIndicator, eligible, accessibleText);
-  setClassToggle(elements.appUpdateRow, "has-update", eligible);
   if (elements.updateVersionBadge) {
     setClassToggle(elements.updateVersionBadge, "hidden", !eligible);
     setTextContent(
@@ -12151,6 +12245,144 @@ function scheduleAudioVariantSwitchUnlock() {
   }, remainingMs);
 }
 
+function preferredAudioVariantPopoverDirection(naturalHeight = 220) {
+  const anchor = elements.audioVariantToggle?.getBoundingClientRect?.()
+    || elements.audioVariantAnchor?.getBoundingClientRect?.();
+  if (!anchor) {
+    return "down";
+  }
+  const toolbarBottom = elements.topbar?.getBoundingClientRect?.().bottom || 0;
+  const inset = 12;
+  const gap = 8;
+  const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - inset - gap);
+  const spaceAbove = Math.max(0, anchor.top - Math.max(inset, toolbarBottom + 8) - gap);
+  if (spaceBelow >= naturalHeight) {
+    return "down";
+  }
+  return spaceAbove > spaceBelow ? "up" : "down";
+}
+
+function clearAudioVariantPopoverPosition() {
+  if (!elements.audioVariantBar) {
+    return;
+  }
+  for (const property of ["left", "top", "width", "maxHeight", "transformOrigin"]) {
+    elements.audioVariantBar.style[property] = "";
+  }
+  delete elements.audioVariantBar.dataset.popoverDirection;
+}
+
+function positionAudioVariantPopover() {
+  if (
+    !state.audioVariantBarExpanded
+    || !elements.audioVariantAnchor
+    || !elements.audioVariantBar
+    || !elements.audioVariantToggle
+  ) {
+    return;
+  }
+  const row = elements.audioVariantAnchor.getBoundingClientRect();
+  const anchor = elements.audioVariantToggle.getBoundingClientRect();
+  const toolbarBottom = elements.topbar?.getBoundingClientRect?.().bottom || 0;
+  const inset = 12;
+  const gap = 8;
+  const topBoundary = Math.max(inset, toolbarBottom + 8);
+  const availableWidth = Math.max(280, window.innerWidth - (inset * 2));
+  const buttons = [...elements.audioVariantBar.querySelectorAll(".audio-variant-button")];
+  const widestButton = buttons.reduce(
+    (width, button) => Math.max(width, Math.ceil(button.getBoundingClientRect().width)),
+    0,
+  );
+  const contentWidth = (widestButton * 2) + 8 + 24;
+  const width = Math.min(640, availableWidth, Math.max(320, contentWidth, Math.min(row.width, 420)));
+  elements.audioVariantBar.style.width = `${width}px`;
+  elements.audioVariantBar.style.maxHeight = "none";
+  const naturalHeight = Math.ceil(elements.audioVariantBar.scrollHeight || 120);
+  const direction = preferredAudioVariantPopoverDirection(naturalHeight);
+  const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - inset - gap);
+  const spaceAbove = Math.max(0, anchor.top - topBoundary - gap);
+  const directionSpace = direction === "down" ? spaceBelow : spaceAbove;
+  const maxHeight = Math.max(96, Math.min(naturalHeight, directionSpace));
+  const left = Math.max(inset, Math.min(anchor.right - width, window.innerWidth - inset - width));
+  const top = direction === "down"
+    ? anchor.bottom + gap
+    : Math.max(topBoundary, anchor.top - gap - maxHeight);
+  state.audioVariantPopoverDirection = direction;
+  elements.audioVariantBar.dataset.popoverDirection = direction;
+  elements.audioVariantBar.style.left = `${left}px`;
+  elements.audioVariantBar.style.top = `${Math.round(top)}px`;
+  elements.audioVariantBar.style.maxHeight = `${Math.round(maxHeight)}px`;
+  elements.audioVariantBar.style.transformOrigin = direction === "down" ? "100% 0" : "100% 100%";
+  const icon = elements.audioVariantToggle.querySelector("span");
+  if (icon) {
+    icon.textContent = direction === "down" ? "▼" : "▲";
+  }
+}
+
+function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
+  const nextOpen = Boolean(open);
+  state.audioVariantBarExpanded = nextOpen;
+  elements.audioVariantBar?.classList.toggle("is-expanded", nextOpen);
+  elements.audioVariantBar?.classList.toggle("is-collapsed", !nextOpen);
+  const toggle = elements.audioVariantToggle;
+  toggle?.setAttribute("aria-expanded", String(nextOpen));
+  toggle?.setAttribute("aria-label", nextOpen ? t("player.collapseParts") : t("player.expandParts"));
+  if (elements.audioVariantBackdrop) {
+    elements.audioVariantBackdrop.hidden = !nextOpen;
+    elements.audioVariantBackdrop.inert = !nextOpen;
+    elements.audioVariantBackdrop.setAttribute("aria-hidden", String(!nextOpen));
+  }
+  if (!nextOpen) {
+    clearAudioVariantPopoverPosition();
+    if (restoreFocus) {
+      toggle?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  if (state.stageControlTrayOpen && !stageControlsAreInline()) {
+    setStageControlTrayOpen(false);
+  }
+  closeCacheAdvancedInfo();
+  setRemoteQrPinned(false, { dismissTransient: true });
+  positionAudioVariantPopover();
+}
+
+function syncAudioVariantOverflow() {
+  const bar = elements.audioVariantBar;
+  const anchor = elements.audioVariantAnchor;
+  const list = bar?.querySelector(".audio-variant-list");
+  const toggle = elements.audioVariantToggle;
+  if (!bar || !anchor || !list || !toggle || anchor.hidden || bar.classList.contains("hidden")) {
+    return false;
+  }
+  const buttons = [...list.querySelectorAll(".audio-variant-button")];
+  const gap = parseFloat(getComputedStyle(list).columnGap || getComputedStyle(list).gap) || 0;
+  const naturalWidth = buttons.reduce(
+    (total, button) => total + button.getBoundingClientRect().width,
+    Math.max(0, buttons.length - 1) * gap,
+  );
+  const toggleWidth = Math.max(34, toggle.getBoundingClientRect().width) + 8;
+  const isOverflowing = naturalWidth > Math.max(0, anchor.clientWidth - toggleWidth - 1);
+  toggle.classList.toggle("hidden", !isOverflowing);
+  bar.classList.toggle("is-collapsed", isOverflowing && !state.audioVariantBarExpanded);
+  if (!isOverflowing && state.audioVariantBarExpanded) {
+    setAudioVariantPopoverOpen(false);
+  }
+  if (isOverflowing) {
+    const direction = state.audioVariantBarExpanded
+      ? state.audioVariantPopoverDirection
+      : preferredAudioVariantPopoverDirection();
+    const icon = toggle.querySelector("span");
+    if (icon) {
+      icon.textContent = direction === "down" ? "▼" : "▲";
+    }
+    if (state.audioVariantBarExpanded) {
+      positionAudioVariantPopover();
+    }
+  }
+  return isOverflowing;
+}
+
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
     const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "", language: state.language });
@@ -12161,8 +12393,12 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     if (elements.audioVariantBar.childElementCount) {
       elements.audioVariantBar.replaceChildren();
     }
+    setAudioVariantPopoverOpen(false);
     setClassToggle(elements.audioVariantBar, "hidden", true);
-    state.audioVariantBarExpanded = false;
+    if (elements.audioVariantAnchor) {
+      elements.audioVariantAnchor.hidden = true;
+    }
+    setClassToggle(elements.audioVariantToggle, "hidden", true);
     state.audioVariantBarItemId = "";
     return;
   }
@@ -12183,14 +12419,18 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     if (elements.audioVariantBar.childElementCount) {
       elements.audioVariantBar.replaceChildren();
     }
+    setAudioVariantPopoverOpen(false);
     setClassToggle(elements.audioVariantBar, "hidden", true);
-    state.audioVariantBarExpanded = false;
+    if (elements.audioVariantAnchor) {
+      elements.audioVariantAnchor.hidden = true;
+    }
+    setClassToggle(elements.audioVariantToggle, "hidden", true);
     state.audioVariantBarItemId = currentItem.id;
     return;
   }
 
   if (state.audioVariantBarItemId !== currentItem.id) {
-    state.audioVariantBarExpanded = false;
+    setAudioVariantPopoverOpen(false);
     state.audioVariantBarItemId = currentItem.id;
   }
 
@@ -12201,7 +12441,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     itemId: currentItem.id,
     selectedVariantId: selectedVariant?.id || "",
     buttonsDisabled,
-    expanded: state.audioVariantBarExpanded,
     language: state.language,
     variants: variants.map((variant) => ({
       id: variant.id,
@@ -12233,40 +12472,28 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     list.appendChild(button);
   });
 
-  const toggleButton = document.createElement("button");
-  toggleButton.type = "button";
-  toggleButton.className = "audio-variant-toggle";
-  toggleButton.dataset.action = "toggle-audio-variants";
-  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
-  toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
-  const toggleIcon = document.createElement("span");
-  toggleIcon.setAttribute("aria-hidden", "true");
-  toggleIcon.textContent = "▾";
-  toggleButton.appendChild(toggleIcon);
+  elements.audioVariantToggle.setAttribute(
+    "aria-label",
+    state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"),
+  );
+  elements.audioVariantToggle.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
+  const toggleIcon = elements.audioVariantToggle.querySelector("span");
+  toggleIcon.textContent = state.audioVariantPopoverDirection === "up" ? "▲" : "▼";
 
-  elements.audioVariantBar.append(list, toggleButton);
-  elements.audioVariantBar.classList.remove("is-collapsed", "is-expanded");
+  elements.audioVariantBar.append(list);
+  elements.audioVariantBar.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+  elements.audioVariantBar.classList.toggle("is-collapsed", !state.audioVariantBarExpanded);
   setClassToggle(elements.audioVariantBar, "hidden", false);
+  if (elements.audioVariantAnchor) {
+    elements.audioVariantAnchor.hidden = false;
+  }
 
   requestAnimationFrame(() => {
     if (!elements.audioVariantBar.contains(list)) {
       return;
     }
-    const firstButton = list.querySelector(".audio-variant-button");
-    const firstRowHeight = firstButton
-      ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
-      : 44;
-    const isWrapped = list.scrollHeight > firstRowHeight + 2;
-
-    elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
-    elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
-    toggleButton.classList.toggle("hidden", !isWrapped);
-    if (isWrapped) {
-      list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
-      toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
-    } else {
-      state.audioVariantBarExpanded = false;
-    }
+    syncAudioVariantOverflow();
+    schedulePersistentStageMeasurement();
   });
 }
 
@@ -14559,6 +14786,7 @@ function poolConfigSetMessage(message, isError = false) {
 function updatePoolConfigWeightLabel() {
   const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
   const favlistWeight = 100 - uidWeight;
+  setRangeFillPercent(elements.poolConfigWeightSlider, uidWeight);
   if (elements.poolConfigWeightLabel) {
     elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
       uid: uidWeight,
@@ -16701,6 +16929,25 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 });
 
 let draggedSessionUser = null;
+let sessionUserDragImage = null;
+
+function removeSessionUserDragImage() {
+  sessionUserDragImage?.remove();
+  sessionUserDragImage = null;
+}
+
+function createSessionUserDragImage(badge) {
+  removeSessionUserDragImage();
+  const dragImage = badge.cloneNode(true);
+  dragImage.className = "session-user-drag-image";
+  dragImage.removeAttribute("draggable");
+  dragImage.removeAttribute("data-index");
+  dragImage.removeAttribute("data-name");
+  dragImage.setAttribute("aria-hidden", "true");
+  document.body.appendChild(dragImage);
+  sessionUserDragImage = dragImage;
+  return dragImage;
+}
 
 function clearSessionUserDropIndicators() {
   elements.sessionUserList
@@ -16723,6 +16970,7 @@ function finishSessionUserDragUi() {
   elements.sessionUsersPanel?.classList.remove("is-dragging");
   elements.sessionUserTrash?.classList.remove("drag-over");
   clearSessionUserDropIndicators();
+  removeSessionUserDragImage();
 }
 
 // 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
@@ -16765,10 +17013,12 @@ elements.sessionUserList.addEventListener("dragstart", (e) => {
   e.dataTransfer.setData("text/plain", badge.dataset.name);
   if (typeof e.dataTransfer.setDragImage === "function") {
     const rect = badge.getBoundingClientRect();
+    const dragImage = createSessionUserDragImage(badge);
+    const dragImageRect = dragImage.getBoundingClientRect();
     e.dataTransfer.setDragImage(
-      badge,
-      Math.max(0, e.clientX - rect.left),
-      Math.max(0, e.clientY - rect.top),
+      dragImage,
+      Math.min(Math.max(0, dragImageRect.width - 1), Math.max(0, e.clientX - rect.left)),
+      Math.min(Math.max(0, dragImageRect.height - 1), Math.max(0, e.clientY - rect.top)),
     );
   }
   setTimeout(() => {
@@ -17624,15 +17874,6 @@ elements.applicationRestartButton?.addEventListener("click", (event) => {
 });
 
 elements.audioVariantBar.addEventListener("click", async (event) => {
-  const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
-  if (toggleButton) {
-    state.audioVariantBarExpanded = !state.audioVariantBarExpanded;
-    if (state.data?.current_item) {
-      renderAudioVariantBar(state.data.current_item, frontendPlaybackMode(state.data.playback_mode));
-    }
-    return;
-  }
-
   const button = event.target.closest("button[data-variant-id]");
   if (!button || !state.data?.current_item) {
     return;
@@ -17740,6 +17981,14 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     state.audioVariantSwitchInFlight = false;
     scheduleAudioVariantSwitchUnlock();
   }
+});
+
+elements.audioVariantToggle?.addEventListener("click", () => {
+  setAudioVariantPopoverOpen(!state.audioVariantBarExpanded);
+});
+
+elements.audioVariantBackdrop?.addEventListener("click", () => {
+  setAudioVariantPopoverOpen(false, { restoreFocus: true });
 });
 
 elements.playlist.addEventListener("click", async (event) => {
@@ -18264,6 +18513,11 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  if (state.audioVariantBarExpanded) {
+    setAudioVariantPopoverOpen(false, { restoreFocus: true });
+    event.preventDefault();
+    return;
+  }
   if (closeOrdinaryPopoverForEscape()) {
     event.preventDefault();
     return;
@@ -18544,11 +18798,6 @@ elements.catalogAdvancedBack?.addEventListener("click", () => {
   elements.catalogAdvancedMenu?.querySelector("summary")?.focus({ preventScroll: true });
 });
 
-elements.manageSourcesButton?.addEventListener("click", () => {
-  activateHostWorkspace("request", { inputOrigin: "pointer" });
-  activateRequestSubview("sources", { focusTab: true });
-});
-
 async function runRequestBusyAction(button, loadingLabel, action) {
   if (!button || button.disabled) {
     return;
@@ -18566,22 +18815,6 @@ async function runRequestBusyAction(button, loadingLabel, action) {
     button.textContent = originalText;
   }
 }
-
-elements.openAddedUidsButton?.addEventListener("click", async () => {
-  await runRequestBusyAction(
-    elements.openAddedUidsButton,
-    t("follow.loadingOwners"),
-    () => loadFollowBrowse({ uid: "", query: state.followBrowseQuery }),
-  );
-});
-
-elements.openFavoritesButton?.addEventListener("click", async () => {
-  await runRequestBusyAction(
-    elements.openFavoritesButton,
-    t("favlist.loadingFolders"),
-    () => loadFavlistBrowse({ folderId: "", query: state.favlistBrowseQuery }),
-  );
-});
 
 elements.requestWorkspace?.addEventListener("submit", (event) => {
   const blacklistForm = event.target.closest("[data-blacklist-search]");
@@ -18679,7 +18912,7 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   }
   const categoryBackButton = event.target.closest("[data-category-browse-back]");
   if (categoryBackButton && elements.requestWorkspace.contains(categoryBackButton)) {
-    rememberDiscoverHierarchyScrollPosition(elements.discoverCategoriesPanel, "categories");
+    rememberDiscoverHierarchyScrollPosition(activeRequestScrollOwner(), "categories");
     state.categoryBrowseSeq += 1;
     state.categoryBrowseLoading = false;
     state.categoryBrowseLevel = "home";
@@ -18690,7 +18923,7 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   const categoryButton = event.target.closest("[data-category-id]");
   if (categoryButton && elements.requestWorkspace.contains(categoryButton)) {
     const categoryId = String(categoryButton.dataset.categoryId || "");
-    rememberDiscoverHierarchyScrollPosition(elements.discoverCategoriesPanel, "categories");
+    rememberDiscoverHierarchyScrollPosition(activeRequestScrollOwner(), "categories");
     if (categoryId === state.categoryBrowseSelectedId && state.categoryBrowseLoaded) {
       state.categoryBrowseLevel = "detail";
       renderCategoryBrowseView();
@@ -18803,15 +19036,19 @@ elements.requestWorkspace?.addEventListener("click", async (event) => {
 
 elements.requestWorkspace?.addEventListener("scroll", (event) => {
   const target = event.target;
-  if (state.requestScrollRestoring) {
+  const owner = activeRequestScrollOwner();
+  if (state.requestScrollRestoring || target !== owner) {
     return;
   }
-  if (target === elements.discoverCategoriesPanel) {
+  const mode = normalizeDiscoverMode(state.discoverMode);
+  if (mode === "categories") {
     rememberDiscoverHierarchyScrollPosition(target, "categories");
-    maybeLoadMoreCategoryBrowse(target);
-  } else if (target === elements.discoverNamePanel) {
+    if (state.categoryBrowseLevel === "detail") {
+      maybeLoadMoreCategoryBrowse(target);
+    }
+  } else if (mode === "name") {
     rememberDiscoverHierarchyScrollPosition(target, "name");
-  } else if (target === elements.discoverArtistPanel) {
+  } else if (mode === "artist") {
     rememberDiscoverHierarchyScrollPosition(target, "artist");
   }
 }, true);
@@ -18825,7 +19062,7 @@ elements.followUpGrid?.addEventListener("click", async (event) => {
   if (!uid) {
     return;
   }
-  state.sourceParentScrollPositions.uids = Number(elements.sourcesUidScroll?.scrollTop || 0);
+  state.sourceParentScrollPositions.followed = Number(elements.sourcesFollowedScroll?.scrollTop || 0);
   state.followBrowseSelectedUid = uid;
   if (elements.followSearchQuery) {
     elements.followSearchQuery.value = "";
@@ -18835,20 +19072,20 @@ elements.followUpGrid?.addEventListener("click", async (event) => {
     t("follow.loadingItems"),
     () => loadFollowBrowse({ uid, query: "" }),
   );
-  if (elements.sourcesUidScroll) {
-    elements.sourcesUidScroll.scrollTop = state.sourceItemScrollPositions.uids;
+  if (elements.sourcesFollowedScroll) {
+    elements.sourcesFollowedScroll.scrollTop = state.sourceItemScrollPositions.followed;
   }
 });
 
 elements.followBrowseBack?.addEventListener("click", () => {
-  state.sourceItemScrollPositions.uids = Number(elements.sourcesUidScroll?.scrollTop || 0);
+  state.sourceItemScrollPositions.followed = Number(elements.sourcesFollowedScroll?.scrollTop || 0);
   state.followBrowseSelectedUid = "";
   if (elements.followSearchQuery) {
     elements.followSearchQuery.value = "";
   }
   renderFollowBrowse();
-  if (elements.sourcesUidScroll) {
-    elements.sourcesUidScroll.scrollTop = state.sourceParentScrollPositions.uids;
+  if (elements.sourcesFollowedScroll) {
+    elements.sourcesFollowedScroll.scrollTop = state.sourceParentScrollPositions.followed;
   }
 });
 
@@ -18974,10 +19211,10 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
   }
 });
 
-elements.sourcesUidScroll?.addEventListener("scroll", () => {
+elements.sourcesFollowedScroll?.addEventListener("scroll", () => {
   const bucket = state.followBrowseSelectedUid ? state.sourceItemScrollPositions : state.sourceParentScrollPositions;
-  bucket.uids = Number(elements.sourcesUidScroll.scrollTop || 0);
-  state.requestScrollPositions.sources.uids = bucket.uids;
+  bucket.followed = Number(elements.sourcesFollowedScroll.scrollTop || 0);
+  state.requestScrollPositions.sources.uids = bucket.followed;
 });
 
 elements.sourcesFavoritesScroll?.addEventListener("scroll", () => {
@@ -19222,6 +19459,7 @@ window.addEventListener("resize", () => {
   scheduleConfirmPopoverPositionSync();
   renderHostWorkspaceSelection();
   schedulePersistentStageMeasurement();
+  syncAudioVariantOverflow();
 });
 window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 

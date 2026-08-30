@@ -294,7 +294,7 @@ function indicatorState() {{
             with self.subTest(name=name):
                 self.assertFalse(result["states"][name]["service"])
                 self.assertTrue(result["states"][name]["advanced"])
-                self.assertTrue(result["states"][name]["row"])
+                self.assertFalse(result["states"][name]["row"])
                 self.assertTrue(result["states"][name]["badge"])
         self.assertEqual(result["states"]["installable"]["button"], "service.update:")
         self.assertEqual(result["states"]["installable"]["status"], "")
@@ -304,6 +304,7 @@ function indicatorState() {{
         self.assertEqual(result["states"]["automaticOff"]["button"], "service.checkUpdate:")
         self.assertFalse(result["states"]["manualVisible"]["service"])
         self.assertTrue(result["states"]["manualVisible"]["advanced"])
+        self.assertFalse(result["states"]["manualVisible"]["row"])
         self.assertEqual(result["states"]["manualVisible"]["status"], "")
         self.assertEqual(result["messagesBeforeActions"], 0)
         self.assertEqual([post["path"] for post in result["posts"]], [

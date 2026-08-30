@@ -5,6 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>bilikara host</title>
+  <link rel="icon" href="/pic/icon.png" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/song-detail.css" />
 </head>
@@ -335,10 +336,16 @@
               </div>
               <div class="cache-panel-row hidden" id="application-restart-row" aria-hidden="true">
                 <div>
-                  <p class="cache-panel-label" data-i18n="service.restartApplication">重启应用</p>
-                  <p class="cache-panel-hint" data-i18n="service.restartApplicationHint">
-                    关闭并重新打开桌面应用
-                  </p>
+                  <div class="cache-advanced-label-row cache-contextual-info-region">
+                    <p class="cache-panel-label" data-i18n="service.restartApplication">重启应用</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="cache-advanced-restart-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <span class="cache-advanced-tooltip" id="cache-advanced-restart-info" role="tooltip"
+                        data-i18n="service.restartApplicationHint">关闭并重新打开桌面应用</span>
+                    </span>
+                  </div>
                 </div>
                 <button type="button" class="toolbar-button cache-update-button"
                   id="application-restart-button" disabled>
@@ -372,12 +379,16 @@
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <div class="cache-advanced-label-row">
+                  <div class="cache-advanced-label-row cache-contextual-info-region">
                     <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="cache-advanced-cleanup-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <span class="cache-advanced-tooltip" id="cache-advanced-cleanup-info" role="tooltip"
+                        data-i18n="service.dataCleanupScope">清空当前点歌列表、用户、历史记录和缓存；保留已唱归档与来源数据</span>
+                    </span>
                   </div>
-                  <p class="cache-panel-hint cache-data-cleanup-scope" data-i18n="service.dataCleanupScope">
-                    清空当前点歌列表、用户、历史记录和缓存；保留已唱归档与抽卡缓存
-                  </p>
                 </div>
                 <button type="button" class="toolbar-button cache-data-reset-button" id="data-reset-button"
                   title="清空 data" data-i18n-title="service.clearDataTitle">
@@ -446,8 +457,8 @@
         <section class="host-content-region">
           <section class="left-column" aria-label="Stage" data-i18n-aria-label="shell.stage">
         <section class="player-panel">
-          <div class="panel-head">
-            <div>
+          <div class="panel-head host-peer-head">
+            <div class="host-peer-heading">
               <p class="section-tag" data-i18n="player.tag">Now Playing</p>
               <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
             </div>
@@ -464,6 +475,15 @@
             </div>
           </div>
           <div class="fullscreen-request-toast hidden" id="fullscreen-request-toast" aria-live="polite"></div>
+          <div class="audio-variant-anchor" id="audio-variant-anchor" hidden>
+            <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
+            <button type="button" class="audio-variant-toggle hidden" id="audio-variant-toggle"
+              data-action="toggle-audio-variants" aria-expanded="false"
+              data-i18n-aria-label="player.expandParts">
+              <span aria-hidden="true">▼</span>
+            </button>
+          </div>
+          <div class="audio-variant-backdrop" id="audio-variant-backdrop" hidden inert aria-hidden="true"></div>
           <button type="button" id="stage-controls-toggle" class="stage-controls-toggle"
             aria-expanded="false" aria-controls="stage-control-tray" aria-label="播放控制" title="播放控制"
             data-i18n-aria-label="player.controls" data-i18n-title="player.controls">
@@ -481,7 +501,6 @@
                 data-i18n-aria-label="common.close">×</button>
             </div>
             <div class="stage-extended-controls" id="stage-extended-controls">
-          <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
           <section class="av-sync-panel" id="av-sync-panel">
             <div class="av-sync-copy">
               <div class="cache-advanced-label-row cache-contextual-info-region playback-contextual-info-region">
@@ -497,14 +516,18 @@
               </div>
             </div>
             <div class="av-sync-controls">
-              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">« -200</button>
-              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50">‹ -50</button>
+              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200"><span
+                  class="av-sync-step-symbol" aria-hidden="true">«</span> -200</button>
+              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50"><span
+                  class="av-sync-step-symbol" aria-hidden="true">‹</span> -50</button>
               <label class="av-sync-input-wrap" for="av-offset-input">
                 <input id="av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
                 <span data-i18n="player.ms">ms</span>
               </label>
-              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50 ›</button>
-              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200 »</button>
+              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50 <span
+                  class="av-sync-step-symbol" aria-hidden="true">›</span></button>
+              <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200 <span
+                  class="av-sync-step-symbol" aria-hidden="true">»</span></button>
               <button type="button" class="toolbar-button ghost av-sync-reset-button" id="av-offset-reset-button"
                 data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
               <button type="button" class="toolbar-button ghost av-sync-lock-button" id="av-delay-lock-button"
@@ -560,8 +583,8 @@
 
         <section class="request-workspace host-workspace-fragment" id="host-workspace-request" role="tabpanel"
           aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
-          <header class="request-workspace-head">
-            <div>
+          <header class="request-workspace-head host-peer-head">
+            <div class="host-peer-heading">
               <p class="section-tag" data-i18n="request.workspaceTag">Request</p>
               <h2 id="workspace-request-heading" data-host-workspace-heading tabindex="-1"
                 data-i18n="request.workspaceTitle">点歌</h2>
@@ -695,7 +718,7 @@
                   data-i18n-aria-label="sources.modeSelector">
                   <button type="button" role="tab" data-sources-mode="uids"
                     aria-controls="request-sources-uids" aria-selected="true" tabindex="0"
-                    data-i18n="sources.addUid">添加 UID</button>
+                    data-i18n="sources.ownerList">UP 主列表</button>
                   <button type="button" role="tab" data-sources-mode="favorites"
                     aria-controls="request-sources-favorites" aria-selected="false" tabindex="-1"
                     data-i18n="sources.favorites">收藏夹</button>
@@ -713,12 +736,10 @@
                   </form>
                   <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button"
                     data-i18n="sources.refreshVideos">刷新视频</button>
-                  <button type="button" id="open-added-uids-button" class="toolbar-button ghost"
-                    data-i18n="sources.openAddedUids">打开来源列表</button>
                 </div>
                 <p class="gatcha-message source-action-message" id="gatcha-uid-message" role="status"></p>
-                <div class="source-browse-scroll request-scroll-region" id="request-sources-uids-scroll" tabindex="0"
-                  aria-label="已添加 UID 来源" data-i18n-aria-label="sources.addedUidsResultsLabel">
+                <div class="source-browse-scroll request-scroll-region" id="request-sources-followed-scroll"
+                  tabindex="0" aria-label="UP 主列表" data-i18n-aria-label="sources.ownerListResultsLabel">
                   <div class="follow-browser" id="follow-browser">
                     <div id="follow-up-list-view" class="follow-up-list-view">
                       <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
@@ -757,8 +778,6 @@
                     <button type="submit" id="modal-pull-favlist-button" class="next-button"
                       data-i18n="sources.fetchCollections">获取收藏夹</button>
                   </form>
-                  <button type="button" id="open-favorites-button" class="toolbar-button ghost"
-                    data-i18n="sources.openFavorites">打开收藏夹列表</button>
                 </div>
                 <div class="source-browse-scroll request-scroll-region" id="request-sources-favorites-scroll"
                   tabindex="0" aria-label="收藏夹来源" data-i18n-aria-label="sources.favoritesResultsLabel">
@@ -796,8 +815,8 @@
 
         <section class="request-panel session-users-panel host-workspace-fragment" id="session-users-panel"
           role="tabpanel" aria-labelledby="work-rail-users" data-host-workspace-panel="users" hidden inert>
-          <div class="request-head">
-            <div>
+          <div class="request-head host-peer-head">
+            <div class="host-peer-heading">
               <p class="section-tag" data-i18n="session.tag">Singer Order</p>
               <h2 id="workspace-users-heading" data-host-workspace-heading tabindex="-1"
                 data-i18n="session.title">本场用户</h2>
@@ -854,8 +873,8 @@
 
           <section class="gatcha-panel host-workspace-fragment" id="gatcha-panel"
             role="tabpanel" aria-labelledby="work-rail-random" data-host-workspace-panel="random" hidden inert>
-            <div class="request-head gatcha-head">
-              <div>
+            <div class="request-head gatcha-head host-peer-head">
+              <div class="host-peer-heading">
                 <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">GATCHA</p>
                 <h2 id="gatcha-title" data-host-workspace-heading tabindex="-1"
                   data-i18n="gatcha.title">试试运气</h2>
@@ -865,10 +884,6 @@
                   class="toolbar-button ghost gatcha-pool-config-toggle" data-i18n="gatcha.poolConfig">
                   自定义卡池
                 </button>
-                <button type="button" id="manage-sources-button" class="toolbar-button ghost"
-                  data-i18n="sources.manage">
-                  管理来源
-                </button>
               </div>
             </div>
 
@@ -877,33 +892,13 @@
               <div class="gatcha-stage-inner">
                 <div id="gatcha-main-view" class="gatcha-main-view">
                   <section id="gatcha-init-view" class="gatcha-state-view" data-gatcha-view="idle">
-                    <div class="gatcha-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect>
-                        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle>
-                      </svg>
-                    </div>
+                    <div class="gatcha-icon" aria-hidden="true">🎲</div>
                     <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
                   </section>
 
                   <section id="gatcha-drawing-view" class="gatcha-state-view" data-gatcha-view="drawing"
                     hidden inert aria-hidden="true">
-                    <div class="gatcha-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect>
-                        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle>
-                        <circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle>
-                      </svg>
-                    </div>
+                    <div class="gatcha-icon" aria-hidden="true">🎲</div>
                     <p class="gatcha-desc" data-i18n="gatcha.drawing">正在寻找幸运投稿...</p>
                   </section>
 
@@ -939,7 +934,7 @@
       <aside class="queue-card list-card host-workspace-fragment" id="host-workspace-queue" role="tabpanel"
         aria-labelledby="work-rail-queue" data-host-workspace-panel="queue">
         <div class="queue-card-head">
-          <div class="queue-card-heading">
+          <div class="queue-card-heading host-peer-heading">
             <p class="section-tag" id="list-tag" data-i18n="list.tag">Requests</p>
             <h2 id="workspace-queue-heading" data-host-workspace-heading tabindex="-1"><span id="list-title"
                 data-i18n="list.title">点歌列表</span> <span class="queue-count" id="queue-count">(0首)</span></h2>
@@ -1001,7 +996,7 @@
       <aside class="history-card list-card host-workspace-fragment" id="host-workspace-history" role="tabpanel"
         aria-labelledby="work-rail-history" data-host-workspace-panel="history" hidden inert>
         <div class="queue-card-head">
-          <div class="queue-card-heading">
+          <div class="queue-card-heading host-peer-heading">
             <p class="section-tag" data-i18n="history.tag">History</p>
             <h2 id="workspace-history-heading" data-host-workspace-heading tabindex="-1">
               <span data-i18n="history.title">历史记录</span>
@@ -1189,8 +1184,8 @@
   <div class="selection-modal hidden" id="binding-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="binding-modal-backdrop"></div>
     <div class="selection-modal-card">
-      <div class="selection-modal-head">
-        <div>
+      <div class="selection-modal-head host-peer-head">
+        <div class="host-peer-heading">
           <p class="section-tag" data-i18n="binding.tag">Part Binding</p>
           <h2 data-i18n="binding.title">选择分P绑定</h2>
         </div>
@@ -1218,8 +1213,8 @@
   <div class="selection-modal hidden" id="gatcha-favlist-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="gatcha-favlist-modal-backdrop"></div>
     <div class="selection-modal-card selection-modal-card-single">
-      <div class="selection-modal-head">
-        <div>
+      <div class="selection-modal-head host-peer-head">
+        <div class="host-peer-heading">
           <p class="section-tag" data-i18n="favlist.tag">Favlist Pull</p>
           <h2 data-i18n="favlist.title">选择收藏夹</h2>
         </div>
@@ -1245,8 +1240,8 @@
   <div class="selection-modal hidden" id="gatcha-pool-config-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="gatcha-pool-config-modal-backdrop"></div>
     <div class="selection-modal-card gatcha-pool-config-card">
-      <div class="selection-modal-head">
-        <div>
+      <div class="selection-modal-head host-peer-head">
+        <div class="host-peer-heading">
           <p class="section-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
           <h2 data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
         </div>
@@ -1260,7 +1255,8 @@
       <div class="pool-config-weight-row">
         <span data-i18n="gatcha.poolWeight">抽取概率</span>
         <strong id="gatcha-pool-weight-label">UID 50% | 收藏夹 50%</strong>
-        <input type="range" id="gatcha-pool-weight-slider" min="0" max="100" step="1" value="50" />
+        <input type="range" id="gatcha-pool-weight-slider" class="volume-slider pool-config-weight-slider"
+          min="0" max="100" step="1" value="50" />
       </div>
       <div id="gatcha-pool-source-list" class="selection-modal-grid pool-config-source-list" tabindex="0"
         aria-label="卡池来源列表" data-i18n-aria-label="gatcha.poolSourceListLabel">
@@ -1302,8 +1298,8 @@
   <div class="selection-modal hidden" id="bilikara-secret-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="bilikara-secret-backdrop"></div>
     <div class="selection-modal-card selection-modal-card-single bilikara-secret-card">
-      <div class="selection-modal-head">
-        <div>
+      <div class="selection-modal-head host-peer-head">
+        <div class="host-peer-heading">
           <p class="section-tag">Access</p>
           <h2>访问验证</h2>
         </div>
@@ -1326,8 +1322,8 @@
   <div class="selection-modal hidden" id="developer-tag-reset-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="developer-tag-reset-backdrop"></div>
     <div class="selection-modal-card selection-modal-card-single developer-tag-reset-card">
-      <div class="selection-modal-head">
-        <div>
+      <div class="selection-modal-head host-peer-head">
+        <div class="host-peer-heading">
           <p class="section-tag">Tools</p>
           <h2 id="developer-tag-reset-title">重置标签字段</h2>
         </div>
