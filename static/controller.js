@@ -1,49 +1,53 @@
-(function initializeController() {
+(function initializePresentationOutput() {
   "use strict";
 
   const invoke = window.__TAURI__?.core?.invoke || null;
   const listen = window.__TAURI__?.event?.listen || null;
+  const sceneApi = window.BilikaraPresentationScene;
+  const renderer = window.BilikaraPresentationRenderer;
+  const sync = window.BilikaraPresentationSync;
   const expectedGeneration = Number(
     new URLSearchParams(window.location.search).get("presentationGeneration"),
   );
+  const senderId = `output-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const cursorHideDelayMs = 1800;
 
   const state = {
     session: null,
-    playback: null,
-    lastPlaybackSequence: 0,
-    lastSubmittedCommandSequence: 0,
+    lastMasterEnvelope: null,
+    scene: null,
+    clock: null,
+    video: null,
+    channel: null,
+    sequence: 0,
     readyGeneration: -1,
-    commandBusy: false,
     failedClosed: false,
-    listenersReady: false,
-    unlisteners: [],
     language: "zh",
     translations: {},
-    sessionRefreshPromise: null,
+    unlisteners: [],
+    cursorHideTimer: null,
+    remoteQrPinned: false,
+    lastPointerType: "",
   };
 
   const elements = {
     shell: document.getElementById("controller-shell"),
+    frame: document.getElementById("controller-stage-frame"),
+    empty: document.getElementById("controller-empty"),
     status: document.getElementById("controller-status"),
-    title: document.getElementById("controller-title"),
-    time: document.getElementById("controller-time"),
-    seek: document.getElementById("controller-seek"),
-    play: document.getElementById("controller-play-toggle"),
-    back: document.getElementById("controller-back-15"),
-    forward: document.getElementById("controller-forward-15"),
-    next: document.getElementById("controller-next"),
-    volume: document.getElementById("controller-volume"),
-    volumeValue: document.getElementById("controller-volume-value"),
-    mute: document.getElementById("controller-mute"),
+    outputControl: document.getElementById("controller-output-control"),
     exit: document.getElementById("controller-exit"),
+    remotePopover: document.getElementById("controller-remote-popover"),
+    remoteQrImage: document.getElementById("controller-remote-qr-image"),
+    remoteQrPlaceholder: document.getElementById("controller-remote-qr-placeholder"),
+    remoteUrlLink: document.getElementById("controller-remote-url-link"),
+    remoteUrlHint: document.getElementById("controller-remote-url-hint"),
     error: document.getElementById("controller-error"),
     unavailable: document.getElementById("controller-unavailable"),
-    commandControls: Array.from(document.querySelectorAll("[data-command-control]")),
   };
 
-  function t(key, params = {}) {
-    const template = String(state.translations[key] || key);
-    return template.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ""));
+  function t(key) {
+    return String(state.translations[key] || key);
   }
 
   function preferredLanguage() {
@@ -62,9 +66,7 @@
   async function loadTranslations() {
     try {
       const response = await fetch("/i18n.json", { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const catalog = await response.json();
       state.language = preferredLanguage();
       state.translations = catalog?.languages?.[state.language]
@@ -77,19 +79,81 @@
     document.documentElement.lang = state.language;
     document.querySelectorAll("[data-i18n]").forEach((element) => {
       const translated = state.translations[element.dataset.i18n];
-      if (translated) {
-        element.textContent = translated;
-      }
+      if (translated) element.textContent = translated;
     });
     document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
       const translated = state.translations[element.dataset.i18nAriaLabel];
-      if (translated) {
-        element.setAttribute("aria-label", translated);
-      }
+      if (translated) element.setAttribute("aria-label", translated);
     });
-    const title = state.translations["document.controllerTitle"];
-    if (title) {
-      document.title = title;
+    document.querySelectorAll("[data-i18n-alt]").forEach((element) => {
+      const translated = state.translations[element.dataset.i18nAlt];
+      if (translated) element.setAttribute("alt", translated);
+    });
+  }
+
+  function normalizedHttpUrl(value) {
+    const normalized = String(value || "").trim();
+    return normalized.startsWith("http://") || normalized.startsWith("https://")
+      ? normalized
+      : "";
+  }
+
+  function renderRemoteAccess(candidate) {
+    const preferredUrl = normalizedHttpUrl(candidate?.preferred_url);
+    const localUrl = normalizedHttpUrl(candidate?.local_url);
+    const url = preferredUrl || localUrl;
+    if (!url) return;
+    if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
+    elements.remoteUrlLink.textContent = url;
+    elements.remoteUrlHint.textContent = t("remote.defaultHint");
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
+    if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
+    elements.remoteQrImage.dataset.qrUrl = qrUrl;
+    elements.remoteQrImage.classList.add("hidden");
+    elements.remoteQrPlaceholder.textContent = t("remote.qrLoading");
+    elements.remoteQrPlaceholder.classList.remove("hidden");
+    elements.remoteQrImage.onload = () => {
+      if (elements.remoteQrImage.dataset.qrUrl !== qrUrl) return;
+      elements.remoteQrImage.classList.remove("hidden");
+      elements.remoteQrPlaceholder.classList.add("hidden");
+    };
+    elements.remoteQrImage.onerror = () => {
+      if (elements.remoteQrImage.dataset.qrUrl !== qrUrl) return;
+      elements.remoteQrImage.classList.add("hidden");
+      elements.remoteQrPlaceholder.textContent = t("remote.qrImageFailed");
+      elements.remoteQrPlaceholder.classList.remove("hidden");
+    };
+    elements.remoteQrImage.src = qrUrl;
+  }
+
+  function setRemoteQrPinned(pinned) {
+    state.remoteQrPinned = Boolean(pinned);
+    elements.outputControl.classList.toggle("is-qr-pinned", state.remoteQrPinned);
+    elements.exit.setAttribute("aria-expanded", String(state.remoteQrPinned));
+  }
+
+  function activationUsesTouch(event) {
+    const pointerType = state.lastPointerType;
+    state.lastPointerType = "";
+    if (pointerType) return pointerType === "touch";
+    return Boolean(
+      event?.detail
+      && window.matchMedia?.("(hover: none), (pointer: coarse)")?.matches,
+    );
+  }
+
+  async function openExternalUrl(url) {
+    const normalized = normalizedHttpUrl(url);
+    if (!normalized) return;
+    try {
+      const response = await fetch("/api/app/open-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      window.open(normalized, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -100,32 +164,21 @@
   }
 
   function failClosed(message = "") {
-    if (message) {
-      setError(message);
-    }
-    elements.unavailable.classList.remove("hidden");
-    state.session = null;
-    state.playback = null;
-    state.commandBusy = false;
     state.failedClosed = true;
-    render();
+    state.session = null;
+    elements.exit.disabled = true;
+    elements.unavailable.classList.remove("hidden");
+    if (message) setError(message);
   }
 
   function normalizeSession(candidate) {
     if (!candidate || typeof candidate !== "object") return null;
     const generation = Number(candidate.generation);
-    const accepted = Number(candidate.lastAcceptedCommandSequence || 0);
-    const applied = Number(candidate.lastAppliedCommandSequence || 0);
     if (
       !["singleScreen", "localDualScreen"].includes(candidate.mode)
       || !["inactive", "activating", "active", "recovering"].includes(candidate.phase)
       || !Number.isSafeInteger(generation)
       || generation < 0
-      || !Number.isSafeInteger(accepted)
-      || accepted < 0
-      || !Number.isSafeInteger(applied)
-      || applied < 0
-      || applied > accepted
       || candidate.playbackAuthority !== "host"
       || candidate.mediaRendererOwner !== "host"
     ) {
@@ -135,145 +188,27 @@
       mode: candidate.mode,
       phase: candidate.phase,
       generation,
-      hostReady: Boolean(candidate.hostReady),
       controllerReady: Boolean(candidate.controllerReady),
-      lastAcceptedCommandSequence: accepted,
-      lastAppliedCommandSequence: applied,
     };
   }
 
-  function normalizePlaybackEvent(candidate) {
-    if (!candidate || typeof candidate !== "object" || !candidate.state) return null;
-    const generation = Number(candidate.generation);
-    const sequence = Number(candidate.sequence);
-    const revision = Number(candidate.state.revision);
-    const playbackGenerationValue = candidate.state.playbackGeneration;
-    const playbackGeneration = playbackGenerationValue == null
-      ? null
-      : Number(playbackGenerationValue);
-    const currentTimeSeconds = Number(candidate.state.currentTimeSeconds);
-    const durationValue = candidate.state.durationSeconds;
-    const durationSeconds = durationValue == null ? null : Number(durationValue);
-    const volumePercent = Number(candidate.state.volumePercent);
-    if (
-      !Number.isSafeInteger(generation)
-      || !Number.isSafeInteger(sequence)
-      || sequence < 1
-      || !Number.isSafeInteger(revision)
-      || revision < 1
-      || (
-        playbackGeneration != null
-        && (
-          !Number.isSafeInteger(playbackGeneration)
-          || playbackGeneration < 1
-        )
-      )
-      || !Number.isFinite(currentTimeSeconds)
-      || currentTimeSeconds < 0
-      || (durationSeconds != null && (!Number.isFinite(durationSeconds) || durationSeconds < 0))
-      || !Number.isInteger(volumePercent)
-      || volumePercent < 0
-      || volumePercent > 100
-      || typeof candidate.state.muted !== "boolean"
-    ) {
-      return null;
-    }
-    return {
-      generation,
-      sequence,
-      revision,
-      playbackGeneration,
-      itemIdentity: candidate.state.itemIdentity == null
-        ? null
-        : String(candidate.state.itemIdentity),
-      title: String(candidate.state.title || ""),
-      paused: Boolean(candidate.state.paused),
-      currentTimeSeconds,
-      durationSeconds,
-      volumePercent,
-      muted: candidate.state.muted,
-      canSkip: Boolean(candidate.state.canSkip),
-    };
-  }
-
-  function formatTime(seconds) {
-    const value = Math.max(0, Number(seconds || 0));
-    const minutes = Math.floor(value / 60);
-    const remainder = Math.floor(value % 60);
-    return `${minutes}:${String(remainder).padStart(2, "0")}`;
-  }
-
-  function controlsAvailable() {
-    return !state.failedClosed
-      && state.session?.phase === "active"
-      && state.session?.mode === "localDualScreen"
-      && state.playback?.generation === state.session.generation
-      && !state.commandBusy;
-  }
-
-  function render() {
+  function renderSession() {
     const session = state.session;
-    const playback = state.playback;
-    const available = controlsAvailable();
-    const duration = playback?.durationSeconds ?? 0;
-    const hasPlayableMedia = available
-      && playback?.itemIdentity != null
-      && Number.isSafeInteger(playback?.playbackGeneration)
-      && Number.isFinite(duration)
-      && duration > 0;
-    const statusKey = session?.phase === "active"
-      ? "controller.statusActive"
-      : session?.phase === "activating"
-        ? "controller.statusActivating"
-        : session?.phase === "recovering"
-          ? "controller.statusRecovering"
-          : "controller.statusUnavailable";
-    elements.status.textContent = t(statusKey);
-    elements.title.textContent = playback?.title || t("controller.noSong");
-    elements.play.querySelector("span").textContent = playback?.paused !== false
-      ? t("controller.play")
-      : t("controller.pause");
-    elements.mute.querySelector("span").textContent = playback?.muted
-      ? t("controller.unmute")
-      : t("controller.mute");
-
-    const current = Math.min(playback?.currentTimeSeconds ?? 0, duration || Infinity);
-    if (document.activeElement !== elements.seek) {
-      elements.seek.max = String(duration);
-      elements.seek.value = String(Number.isFinite(current) ? current : 0);
-    }
-    elements.time.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
-    if (document.activeElement !== elements.volume) {
-      elements.volume.value = String(playback?.volumePercent ?? 100);
-    }
-    elements.volumeValue.textContent = `${elements.volume.value}%`;
-
-    elements.commandControls.forEach((control) => {
-      control.disabled = !available;
-    });
-    elements.play.disabled = !hasPlayableMedia;
-    elements.back.disabled = !hasPlayableMedia;
-    elements.forward.disabled = !hasPlayableMedia;
-    elements.next.disabled = !available || !playback?.canSkip;
-    if (!Number.isSafeInteger(playback?.playbackGeneration)) {
-      elements.next.disabled = true;
-    }
-    elements.seek.disabled = !hasPlayableMedia;
-    elements.exit.disabled = state.commandBusy
+    elements.exit.disabled = state.failedClosed
       || !session
       || !["activating", "active"].includes(session.phase);
+    if (!state.scene?.videoUrl && elements.status) {
+      elements.status.textContent = session?.phase === "active"
+        ? t("controller.noSong")
+        : t("controller.statusActivating");
+    }
   }
 
   function applySession(candidate) {
-    if (state.failedClosed) {
-      return null;
-    }
+    if (state.failedClosed) return null;
     const session = normalizeSession(candidate);
     if (!session) {
       failClosed(t("controller.invalidState"));
-      return null;
-    }
-    if (state.session && session.generation < state.session.generation) {
       return null;
     }
     if (
@@ -284,21 +219,12 @@
       failClosed(t("controller.staleWindow"));
       return null;
     }
-    if (!state.session || session.generation !== state.session.generation) {
-      state.playback = null;
-      state.lastPlaybackSequence = 0;
-      state.lastSubmittedCommandSequence = session.lastAcceptedCommandSequence;
-    }
     state.session = session;
-    state.lastSubmittedCommandSequence = Math.max(
-      state.lastSubmittedCommandSequence,
-      session.lastAcceptedCommandSequence,
-    );
-    render();
+    renderSession();
     return session;
   }
 
-  async function ensureControllerReady(session) {
+  async function ensureOutputReady(session) {
     if (
       session?.phase !== "activating"
       || session.controllerReady
@@ -317,185 +243,240 @@
     }
   }
 
-  async function refreshSession() {
-    if (state.sessionRefreshPromise) {
-      return state.sessionRefreshPromise;
-    }
-    const pending = (async () => {
-      const session = applySession(await invoke("get_presentation_session"));
-      await ensureControllerReady(session);
-      return state.session;
-    })();
-    const tracked = pending.finally(() => {
-      if (state.sessionRefreshPromise === tracked) {
-        state.sessionRefreshPromise = null;
-      }
+  function postEnvelope(type, payload = {}) {
+    if (!sync) return;
+    const envelope = sync.makeEnvelope(type, payload, {
+      senderId,
+      sequence: ++state.sequence,
+      sentAt: Date.now(),
     });
-    state.sessionRefreshPromise = tracked;
-    return tracked;
+    state.channel?.postMessage(envelope);
+    try {
+      localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
+      localStorage.removeItem(sync.storageKey);
+    } catch {
+      // BroadcastChannel is primary; storage is only a same-origin fallback.
+    }
   }
 
-  function applyPlaybackEvent(candidate) {
-    const playback = normalizePlaybackEvent(candidate);
+  function preserveOverlayAndReplace(...nodes) {
+    const overlay = elements.frame.querySelector(".player-delay-overlay");
+    elements.frame.replaceChildren(...nodes);
+    if (overlay) elements.frame.appendChild(overlay);
+  }
+
+  function showEmpty(message) {
+    if (elements.status) elements.status.textContent = String(message || "");
+    preserveOverlayAndReplace(elements.empty);
+    state.video = null;
+  }
+
+  function renderOverlay() {
+    if (!renderer || !state.scene) return;
+    renderer.renderScene(elements.frame, state.scene, {
+      compact: false,
+      manageVisibility: true,
+      now: Date.now(),
+    });
+  }
+
+  function safeSeek(targetTime) {
+    const video = state.video;
+    if (!video || video.readyState < 1) return;
+    const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+    try {
+      video.currentTime = Math.max(0, Math.min(Number(targetTime || 0), duration));
+    } catch {
+      // Metadata readiness events retry the latest clock.
+    }
+  }
+
+  function applyClock() {
+    const video = state.video;
     if (
-      !playback
-      || !state.session
-      || playback.generation !== state.session.generation
-      || playback.sequence <= state.lastPlaybackSequence
+      !video
+      || !state.clock
+      || state.clock.itemIdentity !== state.scene?.currentItemIdentity
     ) {
       return;
     }
-    state.lastPlaybackSequence = playback.sequence;
-    state.playback = playback;
-    render();
-  }
-
-  async function withBusy(element, action) {
-    if (state.commandBusy) return;
-    state.commandBusy = true;
-    element.disabled = true;
-    element.setAttribute("aria-busy", "true");
-    setError();
-    render();
-    try {
-      await action();
-    } catch (error) {
-      setError(error?.message || String(error));
-    } finally {
-      state.commandBusy = false;
-      element.removeAttribute("aria-busy");
-      render();
+    const correction = sync.planClockCorrection(state.clock, {
+      currentTime: video.currentTime,
+      paused: video.paused,
+    }, Date.now());
+    if (correction.action === "seek") safeSeek(correction.targetTime);
+    if (Math.abs(Number(video.playbackRate || 1) - correction.playbackRate) > 0.001) {
+      video.playbackRate = correction.playbackRate;
+    }
+    if (!correction.shouldPlay) {
+      if (!video.paused) video.pause();
+      return;
+    }
+    if (video.paused && !video.ended && video.readyState >= 1) {
+      video.play().catch(() => {
+        setError(t("controller.autoplayBlocked"));
+      });
     }
   }
 
-  async function sendCommand(element, command) {
-    if (!controlsAvailable()) return;
-    await withBusy(element, async () => {
-      const generation = state.session.generation;
-      const sequence = Math.max(
-        state.session.lastAcceptedCommandSequence,
-        state.lastSubmittedCommandSequence,
-      ) + 1;
-      if (!Number.isSafeInteger(sequence)) {
-        throw new Error(t("controller.commandFailed"));
-      }
-      const accepted = await invoke("send_presentation_command", {
-        request: { generation, sequence, command },
-      });
-      if (
-        Number(accepted?.generation) !== generation
-        || Number(accepted?.sequence) !== sequence
-      ) {
-        throw new Error(t("controller.invalidAcknowledgement"));
-      }
-      state.lastSubmittedCommandSequence = sequence;
-      await refreshSession();
-    });
+  function mountScene(scene) {
+    document.documentElement.dataset.theme = scene.theme;
+    document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
+    if (!scene.videoUrl) {
+      showEmpty(t("controller.noSong"));
+      renderOverlay();
+      return;
+    }
+    const video = document.createElement("video");
+    video.dataset.presentationOutputVideo = "true";
+    video.playsInline = true;
+    video.preload = "auto";
+    video.autoplay = false;
+    video.controls = false;
+    video.muted = true;
+    video.defaultMuted = true;
+    video.setAttribute("muted", "");
+    video.src = scene.videoUrl;
+    video.addEventListener("loadedmetadata", applyClock);
+    video.addEventListener("canplay", applyClock);
+    video.addEventListener("error", () => setError(t("controller.outputVideoFailed")));
+    state.video = video;
+    preserveOverlayAndReplace(video);
+    renderOverlay();
+    applyClock();
   }
 
-  function installControls() {
-    elements.play.addEventListener("click", () => {
-      sendCommand(elements.play, { type: state.playback?.paused ? "play" : "pause" });
-    });
-    elements.back.addEventListener("click", () => {
-      sendCommand(elements.back, {
-        type: "seekRelative",
-        deltaSeconds: -15,
-        expectedPlaybackGeneration: state.playback?.playbackGeneration,
-      });
-    });
-    elements.forward.addEventListener("click", () => {
-      sendCommand(elements.forward, {
-        type: "seekRelative",
-        deltaSeconds: 15,
-        expectedPlaybackGeneration: state.playback?.playbackGeneration,
-      });
-    });
-    elements.next.addEventListener("click", () => {
-      sendCommand(elements.next, {
-        type: "nextTrack",
-        expectedPlaybackGeneration: state.playback?.playbackGeneration,
-      });
-    });
-    elements.seek.addEventListener("input", () => {
-      elements.time.textContent = `${formatTime(elements.seek.value)} / ${formatTime(elements.seek.max)}`;
-    });
-    elements.seek.addEventListener("change", () => {
-      sendCommand(elements.seek, {
-        type: "seekAbsolute",
-        targetSeconds: Number(elements.seek.value),
-        expectedPlaybackGeneration: state.playback?.playbackGeneration,
-      });
-    });
-    elements.volume.addEventListener("input", () => {
-      elements.volumeValue.textContent = `${elements.volume.value}%`;
-    });
-    elements.volume.addEventListener("change", () => {
-      sendCommand(elements.volume, {
-        type: "setVolume",
-        volumePercent: Number(elements.volume.value),
-        muted: Boolean(state.playback?.muted),
-      });
-    });
-    elements.mute.addEventListener("click", () => {
-      sendCommand(elements.mute, {
-        type: "setVolume",
-        volumePercent: Number(state.playback?.volumePercent ?? elements.volume.value),
-        muted: !state.playback?.muted,
-      });
-    });
-    elements.exit.addEventListener("click", () => {
-      if (!state.session) return;
-      withBusy(elements.exit, async () => {
-        applySession(await invoke("deactivate_local_presentation", {
-          generation: state.session.generation,
-        }));
-      });
-    });
+  function handleMasterMessage(candidate) {
+    if (
+      candidate?.type !== "master-state"
+      || !sync?.acceptsEnvelope(state.lastMasterEnvelope, candidate)
+    ) {
+      return;
+    }
+    state.lastMasterEnvelope = candidate;
+    renderRemoteAccess(candidate.payload?.remoteAccess);
+    const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
+    const nextClock = sync.normalizeClock(candidate.payload?.clock);
+    if (!nextScene || nextScene.generation !== state.session?.generation) return;
+    const shouldMount = !state.scene
+      || nextScene.revision !== state.scene.revision
+      || nextScene.currentItemIdentity !== state.scene.currentItemIdentity
+      || nextScene.videoUrl !== state.scene.videoUrl;
+    state.scene = nextScene;
+    state.clock = nextClock;
+    setError("");
+    if (shouldMount) {
+      mountScene(nextScene);
+    } else {
+      renderOverlay();
+      applyClock();
+    }
   }
 
-  function teardown() {
-    state.listenersReady = false;
-    state.unlisteners.splice(0).forEach((unlisten) => {
-      try {
-        unlisten();
-      } catch {
-        // The WebView may already have released the native listener.
-      }
-    });
+  function revealCursor() {
+    document.body.classList.remove("is-cursor-hidden");
+    if (state.cursorHideTimer) window.clearTimeout(state.cursorHideTimer);
+    state.cursorHideTimer = window.setTimeout(() => {
+      state.cursorHideTimer = null;
+      document.body.classList.add("is-cursor-hidden");
+    }, cursorHideDelayMs);
   }
 
   async function start() {
-    loadTranslations().then(() => render());
-    installControls();
-    render();
-    if (typeof invoke !== "function" || typeof listen !== "function") {
+    await loadTranslations();
+    if (
+      typeof invoke !== "function"
+      || typeof listen !== "function"
+      || !sceneApi
+      || !renderer
+      || !sync
+      || !Number.isSafeInteger(expectedGeneration)
+      || expectedGeneration < 1
+    ) {
       failClosed(t("controller.tauriRequired"));
       return;
     }
-    try {
-      const unlistenState = await listen("bilikara-presentation-state", (event) => {
-        const session = applySession(event?.payload?.session);
-        if (!state.listenersReady) {
-          return;
-        }
-        ensureControllerReady(session).catch((error) => {
-          failClosed(error?.message || String(error));
-        });
-      });
-      const unlistenPlayback = await listen(
-        "bilikara-presentation-playback-state",
-        (event) => applyPlaybackEvent(event?.payload),
-      );
-      state.unlisteners.push(unlistenState, unlistenPlayback);
-      state.listenersReady = true;
-      await refreshSession();
-    } catch (error) {
-      teardown();
-      failClosed(error?.message || String(error));
+    if (typeof BroadcastChannel === "function") {
+      state.channel = new BroadcastChannel(sync.channelName);
+      state.channel.addEventListener("message", (event) => handleMasterMessage(event.data));
     }
+    window.addEventListener("storage", (event) => {
+      if (event.key !== sync.storageKey || !event.newValue) return;
+      try {
+        handleMasterMessage(JSON.parse(event.newValue));
+      } catch {
+        // Ignore malformed same-origin fallback messages.
+      }
+    });
+    state.unlisteners.push(await listen("bilikara-presentation-state", async (event) => {
+      const session = applySession(event?.payload?.session);
+      try {
+        await ensureOutputReady(session);
+      } catch (error) {
+        failClosed(error?.message || String(error));
+      }
+    }));
+    const session = applySession(await invoke("get_presentation_session"));
+    await ensureOutputReady(session);
+    postEnvelope("output-ready", { generation: expectedGeneration });
+    window.setInterval(() => {
+      applyClock();
+      renderOverlay();
+    }, 100);
   }
 
-  window.addEventListener("pagehide", teardown);
-  start();
+  elements.exit.addEventListener("pointerdown", (event) => {
+    state.lastPointerType = String(event.pointerType || "");
+  });
+
+  elements.exit.addEventListener("click", async (event) => {
+    const generation = state.session?.generation;
+    if (!Number.isSafeInteger(generation) || elements.exit.disabled) return;
+    if (activationUsesTouch(event) && !state.remoteQrPinned) {
+      setRemoteQrPinned(true);
+      return;
+    }
+    setRemoteQrPinned(false);
+    elements.exit.disabled = true;
+    elements.exit.setAttribute("aria-busy", "true");
+    try {
+      applySession(await invoke("deactivate_local_presentation", { generation }));
+    } catch (error) {
+      setError(error?.message || String(error));
+      renderSession();
+    } finally {
+      elements.exit.removeAttribute("aria-busy");
+    }
+  });
+
+  elements.remoteUrlLink.addEventListener("click", (event) => {
+    event.preventDefault();
+    openExternalUrl(elements.remoteUrlLink.href);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (state.remoteQrPinned && !event.target.closest("#controller-output-control")) {
+      setRemoteQrPinned(false);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.remoteQrPinned) {
+      setRemoteQrPinned(false);
+      elements.exit.focus({ preventScroll: true });
+      event.preventDefault();
+    }
+  });
+
+  ["pointermove", "pointerdown", "keydown"].forEach((eventName) => {
+    document.addEventListener(eventName, revealCursor, { passive: true });
+  });
+  window.addEventListener("pagehide", () => {
+    if (state.cursorHideTimer) window.clearTimeout(state.cursorHideTimer);
+    state.unlisteners.splice(0).forEach((unlisten) => unlisten?.());
+    state.channel?.close();
+  });
+
+  revealCursor();
+  start().catch((error) => failClosed(error?.message || String(error)));
 })();

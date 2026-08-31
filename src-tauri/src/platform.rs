@@ -7,6 +7,35 @@ use objc2_web_kit::{WKAudiovisualMediaTypes, WKWebViewConfiguration};
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
+/// Ask Windows to clip the transparent, undecorated host window with the
+/// platform's own rounded-corner treatment. The web surface stays square so
+/// its radius cannot diverge from the non-client frame while resizing.
+#[cfg(target_os = "windows")]
+pub(crate) fn configure_windows_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
+
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let preference: i32 = DWMWCP_ROUND;
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&preference as *const i32).cast::<c_void>(),
+            std::mem::size_of_val(&preference) as u32,
+        )
+    };
+    if result < 0 {
+        return Err(format!(
+            "DWM rounded-corner preference failed with HRESULT 0x{:08X}",
+            result as u32
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn is_macos_app_bundle_executable(path: &Path) -> bool {
     let Some(mac_os_dir) = path.parent() else {
         return false;

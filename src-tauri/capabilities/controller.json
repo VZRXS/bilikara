@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "controller",
-  "description": "Allow the trusted backend-origin Controller window to read its presentation session and send bounded controls to the Host.",
+  "description": "Allow the trusted backend-origin audience output window to read its presentation session and exit dual-screen mode.",
   "windows": [
     "controller"
   ],
@@ -17,7 +17,6 @@
     "core:event:allow-unlisten",
     "allow-get-presentation-session",
     "allow-mark-presentation-controller-ready",
-    "allow-deactivate-local-presentation",
-    "allow-send-presentation-command"
+    "allow-deactivate-local-presentation"
   ]
 }

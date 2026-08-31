@@ -1,219 +1,290 @@
-:root {
-  color-scheme: light dark;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #2c2118;
-  background: #f6efe7;
+@import url("/styles.css");
+
+html,
+body,
+.presentation-output-shell,
+.presentation-output-frame {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
-* {
-  box-sizing: border-box;
+html,
+body {
+  min-width: 320px;
+  min-height: 100%;
+  background: #000;
 }
 
 body {
-  min-width: 320px;
-  min-height: 100vh;
+  user-select: none;
+}
+
+body.is-cursor-hidden,
+body.is-cursor-hidden * {
+  cursor: none !important;
+}
+
+.presentation-output-shell {
+  position: fixed;
+  inset: 0;
+  background: #000;
+}
+
+.presentation-output-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+}
+
+.presentation-output-frame video[data-presentation-output-video] {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.presentation-output-frame .player-delay-overlay {
+  z-index: 10;
+  border-radius: 0;
+}
+
+.presentation-output-empty {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  color: rgba(255, 255, 255, 0.68);
+  background: radial-gradient(circle at center, #25201d, #050505 72%);
+  text-align: center;
+}
+
+.presentation-output-empty p {
   margin: 0;
-  background:
-    radial-gradient(circle at 10% 0%, rgba(238, 128, 73, 0.2), transparent 36%),
-    #f6efe7;
+  font-size: clamp(17px, 2.2vw, 28px);
+  font-weight: 650;
 }
 
-button,
-input {
+.presentation-output-control {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+}
+
+.presentation-output-exit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  min-width: 84px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 12px;
+  color: #1d1a18;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
   font: inherit;
-}
-
-button {
-  border: 1px solid rgba(80, 55, 38, 0.16);
-  border-radius: 14px;
-  color: inherit;
-  background: rgba(255, 255, 255, 0.76);
+  font-weight: 700;
   cursor: pointer;
 }
 
-button:disabled,
-input:disabled {
-  cursor: default;
-  opacity: 0.48;
+.presentation-output-action-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
 }
 
-button:focus-visible,
-input:focus-visible {
-  outline: 3px solid rgba(230, 102, 54, 0.35);
-  outline-offset: 2px;
+.presentation-output-action-icons svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.presentation-output-action-divider {
+  width: 1px;
+  height: 18px;
+  background: currentColor;
+  opacity: 0.22;
+}
+
+.presentation-output-exit:hover:not(:disabled) {
+  background: #fff;
+}
+
+.presentation-output-exit:focus-visible {
+  outline: 3px solid rgba(208, 90, 63, 0.48);
+  outline-offset: 3px;
+}
+
+.presentation-output-exit:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.presentation-output-remote-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(-5px);
+  transition:
+    opacity 130ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 130ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 130ms;
+  pointer-events: none;
+}
+
+.presentation-output-control.is-qr-pinned .presentation-output-remote-popover {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 0s;
+  pointer-events: auto;
+}
+
+.presentation-output-remote-card {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(45, 37, 32, 0.1);
+  border-radius: 20px;
+  color: #2a2420;
+  background: rgba(255, 251, 245, 0.98);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.3);
+  user-select: text;
+}
+
+.presentation-output-qr-wrap {
+  width: 160px;
+  height: 160px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #fff;
+}
+
+.presentation-output-qr-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.presentation-output-qr-placeholder {
+  padding: 12px;
+  color: #756c66;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.presentation-output-remote-copy {
+  min-width: 0;
+  text-align: left;
+}
+
+.presentation-output-remote-copy p {
+  margin: 0 0 8px;
+  color: #756c66;
+  font-size: 13px;
+}
+
+.presentation-output-remote-copy a {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #b33d28;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.presentation-output-remote-copy small {
+  display: block;
+  margin-top: 10px;
+  color: #756c66;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .presentation-output-control:hover .presentation-output-remote-popover {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
+    transition-delay: 0s;
+    pointer-events: auto;
+  }
+}
+
+.presentation-output-error {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 31;
+  max-width: min(760px, calc(100vw - 36px));
+  margin: 0;
+  padding: 11px 15px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 175, 154, 0.34);
+  border-radius: 12px;
+  color: #fff4ef;
+  background: rgba(91, 24, 13, 0.86);
+  font-size: 13px;
+  text-align: center;
 }
 
 .hidden {
   display: none !important;
 }
 
-.controller-shell {
-  width: min(100%, 560px);
-  min-height: 100vh;
-  margin: 0 auto;
-  padding: 28px;
-  display: grid;
-  align-content: start;
-  gap: 20px;
-}
-
-.controller-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.controller-tag,
-.controller-kicker {
-  margin: 0 0 6px;
-  color: #b14f28;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.controller-header h1,
-.controller-now h2 {
-  margin: 0;
-}
-
-.controller-header h1 {
-  font-size: 24px;
-}
-
-.controller-status {
-  margin: 4px 0 0;
-  padding: 7px 10px;
-  border-radius: 999px;
-  color: #6a5748;
-  background: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
-  font-weight: 700;
-  text-align: right;
-}
-
-.controller-now,
-.controller-volume {
-  padding: 20px;
-  border: 1px solid rgba(80, 55, 38, 0.12);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 16px 45px rgba(92, 57, 34, 0.08);
-}
-
-.controller-now h2 {
-  min-height: 2.7em;
-  font-size: clamp(22px, 6vw, 34px);
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-.controller-timeline {
-  margin-top: 20px;
-}
-
-.controller-timeline input,
-.controller-volume input {
-  width: 100%;
-  accent-color: #df6737;
-}
-
-.controller-timeline p {
-  margin: 8px 0 0;
-  color: #715f50;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.controller-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.controller-actions button {
-  min-height: 58px;
-  padding: 12px;
-  font-weight: 750;
-}
-
-.controller-actions .controller-play {
-  color: #fff;
-  background: #df6737;
-}
-
-.controller-actions #controller-next {
-  grid-column: 1 / -1;
-}
-
-.controller-volume-heading,
-.controller-volume-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.controller-volume-heading {
-  justify-content: space-between;
-  margin-bottom: 12px;
-  font-weight: 750;
-}
-
-.controller-volume-row input {
-  flex: 1;
-}
-
-.controller-volume-row button {
-  min-width: 78px;
-  padding: 10px 12px;
-}
-
-.controller-exit {
-  min-height: 50px;
-  padding: 12px 18px;
-  color: #923819;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.controller-error,
-.controller-unavailable {
-  margin: 0;
-  padding: 12px 14px;
-  border-radius: 12px;
-  color: #8b281b;
-  background: rgba(207, 64, 45, 0.12);
-  font-size: 13px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f4e9df;
-    background: #17120f;
+@media (max-width: 560px) {
+  .presentation-output-control {
+    top: 10px;
+    right: 10px;
   }
 
-  body {
-    background:
-      radial-gradient(circle at 10% 0%, rgba(223, 103, 55, 0.16), transparent 36%),
-      #17120f;
+  .presentation-output-exit {
+    width: 80px;
+    min-width: 80px;
+    min-height: 38px;
+    padding: 0 10px;
   }
 
-  button,
-  .controller-status,
-  .controller-now,
-  .controller-volume {
-    color: #f4e9df;
-    border-color: rgba(255, 255, 255, 0.12);
-    background: rgba(46, 37, 31, 0.92);
+  .presentation-output-remote-popover {
+    width: min(340px, calc(100vw - 20px));
+  }
+}
+
+@media (max-width: 350px) {
+  .presentation-output-remote-card {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
   }
 
-  .controller-timeline p,
-  .controller-status {
-    color: #c9b7a8;
+  .presentation-output-remote-copy {
+    width: 100%;
+    text-align: center;
   }
+}
 
-  .controller-actions .controller-play {
-    color: #fff;
-    background: #c8552d;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
   }
 }

@@ -37,6 +37,24 @@ async function run() {
   const discoverNameScreenshotPath = suffixedPath(screenshotPath, "-discover-name-scroll");
   const discoverArtistScreenshotPath = suffixedPath(screenshotPath, "-discover-artist-scroll");
   const requestResultDensityScreenshotPath = suffixedPath(screenshotPath, "-request-results-two-column");
+  const playbackInfoScreenshotPath = suffixedPath(screenshotPath, "-playback-info-anchor");
+  const requestEmptyScreenshotPath = suffixedPath(screenshotPath, "-request-empty-user");
+  const requestEmptyDiscoverScreenshotPath = suffixedPath(screenshotPath, "-request-empty-discover");
+  const requestEmptySearchScreenshotPath = suffixedPath(screenshotPath, "-request-empty-search-results");
+  const usersEmptyScreenshotPath = suffixedPath(screenshotPath, "-users-empty-dot");
+  const toolForwardTransitionScreenshotPath = suffixedPath(screenshotPath, "-tool-forward-transition");
+  const toolBackwardTransitionScreenshotPath = suffixedPath(screenshotPath, "-tool-backward-transition");
+  const presentationHostScreenshotPath = suffixedPath(screenshotPath, "-presentation-host-control");
+  const presentationHostNarrowScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-presentation-host-control-narrow",
+  );
+  const presentationOutputScreenshotPath = suffixedPath(screenshotPath, "-presentation-output");
+  const playerFullscreenRemoteScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-player-fullscreen-remote",
+  );
+  const presentationRoutingScreenshotPath = suffixedPath(screenshotPath, "-presentation-routing");
   const consoleErrors = [];
   const pageErrors = [];
   const hostPlayerRequests = [];
@@ -50,6 +68,7 @@ async function run() {
   const sourceUidPreviewRequests = [];
   const sourceUidAddRequests = [];
   const maintenanceRequests = [];
+  const openUrlRequests = [];
   let releaseMonthlyMaintenance;
   const monthlyMaintenanceGate = new Promise((resolve) => {
     releaseMonthlyMaintenance = resolve;
@@ -101,9 +120,18 @@ async function run() {
       }),
     });
   });
+  await page.route("**/api/app/open-url", (route) => {
+    openUrlRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
   await page.route("**/api/lark/search?**", (route) => {
     larkSearchRequests.push(route.request().url());
-    const items = Array.from({ length: 36 }, (_, index) => ({
+    const query = new URL(route.request().url()).searchParams.get("q") || "";
+    const items = query === "zero-results" ? [] : Array.from({ length: 36 }, (_, index) => ({
       bvid: `BVHOSTUI${index}`,
       title: `Host UI result ${index}`,
       url: `https://www.bilibili.com/video/BVHOSTUI${index}`,
@@ -119,13 +147,14 @@ async function run() {
   });
   await page.route("**/api/gatcha/search?**", (route) => {
     localSearchRequests.push(route.request().url());
+    const query = new URL(route.request().url()).searchParams.get("q") || "";
     return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
         data: {
-          items: [{
+          items: query === "zero-results" ? [] : [{
             bvid: "BVLOCALUI",
             title: "Local configured-source result",
             url: "https://www.bilibili.com/video/BVLOCALUI",
@@ -638,12 +667,31 @@ async function run() {
     await shellPage.waitForTimeout(80);
     const directHistory = await shellPage.evaluate(() => ({
       workspace: state.activeHostWorkspace,
+      direction: elements.hostWorkspaceRegion.dataset.toolTransitionDirection || "",
       selected: Array.from(elements.hostWorkspaceButtons || [])
         .filter((button) => button.getAttribute("aria-selected") === "true")
         .map((button) => button.dataset.hostWorkspace),
       queueHidden: document.querySelector("#host-workspace-queue").hidden
         && document.querySelector("#host-workspace-queue").inert,
       historyVisible: !document.querySelector("#host-workspace-history").hidden,
+      outgoingSurfaceAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).animationName,
+      incomingSurfaceAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).animationName,
+      outgoingContentAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-queue").firstElementChild,
+      ).animationName,
+      incomingContentAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-history").firstElementChild,
+      ).animationName,
+      outgoingSurfaceTransform: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).transform,
+      incomingSurfaceTransform: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).transform,
       stableNodes: document.querySelector("#host-workspace-queue") === window.__hostShellQueueNodes.queue
         && document.querySelector("#host-workspace-history") === window.__hostShellQueueNodes.history
         && elements.playlist === window.__hostShellQueueNodes.playlist
@@ -651,16 +699,68 @@ async function run() {
     }));
     assert(
       directHistory.workspace === "history"
+        && directHistory.direction === "forward"
         && directHistory.selected.join(",") === "history"
         && directHistory.queueHidden
         && directHistory.historyVisible
+        && directHistory.outgoingSurfaceAnimation === "none"
+        && directHistory.incomingSurfaceAnimation === "none"
+        && directHistory.outgoingContentAnimation === "host-tool-content-forward-out"
+        && directHistory.incomingContentAnimation === "host-tool-content-forward-in"
+        && directHistory.outgoingSurfaceTransform === "none"
+        && directHistory.incomingSurfaceTransform === "none"
         && directHistory.stableNodes,
-      "History was not an immediate stable direct rail workspace",
+      "History did not use the forward rail-order transition on stable workspace nodes",
       directHistory,
     );
+    if (toolForwardTransitionScreenshotPath) {
+      await shellPage.screenshot({ path: toolForwardTransitionScreenshotPath, fullPage: false });
+    }
+    await shellPage.waitForTimeout(120);
+    assert(
+      await shellPage.evaluate(() => !elements.hostWorkspaceRegion.dataset.toolTransitionDirection),
+      "forward tool transition did not settle promptly",
+    );
     await shellPage.locator("#work-rail-queue").click();
+    await shellPage.waitForTimeout(70);
+    const backwardTransition = await shellPage.evaluate(() => ({
+      direction: elements.hostWorkspaceRegion.dataset.toolTransitionDirection || "",
+      outgoingSurfaceAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).animationName,
+      incomingSurfaceAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).animationName,
+      outgoingContentAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-history").firstElementChild,
+      ).animationName,
+      incomingContentAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-queue").firstElementChild,
+      ).animationName,
+      outgoingSurfaceTransform: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).transform,
+      incomingSurfaceTransform: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).transform,
+    }));
+    assert(
+      backwardTransition.direction === "backward"
+        && backwardTransition.outgoingSurfaceAnimation === "none"
+        && backwardTransition.incomingSurfaceAnimation === "none"
+        && backwardTransition.outgoingContentAnimation === "host-tool-content-backward-out"
+        && backwardTransition.incomingContentAnimation === "host-tool-content-backward-in"
+        && backwardTransition.outgoingSurfaceTransform === "none"
+        && backwardTransition.incomingSurfaceTransform === "none",
+      "Queue did not use the backward rail-order transition",
+      backwardTransition,
+    );
+    if (toolBackwardTransitionScreenshotPath) {
+      await shellPage.screenshot({ path: toolBackwardTransitionScreenshotPath, fullPage: false });
+    }
+    await shellPage.waitForTimeout(120);
     await shellPage.locator("#work-rail-history").click();
-    await shellPage.waitForTimeout(80);
+    await shellPage.waitForTimeout(180);
     assert(
       shellPlayedSessionRequests.length === 1,
       "History direct switching repeated its bounded lazy session load",
@@ -937,7 +1037,7 @@ async function run() {
         setHostPlaybackSessionPhase(session, scenario.phase);
         session.readyCommitted = scenario.phase !== "binding";
         if (scenario.presentation) {
-          document.body.classList.add("is-presentation-stage-only");
+          document.body.classList.add("is-presentation-control-host");
         }
         for (let cycle = 0; cycle < 20; cycle += 1) {
           for (const workspace of ["request", "random", "users", "queue"]) {
@@ -949,7 +1049,7 @@ async function run() {
             consumeFrameMutations("snapshot");
           }
         }
-        document.body.classList.remove("is-presentation-stage-only");
+        document.body.classList.remove("is-presentation-control-host");
         scenarios.push({
           ...scenario,
           healthy: isCurrentHostPlaybackSession(session, video, audio),
@@ -1239,9 +1339,9 @@ async function run() {
       });
       const currentItem = {
         ...state.data.current_item,
-        display_title: "Browser shell current song",
-        requester_name: "Current singer",
-        owner_name: "Current owner",
+        display_title: "浏览器验收占位：当前歌曲",
+        requester_name: "验收点歌人",
+        owner_name: "验收 UP 主",
         cache_status: "ready",
         cache_progress: 1,
         cache_size_bytes: 4096,
@@ -1683,6 +1783,7 @@ async function run() {
     await shellPage.locator("#next-button").click();
     for (const workspace of ["queue", "history", "request", "random", "users"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
+      await shellPage.waitForTimeout(180);
       nextVisibility[workspace] = await shellPage.locator("#next-button").isVisible();
     }
     const nextEvidence = await shellPage.evaluate(() => ({
@@ -1945,6 +2046,10 @@ async function run() {
     const queueNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-queue");
     const historyNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-history");
     const narrowControlsScreenshotPath = suffixedPath(screenshotPath, "-narrow-controls");
+    const narrowControlsTooltipScreenshotPath = suffixedPath(
+      screenshotPath,
+      "-narrow-controls-tooltip",
+    );
     const controlsUpScreenshotPath = suffixedPath(screenshotPath, "-controls-up");
     const controlsInlineTallScreenshotPath = suffixedPath(screenshotPath, "-controls-inline-tall");
     if (shellWideScreenshotPath) {
@@ -2567,6 +2672,111 @@ async function run() {
     if (narrowControlsScreenshotPath) {
       await shellPage.screenshot({ path: narrowControlsScreenshotPath, fullPage: false });
     }
+    const resizedControlEvidence = [];
+    for (const width of [820, 700, 760, 700]) {
+      await shellPage.setViewportSize({ width, height: 480 });
+      await shellPage.waitForTimeout(180);
+      resizedControlEvidence.push(await shellPage.evaluate(() => {
+        const player = elements.playerPanel.getBoundingClientRect();
+        const trigger = elements.stageControlsToggle.getBoundingClientRect();
+        const tray = elements.stageControlTray.getBoundingClientRect();
+        const info = document.querySelector(
+          "#av-sync-panel .playback-contextual-info-button",
+        ).getBoundingClientRect();
+        const firstStep = document.querySelector(
+          '#av-sync-panel .av-sync-step-button[data-step="-200"]',
+        ).getBoundingClientRect();
+        const boundsLeft = Math.max(12, player.left);
+        const boundsRight = Math.min(innerWidth - 12, player.right);
+        const expectedWidth = Math.max(
+          280,
+          Math.min(860, innerWidth - 24, boundsRight - boundsLeft),
+        );
+        const expectedLeft = Math.max(
+          boundsLeft,
+          Math.min(trigger.left, boundsRight - expectedWidth),
+        );
+        return {
+          viewportWidth: innerWidth,
+          layout: elements.appShell.dataset.stageControlsLayout,
+          density: elements.appShell.dataset.stageControlDensity,
+          open: state.stageControlTrayOpen && !elements.stageControlTray.hidden,
+          trayLeft: tray.left,
+          trayRight: tray.right,
+          trayWidth: tray.width,
+          expectedLeft,
+          expectedWidth,
+          insideViewport: tray.left >= 12 - 1 && tray.right <= innerWidth - 12 + 1,
+          tracksAnchor: Math.abs(tray.left - expectedLeft) <= 1
+            && Math.abs(tray.width - expectedWidth) <= 1,
+          infoClearsFirstControl: info.right + 6 <= firstStep.left,
+          controlsFit: elements.stageControlTray.scrollWidth
+            <= elements.stageControlTray.clientWidth + 1,
+        };
+      }));
+    }
+    assert(
+      resizedControlEvidence.every((entry) => (
+        entry.layout === "popup"
+          && entry.open
+          && entry.insideViewport
+          && entry.tracksAnchor
+          && entry.infoClearsFirstControl
+          && entry.controlsFit
+      )),
+      "resizing an open compact playback tray left stale geometry or overlapping labels",
+      resizedControlEvidence,
+    );
+
+    const playbackTooltipLayerEvidence = [];
+    for (const infoButton of [
+      shellPage.locator("#av-sync-panel .playback-contextual-info-button"),
+      shellPage.locator("#key-shift-panel .playback-contextual-info-button"),
+    ]) {
+      await infoButton.click();
+      await shellPage.waitForTimeout(60);
+      playbackTooltipLayerEvidence.push(await infoButton.evaluate((button) => {
+        const tooltip = document.getElementById(button.getAttribute("aria-describedby"));
+        const buttonRect = button.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const arrow = getComputedStyle(tooltip, "::after");
+        const arrowCenter = tooltipRect.left
+          + Number.parseFloat(arrow.left)
+          + (Number.parseFloat(arrow.width) / 2);
+        const hit = document.elementFromPoint(
+          tooltipRect.left + (tooltipRect.width / 2),
+          tooltipRect.top + (tooltipRect.height / 2),
+        );
+        return {
+          id: tooltip.id,
+          position: getComputedStyle(tooltip).position,
+          trayTransform: getComputedStyle(elements.stageControlTray).transform,
+          insideViewport: tooltipRect.left >= 8 - 1
+            && tooltipRect.top >= 8 - 1
+            && tooltipRect.right <= innerWidth - 8 + 1
+            && tooltipRect.bottom <= innerHeight - 8 + 1,
+          topLayerHit: hit === tooltip || tooltip.contains(hit),
+          arrowDelta: Math.abs(arrowCenter - (buttonRect.left + (buttonRect.width / 2))),
+          fullyPainted: tooltipRect.width > 200 && tooltipRect.height > 30,
+        };
+      }));
+    }
+    assert(
+      playbackTooltipLayerEvidence.every((entry) => (
+        entry.position === "fixed"
+          && entry.trayTransform === "none"
+          && entry.insideViewport
+          && entry.topLayerHit
+          && entry.arrowDelta <= 1
+          && entry.fullyPainted
+      )),
+      "compact playback information bubbles were clipped, obscured, or detached from their i buttons",
+      playbackTooltipLayerEvidence,
+    );
+    if (narrowControlsTooltipScreenshotPath) {
+      await shellPage.screenshot({ path: narrowControlsTooltipScreenshotPath, fullPage: false });
+    }
+    await shellPage.evaluate(() => closeCacheAdvancedInfo());
     await shellPage.keyboard.press("Shift+Tab");
     assert(
       await shellPage.evaluate(() => elements.stageControlTray.contains(document.activeElement)),
@@ -3661,22 +3871,36 @@ async function run() {
     await shellPage.emulateMedia({ reducedMotion: "reduce" });
     const reducedMotion = await shellPage.evaluate(() => {
       const before = state.gatchaView;
+      const beforeWorkspace = state.activeHostWorkspace;
       state.gatchaView = "error";
       renderGatchaWorkspace();
       const errorVisible = !elements.gatchaErrorView.hidden;
       state.gatchaView = "candidate";
       renderGatchaWorkspace();
+      const reducedTarget = beforeWorkspace === "queue" ? "history" : "queue";
+      activateHostWorkspace(reducedTarget, { inputOrigin: "pointer" });
+      const toolTransition = state.hostWorkspaceTransition;
+      const toolAnimation = getComputedStyle(
+        Array.from(elements.hostWorkspacePanels || []).find(
+          (panel) => panel.dataset.hostWorkspacePanel === reducedTarget,
+        ),
+      ).animationName;
+      activateHostWorkspace(beforeWorkspace, { inputOrigin: "programmatic" });
       return {
         before,
         errorVisible,
         candidateVisible: !elements.gatchaResultView.hidden,
         workspaceTransition: getComputedStyle(elements.hostWorkspaceRegion).transitionDuration,
+        toolTransition,
+        toolAnimation,
       };
     });
     assert(
       reducedMotion.errorVisible
         && reducedMotion.candidateVisible
-        && reducedMotion.workspaceTransition === "0s",
+        && reducedMotion.workspaceTransition === "0s"
+        && reducedMotion.toolTransition === null
+        && reducedMotion.toolAnimation === "none",
       "reduced-motion Gatcha did not switch direct states without shell movement",
       reducedMotion,
     );
@@ -3790,7 +4014,52 @@ async function run() {
     if (playerFullscreenScreenshotPath) {
       await shellPage.screenshot({ path: playerFullscreenScreenshotPath, fullPage: false });
     }
-    await shellPage.evaluate(() => document.exitFullscreen());
+    const fullscreenAction = shellPage.locator("#player-fullscreen-button");
+    const fullscreenRemotePopover = shellPage.locator("#player-fullscreen-remote-popover");
+    await fullscreenAction.hover();
+    await shellPage.waitForTimeout(180);
+    const playerFullscreenRemoteEvidence = await shellPage.evaluate(() => {
+      const button = elements.playerFullscreenButton.getBoundingClientRect();
+      const popup = elements.playerFullscreenRemotePopover.getBoundingClientRect();
+      return {
+        button: { left: button.left, top: button.top, right: button.right, bottom: button.bottom },
+        popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
+        visible: getComputedStyle(elements.playerFullscreenRemotePopover).visibility === "visible",
+        phoneIcons: elements.playerFullscreenButton.querySelectorAll(".fullscreen-phone-icon").length,
+        exitIcons: elements.playerFullscreenButton.querySelectorAll(".fullscreen-exit-icon").length,
+        label: elements.playerFullscreenButton.getAttribute("aria-label"),
+      };
+    });
+    assert(
+      playerFullscreenRemoteEvidence.visible
+        && playerFullscreenRemoteEvidence.phoneIcons === 1
+        && playerFullscreenRemoteEvidence.exitIcons === 1
+        && playerFullscreenRemoteEvidence.popup.top >= playerFullscreenRemoteEvidence.button.bottom
+        && playerFullscreenRemoteEvidence.popup.right <= playerFullscreenRemoteEvidence.button.right + 1
+        && playerFullscreenRemoteEvidence.popup.left < playerFullscreenRemoteEvidence.button.left
+        && playerFullscreenRemoteEvidence.label.length > 0,
+      "single-screen fullscreen did not expose the icon-pair QR popup toward the lower left",
+      playerFullscreenRemoteEvidence,
+    );
+    if (playerFullscreenRemoteScreenshotPath) {
+      await shellPage.screenshot({ path: playerFullscreenRemoteScreenshotPath, fullPage: false });
+    }
+    await shellPage.mouse.move(600, 400);
+    await fullscreenAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
+    assert(
+      await shellPage.evaluate(() => state.playerFullscreenRemotePinned),
+      "first touch did not pin the fullscreen QR popup",
+    );
+    await shellPage.evaluate(() => document.body.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert(
+      !await shellPage.evaluate(() => state.playerFullscreenRemotePinned),
+      "touch QR popup did not close after an outside click",
+    );
+    await fullscreenAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
+    await fullscreenAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
     await shellPage.waitForFunction(() => !document.fullscreenElement);
 
     const webKitFullscreenEvidence = await shellPage.evaluate(async () => {
@@ -3859,6 +4128,330 @@ async function run() {
       "entering/exiting native or WebKit fullscreen changed playback identity or issued player requests",
       { fullscreenIdentityBefore, fullscreenIdentityAfter, fullscreenPlayerRequestsBefore, shellPlayerRequests },
     );
+    const presentationHostEvidence = await shellPage.evaluate(async () => {
+      const previousSession = { ...state.presentationSession };
+      const previousPlaylist = Array.isArray(state.data?.playlist) ? [...state.data.playlist] : [];
+      const previousPlaybackGeneration = state.data?.playback_generation;
+      const previousAnnouncementKey = state.presentationHostAnnouncementKey;
+      const previousAnnouncementModel = state.presentationHostAnnouncementModel;
+      const video = state.hostPlaybackSession?.video;
+      const previousVideoDuration = video
+        ? Object.getOwnPropertyDescriptor(video, "duration")
+        : null;
+      const previousVideoCurrentTime = video
+        ? Object.getOwnPropertyDescriptor(video, "currentTime")
+        : null;
+      const announcementItem = (index, title, duration) => ({
+        id: `presentation-next-${index}`,
+        item_incarnation_id: `presentation-next-incarnation-${index}`,
+        title,
+        display_title: title,
+        requester_name: index === 0 ? "本场用户" : `点歌人 ${index}`,
+        selected_pages: [1],
+        selected_durations: [duration],
+        page: 1,
+      });
+      state.data.playlist = [
+        announcementItem(0, "下一首验收歌曲", 220),
+        announcementItem(1, "随后播放歌曲", 185),
+        announcementItem(2, "再下一首歌曲", 242),
+      ];
+      state.presentationSession = {
+        ...previousSession,
+        mode: "localDualScreen",
+        phase: "active",
+        generation: 4242,
+        hostReady: true,
+        controllerReady: true,
+      };
+      if (video) {
+        Object.defineProperty(video, "duration", {
+          configurable: true,
+          value: 245,
+        });
+        Object.defineProperty(video, "currentTime", {
+          configurable: true,
+          writable: true,
+          value: 61,
+        });
+      }
+      applyPresentationCompositionDom(4242, "stageOnly");
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const frame = elements.playerFrame.getBoundingClientRect();
+      const panel = elements.playerPanel.getBoundingClientRect();
+      const controls = elements.presentationHostControls.getBoundingClientRect();
+      const transport = elements.presentationHostControls
+        .querySelector(".presentation-host-transport-row").getBoundingClientRect();
+      const play = elements.presentationHostPlay.getBoundingClientRect();
+      const progress = elements.presentationHostProgress.getBoundingClientRect();
+      const progressWrap = elements.presentationHostProgress.closest(
+        ".presentation-host-progress-wrap",
+      ).getBoundingClientRect();
+      const next = elements.presentationHostNext.getBoundingClientRect();
+      const variantAnchor = elements.audioVariantAnchor.getBoundingClientRect();
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      const announcement = elements.presentationHostAnnouncement.getBoundingClientRect();
+      const announcementOverlay = elements.presentationHostAnnouncement.querySelector(
+        ".presentation-host-next-song-overlay",
+      );
+      const announcementCountdown = announcementOverlay?.querySelector(".player-delay-countdown");
+      const stageToggleStyle = getComputedStyle(elements.stageControlsToggle);
+      const trayStyle = getComputedStyle(elements.stageControlTray);
+      const result = {
+        bodyControlHost: document.body.classList.contains("is-presentation-control-host"),
+        frame: {
+          left: frame.left,
+          top: frame.top,
+          right: frame.right,
+          bottom: frame.bottom,
+          width: frame.width,
+          height: frame.height,
+        },
+        panel: { left: panel.left, top: panel.top, right: panel.right, bottom: panel.bottom },
+        viewport: { width: innerWidth, height: innerHeight },
+        announcementVisible: Boolean(announcement.width && announcement.height),
+        announcementHeading: announcementOverlay
+          ?.querySelector("[data-delay-heading]")?.textContent?.trim() || "",
+        announcementTitle: announcementOverlay
+          ?.querySelector("[data-delay-next-title]")?.textContent?.trim() || "",
+        announcementRequester: announcementOverlay
+          ?.querySelector("[data-delay-next-requester]")?.textContent?.trim() || "",
+        announcementDuration: announcementOverlay
+          ?.querySelector("[data-delay-next-duration]")?.textContent?.trim() || "",
+        announcementRows: announcementOverlay
+          ?.querySelectorAll(".player-delay-list-row")?.length || 0,
+        countdownDisplay: announcementCountdown
+          ? getComputedStyle(announcementCountdown).display
+          : "missing",
+        controlsVisible: Boolean(controls.width && controls.height),
+        controls: {
+          left: controls.left,
+          right: controls.right,
+          width: controls.width,
+        },
+        transport: { top: transport.top, bottom: transport.bottom },
+        play: { left: play.left, top: play.top, right: play.right, bottom: play.bottom },
+        progress: {
+          left: progress.left,
+          top: progress.top,
+          right: progress.right,
+          bottom: progress.bottom,
+          value: elements.presentationHostProgress.value,
+          max: elements.presentationHostProgress.max,
+          fill: elements.presentationHostProgress.style.getPropertyValue("--range-fill-percent"),
+        },
+        progressWrap: {
+          left: progressWrap.left,
+          top: progressWrap.top,
+          right: progressWrap.right,
+          bottom: progressWrap.bottom,
+        },
+        next: { top: next.top, bottom: next.bottom, left: next.left, right: next.right },
+        currentTime: elements.presentationHostCurrentTime.textContent?.trim() || "",
+        duration: elements.presentationHostDuration.textContent?.trim() || "",
+        variantAnchor: {
+          visible: !elements.audioVariantAnchor.hidden
+            && variantAnchor.width > 0
+            && variantAnchor.height > 0,
+          top: variantAnchor.top,
+          bottom: variantAnchor.bottom,
+        },
+        tray: {
+          visible: !elements.stageControlTray.hidden
+            && getComputedStyle(elements.stageControlTray).display !== "none"
+            && tray.width > 0
+            && tray.height > 0,
+          left: tray.left,
+          right: tray.right,
+          top: tray.top,
+          bottom: tray.bottom,
+        },
+        rangeStyle: {
+          progressHeight: getComputedStyle(elements.presentationHostProgress).height,
+          volumeHeight: getComputedStyle(elements.volumeSlider).height,
+          progressAppearance: getComputedStyle(elements.presentationHostProgress).appearance,
+          volumeAppearance: getComputedStyle(elements.volumeSlider).appearance,
+          sharedRuleCount: Array.from(document.styleSheets)
+            .flatMap((sheet) => Array.from(sheet.cssRules || []))
+            .filter((rule) => String(rule.selectorText || "").includes(".volume-slider")
+              && String(rule.selectorText || "").includes(".presentation-host-progress"))
+            .length,
+        },
+        stageControlsLayout: elements.appShell.dataset.stageControlsLayout,
+        fullscreenDisabled: elements.playerFullscreenButton.disabled,
+        stageToggleDisplay: stageToggleStyle.display,
+        trayDisplay: trayStyle.display,
+      };
+      window.__restorePresentationHost = () => {
+        if (video) {
+          if (previousVideoDuration) {
+            Object.defineProperty(video, "duration", previousVideoDuration);
+          } else {
+            delete video.duration;
+          }
+          if (previousVideoCurrentTime) {
+            Object.defineProperty(video, "currentTime", previousVideoCurrentTime);
+          } else {
+            delete video.currentTime;
+          }
+        }
+        state.data.playlist = previousPlaylist;
+        state.data.playback_generation = previousPlaybackGeneration;
+        state.presentationHostAnnouncementKey = previousAnnouncementKey;
+        state.presentationHostAnnouncementModel = previousAnnouncementModel;
+        state.presentationSession = previousSession;
+        applyPresentationCompositionDom(previousSession.generation, "combined");
+      };
+      return result;
+    });
+    assert(
+      presentationHostEvidence.bodyControlHost
+        && presentationHostEvidence.frame.left >= presentationHostEvidence.panel.left
+        && presentationHostEvidence.frame.right <= presentationHostEvidence.panel.right
+        && presentationHostEvidence.frame.bottom < presentationHostEvidence.viewport.height
+        && presentationHostEvidence.announcementVisible
+        && presentationHostEvidence.announcementHeading === "即将播放"
+        && presentationHostEvidence.announcementTitle === "下一首验收歌曲"
+        && presentationHostEvidence.announcementRequester === "本场用户"
+        && presentationHostEvidence.announcementDuration === "3:40"
+        && presentationHostEvidence.announcementRows === 2
+        && presentationHostEvidence.countdownDisplay === "none"
+        && presentationHostEvidence.controlsVisible
+        && Math.abs(presentationHostEvidence.frame.left - presentationHostEvidence.tray.left) <= 1
+        && Math.abs(presentationHostEvidence.frame.right - presentationHostEvidence.tray.right) <= 1
+        && presentationHostEvidence.frame.width / presentationHostEvidence.frame.height > 1.85
+        && Math.abs(presentationHostEvidence.controls.left - presentationHostEvidence.frame.left) <= 1
+        && Math.abs(presentationHostEvidence.controls.right - presentationHostEvidence.frame.right) <= 1
+        && Math.abs(presentationHostEvidence.play.top - presentationHostEvidence.next.top) <= 1
+        && Math.abs(presentationHostEvidence.play.bottom - presentationHostEvidence.next.bottom) <= 1
+        && Math.abs(presentationHostEvidence.play.left - presentationHostEvidence.frame.left) <= 1
+        && Math.abs(presentationHostEvidence.next.right - presentationHostEvidence.frame.right) <= 1
+        && presentationHostEvidence.progressWrap.top >= presentationHostEvidence.transport.top
+        && presentationHostEvidence.progressWrap.bottom <= presentationHostEvidence.transport.bottom
+        && presentationHostEvidence.play.right < presentationHostEvidence.progress.left
+        && presentationHostEvidence.progress.right < presentationHostEvidence.next.left
+        && presentationHostEvidence.currentTime === "1:01"
+        && presentationHostEvidence.duration === "4:05"
+        && Number(presentationHostEvidence.progress.value) === 61
+        && Number(presentationHostEvidence.progress.max) === 245
+        && presentationHostEvidence.progress.fill.startsWith("24.89")
+        && presentationHostEvidence.variantAnchor.visible
+        && presentationHostEvidence.variantAnchor.top >= presentationHostEvidence.frame.bottom
+        && presentationHostEvidence.transport.top >= presentationHostEvidence.variantAnchor.bottom
+        && presentationHostEvidence.tray.visible
+        && presentationHostEvidence.tray.top >= presentationHostEvidence.transport.bottom
+        && presentationHostEvidence.tray.bottom <= presentationHostEvidence.panel.bottom + 1
+        && presentationHostEvidence.rangeStyle.progressHeight
+          === presentationHostEvidence.rangeStyle.volumeHeight
+        && presentationHostEvidence.rangeStyle.progressAppearance
+          === presentationHostEvidence.rangeStyle.volumeAppearance
+        && presentationHostEvidence.rangeStyle.sharedRuleCount >= 5
+        && presentationHostEvidence.stageControlsLayout === "inline"
+        && presentationHostEvidence.fullscreenDisabled
+        && presentationHostEvidence.stageToggleDisplay === "none"
+        && presentationHostEvidence.trayDisplay !== "none",
+      "dual-screen Host controls were not ordered as parts, transport progress row, then persistent playback controls",
+      presentationHostEvidence,
+    );
+    if (presentationHostScreenshotPath) {
+      await shellPage.screenshot({ path: presentationHostScreenshotPath, fullPage: false });
+    }
+    const presentationHostProgressInteraction = await shellPage.evaluate(() => {
+      const video = state.hostPlaybackSession?.video;
+      const beforeMediaTime = Number(video?.currentTime || 0);
+      for (const value of [75, 90, 105]) {
+        elements.presentationHostProgress.value = String(value);
+        elements.presentationHostProgress.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      const evidence = {
+        beforeMediaTime,
+        afterInputMediaTime: Number(video?.currentTime || 0),
+        previewTime: elements.presentationHostCurrentTime.textContent?.trim() || "",
+        scrubbing: state.presentationHostProgressScrubbing,
+        fill: elements.presentationHostProgress.style.getPropertyValue("--range-fill-percent"),
+      };
+      elements.presentationHostProgress.value = String(beforeMediaTime);
+      elements.presentationHostProgress.dispatchEvent(new Event("input", { bubbles: true }));
+      state.presentationHostProgressScrubbing = false;
+      renderPresentationHostSurface();
+      return evidence;
+    });
+    assert(
+      presentationHostProgressInteraction.beforeMediaTime === 61
+        && presentationHostProgressInteraction.afterInputMediaTime === 61
+        && presentationHostProgressInteraction.previewTime === "1:45"
+        && presentationHostProgressInteraction.scrubbing
+        && presentationHostProgressInteraction.fill.startsWith("42.85"),
+      "progress preview performed repeated media seeks instead of keeping drag feedback local until commit",
+      presentationHostProgressInteraction,
+    );
+    await shellPage.setViewportSize({ width: 1024, height: 900 });
+    await shellPage.evaluate(() => {
+      syncNarrowToolLayout();
+      schedulePersistentStageMeasurement();
+    });
+    await shellPage.waitForTimeout(120);
+    const presentationHostNarrowEvidence = await shellPage.evaluate(() => {
+      const panel = elements.playerPanel.getBoundingClientRect();
+      const frame = elements.playerFrame.getBoundingClientRect();
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      const tool = elements.hostWorkspaceRegion.getBoundingClientRect();
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        narrowToolLayout: elements.appShell.dataset.narrowToolLayout,
+        stageControlsLayout: elements.appShell.dataset.stageControlsLayout,
+        trayVisible: !elements.stageControlTray.hidden
+          && getComputedStyle(elements.stageControlTray).display !== "none"
+          && tray.height > 0,
+        panel: { top: panel.top, bottom: panel.bottom, height: panel.height },
+        frame: { top: frame.top, bottom: frame.bottom, height: frame.height },
+        tray: { top: tray.top, bottom: tray.bottom, height: tray.height },
+        tool: { top: tool.top, bottom: tool.bottom, height: tool.height },
+      };
+    });
+    assert(
+      presentationHostNarrowEvidence.narrowToolLayout === "overlay"
+        && presentationHostNarrowEvidence.stageControlsLayout === "inline"
+        && presentationHostNarrowEvidence.trayVisible
+        && presentationHostNarrowEvidence.frame.height >= 180
+        && presentationHostNarrowEvidence.tray.bottom <= presentationHostNarrowEvidence.panel.bottom + 1,
+      "narrow dual-screen layout collapsed playback controls before yielding the tool workspace",
+      presentationHostNarrowEvidence,
+    );
+    if (presentationHostNarrowScreenshotPath) {
+      await shellPage.screenshot({ path: presentationHostNarrowScreenshotPath, fullPage: false });
+    }
+    const presentationHostSnapshotEvidence = await shellPage.evaluate(() => {
+      const overlay = elements.presentationHostAnnouncement.querySelector(
+        ".presentation-host-next-song-overlay",
+      );
+      const title = () => overlay
+        ?.querySelector("[data-delay-next-title]")?.textContent?.trim() || "";
+      const before = title();
+      state.data.playlist[0] = {
+        ...state.data.playlist[0],
+        title: "队列变化不应刷新报幕",
+        display_title: "队列变化不应刷新报幕",
+      };
+      renderPresentationHostSurface();
+      const afterQueueChange = title();
+      state.data.playback_generation = Number(state.data.playback_generation || 0) + 1;
+      renderPresentationHostSurface();
+      return {
+        before,
+        afterQueueChange,
+        afterSongChange: title(),
+      };
+    });
+    assert(
+      presentationHostSnapshotEvidence.before === "下一首验收歌曲"
+        && presentationHostSnapshotEvidence.afterQueueChange === "下一首验收歌曲"
+        && presentationHostSnapshotEvidence.afterSongChange === "队列变化不应刷新报幕",
+      "dual-screen Host announcement refreshed outside a song transition or failed to refresh on one",
+      presentationHostSnapshotEvidence,
+    );
+    await shellPage.setViewportSize({ width: 1200, height: 800 });
+    await shellPage.evaluate(() => window.__restorePresentationHost());
     assert(shellPageErrors.length === 0, "unexpected Host shell page errors", shellPageErrors);
     assert(shellConsoleErrors.length === 0, "unexpected Host shell console errors", shellConsoleErrors);
     const shellEvidence = {
@@ -3893,8 +4486,10 @@ async function run() {
       sourceResponsiveEvidence,
       fullscreen: {
         native: nativeFullscreenEvidence,
+        remoteAction: playerFullscreenRemoteEvidence,
         webKitFallback: webKitFullscreenEvidence,
         identity: fullscreenIdentityAfter,
+        dualScreenHost: presentationHostEvidence,
       },
       draftAndScroll,
       bannerEvidence,
@@ -3929,10 +4524,14 @@ async function run() {
         sourcesReview1200x1000: sourcesReviewScreenshotPath,
         favoritesReview1200x1000: favoritesReviewScreenshotPath,
         playerFullscreen: playerFullscreenScreenshotPath,
+        playerFullscreenRemote: playerFullscreenRemoteScreenshotPath,
         playerWebKitFullscreen: playerWebKitFullscreenScreenshotPath,
+        dualScreenHost: presentationHostScreenshotPath,
+        dualScreenHostNarrow: presentationHostNarrowScreenshotPath,
         queueNarrow: queueNarrowScreenshotPath,
         historyNarrow: historyNarrowScreenshotPath,
         narrowControls: narrowControlsScreenshotPath,
+        narrowControlsTooltip: narrowControlsTooltipScreenshotPath,
         controlsUp: controlsUpScreenshotPath,
         controlsInlineTall: controlsInlineTallScreenshotPath,
         gatchaWide: gatchaWideScreenshotPath,
@@ -5042,6 +5641,28 @@ async function run() {
       "Host A/V information was not bounded within the compact control tray viewport",
       { avTooltipBox, avPanelBox, playbackViewport },
     );
+    const avInfoAnchorEvidence = await playbackInfoRegions.first().evaluate((region) => {
+      const button = region.querySelector(".playback-contextual-info-button").getBoundingClientRect();
+      const tooltip = region.querySelector(".cache-advanced-tooltip");
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const arrow = getComputedStyle(tooltip, "::after");
+      const arrowCenter = tooltipRect.left
+        + Number.parseFloat(arrow.left)
+        + (Number.parseFloat(arrow.width) / 2);
+      return {
+        buttonCenter: button.left + (button.width / 2),
+        arrowCenter,
+        delta: Math.abs(arrowCenter - (button.left + (button.width / 2))),
+      };
+    });
+    assert(
+      avInfoAnchorEvidence.delta <= 1,
+      "Host information bubble pointer did not target the i-button center",
+      avInfoAnchorEvidence,
+    );
+    if (playbackInfoScreenshotPath) {
+      await page.screenshot({ path: playbackInfoScreenshotPath, fullPage: false });
+    }
     await avTooltip.hover();
     await page.waitForTimeout(140);
     assert(await avTooltip.isVisible(), "moving into Host A/V information dismissed it");
@@ -5398,12 +6019,33 @@ async function run() {
         };
       }
       document.documentElement.dataset.theme = previousTheme;
-      return colors;
+      const usersButton = document.querySelector("#work-rail-users");
+      usersButton.classList.add("needs-attention");
+      const attentionDot = getComputedStyle(usersButton, "::after");
+      const updateDot = getComputedStyle(elements.advancedUpdateIndicator);
+      const geometry = {
+        attention: {
+          width: attentionDot.width,
+          height: attentionDot.height,
+          background: attentionDot.backgroundColor,
+          shadow: attentionDot.boxShadow,
+        },
+        update: {
+          width: updateDot.width,
+          height: updateDot.height,
+          background: updateDot.backgroundColor,
+          shadow: updateDot.boxShadow,
+        },
+      };
+      usersButton.classList.remove("needs-attention");
+      return { colors, geometry };
     });
     assert(
-      Object.values(updateDotThemeEvidence).every(({ token, rendered }) => token && rendered)
-        && new Set(Object.values(updateDotThemeEvidence).map(({ rendered }) => rendered)).size === 3,
-      "Service-menu update dot did not follow the active theme token",
+      Object.values(updateDotThemeEvidence.colors).every(({ token, rendered }) => token && rendered)
+        && new Set(Object.values(updateDotThemeEvidence.colors).map(({ rendered }) => rendered)).size === 3
+        && JSON.stringify(updateDotThemeEvidence.geometry.attention)
+          === JSON.stringify(updateDotThemeEvidence.geometry.update),
+      "Service-menu update dot did not match the Session Users attention dot across themes",
       updateDotThemeEvidence,
     );
     await page.locator("#cache-panel-advanced-trigger").click();
@@ -5659,6 +6301,17 @@ async function run() {
         > Number(await cachePanel.evaluate((element) => getComputedStyle(element).zIndex)),
       "QR popup was not above Host settings surfaces",
     );
+    await page.evaluate(() => { window.__TAURI__ = {}; });
+    const remoteLinkHref = await page.locator("#remote-popover-url-link").getAttribute("href");
+    await page.locator("#remote-popover-url-link").click();
+    await page.waitForTimeout(80);
+    assert(
+      openUrlRequests.length === 1
+        && openUrlRequests[0]?.url === new URL(remoteLinkHref, baseUrl).href,
+      "mobile request card link did not delegate to the system-browser endpoint",
+      { openUrlRequests, remoteLinkHref },
+    );
+    await page.evaluate(() => { delete window.__TAURI__; });
     await page.locator("#remote-mini-popover-close").click();
     assert(!await remotePopover.isVisible(), "explicit QR close action did not close the popup");
     assert(await cachePanel.isVisible(), "explicit QR close action closed parent service settings");
@@ -5679,6 +6332,235 @@ async function run() {
     await page.locator("h1").click();
     assert(!await remotePopover.isVisible(), "true outside click did not close pinned QR popup");
     assert(!await cachePanel.isVisible(), "true outside click did not retain parent outside-click behavior");
+
+    await page.locator("#work-rail-request").click();
+    await page.locator('[data-request-view="quick"]').click();
+    await page.waitForTimeout(180);
+    await page.evaluate(() => {
+      state.data = { ...(state.data || {}), session_users: [] };
+      renderRequesterSelect([]);
+      renderSessionUsers([]);
+      renderHostWorkspaceSelection();
+    });
+    const emptyRequesterButton = page.locator("#requester-empty-button");
+    assert(await emptyRequesterButton.isVisible(), "empty requester action did not replace the disabled select");
+    assert(!await page.locator("#requester-select").isVisible(), "empty requester select remained visible");
+    const requestUserNotice = page.locator("#request-session-user-notice");
+    assert(await requestUserNotice.isVisible(), "empty-user notice was not shown across Request tabs");
+    const requestUserNoticeEvidence = await requestUserNotice.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        text: element.textContent.trim(),
+        background: style.backgroundColor,
+        border: style.borderTopWidth,
+        color: style.color,
+        weight: style.fontWeight,
+        align: style.textAlign,
+      };
+    });
+    assert(
+      requestUserNoticeEvidence.text === "先添加本场用户，服务端和客户端才能开始点歌。"
+        && requestUserNoticeEvidence.background === "rgba(0, 0, 0, 0)"
+        && requestUserNoticeEvidence.border === "0px"
+        && Number(requestUserNoticeEvidence.weight) >= 700
+        && requestUserNoticeEvidence.align === "center",
+      "Request empty-user notice did not match the borderless Session Users prompt",
+      requestUserNoticeEvidence,
+    );
+    assert(
+      await page.locator("#work-rail-users").evaluate((element) => element.classList.contains("needs-attention")),
+      "empty requester state did not highlight Session Users",
+    );
+    const emptyRequestGeometry = await page.evaluate(() => {
+      const panel = elements.requestWorkspace.getBoundingClientRect();
+      const eyebrow = elements.requestWorkspace.querySelector(".host-peer-heading .section-tag")
+        .getBoundingClientRect();
+      const title = document.querySelector("#workspace-request-heading").getBoundingClientRect();
+      const headStyle = getComputedStyle(elements.requestWorkspace.querySelector(".request-workspace-head"));
+      const selected = document.querySelector("#work-rail-request");
+      selected.focus();
+      const selectedStyle = getComputedStyle(selected);
+      return {
+        titleLeftInset: title.left - panel.left,
+        titleRowGap: title.top - eyebrow.bottom,
+        configuredRowGap: headStyle.rowGap,
+        titleFontSize: Number.parseFloat(getComputedStyle(document.querySelector("#workspace-request-heading")).fontSize),
+        stageTitleLeftInset: document.querySelector("#current-title").getBoundingClientRect().left
+          - elements.playerPanel.getBoundingClientRect().left,
+        stageTitleFontSize: Number.parseFloat(getComputedStyle(document.querySelector("#current-title")).fontSize),
+        selectedOutline: selectedStyle.outlineStyle,
+        selectedOutlineWidth: selectedStyle.outlineWidth,
+      };
+    });
+    assert(
+      Math.abs(emptyRequestGeometry.titleLeftInset - emptyRequestGeometry.stageTitleLeftInset) <= 1
+        && emptyRequestGeometry.titleRowGap >= 2
+        && emptyRequestGeometry.titleRowGap <= 5
+        && emptyRequestGeometry.configuredRowGap === "3px"
+        && emptyRequestGeometry.titleFontSize === emptyRequestGeometry.stageTitleFontSize
+        && (emptyRequestGeometry.selectedOutline === "none"
+          || emptyRequestGeometry.selectedOutlineWidth === "0px"),
+      "empty-user Request title or selected rail style diverged from the Host peer contract",
+      emptyRequestGeometry,
+    );
+    if (requestEmptyScreenshotPath) {
+      await page.screenshot({ path: requestEmptyScreenshotPath, fullPage: false });
+    }
+
+    const requestTabsWithNotice = [];
+    for (const view of ["search", "discover", "sources", "quick"]) {
+      await page.locator(`[data-request-view="${view}"]`).click();
+      requestTabsWithNotice.push({ view, visible: await requestUserNotice.isVisible() });
+    }
+    assert(
+      requestTabsWithNotice.every((entry) => entry.visible),
+      "one or more Request tabs hid the empty-user notice",
+      requestTabsWithNotice,
+    );
+
+    await page.locator('[data-request-view="search"]').click();
+    await page.locator('[data-search-mode="shared"]').click();
+    const searchControlGeometry = await page.evaluate(() => {
+      const input = elements.larkSearchQuery;
+      const button = elements.larkSearchButton;
+      return {
+        inputHeight: input.getBoundingClientRect().height,
+        inputRadius: getComputedStyle(input).borderRadius,
+        inputFontSize: getComputedStyle(input).fontSize,
+        buttonHeight: button.getBoundingClientRect().height,
+        buttonRadius: getComputedStyle(button).borderRadius,
+        buttonFontSize: getComputedStyle(button).fontSize,
+      };
+    });
+    await page.locator("#lark-search-query").fill("zero-results");
+    await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => elements.larkSearchMessage.textContent.includes("没有匹配结果"));
+    const sharedEmptyEvidence = await page.evaluate(() => ({
+      message: elements.larkSearchMessage.textContent.trim(),
+      resultHidden: elements.larkSearchResults.classList.contains("hidden"),
+      emptyCards: elements.larkSearchResults.querySelectorAll(".search-empty").length,
+    }));
+    assert(
+      sharedEmptyEvidence.message === "bilikara 数据库里没有匹配结果。"
+        && sharedEmptyEvidence.resultHidden
+        && sharedEmptyEvidence.emptyCards === 0,
+      "Shared search rendered duplicate or outdated no-result messages",
+      sharedEmptyEvidence,
+    );
+    if (requestEmptySearchScreenshotPath) {
+      await page.screenshot({ path: requestEmptySearchScreenshotPath, fullPage: false });
+    }
+
+    await page.locator('[data-search-mode="local"]').click();
+    await page.locator("#search-query").fill("zero-results");
+    await page.locator("#search-form").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => elements.searchMessage.textContent.includes("未找到结果"));
+    const localEmptyEvidence = await page.evaluate(() => ({
+      message: elements.searchMessage.textContent.trim(),
+      resultHidden: elements.searchResults.classList.contains("hidden"),
+      emptyCards: elements.searchResults.querySelectorAll(".search-empty").length,
+    }));
+    assert(
+      localEmptyEvidence.resultHidden && localEmptyEvidence.emptyCards === 0,
+      "Local search rendered a second no-result card below its status message",
+      localEmptyEvidence,
+    );
+
+    await page.locator('[data-request-view="discover"]').click();
+    await page.evaluate(() => activateDiscoverMode("name"));
+    const discoverControlGeometry = await page.evaluate(() => {
+      const input = elements.discoverNamePanel.querySelector("[data-d1-browse-query]");
+      const button = elements.discoverNamePanel.querySelector("[data-d1-browse-submit]");
+      return {
+        inputHeight: input.getBoundingClientRect().height,
+        inputRadius: getComputedStyle(input).borderRadius,
+        inputFontSize: getComputedStyle(input).fontSize,
+        buttonHeight: button.getBoundingClientRect().height,
+        buttonRadius: getComputedStyle(button).borderRadius,
+        buttonFontSize: getComputedStyle(button).fontSize,
+      };
+    });
+    assert(
+      JSON.stringify(discoverControlGeometry) === JSON.stringify(searchControlGeometry),
+      "Discover search controls did not match the Search-tab control geometry",
+      { searchControlGeometry, discoverControlGeometry },
+    );
+    if (requestEmptyDiscoverScreenshotPath) {
+      await page.screenshot({ path: requestEmptyDiscoverScreenshotPath, fullPage: false });
+    }
+
+    await page.locator('[data-request-view="quick"]').click();
+    await page.locator("#url-input").fill("BV1EMPTYUSER");
+    await page.locator('#add-form button[type="submit"]').click();
+    const noUserToastEvidence = await page.evaluate(() => ({
+      toastVisible: !elements.appToast.classList.contains("hidden"),
+      toastText: elements.appToast.textContent.trim(),
+      toastError: elements.appToast.classList.contains("is-error"),
+      inlineText: elements.formMessage.textContent.trim(),
+    }));
+    assert(
+      noUserToastEvidence.toastVisible
+        && noUserToastEvidence.toastText === "请先在服务端添加本场 KTV 用户"
+        && noUserToastEvidence.toastError
+        && !noUserToastEvidence.inlineText,
+      "empty-user request failure did not use the bottom red toast exclusively",
+      noUserToastEvidence,
+    );
+    await page.evaluate(() => {
+      if (state.appToastTimer) window.clearTimeout(state.appToastTimer);
+      state.appToastTimer = null;
+      elements.appToast.classList.add("hidden");
+    });
+    await emptyRequesterButton.click();
+    await page.waitForTimeout(80);
+    assert(
+      await page.evaluate(() => state.activeHostWorkspace === "users"
+        && document.activeElement === elements.sessionUserInput),
+      "empty requester action did not open and focus Session Users",
+    );
+    const emptyUsersRailEvidence = await page.locator("#work-rail-users").evaluate((element) => {
+      const style = getComputedStyle(element);
+      const dot = getComputedStyle(element, "::after");
+      return {
+        selected: element.getAttribute("aria-selected"),
+        needsAttention: element.classList.contains("needs-attention"),
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        dotContent: dot.content,
+        dotWidth: dot.width,
+      };
+    });
+    assert(
+      emptyUsersRailEvidence.selected === "true"
+        && emptyUsersRailEvidence.needsAttention
+        && (emptyUsersRailEvidence.outlineStyle === "none"
+          || emptyUsersRailEvidence.outlineWidth === "0px")
+        && emptyUsersRailEvidence.dotContent !== "none"
+        && emptyUsersRailEvidence.dotWidth === "7px",
+      "empty Session Users rail used more than the standard selected style plus its attention dot",
+      emptyUsersRailEvidence,
+    );
+    if (usersEmptyScreenshotPath) {
+      await page.screenshot({ path: usersEmptyScreenshotPath, fullPage: false });
+    }
+    const populatedUsersRailEvidence = await page.evaluate(() => {
+      state.data = { ...(state.data || {}), session_users: ["User"] };
+      renderSessionUsers(["User"]);
+      renderHostWorkspaceSelection();
+      return {
+        needsAttention: document.querySelector("#work-rail-users").classList.contains("needs-attention"),
+      };
+    });
+    assert(
+      !populatedUsersRailEvidence.needsAttention,
+      "Session Users attention dot remained after a user was available",
+      populatedUsersRailEvidence,
+    );
+    await page.evaluate(() => {
+      state.data = { ...(state.data || {}), session_users: [] };
+      renderSessionUsers([]);
+      renderHostWorkspaceSelection();
+    });
 
     await page.locator("#work-rail-users").click();
     const sessionUserList = page.locator("#session-user-list");
@@ -6265,6 +7147,7 @@ async function run() {
     await coarseContext.close();
 
     const ultraDisplayScreenshotPath = suffixedPath(screenshotPath, "-ultranarrow-display");
+    const ultraRemoteScreenshotPath = suffixedPath(screenshotPath, "-ultranarrow-remote-anchored");
     const ultraServiceScreenshotPath = suffixedPath(screenshotPath, "-ultranarrow-service");
     const windowFrameScreenshotPath = suffixedPath(screenshotPath, "-windows-frame");
     const maximizedWindowFrameScreenshotPath = suffixedPath(screenshotPath, "-windows-frame-maximized");
@@ -6399,16 +7282,60 @@ async function run() {
         && windowFrameEvidence.top === 0
         && windowFrameEvidence.rightGap === 0
         && windowFrameEvidence.bottomGap === 0
-        && windowFrameEvidence.borderWidth >= 1
-        && windowFrameEvidence.borderRadius >= 12
+        && windowFrameEvidence.borderWidth === 0
+        && windowFrameEvidence.borderRadius === 0
         && windowFrameEvidence.boxShadow === "none"
         && windowFrameEvidence.bodyBackground === "rgba(0, 0, 0, 0)",
-      "Windows Host retained an application-drawn shadow gutter instead of using the native window shadow",
+      "Windows Host web surface did not stay flush for native DWM chrome",
       windowFrameEvidence,
     );
     if (windowFrameScreenshotPath) {
       await titlebarPage.screenshot({ path: windowFrameScreenshotPath, fullPage: false });
     }
+
+    const compactTopMenuEvidence = [];
+    for (const entry of [
+      ["remote", "#remote-mini-trigger", "#remote-mini-popover"],
+      ["display", "#display-settings-toggle", "#display-settings-panel"],
+      ["presentation", "#presentation-settings-toggle", "#presentation-settings-panel"],
+      ["service", "#cache-settings-toggle", "#cache-panel"],
+    ]) {
+      const [name, triggerSelector, popupSelector] = entry;
+      await titlebarPage.locator(triggerSelector).click();
+      await titlebarPage.waitForTimeout(60);
+      compactTopMenuEvidence.push(await titlebarPage.evaluate(({ name, triggerSelector, popupSelector }) => {
+        const trigger = document.querySelector(triggerSelector).getBoundingClientRect();
+        const popup = document.querySelector(popupSelector).getBoundingClientRect();
+        const expectedLeft = Math.max(
+          12,
+          Math.min(trigger.right - popup.width, innerWidth - 12 - popup.width),
+        );
+        return {
+          name,
+          triggerLeft: trigger.left,
+          triggerRight: trigger.right,
+          popupLeft: popup.left,
+          popupRight: popup.right,
+          popupTop: popup.top,
+          expectedLeft,
+          anchorDelta: Math.abs(popup.left - expectedLeft),
+          opensDown: popup.top >= trigger.bottom + 7,
+          insideViewport: popup.left >= 12 - 1 && popup.right <= innerWidth - 12 + 1,
+        };
+      }, { name, triggerSelector, popupSelector }));
+      if (name === "remote" && ultraRemoteScreenshotPath) {
+        await titlebarPage.screenshot({ path: ultraRemoteScreenshotPath, fullPage: false });
+      }
+      await titlebarPage.keyboard.press("Escape");
+    }
+    assert(
+      compactTopMenuEvidence.every((entry) => (
+        entry.anchorDelta <= 1 && entry.opensDown && entry.insideViewport
+      ))
+        && new Set(compactTopMenuEvidence.map((entry) => Math.round(entry.popupLeft))).size >= 3,
+      "compact top menus ignored their own trigger anchors or escaped the viewport",
+      compactTopMenuEvidence,
+    );
 
     await titlebarPage.locator("#display-settings-toggle").click();
     const ultraDisplayEvidence = await titlebarPage.evaluate(() => {
@@ -6497,18 +7424,18 @@ async function run() {
         && ultraServiceEvidence.leftGap >= 12
         && ultraServiceEvidence.rightGap >= 8
         && ultraServiceEvidence.rowDirections.every((direction) => direction === "row")
-        && ultraServiceEvidence.serviceWrap.width >= 20
-        && ultraServiceEvidence.serviceWrap.height >= 20
-        && ultraServiceEvidence.serviceMark.width >= 20
-        && ultraServiceEvidence.serviceMark.height >= 20
+        && ultraServiceEvidence.serviceWrap.width === 18
+        && ultraServiceEvidence.serviceWrap.height === 18
+        && ultraServiceEvidence.serviceMark.width === 18
+        && ultraServiceEvidence.serviceMark.height === 18
         && ultraServiceEvidence.serviceMarkText === "✓"
-        && ultraServiceEvidence.serviceMarkFontSize >= 18
+        && ultraServiceEvidence.serviceMarkFontSize === 12
         && ultraServiceEvidence.rowMarks.every((mark) => mark.text === "✓"
-          && mark.width >= 18
-          && mark.height >= 18
+          && mark.width === ultraServiceEvidence.serviceMark.width
+          && mark.height === ultraServiceEvidence.serviceMark.height
           && mark.background === ultraServiceEvidence.serviceMarkBackground)
         && !ultraServiceEvidence.horizontalPageScroll,
-      "ultra-narrow Service settings stacked its desktop rows or shrank the Web-style ready marks",
+      "ultra-narrow Service settings stacked its desktop rows or diverged from the Web-style ready marks",
       ultraServiceEvidence,
     );
     if (ultraServiceScreenshotPath) {
@@ -6516,6 +7443,13 @@ async function run() {
     }
     await titlebarPage.keyboard.press("Escape");
 
+    await titlebarPage.locator("#window-drag-region").dblclick();
+    const dragRegionScriptToggleCount = await titlebarPage.evaluate(() => window.__titlebarToggleCount);
+    assert(
+      dragRegionScriptToggleCount === 0,
+      "the Web double-click handler also toggled the native Tauri drag region",
+      { dragRegionScriptToggleCount },
+    );
     await titlebarPage.locator(".host-brand h1").dblclick();
     await titlebarPage.waitForFunction(() => document.body.classList.contains("is-tauri-maximized"));
     const titlebarAfterSurface = await titlebarPage.evaluate(() => window.__titlebarToggleCount);
@@ -6568,6 +7502,301 @@ async function run() {
       },
     );
     await titlebarPage.close();
+
+    const outputConsoleErrors = [];
+    const outputPageErrors = [];
+    const outputOpenUrlRequests = [];
+    const outputPage = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+    outputPage.on("console", (message) => {
+      if (message.type() === "error") outputConsoleErrors.push(message.text());
+    });
+    outputPage.on("pageerror", (error) => outputPageErrors.push(error.message));
+    await outputPage.route("**/api/app/open-url", (route) => {
+      outputOpenUrlRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await outputPage.addInitScript(() => {
+      const session = {
+        mode: "localDualScreen",
+        phase: "active",
+        generation: 42,
+        hostReady: true,
+        controllerReady: true,
+        lastAcceptedCommandSequence: 0,
+        lastAppliedCommandSequence: 0,
+        playbackAuthority: "host",
+        mediaRendererOwner: "host",
+      };
+      window.__controllerListeners = {};
+      window.__controllerDeactivateCount = 0;
+      class TestPresentationChannel {
+        constructor() {
+          this.listeners = [];
+          window.__presentationOutputChannel = this;
+        }
+        addEventListener(type, callback) {
+          if (type === "message") this.listeners.push(callback);
+        }
+        postMessage() {}
+        close() {}
+      }
+      window.BroadcastChannel = TestPresentationChannel;
+      window.__deliverPresentationMaster = (data) => {
+        window.__presentationOutputChannel?.listeners.forEach((callback) => callback({ data }));
+      };
+      window.__TAURI__ = {
+        core: {
+          invoke: async (name) => {
+            if (name === "get_presentation_session") return { ...session };
+            if (name === "mark_presentation_controller_ready") return { ...session };
+            if (name === "deactivate_local_presentation") {
+              window.__controllerDeactivateCount += 1;
+              return { ...session, phase: "recovering" };
+            }
+            throw new Error(`unexpected output invoke: ${name}`);
+          },
+        },
+        event: {
+          listen: async (name, callback) => {
+            window.__controllerListeners[name] = callback;
+            return () => {};
+          },
+        },
+      };
+    });
+    await outputPage.goto(`${baseUrl}/controller.html?presentationGeneration=42`, {
+      waitUntil: "domcontentloaded",
+    });
+    await outputPage.waitForFunction(() => (
+      Boolean(window.__presentationOutputChannel)
+    ));
+    await outputPage.evaluate(() => {
+      window.__deliverPresentationMaster({
+        protocol: 1,
+        type: "master-state",
+        senderId: "host-proof",
+        sequence: 1,
+        sentAt: Date.now(),
+        payload: {
+          scene: {
+            generation: 42,
+            revision: 1,
+            currentItemIdentity: "output-proof-song",
+            title: "副屏播放窗口",
+            videoUrl: "",
+            displayMetadata: { requester: "本场用户", duration: "03:40", detail: "Bilikara" },
+            theme: "light",
+            overlay: {
+              visible: true,
+              heading: "NEXT SONG",
+              countdownLabel: "即将切歌",
+              deadline: Date.now() + 5000,
+              durationMs: 5000,
+              title: "副屏播放窗口",
+              requester: "本场用户",
+              duration: "03:40",
+              queueHeading: "接下来",
+              rows: [],
+              emptyText: "",
+              remainingText: "",
+              totalText: "",
+            },
+          },
+          clock: {
+            itemIdentity: "output-proof-song",
+            mediaTime: 72,
+            sampledAt: Date.now(),
+            paused: true,
+            playbackRate: 1,
+            seeking: false,
+          },
+          remoteAccess: {
+            preferred_url: "http://192.0.2.44:8000/remote",
+            local_url: "http://127.0.0.1:8000/remote",
+            lan_urls: ["http://192.0.2.44:8000/remote"],
+          },
+        },
+      });
+    });
+    await outputPage.waitForFunction(() => (
+      document.querySelector(".player-delay-overlay")
+    ));
+    const outputLayoutEvidence = await outputPage.evaluate(() => {
+      const frame = document.querySelector("#controller-stage-frame").getBoundingClientRect();
+      const exit = document.querySelector("#controller-exit").getBoundingClientRect();
+      return {
+        frame: { left: frame.left, top: frame.top, right: frame.right, bottom: frame.bottom },
+        viewport: { width: innerWidth, height: innerHeight },
+        exit: { left: exit.left, top: exit.top, right: exit.right, bottom: exit.bottom },
+        exitLabel: document.querySelector("#controller-exit").getAttribute("aria-label"),
+        phoneIcons: document.querySelectorAll("#controller-exit .presentation-output-phone-icon").length,
+        exitIcons: document.querySelectorAll("#controller-exit .presentation-output-exit-icon").length,
+        playbackControlCount: document.querySelectorAll(
+          "#controller-play-toggle, #controller-back-15, #controller-forward-15, #controller-next",
+        ).length,
+        videoCount: document.querySelectorAll("video[data-presentation-output-video]").length,
+        overlayVisible: Boolean(document.querySelector(".player-delay-overlay")),
+        status: document.querySelector("#controller-status").textContent.trim(),
+      };
+    });
+    assert(
+      Math.abs(outputLayoutEvidence.frame.left) <= 1
+        && Math.abs(outputLayoutEvidence.frame.top) <= 1
+        && Math.abs(outputLayoutEvidence.frame.right - outputLayoutEvidence.viewport.width) <= 1
+        && Math.abs(outputLayoutEvidence.frame.bottom - outputLayoutEvidence.viewport.height) <= 1
+        && outputLayoutEvidence.exit.top <= 17
+        && outputLayoutEvidence.exit.right >= outputLayoutEvidence.viewport.width - 17
+        && outputLayoutEvidence.exitLabel.length > 0
+        && outputLayoutEvidence.phoneIcons === 1
+        && outputLayoutEvidence.exitIcons === 1
+        && outputLayoutEvidence.playbackControlCount === 0
+        && outputLayoutEvidence.overlayVisible,
+      "audience output did not retain a true fullscreen surface with the upper-right QR/exit affordance",
+      outputLayoutEvidence,
+    );
+    const outputAction = outputPage.locator("#controller-exit");
+    const outputRemotePopover = outputPage.locator("#controller-remote-popover");
+    await outputAction.hover();
+    await outputPage.waitForTimeout(180);
+    const outputRemoteEvidence = await outputPage.evaluate(() => {
+      const button = document.querySelector("#controller-exit").getBoundingClientRect();
+      const popup = document.querySelector("#controller-remote-popover").getBoundingClientRect();
+      return {
+        visible: getComputedStyle(document.querySelector("#controller-remote-popover")).visibility === "visible",
+        button: { left: button.left, top: button.top, right: button.right, bottom: button.bottom },
+        popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
+        link: document.querySelector("#controller-remote-url-link").href,
+      };
+    });
+    assert(
+      outputRemoteEvidence.visible
+        && outputRemoteEvidence.popup.top >= outputRemoteEvidence.button.bottom
+        && outputRemoteEvidence.popup.right <= outputRemoteEvidence.button.right + 1
+        && outputRemoteEvidence.popup.left < outputRemoteEvidence.button.left
+        && outputRemoteEvidence.link === "http://192.0.2.44:8000/remote",
+      "dual-screen output QR popup did not open toward the lower left with the LAN URL",
+      outputRemoteEvidence,
+    );
+    if (presentationOutputScreenshotPath) {
+      await outputPage.screenshot({ path: presentationOutputScreenshotPath, fullPage: false });
+    }
+    await outputPage.locator("#controller-remote-url-link").click();
+    await outputPage.waitForTimeout(80);
+    assert(
+      outputOpenUrlRequests.length === 1
+        && outputOpenUrlRequests[0]?.url === outputRemoteEvidence.link,
+      "dual-screen QR card link did not request the system browser",
+      outputOpenUrlRequests,
+    );
+    await outputPage.mouse.move(600, 400);
+    await outputAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await outputAction.dispatchEvent("click", { detail: 1, bubbles: true });
+    assert(
+      await outputPage.locator("#controller-output-control").evaluate((element) => (
+        element.classList.contains("is-qr-pinned")
+      )),
+      "first output touch did not pin the QR popup",
+    );
+    assert(
+      await outputPage.evaluate(() => window.__controllerDeactivateCount) === 0,
+      "first output touch exited fullscreen instead of showing QR",
+    );
+    await outputPage.locator("#controller-stage-frame").click({ position: { x: 20, y: 200 } });
+    assert(
+      !await outputPage.locator("#controller-output-control").evaluate((element) => (
+        element.classList.contains("is-qr-pinned")
+      )),
+      "output QR popup did not close after an outside touch",
+    );
+    await outputAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await outputAction.dispatchEvent("click", { detail: 1, bubbles: true });
+    await outputAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await outputAction.dispatchEvent("click", { detail: 1, bubbles: true });
+    await outputPage.waitForFunction(() => window.__controllerDeactivateCount === 1);
+    const outputDeactivateCount = await outputPage.evaluate(() => window.__controllerDeactivateCount);
+    assert(outputPageErrors.length === 0, "unexpected output page errors", outputPageErrors);
+    assert(outputConsoleErrors.length === 0, "unexpected output console errors", outputConsoleErrors);
+    await outputPage.close();
+
+    const presentationRoutingEvidence = await page.evaluate(() => {
+      const displays = [
+        {
+          id: "display:host-current", name: "Current Host display", positionX: 0, positionY: 0,
+          width: 1920, height: 1080, scaleFactor: 1, builtIn: false, controller: true,
+          primary: true, selectable: true, mirrored: false, identityStable: true,
+          identityQuality: "stable",
+        },
+        {
+          id: "display:other", name: "Studio display", positionX: 1920, positionY: 0,
+          width: 1920, height: 1080, scaleFactor: 1, builtIn: false, controller: false,
+          primary: false, selectable: true, mirrored: false, identityStable: true,
+          identityQuality: "stable",
+        },
+      ];
+      state.presentationSelectionInitialized = true;
+      state.presentationSelectedDisplayId = "display:host-current";
+      state.presentationSelectedHostDisplayId = "";
+      applyPresentationDisplayInfo({
+        monitorCount: 2,
+        displays,
+        controllerDisplayId: "display:host-current",
+        recommendedDisplayId: "display:other",
+      });
+      renderPresentationDisplayList();
+      state.cacheSettingsOpen = false;
+      state.displaySettingsOpen = false;
+      state.presentationSettingsOpen = true;
+      syncCachePanelVisibility();
+      syncDisplayPanelVisibility();
+      syncPresentationPanelVisibility();
+      const manual = {
+        targetSectionVisible: !elements.presentationHostTargetSection.classList.contains("hidden"),
+        targetOptions: elements.presentationHostDisplayList
+          .querySelectorAll("[data-presentation-host-display-id]").length,
+        selectedHostDisplayId: state.presentationSelectedHostDisplayId,
+      };
+      window.__applyBuiltInRoutingProof = () => {
+        applyPresentationDisplayInfo({
+          monitorCount: 2,
+          displays: displays.map((display) => (
+            display.id === "display:other" ? { ...display, builtIn: true } : display
+          )),
+          controllerDisplayId: "display:host-current",
+          recommendedDisplayId: "display:other",
+        });
+        renderPresentationDisplayList();
+        return {
+          targetSectionHidden: elements.presentationHostTargetSection.classList.contains("hidden"),
+          selectedHostDisplayId: state.presentationSelectedHostDisplayId,
+        };
+      };
+      return manual;
+    });
+    assert(
+      presentationRoutingEvidence.targetSectionVisible
+        && presentationRoutingEvidence.targetOptions === 1
+        && presentationRoutingEvidence.selectedHostDisplayId === "",
+      "same-display output did not require an explicit Host destination when no built-in display exists",
+      presentationRoutingEvidence,
+    );
+    if (presentationRoutingScreenshotPath) {
+      await page.screenshot({ path: presentationRoutingScreenshotPath, fullPage: false });
+    }
+    const builtInRoutingEvidence = await page.evaluate(() => window.__applyBuiltInRoutingProof());
+    assert(
+      builtInRoutingEvidence.targetSectionHidden
+        && builtInRoutingEvidence.selectedHostDisplayId === "display:other",
+      "same-display output did not automatically select the available built-in display for Host",
+      builtInRoutingEvidence,
+    );
+    await page.evaluate(() => {
+      state.presentationSettingsOpen = false;
+      syncPresentationPanelVisibility();
+    });
 
     assert(pageErrors.length === 0, "unexpected page errors", pageErrors);
     assert(consoleErrors.length === 0, "unexpected console errors", consoleErrors);
@@ -6625,6 +7854,29 @@ async function run() {
         screenshotPath: sessionUsersScreenshotPath,
       },
       reviewRepair: {
+        annotationScreenshots: {
+          playbackInfo: playbackInfoScreenshotPath,
+          requestEmpty: requestEmptyScreenshotPath,
+          requestEmptyDiscover: requestEmptyDiscoverScreenshotPath,
+          requestEmptySearch: requestEmptySearchScreenshotPath,
+          usersEmpty: usersEmptyScreenshotPath,
+          dualScreenHost: presentationHostScreenshotPath,
+          dualScreenHostNarrow: presentationHostNarrowScreenshotPath,
+          presentationOutput: presentationOutputScreenshotPath,
+          presentationRouting: presentationRoutingScreenshotPath,
+        },
+        presentationOutput: {
+          ...outputLayoutEvidence,
+          remoteAction: outputRemoteEvidence,
+          deactivateCount: outputDeactivateCount,
+          openUrlRequests: outputOpenUrlRequests,
+          consoleErrors: outputConsoleErrors,
+          pageErrors: outputPageErrors,
+        },
+        presentationRouting: {
+          manual: presentationRoutingEvidence,
+          builtIn: builtInRoutingEvidence,
+        },
         audioVariants: variantPopupEvidence,
         audioVariantsScreenshotPath,
         songDetail: songDetailEvidence,
@@ -6632,17 +7884,20 @@ async function run() {
         narrowSongDetail: narrowDetailEvidence,
         songDetailNarrowScreenshotPath,
         titlebar: {
+          dragRegionScriptToggleCount,
           surfaceToggleCount: titlebarAfterSurface,
           afterInteractiveControl: titlebarAfterControl,
           windowFrameEvidence,
           maximizedFrameEvidence,
           ultraDisplayEvidence,
+          compactTopMenuEvidence,
           ultraRemoteEvidence,
           ultraServiceEvidence,
           screenshots: {
             frame: windowFrameScreenshotPath,
             maximized: maximizedWindowFrameScreenshotPath,
             display: ultraDisplayScreenshotPath,
+            remote: ultraRemoteScreenshotPath,
             service: ultraServiceScreenshotPath,
           },
           consoleErrors: titlebarConsoleErrors,

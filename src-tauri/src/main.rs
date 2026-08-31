@@ -67,6 +67,13 @@ fn main() {
                 return Ok(());
             };
             window_lifecycle::initialize_main_window_geometry(app, &window);
+            #[cfg(target_os = "windows")]
+            if let Err(error) = platform::configure_windows_main_window(&window) {
+                if let Some(startup_log) = startup_log.as_ref() {
+                    startup_log.append("windows_native_chrome", error.clone());
+                }
+                eprintln!("Windows native rounded corners unavailable: {error}");
+            }
             backend_process::launch(app, window, startup_log);
             Ok(())
         })

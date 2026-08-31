@@ -34,6 +34,7 @@
    * @property {number} revision
    * @property {string} currentItemIdentity
    * @property {string} title
+   * @property {string} videoUrl
    * @property {{requester: string, duration: string, detail: string}} displayMetadata
    * @property {"light"|"dark"|"blue"} theme
    * @property {Object|null} overlay
@@ -78,6 +79,7 @@
       revision: Math.max(0, Math.trunc(finiteNumber(scene.revision))),
       currentItemIdentity: text(scene.currentItemIdentity),
       title: text(scene.title),
+      videoUrl: text(scene.videoUrl),
       displayMetadata: {
         requester: text(metadata.requester),
         duration: text(metadata.duration),

@@ -1555,16 +1555,16 @@ class CacheManager:
                 "reset_offset_on_next": self.reset_offset_on_next,
                 "download_source_choices": [
                     {
+                        "value": DOWNLOAD_SOURCE_NATIVE,
+                        "label": "Rust Native",
+                    },
+                    {
                         "value": DOWNLOAD_SOURCE_BBDOWN,
                         "label": "BBDown",
                     },
                     {
                         "value": DOWNLOAD_SOURCE_DOWNKYI,
                         "label": "Downkyi (aria2c)",
-                    },
-                    {
-                        "value": DOWNLOAD_SOURCE_NATIVE,
-                        "label": "Rust Native",
                     },
                 ],
                 "force_avc": self._should_force_avc_locked(),

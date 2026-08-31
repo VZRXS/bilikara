@@ -400,7 +400,7 @@ console.log(JSON.stringify({ waitingAction, recoveryAction, audioTime: audio.cur
 
     def test_all_programmatic_video_writes_are_navigation_or_restore_paths(self):
         self.assertEqual(self.source.count("seekVideoForNavigation(video,"), 2)
-        self.assertEqual(self.source.count("setMediaCurrentTime(video,"), 2)
+        self.assertEqual(self.source.count("setMediaCurrentTime(video,"), 3)
         restore_call = self._slice("const maybeRestorePlayback = () =>", "const synchronizeStartupPlayer")
         remote_controls = self._slice(
             "function applyRemotePlayerControl",
@@ -410,6 +410,13 @@ console.log(JSON.stringify({ waitingAction, recoveryAction, audioTime: audio.cur
         self.assertIn('action === "seek-relative" || action === "seek-absolute"', remote_controls)
         self.assertIn('diagnosticAction: "manual-video-seek"', remote_controls)
         self.assertIn("setMediaCurrentTime(video, clampedNextTime)", remote_controls)
+        presentation_controls = self._slice(
+            "async function handlePresentationHostControl",
+            "function queuePlayerFrameSingleClick",
+        )
+        self.assertIn('action === "seek"', presentation_controls)
+        self.assertIn('diagnosticAction: "presentation-host-seek"', presentation_controls)
+        self.assertIn("setMediaCurrentTime(video, targetTime)", presentation_controls)
 
     def test_normal_drift_correction_seeks_audio_only(self):
         result = self.run_node(

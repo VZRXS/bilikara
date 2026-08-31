@@ -15,6 +15,7 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
         cls.controller = (cls.static / "controller.js").read_text(encoding="utf-8")
         cls.scene = (cls.static / "presentation-scene.js").read_text(encoding="utf-8")
         cls.renderer = (cls.static / "presentation-renderer.js").read_text(encoding="utf-8")
+        cls.sync = (cls.static / "presentation-sync.js").read_text(encoding="utf-8")
         cls.index = (cls.static / "index.html").read_text(encoding="utf-8")
 
     def test_rejected_stage_player_and_native_commands_are_removed(self):
@@ -45,40 +46,39 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
         ):
             self.assertNotIn(rejected, self.app)
 
-    def test_presentation_modules_load_before_host_and_never_own_media_transport(self):
+    def test_presentation_modules_load_before_host_and_keep_host_authoritative(self):
         scene_index = self.index.index('src="/presentation-scene.js"')
         renderer_index = self.index.index('src="/presentation-renderer.js"')
+        sync_index = self.index.index('src="/presentation-sync.js"')
         app_index = self.index.index('src="/app.js"')
         self.assertLess(scene_index, renderer_index)
-        self.assertLess(renderer_index, app_index)
-        presentation_only = "\n".join((self.scene, self.renderer, self.controller))
+        self.assertLess(renderer_index, sync_index)
+        self.assertLess(sync_index, app_index)
+        presentation_only = "\n".join((self.scene, self.renderer, self.controller, self.sync))
         for forbidden in (
-            "BroadcastChannel",
-            "localStorage",
-            "playbackRate",
-            "predictedTime",
-            "driftCorrection",
-            'createElement("video")',
             'createElement("audio")',
             "/api/player/",
             "EventSource",
         ):
             self.assertNotIn(forbidden, presentation_only)
+        self.assertIn('createElement("video")', self.controller)
+        self.assertIn("video.muted = true", self.controller)
+        self.assertIn("BroadcastChannel", presentation_only)
+        self.assertNotIn('invoke("send_presentation_command"', self.controller)
 
-    def test_host_presentation_block_has_no_follower_transport_or_media_constructor(self):
+    def test_host_publishes_scene_clock_without_constructing_second_media_owner(self):
         start = self.app.index("function presentationSceneApi")
         end = self.app.index("function renderPlayerFullscreenButton", start)
         block = self.app[start:end]
         for forbidden in (
-            "BroadcastChannel",
-            "localStorage",
             'createElement("video")',
             'createElement("audio")',
-            "playbackRate",
-            "predictedTime",
             "open_stage_window",
         ):
             self.assertNotIn(forbidden, block)
+        self.assertIn("BroadcastChannel", block)
+        self.assertIn("localStorage.setItem", block)
+        self.assertIn('makeEnvelope("master-state"', block)
         self.assertIn('playbackAuthority !== "host"', block)
         self.assertIn('mediaRendererOwner !== "host"', block)
 
@@ -102,6 +102,11 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
             "display.presentationRecovering",
             "display.presentationNoExternalDisplay",
             "display.presentationDisconnected",
+            "display.presentationActiveShort",
+            "display.hostTargetTitle",
+            "display.hostTargetConfirmHint",
+            "display.builtInDisplay",
+            "display.hostDestination",
             "controller.title",
             "controller.statusActive",
             "controller.play",
@@ -112,6 +117,8 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
             "controller.volume",
             "controller.exit",
             "controller.tauriRequired",
+            "controller.autoplayBlocked",
+            "controller.outputVideoFailed",
         }
         for language, translations in catalog["languages"].items():
             self.assertEqual(required - set(translations), set(), language)
@@ -155,6 +162,7 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
             "controller.css",
             "presentation-scene.js",
             "presentation-renderer.js",
+            "presentation-sync.js",
         )
         for asset in assets:
             self.assertTrue((self.static / asset).is_file(), asset)

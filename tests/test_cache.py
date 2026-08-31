@@ -1704,7 +1704,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 self.assertEqual(
                     [choice["value"] for choice in manager.policy_snapshot()["download_source_choices"]],
-                    [DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE],
+                    [DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI],
                 )
                 for source in (
                     DOWNLOAD_SOURCE_BBDOWN,

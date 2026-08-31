@@ -44,6 +44,16 @@ function openExternalUrl(url) {
     window.open(url, "_blank");
   }
 }
+
+function openRemoteAccessLink(event) {
+  const link = event?.currentTarget;
+  const url = String(link?.href || "").trim();
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    return;
+  }
+  event.preventDefault();
+  openExternalUrl(url);
+}
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -101,6 +111,7 @@ const state = {
   bbdownLoginRenderSignature: "",
   gatchaUidFaceRenderSignature: "",
   gatchaTaskLastMessageSignature: "",
+  gatchaUidLastToastSignature: "",
   confirmPopoverRenderSignature: "",
   gatchaTaskWatchStartedAt: Date.now() / 1000,
   historyRenderSignature: "",
@@ -141,10 +152,13 @@ const state = {
   localWebKitStartRetryDone: false,
   stageControlTrayOpen: false,
   stageControlInlineCollapsed: false,
+  stageMeasuredPresentationActive: false,
   stageControlTrayDirection: "up",
   stageControlTrayFocusHandler: null,
   stageResizeObserver: null,
   stageMeasureFrame: null,
+  topControlPopoverPositionFrame: null,
+  playbackTooltipPositionFrame: null,
   queueScrollResizeObserver: null,
   queueScrollMeasureFrame: null,
   openRowMenuTrigger: null,
@@ -153,6 +167,8 @@ const state = {
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
   remoteQrPinned: false,
+  playerFullscreenRemotePinned: false,
+  playerFullscreenLastPointerType: "",
   displaySettingsOpen: false,
   presentationSettingsOpen: false,
   cacheLimitSaving: false,
@@ -392,6 +408,7 @@ const state = {
   presentationDisplayInfo: null,
   presentationDisplayError: "",
   presentationSelectedDisplayId: "",
+  presentationSelectedHostDisplayId: "",
   presentationSelectionInitialized: false,
   presentationControlBusy: false,
   presentationDisplayBusy: false,
@@ -409,10 +426,19 @@ const state = {
   presentationListenersReady: false,
   presentationUnlisteners: [],
   presentationCursorHideTimer: null,
+  presentationOutputChannel: null,
+  presentationOutputSenderId: `host-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+  presentationOutputSequence: 0,
+  presentationHostControlBusy: false,
+  presentationHostProgressScrubbing: false,
+  presentationHostAnnouncementKey: "",
+  presentationHostAnnouncementModel: null,
   activeHostWorkspace: "queue",
   focusedHostWorkspace: "queue",
   hostWorkspaceOverlayOpen: false,
   hostNarrowToolSheetActive: false,
+  hostWorkspaceTransition: null,
+  hostWorkspaceTransitionTimer: null,
   hostWorkspaceScrollPositions: {
     queue: 0,
     request: 0,
@@ -523,7 +549,22 @@ const elements = {
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
+  presentationHostAnnouncement: document.getElementById("presentation-host-announcement"),
+  presentationHostControls: document.getElementById("presentation-host-controls"),
+  presentationHostPlay: document.getElementById("presentation-host-play"),
+  presentationHostProgress: document.getElementById("presentation-host-progress"),
+  presentationHostCurrentTime: document.getElementById("presentation-host-current-time"),
+  presentationHostDuration: document.getElementById("presentation-host-duration"),
+  presentationHostNext: document.getElementById("presentation-host-next"),
+  playerFullscreenControl: document.getElementById("player-fullscreen-control"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
+  playerFullscreenLabel: document.getElementById("player-fullscreen-label"),
+  playerFullscreenRemotePopover: document.getElementById("player-fullscreen-remote-popover"),
+  playerFullscreenRemoteClose: document.getElementById("player-fullscreen-remote-close"),
+  playerFullscreenRemoteQrImage: document.getElementById("player-fullscreen-remote-qr-image"),
+  playerFullscreenRemoteQrPlaceholder: document.getElementById("player-fullscreen-remote-qr-placeholder"),
+  playerFullscreenRemoteUrlLink: document.getElementById("player-fullscreen-remote-url-link"),
+  playerFullscreenRemoteUrlHint: document.getElementById("player-fullscreen-remote-url-hint"),
   stageControlsToggle: document.getElementById("stage-controls-toggle"),
   stageControlsClose: document.getElementById("stage-controls-close"),
   stageControlBackdrop: document.getElementById("stage-control-backdrop"),
@@ -549,6 +590,8 @@ const elements = {
   keyShiftResetButton: document.getElementById("key-shift-reset-button"),
   addForm: document.getElementById("add-form"),
   requesterSelect: document.getElementById("requester-select"),
+  requesterEmptyButton: document.getElementById("requester-empty-button"),
+  requestSessionUserNotice: document.getElementById("request-session-user-notice"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
   appToast: document.getElementById("app-toast"),
@@ -590,6 +633,9 @@ const elements = {
   presentationOutputMeta: document.getElementById("presentation-output-meta"),
   presentationStateDot: document.getElementById("presentation-state-dot"),
   presentationDisplayList: document.getElementById("presentation-display-list"),
+  presentationHostTargetSection: document.getElementById("presentation-host-target-section"),
+  presentationHostTargetHint: document.getElementById("presentation-host-target-hint"),
+  presentationHostDisplayList: document.getElementById("presentation-host-display-list"),
   presentationRefreshButton: document.getElementById("presentation-refresh-button"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
@@ -765,6 +811,10 @@ const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
 ]);
 
 function setFormMessage(message, isError = false) {
+  if (isError && requiresSessionUsers(message)) {
+    showSessionUsersRequiredToast();
+    return;
+  }
   elements.formMessage.textContent = message;
   elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
 }
@@ -778,6 +828,10 @@ function setSearchMessage(message, isError = false) {
 }
 
 function setMessageForSource(source, message, isError = false) {
+  if (isError && requiresSessionUsers(message)) {
+    showSessionUsersRequiredToast();
+    return;
+  }
   if (source === "search") {
     setSearchMessage(message, isError);
     return;
@@ -1129,9 +1183,38 @@ function hasSessionUsers() {
   return Array.isArray(state.data?.session_users) && state.data.session_users.length > 0;
 }
 
+function requiresSessionUsers(message) {
+  const normalized = String(message || "").trim();
+  return normalized === "请先在服务端添加本场 KTV 用户"
+    || normalized === t("session.requireUsers");
+}
+
+function showSessionUsersRequiredToast() {
+  [
+    elements.formMessage,
+    elements.searchMessage,
+    elements.larkSearchMessage,
+    elements.followBrowseMessage,
+    elements.favlistBrowseMessage,
+    elements.gatchaMessage,
+  ].forEach((messageElement) => {
+    if (!messageElement) {
+      return;
+    }
+    messageElement.textContent = "";
+    messageElement.classList.remove("is-error");
+  });
+  if (elements.formMessage) {
+    elements.formMessage.style.color = "var(--muted)";
+  }
+  state.gatchaMessage = "";
+  state.gatchaMessageIsError = false;
+  setAppMessage(t("session.requireUsers"), true);
+}
+
 function validatedRequesterNameForAdd(showMessage = setFormMessage) {
   if (!hasSessionUsers()) {
-    showMessage(t("session.requireUsers"), true);
+    showSessionUsersRequiredToast();
     return "";
   }
   const requesterName = selectedRequesterName();
@@ -1181,7 +1264,7 @@ function isPlayerPanelFullscreen() {
 }
 
 function isAudiencePlayerSurface() {
-  return isPlayerPanelFullscreen() || presentationCompositionActive();
+  return isPlayerPanelFullscreen();
 }
 
 function isPlayerPanelFullscreenForTransition() {
@@ -1206,6 +1289,9 @@ function supportsPlayerFullscreen() {
 }
 
 function canTogglePlayerFullscreen() {
+  if (presentationCompositionActive()) {
+    return false;
+  }
   return state.presentationSession.phase === "inactive"
     && supportsPlayerFullscreen()
     && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
@@ -1449,6 +1535,9 @@ function presentationOverlayModel() {
 
 function currentPresentationScene() {
   const currentItem = state.data?.current_item || null;
+  const mountedVideo = activePrimaryVideoElement();
+  const videoUrl = selectedVideoUrlForItem(currentItem)
+    || String(mountedVideo?.currentSrc || mountedVideo?.src || "");
   const sceneKey = JSON.stringify({
     generation: state.presentationSession.generation,
     item: currentItem?.id || "",
@@ -1464,6 +1553,7 @@ function currentPresentationScene() {
     revision: state.presentationSceneRevision,
     currentItemIdentity: String(currentItem?.id || ""),
     title: String(currentItem?.display_title || currentItem?.title || ""),
+    videoUrl,
     displayMetadata: {
       requester: String(currentItem?.requester_name || ""),
       duration: formatDurationSeconds(durationSecondsForItem(currentItem)),
@@ -1481,10 +1571,63 @@ function renderCurrentPresentationScene() {
     return;
   }
   renderer.renderScene(elements.playerFrame, currentPresentationScene(), {
-    compact: !(isPlayerPanelFullscreen() || presentationCompositionActive()),
+    compact: !isPlayerPanelFullscreen(),
     manageVisibility: false,
     now: Date.now(),
   });
+}
+
+function presentationSyncApi() {
+  return window.BilikaraPresentationSync || null;
+}
+
+function ensurePresentationOutputChannel() {
+  const sync = presentationSyncApi();
+  if (!sync || typeof BroadcastChannel !== "function") {
+    return null;
+  }
+  if (!state.presentationOutputChannel) {
+    state.presentationOutputChannel = new BroadcastChannel(sync.channelName);
+  }
+  return state.presentationOutputChannel;
+}
+
+function publishPresentationOutputState(session = state.hostPlaybackSession) {
+  const sync = presentationSyncApi();
+  if (
+    !sync
+    || state.presentationSession.mode !== "localDualScreen"
+    || !["activating", "active"].includes(state.presentationSession.phase)
+  ) {
+    return false;
+  }
+  const video = session?.video || activePrimaryVideoElement();
+  const scene = currentPresentationScene();
+  const clock = {
+    itemIdentity: scene.currentItemIdentity,
+    mediaTime: Math.max(0, Number(video?.currentTime || 0)),
+    sampledAt: Date.now(),
+    paused: !video || Boolean(video.paused),
+    playbackRate: Math.max(0.1, Number(video?.playbackRate || 1)),
+    seeking: Boolean(video?.seeking),
+  };
+  const envelope = sync.makeEnvelope("master-state", {
+    scene,
+    clock,
+    remoteAccess: state.data?.remote_access || null,
+  }, {
+    senderId: state.presentationOutputSenderId,
+    sequence: ++state.presentationOutputSequence,
+    sentAt: Date.now(),
+  });
+  ensurePresentationOutputChannel()?.postMessage(envelope);
+  try {
+    localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
+    localStorage.removeItem(sync.storageKey);
+  } catch {
+    // BroadcastChannel is primary; storage is only a same-origin fallback.
+  }
+  return true;
 }
 
 const presentationModes = new Set(["singleScreen", "localDualScreen"]);
@@ -1554,21 +1697,10 @@ function clearPresentationCursorTimer() {
 function revealPresentationCursor() {
   document.body?.classList.remove("is-presentation-cursor-hidden");
   clearPresentationCursorTimer();
-  if (!presentationCompositionActive()) {
-    return;
-  }
-  state.presentationCursorHideTimer = window.setTimeout(() => {
-    state.presentationCursorHideTimer = null;
-    if (presentationCompositionActive()) {
-      document.body?.classList.add("is-presentation-cursor-hidden");
-    }
-  }, 1800);
 }
 
 function handlePresentationPointerMove() {
-  if (presentationCompositionActive()) {
-    revealPresentationCursor();
-  }
+  revealPresentationCursor();
 }
 
 function applyPresentationCompositionDom(generation, composition) {
@@ -1584,19 +1716,28 @@ function applyPresentationCompositionDom(generation, composition) {
     && ["activating", "active"].includes(state.presentationSession.phase);
   state.presentationAppliedComposition = active ? "stageOnly" : "combined";
   state.presentationCompositionGeneration = generation;
-  document.body?.classList.toggle("is-presentation-stage-only", active);
+  document.body?.classList.toggle("is-presentation-control-host", active);
+  document.body?.classList.remove("is-presentation-stage-only");
   if (elements.playerFrame) {
     elements.playerFrame.inert = active;
   }
   if (active) {
     hideMountedPlayerControls();
-    revealPresentationCursor();
   } else {
     clearPresentationCursorTimer();
     document.body?.classList.remove("is-presentation-cursor-hidden");
   }
   renderCurrentPresentationScene();
+  if (typeof renderPresentationHostSurface === "function") {
+    renderPresentationHostSurface();
+  }
   renderPlayerFullscreenButton();
+  if (typeof syncNarrowToolLayout === "function") {
+    syncNarrowToolLayout();
+  }
+  if (typeof schedulePersistentStageMeasurement === "function") {
+    schedulePersistentStageMeasurement();
+  }
   return true;
 }
 
@@ -1701,6 +1842,7 @@ function normalizePresentationDisplayInfo(candidate) {
       width: Math.max(0, Number(display.width || 0)),
       height: Math.max(0, Number(display.height || 0)),
       scaleFactor: Math.max(0, Number(display.scaleFactor || 0)),
+      builtIn: Boolean(display.builtIn),
       controller: Boolean(display.controller),
       primary: Boolean(display.primary),
       selectable: Boolean(display.selectable),
@@ -1741,6 +1883,24 @@ function applyPresentationDisplayInfo(candidate) {
   ) {
     state.presentationSelectedDisplayId = "";
   }
+  const selected = info.displays.find(
+    (display) => display.id === state.presentationSelectedDisplayId,
+  );
+  if (!selected?.controller) {
+    state.presentationSelectedHostDisplayId = "";
+  } else {
+    const alternatives = info.displays.filter((display) => (
+      display.id !== selected.id && display.identityStable && !display.mirrored
+    ));
+    const builtIn = alternatives.find((display) => display.builtIn);
+    if (builtIn) {
+      state.presentationSelectedHostDisplayId = builtIn.id;
+    } else if (!alternatives.some(
+      (display) => display.id === state.presentationSelectedHostDisplayId,
+    )) {
+      state.presentationSelectedHostDisplayId = "";
+    }
+  }
   renderPresentationOutputControl();
   return info;
 }
@@ -1772,6 +1932,33 @@ function presentationDisplayById(displayId) {
   return state.presentationDisplayInfo?.displays?.find(
     (display) => display.id === displayId,
   ) || null;
+}
+
+function presentationHostAlternatives(target = presentationDisplayById(
+  state.presentationSelectedDisplayId,
+)) {
+  if (!target?.controller) {
+    return [];
+  }
+  return (state.presentationDisplayInfo?.displays || []).filter((display) => (
+    display.id !== target.id && display.identityStable && !display.mirrored
+  ));
+}
+
+function resolvedPresentationHostDisplayId(target = presentationDisplayById(
+  state.presentationSelectedDisplayId,
+)) {
+  if (!target?.controller) {
+    return "";
+  }
+  const alternatives = presentationHostAlternatives(target);
+  const builtIn = alternatives.find((display) => display.builtIn);
+  if (builtIn) {
+    return builtIn.id;
+  }
+  return alternatives.some(
+    (display) => display.id === state.presentationSelectedHostDisplayId,
+  ) ? state.presentationSelectedHostDisplayId : "";
 }
 
 const presentationDeviceIconShapes = Object.freeze({
@@ -1833,10 +2020,11 @@ function createPresentationDisplayOption(display) {
   const resolution = display.width && display.height
     ? `${display.width} × ${display.height}`
     : t("display.resolutionUnknown");
+  const builtInSuffix = display.builtIn ? ` · ${t("display.builtInDisplay")}` : "";
   detail.textContent = display.mirrored
     ? `${resolution} · ${t("display.presentationMirrored")}`
     : display.identityStable && display.identityQuality === "stable"
-      ? resolution
+      ? `${resolution}${builtInSuffix}`
       : `${resolution} · ${t("display.presentationIdentityUnavailable")}`;
   copy.append(name, detail);
   const status = document.createElement("span");
@@ -1853,6 +2041,24 @@ function createPresentationDisplayOption(display) {
     copy,
     status,
   );
+  return button;
+}
+
+function createPresentationHostDisplayOption(display) {
+  const selected = display.id === state.presentationSelectedHostDisplayId;
+  const button = createPresentationDisplayOption({
+    ...display,
+    controller: false,
+    selectable: true,
+  });
+  button.classList.toggle("is-selected", selected);
+  button.dataset.presentationDisplayId = "";
+  button.dataset.presentationHostDisplayId = display.id;
+  button.setAttribute("aria-pressed", String(selected));
+  const status = button.querySelector(".presentation-display-state");
+  if (status) {
+    status.textContent = selected ? t("display.hostDestination") : "";
+  }
   return button;
 }
 
@@ -1880,6 +2086,21 @@ function renderPresentationDisplayList() {
     list.removeAttribute("aria-busy");
   }
   list.replaceChildren(fragment);
+
+  const target = presentationDisplayById(state.presentationSelectedDisplayId);
+  const alternatives = presentationHostAlternatives(target);
+  const automaticBuiltIn = alternatives.find((display) => display.builtIn);
+  const needsConfirmation = Boolean(target?.controller && alternatives.length && !automaticBuiltIn);
+  elements.presentationHostTargetSection?.classList.toggle("hidden", !needsConfirmation);
+  if (elements.presentationHostDisplayList) {
+    const hostFragment = document.createDocumentFragment();
+    if (needsConfirmation) {
+      alternatives.forEach((display) => {
+        hostFragment.append(createPresentationHostDisplayOption(display));
+      });
+    }
+    elements.presentationHostDisplayList.replaceChildren(hostFragment);
+  }
 }
 
 function renderPresentationOutputControl() {
@@ -1903,6 +2124,10 @@ function renderPresentationOutputControl() {
   const session = state.presentationSession;
   const selectedId = session.selectedOutputDisplayId || state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(selectedId);
+  const hostDisplayId = typeof resolvedPresentationHostDisplayId === "function"
+    ? resolvedPresentationHostDisplayId(selected)
+    : "";
+  const requiresHostConfirmation = Boolean(selected?.controller && !hostDisplayId);
   const monitorName = selected?.name || t("display.secondaryDisplay");
   const hasSelectableDisplay = Boolean(
     state.presentationDisplayInfo?.displays?.some((display) => display.selectable),
@@ -1925,7 +2150,9 @@ function renderPresentationOutputControl() {
           : noExternalDisplayAvailable
             ? t("display.presentationNoExternalDisplay")
             : state.presentationSelectedDisplayId
-              ? t("display.presentationTargetSelected", { monitor: monitorName })
+              ? requiresHostConfirmation
+                ? t("display.hostTargetConfirmHint")
+                : t("display.presentationTargetSelected", { monitor: monitorName })
               : t("display.presentationSelectDisplay");
   const summaryText = state.presentationControlBusy
     ? t("display.presentationTransitioning")
@@ -1942,7 +2169,8 @@ function renderPresentationOutputControl() {
         ? t("display.displayCount", { count: state.presentationDisplayInfo.monitorCount })
         : t("display.detectingDisplays");
   const canActivate = session.phase === "inactive"
-    && Boolean(presentationDisplayById(state.presentationSelectedDisplayId)?.selectable);
+    && Boolean(selected?.selectable)
+    && !requiresHostConfirmation;
   const canDeactivate = session.phase === "active" || session.phase === "activating";
   const disabled = state.presentationControlBusy
     || state.presentationDisplayBusy
@@ -1950,6 +2178,7 @@ function renderPresentationOutputControl() {
   const signature = JSON.stringify({
     session,
     selectedId: state.presentationSelectedDisplayId,
+    selectedHostId: state.presentationSelectedHostDisplayId,
     displayInfo: state.presentationDisplayInfo,
     displayError: state.presentationDisplayError,
     displayBusy: state.presentationDisplayBusy,
@@ -2027,7 +2256,13 @@ async function activateLocalPresentation() {
   if (typeof invoke !== "function" || !selected?.selectable) {
     throw new Error(t("display.presentationSelectDisplay"));
   }
-  await handlePresentationSession(await invoke("activate_local_presentation", { displayId }));
+  const hostDisplayId = typeof resolvedPresentationHostDisplayId === "function"
+    ? (resolvedPresentationHostDisplayId(selected) || null)
+    : null;
+  await handlePresentationSession(await invoke("activate_local_presentation", {
+    displayId,
+    hostDisplayId,
+  }));
 }
 
 async function deactivateLocalPresentation() {
@@ -2075,11 +2310,36 @@ function selectPresentationDisplay(displayId) {
     return;
   }
   state.presentationSelectedDisplayId = target.id;
+  const alternatives = presentationHostAlternatives(target);
+  state.presentationSelectedHostDisplayId = alternatives.find((display) => display.builtIn)?.id || "";
   renderPresentationOutputControl();
   const replacement = Array.from(
     elements.presentationDisplayList?.querySelectorAll("[data-presentation-display-id]") || [],
   ).find((option) => option.dataset.presentationDisplayId === target.id);
   replacement?.focus();
+}
+
+function selectPresentationHostDisplay(displayId) {
+  if (
+    state.presentationControlBusy
+    || state.presentationDisplayBusy
+    || state.presentationSession.phase !== "inactive"
+  ) {
+    return;
+  }
+  const target = presentationDisplayById(state.presentationSelectedDisplayId);
+  const replacement = presentationHostAlternatives(target).find(
+    (display) => display.id === String(displayId || ""),
+  );
+  if (!replacement) {
+    return;
+  }
+  state.presentationSelectedHostDisplayId = replacement.id;
+  renderPresentationOutputControl();
+  Array.from(
+    elements.presentationHostDisplayList?.querySelectorAll("[data-presentation-host-display-id]") || [],
+  ).find((option) => option.dataset.presentationHostDisplayId === replacement.id)
+    ?.focus();
 }
 
 function normalizeControllerCommandEnvelope(candidate) {
@@ -2332,10 +2592,172 @@ function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
   };
 }
 
+function presentationHostAnnouncementSnapshot() {
+  const currentItem = state.data?.current_item || null;
+  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const snapshotKey = JSON.stringify({
+    presentationGeneration: Number(state.presentationSession?.generation || 0),
+    playbackGeneration: Number(state.data?.playback_generation || 0),
+    currentItemIdentity: String(
+      currentItem?.item_incarnation_id || currentItem?.id || "",
+    ),
+    language: state.language,
+  });
+  if (
+    snapshotKey === state.presentationHostAnnouncementKey
+    && state.presentationHostAnnouncementModel
+  ) {
+    return state.presentationHostAnnouncementModel;
+  }
+
+  const primaryItem = playlist[0] || null;
+  const followItems = playlist.slice(1, 3);
+  state.presentationHostAnnouncementKey = snapshotKey;
+  state.presentationHostAnnouncementModel = {
+    visible: true,
+    heading: t("player.upNext"),
+    countdownLabel: "",
+    deadline: 0,
+    durationMs: 1000,
+    title: delayOverlayTitleForItem(primaryItem, t("player.prepareNext")),
+    requester: primaryItem?.requester_name || "—",
+    duration: primaryItem
+      ? formatDurationSeconds(durationSecondsForItem(primaryItem))
+      : "—",
+    queueHeading: t("player.followingQueue"),
+    rows: followItems.map((item) => ({
+      title: delayOverlayTitleForItem(item),
+      requester: item?.requester_name || "—",
+      duration: formatDurationSeconds(durationSecondsForItem(item)),
+    })),
+    emptyText: "",
+    remainingText: "",
+    totalText: "",
+  };
+  return state.presentationHostAnnouncementModel;
+}
+
+function renderPresentationHostAnnouncement() {
+  const renderer = presentationRendererApi();
+  if (!renderer || !elements.presentationHostAnnouncement) {
+    return null;
+  }
+  const overlay = renderer.ensureOverlay(elements.presentationHostAnnouncement);
+  if (!overlay) {
+    return null;
+  }
+  overlay.classList.add("presentation-host-next-song-overlay");
+  renderer.renderOverlay(overlay, presentationHostAnnouncementSnapshot(), {
+    manageVisibility: true,
+    now: 0,
+  });
+  return overlay;
+}
+
+function formatPresentationHostClock(seconds) {
+  const normalized = Math.max(0, Math.floor(Number(seconds || 0)));
+  const hours = Math.floor(normalized / 3600);
+  const minutes = Math.floor((normalized % 3600) / 60);
+  const remainder = normalized % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function paintPresentationHostProgress(currentSeconds, durationSeconds) {
+  const progress = elements.presentationHostProgress;
+  const duration = Number.isFinite(Number(durationSeconds)) && Number(durationSeconds) > 0
+    ? Number(durationSeconds)
+    : 0;
+  const current = duration > 0
+    ? Math.max(0, Math.min(duration, Number(currentSeconds || 0)))
+    : 0;
+  if (progress) {
+    const nextMax = String(duration || 1);
+    const nextValue = String(current);
+    if (progress.max !== nextMax) {
+      progress.max = nextMax;
+    }
+    if (progress.value !== nextValue) {
+      progress.value = nextValue;
+    }
+    const percent = duration > 0 ? (current / duration) * 100 : 0;
+    setRangeFillPercent(progress, percent);
+    const ariaValueText = duration > 0
+      ? `${formatPresentationHostClock(current)} / ${formatPresentationHostClock(duration)}`
+      : "—";
+    if (progress.getAttribute("aria-valuetext") !== ariaValueText) {
+      progress.setAttribute("aria-valuetext", ariaValueText);
+    }
+  }
+  setTextContent(elements.presentationHostCurrentTime, formatPresentationHostClock(current));
+  setTextContent(
+    elements.presentationHostDuration,
+    duration > 0 ? formatPresentationHostClock(duration) : "—",
+  );
+}
+
+function renderPresentationHostSurface(session = state.hostPlaybackSession) {
+  const active = typeof presentationCompositionActive === "function"
+    ? presentationCompositionActive()
+    : false;
+  const currentItem = state.data?.current_item || null;
+  const playback = presentationPlaybackStateModel(session);
+  if (elements.presentationHostAnnouncement) {
+    elements.presentationHostAnnouncement.hidden = !active;
+    elements.presentationHostAnnouncement.setAttribute("aria-hidden", String(!active));
+    if (active) {
+      renderPresentationHostAnnouncement();
+    }
+  }
+  if (elements.presentationHostControls) {
+    elements.presentationHostControls.hidden = !active;
+  }
+  const playLabel = playback.paused ? t("controller.play") : t("controller.pause");
+  setTextContent(
+    elements.presentationHostPlay?.querySelector("[data-presentation-host-play-label]"),
+    playLabel,
+  );
+  const hasPlayableMedia = Boolean(
+    active
+    && currentItem
+    && session?.readyCommitted
+    && isCurrentHostPlaybackSession(session, session.video, session.audio),
+  );
+  if (elements.presentationHostPlay) {
+    elements.presentationHostPlay.disabled = !hasPlayableMedia
+      || state.presentationHostControlBusy;
+  }
+  const durationAvailable = Number(playback.durationSeconds || 0) > 0;
+  if (elements.presentationHostProgress) {
+    elements.presentationHostProgress.disabled = !hasPlayableMedia
+      || !durationAvailable
+      || state.presentationHostControlBusy;
+  }
+  if (!state.presentationHostProgressScrubbing) {
+    paintPresentationHostProgress(
+      playback.currentTimeSeconds,
+      playback.durationSeconds,
+    );
+  }
+  if (elements.presentationHostNext) {
+    elements.presentationHostNext.disabled = !active
+      || !playback.canSkip
+      || state.presentationHostControlBusy;
+  }
+}
+
 function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
   const invoke = tauriInvoke();
   const capturedVideo = session?.video;
   const capturedAudio = session?.audio;
+  if (typeof publishPresentationOutputState === "function") {
+    publishPresentationOutputState(session);
+  }
+  if (typeof elements !== "undefined" && typeof renderPresentationHostSurface === "function") {
+    renderPresentationHostSurface(session);
+  }
   if (
     typeof invoke !== "function"
     || !["activating", "active"].includes(state.presentationSession.phase)
@@ -2492,7 +2914,7 @@ function renderPlayerFullscreenButton() {
   const enabled = canTogglePlayerFullscreen();
   const label = active ? t("player.fullscreenExit") : t("player.fullscreen");
   const title = enabled
-    ? (active ? t("player.fullscreenExitLabel") : t("player.fullscreenEnterLabel"))
+    ? (active ? t("player.fullscreenRemoteExit") : t("player.fullscreenEnterLabel"))
     : supportsPlayerFullscreen()
       ? t("player.fullscreenDisabled")
       : t("player.fullscreenUnsupported");
@@ -2506,9 +2928,37 @@ function renderPlayerFullscreenButton() {
   if (button.disabled !== !enabled) {
     button.disabled = !enabled;
   }
-  setTextContent(button, label);
+  setTextContent(elements.playerFullscreenLabel, label);
   setElementAttribute(button, "aria-pressed", String(active));
+  setElementAttribute(button, "aria-label", active ? t("player.fullscreenRemoteExit") : title);
   setElementTitle(button, title);
+  if (!active) {
+    setPlayerFullscreenRemotePinned(false);
+  }
+}
+
+function setPlayerFullscreenRemotePinned(pinned) {
+  state.playerFullscreenRemotePinned = Boolean(pinned) && isPlayerPanelFullscreen();
+  elements.playerFullscreenControl?.classList.toggle(
+    "is-qr-pinned",
+    state.playerFullscreenRemotePinned,
+  );
+  elements.playerFullscreenButton?.setAttribute(
+    "aria-expanded",
+    String(state.playerFullscreenRemotePinned),
+  );
+}
+
+function playerFullscreenActivationUsesTouch(event) {
+  const pointerType = state.playerFullscreenLastPointerType;
+  state.playerFullscreenLastPointerType = "";
+  if (pointerType) {
+    return pointerType === "touch";
+  }
+  return Boolean(
+    event?.detail
+    && window.matchMedia?.("(hover: none), (pointer: coarse)")?.matches,
+  );
 }
 
 function requestElementFullscreen(element) {
@@ -2540,7 +2990,12 @@ async function togglePlayerFullscreen() {
   if (!canTogglePlayerFullscreen()) {
     return;
   }
+  if (presentationCompositionActive()) {
+    await toggleLocalPresentation();
+    return;
+  }
   if (isPlayerPanelFullscreen()) {
+    setPlayerFullscreenRemotePinned(false);
     const exitFullscreenPromise = exitDocumentFullscreen();
     const tauriFullscreenPromise = setTauriWindowFullscreen(false);
     elements.playerPanel?.classList.remove("is-tauri-fullscreen");
@@ -2660,9 +3115,6 @@ function revealMountedPlayerControlsForUserInteraction() {
 }
 
 function toggleMountedLocalPlayback() {
-  if (presentationCompositionActive()) {
-    return true;
-  }
   if (frontendPlaybackMode(state.data?.playback_mode) !== "local" || !state.data?.current_item) {
     return false;
   }
@@ -2702,6 +3154,53 @@ function toggleMountedLocalPlayback() {
     video.pause();
   }
   return true;
+}
+
+async function handlePresentationHostControl(action, button) {
+  if (
+    !presentationCompositionActive()
+    || state.presentationHostControlBusy
+    || !button
+  ) {
+    return;
+  }
+  const session = state.hostPlaybackSession;
+  const { video, audio } = activeLocalPlayerElements();
+  state.presentationHostControlBusy = true;
+  button.setAttribute("aria-busy", "true");
+  renderPresentationHostSurface(session);
+  try {
+    if (action === "toggle") {
+      toggleMountedLocalPlayback();
+    } else if (action === "seek") {
+      if (!video) return;
+      const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+      const targetTime = Math.max(
+        0,
+        Math.min(Number(elements.presentationHostProgress?.value || 0), duration),
+      );
+      if (audio) {
+        beginSplitPlayerSeek(video, audio, {
+          resumeAfterSeek: state.localShouldBePlaying,
+          targetTime,
+          diagnosticAction: "presentation-host-seek",
+          onSettled: (applied) => {
+            if (applied) reportPlayerStatus(state.data?.current_item?.id || "", video, session);
+          },
+        });
+      } else {
+        setMediaCurrentTime(video, targetTime);
+      }
+    } else if (action === "next") {
+      await requestNextTrack(state.data?.playback_generation ?? null);
+    }
+    publishPresentationPlaybackState(session).catch(() => {});
+  } finally {
+    state.presentationHostProgressScrubbing = false;
+    state.presentationHostControlBusy = false;
+    button.removeAttribute("aria-busy");
+    renderPresentationHostSurface();
+  }
 }
 
 function queuePlayerFrameSingleClick() {
@@ -3213,6 +3712,9 @@ function renderHostWorkspaceSelection() {
   }
   state.hostNarrowToolSheetActive = narrowToolSheet;
   const narrowToolSheetClosed = narrowToolSheet && !state.hostWorkspaceOverlayOpen;
+  const workspaceTransition = state.hostWorkspaceTransition?.to === activeWorkspace
+    ? state.hostWorkspaceTransition
+    : null;
 
   state.activeHostWorkspace = activeWorkspace;
   state.focusedHostWorkspace = focusedWorkspace;
@@ -3224,6 +3726,11 @@ function renderHostWorkspaceSelection() {
   }
   if (elements.hostWorkspaceRegion) {
     elements.hostWorkspaceRegion.dataset.activeWorkspace = activeWorkspace;
+    if (workspaceTransition) {
+      elements.hostWorkspaceRegion.dataset.toolTransitionDirection = workspaceTransition.direction;
+    } else {
+      delete elements.hostWorkspaceRegion.dataset.toolTransitionDirection;
+    }
     elements.hostWorkspaceRegion.setAttribute(
       "aria-labelledby",
       `work-rail-${activeWorkspace}`,
@@ -3231,6 +3738,8 @@ function renderHostWorkspaceSelection() {
     elements.hostWorkspaceRegion.inert = narrowToolSheetClosed;
     elements.hostWorkspaceRegion.setAttribute("aria-hidden", String(narrowToolSheetClosed));
   }
+  const sessionUsersAvailable = Array.isArray(state.data?.session_users)
+    && state.data.session_users.length > 0;
   elements.hostWorkspaceButtons?.forEach((button) => {
     const workspace = normalizeHostWorkspaceName(button.dataset.hostWorkspace, "");
     const selected = workspace === activeWorkspace;
@@ -3241,15 +3750,21 @@ function renderHostWorkspaceSelection() {
       button.removeAttribute?.("aria-expanded");
     }
     button.tabIndex = workspace === focusedWorkspace ? 0 : -1;
+    button.classList.toggle("needs-attention", workspace === "users" && !sessionUsersAvailable);
   });
   elements.hostWorkspacePanels?.forEach((panel) => {
     const workspace = normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, "");
+    const transitionRole = workspaceTransition && workspace === workspaceTransition.from
+      ? "out"
+      : (workspaceTransition && workspace === workspaceTransition.to ? "in" : "");
     const visible = workspace === activeWorkspace
       && !requestOverlayClosed
       && !narrowToolSheetClosed;
     panel.hidden = !visible;
-    panel.inert = !visible;
+    panel.inert = !visible || transitionRole === "out";
     panel.setAttribute("aria-hidden", String(!visible));
+    panel.classList.toggle("is-tool-transition-in", transitionRole === "in");
+    panel.classList.toggle("is-tool-transition-out", transitionRole === "out");
   });
   if (elements.hostWorkspaceBackdrop) {
     elements.hostWorkspaceBackdrop.hidden = !requestOverlay;
@@ -3266,6 +3781,51 @@ function normalizeHostWorkspaceName(value, fallback = "queue") {
   return ["queue", "history", "request", "random", "users"].includes(candidate)
     ? candidate
     : fallback;
+}
+
+const hostWorkspaceRailOrder = Object.freeze([
+  "queue",
+  "history",
+  "request",
+  "random",
+  "users",
+]);
+
+function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
+  const from = normalizeHostWorkspaceName(fromWorkspace, "");
+  const to = normalizeHostWorkspaceName(toWorkspace, "");
+  const fromIndex = hostWorkspaceRailOrder.indexOf(from);
+  const toIndex = hostWorkspaceRailOrder.indexOf(to);
+  const reducedMotion = typeof window !== "undefined" && Boolean(
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
+  );
+  if (!from || !to || from === to || fromIndex < 0 || toIndex < 0 || reducedMotion) {
+    if (state.hostWorkspaceTransitionTimer) {
+      globalThis.clearTimeout(state.hostWorkspaceTransitionTimer);
+      state.hostWorkspaceTransitionTimer = null;
+    }
+    state.hostWorkspaceTransition = null;
+    return null;
+  }
+  if (state.hostWorkspaceTransitionTimer) {
+    globalThis.clearTimeout(state.hostWorkspaceTransitionTimer);
+  }
+  const transition = {
+    from,
+    to,
+    direction: toIndex > fromIndex ? "forward" : "backward",
+    token: Number(state.hostWorkspaceTransition?.token || 0) + 1,
+  };
+  state.hostWorkspaceTransition = transition;
+  state.hostWorkspaceTransitionTimer = globalThis.setTimeout(() => {
+    if (state.hostWorkspaceTransition?.token !== transition.token) {
+      return;
+    }
+    state.hostWorkspaceTransition = null;
+    state.hostWorkspaceTransitionTimer = null;
+    renderHostWorkspaceSelection();
+  }, 180);
+  return transition;
 }
 
 function hostRequestWorkspaceUsesOverlay() {
@@ -3304,12 +3864,22 @@ function syncNarrowToolLayout() {
   const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
     ? elements.audioVariantAnchor.getBoundingClientRect?.().height || 0
     : 0;
+  const presentationActive = typeof presentationCompositionActive === "function"
+    ? presentationCompositionActive()
+    : false;
+  const presentationControlsHeight = presentationActive
+    && elements.presentationHostControls
+    && !elements.presentationHostControls.hidden
+    ? elements.presentationHostControls.getBoundingClientRect?.().height || 0
+    : 0;
   const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect?.().height || 40;
   const frameWidth = Math.max(0, contentWidth - panelPaddingInline);
   const frameHeight = frameWidth * (9 / 16);
-  const persistentRowGapCount = variantHeight > 0 ? 3 : 2;
+  const persistentRowGapCount = (variantHeight > 0 ? 3 : 2)
+    + (presentationControlsHeight > 0 ? 1 : 0);
   const compactStageHeight = Math.ceil(
-    panelPaddingBlock + headerHeight + variantHeight + toggleHeight + frameHeight
+    panelPaddingBlock + headerHeight + variantHeight + presentationControlsHeight
+      + toggleHeight + frameHeight
       + (panelGap * persistentRowGapCount),
   );
   const shellGap = canReadComputedStyle
@@ -3321,6 +3891,47 @@ function syncNarrowToolLayout() {
   const availableStageHeight = Math.floor(
     contentHeight - minimumResidentToolHeight - shellGap,
   );
+  const inlineFit = findStageControlFit(frameWidth, { layout: "inline" });
+  const inlineTraySize = inlineFit.size;
+  const inlineTrayHeight = inlineTraySize.height;
+  const inlineTrayFitsWidth = inlineTraySize.width <= frameWidth + 1
+    && inlineTraySize.contentFits;
+  const fullStageHeight = Math.ceil(
+    panelPaddingBlock + headerHeight + variantHeight + presentationControlsHeight
+      + frameHeight + inlineTrayHeight
+      + (panelGap * persistentRowGapCount),
+  );
+
+  if (presentationActive) {
+    const minimumFrameHeight = Math.min(
+      frameHeight,
+      Math.max(180, Math.min(260, frameHeight)),
+    );
+    const minimumInlineStageHeight = Math.ceil(
+      panelPaddingBlock + headerHeight + variantHeight + presentationControlsHeight
+        + minimumFrameHeight + inlineTrayHeight
+        + (panelGap * persistentRowGapCount),
+    );
+    const resident = contentWidth > 0
+      && contentHeight > 0
+      && inlineTrayFitsWidth
+      && availableStageHeight >= minimumInlineStageHeight;
+    if (!resident) {
+      elements.appShell.dataset.narrowToolLayout = "overlay";
+      elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
+      return "overlay";
+    }
+    elements.appShell.dataset.narrowToolLayout = "resident";
+    elements.appShell.style?.setProperty?.(
+      "--narrow-stage-resident-height",
+      `${Math.max(
+        minimumInlineStageHeight,
+        Math.min(fullStageHeight, availableStageHeight),
+      )}px`,
+    );
+    return "resident";
+  }
+
   const resident = contentWidth > 0
     && contentHeight > 0
     && availableStageHeight >= compactStageHeight;
@@ -3329,15 +3940,6 @@ function syncNarrowToolLayout() {
     elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
     return "overlay";
   }
-  const inlineFit = findStageControlFit(frameWidth, { layout: "inline" });
-  const inlineTraySize = inlineFit.size;
-  const inlineTrayHeight = inlineTraySize.height;
-  const inlineTrayFitsWidth = inlineTraySize.width <= frameWidth + 1
-    && inlineTraySize.contentFits;
-  const fullStageHeight = Math.ceil(
-    panelPaddingBlock + headerHeight + variantHeight + frameHeight + inlineTrayHeight
-      + (panelGap * persistentRowGapCount),
-  );
   const residentStageHeight = inlineTrayFitsWidth && availableStageHeight >= fullStageHeight
     ? fullStageHeight
     : compactStageHeight;
@@ -3396,6 +3998,15 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
   }
   const changed = state.activeHostWorkspace !== nextWorkspace;
   const interactiveActivation = inputOrigin === "pointer" || inputOrigin === "keyboard";
+  if (changed && interactiveActivation) {
+    beginHostWorkspaceTransition(state.activeHostWorkspace, nextWorkspace);
+  } else if (changed) {
+    state.hostWorkspaceTransition = null;
+    if (state.hostWorkspaceTransitionTimer) {
+      window.clearTimeout(state.hostWorkspaceTransitionTimer);
+      state.hostWorkspaceTransitionTimer = null;
+    }
+  }
   const previousToolSheetOpen = state.hostWorkspaceOverlayOpen;
   if (changed) {
     if (typeof closeOpenMenus === "function") {
@@ -3556,6 +4167,11 @@ function closeOrdinaryPopoverForEscape() {
     infoTrigger?.focus({ preventScroll: true });
     return true;
   }
+  if (state.playerFullscreenRemotePinned) {
+    setPlayerFullscreenRemotePinned(false);
+    elements.playerFullscreenButton?.focus({ preventScroll: true });
+    return true;
+  }
   if (state.remoteQrPinned) {
     setRemoteQrPinned(false, { dismissTransient: true });
     elements.remoteMiniTrigger?.focus({ preventScroll: true });
@@ -3705,8 +4321,18 @@ function positionStageControlTray() {
   const viewportInset = 12;
   const popupGap = 10;
   const topBoundary = Math.max(viewportInset, Number(toolbar?.bottom || 0) + 8);
-  const availableWidth = Math.max(280, window.innerWidth - (viewportInset * 2));
-  const width = Math.min(860, availableWidth);
+  const stageBounds = (
+    elements.playerPanel?.getBoundingClientRect?.()
+    || elements.leftColumn?.getBoundingClientRect?.()
+    || { left: viewportInset, right: window.innerWidth - viewportInset }
+  );
+  const boundsLeft = Math.max(viewportInset, stageBounds.left);
+  const boundsRight = Math.min(window.innerWidth - viewportInset, stageBounds.right);
+  const availableWidth = Math.max(
+    280,
+    Math.min(860, window.innerWidth - (viewportInset * 2), boundsRight - boundsLeft),
+  );
+  const width = availableWidth;
   const popupFit = findStageControlFit(width, { layout: "popup" });
   if (elements.appShell) {
     elements.appShell.dataset.stageControlDensity = popupFit.density;
@@ -3718,8 +4344,8 @@ function positionStageControlTray() {
   const directionSpace = direction === "down" ? spaceBelow : spaceAbove;
   const maxHeight = Math.max(120, Math.min(naturalHeight, directionSpace));
   const left = Math.max(
-    viewportInset,
-    Math.min(anchor.left, window.innerWidth - viewportInset - width),
+    boundsLeft,
+    Math.min(anchor.left, boundsRight - width),
   );
   const top = direction === "down"
     ? anchor.bottom + popupGap
@@ -3731,6 +4357,9 @@ function positionStageControlTray() {
   elements.stageControlTray.style.width = `${Math.round(width)}px`;
   elements.stageControlTray.style.maxHeight = `${Math.round(maxHeight)}px`;
   elements.stageControlTray.style.transformOrigin = direction === "down" ? "0 0" : "0 100%";
+  if (typeof schedulePlaybackContextualTooltipPositionSync === "function") {
+    schedulePlaybackContextualTooltipPositionSync();
+  }
 }
 
 function setStageControlTrayOpen(open, { restoreFocus = false, moveFocus = true } = {}) {
@@ -3815,6 +4444,9 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  const presentationActive = presentationCompositionActive();
+  const presentationContextChanged = state.stageMeasuredPresentationActive !== presentationActive;
+  state.stageMeasuredPresentationActive = presentationActive;
   const panelStyle = window.getComputedStyle(elements.playerPanel);
   const panelPaddingInline = (parseFloat(panelStyle.paddingLeft) || 0)
     + (parseFloat(panelStyle.paddingRight) || 0);
@@ -3827,7 +4459,13 @@ function measurePersistentStage() {
   const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
     ? elements.audioVariantAnchor.getBoundingClientRect().height
     : 0;
-  const persistentRowGapCount = variantHeight > 0 ? 3 : 2;
+  const presentationControlsHeight = presentationActive
+    && elements.presentationHostControls
+    && !elements.presentationHostControls.hidden
+    ? elements.presentationHostControls.getBoundingClientRect().height
+    : 0;
+  const persistentRowGapCount = (variantHeight > 0 ? 3 : 2)
+    + (presentationControlsHeight > 0 ? 1 : 0);
   const toggleHeight = elements.stageControlsToggle?.getBoundingClientRect().height || 40;
   const fullFrameWidth = innerWidth;
   const fullFrameHeight = fullFrameWidth * (9 / 16);
@@ -3835,23 +4473,52 @@ function measurePersistentStage() {
   const inlineTraySize = inlineFit.size;
   const trayHeight = inlineTraySize.height;
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
-  const fullFrameWithInlineControlsFits = inlineTraySize.width <= innerWidth + 1
+  const inlineWidthSlack = innerWidth - inlineTraySize.width;
+  const minimumPresentationFrameHeight = Math.min(
+    fullFrameHeight,
+    Math.max(180, Math.min(260, fullFrameHeight)),
+  );
+  const desiredInlineFrameHeight = presentationActive
+    ? minimumPresentationFrameHeight
+    : fullFrameHeight;
+  const inlineHeightSlack = innerHeight - (
+    headerHeight
+      + variantHeight
+      + presentationControlsHeight
+      + desiredInlineFrameHeight
+      + trayHeight
+      + (panelGap * persistentRowGapCount)
+  );
+  // `findStageControlFit` measures the tray at exactly `innerWidth`, so the
+  // horizontal slack is intentionally zero whenever the controls fit. Use
+  // the vertical slack as the hysteresis signal in that case; otherwise a
+  // permanently-zero min() would prevent a popup from ever returning inline.
+  const inlineFitSlack = inlineWidthSlack >= -1
+    ? inlineHeightSlack
+    : Math.min(inlineWidthSlack, inlineHeightSlack);
+  const fullFrameWithInlineControlsFits = inlineWidthSlack >= -1
     && inlineTraySize.contentFits
     && trayHeight > 0
-    && innerHeight >= headerHeight
-      + variantHeight
-      + fullFrameHeight
-      + trayHeight
-      + (panelGap * persistentRowGapCount);
-  const inlineControls = fullFrameWithInlineControlsFits;
+    && inlineHeightSlack >= -1;
+  const previousLayout = elements.appShell.dataset.stageControlsLayout;
+  const fitHysteresis = 16;
+  const inlineControls = presentationContextChanged
+    ? fullFrameWithInlineControlsFits
+    : previousLayout === "inline"
+      ? fullFrameWithInlineControlsFits || inlineFitSlack >= -fitHysteresis
+      : previousLayout === "popup"
+        ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
+        : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
   const popupFit = inlineControls
     ? inlineFit
     : findStageControlFit(Math.min(860, Math.max(280, window.innerWidth - 24)), { layout: "popup" });
   const controlDensity = popupFit.density;
   const reservedControlsHeight = inlineControls
-    ? headerHeight + variantHeight + trayHeight + (panelGap * persistentRowGapCount)
-    : headerHeight + variantHeight + toggleHeight + (panelGap * persistentRowGapCount);
+    ? headerHeight + variantHeight + presentationControlsHeight
+      + trayHeight + (panelGap * persistentRowGapCount)
+    : headerHeight + variantHeight + presentationControlsHeight
+      + toggleHeight + (panelGap * persistentRowGapCount);
   const frameHeight = Math.max(0, Math.min(fullFrameHeight, innerHeight - reservedControlsHeight));
   const frameWidth = Math.max(0, Math.min(fullFrameWidth, frameHeight * (16 / 9)));
   const mode = narrowShell
@@ -3860,11 +4527,11 @@ function measurePersistentStage() {
       ? "full"
       : "compact";
   const previousMode = elements.appShell.dataset.stageMode;
-  const previousLayout = elements.appShell.dataset.stageControlsLayout;
   elements.appShell.dataset.stageMode = mode;
   elements.appShell.dataset.stageControlsLayout = controlLayout;
   elements.appShell.dataset.stageControlDensity = controlDensity;
   elements.playerPanel.style.setProperty("--stage-frame-inline-size", `${Math.floor(frameWidth)}px`);
+  elements.playerPanel.style.setProperty("--stage-frame-block-size", `${Math.floor(frameHeight)}px`);
   if (previousLayout !== controlLayout) {
     if (inlineControls) {
       state.stageControlInlineCollapsed = false;
@@ -3876,7 +4543,7 @@ function measurePersistentStage() {
   } else if (inlineControls && !state.stageControlTrayOpen) {
     state.stageControlInlineCollapsed = false;
     setStageControlTrayOpen(true, { moveFocus: false });
-  } else if (state.stageControlTrayOpen && previousMode !== mode) {
+  } else if (state.stageControlTrayOpen && !inlineControls) {
     positionStageControlTray();
   }
   syncAudioVariantOverflow();
@@ -3950,6 +4617,7 @@ function initializeWindowChrome() {
     if (
       event.button !== 0
       || platform !== "windows"
+      || target?.closest("[data-tauri-drag-region]")
       || target?.closest("button, a, input, select, textarea, [role='button']")
     ) {
       return;
@@ -5355,6 +6023,14 @@ async function confirmDeveloperAction() {
 function hideSearchResults() {
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
+}
+
+function hideLarkSearchResults() {
+  if (!elements.larkSearchResults) {
+    return;
+  }
+  elements.larkSearchResults.innerHTML = "";
+  elements.larkSearchResults.classList.add("hidden");
 }
 
 function searchResultOwnerName(item) {
@@ -7151,6 +7827,7 @@ function renderFollowBrowse() {
 
   if (!hasSelectedUid) {
     elements.followUpGrid.innerHTML = "";
+    elements.followSongResults.innerHTML = "";
     if (!owners.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
@@ -7249,8 +7926,10 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
 async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
   state.followBrowseRenderSignature = "";
   const currentUid = String(state.followBrowseSelectedUid || "").trim();
-  const nextUid = currentUid || String(uid || "").trim();
-  await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
+  // Keep the owner list visible after a pull. Entering the newly added owner
+  // here made refreshed cards appear stale until the user navigated back.
+  void uid;
+  await loadFollowBrowse({ uid: currentUid, query: "", keepQuery: false });
 }
 
 function selectedFavlistFolder() {
@@ -7289,6 +7968,7 @@ function renderFavlistBrowse() {
 
   if (!hasSelectedFolder) {
     elements.favlistGrid.innerHTML = "";
+    elements.favlistSongResults.innerHTML = "";
     if (!folders.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
@@ -7644,6 +8324,10 @@ async function handleGatchaDraw(event = null) {
 }
 
 function setGatchaMessage(message, isError = false) {
+  if (isError && requiresSessionUsers(message)) {
+    showSessionUsersRequiredToast();
+    return;
+  }
   state.gatchaMessage = message || "";
   state.gatchaMessageIsError = Boolean(isError);
   if (elements.gatchaMessage) {
@@ -7747,20 +8431,31 @@ function syncLarkSearchInputs(value) {
 }
 
 function setGatchaUidMessage(message, isError = false) {
-  if (!elements.gatchaUidMessage) {
+  const normalizedMessage = String(message || "");
+  if (elements.gatchaUidMessage) {
+    elements.gatchaUidMessage.textContent = normalizedMessage;
+    elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
+  }
+  const toastSignature = JSON.stringify({ message: normalizedMessage, isError: Boolean(isError) });
+  if (!normalizedMessage) {
+    state.gatchaUidLastToastSignature = "";
     return;
   }
-  elements.gatchaUidMessage.textContent = message || "";
-  elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
+  if (toastSignature !== state.gatchaUidLastToastSignature) {
+    state.gatchaUidLastToastSignature = toastSignature;
+    setAppMessage(normalizedMessage, isError);
+  }
 }
 
 function setGatchaUidFlowMessage(target, message, isError = false) {
   if (target === "follow-modal") {
     setFollowBrowseMessage(message, isError);
+    setAppMessage(message, isError);
     return;
   }
   if (target === "favlist-modal") {
     setFavlistBrowseMessage(message, isError);
+    setAppMessage(message, isError);
     return;
   }
   setGatchaUidMessage(message, isError);
@@ -7845,6 +8540,24 @@ function syncGatchaTaskTerminalMessage() {
   const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
   const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
+  if (status !== "failed") {
+    if (state.followBrowseData && !state.followBrowseLoading) {
+      state.followBrowseRenderSignature = "";
+      void loadFollowBrowse({
+        uid: state.followBrowseSelectedUid,
+        query: state.followBrowseQuery,
+        keepQuery: true,
+      });
+    }
+    if (state.favlistBrowseData && !state.favlistBrowseLoading) {
+      state.favlistBrowseRenderSignature = "";
+      void loadFavlistBrowse({
+        folderId: state.favlistBrowseSelectedFolderId,
+        query: state.favlistBrowseQuery,
+        keepQuery: true,
+      });
+    }
+  }
 }
 
 function renderGatchaUidFace() {
@@ -8006,6 +8719,19 @@ function renderRequesterSelect(sessionUsers) {
     elements.requesterSelect.value = "";
   }
   elements.requesterSelect.disabled = users.length === 0;
+  const empty = users.length === 0;
+  elements.requesterSelect.hidden = empty;
+  elements.requesterSelect.inert = empty;
+  elements.requesterSelect.setAttribute("aria-hidden", String(empty));
+  if (elements.requesterEmptyButton) {
+    elements.requesterEmptyButton.hidden = !empty;
+    elements.requesterEmptyButton.inert = !empty;
+    elements.requesterEmptyButton.setAttribute("aria-hidden", String(!empty));
+  }
+  if (elements.requestSessionUserNotice) {
+    elements.requestSessionUserNotice.hidden = !empty;
+    elements.requestSessionUserNotice.setAttribute("aria-hidden", String(!empty));
+  }
 }
 
 function renderSessionUsers(sessionUsers) {
@@ -8017,6 +8743,7 @@ function renderSessionUsers(sessionUsers) {
   state.sessionUsersRenderSignature = signature;
 
   elements.sessionUserList.innerHTML = "";
+  elements.sessionUserList.classList.toggle("is-empty", !users.length);
 
   if (!users.length) {
     elements.sessionUserList.innerHTML = `<div class="queue-empty session-user-empty">${htmlT("session.empty")}</div>`;
@@ -8047,6 +8774,9 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     !state.remoteQrPinned && Boolean(dismissTransient),
   );
   elements.remoteMiniTrigger?.setAttribute("aria-expanded", String(state.remoteQrPinned));
+  if (typeof scheduleTopControlPopoverPositionSync === "function") {
+    scheduleTopControlPopoverPositionSync();
+  }
   if (!state.remoteQrPinned && dismissTransient) {
     const activeElement = document.activeElement;
     if (activeElement && elements.remoteMiniControl?.contains(activeElement)) {
@@ -8059,6 +8789,113 @@ const cacheAdvancedInfoHoverDelayMs = 160;
 const cacheAdvancedInfoLeaveDelayMs = 90;
 let cacheAdvancedInfoHoverTimer = null;
 let cacheAdvancedInfoLeaveTimer = null;
+
+function positionPlaybackContextualTooltip(info) {
+  if (!info?.closest?.(".playback-contextual-info-region")) {
+    return false;
+  }
+  const button = info.querySelector(".playback-contextual-info-button");
+  const tooltip = info.querySelector(".cache-advanced-tooltip");
+  if (!button || !tooltip || !info.classList.contains("is-visible")) {
+    return false;
+  }
+  const viewportInset = 8;
+  const tooltipGap = 7;
+  const buttonRect = button.getBoundingClientRect();
+  const width = Math.min(260, Math.max(0, window.innerWidth - (viewportInset * 2)));
+  tooltip.style.width = `${Math.round(width)}px`;
+  tooltip.style.left = "0px";
+  tooltip.style.top = "0px";
+  tooltip.style.bottom = "auto";
+  const height = tooltip.getBoundingClientRect().height;
+  const buttonCenter = buttonRect.left + (buttonRect.width / 2);
+  const preferredLeft = buttonCenter - 16;
+  const left = Math.max(
+    viewportInset,
+    Math.min(preferredLeft, window.innerWidth - viewportInset - width),
+  );
+  const spaceAbove = buttonRect.top - viewportInset - tooltipGap;
+  const direction = spaceAbove >= height ? "up" : "down";
+  const top = direction === "up"
+    ? buttonRect.top - tooltipGap - height
+    : Math.min(
+      window.innerHeight - viewportInset - height,
+      buttonRect.bottom + tooltipGap,
+    );
+  const arrowCenter = Math.max(10, Math.min(width - 10, buttonCenter - left));
+  tooltip.dataset.tooltipDirection = direction;
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(Math.max(viewportInset, top))}px`;
+  tooltip.style.setProperty("--playback-tooltip-arrow-left", `${arrowCenter - 5}px`);
+  return true;
+}
+
+function syncVisiblePlaybackContextualTooltipPosition() {
+  state.playbackTooltipPositionFrame = null;
+  document.querySelectorAll(
+    ".playback-contextual-info-region .cache-advanced-info.is-visible",
+  ).forEach(positionPlaybackContextualTooltip);
+}
+
+function schedulePlaybackContextualTooltipPositionSync() {
+  if (state.playbackTooltipPositionFrame !== null) {
+    return;
+  }
+  state.playbackTooltipPositionFrame = window.requestAnimationFrame(
+    syncVisiblePlaybackContextualTooltipPosition,
+  );
+}
+
+function compactTopControlPopoverEntries() {
+  return [
+    [elements.remoteMiniTrigger, elements.remoteMiniPopover],
+    [elements.displaySettingsToggle, elements.displaySettingsPanel],
+    [elements.presentationSettingsToggle, elements.presentationSettingsPanel],
+    [elements.cacheSettingsToggle, elements.cachePanel],
+  ];
+}
+
+function syncTopControlPopoverPositions() {
+  state.topControlPopoverPositionFrame = null;
+  const compact = Boolean(window.matchMedia?.("(max-width: 840px)")?.matches);
+  const viewportInset = 12;
+  const popupGap = 8;
+  compactTopControlPopoverEntries().forEach(([trigger, popup]) => {
+    if (!trigger || !popup) {
+      return;
+    }
+    if (!compact) {
+      for (const property of ["left", "right", "top"]) {
+        popup.style[property] = "";
+      }
+      return;
+    }
+    const triggerRect = trigger.getBoundingClientRect();
+    const popupRect = popup.getBoundingClientRect();
+    const computedWidth = Number.parseFloat(window.getComputedStyle(popup).width) || 0;
+    const popupWidth = Math.min(
+      window.innerWidth - (viewportInset * 2),
+      popupRect.width || computedWidth,
+    );
+    const preferredLeft = triggerRect.right - popupWidth;
+    const left = Math.max(
+      viewportInset,
+      Math.min(preferredLeft, window.innerWidth - viewportInset - popupWidth),
+    );
+    popup.style.left = `${Math.round(left)}px`;
+    popup.style.right = "auto";
+    popup.style.top = `${Math.round(triggerRect.bottom + popupGap)}px`;
+  });
+}
+
+function scheduleTopControlPopoverPositionSync() {
+  if (state.topControlPopoverPositionFrame !== null) {
+    return;
+  }
+  state.topControlPopoverPositionFrame = window.requestAnimationFrame(
+    syncTopControlPopoverPositions,
+  );
+}
 
 function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   if (!info) {
@@ -8074,6 +8911,9 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   info.classList.add("is-visible");
   info.classList.toggle("is-pinned", pinned);
   info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
+  if (info.closest?.(".playback-contextual-info-region")) {
+    positionPlaybackContextualTooltip(info);
+  }
   return true;
 }
 
@@ -8133,7 +8973,11 @@ function renderRemoteAccess(remoteAccess) {
   }
   state.remoteAccessRenderSignature = signature;
 
-  [elements.remoteUrlLink, elements.remotePopoverUrlLink].forEach((link) => {
+  [
+    elements.remoteUrlLink,
+    elements.remotePopoverUrlLink,
+    elements.playerFullscreenRemoteUrlLink,
+  ].forEach((link) => {
     if (!link) {
       return;
     }
@@ -8143,7 +8987,11 @@ function renderRemoteAccess(remoteAccess) {
     setTextContent(link, displayUrl);
   });
 
-  [elements.remoteUrlHint, elements.remotePopoverUrlHint].forEach((hint) => {
+  [
+    elements.remoteUrlHint,
+    elements.remotePopoverUrlHint,
+    elements.playerFullscreenRemoteUrlHint,
+  ].forEach((hint) => {
     setTextContent(hint, displayHint);
   });
 
@@ -8151,6 +8999,11 @@ function renderRemoteAccess(remoteAccess) {
     { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
     { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
     { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
+    {
+      image: elements.playerFullscreenRemoteQrImage,
+      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+      size: 220,
+    },
   ]);
 }
 
@@ -8753,10 +9606,15 @@ function renderCachePolicyControls(cachePolicy) {
       };
     }).filter((choice) => choice.value)
     : [
+      { value: "native", label: "Rust Native" },
       { value: "bbdown", label: "BBDown" },
       { value: "downkyi", label: "Downkyi (aria2c)" },
-      { value: "native", label: "Rust Native" },
     ];
+  const sourceOrder = new Map([["native", 0], ["bbdown", 1], ["downkyi", 2]]);
+  sourceChoices.sort((left, right) => (
+    (sourceOrder.get(left.value) ?? Number.MAX_SAFE_INTEGER)
+      - (sourceOrder.get(right.value) ?? Number.MAX_SAFE_INTEGER)
+  ));
   const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({
     choices,
@@ -9117,6 +9975,9 @@ function syncCachePanelVisibility(options = {}) {
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
+  if (state.cacheSettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
+    scheduleTopControlPopoverPositionSync();
+  }
 }
 
 function syncDisplayPanelVisibility() {
@@ -9125,6 +9986,9 @@ function syncDisplayPanelVisibility() {
     elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
   }
   setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
+  if (state.displaySettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
+    scheduleTopControlPopoverPositionSync();
+  }
 }
 
 function syncPresentationPanelVisibility() {
@@ -9137,6 +10001,9 @@ function syncPresentationPanelVisibility() {
     "hidden",
     !state.presentationSettingsOpen,
   );
+  if (state.presentationSettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
+    scheduleTopControlPopoverPositionSync();
+  }
 }
 
 function renderQueueCurrent(currentItem) {
@@ -9664,7 +10531,9 @@ function clearLocalPlayerSeekState(session = state.hostPlaybackSession) {
 }
 
 function playerDelayOverlay() {
-  return elements.playerFrame?.querySelector(".player-delay-overlay") || null;
+  return Array.from(elements.playerFrame?.children || []).find(
+    (child) => child.classList?.contains("player-delay-overlay"),
+  ) || null;
 }
 
 function ensurePlayerDelayOverlay() {
@@ -12798,9 +13667,13 @@ function beginHostPlaybackSessionOwnershipClaim(session) {
 
 function replaceHostPlayerView(...nodes) {
   const overlay = playerDelayOverlay();
+  const announcement = elements.presentationHostAnnouncement;
   elements.playerFrame.replaceChildren(...nodes);
   if (overlay) {
     elements.playerFrame.appendChild(overlay);
+  }
+  if (announcement) {
+    elements.playerFrame.appendChild(announcement);
   }
 }
 
@@ -16653,7 +17526,11 @@ elements.searchForm?.addEventListener("submit", async (event) => {
     }
     modeState.items = items;
     modeState.message = items.length ? t("search.localFound", { count: items.length }) : t("search.localNotFound");
-    renderSearchResults(items);
+    if (items.length) {
+      renderSearchResults(items);
+    } else {
+      hideSearchResults();
+    }
     setSearchMessage(modeState.message);
   } catch (error) {
     if (modeState.seq === seq) {
@@ -16812,7 +17689,7 @@ async function handleLarkSearchSubmit(event) {
   const query = String(elements.larkSearchQuery?.value || "").trim();
   modeState.draft = String(elements.larkSearchQuery?.value || "");
   if (!query) {
-    renderSearchResultItems(elements.larkSearchResults, []);
+    hideLarkSearchResults();
     modeState.items = [];
     modeState.error = t("search.keywordRequired");
     modeState.message = "";
@@ -16859,7 +17736,7 @@ async function handleLarkSearchSubmit(event) {
       return;
     }
     if (!collectedItems.length) {
-      renderSearchResultItems(elements.larkSearchResults, [], t("search.larkNoResults"));
+      hideLarkSearchResults();
     }
     modeState.items = collectedItems;
     modeState.message = (
@@ -16867,14 +17744,14 @@ async function handleLarkSearchSubmit(event) {
         ? t(partialFailure ? "search.larkFoundPartial" : "search.larkFound", { count: collectedItems.length })
         : partialFailure
           ? t("search.larkPartialNoResults")
-          : t("search.larkNoResultsLong")
+          : t("search.larkNoResults")
     );
     setLarkSearchMessage(modeState.message, partialFailure && !collectedItems.length);
   } catch (error) {
     if (state.larkSearchSeq === searchSeq) {
       modeState.items = [];
       modeState.error = error.message;
-      renderSearchResultItems(elements.larkSearchResults, []);
+      hideLarkSearchResults();
       setLarkSearchMessage(modeState.error, true);
     }
   } finally {
@@ -17395,10 +18272,12 @@ for (const eventName of ["wheel", "touchmove"]) {
 
 elements.remoteMiniTrigger?.addEventListener("focus", () => {
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+  scheduleTopControlPopoverPositionSync();
 });
 
 elements.remoteMiniControl?.addEventListener("mouseenter", () => {
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+  scheduleTopControlPopoverPositionSync();
 });
 
 elements.remoteMiniControl?.addEventListener("mouseleave", () => {
@@ -17445,6 +18324,34 @@ elements.presentationDisplayList?.addEventListener("click", (event) => {
     return;
   }
   selectPresentationDisplay(option.dataset.presentationDisplayId || "");
+});
+
+elements.presentationHostDisplayList?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-presentation-host-display-id]");
+  if (!option || option.disabled) {
+    return;
+  }
+  selectPresentationHostDisplay(option.dataset.presentationHostDisplayId || "");
+});
+
+document.querySelectorAll("[data-presentation-host-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    handlePresentationHostControl(button.dataset.presentationHostAction || "", button)
+      .catch((error) => setAppMessage(error?.message || String(error), true));
+  });
+});
+
+elements.presentationHostProgress?.addEventListener("input", () => {
+  state.presentationHostProgressScrubbing = true;
+  paintPresentationHostProgress(
+    Number(elements.presentationHostProgress?.value || 0),
+    Number(elements.presentationHostProgress?.max || 0),
+  );
+});
+
+elements.presentationHostProgress?.addEventListener("change", () => {
+  handlePresentationHostControl("seek", elements.presentationHostProgress)
+    .catch((error) => setAppMessage(error?.message || String(error), true));
 });
 
 elements.presentationRefreshButton?.addEventListener("click", () => {
@@ -17685,10 +18592,34 @@ elements.historyExportButton?.addEventListener("click", (event) => {
   });
 });
 
-elements.playerFullscreenButton?.addEventListener("click", async () => {
+elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
+  state.playerFullscreenLastPointerType = String(event.pointerType || "");
+});
+
+elements.playerFullscreenButton?.addEventListener("click", async (event) => {
+  if (
+    isPlayerPanelFullscreen()
+    && playerFullscreenActivationUsesTouch(event)
+    && !state.playerFullscreenRemotePinned
+  ) {
+    setPlayerFullscreenRemotePinned(true);
+    return;
+  }
+  setPlayerFullscreenRemotePinned(false);
   await togglePlayerFullscreen();
   renderPlayerFullscreenButton();
 });
+
+elements.playerFullscreenRemoteClose?.addEventListener("click", () => {
+  setPlayerFullscreenRemotePinned(false);
+  elements.playerFullscreenButton?.focus({ preventScroll: true });
+});
+
+[
+  elements.remoteUrlLink,
+  elements.remotePopoverUrlLink,
+  elements.playerFullscreenRemoteUrlLink,
+].forEach((link) => link?.addEventListener("click", openRemoteAccessLink));
 
 elements.presentationOutputButton?.addEventListener("click", toggleLocalPresentation);
 
@@ -18444,6 +19375,13 @@ document.addEventListener("click", (event) => {
     setRemoteQrPinned(false);
   }
 
+  const clickedInsideFullscreenRemote = Boolean(
+    event.target.closest("#player-fullscreen-control"),
+  );
+  if (state.playerFullscreenRemotePinned && !clickedInsideFullscreenRemote) {
+    setPlayerFullscreenRemotePinned(false);
+  }
+
   if (
     state.cacheSettingsOpen
     && !event.target.closest("#cache-settings")
@@ -18555,6 +19493,7 @@ document.addEventListener("visibilitychange", () => {
 function handleFullscreenChange() {
   const isFullscreen = isPlayerPanelFullscreen();
   if (!isFullscreen) {
+    setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
@@ -18734,6 +19673,13 @@ document.addEventListener("fullscreenchange", handleRatingFullscreenChange);
 document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange);
 
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
+
+elements.requesterEmptyButton?.addEventListener("click", () => {
+  activateHostWorkspace("users", { inputOrigin: "pointer" });
+  window.requestAnimationFrame(() => {
+    elements.sessionUserInput?.focus({ preventScroll: true });
+  });
+});
 
 elements.requestSubviewButtons?.forEach((button) => {
   button.addEventListener("click", () => activateRequestSubview(button.dataset.requestView));
@@ -19459,6 +20405,8 @@ window.addEventListener("resize", () => {
   scheduleConfirmPopoverPositionSync();
   renderHostWorkspaceSelection();
   schedulePersistentStageMeasurement();
+  scheduleTopControlPopoverPositionSync();
+  schedulePlaybackContextualTooltipPositionSync();
   syncAudioVariantOverflow();
 });
 window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);

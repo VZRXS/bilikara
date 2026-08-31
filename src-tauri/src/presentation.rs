@@ -7,9 +7,11 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
-    QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+    DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+    DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME,
+    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS,
+    QueryDisplayConfig,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
@@ -21,8 +23,8 @@ const PLAYBACK_STATE_EVENT: &str = "bilikara-presentation-playback-state";
 const MAX_PENDING_COMMANDS: usize = 32;
 const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_MEDIA_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
-const CONTROLLER_WIDTH: f64 = 520.0;
-const CONTROLLER_HEIGHT: f64 = 720.0;
+const CONTROLLER_WIDTH: f64 = 1200.0;
+const CONTROLLER_HEIGHT: f64 = 800.0;
 const ACTIVATION_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RECOVERY_FINALIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -68,6 +70,7 @@ impl MonitorGeometry {
 struct NativeDisplayMetadata {
     id: String,
     name: String,
+    built_in: bool,
     mirrored: bool,
     identity_stable: bool,
 }
@@ -83,6 +86,7 @@ struct DisplayCandidate {
     geometry: MonitorGeometry,
     base_id: String,
     name: String,
+    built_in: bool,
     identity_stable: bool,
     mirrored: bool,
 }
@@ -104,6 +108,7 @@ pub struct PresentationDisplay {
     pub width: u32,
     pub height: u32,
     pub scale_factor: f64,
+    pub built_in: bool,
     pub controller: bool,
     pub primary: bool,
     pub selectable: bool,
@@ -333,6 +338,7 @@ struct RecoveryClaim {
 struct PresentationRuntime {
     session: PresentationSession,
     host_placement: Option<HostWindowPlacement>,
+    host_relocated: bool,
     playback_state: Option<ControllerPlaybackStateEnvelope>,
     playback_state_sequence: u64,
     pending_commands: VecDeque<ControllerCommandEnvelope>,
@@ -367,6 +373,7 @@ impl PresentationState {
         selected_display_id: String,
         controller_display_id: String,
         host_placement: HostWindowPlacement,
+        host_relocated: bool,
     ) -> Result<PresentationSession, String> {
         let mut runtime = self.lock_runtime()?;
         if runtime.activation_attempt_generation.is_some() {
@@ -397,6 +404,7 @@ impl PresentationState {
             recovery_reason: None,
         };
         runtime.host_placement = Some(host_placement);
+        runtime.host_relocated = host_relocated;
         runtime.playback_state = None;
         runtime.playback_state_sequence = 0;
         runtime.pending_commands.clear();
@@ -616,6 +624,16 @@ impl PresentationState {
         Ok(runtime.host_placement.clone())
     }
 
+    fn recovery_host_was_relocated(&self, generation: u64) -> Result<bool, String> {
+        let runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.phase != PresentationPhase::Recovering
+        {
+            return Err("presentation recovery generation is stale".to_string());
+        }
+        Ok(runtime.host_relocated)
+    }
+
     fn host_window_restored(&self, generation: u64) -> Result<bool, String> {
         let runtime = self.lock_runtime()?;
         if runtime.session.generation != generation
@@ -824,6 +842,7 @@ impl PresentationState {
                 .unwrap_or(MAX_SAFE_JS_INTEGER);
             runtime.session = inactive_session(generation, runtime.session.recovery_reason);
             runtime.host_placement = None;
+            runtime.host_relocated = false;
             runtime.playback_state = None;
             runtime.playback_state_sequence = 0;
             runtime.pending_commands.clear();
@@ -958,6 +977,7 @@ fn reset_runtime_to_inactive(
 ) -> PresentationSession {
     runtime.session = inactive_session(generation, recovery_reason);
     runtime.host_placement = None;
+    runtime.host_relocated = false;
     runtime.playback_state = None;
     runtime.playback_state_sequence = 0;
     runtime.pending_commands.clear();
@@ -1133,6 +1153,12 @@ fn windows_display_metadata() -> Result<HashMap<String, Vec<NativeDisplayMetadat
                 .push(NativeDisplayMetadata {
                     id: format!("windows-device-path:{}", device_path.to_ascii_lowercase()),
                     name: friendly_name,
+                    built_in: matches!(
+                        path.targetInfo.outputTechnology,
+                        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
+                            | DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED
+                            | DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED
+                    ),
                     mirrored: false,
                     identity_stable: true,
                 });
@@ -1270,6 +1296,7 @@ fn macos_metadata_for_monitor(
             matches.push(NativeDisplayMetadata {
                 id: format!("macos-uuid:{uuid}"),
                 name: localized_name.clone(),
+                built_in: display.is_builtin(),
                 mirrored: display.is_in_mirror_set(),
                 identity_stable: true,
             });
@@ -1346,16 +1373,32 @@ fn matching_monitor_index(
         })
 }
 
+fn readable_display_name(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(suffix) = trimmed.strip_prefix(r"\\.\DISPLAY")
+        && !suffix.is_empty()
+        && suffix.chars().all(|character| character.is_ascii_digit())
+    {
+        return format!("Display {suffix}");
+    }
+    trimmed.to_string()
+}
+
 fn candidate_identity(
     monitor: &tauri::window::Monitor,
     native: Option<&NativeDisplayMetadata>,
 ) -> (String, String, bool) {
-    let platform_name = monitor.name().cloned().unwrap_or_default();
+    let platform_name =
+        readable_display_name(monitor.name().map(String::as_str).unwrap_or_default());
     if let Some(native) = native {
         let name = if native.name.trim().is_empty() {
-            platform_name
+            if native.built_in {
+                "Built-in display".to_string()
+            } else {
+                platform_name
+            }
         } else {
-            native.name.trim().to_string()
+            readable_display_name(&native.name)
         };
         return (native.id.clone(), name, native.identity_stable);
     }
@@ -1389,6 +1432,10 @@ fn discover_display_records(
         .primary_monitor()
         .map_err(|error| error.to_string())?;
     let primary_index = matching_monitor_index(&monitors, primary_monitor.as_ref());
+    let current_monitor = main_window
+        .current_monitor()
+        .map_err(|error| error.to_string())?;
+    let current_index = matching_monitor_index(&monitors, current_monitor.as_ref());
     let native_metadata = native_metadata_for_monitors(main_window, &monitors)?;
     let mut candidates = monitors
         .into_iter()
@@ -1401,6 +1448,7 @@ fn discover_display_records(
                 geometry,
                 base_id,
                 name,
+                built_in: native.as_ref().is_some_and(|metadata| metadata.built_in),
                 identity_stable,
                 mirrored: native.as_ref().is_some_and(|metadata| metadata.mirrored),
             }
@@ -1419,7 +1467,15 @@ fn discover_display_records(
             .entry(candidate.name.to_ascii_lowercase())
             .or_insert(0usize) += 1;
     }
-    let primary_geometry = primary_index.map(|index| candidates[index].geometry);
+    let controller_geometry = current_index.map(|index| candidates[index].geometry);
+    let controller_has_alternative = candidates.iter().enumerate().any(|(index, candidate)| {
+        current_index != Some(index)
+            && candidate.identity_stable
+            && !candidate.mirrored
+            && controller_geometry
+                .map(|geometry| !candidate.geometry.intersects(geometry))
+                .unwrap_or(false)
+    });
 
     Ok(candidates
         .drain(..)
@@ -1441,8 +1497,8 @@ fn discover_display_records(
                 .copied()
                 .unwrap_or(1)
                 > 1;
-            let controller = primary_index == Some(index);
-            let mirrors_controller = primary_geometry
+            let controller = current_index == Some(index);
+            let mirrors_controller = controller_geometry
                 .map(|geometry| candidate.geometry.same_origin(geometry))
                 .unwrap_or(true);
             let mirrored =
@@ -1471,9 +1527,12 @@ fn discover_display_records(
                     width: candidate.geometry.width,
                     height: candidate.geometry.height,
                     scale_factor: candidate.monitor.scale_factor(),
+                    built_in: candidate.built_in,
                     controller,
-                    primary: controller,
-                    selectable: identity_stable && !controller && !mirrored,
+                    primary: primary_index == Some(index),
+                    selectable: identity_stable
+                        && !mirrored
+                        && (!controller || controller_has_alternative),
                     mirrored,
                     identity_stable,
                     identity_quality: if identity_stable {
@@ -1501,7 +1560,8 @@ fn display_info(records: &[PresentationDisplayRecord]) -> PresentationDisplayInf
             .map(|record| record.display.id.clone()),
         recommended_display_id: records
             .iter()
-            .find(|record| record.display.selectable)
+            .find(|record| record.display.selectable && !record.display.controller)
+            .or_else(|| records.iter().find(|record| record.display.selectable))
             .map(|record| record.display.id.clone()),
     }
 }
@@ -1551,9 +1611,15 @@ fn place_host_for_activation(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     monitor: &tauri::window::Monitor,
+    placement: &HostWindowPlacement,
     state: &PresentationState,
     generation: u64,
 ) -> Result<(), String> {
+    let work = monitor.work_area();
+    let width = placement.size.width.min(work.size.width);
+    let height = placement.size.height.min(work.size.height);
+    let x = work.position.x + (work.size.width.saturating_sub(width) / 2) as i32;
+    let y = work.position.y + (work.size.height.saturating_sub(height) / 2) as i32;
     run_activation_window_mutation(app, state, generation, "leave fullscreen", || {
         window.set_fullscreen(false)
     })?;
@@ -1563,19 +1629,19 @@ fn place_host_for_activation(
     run_activation_window_mutation(app, state, generation, "unmaximize Host", || {
         window.unmaximize()
     })?;
-    run_activation_window_mutation(app, state, generation, "remove Host decorations", || {
-        window.set_decorations(false)
-    })?;
-    run_activation_window_mutation(app, state, generation, "lock Host resizing", || {
-        window.set_resizable(false)
-    })?;
     run_activation_window_mutation(app, state, generation, "position Host", || {
-        window.set_position(*monitor.position())
+        window.set_position(tauri::PhysicalPosition::new(x, y))
     })?;
     run_activation_window_mutation(app, state, generation, "resize Host", || {
-        window.set_size(*monitor.size())
+        window.set_size(tauri::PhysicalSize::new(width, height))
     })?;
-    run_activation_window_mutation(app, state, generation, "show Host", || window.show())
+    if placement.maximized || placement.fullscreen {
+        run_activation_window_mutation(app, state, generation, "maximize Host", || {
+            window.maximize()
+        })?;
+    }
+    run_activation_window_mutation(app, state, generation, "show Host", || window.show())?;
+    run_activation_window_mutation(app, state, generation, "focus Host", || window.set_focus())
 }
 
 fn collect_recovery_window_mutation(
@@ -1760,10 +1826,10 @@ fn create_controller_window(
                 allowed_origin.as_str(),
             )
         })
-        .title("Bilikara Controller")
+        .title("Bilikara Stage")
         .visible(false)
-        .decorations(true)
-        .resizable(true)
+        .decorations(false)
+        .resizable(false)
         .focused(false)
         .inner_size(CONTROLLER_WIDTH, CONTROLLER_HEIGHT)
         .build()
@@ -1773,21 +1839,20 @@ fn create_controller_window(
 fn place_controller_for_activation(
     app: &tauri::AppHandle,
     controller: &tauri::WebviewWindow,
-    primary: &tauri::window::Monitor,
+    target: &tauri::window::Monitor,
     state: &PresentationState,
     generation: u64,
 ) -> Result<(), String> {
-    let work = primary.work_area();
-    let scale = primary.scale_factor();
-    let width = ((CONTROLLER_WIDTH * scale).round() as u32).min(work.size.width);
-    let height = ((CONTROLLER_HEIGHT * scale).round() as u32).min(work.size.height);
-    let x = work.position.x + (work.size.width.saturating_sub(width) / 2) as i32;
-    let y = work.position.y + (work.size.height.saturating_sub(height) / 2) as i32;
-    run_activation_window_mutation(app, state, generation, "resize Controller", || {
-        controller.set_size(tauri::PhysicalSize::new(width, height))
+    let position = *target.position();
+    let size = *target.size();
+    run_activation_window_mutation(app, state, generation, "resize output window", || {
+        controller.set_size(size)
     })?;
-    run_activation_window_mutation(app, state, generation, "position Controller", || {
-        controller.set_position(tauri::PhysicalPosition::new(x, y))
+    run_activation_window_mutation(app, state, generation, "position output window", || {
+        controller.set_position(position)
+    })?;
+    run_activation_window_mutation(app, state, generation, "fullscreen output window", || {
+        controller.set_fullscreen(true)
     })
 }
 
@@ -1882,6 +1947,9 @@ fn restore_recovery_window(
 ) -> Result<(), String> {
     if state.host_window_restored(generation)? && !preserve_original_window_mode {
         return Ok(());
+    }
+    if !state.recovery_host_was_relocated(generation)? {
+        return state.mark_host_window_restored(generation);
     }
     let host = app
         .get_webview_window("main")
@@ -2230,6 +2298,7 @@ pub(crate) fn activate_local_presentation(
     backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     display_id: String,
+    host_display_id: Option<String>,
 ) -> Result<PresentationSession, String> {
     trace_presentation(
         &app,
@@ -2248,16 +2317,57 @@ pub(crate) fn activate_local_presentation(
         .find(|record| record.display.id == requested_display_id && record.display.selectable)
         .cloned()
         .ok_or_else(|| "the selected presentation display is unavailable".to_string())?;
-    let controller_record = records
+    let current_host = records
         .iter()
-        .find(|record| record.display.controller && record.display.primary)
+        .find(|record| record.display.controller)
         .cloned()
-        .ok_or_else(|| "the primary Controller display is unavailable".to_string())?;
+        .ok_or_else(|| "the current Host display is unavailable".to_string())?;
+    let requested_host_display_id = host_display_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if requested_host_display_id.is_some_and(|value| value.len() > 1024) {
+        return Err("the Host display identity is invalid".to_string());
+    }
+    let host_target = if target.display.id == current_host.display.id {
+        let alternatives = records
+            .iter()
+            .filter(|record| {
+                record.display.id != target.display.id
+                    && record.display.identity_stable
+                    && !record.display.mirrored
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected = requested_host_display_id
+            .and_then(|requested| {
+                alternatives
+                    .iter()
+                    .find(|record| record.display.id == requested)
+                    .cloned()
+            })
+            .or_else(|| {
+                alternatives
+                    .iter()
+                    .find(|record| record.display.built_in)
+                    .cloned()
+            });
+        Some(selected.ok_or_else(|| {
+            "the Host destination display must be confirmed before using its current display for output"
+                .to_string()
+        })?)
+    } else {
+        None
+    };
     let placement = capture_host_placement(&window)?;
     let activating = state.begin_activation(
         target.display.id.clone(),
-        controller_record.display.id.clone(),
+        host_target
+            .as_ref()
+            .map(|record| record.display.id.clone())
+            .unwrap_or_else(|| current_host.display.id.clone()),
         placement.clone(),
+        host_target.is_some(),
     )?;
     trace_presentation(
         &app,
@@ -2292,8 +2402,9 @@ pub(crate) fn activate_local_presentation(
             let lifecycle_app = app.clone();
             let host = window.clone();
             let target_monitor = target.monitor.clone();
-            let controller_monitor = controller_record.monitor.clone();
+            let host_target_monitor = host_target.map(|record| record.monitor);
             let selected_display_id = target.display.id.clone();
+            let placement = placement.clone();
             let activating = activating.clone();
             run_on_main_thread_with_result(&app, activating.generation, "activate", move || {
                 let state = lifecycle_app.state::<PresentationState>();
@@ -2301,17 +2412,20 @@ pub(crate) fn activate_local_presentation(
                 place_controller_for_activation(
                     &lifecycle_app,
                     &controller,
-                    &controller_monitor,
-                    &state,
-                    activating.generation,
-                )?;
-                place_host_for_activation(
-                    &lifecycle_app,
-                    &host,
                     &target_monitor,
                     &state,
                     activating.generation,
                 )?;
+                if let Some(host_monitor) = host_target_monitor.as_ref() {
+                    place_host_for_activation(
+                        &lifecycle_app,
+                        &host,
+                        host_monitor,
+                        &placement,
+                        &state,
+                        activating.generation,
+                    )?;
+                }
                 state.ensure_activation_native_owner(activating.generation)?;
                 let placement_is_valid = discover_display_records(&host)
                     .map_err(|error| format!("failed to verify presentation placement: {error}"))?
@@ -2333,13 +2447,6 @@ pub(crate) fn activate_local_presentation(
                     activating.generation,
                     "show Controller",
                     || controller.show(),
-                )?;
-                run_activation_window_mutation(
-                    &lifecycle_app,
-                    &state,
-                    activating.generation,
-                    "focus Controller",
-                    || controller.set_focus(),
                 )?;
                 state.ensure_activation_native_owner(activating.generation)?;
                 emit_state(&lifecycle_app, &activating)
@@ -2467,24 +2574,20 @@ fn complete_activation_if_ready(
             .as_deref()
             .ok_or_else(|| "the presentation display identity is unavailable".to_string())?;
         state.ensure_activation_native_owner(generation)?;
-        let target_is_still_valid = discover_display_records(&host)?
-            .iter()
-            .any(|record| record.display.id == selected_id && record.display.selectable);
+        let target_is_still_valid = discover_display_records(&host)?.iter().any(|record| {
+            record.display.id == selected_id
+                && record.display.identity_stable
+                && !record.display.mirrored
+        });
         if !target_is_still_valid {
-            return Err("the selected presentation display changed before fullscreen".to_string());
+            return Err("the selected presentation display changed before activation".to_string());
         }
-        run_activation_window_mutation(app, state, generation, "fullscreen Host", || {
-            host.set_fullscreen(true)
-        })?;
         let active = state.complete_activation(generation)?;
         emit_state(app, &active)
             .map_err(|error| format!("failed to publish active presentation state: {error}"))?;
-        if let Some(controller) = app.get_webview_window("controller") {
-            state.ensure_active_generation(generation)?;
-            controller
-                .set_focus()
-                .map_err(|error| format!("failed to focus Controller: {error}"))?;
-        }
+        state.ensure_active_generation(generation)?;
+        host.set_focus()
+            .map_err(|error| format!("failed to focus Host: {error}"))?;
         Ok(active)
     })();
     result.map_err(|error| recover_after_activation_failure(app, state, generation, error))
@@ -2850,8 +2953,8 @@ mod tests {
         MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
         PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
         WindowRole, deliver_main_thread_operation_result, display_source_is_mirrored,
-        next_sequence, run_activation_readiness_step, validate_controller_command,
-        validate_playback_state, visible_restore_placement,
+        next_sequence, readable_display_name, run_activation_readiness_step,
+        validate_controller_command, validate_playback_state, visible_restore_placement,
     };
     use crate::desktop_diagnostics::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
     use std::cell::RefCell;
@@ -2867,6 +2970,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn windows_display_names_are_readable() {
+        assert_eq!(readable_display_name(r"\\.\DISPLAY1"), "Display 1");
+        assert_eq!(readable_display_name(r"\\.\DISPLAY2"), "Display 2");
+        assert_eq!(readable_display_name("ASUS MB16AC"), "ASUS MB16AC");
+    }
+
     fn begin_state() -> (PresentationState, u64) {
         let state = PresentationState::default();
         let session = state
@@ -2874,6 +2984,7 @@ mod tests {
                 "display:audience".to_string(),
                 "display:primary".to_string(),
                 host_placement(),
+                false,
             )
             .expect("activation should begin");
         (state, session.generation)
@@ -3127,6 +3238,7 @@ mod tests {
                     "display:other".to_string(),
                     "display:primary".to_string(),
                     host_placement(),
+                    false,
                 )
                 .is_err()
         );
@@ -3147,6 +3259,7 @@ mod tests {
                     "display:other".to_string(),
                     "display:primary".to_string(),
                     host_placement(),
+                    false,
                 )
                 .is_ok()
         );
@@ -3246,6 +3359,7 @@ mod tests {
                     "display:other".to_string(),
                     "display:primary".to_string(),
                     host_placement(),
+                    false,
                 )
                 .is_ok()
         );
@@ -3669,6 +3783,7 @@ mod tests {
                 "display:audience".to_string(),
                 "display:primary".to_string(),
                 host_placement(),
+                false,
             )
             .expect("activation should begin");
         assert!(!state.allows_manual_fullscreen());

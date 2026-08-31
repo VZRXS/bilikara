@@ -73,7 +73,6 @@ class PresentationTauriSourceTest(unittest.TestCase):
                 "allow-get-presentation-session",
                 "allow-mark-presentation-controller-ready",
                 "allow-deactivate-local-presentation",
-                "allow-send-presentation-command",
             },
         )
         self.assertNotIn("core:default", controller_permissions)
@@ -115,15 +114,32 @@ class PresentationTauriSourceTest(unittest.TestCase):
             text = permission.read_text(encoding="utf-8")
             self.assertIn(f'commands.allow = ["{command}"]', text)
 
-    def test_only_main_is_static_and_controller_is_dynamic(self):
+    def test_only_main_is_static_and_audience_output_is_dynamic(self):
         self.assertEqual([window["label"] for window in self.configuration["app"]["windows"]], ["main"])
         self.assertEqual(set(self.configuration["app"]["security"]["capabilities"]), {"main", "controller"})
         self.assertIn("visible(false)", self.presentation)
-        placement = self.presentation.index("set_position(tauri::PhysicalPosition::new(x, y))")
+        placement = self.presentation.index("controller.set_position(position)")
+        fullscreen = self.presentation.index("controller.set_fullscreen(true)")
         show = self.presentation.index("controller.show()")
-        fullscreen = self.presentation.index("host.set_fullscreen(true)")
         self.assertLess(placement, show)
-        self.assertLess(show, fullscreen)
+        self.assertLess(fullscreen, show)
+        finalization = self.presentation[
+            self.presentation.index("fn complete_activation_if_ready") :
+            self.presentation.index("fn run_activation_readiness_step")
+        ]
+        self.assertNotIn("host.set_fullscreen(true)", finalization)
+
+    def test_audience_output_is_frameless_and_fills_the_selected_monitor(self):
+        self.assertIn('.title("Bilikara Stage")', self.presentation)
+        self.assertIn(".decorations(false)", self.presentation)
+        self.assertIn(".resizable(false)", self.presentation)
+        placement = self.presentation[
+            self.presentation.index("fn place_controller_for_activation") :
+            self.presentation.index("pub(crate) fn authorize_window")
+        ]
+        self.assertIn("controller.set_size(size)", placement)
+        self.assertIn("controller.set_position(position)", placement)
+        self.assertIn("controller.set_fullscreen(true)", placement)
 
     def test_activation_uses_tauri_async_executor_before_controller_construction(self):
         start = self.presentation.index(
@@ -145,6 +161,7 @@ class PresentationTauriSourceTest(unittest.TestCase):
             activation.index("place_host_for_activation("),
             activation.index("mark_activation_published("),
         )
+        self.assertIn("if let Some(host_monitor) = host_target_monitor.as_ref()", activation)
         self.assertLess(
             activation.index("|| controller.show()"),
             activation.index("mark_activation_published("),
@@ -202,11 +219,11 @@ class PresentationTauriSourceTest(unittest.TestCase):
             self.presentation.index("fn complete_activation_if_ready") :
             self.presentation.index("fn run_activation_readiness_step")
         ]
-        fullscreen = finalization.index("host.set_fullscreen(true)")
         self.assertLess(
-            finalization.rindex("ensure_activation_native_owner", 0, fullscreen),
-            fullscreen,
+            finalization.index("ensure_activation_native_owner"),
+            finalization.index("complete_activation(generation)"),
         )
+        self.assertNotIn("host.set_fullscreen(true)", finalization)
         settlement = self.presentation[
             self.presentation.index("fn settle_activation_attempt") :
             self.presentation.index("fn complete_activation_if_ready")
@@ -223,6 +240,8 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertIn("localizedName", self.presentation)
         self.assertIn("is_in_mirror_set", self.presentation)
         self.assertIn("source_path_counts", self.presentation)
+        self.assertIn("DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL", self.presentation)
+        self.assertIn("display.is_builtin()", self.presentation)
         windows_metadata = self.presentation[
             self.presentation.index("fn windows_display_metadata") :
             self.presentation.index("fn macos_display_uuid")
@@ -241,7 +260,26 @@ class PresentationTauriSourceTest(unittest.TestCase):
             self.presentation,
         )
         self.assertIn("platform_name,\n            false,", self.presentation)
-        self.assertIn("selectable: identity_stable && !controller && !mirrored", self.presentation)
+        self.assertIn("let current_monitor = main_window", self.presentation)
+        self.assertIn(".current_monitor()", self.presentation)
+        self.assertIn("(!controller || controller_has_alternative)", self.presentation)
+
+    def test_host_moves_only_when_output_uses_its_current_display(self):
+        activation = self.presentation[
+            self.presentation.index("pub(crate) fn activate_local_presentation") :
+            self.presentation.index("fn settle_activation_attempt")
+        ]
+        self.assertIn("if target.display.id == current_host.display.id", activation)
+        self.assertIn(".find(|record| record.display.built_in)", activation)
+        self.assertIn("host_display_id: Option<String>", activation)
+        self.assertIn("if let Some(host_monitor) = host_target_monitor.as_ref()", activation)
+        self.assertIn("host_target.is_some()", activation)
+        recovery = self.presentation[
+            self.presentation.index("fn restore_recovery_window") :
+            self.presentation.index("fn finalize_recovery")
+        ]
+        self.assertIn("recovery_host_was_relocated", recovery)
+        self.assertIn("mark_host_window_restored", recovery)
 
     def test_recovery_and_playback_publication_have_bounded_failure_transactions(self):
         self.assertIn("RECOVERY_FINALIZATION_TIMEOUT", self.presentation)

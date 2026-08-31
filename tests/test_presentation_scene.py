@@ -36,7 +36,7 @@ process.stdout.write(JSON.stringify(result));
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_scene_normalizes_only_audience_visual_state(self):
+    def test_scene_normalizes_audience_visual_state_and_selected_video_url(self):
         result = self.call(
             """
 scene.normalizePresentationScene({
@@ -62,6 +62,7 @@ scene.normalizePresentationScene({
                 "revision",
                 "currentItemIdentity",
                 "title",
+                "videoUrl",
                 "displayMetadata",
                 "theme",
                 "overlay",
@@ -71,9 +72,9 @@ scene.normalizePresentationScene({
         self.assertEqual(result["revision"], 0)
         self.assertEqual(result["currentItemIdentity"], "123")
         self.assertEqual(result["title"], "<b>Audience title</b>")
+        self.assertEqual(result["videoUrl"], "https://forbidden.invalid/video.mp4")
         self.assertEqual(result["theme"], "light")
         for forbidden in (
-            "videoUrl",
             "audioUrl",
             "currentTime",
             "predictedTime",
@@ -116,7 +117,6 @@ scene.normalizeOverlay({
             "playbackRate",
             "predictedTime",
             "driftMs",
-            "videoUrl",
             "audioUrl",
         ):
             self.assertNotIn(forbidden, self.source)

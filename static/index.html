@@ -156,6 +156,16 @@
               </div>
               <div class="presentation-display-list" id="presentation-display-list" aria-live="polite"></div>
             </div>
+            <div class="presentation-host-target-section hidden" id="presentation-host-target-section">
+              <div class="presentation-target-heading">
+                <div>
+                  <p class="cache-panel-label" data-i18n="display.hostTargetTitle">Host 窗口位置</p>
+                  <p class="cache-panel-hint" id="presentation-host-target-hint"
+                    data-i18n="display.hostTargetConfirmHint">播放窗将占用当前屏幕，请确认 Host 要移动到哪块屏幕。</p>
+                </div>
+              </div>
+              <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>
+            </div>
           </div>
         </div>
         <div class="status-chip" id="cache-settings">
@@ -462,17 +472,56 @@
               <p class="section-tag" data-i18n="player.tag">Now Playing</p>
               <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
             </div>
-            <span class="stage-actions">
-              <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false" disabled>
-                全屏显示
-              </button>
-            </span>
+            <div class="stage-actions">
+              <div class="fullscreen-action-control" id="player-fullscreen-control">
+                <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false"
+                  disabled>
+                  <span class="player-fullscreen-label" id="player-fullscreen-label">全屏显示</span>
+                  <span class="fullscreen-action-icons" aria-hidden="true">
+                    <svg class="fullscreen-phone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="7" y="2.5" width="10" height="19" rx="2"></rect>
+                      <path d="M10 5h4M11 18.5h2"></path>
+                    </svg>
+                    <span class="fullscreen-action-divider"></span>
+                    <svg class="fullscreen-exit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path>
+                    </svg>
+                  </span>
+                </button>
+                <div class="fullscreen-remote-popover" id="player-fullscreen-remote-popover" role="dialog"
+                  aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
+                  <div class="remote-card remote-mini-popover-card fullscreen-remote-popover-card">
+                    <button type="button" class="banner-close remote-mini-popover-close"
+                      id="player-fullscreen-remote-close" aria-label="关闭"
+                      data-i18n-aria-label="common.close">×</button>
+                    <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
+                      <img id="player-fullscreen-remote-qr-image" class="remote-qr-image hidden"
+                        alt="手机访问二维码" data-i18n-alt="remote.qrAlt" />
+                      <div id="player-fullscreen-remote-qr-placeholder" class="remote-qr-placeholder"
+                        data-i18n="remote.qrLoading">正在生成二维码...</div>
+                    </div>
+                    <div class="remote-copy">
+                      <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
+                      <a id="player-fullscreen-remote-url-link" class="remote-url-link" href="/remote"
+                        target="_blank" rel="noreferrer">/remote</a>
+                      <p id="player-fullscreen-remote-url-hint" class="remote-url-hint">
+                        请确保手机和服务端在同一个局域网内。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="player-frame" id="player-frame">
             <div class="empty-state">
               <p data-i18n="player.empty">把 Bilibili 视频链接加入点歌列表后，这里会开始播放。</p>
             </div>
+            <div class="presentation-host-announcement" id="presentation-host-announcement" hidden
+              aria-hidden="true"></div>
           </div>
           <div class="fullscreen-request-toast hidden" id="fullscreen-request-toast" aria-live="polite"></div>
           <div class="audio-variant-anchor" id="audio-variant-anchor" hidden>
@@ -484,6 +533,28 @@
             </button>
           </div>
           <div class="audio-variant-backdrop" id="audio-variant-backdrop" hidden inert aria-hidden="true"></div>
+          <section class="presentation-host-controls" id="presentation-host-controls" hidden
+            aria-label="双屏播放控制" data-i18n-aria-label="controller.controls">
+            <div class="presentation-host-transport-row">
+              <button type="button" class="presentation-host-play" id="presentation-host-play"
+                data-presentation-host-action="toggle">
+                <span data-presentation-host-play-label data-i18n="controller.pause">暂停</span>
+              </button>
+              <div class="presentation-host-progress-wrap">
+                <input type="range" id="presentation-host-progress" class="presentation-host-progress"
+                  min="0" max="1" step="0.01" value="0" aria-label="播放进度"
+                  data-i18n-aria-label="controller.seek" />
+                <div class="presentation-host-progress-times" aria-hidden="true">
+                  <span id="presentation-host-current-time">0:00</span>
+                  <span id="presentation-host-duration">—</span>
+                </div>
+              </div>
+              <button type="button" class="presentation-host-next" id="presentation-host-next"
+                data-presentation-host-action="next">
+                <span data-i18n="player.nextSong">切歌</span>
+              </button>
+            </div>
+          </section>
           <button type="button" id="stage-controls-toggle" class="stage-controls-toggle"
             aria-expanded="false" aria-controls="stage-control-tray" aria-label="播放控制" title="播放控制"
             data-i18n-aria-label="player.controls" data-i18n-title="player.controls">
@@ -602,6 +673,9 @@
             </nav>
           </header>
 
+          <p class="request-session-user-notice" id="request-session-user-notice" role="status"
+            data-i18n="session.empty" hidden>先添加本场用户，服务端和客户端才能开始点歌。</p>
+
           <div class="request-workspace-body">
             <section class="request-subview request-quick-view" id="request-quick-panel" role="tabpanel"
               data-request-panel="quick" aria-labelledby="workspace-request-heading" hidden inert>
@@ -611,11 +685,13 @@
               </div>
               <form id="add-form" class="add-form compact-form">
                 <select id="requester-select" name="requester_name"></select>
+                <button type="button" id="requester-empty-button" class="secondary requester-empty-button" hidden
+                  data-i18n="session.openUsers" aria-hidden="true" inert>先添加本场用户</button>
                 <input id="url-input" name="url" type="text" placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
                   data-i18n-placeholder="request.urlPlaceholder" autocomplete="off" />
                 <button type="submit" data-i18n="request.submit">点歌</button>
                 <button type="button" id="queue-next-button" class="secondary"
-                  data-i18n="request.next">顶歌到下一首</button>
+                  data-i18n="request.next">顶歌</button>
                 <p class="help-text message-surface message-inline" id="form-message" role="status" aria-live="polite"></p>
               </form>
             </section>
@@ -1350,6 +1426,7 @@
   <script src="/song-detail.js" defer></script>
   <script src="/presentation-scene.js" defer></script>
   <script src="/presentation-renderer.js" defer></script>
+  <script src="/presentation-sync.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 

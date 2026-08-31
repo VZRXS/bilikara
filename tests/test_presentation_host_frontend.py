@@ -36,7 +36,7 @@ class PresentationHostFrontendTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_composition_preserves_media_and_acknowledges_after_render_frame(self):
+    def test_composition_preserves_media_and_turns_host_player_into_control_surface(self):
         functions = self.source_slice(
             "function presentationCompositionActive",
             "function applyPresentationSession",
@@ -93,7 +93,7 @@ async function handlePresentationSession(session) {{
   const entered = await applyPresentationComposition({{ generation: 4, composition: "stageOnly" }});
   const entry = {{
     entered,
-    activeClass: document.body.classList.contains("is-presentation-stage-only"),
+    activeClass: document.body.classList.contains("is-presentation-control-host"),
     inert: frame.inert,
     sameVideo: frame.children[0] === before[0],
     sameAudio: frame.children[1] === before[1],
@@ -113,7 +113,7 @@ async function handlePresentationSession(session) {{
     exit: {{
       exited,
       stale,
-      activeClass: document.body.classList.contains("is-presentation-stage-only"),
+      activeClass: document.body.classList.contains("is-presentation-control-host"),
       inert: frame.inert,
       sameVideo: frame.children[0] === before[0],
       sameAudio: frame.children[1] === before[1],

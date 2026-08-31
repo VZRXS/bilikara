@@ -1,73 +1,61 @@
 <!doctype html>
-<html lang="zh">
+<html lang="zh" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>bilikara controller</title>
-  <link rel="icon" href="/pic/icon.png" />
+  <title>Bilikara Stage</title>
+  <link rel="icon" href="/pic/icon.png">
   <link rel="stylesheet" href="/controller.css">
 </head>
 <body>
-  <main class="controller-shell" id="controller-shell">
-    <header class="controller-header">
-      <div>
-        <p class="controller-tag" data-i18n="controller.tag">LOCAL CONTROLLER</p>
-        <h1 data-i18n="controller.title">演出控制台</h1>
+  <main class="presentation-output-shell" id="controller-shell" aria-label="Bilikara 副屏播放窗口">
+    <div class="presentation-output-frame" id="controller-stage-frame">
+      <div class="presentation-output-empty" id="controller-empty">
+        <p id="controller-status" role="status" aria-live="polite">正在连接 Host…</p>
       </div>
-      <p class="controller-status" id="controller-status" role="status" aria-live="polite">正在连接…</p>
-    </header>
-
-    <section class="controller-now" aria-labelledby="controller-title">
-      <p class="controller-kicker" data-i18n="controller.nowPlaying">正在播放</p>
-      <h2 id="controller-title">—</h2>
-      <div class="controller-timeline">
-        <input id="controller-seek" type="range" min="0" max="0" step="0.1" value="0"
-          aria-label="播放进度" data-i18n-aria-label="controller.seek" disabled>
-        <p id="controller-time">0:00 / 0:00</p>
+    </div>
+    <div class="presentation-output-control" id="controller-output-control">
+      <button type="button" class="presentation-output-exit" id="controller-exit" disabled
+        aria-label="手机点歌 / 退出全屏" data-i18n-aria-label="player.fullscreenRemoteExit">
+        <span class="presentation-output-action-icons" aria-hidden="true">
+          <svg class="presentation-output-phone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="7" y="2.5" width="10" height="19" rx="2"></rect>
+            <path d="M10 5h4M11 18.5h2"></path>
+          </svg>
+          <span class="presentation-output-action-divider"></span>
+          <svg class="presentation-output-exit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path>
+          </svg>
+        </span>
+      </button>
+      <div class="presentation-output-remote-popover" id="controller-remote-popover" role="dialog"
+        aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
+        <div class="presentation-output-remote-card">
+          <div class="presentation-output-qr-wrap">
+            <img id="controller-remote-qr-image" class="presentation-output-qr-image hidden"
+              alt="手机访问二维码" data-i18n-alt="remote.qrAlt">
+            <div id="controller-remote-qr-placeholder" class="presentation-output-qr-placeholder"
+              data-i18n="remote.qrLoading">正在生成二维码...</div>
+          </div>
+          <div class="presentation-output-remote-copy">
+            <p data-i18n="remote.openInBrowser">手机浏览器打开</p>
+            <a id="controller-remote-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
+            <small id="controller-remote-url-hint" data-i18n="remote.defaultHint">
+              请确保手机和服务端在同一个局域网内。
+            </small>
+          </div>
+        </div>
       </div>
-    </section>
-
-    <section class="controller-actions" aria-label="播放控制" data-i18n-aria-label="controller.controls">
-      <button type="button" id="controller-back-15" aria-label="后退 15 秒"
-        data-i18n-aria-label="controller.backFifteen" disabled data-command-control>
-        <span aria-hidden="true">−15</span>
-        <span data-i18n="controller.seconds">秒</span>
-      </button>
-      <button type="button" class="controller-play" id="controller-play-toggle" disabled data-command-control>
-        <span data-i18n="controller.play">播放</span>
-      </button>
-      <button type="button" id="controller-forward-15" aria-label="前进 15 秒"
-        data-i18n-aria-label="controller.forwardFifteen" disabled data-command-control>
-        <span aria-hidden="true">+15</span>
-        <span data-i18n="controller.seconds">秒</span>
-      </button>
-      <button type="button" id="controller-next" disabled data-command-control>
-        <span data-i18n="controller.next">下一首</span>
-      </button>
-    </section>
-
-    <section class="controller-volume">
-      <div class="controller-volume-heading">
-        <label for="controller-volume" data-i18n="controller.volume">音量</label>
-        <output id="controller-volume-value" for="controller-volume">100%</output>
-      </div>
-      <div class="controller-volume-row">
-        <input id="controller-volume" type="range" min="0" max="100" step="1" value="100"
-          disabled data-command-control>
-        <button type="button" id="controller-mute" disabled data-command-control>
-          <span data-i18n="controller.mute">静音</span>
-        </button>
-      </div>
-    </section>
-
-    <p class="controller-error hidden" id="controller-error" role="alert"></p>
-    <p class="controller-unavailable hidden" id="controller-unavailable" role="alert"
-      data-i18n="controller.unavailable">本地控制台不可用。请回到 Host 窗口。</p>
-
-    <button type="button" class="controller-exit" id="controller-exit" disabled>
-      <span data-i18n="controller.exit">退出双屏模式</span>
-    </button>
+    </div>
+    <p class="presentation-output-error hidden" id="controller-error" role="alert"></p>
+    <p class="presentation-output-error hidden" id="controller-unavailable" role="alert"
+      data-i18n="controller.unavailable">副屏播放窗口不可用，请回到 Host 窗口。</p>
   </main>
-  <script src="/controller.js" defer></script>
+  <script src="/presentation-scene.js"></script>
+  <script src="/presentation-renderer.js"></script>
+  <script src="/presentation-sync.js"></script>
+  <script src="/controller.js"></script>
 </body>
 </html>

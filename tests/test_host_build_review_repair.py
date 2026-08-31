@@ -196,7 +196,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn("service-status-ring", self.markup)
         self.assertIn("--update-available-dot: var(--accent)", self.styles)
         update_dot = re.search(r"\.app-update-indicator\s*\{([^}]*)\}", self.styles).group(1)
-        self.assertIn("var(--update-available-dot)", update_dot)
+        self.assertIn("width: 7px", update_dot)
+        self.assertIn("height: 7px", update_dot)
+        self.assertIn("background: var(--accent)", update_dot)
+        self.assertIn("0 0 0 3px", update_dot)
         self.assertNotIn('setClassToggle(elements.serviceUpdateIndicator, "has-update"', self.script)
         topbar_rule = re.findall(r"(?m)^\.topbar\s*\{([^}]*)\}", self.styles)[-1]
         self.assertIn("border-bottom: 0", topbar_rule)
@@ -227,7 +230,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             r"\.stage-extended-controls > \.volume-panel\s*\{([^}]*)\}",
             self.styles,
         ).group(1)
-        self.assertIn("grid-template-columns: max-content minmax(0, 1fr)", control_rows)
+        self.assertIn(
+            "grid-template-columns: minmax(112px, max-content) minmax(0, 1fr)",
+            control_rows,
+        )
         self.assertIn("border: 0", control_rows)
         aligned_controls = re.search(
             r"\.stage-extended-controls \.av-sync-controls,\s*"
@@ -332,6 +338,25 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "box-shadow: none;",
         ):
             self.assertIn(declaration, fullscreen_rule)
+
+    def test_fullscreen_exit_combines_remote_qr_and_touch_safe_exit(self):
+        for marker in (
+            'id="player-fullscreen-control"',
+            'id="player-fullscreen-remote-popover"',
+            'id="player-fullscreen-remote-qr-image"',
+            'class="fullscreen-phone-icon"',
+            'class="fullscreen-exit-icon"',
+        ):
+            self.assertIn(marker, self.markup)
+        for marker in (
+            "function setPlayerFullscreenRemotePinned",
+            "function playerFullscreenActivationUsesTouch",
+            "setPlayerFullscreenRemotePinned(true)",
+            "openRemoteAccessLink",
+            "elements.playerFullscreenRemoteUrlLink",
+        ):
+            self.assertIn(marker, self.script)
+        self.assertIn(".fullscreen-action-control.is-qr-pinned .fullscreen-remote-popover", self.styles)
 
     def test_stage_density_prefers_full_frame_and_checks_group_overflow(self):
         self.assertIn('data-stage-control-density="compact"', self.styles)
@@ -486,7 +511,44 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         ]
         self.assertIn('elements.topbar?.addEventListener("dblclick"', chrome)
         self.assertIn('closest("button, a, input, select, textarea', chrome)
+        self.assertIn('closest("[data-tauri-drag-region]")', chrome)
         self.assertIn("appWindow.toggleMaximize()", chrome)
+
+    def test_request_empty_users_search_feedback_and_discover_controls_match_review(self):
+        self.assertIn('id="request-session-user-notice"', self.markup)
+        self.assertIn('data-i18n="session.empty"', self.markup)
+        notice = re.search(
+            r"\.request-session-user-notice\s*\{([^}]*)\}", self.styles
+        ).group(1)
+        self.assertIn("background: transparent", notice)
+        self.assertIn("color: var(--accent)", notice)
+        self.assertIn("font-weight: 700", notice)
+        self.assertIn("text-align: center", notice)
+        self.assertIn("showSessionUsersRequiredToast", self.script)
+        self.assertIn('setAppMessage(t("session.requireUsers"), true)', self.script)
+
+        lark_search = self.script[
+            self.script.index("async function handleLarkSearchSubmit") :
+            self.script.index("elements.larkSearchForm?.addEventListener")
+        ]
+        self.assertIn("hideLarkSearchResults()", lark_search)
+        self.assertNotIn('t("search.larkNoResultsLong")', lark_search)
+        local_search = self.script[
+            self.script.index('elements.searchForm?.addEventListener("submit"') :
+            self.script.index('elements.searchQuery?.addEventListener("input"')
+        ]
+        self.assertIn("hideSearchResults()", local_search)
+        for values in self.translations["languages"].values():
+            self.assertEqual(values["search.larkNoResultsLong"], values["search.larkNoResults"])
+
+        discover_controls = re.search(
+            r"\.request-discover-view \.tag-browser-search input,\s*"
+            r"\.request-discover-view \.tag-browser-search button\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        self.assertIn("height: var(--host-control-height)", discover_controls)
+        self.assertIn("border-radius: var(--host-control-radius)", discover_controls)
+        self.assertIn("font-size: var(--host-control-font-size)", discover_controls)
 
     def test_ultranarrow_toolbar_menus_and_windows_frame_keep_desktop_geometry(self):
         toolbar_repair = self.styles[
@@ -502,7 +564,9 @@ class HostBuildReviewRepairTest(unittest.TestCase):
 
         frame = self.styles[self.styles.index("/* v0.8 Windows application frame") :]
         self.assertIn('body[data-tauri-platform="windows"] .app-shell', frame)
-        self.assertIn("border-radius: var(--window-frame-radius)", frame)
+        self.assertIn("border: 0", frame)
+        self.assertIn("border-radius: 0", frame)
+        self.assertIn("DWM", frame)
         self.assertNotIn("--window-frame-shadow", frame)
         self.assertNotIn("box-shadow: var(--window-frame-shadow)", frame)
         self.assertIn(".is-tauri-maximized .app-shell", frame)
@@ -527,14 +591,14 @@ class HostBuildReviewRepairTest(unittest.TestCase):
     def test_service_ready_mark_matches_the_web_indicator_size(self):
         service_wraps = re.findall(r"\.service-status-wrap\s*\{([^}]*)\}", self.styles)
         self.assertTrue(service_wraps)
-        self.assertIn("width: 20px", service_wraps[-1])
-        self.assertIn("height: 20px", service_wraps[-1])
+        self.assertIn("width: 18px", service_wraps[-1])
+        self.assertIn("height: 18px", service_wraps[-1])
         toolbar_indicator = re.findall(
             r"\.service-status-wrap \.tool-status-indicator\s*\{([^}]*)\}",
             self.styles,
         )
         self.assertTrue(toolbar_indicator)
-        self.assertIn("font-size: 18px", toolbar_indicator[-1])
+        self.assertIn("font-size: 12px", toolbar_indicator[-1])
         shared_ready = re.search(
             r"\.service-status-wrap \.tool-status-indicator\.is-ready,\s*"
             r"\.cache-panel-tool-indicator\.is-ready\s*\{([^}]*)\}",

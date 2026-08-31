@@ -1696,7 +1696,7 @@ async function sessionRerender(page) {
       sameVideo: frame.querySelector('video[data-player-role="video"]') === video,
       sameAudio: frame.querySelector('audio[data-player-role="audio"]') === audio,
       inert: frame.inert,
-      activeClass: document.body.classList.contains("is-presentation-stage-only"),
+      activeClass: document.body.classList.contains("is-presentation-control-host"),
     };
     applyPresentationSession({
       ...activeSession,
@@ -1718,7 +1718,7 @@ async function sessionRerender(page) {
         sameVideo: frame.querySelector('video[data-player-role="video"]') === video,
         sameAudio: frame.querySelector('audio[data-player-role="audio"]') === audio,
         inert: frame.inert,
-        activeClass: document.body.classList.contains("is-presentation-stage-only"),
+        activeClass: document.body.classList.contains("is-presentation-control-host"),
       },
     };
   });
