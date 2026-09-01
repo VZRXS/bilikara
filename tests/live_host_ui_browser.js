@@ -847,6 +847,10 @@ async function run() {
         nextInQueueCurrent: Boolean(document.querySelector("#queue-current #next-button")),
         nextInStage: Boolean(document.querySelector(".player-panel #next-button")),
         nextCount: document.querySelectorAll("#next-button").length,
+        transitionVeilOpacity: Number(getComputedStyle(
+          elements.hostWorkspaceRegion,
+          "::after",
+        ).opacity),
       };
     });
     assert(
@@ -856,7 +860,8 @@ async function run() {
         && directListInitial.historyHidden
         && directListInitial.nextInQueueCurrent
         && !directListInitial.nextInStage
-        && directListInitial.nextCount === 1,
+        && directListInitial.nextCount === 1
+        && directListInitial.transitionVeilOpacity === 0,
       "Queue was not the one accessible default direct list workspace",
       directListInitial,
     );
@@ -904,6 +909,14 @@ async function run() {
       incomingSurfaceBackground: getComputedStyle(
         document.querySelector("#host-workspace-history"),
       ).backgroundColor,
+      transitionVeilAnimation: getComputedStyle(
+        elements.hostWorkspaceRegion,
+        "::after",
+      ).animationName,
+      transitionVeilOpacity: Number(getComputedStyle(
+        elements.hostWorkspaceRegion,
+        "::after",
+      ).opacity),
       stableNodes: document.querySelector("#host-workspace-queue") === window.__hostShellQueueNodes.queue
         && document.querySelector("#host-workspace-history") === window.__hostShellQueueNodes.history
         && elements.playlist === window.__hostShellQueueNodes.playlist
@@ -926,6 +939,9 @@ async function run() {
         && directHistory.outgoingSurfaceBorderColor === "rgba(0, 0, 0, 0)"
         && directHistory.outgoingSurfaceShadow === "none"
         && directHistory.incomingSurfaceBackground !== "rgba(0, 0, 0, 0)"
+        && directHistory.transitionVeilAnimation === "host-tool-transition-veil"
+        && directHistory.transitionVeilOpacity >= 0.35
+        && directHistory.transitionVeilOpacity <= 0.47
         && directHistory.stableNodes,
       "History did not use the forward rail-order transition on stable workspace nodes",
       directHistory,
@@ -934,9 +950,14 @@ async function run() {
       await shellPage.screenshot({ path: toolForwardTransitionScreenshotPath, fullPage: false });
     }
     await shellPage.waitForTimeout(120);
+    const settledForwardTransition = await shellPage.evaluate(() => ({
+      direction: elements.hostWorkspaceRegion.dataset.toolTransitionDirection || "",
+      veilOpacity: Number(getComputedStyle(elements.hostWorkspaceRegion, "::after").opacity),
+    }));
     assert(
-      await shellPage.evaluate(() => !elements.hostWorkspaceRegion.dataset.toolTransitionDirection),
+      !settledForwardTransition.direction && settledForwardTransition.veilOpacity === 0,
       "forward tool transition did not settle promptly",
+      settledForwardTransition,
     );
     await shellPage.locator("#work-rail-queue").click();
     await shellPage.waitForTimeout(70);

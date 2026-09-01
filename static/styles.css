@@ -7982,6 +7982,21 @@ body {
   scrollbar-gutter: stable;
 }
 
+.host-workspace-region::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: 18px;
+  background: var(--panel);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.host-workspace-region[data-tool-transition-direction]::after {
+  animation: host-tool-transition-veil 180ms cubic-bezier(0.45, 0, 0.55, 1) both;
+}
+
 .host-workspace-fragment {
   min-width: 0;
   min-height: 0;
@@ -8085,7 +8100,19 @@ body {
   }
 }
 
+@keyframes host-tool-transition-veil {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 0.46;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .host-workspace-region[data-tool-transition-direction]::after,
   .host-workspace-fragment.is-tool-transition-in,
   .host-workspace-fragment.is-tool-transition-out,
   .host-workspace-fragment.is-tool-transition-in > *,

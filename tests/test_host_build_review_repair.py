@@ -446,6 +446,12 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("background: transparent !important", transition_out_rule)
         self.assertIn("border-color: transparent !important", transition_out_rule)
         self.assertIn("box-shadow: none !important", transition_out_rule)
+        self.assertIn("@keyframes host-tool-transition-veil", self.styles)
+        self.assertIn(
+            "animation: host-tool-transition-veil 180ms cubic-bezier(0.45, 0, 0.55, 1) both",
+            self.styles,
+        )
+        self.assertIn("opacity: 0.46", self.styles)
         self.assertIn("const inlineControls = narrowShell", self.script)
 
         request_follow_grids = re.findall(
