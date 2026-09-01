@@ -1991,7 +1991,12 @@ def refresh_gatcha_cache_in_background(
                 message = "抽卡缓存格式重建完成。"
                 _set_gatcha_task_status(task_status, message=message, result=result, blocking=False)
                 # A local schema rebuild does not discover new remote records. Uploading the
-                # rebuilt cache here would resend the entire library during process startup.
+                # rebuilt UID cache here would resend the entire library during process
+                # startup. Favorite-list entries remain a separate source and must keep their
+                # existing remote-pool synchronization path.
+                favlist_entries = _local_gatcha_favlist_candidates()
+                if favlist_entries:
+                    _append_lark_pool_entries_async(favlist_entries)
                 return
 
             cache_payload = refresh_gatcha_cache()

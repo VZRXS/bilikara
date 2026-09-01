@@ -2393,7 +2393,7 @@ class BilibiliParserTest(unittest.TestCase):
         finally:
             bilibili_module.rust_runtime.release_gatcha_refresh()
 
-    def test_startup_schema_rebuild_skips_regular_refresh(self):
+    def test_startup_schema_rebuild_uploads_only_favlist_candidates(self):
         class FakeThread:
             def __init__(self, *, target, daemon=None, name=None):
                 self.target = target
@@ -2401,6 +2401,11 @@ class BilibiliParserTest(unittest.TestCase):
             def start(self):
                 self.target()
 
+        favlist_entry = {
+            "bvid": "BV1FAVONLY01",
+            "title": "favorite only",
+            "url": "https://www.bilibili.com/video/BV1FAVONLY01",
+        }
         with (
             patch.object(bilibili_module, "_gatcha_schema_rebuild_needed", return_value=True),
             patch.object(
@@ -2409,8 +2414,11 @@ class BilibiliParserTest(unittest.TestCase):
                 return_value={"rebuild": {"completed": True}},
             ) as rebuild,
             patch.object(bilibili_module, "refresh_gatcha_cache") as refresh,
-            patch.object(bilibili_module, "_load_gatcha_cache", return_value={"uids": {}, "profiles": {}}),
-            patch.object(bilibili_module, "_local_gatcha_favlist_candidates", return_value=[]),
+            patch.object(
+                bilibili_module,
+                "_local_gatcha_favlist_candidates",
+                return_value=[favlist_entry],
+            ),
             patch.object(bilibili_module, "_append_lark_pool_entries_async") as append_lark,
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):
@@ -2423,7 +2431,7 @@ class BilibiliParserTest(unittest.TestCase):
 
         rebuild.assert_called_once()
         refresh.assert_not_called()
-        append_lark.assert_not_called()
+        append_lark.assert_called_once_with([favlist_entry])
 
     def test_background_gatcha_refresh_records_failure_status(self):
         class FakeThread:
