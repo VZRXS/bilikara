@@ -1990,11 +1990,8 @@ def refresh_gatcha_cache_in_background(
                 task_status = "success"
                 message = "抽卡缓存格式重建完成。"
                 _set_gatcha_task_status(task_status, message=message, result=result, blocking=False)
-                rebuilt_cache = _load_gatcha_cache()
-                entries = _gatcha_cache_payload_entries(rebuilt_cache)
-                favlist_entries = _local_gatcha_favlist_candidates()
-                if entries or favlist_entries:
-                    _append_lark_pool_entries_async(entries + favlist_entries)
+                # A local schema rebuild does not discover new remote records. Uploading the
+                # rebuilt cache here would resend the entire library during process startup.
                 return
 
             cache_payload = refresh_gatcha_cache()
@@ -2020,7 +2017,7 @@ def refresh_gatcha_cache_in_background(
                 if on_done is not None:
                     on_done()
         if cache_payload is not None and task_status != "failed":
-            entries = _gatcha_cache_payload_entries(cache_payload)
+            entries = _gatcha_refresh_added_entries(cache_payload)
             if entries:
                 _append_lark_pool_entries_async(entries)
 
@@ -2262,6 +2259,39 @@ def _gatcha_cache_payload_entries(cache_payload: dict, *, exclude_uids: set[str]
                 payload.setdefault("owner_url", str(profile.get("space_url") or ""))
             entries.append(payload)
     return entries
+
+
+def _gatcha_refresh_added_entries(cache_payload: dict) -> list[dict]:
+    """Project only records added by the latest UID refresh for remote append."""
+    if not isinstance(cache_payload, dict):
+        return []
+    uid_entries = cache_payload.get("uids")
+    profiles = cache_payload.get("profiles")
+    summary = cache_payload.get("refresh_summary")
+    results = summary.get("uids") if isinstance(summary, dict) else None
+    if not isinstance(uid_entries, dict) or not isinstance(results, list):
+        return []
+
+    added_by_uid: dict[str, list[dict]] = {}
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        uid = str(result.get("uid") or "").strip()
+        try:
+            added_count = int(result.get("added_count") or 0)
+        except (TypeError, ValueError):
+            continue
+        raw_entries = uid_entries.get(uid)
+        if not uid or added_count <= 0 or not isinstance(raw_entries, list):
+            continue
+        added_by_uid[uid] = raw_entries[:added_count]
+
+    return _gatcha_cache_payload_entries(
+        {
+            "uids": added_by_uid,
+            "profiles": profiles if isinstance(profiles, dict) else {},
+        }
+    )
 
 
 def _append_lark_pool_entries_async(entries: list[dict]) -> None:
