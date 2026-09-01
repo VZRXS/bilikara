@@ -1,5 +1,6 @@
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
+const backupBannerMotionMs = 360;
 const stalledRetrySeconds = 5;
 const localPlayerSyncIntervalMs = 120;
 const localPlayerDriftToleranceSeconds = 0.045;
@@ -200,6 +201,8 @@ const state = {
   backupBannerRemainingMs: bannerAutoHideMs,
   backupBannerPaused: false,
   backupDismissHover: false,
+  backupBannerMotionFrame: null,
+  backupBannerMotionTimer: null,
   localAdvanceInFlight: false,
   localAdvanceDelayTimer: null,
   localAdvanceCountdownTimer: null,
@@ -15119,7 +15122,7 @@ function renderBackupBanner(
   if (!mode) {
     clearBackupBannerTimer();
     state.backupBannerMode = "";
-    elements.backupBanner.classList.add("hidden");
+    hideBackupBanner();
     updateBackupDismissButton();
     return;
   }
@@ -15150,7 +15153,81 @@ function renderBackupBanner(
     elements.backupActionButton.textContent = t("backup.clear");
   }
 
-  elements.backupBanner.classList.toggle("hidden", state.backupBannerDismissed);
+  if (state.backupBannerDismissed) {
+    hideBackupBanner();
+  } else {
+    showBackupBanner();
+  }
+}
+
+function clearBackupBannerMotionFrame() {
+  if (state.backupBannerMotionFrame !== null) {
+    window.cancelAnimationFrame(state.backupBannerMotionFrame);
+    state.backupBannerMotionFrame = null;
+  }
+}
+
+function clearBackupBannerMotionTimer() {
+  if (state.backupBannerMotionTimer !== null) {
+    window.clearTimeout(state.backupBannerMotionTimer);
+    state.backupBannerMotionTimer = null;
+  }
+}
+
+function showBackupBanner() {
+  const banner = elements.backupBanner;
+  clearBackupBannerMotionTimer();
+  banner.inert = false;
+  banner.setAttribute("aria-hidden", "false");
+
+  if (!banner.classList.contains("hidden")) {
+    if (state.backupBannerMotionFrame === null) {
+      banner.classList.add("is-visible");
+    }
+    return;
+  }
+
+  clearBackupBannerMotionFrame();
+  banner.classList.remove("is-visible");
+  banner.classList.remove("hidden");
+  state.backupBannerMotionFrame = window.requestAnimationFrame(() => {
+    state.backupBannerMotionFrame = null;
+    if (!state.backupBannerDismissed && !banner.classList.contains("hidden")) {
+      banner.classList.add("is-visible");
+    }
+  });
+}
+
+function hideBackupBanner({ immediate = false } = {}) {
+  const banner = elements.backupBanner;
+  clearBackupBannerMotionFrame();
+  banner.classList.remove("is-visible");
+  banner.inert = true;
+  banner.setAttribute("aria-hidden", "true");
+
+  if (banner.classList.contains("hidden")) {
+    clearBackupBannerMotionTimer();
+    return;
+  }
+  if (state.backupBannerMotionTimer !== null && !immediate) {
+    return;
+  }
+
+  clearBackupBannerMotionTimer();
+  const reduceMotion = Boolean(
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
+  );
+  if (immediate || reduceMotion) {
+    banner.classList.add("hidden");
+    return;
+  }
+
+  state.backupBannerMotionTimer = window.setTimeout(() => {
+    state.backupBannerMotionTimer = null;
+    if (!banner.classList.contains("is-visible")) {
+      banner.classList.add("hidden");
+    }
+  }, backupBannerMotionMs);
 }
 
 function startBackupBannerTimer() {
@@ -15228,7 +15305,7 @@ function updateBackupDismissButton() {
 
 function dismissBackupBanner() {
   state.backupBannerDismissed = true;
-  elements.backupBanner.classList.add("hidden");
+  hideBackupBanner();
   clearBackupBannerTimer();
   updateBackupDismissButton();
 }

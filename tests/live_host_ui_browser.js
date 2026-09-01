@@ -2253,28 +2253,46 @@ async function run() {
       const banner = document.querySelector("#backup-banner");
       const region = document.querySelector("#critical-banner-region");
       const frame = elements.playerFrame;
+      const shellBody = document.querySelector(".shell-body");
       const collapsed = region.getBoundingClientRect().height;
-      banner.classList.remove("hidden");
+      const shellTopBefore = shellBody.getBoundingClientRect().top;
+      state.backupBannerDismissed = false;
+      showBackupBanner();
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const expanded = region.getBoundingClientRect().height;
-      const sameFrameExpanded = elements.playerFrame === frame;
-      banner.classList.add("hidden");
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const visibleStyle = getComputedStyle(banner);
+      const shown = {
+        regionHeight: region.getBoundingClientRect().height,
+        shellTop: shellBody.getBoundingClientRect().top,
+        opacity: Number(visibleStyle.opacity),
+        position: visibleStyle.position,
+        pointerEvents: visibleStyle.pointerEvents,
+        zIndex: Number(getComputedStyle(region).zIndex),
+      };
+      hideBackupBanner();
+      await new Promise((resolve) => setTimeout(resolve, backupBannerMotionMs + 40));
       return {
         collapsed,
-        expanded,
+        shellTopBefore,
+        shown,
         collapsedAgain: region.getBoundingClientRect().height,
-        sameFrameExpanded,
-        sameFrameCollapsed: elements.playerFrame === frame,
+        shellTopAfter: shellBody.getBoundingClientRect().top,
+        hiddenAfterExit: banner.classList.contains("hidden"),
+        sameFrame: elements.playerFrame === frame,
       };
     });
     assert(
       bannerEvidence.collapsed === 0
-        && bannerEvidence.expanded > 0
+        && bannerEvidence.shown.regionHeight === 0
         && bannerEvidence.collapsedAgain === 0
-        && bannerEvidence.sameFrameExpanded
-        && bannerEvidence.sameFrameCollapsed,
-      "critical banner row did not expand/collapse without recreating the Stage",
+        && bannerEvidence.shown.shellTop === bannerEvidence.shellTopBefore
+        && bannerEvidence.shellTopAfter === bannerEvidence.shellTopBefore
+        && bannerEvidence.shown.opacity === 1
+        && bannerEvidence.shown.position === "absolute"
+        && bannerEvidence.shown.pointerEvents === "auto"
+        && bannerEvidence.shown.zIndex > 1305
+        && bannerEvidence.hiddenAfterExit
+        && bannerEvidence.sameFrame,
+      "critical banner did not float above the shell without moving or recreating the Stage",
       bannerEvidence,
     );
 

@@ -5670,7 +5670,7 @@ body.is-presentation-stage-only #app-shell {
   padding: 0;
 }
 
-body.is-presentation-stage-only #app-shell > .backup-banner,
+body.is-presentation-stage-only #app-shell > .critical-banner-region,
 body.is-presentation-stage-only #app-shell > .topbar,
 body.is-presentation-stage-only .layout > .queue-card,
 body.is-presentation-stage-only .left-column > :not(.player-panel),
@@ -7695,7 +7695,7 @@ body {
   min-height: 0;
   padding: 0 var(--host-shell-padding-inline) 12px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
   overflow: clip;
 }
@@ -7840,23 +7840,60 @@ body {
 }
 
 .critical-banner-region {
-  position: relative;
-  z-index: 160;
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 1400;
+  height: 0;
   min-height: 0;
+  pointer-events: none;
+  overflow: visible;
 }
 
 .critical-banner-region:has(.backup-banner:not(.hidden)) {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 
 .critical-banner-region .backup-banner {
-  position: relative;
-  inset: auto;
-  transform: none;
-  width: 100%;
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  width: min(600px, calc(100vw - 40px));
   padding: 9px 12px;
-  border-radius: 12px;
-  box-shadow: 0 8px 20px rgba(80, 52, 32, 0.12);
+  border-radius: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -16px);
+  box-shadow:
+    0 14px 34px rgba(80, 52, 32, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  transition:
+    opacity 360ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.critical-banner-region .backup-banner.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+@media (max-width: 1180px) {
+  .critical-banner-region .backup-banner {
+    top: 68px;
+    width: min(600px, calc(100vw - 24px));
+  }
+}
+
+@media (max-width: 520px) {
+  .critical-banner-region .backup-banner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .critical-banner-region .backup-actions {
+    justify-content: flex-end;
+  }
 }
 
 .shell-body {
@@ -9706,6 +9743,7 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .critical-banner-region .backup-banner,
   .stage-control-tray,
   .host-workspace-region,
   .app-shell[data-active-workspace="request"] .host-workspace-region {

@@ -40,6 +40,44 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         )
         self.assertIn(".layout > .work-rail", self.styles)
 
+    def test_restore_banner_floats_without_reserving_a_shell_row(self):
+        banner = re.search(
+            r'<section class="backup-banner hidden" id="backup-banner"[^>]*>',
+            self.markup,
+        ).group(0)
+        self.assertIn('aria-hidden="true"', banner)
+        self.assertIn("inert", banner)
+
+        region_rule = re.findall(
+            r"\.critical-banner-region\s*\{([^}]*)\}", self.styles
+        )[-1]
+        self.assertIn("position: fixed", region_rule)
+        self.assertIn("height: 0", region_rule)
+        self.assertIn("z-index: 1400", region_rule)
+        self.assertIn("pointer-events: none", region_rule)
+        shell_rule = next(
+            rule
+            for rule in re.findall(r"\.app-shell\s*\{([^}]*)\}", self.styles)
+            if "--host-shell-padding-inline" in rule
+        )
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr)", shell_rule)
+
+        banner_rule = re.findall(
+            r"\.critical-banner-region \.backup-banner\s*\{([^}]*)\}",
+            self.styles,
+        )[0]
+        self.assertIn("position: absolute", banner_rule)
+        self.assertIn("opacity: 0", banner_rule)
+        self.assertIn("translate(-50%, -16px)", banner_rule)
+        self.assertIn("opacity 360ms", banner_rule)
+        self.assertIn("transform 360ms", banner_rule)
+        self.assertIn(".backup-banner.is-visible", self.styles)
+
+        self.assertIn("function showBackupBanner()", self.script)
+        self.assertIn("function hideBackupBanner({ immediate = false } = {})", self.script)
+        self.assertIn('banner.setAttribute("aria-hidden", "false")', self.script)
+        self.assertIn('banner.setAttribute("aria-hidden", "true")', self.script)
+
     def test_queue_and_history_are_direct_and_next_is_queue_current_owned(self):
         self.assertEqual(self.markup.count('id="next-button"'), 1)
         queue = re.search(
