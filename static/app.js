@@ -653,7 +653,6 @@ const elements = {
   confirmOk: document.getElementById("confirm-ok"),
   bindingModal: document.getElementById("binding-modal"),
   bindingModalBackdrop: document.getElementById("binding-modal-backdrop"),
-  bindingModalText: document.getElementById("binding-modal-text"),
   bindingVideoOptions: document.getElementById("binding-video-options"),
   bindingAudioOptions: document.getElementById("binding-audio-options"),
   bindingModalClose: document.getElementById("binding-modal-close"),
@@ -15295,7 +15294,9 @@ function updateBackupDismissButton() {
   if (!elements.dismissBackupButton) {
     return;
   }
-  if (state.backupBannerDismissed || state.backupDismissHover) {
+  const showCloseGlyph = state.backupBannerDismissed || state.backupDismissHover;
+  elements.dismissBackupButton.classList.toggle("is-close-glyph", showCloseGlyph);
+  if (showCloseGlyph) {
     elements.dismissBackupButton.textContent = "×";
     return;
   }
@@ -15661,7 +15662,6 @@ function openBindingModal(intent, payload) {
     binding: payload,
     focusElement: intent?.focusElement || document.activeElement,
   };
-  elements.bindingModalText.textContent = t("binding.videoHasParts", { title: payload.title || t("binding.thisVideo") });
   elements.bindingVideoOptions.innerHTML = "";
   elements.bindingAudioOptions.innerHTML = "";
 

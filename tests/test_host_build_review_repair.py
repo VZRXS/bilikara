@@ -15,7 +15,13 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             encoding="utf-8"
         )
         cls.styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        cls.remote_styles = (ROOT / "static" / "remote.css").read_text(
+            encoding="utf-8"
+        )
         cls.script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        cls.remote_script = (ROOT / "static" / "remote.js").read_text(
+            encoding="utf-8"
+        )
         cls.translations = json.loads(
             (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
         )
@@ -77,6 +83,164 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("function hideBackupBanner({ immediate = false } = {})", self.script)
         self.assertIn('banner.setAttribute("aria-hidden", "false")', self.script)
         self.assertIn('banner.setAttribute("aria-hidden", "true")', self.script)
+
+    def test_peer_buttons_and_close_controls_share_geometry_and_motion(self):
+        self.assertIn("width: 32px;\n  height: 32px;", self.styles)
+        self.assertIn("font: 400 20px/0 sans-serif", self.styles)
+        self.assertIn("#dismiss-backup-button.is-close-glyph", self.styles)
+        self.assertIn(
+            ".critical-banner-region .backup-actions .banner-action,\n"
+            ".critical-banner-region .backup-actions .banner-close",
+            self.styles,
+        )
+        self.assertIn(
+            ".selection-modal-actions .toolbar-button,\n"
+            ".selection-modal-actions .next-button",
+            self.styles,
+        )
+        self.assertIn("transform: scale(1.04)", self.styles)
+        self.assertIn("transform: scale(0.96)", self.styles)
+
+        self.assertIn("--remote-peer-action-height: 42px", self.remote_styles)
+        self.assertIn("--remote-close-control-size: 32px", self.remote_styles)
+        self.assertIn(
+            ".remote-qr-popover-close,\n"
+            ".remote-search-modal-close,\n"
+            ".binding-sheet-close,\n"
+            ".rating-close,\n"
+            ".floating-control-close",
+            self.remote_styles,
+        )
+        pool_head_rule = re.search(
+            r"\.pool-config-head-actions \.ghost-button\s*\{([^}]*)\}",
+            self.remote_styles,
+        ).group(1)
+        self.assertIn("height: var(--remote-peer-action-height)", pool_head_rule)
+        self.assertIn("font-size: var(--remote-peer-action-font-size)", pool_head_rule)
+
+    def test_remote_sheets_are_centered_dismissible_dialogs_with_shared_blur(self):
+        for dialog_id in (
+            "binding-sheet",
+            "gatcha-favlist-sheet",
+            "gatcha-pool-config-sheet",
+            "reorder-confirm-sheet",
+        ):
+            dialog = re.search(
+                rf'<div[^>]+id="{dialog_id}"[^>]+>', self.remote_markup
+            ).group(0)
+            self.assertIn('role="dialog"', dialog)
+            self.assertIn('aria-modal="true"', dialog)
+
+        close_buttons = re.findall(
+            r'<button[^>]+class="binding-sheet-close"[^>]*>×</button>',
+            self.remote_markup,
+        )
+        self.assertEqual(len(close_buttons), 4)
+        self.assertTrue(
+            all(
+                'data-i18n-aria-label="common.close"' in button
+                for button in close_buttons
+            )
+        )
+
+        sheet_rule = re.search(
+            r"\.binding-sheet\s*\{([^}]*)\}", self.remote_styles
+        ).group(1)
+        self.assertIn("display: grid", sheet_rule)
+        self.assertIn("place-items: center", sheet_rule)
+        panel_rule = re.search(
+            r"\.binding-sheet-panel\s*\{([^}]*)\}", self.remote_styles
+        ).group(1)
+        self.assertIn("position: relative", panel_rule)
+        self.assertIn("border-radius: 20px", panel_rule)
+        self.assertNotIn("bottom: 0", panel_rule)
+
+        self.assertIn("--modal-backdrop-blur: 10px", self.styles)
+        self.assertIn("--modal-backdrop-blur: 10px", self.remote_styles)
+        self.assertIn(
+            "backdrop-filter: blur(var(--modal-backdrop-blur))",
+            self.styles,
+        )
+        self.assertGreaterEqual(
+            self.remote_styles.count(
+                "backdrop-filter: blur(var(--modal-backdrop-blur))"
+            ),
+            5,
+        )
+
+        pool_slider = re.search(
+            r'<input[^>]+id="gatcha-pool-weight-slider"[^>]+>',
+            self.remote_markup,
+        ).group(0)
+        self.assertIn("remote-volume-slider pool-config-weight-slider", pool_slider)
+        self.assertIn(
+            "setRangeFillPercent(elements.poolConfigWeightSlider, uidWeight)",
+            self.remote_script,
+        )
+        volume_slider_rule = re.search(
+            r"\.remote-volume-slider\s*\{([^}]*)\}", self.remote_styles
+        ).group(1)
+        self.assertIn("min-height: 20px", volume_slider_rule)
+
+        for backdrop_name, close_call in (
+            ("bindingSheetBackdrop", "closeBindingSheet()"),
+            ("gatchaFavlistSheetBackdrop", "closeGatchaFavlistSheet()"),
+            ("poolConfigSheetBackdrop", "closePoolConfigSheet()"),
+            ("reorderConfirmSheetBackdrop", "closeReorderConfirmSheet()"),
+        ):
+            self.assertRegex(
+                self.remote_script,
+                rf"elements\.{backdrop_name}\?\.addEventListener"
+                rf"\(\"click\", \(\) => \{{\s*{re.escape(close_call)}",
+            )
+        self.assertIn(
+            'elements.remoteIdentityBackdrop?.addEventListener("click", closeRemoteIdentityRename)',
+            self.remote_script,
+        )
+        languages = self.translations["languages"]
+        self.assertEqual(languages["zh"]["binding.confirm"], "点歌")
+        self.assertEqual(languages["en"]["binding.confirm"], "Request Song")
+        self.assertEqual(languages["ja"]["binding.confirm"], "リクエスト")
+
+    def test_part_binding_help_uses_contextual_info_in_both_frontends(self):
+        host_dialog = re.search(
+            r'<div class="selection-modal hidden" id="binding-modal".*?'
+            r'<div class="selection-modal hidden" id="gatcha-favlist-modal"',
+            self.markup,
+            re.DOTALL,
+        ).group(0)
+        remote_dialog = re.search(
+            r'<div id="binding-sheet".*?'
+            r'<div id="gatcha-favlist-sheet"',
+            self.remote_markup,
+            re.DOTALL,
+        ).group(0)
+
+        self.assertNotIn('id="binding-modal-text"', host_dialog)
+        self.assertNotIn('id="binding-sheet-text"', remote_dialog)
+        self.assertIn("binding-modal-title-row cache-contextual-info-region", host_dialog)
+        self.assertIn('aria-describedby="binding-modal-help"', host_dialog)
+        self.assertIn('id="binding-modal-help" role="tooltip"', host_dialog)
+        self.assertIn("binding-sheet-title-row remote-contextual-info-region", remote_dialog)
+        self.assertIn('aria-describedby="binding-sheet-help"', remote_dialog)
+        self.assertIn('id="binding-sheet-help" role="tooltip"', remote_dialog)
+        self.assertNotIn("bindingModalText", self.script)
+        self.assertNotIn("bindingSheetText", self.remote_script)
+        self.assertIn("function positionRemoteContextualTooltip(wrap)", self.remote_script)
+
+        languages = self.translations["languages"]
+        self.assertEqual(
+            languages["zh"]["binding.help"],
+            "选择一个要下载的视频画面，和要绑定的音频轨道",
+        )
+        self.assertEqual(
+            languages["en"]["binding.help"],
+            "Choose one video track to download and the audio track to bind to it.",
+        )
+        self.assertEqual(
+            languages["ja"]["binding.help"],
+            "ダウンロードする映像を1つと、バインドするオーディオトラックを選択します。",
+        )
 
     def test_queue_and_history_are_direct_and_next_is_queue_current_owned(self):
         self.assertEqual(self.markup.count('id="next-button"'), 1)

@@ -1291,12 +1291,20 @@
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
           <p class="section-tag" data-i18n="binding.tag">Part Binding</p>
-          <h2 data-i18n="binding.title">选择分P绑定</h2>
+          <div class="binding-modal-title-row cache-contextual-info-region">
+            <h2 data-i18n="binding.title">选择分P绑定</h2>
+            <span class="cache-advanced-info">
+              <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                aria-describedby="binding-modal-help" data-i18n-aria-label="common.moreInfo"
+                aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+              <span class="cache-advanced-tooltip" id="binding-modal-help" role="tooltip"
+                data-i18n="binding.help">选择一个要下载的视频画面，和要绑定的音频轨道</span>
+            </span>
+          </div>
         </div>
         <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭"
           data-i18n-aria-label="common.close">×</button>
       </div>
-      <p class="selection-modal-text" id="binding-modal-text" data-i18n="binding.text">请选择要下载的视频分P和音频分P。</p>
       <div class="selection-modal-grid">
         <section class="selection-modal-column">
           <h3 data-i18n="binding.video">视频画面</h3>
@@ -1309,7 +1317,7 @@
       </div>
       <div class="selection-modal-actions">
         <button type="button" id="binding-modal-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
-        <button type="button" id="binding-modal-confirm" class="next-button" data-i18n="binding.confirm">加入点歌列表</button>
+        <button type="button" id="binding-modal-confirm" class="next-button" data-i18n="binding.confirm">点歌</button>
       </div>
     </div>
   </div>

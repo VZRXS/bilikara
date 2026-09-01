@@ -93,7 +93,12 @@
   font: 400 20px/0 sans-serif;
   cursor: pointer;
   touch-action: manipulation;
-  transition: background 0.2s ease;
+  transform-origin: center;
+  transition:
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -104,7 +109,21 @@
   .remote-search-modal .remote-search-modal-close:hover,
   .remote-search-modal .song-detail-close:hover {
     background: var(--rating-close-hover-bg);
+    transform: scale(1.04);
   }
+}
+
+.request-workspace .song-detail-close:active:not(:disabled),
+.selection-modal .song-detail-close:active:not(:disabled),
+.remote-search-modal .song-detail-close:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.request-workspace .song-detail-close:focus-visible,
+.selection-modal .song-detail-close:focus-visible,
+.remote-search-modal .song-detail-close:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 2px;
 }
 
 @media (hover: none), (pointer: coarse) {

@@ -383,7 +383,6 @@ const elements = {
   floatingControlClose: document.getElementById("floating-control-close"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
-  bindingSheetText: document.getElementById("binding-sheet-text"),
   bindingVideoToggle: document.getElementById("binding-video-toggle"),
   bindingAudioToggle: document.getElementById("binding-audio-toggle"),
   bindingSheetVideoOptionsWrap: document.getElementById("binding-sheet-video-options-wrap"),
@@ -425,6 +424,7 @@ const elements = {
   remoteIdentityName: document.getElementById("remote-identity-name"),
   remoteIdentityRename: document.getElementById("remote-identity-rename"),
   remoteIdentityModal: document.getElementById("remote-identity-modal"),
+  remoteIdentityBackdrop: document.getElementById("remote-identity-backdrop"),
   remoteIdentityForm: document.getElementById("remote-identity-form"),
   remoteIdentityTitle: document.getElementById("remote-identity-title"),
   remoteIdentityDescription: document.getElementById("remote-identity-description"),
@@ -5169,7 +5169,6 @@ function openBindingSheet(intent, payload) {
     ...intent,
     binding: payload,
   };
-  elements.bindingSheetText.textContent = t("binding.videoHasParts", { title: payload.title || t("binding.thisVideo") });
   elements.bindingSheetVideoOptions.innerHTML = "";
   elements.bindingSheetAudioOptions.innerHTML = "";
   state.bindingAccordion.video = false;
@@ -5291,6 +5290,7 @@ function poolConfigSetMessage(message, isError = false) {
 function updatePoolConfigWeightLabel() {
   const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
   const favlistWeight = 100 - uidWeight;
+  setRangeFillPercent(elements.poolConfigWeightSlider, uidWeight);
   if (elements.poolConfigWeightLabel) {
     elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
       uid: uidWeight,
@@ -7389,6 +7389,73 @@ const remoteContextualInfoHoverDelayMs = 160;
 const remoteContextualInfoLeaveDelayMs = 90;
 let remoteContextualInfoHoverTimer = null;
 let remoteContextualInfoLeaveTimer = null;
+let remoteContextualInfoPositionFrame = null;
+
+function positionRemoteContextualTooltip(wrap) {
+  const button = wrap?.querySelector?.(".remote-info-button");
+  const tooltip = wrap?.querySelector?.(".remote-tooltip-bubble");
+  if (!button || !tooltip || !wrap.classList.contains("is-visible")) {
+    return false;
+  }
+  const viewportInset = 8;
+  const tooltipGap = 7;
+  const containerRect = wrap.closest(".binding-sheet-panel, .floating-control-card")?.getBoundingClientRect();
+  const boundaryLeft = Math.max(viewportInset, (containerRect?.left ?? viewportInset) + (containerRect ? 8 : 0));
+  const boundaryRight = Math.min(
+    window.innerWidth - viewportInset,
+    (containerRect?.right ?? (window.innerWidth - viewportInset)) - (containerRect ? 8 : 0),
+  );
+  const boundaryTop = Math.max(viewportInset, (containerRect?.top ?? viewportInset) + (containerRect ? 8 : 0));
+  const boundaryBottom = Math.min(
+    window.innerHeight - viewportInset,
+    (containerRect?.bottom ?? (window.innerHeight - viewportInset)) - (containerRect ? 8 : 0),
+  );
+  const buttonRect = button.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const width = Math.min(240, Math.max(0, boundaryRight - boundaryLeft));
+  tooltip.style.width = `${Math.round(width)}px`;
+  tooltip.style.left = "0px";
+  tooltip.style.right = "auto";
+  tooltip.style.top = "0px";
+  tooltip.style.bottom = "auto";
+  const height = tooltip.getBoundingClientRect().height;
+  const buttonCenter = buttonRect.left + (buttonRect.width / 2);
+  const left = Math.max(
+    boundaryLeft,
+    Math.min(buttonCenter - (width / 2), boundaryRight - width),
+  );
+  const spaceAbove = buttonRect.top - boundaryTop - tooltipGap;
+  const spaceBelow = boundaryBottom - buttonRect.bottom - tooltipGap;
+  const direction = spaceAbove >= height || spaceAbove >= spaceBelow ? "up" : "down";
+  const preferredTop = direction === "up"
+    ? buttonRect.top - tooltipGap - height
+    : buttonRect.bottom + tooltipGap;
+  const top = Math.max(boundaryTop, Math.min(preferredTop, boundaryBottom - height));
+  const arrowCenter = Math.max(10, Math.min(width - 10, buttonCenter - left));
+  tooltip.dataset.tooltipDirection = direction;
+  tooltip.style.left = `${Math.round(left - wrapRect.left)}px`;
+  tooltip.style.top = `${Math.round(top - wrapRect.top)}px`;
+  tooltip.style.setProperty("--remote-tooltip-arrow-left", `${arrowCenter - 6}px`);
+  tooltip.style.setProperty(
+    "--remote-tooltip-transform-origin",
+    `${Math.round(arrowCenter)}px ${direction === "up" ? "bottom" : "top"}`,
+  );
+  return true;
+}
+
+function syncVisibleRemoteContextualTooltipPosition() {
+  remoteContextualInfoPositionFrame = null;
+  document.querySelectorAll(".info-trigger-wrap.is-visible").forEach(positionRemoteContextualTooltip);
+}
+
+function scheduleRemoteContextualTooltipPositionSync() {
+  if (remoteContextualInfoPositionFrame !== null) {
+    return;
+  }
+  remoteContextualInfoPositionFrame = window.requestAnimationFrame(
+    syncVisibleRemoteContextualTooltipPosition,
+  );
+}
 
 function setRemoteContextualInfoVisible(wrap, { pinned = false } = {}) {
   if (!wrap) {
@@ -7404,6 +7471,7 @@ function setRemoteContextualInfoVisible(wrap, { pinned = false } = {}) {
   wrap.classList.add("is-visible");
   wrap.classList.toggle("is-pinned", pinned);
   wrap.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "true");
+  positionRemoteContextualTooltip(wrap);
   return true;
 }
 
@@ -7546,6 +7614,9 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+window.addEventListener("resize", scheduleRemoteContextualTooltipPositionSync);
+window.addEventListener("scroll", scheduleRemoteContextualTooltipPositionSync, true);
+
 elements.refreshButton.addEventListener("click", async () => {
   try {
     await fetchState({ force: true });
@@ -7635,6 +7706,7 @@ elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
 
 elements.remoteIdentityRename?.addEventListener("click", openRemoteIdentityRename);
 elements.remoteIdentityCancel?.addEventListener("click", closeRemoteIdentityRename);
+elements.remoteIdentityBackdrop?.addEventListener("click", closeRemoteIdentityRename);
 elements.remoteIdentityForm?.addEventListener("submit", submitRemoteIdentity);
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);

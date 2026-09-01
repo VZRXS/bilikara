@@ -475,18 +475,28 @@
         </div>
       </section>
 
-      <div id="binding-sheet" class="binding-sheet hidden" aria-hidden="true">
+      <div id="binding-sheet" class="binding-sheet hidden" role="dialog" aria-modal="true"
+        aria-labelledby="binding-sheet-title" aria-hidden="true">
         <div id="binding-sheet-backdrop" class="binding-sheet-backdrop"></div>
         <div class="binding-sheet-panel">
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
-            <div>
+            <div class="binding-sheet-heading">
               <p class="panel-tag" data-i18n="binding.tag">Part Binding</p>
-              <h2 data-i18n="binding.title">选择分P绑定</h2>
+              <div class="binding-sheet-title-row remote-contextual-info-region">
+                <h2 id="binding-sheet-title" data-i18n="binding.title">选择分P绑定</h2>
+                <span class="info-trigger-wrap">
+                  <button type="button" class="remote-info-button" aria-expanded="false"
+                    aria-describedby="binding-sheet-help" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <span class="remote-tooltip-bubble" id="binding-sheet-help" role="tooltip"
+                    data-i18n="binding.help">选择一个要下载的视频画面，和要绑定的音频轨道</span>
+                </span>
+              </div>
             </div>
-            <button type="button" id="binding-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+            <button type="button" id="binding-sheet-close" class="binding-sheet-close"
+              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
           </div>
-          <p id="binding-sheet-text" class="muted" data-i18n="binding.text">请选择要下载的视频分P和音频分P。</p>
           <section class="binding-sheet-section binding-accordion" id="binding-video-section">
             <button
               type="button"
@@ -519,20 +529,22 @@
           </section>
           <div class="binding-sheet-actions">
             <button type="button" id="binding-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
-            <button type="button" id="binding-sheet-confirm" class="primary-button" data-i18n="binding.confirm">加入点歌列表</button>
+            <button type="button" id="binding-sheet-confirm" class="primary-button" data-i18n="binding.confirm">点歌</button>
           </div>
         </div>
       </div>
-      <div id="gatcha-favlist-sheet" class="binding-sheet hidden" aria-hidden="true">
+      <div id="gatcha-favlist-sheet" class="binding-sheet hidden" role="dialog" aria-modal="true"
+        aria-labelledby="gatcha-favlist-sheet-title" aria-hidden="true">
         <div id="gatcha-favlist-sheet-backdrop" class="binding-sheet-backdrop"></div>
         <div class="binding-sheet-panel">
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
               <p class="panel-tag" data-i18n="favlist.tag">Favlist Pull</p>
-              <h2 data-i18n="favlist.title">选择收藏夹</h2>
+              <h2 id="gatcha-favlist-sheet-title" data-i18n="favlist.title">选择收藏夹</h2>
             </div>
-            <button type="button" id="gatcha-favlist-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+            <button type="button" id="gatcha-favlist-sheet-close" class="binding-sheet-close"
+              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
           </div>
           <p id="gatcha-favlist-sheet-text" class="muted" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
           <section class="binding-sheet-section">
@@ -544,18 +556,20 @@
           </div>
         </div>
       </div>
-      <div id="gatcha-pool-config-sheet" class="binding-sheet pool-config-sheet hidden" aria-hidden="true">
+      <div id="gatcha-pool-config-sheet" class="binding-sheet pool-config-sheet hidden" role="dialog"
+        aria-modal="true" aria-labelledby="gatcha-pool-config-sheet-title" aria-hidden="true">
         <div id="gatcha-pool-config-sheet-backdrop" class="binding-sheet-backdrop"></div>
         <div class="binding-sheet-panel">
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
               <p class="panel-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
-              <h2 data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
+              <h2 id="gatcha-pool-config-sheet-title" data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
             </div>
             <div class="pool-config-head-actions">
               <button type="button" id="gatcha-pool-config-sheet-reset" class="ghost-button" data-i18n="common.reset">重置</button>
-              <button type="button" id="gatcha-pool-config-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+              <button type="button" id="gatcha-pool-config-sheet-close" class="binding-sheet-close"
+                aria-label="关闭" data-i18n-aria-label="common.close">×</button>
             </div>
           </div>
           <section class="binding-sheet-section pool-config-section">
@@ -563,7 +577,8 @@
               <span data-i18n="gatcha.poolWeight">抽取概率</span>
               <strong id="gatcha-pool-weight-label">UID 50% | 收藏夹 50%</strong>
             </div>
-            <input type="range" id="gatcha-pool-weight-slider" min="0" max="100" step="1" value="50" />
+            <input type="range" id="gatcha-pool-weight-slider" class="remote-volume-slider pool-config-weight-slider"
+              min="0" max="100" step="1" value="50" />
           </section>
           <section class="binding-sheet-section pool-config-section">
             <div class="pool-config-list-head">
@@ -592,16 +607,18 @@
           </div>
         </div>
       </div>
-      <div id="reorder-confirm-sheet" class="binding-sheet hidden" aria-hidden="true">
+      <div id="reorder-confirm-sheet" class="binding-sheet hidden" role="dialog" aria-modal="true"
+        aria-labelledby="reorder-confirm-sheet-title" aria-hidden="true">
         <div id="reorder-confirm-sheet-backdrop" class="binding-sheet-backdrop"></div>
         <div class="binding-sheet-panel reorder-confirm-panel">
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
               <p class="panel-tag" data-i18n="remote.queueOrderTag">Queue Order</p>
-              <h2 data-i18n="remote.queueOrderTitle">确认调整顺序</h2>
+              <h2 id="reorder-confirm-sheet-title" data-i18n="remote.queueOrderTitle">确认调整顺序</h2>
             </div>
-            <button type="button" id="reorder-confirm-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+            <button type="button" id="reorder-confirm-sheet-close" class="binding-sheet-close"
+              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
           </div>
           <p id="reorder-confirm-sheet-text" class="muted reorder-confirm-text"></p>
           <div class="binding-sheet-actions">
@@ -800,7 +817,7 @@
     <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
 
     <div id="remote-identity-modal" class="remote-identity-modal" role="dialog" aria-modal="true" aria-labelledby="remote-identity-title">
-      <div class="remote-identity-backdrop"></div>
+      <div class="remote-identity-backdrop" id="remote-identity-backdrop"></div>
       <div class="remote-identity-card">
         <p class="panel-tag" data-i18n="remoteIdentity.tag">REMOTE ID</p>
         <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
