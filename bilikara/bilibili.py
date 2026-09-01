@@ -3062,22 +3062,6 @@ def fetch_video_item(
     selected_audio_pages: list[int] | None = None,
 ) -> PlaylistItem:
     reference = resolve_video_reference(raw_input)
-    if reference.bvid:
-        api_url = (
-            "https://api.bilibili.com/x/web-interface/view?"
-            f"bvid={urllib.parse.quote(reference.bvid)}"
-        )
-    else:
-        api_url = (
-            "https://api.bilibili.com/x/web-interface/view?"
-            f"aid={reference.aid}"
-        )
-
-    payload = request_json(api_url)
-    if payload.get("code") != 0:
-        message = payload.get("message") or "获取视频信息失败"
-        raise BilibiliError(message)
-
     data = _fetch_view_data(reference)
     pages = parse_video_pages(data)
     if not pages:
@@ -3199,12 +3183,12 @@ def fetch_video_item(
 def _fetch_view_data(reference: VideoReference) -> dict:
     if reference.bvid:
         api_url = (
-            "https://api.bilibili.com/x/web-interface/view?"
+            "https://api.bilibili.com/x/web-interface/wbi/view?"
             f"bvid={urllib.parse.quote(reference.bvid)}"
         )
     else:
         api_url = (
-            "https://api.bilibili.com/x/web-interface/view?"
+            "https://api.bilibili.com/x/web-interface/wbi/view?"
             f"aid={reference.aid}"
         )
 

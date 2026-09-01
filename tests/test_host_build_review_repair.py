@@ -23,8 +23,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_right_dock_has_five_direct_icon_and_label_destinations(self):
-        expected = ["queue", "history", "request", "random", "users"]
+    def test_right_dock_has_six_direct_icon_and_label_destinations(self):
+        expected = ["queue", "history", "request", "random", "users", "settings"]
         self.assertEqual(
             re.findall(r'data-host-workspace="([^"]+)"', self.markup), expected
         )
@@ -32,7 +32,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             r'<nav class="work-rail".*?</nav>', self.markup, re.DOTALL
         ).group(0)
         self.assertIn('class="work-rail-icon"', rail)
-        self.assertEqual(rail.count("<svg"), 5)
+        self.assertEqual(rail.count("<svg"), 6)
         self.assertRegex(
             self.markup,
             r'(?s)id="host-workspace-history".*?</aside>\s*</section>\s*</section>\s*'
@@ -146,6 +146,11 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         )
         self.assertIn('dataset.narrowToolLayout = "overlay"', self.script)
         self.assertIn('dataset.narrowToolLayout = "resident"', self.script)
+        self.assertIn("previousNarrowToolLayout !== nextNarrowToolLayout", self.script)
+        self.assertIn(
+            "window.requestAnimationFrame(schedulePersistentStageMeasurement)",
+            self.script,
+        )
 
     def test_service_and_playback_controls_use_distinct_reviewed_icons(self):
         remote_control_path = (
@@ -157,9 +162,20 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         service = re.search(
             r'id="cache-settings-toggle".*?</button>', self.markup, re.DOTALL
         ).group(0)
-        self.assertIn("M12.22 2h-.44", service)
-        self.assertIn('<circle cx="12" cy="12" r="3">', service)
+        self.assertIn("M3 12A9 9 0 1 1 18.36 18.36", service)
+        self.assertIn("m12 12 4.3-4.8", service)
+        self.assertIn("M3 16.1h12", service)
+        self.assertIn('<circle cx="6.7" cy="16.1" r="1.15" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"></circle>', service)
+        self.assertIn("M3 20.2h12", service)
+        self.assertIn('<circle cx="11.2" cy="20.2" r="1.15" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"></circle>', service)
+        self.assertNotIn("M12 3.5v2", service)
+        self.assertNotIn("M12.22 2h-.44", service)
         self.assertNotIn(remote_control_path, service)
+        settings = re.search(
+            r'id="work-rail-settings".*?</button>', self.markup, re.DOTALL
+        ).group(0)
+        self.assertIn("M12.22 2h-.44", settings)
+        self.assertIn('<circle cx="12" cy="12" r="3"></circle>', settings)
         stage_button = next(
             rule
             for rule in re.findall(
@@ -186,7 +202,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
 
     def test_toolbar_badge_messages_and_product_copy_match_review(self):
         self.assertIn('class="global-action-icon"', self.markup)
-        self.assertGreaterEqual(self.markup.count('class="global-action-icon"'), 4)
+        self.assertGreaterEqual(self.markup.count('class="global-action-icon"'), 3)
         self.assertRegex(
             self.styles,
             r'\.topbar \.control-label[^}]*font-size:\s*(?:13|14|15|16)px',
@@ -195,19 +211,27 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn("border:", service_wrap)
         self.assertNotIn("service-status-ring", self.markup)
         self.assertIn("--update-available-dot: var(--accent)", self.styles)
-        update_dot = re.search(r"\.app-update-indicator\s*\{([^}]*)\}", self.styles).group(1)
+        update_dot = re.search(r"\.work-rail-update-dot\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("width: 7px", update_dot)
         self.assertIn("height: 7px", update_dot)
         self.assertIn("background: var(--accent)", update_dot)
         self.assertIn("0 0 0 3px", update_dot)
         self.assertNotIn('setClassToggle(elements.serviceUpdateIndicator, "has-update"', self.script)
+        self.assertIn(
+            "syncUpdateIndicator(elements.settingsUpdateIndicator, eligible, accessibleText)",
+            self.script,
+        )
         topbar_rule = re.findall(r"(?m)^\.topbar\s*\{([^}]*)\}", self.styles)[-1]
         self.assertIn("border-bottom: 0", topbar_rule)
         self.assertIn("background: transparent", topbar_rule)
         self.assertIn(".message-surface", self.styles)
         self.assertIn("white-space: normal", self.styles)
         for language, values in self.translations["languages"].items():
-            expected_gatcha = "试试运气" if language == "zh" else "Gatcha"
+            expected_gatcha = {
+                "zh": "试试运气",
+                "en": "Gatcha",
+                "ja": "ガチャ",
+            }[language]
             self.assertEqual(values["shell.random"], expected_gatcha, language)
             self.assertEqual(values["gatcha.title"], expected_gatcha, language)
             self.assertNotIn("Discover", values["request.workspaceTitle"], language)
@@ -344,6 +368,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             'id="player-fullscreen-control"',
             'id="player-fullscreen-remote-popover"',
             'id="player-fullscreen-remote-qr-image"',
+            'class="fullscreen-enter-icon"',
             'class="fullscreen-phone-icon"',
             'class="fullscreen-exit-icon"',
         ):
@@ -356,6 +381,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "elements.playerFullscreenRemoteUrlLink",
         ):
             self.assertIn(marker, self.script)
+        self.assertIn("M14 10l6-6M15 4h5v5M10 14l-6 6M4 15v5h5", self.markup)
+        self.assertIn("M20 4l-6 6M14 5v5h5M4 20l6-6M5 14h5v5", self.markup)
         self.assertIn(".fullscreen-action-control.is-qr-pinned .fullscreen-remote-popover", self.styles)
 
     def test_stage_density_prefers_full_frame_and_checks_group_overflow(self):
@@ -397,12 +424,29 @@ class HostBuildReviewRepairTest(unittest.TestCase):
     def test_integrated_titlebar_and_followed_sources_use_peer_sizing(self):
         shell_rule = re.findall(r"(?m)^\.app-shell\s*\{([^}]*)\}", self.styles)[-1]
         self.assertIn("padding: 0 var(--host-shell-padding-inline) 12px", shell_rule)
+        brand_rule = re.findall(r"(?m)^\.host-brand\s*\{([^}]*)\}", self.styles)[-1]
+        self.assertIn("min-width: 142px", brand_rule)
+        self.assertIn("display: flex", brand_rule)
         title_rule = re.findall(r"(?m)^\.host-brand h1\s*\{([^}]*)\}", self.styles)[-1]
         self.assertIn("font-size: 28px", title_rule)
+        eyebrow_rule = re.findall(
+            r"(?m)^\.host-brand \.eyebrow\s*\{([^}]*)\}", self.styles
+        )[-1]
+        self.assertIn("display: none", eyebrow_rule)
+        self.assertNotIn("KARAOKE HOST", self.markup)
         topbar_rule = re.findall(r"(?m)^\.topbar\s*\{([^}]*)\}", self.styles)[-1]
         self.assertIn("border-bottom: 0", topbar_rule)
         window_controls = re.findall(r"(?m)^\.window-controls\s*\{([^}]*)\}", self.styles)[-1]
         self.assertNotIn("margin-right", window_controls)
+
+        transition_out_rule = re.findall(
+            r"(?m)^\.host-workspace-fragment\.is-tool-transition-out\s*\{([^}]*)\}",
+            self.styles,
+        )[-1]
+        self.assertIn("background: transparent !important", transition_out_rule)
+        self.assertIn("border-color: transparent !important", transition_out_rule)
+        self.assertIn("box-shadow: none !important", transition_out_rule)
+        self.assertIn("const inlineControls = narrowShell", self.script)
 
         request_follow_grids = re.findall(
             r"#host-workspace-request \.follow-up-grid,\s*"
@@ -489,9 +533,46 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("cache-contextual-info-region", restart)
         self.assertIn('data-i18n="service.restartApplicationHint"', restart)
         self.assertNotIn('<p class="cache-panel-hint"', restart)
+        self.assertLess(
+            self.markup.index('data-i18n="service.playbackRepair"'),
+            self.markup.index('id="application-restart-row"'),
+        )
+        settings_row = re.search(
+            r"\.settings-section-card > \.cache-panel-row\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        self.assertIn("align-items: center", settings_row)
+        update_upper = re.search(
+            r"\.cache-update-upper-field\s*\{([^}]*)\}", self.styles
+        ).group(1)
+        self.assertIn("align-self: center", update_upper)
         self.assertIn("cache-contextual-info-region", cleanup)
         self.assertIn('data-i18n="service.dataCleanupScope"', cleanup)
         self.assertNotIn("cache-data-cleanup-scope", cleanup)
+        appearance = self.markup[
+            self.markup.index('id="settings-appearance-title"') :
+            self.markup.index('id="settings-maintenance-title"')
+        ]
+        self.assertNotIn('data-i18n="display.languageHint"', appearance)
+        self.assertNotIn('data-i18n="display.themeHint"', appearance)
+        self.assertEqual(self.translations["languages"]["zh"]["settings.workspaceTag"], "Settings")
+        self.assertEqual(self.translations["languages"]["en"]["settings.workspaceTag"], "设置")
+        self.assertEqual(self.translations["languages"]["ja"]["settings.workspaceTag"], "Settings")
+        self.assertEqual(
+            self.translations["languages"]["zh"]["service.bbdownLogin"],
+            "Bilibili 登录",
+        )
+        self.assertEqual(
+            self.translations["languages"]["ja"]["common.resetShort"],
+            "Reset",
+        )
+        narrow_settings = self.styles[
+            self.styles.rindex("/* Settings keeps the wide layout's") :
+            self.styles.index('.request-quick-view #requester-select[hidden]')
+        ]
+        self.assertIn("flex-direction: row", narrow_settings)
+        self.assertIn("justify-content: space-between", narrow_settings)
+        self.assertIn("margin-left: auto", narrow_settings)
         self.assertNotIn(".cache-panel-update-row.has-update", self.styles)
         badge = re.search(
             r"\.app-update-version-badge\s*\{([^}]*)\}", self.styles
@@ -501,7 +582,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         update_heading = re.search(
             r"\.cache-app-update-heading\s*\{([^}]*)\}", self.styles
         ).group(1)
-        self.assertIn("flex-direction: column", update_heading)
+        self.assertIn("flex-direction: row", update_heading)
+        self.assertIn("align-items: center", update_heading)
         self.assertNotIn('setClassToggle(elements.appUpdateRow, "has-update"', self.script)
 
     def test_titlebar_double_click_uses_the_whole_noninteractive_surface(self):
@@ -518,14 +600,30 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn('id="request-session-user-notice"', self.markup)
         self.assertIn('data-i18n="session.empty"', self.markup)
         notice = re.search(
-            r"\.request-session-user-notice\s*\{([^}]*)\}", self.styles
+            r"(?m)^\.request-session-user-notice\s*\{([^}]*)\}", self.styles
         ).group(1)
         self.assertIn("background: transparent", notice)
         self.assertIn("color: var(--accent)", notice)
         self.assertIn("font-weight: 700", notice)
         self.assertIn("text-align: center", notice)
+        self.assertIn("function syncRequestSessionUserNoticePlacement()", self.script)
+        self.assertIn('placement.anchor.insertAdjacentElement("afterend", notice)', self.script)
         self.assertIn("showSessionUsersRequiredToast", self.script)
         self.assertIn('setAppMessage(t("session.requireUsers"), true)', self.script)
+        self.assertIn('id="gatcha-login-notice"', self.markup)
+        self.assertIn('id="gatcha-session-user-notice"', self.markup)
+        self.assertIn("state.data?.bbdown?.login?.logged_in", self.script)
+        self.assertIn("button.disabled = state.gatchaDrawBusy || !loggedIn", self.script)
+        source_panel = re.search(
+            r"(?m)^\.source-mode-panel\s*\{([^}]*)\}", self.styles
+        ).group(1)
+        self.assertIn("display: flex", source_panel)
+        self.assertIn("flex-direction: column", source_panel)
+        source_messages = self.script[
+            self.script.index("function setMessageForSource") :
+            self.script.index("function setAppMessage")
+        ]
+        self.assertIn("setAppMessage(message, true)", source_messages)
 
         lark_search = self.script[
             self.script.index("async function handleLarkSearchSubmit") :

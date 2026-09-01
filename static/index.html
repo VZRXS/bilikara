@@ -14,7 +14,6 @@
   <div class="app-shell" id="app-shell" data-active-workspace="queue" data-stage-mode="compact">
     <header class="topbar" aria-label="Global toolbar" data-i18n-aria-label="shell.globalToolbar">
       <div class="host-brand">
-        <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host</p>
         <h1 data-i18n="brand.name">bilikara</h1>
         <p class="project-link" id="developer-mode-trigger" role="button" tabindex="0">
           <svg class="project-link-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -62,48 +61,6 @@
                 <p id="remote-popover-url-hint" class="remote-url-hint">
                   请确保手机和服务端在同一个局域网内。
                 </p>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="status-chip" id="display-settings">
-          <button type="button" class="status-chip-toggle" id="display-settings-toggle" aria-expanded="false"
-            aria-controls="display-settings-panel">
-            <span class="status-chip-label-row">
-              <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3.5"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"></path>
-              </svg>
-              <span class="control-label" data-i18n="top.displaySettings">界面设置</span>
-            </span>
-          </button>
-          <div class="cache-panel hidden" id="display-settings-panel">
-            <div class="cache-panel-row" style="align-items: center; width: 100%;">
-              <div>
-                <p class="cache-panel-label" data-i18n="top.language">语言</p>
-                <p class="cache-panel-hint" data-i18n="display.languageHint">切换界面显示语言</p>
-              </div>
-              <div class="mode-switch language-switch" id="language-switch" style="margin: 0;">
-                <button class="mode-button" data-language="en">EN</button>
-                <button class="mode-button" data-language="ja">JA</button>
-                <button class="mode-button active" data-language="zh">ZH</button>
-              </div>
-            </div>
-            <div class="cache-panel-row" style="align-items: center; width: 100%;">
-              <div>
-                <p class="cache-panel-label" data-i18n="top.theme">切换主题</p>
-                <p class="cache-panel-hint" data-i18n="display.themeHint">切换界面色彩主题</p>
-              </div>
-              <div class="mode-switch theme-switch" id="theme-switch" style="margin: 0;">
-                <button class="mode-button active" data-theme="light" aria-label="奶茶暖橘">
-                  <span class="theme-preview-pill light-preview"></span>
-                </button>
-                <button class="mode-button" data-theme="dark" aria-label="暗黑可可">
-                  <span class="theme-preview-pill dark-preview"></span>
-                </button>
-                <button class="mode-button" data-theme="blue" aria-label="蓝黑霓虹">
-                  <span class="theme-preview-pill blue-preview"></span>
-                </button>
               </div>
             </div>
           </div>
@@ -173,11 +130,16 @@
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M3 12A9 9 0 1 1 18.36 18.36"></path>
+                <path d="m12 12 4.3-4.8"></path>
+                <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"></circle>
+                <path d="M3 16.1h12"></path>
+                <circle cx="6.7" cy="16.1" r="1.15" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"></circle>
+                <path d="M3 20.2h12"></path>
+                <circle cx="11.2" cy="20.2" r="1.15" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"></circle>
               </svg>
-              <span class="control-label" data-i18n="service.title">服务设置</span>
-              <span class="service-status-wrap" id="service-update-indicator">
+              <span class="control-label" data-i18n="service.title">运行设置</span>
+              <span class="service-status-wrap" id="service-status-wrap">
                 <span class="tool-status-indicator is-loading" id="service-status-indicator" aria-hidden="true"></span>
               </span>
             </span>
@@ -274,10 +236,10 @@
             </div>
             <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
               <div class="bbdown-login-copy">
-                <p class="cache-panel-label" data-i18n="service.bbdownLogin">B站登录</p>
+                <p class="cache-panel-label" data-i18n="service.bbdownLogin">Bilibili 登录</p>
               </div>
               <div class="bbdown-login-qr">
-                <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="B站登录二维码"
+                <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="Bilibili 登录二维码"
                   data-i18n-alt="service.bbdownQrAlt" />
                 <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
                 <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
@@ -298,138 +260,6 @@
                   <span data-i18n="common.switch">切换</span>
                 </button>
               </div>
-            </div>
-            <div class="cache-panel-divider"></div>
-            <button type="button" class="cache-panel-menu-row" id="cache-panel-advanced-trigger" aria-expanded="false">
-              <span class="cache-panel-label" data-i18n="service.advancedSettings">高级与系统维护</span>
-              <span class="cache-panel-menu-adornment">
-                <span class="app-update-indicator hidden" id="advanced-update-indicator" role="status"></span>
-                <span class="cache-panel-menu-chevron" aria-hidden="true"></span>
-              </span>
-            </button>
-
-            <!-- COLLAPSIBLE INLINE ADVANCED VIEW -->
-            <div class="cache-advanced-inline-view hidden" id="cache-advanced-inline-view">
-              <div class="cache-panel-row cache-panel-update-row" id="app-update-row">
-                <div class="cache-app-update-copy">
-                  <div class="cache-app-update-heading">
-                    <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
-                    <span class="app-update-version-badge hidden" id="update-version-badge"></span>
-                  </div>
-                  <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
-                    aria-live="polite"></p>
-                </div>
-                <label class="cache-preview-field cache-update-upper-field" for="update-preview-checkbox"
-                  title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
-                  <span data-i18n="service.previewRelease">预览版</span>
-                  <input id="update-preview-checkbox" type="checkbox" />
-                  <span class="cache-preview-switch" aria-hidden="true">
-                    <span class="cache-preview-switch-thumb"></span>
-                  </span>
-                </label>
-                <div class="cache-update-control">
-                  <div class="cache-update-preferences">
-                    <label class="cache-preview-field" for="update-automatic-checkbox"
-                      title="启动时自动检查更新" data-i18n-title="service.autoCheckUpdatesTitle">
-                      <span data-i18n="service.autoCheckUpdates">自动检查更新</span>
-                      <input id="update-automatic-checkbox" type="checkbox" checked />
-                      <span class="cache-preview-switch" aria-hidden="true">
-                        <span class="cache-preview-switch-thumb"></span>
-                      </span>
-                    </label>
-                  </div>
-                  <button type="button" class="toolbar-button cache-update-button" id="update-check-button"
-                    title="检查 bilikara 新版本" data-i18n-title="service.checkUpdateTitle">
-                    <span data-i18n="service.checkUpdate">检查更新</span>
-                  </button>
-                </div>
-              </div>
-              <div class="cache-panel-row hidden" id="application-restart-row" aria-hidden="true">
-                <div>
-                  <div class="cache-advanced-label-row cache-contextual-info-region">
-                    <p class="cache-panel-label" data-i18n="service.restartApplication">重启应用</p>
-                    <span class="cache-advanced-info">
-                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
-                        aria-describedby="cache-advanced-restart-info" data-i18n-aria-label="common.moreInfo"
-                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                      <span class="cache-advanced-tooltip" id="cache-advanced-restart-info" role="tooltip"
-                        data-i18n="service.restartApplicationHint">关闭并重新打开桌面应用</span>
-                    </span>
-                  </div>
-                </div>
-                <button type="button" class="toolbar-button cache-update-button"
-                  id="application-restart-button" disabled>
-                  <span data-i18n="service.restartApplication">重启应用</span>
-                </button>
-              </div>
-              <div class="cache-panel-row cache-panel-danger-row">
-                <div>
-                  <div class="cache-advanced-label-row cache-contextual-info-region">
-                    <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
-                    <span class="cache-advanced-info">
-                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
-                        aria-describedby="cache-advanced-repair-info" data-i18n-aria-label="common.moreInfo"
-                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                      <span class="cache-advanced-tooltip" id="cache-advanced-repair-info" role="tooltip"
-                        data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</span>
-                    </span>
-                  </div>
-                </div>
-                <div class="cache-panel-actions">
-                  <button type="button" class="toolbar-button cache-retry-current-button"
-                    id="current-cache-retry-button" title="重新缓存当前歌曲" data-i18n-title="service.retryCurrentTitle"
-                    disabled>
-                    <span data-i18n="service.retryCache">重新缓存</span>
-                  </button>
-                  <button type="button" class="toolbar-button cache-data-reset-button" id="player-reset-button"
-                    title="重置播放器状态" data-i18n-title="service.resetPlayerTitle">
-                    <span data-i18n="common.reset">重置</span>
-                  </button>
-                </div>
-              </div>
-              <div class="cache-panel-row cache-panel-danger-row">
-                <div>
-                  <div class="cache-advanced-label-row cache-contextual-info-region">
-                    <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
-                    <span class="cache-advanced-info">
-                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
-                        aria-describedby="cache-advanced-cleanup-info" data-i18n-aria-label="common.moreInfo"
-                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                      <span class="cache-advanced-tooltip" id="cache-advanced-cleanup-info" role="tooltip"
-                        data-i18n="service.dataCleanupScope">清空当前点歌列表、用户、历史记录和缓存；保留已唱归档与来源数据</span>
-                    </span>
-                  </div>
-                </div>
-                <button type="button" class="toolbar-button cache-data-reset-button" id="data-reset-button"
-                  title="清空 data" data-i18n-title="service.clearDataTitle">
-                  <span data-i18n="common.clear">清空</span>
-                </button>
-              </div>
-              <div class="cache-panel-row diagnostic-panel-row">
-                <div>
-                  <div class="cache-advanced-label-row cache-contextual-info-region">
-                    <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
-                    <span class="cache-advanced-info">
-                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
-                        aria-describedby="cache-advanced-diagnostics-info" data-i18n-aria-label="common.moreInfo"
-                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                      <span class="cache-advanced-tooltip" id="cache-advanced-diagnostics-info" role="tooltip"
-                        data-i18n="service.diagnosticsHint">不含个人信息</span>
-                    </span>
-                  </div>
-                </div>
-                <div class="cache-panel-actions diagnostic-panel-actions">
-                  <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">
-                    <span data-i18n="service.copyDiagnosticsMarkdown">复制 .md</span>
-                  </button>
-                  <button type="button" class="toolbar-button cache-update-button" id="diagnostic-package-button">
-                    <span data-i18n="service.downloadDiagnostics">生成诊断包</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div class="cache-panel-footer">
-              <span class="cache-panel-version" id="cache-panel-version">bilikara</span>
             </div>
           </div>
         </div>
@@ -476,6 +306,10 @@
               <div class="fullscreen-action-control" id="player-fullscreen-control">
                 <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false"
                   disabled>
+                  <svg class="fullscreen-enter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M14 10l6-6M15 4h5v5M10 14l-6 6M4 15v5h5"></path>
+                  </svg>
                   <span class="player-fullscreen-label" id="player-fullscreen-label">全屏显示</span>
                   <span class="fullscreen-action-icons" aria-hidden="true">
                     <svg class="fullscreen-phone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -486,8 +320,9 @@
                     <span class="fullscreen-action-divider"></span>
                     <svg class="fullscreen-exit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path>
+                      <path d="M20 4l-6 6M14 5v5h5M4 20l6-6M5 14h5v5"></path>
                     </svg>
+                    <span class="fullscreen-exit-hover-label" data-i18n="player.fullscreenExit">退出全屏</span>
                   </span>
                 </button>
                 <div class="fullscreen-remote-popover" id="player-fullscreen-remote-popover" role="dialog"
@@ -651,6 +486,183 @@
           <div class="host-workspace-backdrop" id="host-workspace-backdrop" hidden aria-hidden="true"></div>
           <section class="host-workspace-region" id="host-workspace-region" role="region"
             aria-labelledby="work-rail-queue" data-active-workspace="queue">
+
+        <section class="settings-workspace host-workspace-fragment" id="host-workspace-settings" role="tabpanel"
+          aria-labelledby="work-rail-settings" data-host-workspace-panel="settings" hidden inert>
+          <header class="settings-workspace-head host-peer-head">
+            <div class="host-peer-heading">
+              <p class="section-tag" data-i18n="settings.workspaceTag">Settings</p>
+              <h2 id="workspace-settings-heading" data-host-workspace-heading tabindex="-1"
+                data-i18n="settings.title">设置</h2>
+            </div>
+          </header>
+
+          <div class="settings-workspace-body">
+            <section class="settings-section" aria-labelledby="settings-appearance-title">
+              <div class="settings-section-heading">
+                <p class="section-tag" data-i18n="settings.appearanceTag">Appearance</p>
+                <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
+              </div>
+              <div class="settings-section-card">
+                <div class="cache-panel-row settings-control-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="top.language">语言</p>
+                  </div>
+                  <div class="mode-switch language-switch" id="language-switch">
+                    <button class="mode-button" data-language="en">EN</button>
+                    <button class="mode-button" data-language="ja">JA</button>
+                    <button class="mode-button active" data-language="zh">ZH</button>
+                  </div>
+                </div>
+                <div class="cache-panel-row settings-control-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="top.theme">切换主题</p>
+                  </div>
+                  <div class="mode-switch theme-switch" id="theme-switch">
+                    <button class="mode-button active" data-theme="light" aria-label="奶茶暖橘">
+                      <span class="theme-preview-pill light-preview"></span>
+                    </button>
+                    <button class="mode-button" data-theme="dark" aria-label="暗黑可可">
+                      <span class="theme-preview-pill dark-preview"></span>
+                    </button>
+                    <button class="mode-button" data-theme="blue" aria-label="蓝黑霓虹">
+                      <span class="theme-preview-pill blue-preview"></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-maintenance-title">
+              <div class="settings-section-heading">
+                <p class="section-tag" data-i18n="settings.maintenanceTag">System</p>
+                <h3 id="settings-maintenance-title" data-i18n="service.advancedSettings">高级与系统维护</h3>
+              </div>
+              <div class="settings-section-card cache-advanced-inline-view" id="cache-advanced-inline-view">
+                <div class="cache-panel-row cache-panel-update-row" id="app-update-row">
+                  <div class="cache-app-update-copy">
+                    <div class="cache-app-update-heading">
+                      <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
+                      <span class="app-update-version-badge hidden" id="update-version-badge"></span>
+                    </div>
+                    <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
+                      aria-live="polite"></p>
+                  </div>
+                  <label class="cache-preview-field cache-update-upper-field" for="update-preview-checkbox"
+                    title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
+                    <span data-i18n="service.previewRelease">预览版</span>
+                    <input id="update-preview-checkbox" type="checkbox" />
+                    <span class="cache-preview-switch" aria-hidden="true">
+                      <span class="cache-preview-switch-thumb"></span>
+                    </span>
+                  </label>
+                  <div class="cache-update-control">
+                    <div class="cache-update-preferences">
+                      <label class="cache-preview-field" for="update-automatic-checkbox"
+                        title="启动时自动检查更新" data-i18n-title="service.autoCheckUpdatesTitle">
+                        <span data-i18n="service.autoCheckUpdates">自动检查更新</span>
+                        <input id="update-automatic-checkbox" type="checkbox" checked />
+                        <span class="cache-preview-switch" aria-hidden="true">
+                          <span class="cache-preview-switch-thumb"></span>
+                        </span>
+                      </label>
+                    </div>
+                    <button type="button" class="toolbar-button cache-update-button" id="update-check-button"
+                      title="检查 bilikara 新版本" data-i18n-title="service.checkUpdateTitle">
+                      <span data-i18n="service.checkUpdate">检查更新</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="cache-panel-row cache-panel-danger-row">
+                  <div>
+                    <div class="cache-advanced-label-row cache-contextual-info-region">
+                      <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
+                      <span class="cache-advanced-info">
+                        <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                          aria-describedby="cache-advanced-repair-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="cache-advanced-tooltip" id="cache-advanced-repair-info" role="tooltip"
+                          data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="cache-panel-actions">
+                    <button type="button" class="toolbar-button cache-retry-current-button"
+                      id="current-cache-retry-button" title="重新缓存当前歌曲" data-i18n-title="service.retryCurrentTitle"
+                      disabled>
+                      <span data-i18n="service.retryCache">重新缓存</span>
+                    </button>
+                    <button type="button" class="toolbar-button cache-data-reset-button" id="player-reset-button"
+                      title="重置播放器状态" data-i18n-title="service.resetPlayerTitle">
+                      <span data-i18n="common.reset">重置</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="cache-panel-row hidden" id="application-restart-row" aria-hidden="true">
+                  <div>
+                    <div class="cache-advanced-label-row cache-contextual-info-region">
+                      <p class="cache-panel-label" data-i18n="service.restartApplication">重启应用</p>
+                      <span class="cache-advanced-info">
+                        <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                          aria-describedby="cache-advanced-restart-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="cache-advanced-tooltip" id="cache-advanced-restart-info" role="tooltip"
+                          data-i18n="service.restartApplicationHint">关闭并重新打开桌面应用</span>
+                      </span>
+                    </div>
+                  </div>
+                  <button type="button" class="toolbar-button cache-update-button"
+                    id="application-restart-button" disabled>
+                    <span data-i18n="service.restartApplicationAction">重启应用</span>
+                  </button>
+                </div>
+                <div class="cache-panel-row cache-panel-danger-row">
+                  <div>
+                    <div class="cache-advanced-label-row cache-contextual-info-region">
+                      <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
+                      <span class="cache-advanced-info">
+                        <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                          aria-describedby="cache-advanced-cleanup-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="cache-advanced-tooltip" id="cache-advanced-cleanup-info" role="tooltip"
+                          data-i18n="service.dataCleanupScope">清空当前点歌列表、用户、历史记录和缓存；保留已唱归档与来源数据</span>
+                      </span>
+                    </div>
+                  </div>
+                  <button type="button" class="toolbar-button cache-data-reset-button" id="data-reset-button"
+                    title="清空 data" data-i18n-title="service.clearDataTitle">
+                    <span data-i18n="common.clear">清空</span>
+                  </button>
+                </div>
+                <div class="cache-panel-row diagnostic-panel-row">
+                  <div>
+                    <div class="cache-advanced-label-row cache-contextual-info-region">
+                      <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
+                      <span class="cache-advanced-info">
+                        <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                          aria-describedby="cache-advanced-diagnostics-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="cache-advanced-tooltip" id="cache-advanced-diagnostics-info" role="tooltip"
+                          data-i18n="service.diagnosticsHint">不含个人信息</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="cache-panel-actions diagnostic-panel-actions">
+                    <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">
+                      <span data-i18n="service.copyDiagnosticsMarkdown">复制 .md</span>
+                    </button>
+                    <button type="button" class="toolbar-button cache-update-button" id="diagnostic-package-button">
+                      <span data-i18n="service.downloadDiagnostics">生成诊断包</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="cache-panel-footer">
+                <span class="cache-panel-version" id="cache-panel-version">bilikara</span>
+              </div>
+            </section>
+          </div>
+        </section>
 
         <section class="request-workspace host-workspace-fragment" id="host-workspace-request" role="tabpanel"
           aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
@@ -992,6 +1004,12 @@
                     <p class="gatcha-desc" data-i18n="gatcha.drawFailed">获取幸运歌曲失败</p>
                   </section>
 
+                  <div class="gatcha-prerequisite-notices" id="gatcha-prerequisite-notices" hidden>
+                    <p class="request-session-user-notice" id="gatcha-login-notice" role="status"
+                      data-i18n="gatcha.loginRequired" hidden>请登录 Bilibili 账号</p>
+                    <p class="request-session-user-notice" id="gatcha-session-user-notice" role="status"
+                      data-i18n="session.empty" hidden>先添加本场用户，服务端和客户端才能开始点歌。</p>
+                  </div>
                   <p class="gatcha-message message-surface" id="gatcha-message" role="status" aria-live="polite"></p>
                   <div class="gatcha-actions">
                     <button type="button" id="gatcha-button" class="next-button gatcha-main-btn"
@@ -1127,6 +1145,16 @@
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path></svg>
           <span class="work-rail-label" data-i18n="shell.users">Session Users</span>
+        </button>
+        <button type="button" class="work-rail-button work-rail-settings" id="work-rail-settings" role="tab"
+          data-host-workspace="settings" aria-controls="host-workspace-settings" aria-selected="false" tabindex="-1">
+          <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <span class="work-rail-label" data-i18n="shell.settings">设置</span>
+          <span class="work-rail-update-dot hidden" id="settings-update-indicator" role="status"></span>
         </button>
       </nav>
       </main>

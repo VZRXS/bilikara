@@ -411,6 +411,7 @@ class AsyncActionGuardsTest(unittest.TestCase):
               fetchCalls += 1;
               return new Promise(resolve => { resolveFetch = resolve; });
             };
+            global.state.data = { bbdown: { login: { logged_in: true } } };
 
             const drawButton = global.elements.gatchaButton;
             drawButton.textContent = "Draw";
@@ -466,12 +467,14 @@ class AsyncActionGuardsTest(unittest.TestCase):
               process.stdout.write(JSON.stringify({
                 candidate: global.state.gatchaCandidate,
                 message: global.elements.gatchaMessage.textContent,
+                toast: global.elements.appToast.textContent,
               }));
             }, 10);
             """
         )
         self.assertEqual(res["candidate"]["title"], "Retained Song")
-        self.assertEqual(res["message"], "error.requestFailed")
+        self.assertEqual(res["message"], "")
+        self.assertEqual(res["toast"], "error.requestFailed")
 
     def test_gatcha_duplicate_confirmation_keeps_exact_source_and_requester(self):
         res = self.run_node_app_test(

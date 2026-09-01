@@ -2591,6 +2591,11 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_audio_variant_id, "p1_on_vocal")
         self.assertEqual(item.available_pages, [1, 2])
         self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
+        mock_request_json.assert_called_once()
+        self.assertIn(
+            "/x/web-interface/wbi/view?bvid=BV1xx411c7mD",
+            mock_request_json.call_args.args[0],
+        )
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_requires_manual_binding_when_durations_differ(self, mock_request_json):

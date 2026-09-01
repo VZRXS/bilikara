@@ -2029,7 +2029,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(target.read_bytes(), b"existing-runtime")
-        self.assertEqual(manager.download_source, DOWNLOAD_SOURCE_BBDOWN)
+        self.assertEqual(manager.download_source, DOWNLOAD_SOURCE_NATIVE)
 
     def test_existing_runtime_aria2c_skips_all_preparation_network(self):
         aria2_dir = Path(self.temp_dir.name) / "existing-aria2" / "tools" / "aria2c"
@@ -2207,6 +2207,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 self.mark_item_ready_with_files("song-a")
@@ -2366,6 +2367,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 item = self.make_item("song-a")
                 item.page = 2
                 item.video_page = 2
@@ -2392,6 +2394,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
                 self.store.add_item(self.make_item("song-b"), requester_name="cache-test-user")
                 self.store.add_item(self.make_item("song-c"), requester_name="cache-test-user")
@@ -2428,6 +2431,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=1)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
                 self.project_missing_ready("song-a")
                 events = []
@@ -2544,6 +2548,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 kill=lambda: None,
             )
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 for item_id in ["song-a", "song-b", "song-c"]:
                     self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
                 with manager.lock:
@@ -2606,6 +2611,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=2)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 for item_id in ["song-a", "song-b"]:
                     self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
                 state_plan = CachePlan(
@@ -3055,6 +3061,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 self.project_cache_failed("song-a", message="缓存失败")
@@ -3192,6 +3199,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 self.mark_item_ready_with_files("song-a")
@@ -3221,6 +3229,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 item_dir = self.cache_dir / "song-a" / "video-p1"
@@ -3252,6 +3261,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 target = self.make_item("song-a")
                 active = self.make_item("song-b")
                 self.store.add_item(target, requester_name="cache-test-user")
@@ -3287,6 +3297,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             lambda self: None,
         ):
             manager = CacheManager(self.store, max_cache_items=3)
+            manager.download_source = DOWNLOAD_SOURCE_BBDOWN
             target = self.make_item("song-a")
             active = self.make_item("song-b")
             self.store.add_item(target, requester_name="cache-test-user")

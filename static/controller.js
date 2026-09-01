@@ -24,6 +24,7 @@
     failedClosed: false,
     language: "zh",
     translations: {},
+    translationCatalog: {},
     unlisteners: [],
     cursorHideTimer: null,
     remoteQrPinned: false,
@@ -63,20 +64,13 @@
     return "zh";
   }
 
-  async function loadTranslations() {
-    try {
-      const response = await fetch("/i18n.json", { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const catalog = await response.json();
-      state.language = preferredLanguage();
-      state.translations = catalog?.languages?.[state.language]
-        || catalog?.languages?.[catalog?.defaultLanguage]
-        || {};
-    } catch {
-      state.language = "zh";
-      state.translations = {};
-    }
-    document.documentElement.lang = state.language;
+  function applyLanguage(language) {
+    const nextLanguage = ["zh", "en", "ja"].includes(language) ? language : "zh";
+    state.language = nextLanguage;
+    state.translations = state.translationCatalog[nextLanguage]
+      || state.translationCatalog.zh
+      || {};
+    document.documentElement.lang = nextLanguage === "zh" ? "zh-CN" : nextLanguage;
     document.querySelectorAll("[data-i18n]").forEach((element) => {
       const translated = state.translations[element.dataset.i18n];
       if (translated) element.textContent = translated;
@@ -89,6 +83,18 @@
       const translated = state.translations[element.dataset.i18nAlt];
       if (translated) element.setAttribute("alt", translated);
     });
+  }
+
+  async function loadTranslations() {
+    try {
+      const response = await fetch("/i18n.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const catalog = await response.json();
+      state.translationCatalog = catalog?.languages || {};
+    } catch {
+      state.translationCatalog = {};
+    }
+    applyLanguage(preferredLanguage());
   }
 
   function normalizedHttpUrl(value) {
@@ -354,6 +360,7 @@
       return;
     }
     state.lastMasterEnvelope = candidate;
+    applyLanguage(candidate.payload?.language);
     renderRemoteAccess(candidate.payload?.remoteAccess);
     const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
     const nextClock = sync.normalizeClock(candidate.payload?.clock);

@@ -84,24 +84,32 @@ body.is-cursor-hidden * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 84px;
+  width: auto;
   min-width: 84px;
+  max-width: 84px;
   min-height: 42px;
   padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  overflow: hidden;
+  border: var(--settings-panel-border);
   border-radius: 12px;
-  color: #1d1a18;
-  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  background: var(--settings-panel-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+  backdrop-filter: none;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+  transition:
+    max-width 170ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 120ms ease-out,
+    background 120ms ease-out,
+    border-color 120ms ease-out;
 }
 
 .presentation-output-action-icons {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 0;
 }
 
 .presentation-output-action-icons svg {
@@ -113,12 +121,38 @@ body.is-cursor-hidden * {
 .presentation-output-action-divider {
   width: 1px;
   height: 18px;
+  margin: 0 9px;
   background: currentColor;
   opacity: 0.22;
 }
 
+.presentation-output-phone-icon,
+.presentation-output-action-divider,
+.presentation-output-exit-label {
+  transition:
+    flex-basis 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    max-width 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    margin 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 110ms ease-out,
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.presentation-output-exit-label {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-4px);
+}
+
 .presentation-output-exit:hover:not(:disabled) {
-  background: #fff;
+  max-width: 180px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 .presentation-output-exit:focus-visible {
@@ -160,11 +194,11 @@ body.is-cursor-hidden * {
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
-  border: 1px solid rgba(45, 37, 32, 0.1);
+  border: var(--settings-panel-border);
   border-radius: 20px;
-  color: #2a2420;
-  background: rgba(255, 251, 245, 0.98);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.3);
+  color: var(--ink);
+  background: var(--settings-panel-bg);
+  box-shadow: var(--shadow);
   user-select: text;
 }
 
@@ -185,7 +219,7 @@ body.is-cursor-hidden * {
 
 .presentation-output-qr-placeholder {
   padding: 12px;
-  color: #756c66;
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.4;
   text-align: center;
@@ -198,14 +232,14 @@ body.is-cursor-hidden * {
 
 .presentation-output-remote-copy p {
   margin: 0 0 8px;
-  color: #756c66;
+  color: var(--muted);
   font-size: 13px;
 }
 
 .presentation-output-remote-copy a {
   display: block;
   overflow-wrap: anywhere;
-  color: #b33d28;
+  color: var(--accent-deep);
   font-size: 16px;
   line-height: 1.45;
 }
@@ -213,7 +247,7 @@ body.is-cursor-hidden * {
 .presentation-output-remote-copy small {
   display: block;
   margin-top: 10px;
-  color: #756c66;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -225,6 +259,26 @@ body.is-cursor-hidden * {
     transform: translateY(0);
     transition-delay: 0s;
     pointer-events: auto;
+  }
+
+  .presentation-output-control:hover .presentation-output-phone-icon {
+    width: 0;
+    flex-basis: 0;
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  .presentation-output-control:hover .presentation-output-action-divider {
+    width: 0;
+    margin: 0;
+    opacity: 0;
+  }
+
+  .presentation-output-control:hover .presentation-output-exit-label {
+    max-width: 110px;
+    margin-left: 8px;
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -256,8 +310,8 @@ body.is-cursor-hidden * {
   }
 
   .presentation-output-exit {
-    width: 80px;
     min-width: 80px;
+    max-width: 80px;
     min-height: 38px;
     padding: 0 10px;
   }

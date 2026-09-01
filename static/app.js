@@ -165,11 +165,9 @@ const state = {
   playedSessionsLoaded: false,
   playedSessionsLoadPromise: null,
   cacheSettingsOpen: false,
-  cacheAdvancedOpen: false,
   remoteQrPinned: false,
   playerFullscreenRemotePinned: false,
   playerFullscreenLastPointerType: "",
-  displaySettingsOpen: false,
   presentationSettingsOpen: false,
   cacheLimitSaving: false,
   cacheLimitDraftValue: null,
@@ -444,6 +442,7 @@ const state = {
     request: 0,
     random: 0,
     users: 0,
+    settings: 0,
   },
   language: "zh",
   translations: {},
@@ -509,8 +508,6 @@ const elements = {
   cacheSettings: document.getElementById("cache-settings"),
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
-  cacheAdvancedInlineView: document.getElementById("cache-advanced-inline-view"),
-  cachePanelAdvancedTrigger: document.getElementById("cache-panel-advanced-trigger"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
   cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
@@ -537,8 +534,7 @@ const elements = {
   updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
   updateAutomaticCheckbox: document.getElementById("update-automatic-checkbox"),
   updateCheckButton: document.getElementById("update-check-button"),
-  serviceUpdateIndicator: document.getElementById("service-update-indicator"),
-  advancedUpdateIndicator: document.getElementById("advanced-update-indicator"),
+  settingsUpdateIndicator: document.getElementById("settings-update-indicator"),
   appUpdateRow: document.getElementById("app-update-row"),
   appUpdateStatus: document.getElementById("app-update-status"),
   updateVersionBadge: document.getElementById("update-version-badge"),
@@ -621,9 +617,6 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
-  displaySettings: document.getElementById("display-settings"),
-  displaySettingsToggle: document.getElementById("display-settings-toggle"),
-  displaySettingsPanel: document.getElementById("display-settings-panel"),
   presentationSettings: document.getElementById("presentation-settings"),
   presentationSettingsToggle: document.getElementById("presentation-settings-toggle"),
   presentationSettingsPanel: document.getElementById("presentation-settings-panel"),
@@ -755,6 +748,9 @@ const elements = {
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
   gatchaMessage: document.getElementById("gatcha-message"),
+  gatchaPrerequisiteNotices: document.getElementById("gatcha-prerequisite-notices"),
+  gatchaLoginNotice: document.getElementById("gatcha-login-notice"),
+  gatchaSessionUserNotice: document.getElementById("gatcha-session-user-notice"),
   gatchaInitView: document.getElementById("gatcha-init-view"),
   gatchaDrawingView: document.getElementById("gatcha-drawing-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
@@ -813,7 +809,8 @@ const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
 function setFormMessage(message, isError = false) {
   if (isError && requiresSessionUsers(message)) {
     showSessionUsersRequiredToast();
-    return;
+    message = "";
+    isError = false;
   }
   elements.formMessage.textContent = message;
   elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
@@ -830,7 +827,13 @@ function setSearchMessage(message, isError = false) {
 function setMessageForSource(source, message, isError = false) {
   if (isError && requiresSessionUsers(message)) {
     showSessionUsersRequiredToast();
-    return;
+    message = "";
+    isError = false;
+  }
+  if (isError) {
+    setAppMessage(message, true);
+    message = "";
+    isError = false;
   }
   if (source === "search") {
     setSearchMessage(message, isError);
@@ -1543,6 +1546,7 @@ function currentPresentationScene() {
     item: currentItem?.id || "",
     title: currentItem?.display_title || currentItem?.title || "",
     theme: state.theme,
+    language: state.language,
   });
   if (sceneKey !== state.presentationSceneKey) {
     state.presentationSceneKey = sceneKey;
@@ -1560,6 +1564,7 @@ function currentPresentationScene() {
       detail: String(currentItem?.owner_name || ""),
     },
     theme: state.theme,
+    language: state.language,
     overlay: presentationOverlayModel(),
   };
   return presentationSceneApi()?.normalizePresentationScene(candidate) || candidate;
@@ -1614,6 +1619,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
   const envelope = sync.makeEnvelope("master-state", {
     scene,
     clock,
+    language: state.language,
     remoteAccess: state.data?.remote_access || null,
   }, {
     senderId: state.presentationOutputSenderId,
@@ -3451,6 +3457,56 @@ function restoreRequestScrollPosition() {
   owner.scrollTop = Math.max(0, Number(state.requestScrollPositions?.[subview]?.[mode] || 0));
 }
 
+function requestSessionUserNoticePlacement() {
+  const subview = normalizeRequestSubview(state.requestSubview);
+  if (subview === "quick") {
+    return elements.addForm ? { anchor: elements.addForm } : null;
+  }
+  if (subview === "search") {
+    const mode = normalizeSearchMode(state.searchMode);
+    const panel = elements.requestWorkspace?.querySelector(`[data-search-panel="${mode}"]`);
+    const anchor = panel?.querySelector(".request-query-form");
+    return anchor ? { anchor } : panel ? { container: panel } : null;
+  }
+  if (subview === "discover") {
+    if (state.catalogAdvancedTool) {
+      return elements.catalogAdvancedView ? { container: elements.catalogAdvancedView } : null;
+    }
+    const mode = normalizeDiscoverMode(state.discoverMode);
+    const panel = elements.requestWorkspace?.querySelector(`[data-discover-panel="${mode}"]`);
+    const anchor = panel?.querySelector("[data-category-browse-search], [data-d1-browse-search]");
+    return anchor ? { anchor } : panel ? { container: panel } : null;
+  }
+  if (subview === "sources") {
+    const mode = normalizeSourcesMode(state.sourcesMode);
+    const panel = elements.requestWorkspace?.querySelector(`[data-sources-panel="${mode}"]`);
+    const anchor = panel?.querySelector(".source-action-row");
+    return anchor ? { anchor } : panel ? { container: panel } : null;
+  }
+  return null;
+}
+
+function syncRequestSessionUserNoticePlacement() {
+  const notice = elements.requestSessionUserNotice;
+  const placement = requestSessionUserNoticePlacement();
+  if (!notice || !placement) {
+    return;
+  }
+  elements.requestWorkspace
+    ?.querySelectorAll(".has-request-session-user-notice")
+    .forEach((owner) => owner.classList.remove("has-request-session-user-notice"));
+  if (placement.anchor) {
+    if (notice.previousElementSibling !== placement.anchor) {
+      placement.anchor.insertAdjacentElement("afterend", notice);
+    }
+  } else if (placement.container && placement.container.firstElementChild !== notice) {
+    placement.container.prepend(notice);
+  }
+  if (!notice.hidden) {
+    notice.parentElement?.classList.add("has-request-session-user-notice");
+  }
+}
+
 function syncSearchModeSelection() {
   const activeMode = normalizeSearchMode(state.searchMode);
   const focusedMode = normalizeSearchMode(state.focusedSearchMode, activeMode);
@@ -3468,6 +3524,7 @@ function syncSearchModeSelection() {
     elements.searchModeContract,
     t(activeMode === "shared" ? "search.sharedContract" : "search.localContract"),
   );
+  syncRequestSessionUserNoticePlacement();
 }
 
 function syncDiscoverModeSelection() {
@@ -3496,6 +3553,7 @@ function syncDiscoverModeSelection() {
       renderD1BrowseView();
     }
   }
+  syncRequestSessionUserNoticePlacement();
 }
 
 function syncSourcesModeSelection() {
@@ -3516,6 +3574,7 @@ function syncSourcesModeSelection() {
   } else if (activeMode === "favorites") {
     renderFavlistBrowse();
   }
+  syncRequestSessionUserNoticePlacement();
 }
 
 function ensureActiveSourcesLoaded() {
@@ -3553,6 +3612,7 @@ function syncRequestSubviewSelection() {
   } else if (activeSubview === "sources") {
     syncSourcesModeSelection();
   }
+  syncRequestSessionUserNoticePlacement();
 }
 
 function closeRequestDetailForNavigation() {
@@ -3692,7 +3752,8 @@ function handleHorizontalTabKeydown(event, values, activate) {
 }
 
 function renderHostWorkspaceSelection() {
-  syncNarrowToolLayout();
+  const previousNarrowToolLayout = elements.appShell?.dataset.narrowToolLayout || "";
+  const nextNarrowToolLayout = syncNarrowToolLayout();
   const activeWorkspace = normalizeHostWorkspaceName(state.activeHostWorkspace, "queue");
   const focusedWorkspace = normalizeHostWorkspaceName(
     state.focusedHostWorkspace,
@@ -3774,11 +3835,23 @@ function renderHostWorkspaceSelection() {
   if (typeof scheduleQueueScrollOwnershipSync === "function") {
     scheduleQueueScrollOwnershipSync();
   }
+  if (
+    previousNarrowToolLayout
+    && previousNarrowToolLayout !== nextNarrowToolLayout
+    && typeof window.requestAnimationFrame === "function"
+  ) {
+    // WebKit can report the pre-collapse Stage height for the first resize
+    // frame. Measure again after the resident/overlay grid has painted so the
+    // playback controls can reclaim space released by the tool workspace.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(schedulePersistentStageMeasurement);
+    });
+  }
 }
 
 function normalizeHostWorkspaceName(value, fallback = "queue") {
   const candidate = String(value || "").trim().toLowerCase();
-  return ["queue", "history", "request", "random", "users"].includes(candidate)
+  return ["queue", "history", "request", "random", "users", "settings"].includes(candidate)
     ? candidate
     : fallback;
 }
@@ -3789,6 +3862,7 @@ const hostWorkspaceRailOrder = Object.freeze([
   "request",
   "random",
   "users",
+  "settings",
 ]);
 
 function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
@@ -4074,7 +4148,7 @@ function handleHostWorkspaceRailKeydown(event) {
     event.currentTarget?.dataset?.hostWorkspace,
     state.focusedHostWorkspace,
   );
-  const workspaces = ["queue", "history", "request", "random", "users"];
+  const workspaces = hostWorkspaceRailOrder;
   const currentIndex = Math.max(0, workspaces.indexOf(currentWorkspace));
   let targetIndex = null;
   if (event.key === "ArrowDown") {
@@ -4182,12 +4256,6 @@ function closeOrdinaryPopoverForEscape() {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
     elements.cacheSettingsToggle?.focus({ preventScroll: true });
-    return true;
-  }
-  if (state.displaySettingsOpen) {
-    state.displaySettingsOpen = false;
-    syncDisplayPanelVisibility();
-    elements.displaySettingsToggle?.focus({ preventScroll: true });
     return true;
   }
   if (state.presentationSettingsOpen) {
@@ -4374,10 +4442,8 @@ function setStageControlTrayOpen(open, { restoreFocus = false, moveFocus = true 
       closeCacheAdvancedInfo();
       setRemoteQrPinned(false, { dismissTransient: true });
       state.cacheSettingsOpen = false;
-      state.displaySettingsOpen = false;
       state.presentationSettingsOpen = false;
       syncCachePanelVisibility();
-      syncDisplayPanelVisibility();
       syncPresentationPanelVisibility();
     }
     if (elements.stageControlTray) {
@@ -4502,13 +4568,15 @@ function measurePersistentStage() {
     && inlineHeightSlack >= -1;
   const previousLayout = elements.appShell.dataset.stageControlsLayout;
   const fitHysteresis = 16;
-  const inlineControls = presentationContextChanged
+  const inlineControls = narrowShell
     ? fullFrameWithInlineControlsFits
-    : previousLayout === "inline"
-      ? fullFrameWithInlineControlsFits || inlineFitSlack >= -fitHysteresis
-      : previousLayout === "popup"
-        ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
-        : fullFrameWithInlineControlsFits;
+    : presentationContextChanged
+      ? fullFrameWithInlineControlsFits
+      : previousLayout === "inline"
+        ? fullFrameWithInlineControlsFits || inlineFitSlack >= -fitHysteresis
+        : previousLayout === "popup"
+          ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
+          : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
   const popupFit = inlineControls
     ? inlineFit
@@ -8219,6 +8287,21 @@ function renderGatchaWorkspace() {
     elements.gatchaMessage.classList.toggle("is-error", Boolean(state.gatchaMessageIsError));
   }
 
+  const loggedIn = Boolean(
+    state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in,
+  );
+  const sessionUsersAvailable = Array.isArray(state.data?.session_users)
+    && state.data.session_users.length > 0;
+  if (elements.gatchaPrerequisiteNotices) {
+    elements.gatchaPrerequisiteNotices.hidden = loggedIn && sessionUsersAvailable;
+  }
+  if (elements.gatchaLoginNotice) {
+    elements.gatchaLoginNotice.hidden = loggedIn;
+  }
+  if (elements.gatchaSessionUserNotice) {
+    elements.gatchaSessionUserNotice.hidden = sessionUsersAvailable;
+  }
+
   const drawingWithRetry = state.gatchaDrawBusy
     && state.gatchaDrawControlId === "gatcha-retry-button";
   setGatchaControlVisibility(
@@ -8237,7 +8320,7 @@ function renderGatchaWorkspace() {
       return;
     }
     const busy = state.gatchaDrawBusy && button === drawingControl;
-    button.disabled = state.gatchaDrawBusy;
+    button.disabled = state.gatchaDrawBusy || !loggedIn;
     button.textContent = busy
       ? t("gatcha.drawing")
       : t(button === elements.gatchaRetryButton ? "gatcha.retry" : "gatcha.title");
@@ -8275,7 +8358,11 @@ function clearAcceptedGatchaCandidate({ focusDraw = true } = {}) {
 }
 
 async function handleGatchaDraw(event = null) {
-  if (state.gatchaDrawBusy) {
+  const loggedIn = Boolean(
+    state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in,
+  );
+  if (state.gatchaDrawBusy || !loggedIn) {
+    renderGatchaWorkspace();
     return false;
   }
   const control = event?.currentTarget === elements.gatchaRetryButton
@@ -8326,7 +8413,8 @@ async function handleGatchaDraw(event = null) {
 function setGatchaMessage(message, isError = false) {
   if (isError && requiresSessionUsers(message)) {
     showSessionUsersRequiredToast();
-    return;
+    message = "";
+    isError = false;
   }
   state.gatchaMessage = message || "";
   state.gatchaMessageIsError = Boolean(isError);
@@ -8731,6 +8819,7 @@ function renderRequesterSelect(sessionUsers) {
   if (elements.requestSessionUserNotice) {
     elements.requestSessionUserNotice.hidden = !empty;
     elements.requestSessionUserNotice.setAttribute("aria-hidden", String(!empty));
+    syncRequestSessionUserNoticePlacement();
   }
 }
 
@@ -8790,51 +8879,69 @@ const cacheAdvancedInfoLeaveDelayMs = 90;
 let cacheAdvancedInfoHoverTimer = null;
 let cacheAdvancedInfoLeaveTimer = null;
 
-function positionPlaybackContextualTooltip(info) {
-  if (!info?.closest?.(".playback-contextual-info-region")) {
-    return false;
-  }
-  const button = info.querySelector(".playback-contextual-info-button");
-  const tooltip = info.querySelector(".cache-advanced-tooltip");
+function positionContextualTooltip(info) {
+  const button = info?.querySelector?.(".cache-advanced-info-button");
+  const tooltip = info?.querySelector?.(".cache-advanced-tooltip");
   if (!button || !tooltip || !info.classList.contains("is-visible")) {
     return false;
   }
   const viewportInset = 8;
   const tooltipGap = 7;
+  const boundaryRect = info.closest(".host-workspace-region")?.getBoundingClientRect();
+  const boundaryLeft = Math.max(viewportInset, boundaryRect?.left ?? viewportInset);
+  const boundaryRight = Math.min(
+    window.innerWidth - viewportInset,
+    boundaryRect?.right ?? (window.innerWidth - viewportInset),
+  );
+  const boundaryTop = Math.max(viewportInset, boundaryRect?.top ?? viewportInset);
+  const boundaryBottom = Math.min(
+    window.innerHeight - viewportInset,
+    boundaryRect?.bottom ?? (window.innerHeight - viewportInset),
+  );
   const buttonRect = button.getBoundingClientRect();
-  const width = Math.min(260, Math.max(0, window.innerWidth - (viewportInset * 2)));
+  const width = Math.min(260, Math.max(0, boundaryRight - boundaryLeft));
   tooltip.style.width = `${Math.round(width)}px`;
   tooltip.style.left = "0px";
   tooltip.style.top = "0px";
   tooltip.style.bottom = "auto";
   const height = tooltip.getBoundingClientRect().height;
   const buttonCenter = buttonRect.left + (buttonRect.width / 2);
-  const preferredLeft = buttonCenter - 16;
+  const preferredLeft = buttonCenter - (width / 2);
   const left = Math.max(
-    viewportInset,
-    Math.min(preferredLeft, window.innerWidth - viewportInset - width),
+    boundaryLeft,
+    Math.min(preferredLeft, boundaryRight - width),
   );
-  const spaceAbove = buttonRect.top - viewportInset - tooltipGap;
+  const spaceAbove = buttonRect.top - boundaryTop - tooltipGap;
   const direction = spaceAbove >= height ? "up" : "down";
   const top = direction === "up"
     ? buttonRect.top - tooltipGap - height
     : Math.min(
-      window.innerHeight - viewportInset - height,
+      boundaryBottom - height,
       buttonRect.bottom + tooltipGap,
     );
   const arrowCenter = Math.max(10, Math.min(width - 10, buttonCenter - left));
+  const clampedTop = Math.max(boundaryTop, top);
   tooltip.dataset.tooltipDirection = direction;
   tooltip.style.left = `${Math.round(left)}px`;
-  tooltip.style.top = `${Math.round(Math.max(viewportInset, top))}px`;
-  tooltip.style.setProperty("--playback-tooltip-arrow-left", `${arrowCenter - 5}px`);
+  tooltip.style.top = `${Math.round(clampedTop)}px`;
+  const positionedRect = tooltip.getBoundingClientRect();
+  const leftCorrection = left - positionedRect.left;
+  const topCorrection = clampedTop - positionedRect.top;
+  if (Math.abs(leftCorrection) > 0.5) {
+    tooltip.style.left = `${Math.round(left + leftCorrection)}px`;
+  }
+  if (Math.abs(topCorrection) > 0.5) {
+    tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
+  }
+  tooltip.style.setProperty("--contextual-tooltip-arrow-left", `${arrowCenter - 5}px`);
   return true;
 }
 
 function syncVisiblePlaybackContextualTooltipPosition() {
   state.playbackTooltipPositionFrame = null;
   document.querySelectorAll(
-    ".playback-contextual-info-region .cache-advanced-info.is-visible",
-  ).forEach(positionPlaybackContextualTooltip);
+    ".cache-advanced-info.is-visible",
+  ).forEach(positionContextualTooltip);
 }
 
 function schedulePlaybackContextualTooltipPositionSync() {
@@ -8849,7 +8956,6 @@ function schedulePlaybackContextualTooltipPositionSync() {
 function compactTopControlPopoverEntries() {
   return [
     [elements.remoteMiniTrigger, elements.remoteMiniPopover],
-    [elements.displaySettingsToggle, elements.displaySettingsPanel],
     [elements.presentationSettingsToggle, elements.presentationSettingsPanel],
     [elements.cacheSettingsToggle, elements.cachePanel],
   ];
@@ -8911,9 +9017,7 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   info.classList.add("is-visible");
   info.classList.toggle("is-pinned", pinned);
   info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
-  if (info.closest?.(".playback-contextual-info-region")) {
-    positionPlaybackContextualTooltip(info);
-  }
+  positionContextualTooltip(info);
   return true;
 }
 
@@ -9307,11 +9411,7 @@ function renderUpdatePreviewControl() {
         : t("service.checkUpdateTitle"),
     );
   }
-  if (elements.serviceUpdateIndicator) {
-    elements.serviceUpdateIndicator.classList.toggle("has-update", false);
-    elements.serviceUpdateIndicator.removeAttribute("aria-label");
-  }
-  syncUpdateIndicator(elements.advancedUpdateIndicator, eligible, accessibleText);
+  syncUpdateIndicator(elements.settingsUpdateIndicator, eligible, accessibleText);
   if (elements.updateVersionBadge) {
     setClassToggle(elements.updateVersionBadge, "hidden", !eligible);
     setTextContent(
@@ -9615,7 +9715,7 @@ function renderCachePolicyControls(cachePolicy) {
     (sourceOrder.get(left.value) ?? Number.MAX_SAFE_INTEGER)
       - (sourceOrder.get(right.value) ?? Number.MAX_SAFE_INTEGER)
   ));
-  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
+  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "native");
   const signature = JSON.stringify({
     choices,
     currentQuality,
@@ -9962,31 +10062,10 @@ function syncCachePanelVisibility(options = {}) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
   }
   setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
-  if (!state.cacheSettingsOpen) {
-    state.cacheAdvancedOpen = false;
-  }
-  if (!state.cacheAdvancedOpen) {
-    closeCacheAdvancedInfo();
-  }
-  setClassToggle(elements.cacheAdvancedInlineView, "hidden", !state.cacheAdvancedOpen);
-  if (elements.cachePanelAdvancedTrigger) {
-    elements.cachePanelAdvancedTrigger.setAttribute("aria-expanded", String(state.cacheAdvancedOpen));
-  }
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
   if (state.cacheSettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
-    scheduleTopControlPopoverPositionSync();
-  }
-}
-
-function syncDisplayPanelVisibility() {
-  const expanded = String(state.displaySettingsOpen);
-  if (elements.displaySettingsToggle && elements.displaySettingsToggle.getAttribute("aria-expanded") !== expanded) {
-    elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
-  }
-  setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
-  if (state.displaySettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
     scheduleTopControlPopoverPositionSync();
   }
 }
@@ -16078,6 +16157,7 @@ async function handleAdd(position, anchorPoint) {
   let originalText = "";
   if (button) {
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     originalText = button.textContent;
     button.textContent = t("search.adding") || "添加中...";
   }
@@ -16119,10 +16199,12 @@ async function handleAdd(position, anchorPoint) {
       setFormMessage(t("request.duplicateHint"));
       return;
     }
-    setFormMessage(error.message, true);
+    setFormMessage("");
+    setAppMessage(error.message, true);
   } finally {
     if (button) {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
       button.textContent = originalText;
     }
   }
@@ -17223,7 +17305,7 @@ function isDownkyiDownloadSource(downloadSource) {
 }
 
 function currentCacheDownloadSource() {
-  return String(state.data?.cache_policy?.download_source || "bbdown");
+  return String(state.data?.cache_policy?.download_source || "native");
 }
 
 function restoreCacheDownloadSourceSelect() {
@@ -18128,17 +18210,10 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
   if (state.cacheSettingsOpen) {
-    state.displaySettingsOpen = false;
     state.presentationSettingsOpen = false;
-    syncDisplayPanelVisibility();
     syncPresentationPanelVisibility();
   }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
-});
-
-elements.cachePanelAdvancedTrigger?.addEventListener("click", () => {
-  state.cacheAdvancedOpen = !state.cacheAdvancedOpen;
-  syncCachePanelVisibility();
 });
 
 document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
@@ -18295,24 +18370,11 @@ elements.remoteMiniPopoverClose?.addEventListener("click", () => {
   setRemoteQrPinned(false, { dismissTransient: true });
 });
 
-elements.displaySettingsToggle?.addEventListener("click", () => {
-  state.displaySettingsOpen = !state.displaySettingsOpen;
-  if (state.displaySettingsOpen) {
-    state.cacheSettingsOpen = false;
-    state.presentationSettingsOpen = false;
-    syncCachePanelVisibility();
-    syncPresentationPanelVisibility();
-  }
-  syncDisplayPanelVisibility();
-});
-
 elements.presentationSettingsToggle?.addEventListener("click", () => {
   state.presentationSettingsOpen = !state.presentationSettingsOpen;
   if (state.presentationSettingsOpen) {
     state.cacheSettingsOpen = false;
-    state.displaySettingsOpen = false;
     syncCachePanelVisibility();
-    syncDisplayPanelVisibility();
     refreshPresentationDisplays().catch(() => {});
   }
   syncPresentationPanelVisibility();
@@ -19391,11 +19453,6 @@ document.addEventListener("click", (event) => {
     syncCachePanelVisibility();
   }
 
-  if (state.displaySettingsOpen && !event.target.closest("#display-settings")) {
-    state.displaySettingsOpen = false;
-    syncDisplayPanelVisibility();
-  }
-
   const presentationClickPath = typeof event.composedPath === "function" ? event.composedPath() : [];
   const clickedInsidePresentationSettings = presentationClickPath.includes(
     elements.presentationSettings,
@@ -20198,7 +20255,8 @@ async function confirmGatchaCandidate(event = null) {
   try {
     const accepted = await submitAddRequest(url, "tail", { requesterName });
     if (!accepted) {
-      setGatchaMessage(t("error.requestFailed"), true);
+      setGatchaMessage("");
+      setAppMessage(t("error.requestFailed"), true);
       return false;
     }
     setFormMessage(t("gatcha.requestSuccess", { title }));
@@ -20242,7 +20300,8 @@ async function confirmGatchaCandidate(event = null) {
       });
       return false;
     }
-    setGatchaMessage(error.message, true);
+    setGatchaMessage("");
+    setAppMessage(error.message, true);
     return false;
   } finally {
     state.gatchaRequestBusy = false;
@@ -20409,7 +20468,10 @@ window.addEventListener("resize", () => {
   schedulePlaybackContextualTooltipPositionSync();
   syncAudioVariantOverflow();
 });
-window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
+window.addEventListener("scroll", () => {
+  scheduleConfirmPopoverPositionSync();
+  schedulePlaybackContextualTooltipPositionSync();
+}, true);
 
 window.addEventListener("pagehide", () => {
   const session = state.hostPlaybackSession;

@@ -65,6 +65,7 @@ scene.normalizePresentationScene({
                 "videoUrl",
                 "displayMetadata",
                 "theme",
+                "language",
                 "overlay",
             },
         )
@@ -74,6 +75,7 @@ scene.normalizePresentationScene({
         self.assertEqual(result["title"], "<b>Audience title</b>")
         self.assertEqual(result["videoUrl"], "https://forbidden.invalid/video.mp4")
         self.assertEqual(result["theme"], "light")
+        self.assertEqual(result["language"], "zh")
         for forbidden in (
             "audioUrl",
             "currentTime",

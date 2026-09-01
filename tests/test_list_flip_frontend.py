@@ -56,7 +56,7 @@ class FakeElement {
   focus() { this.focused = true; }
   querySelector() { return this.heading; }
 }
-const workspaces = ["queue", "history", "request", "random", "users"];
+const workspaces = ["queue", "history", "request", "random", "users", "settings"];
 const buttons = workspaces.map((workspace) => new FakeElement(workspace));
 const panels = workspaces.map((workspace) => new FakeElement(workspace, true));
 const queueButton = buttons[0];
@@ -175,14 +175,14 @@ function key(target, value) {
 }
 const sequence = [
   key(queueButton, "ArrowUp"),
-  key(buttons[4], "ArrowDown"),
+  key(buttons[5], "ArrowDown"),
   key(queueButton, "End"),
-  key(buttons[4], "Home"),
+  key(buttons[5], "Home"),
 ];
 console.log(JSON.stringify({ sequence }));
 """
         )
-        self.assertEqual(result["sequence"], ["users", "queue", "users", "queue"])
+        self.assertEqual(result["sequence"], ["settings", "queue", "settings", "queue"])
 
     def test_markup_places_actions_on_their_final_owners(self):
         player_panel = self.markup[

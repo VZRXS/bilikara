@@ -2,7 +2,7 @@
 
 const { chromium } = require("playwright");
 
-const [baseUrl, executablePath, screenshotPath] = process.argv.slice(2);
+const [baseUrl, executablePath, screenshotPath, runMode] = process.argv.slice(2);
 
 function assert(condition, message, detail = undefined) {
   if (!condition) {
@@ -41,6 +41,8 @@ async function run() {
   const requestEmptyScreenshotPath = suffixedPath(screenshotPath, "-request-empty-user");
   const requestEmptyDiscoverScreenshotPath = suffixedPath(screenshotPath, "-request-empty-discover");
   const requestEmptySearchScreenshotPath = suffixedPath(screenshotPath, "-request-empty-search-results");
+  const requestEmptyFavoritesScreenshotPath = suffixedPath(screenshotPath, "-request-empty-favorites");
+  const gatchaPrerequisiteScreenshotPath = suffixedPath(screenshotPath, "-gatcha-prerequisites");
   const usersEmptyScreenshotPath = suffixedPath(screenshotPath, "-users-empty-dot");
   const toolForwardTransitionScreenshotPath = suffixedPath(screenshotPath, "-tool-forward-transition");
   const toolBackwardTransitionScreenshotPath = suffixedPath(screenshotPath, "-tool-backward-transition");
@@ -354,6 +356,195 @@ async function run() {
     await page.waitForTimeout(1200);
     assert(updateCheckRequests.length === 1, "repeated renders or state polls repeated the startup update check", updateCheckRequests);
 
+    if (runMode === "settings-review") {
+      const paths = {
+        wide: suffixedPath(screenshotPath, "-wide-main"),
+        runtime: suffixedPath(screenshotPath, "-runtime-settings"),
+        settings: suffixedPath(screenshotPath, "-settings-workspace"),
+        update: suffixedPath(screenshotPath, "-settings-update-dot"),
+        narrow: suffixedPath(screenshotPath, "-narrow-settings"),
+      };
+      await page.setViewportSize({ width: 1400, height: 900 });
+      await page.locator("#work-rail-queue").click();
+      await page.waitForTimeout(220);
+      await page.screenshot({ path: paths.wide, fullPage: false });
+
+      await page.locator("#cache-settings-toggle").click();
+      await page.waitForTimeout(120);
+      await page.screenshot({ path: paths.runtime, fullPage: false });
+      await page.keyboard.press("Escape");
+
+      await page.evaluate(() => {
+        window.__TAURI__ = {
+          core: {
+            invoke: async (command) => {
+              if (command === "restart_application") return null;
+              throw new Error(`unexpected settings review invoke: ${command}`);
+            },
+          },
+        };
+        syncApplicationRestartAvailability();
+      });
+      await page.locator("#work-rail-settings").click();
+      await page.waitForTimeout(220);
+      await page.screenshot({ path: paths.settings, fullPage: false });
+      const maintenanceLayoutEvidence = await page.evaluate(() => {
+        const centerY = (element) => {
+          const rect = element.getBoundingClientRect();
+          return (rect.top + rect.bottom) / 2;
+        };
+        const updateTitle = document.querySelector("#app-update-row .cache-panel-label");
+        const updateControl = document.querySelector("#app-update-row .cache-update-upper-field");
+        const repairRow = document.querySelector("[data-i18n='service.playbackRepair']")?.closest(".cache-panel-row");
+        const restartRow = document.querySelector("#application-restart-row");
+        const restartTitle = restartRow?.querySelector(".cache-panel-label");
+        const restartButton = document.querySelector("#application-restart-button");
+        const body = document.querySelector(".settings-workspace-body");
+        const appearanceSection = document.querySelector("[aria-labelledby='settings-appearance-title']");
+        const maintenanceSection = document.querySelector("[aria-labelledby='settings-maintenance-title']");
+        const appearanceTag = appearanceSection?.querySelector(".section-tag");
+        const appearanceTitle = appearanceSection?.querySelector("h3");
+        const maintenanceTag = maintenanceSection?.querySelector(".section-tag");
+        const maintenanceTitle = maintenanceSection?.querySelector("h3");
+        const rect = (element) => element.getBoundingClientRect();
+        return {
+          updateCenterDelta: Math.abs(centerY(updateTitle) - centerY(updateControl)),
+          restartCenterDelta: Math.abs(centerY(restartTitle) - centerY(restartButton)),
+          repairBeforeRestart: Boolean(
+            repairRow
+              && restartRow
+              && (repairRow.compareDocumentPosition(restartRow) & Node.DOCUMENT_POSITION_FOLLOWING),
+          ),
+          headingLeftDelta: Math.max(
+            Math.abs(rect(appearanceTag).left - rect(maintenanceTag).left),
+            Math.abs(rect(appearanceTitle).left - rect(maintenanceTitle).left),
+          ),
+          eyebrowTitleGapDelta: Math.abs(
+            (rect(appearanceTitle).top - rect(appearanceTag).bottom)
+              - (rect(maintenanceTitle).top - rect(maintenanceTag).bottom),
+          ),
+          bodySectionGapDelta: Math.abs(
+            (rect(appearanceSection).top - rect(body).top)
+              - (rect(maintenanceSection).top - rect(appearanceSection).bottom),
+          ),
+          version: document.querySelector("#cache-panel-version")?.textContent?.trim() || "",
+        };
+      });
+
+      await page.evaluate(() => {
+        state.updateAutomaticEnabled = true;
+        state.updatePreviewEnabled = false;
+        state.data = {
+          ...state.data,
+          app_update: {
+            state: "available",
+            operation: "check",
+            include_preview: false,
+            updated_at: 14,
+            update_action: "normal_upgrade",
+            update_reason: "newer_version",
+            eligible_update: true,
+            update_available: true,
+            latest_version: "v0.8.1",
+            release_url: "https://example.test/releases/v0.8.1",
+            auto_update_supported: true,
+            message: "available",
+          },
+        };
+        renderUpdatePreviewControl();
+      });
+      const updateDotVisibleBeforeNavigation = await page.locator("#settings-update-indicator").isVisible();
+      await page.locator("#work-rail-queue").click();
+      await page.waitForTimeout(220);
+      await page.screenshot({ path: paths.update, fullPage: false });
+
+      await page.setViewportSize({ width: 760, height: 900 });
+      await page.locator("#work-rail-settings").click();
+      await page.waitForTimeout(260);
+      await page.evaluate(() => {
+        state.data.app_update = {
+          ...state.data.app_update,
+          state: "available",
+          operation: "check",
+          include_preview: false,
+          updated_at: 15,
+          update_action: "normal_upgrade",
+          update_reason: "newer_version",
+          eligible_update: true,
+          update_available: true,
+          latest_version: "v0.8.1",
+          auto_update_supported: true,
+        };
+        renderUpdatePreviewControl();
+      });
+      await page.screenshot({ path: paths.narrow, fullPage: false });
+      const evidence = await page.evaluate(() => {
+        const visibleWorkspaces = Array.from(document.querySelectorAll("[data-host-workspace-panel]"))
+          .filter((panel) => !panel.hidden)
+          .map((panel) => panel.dataset.hostWorkspacePanel);
+        const runtimeTitle = document.querySelector("#cache-settings-toggle .control-label")?.textContent?.trim();
+        const settingsButton = document.querySelector("#work-rail-settings");
+        const settingsPanel = document.querySelector("#host-workspace-settings");
+        return {
+          activeWorkspace: state.activeHostWorkspace,
+          visibleWorkspaces,
+          runtimeTitle,
+          displaySettingsPresent: Boolean(document.querySelector("#display-settings")),
+          settingsSelected: settingsButton?.getAttribute("aria-selected"),
+          settingsUpdateVisible: !document.querySelector("#settings-update-indicator")?.classList.contains("hidden"),
+          settingsPanelVisible: Boolean(settingsPanel?.offsetWidth || settingsPanel?.offsetHeight),
+          restartApplicationVisible: Boolean(document.querySelector("#application-restart-row")?.offsetHeight),
+          narrowLayout: elements.appShell?.dataset.narrowToolLayout || "",
+          playerFrameCount: document.querySelectorAll("#player-frame").length,
+        };
+      });
+      assert(evidence.runtimeTitle === "运行设置", "runtime settings title was not migrated", evidence);
+      assert(!evidence.displaySettingsPresent, "legacy display settings remained in the top bar", evidence);
+      assert(
+        evidence.activeWorkspace === "settings"
+          && evidence.visibleWorkspaces.join(",") === "settings"
+          && evidence.settingsSelected === "true"
+          && evidence.settingsPanelVisible,
+        "Settings did not reuse the Host workspace selection flow",
+        evidence,
+      );
+      assert(
+        updateDotVisibleBeforeNavigation && evidence.settingsUpdateVisible,
+        "available update did not persist on the Settings rail entry across navigation",
+        { updateDotVisibleBeforeNavigation, evidence },
+      );
+      assert(evidence.restartApplicationVisible, "desktop restart action was not retained in Settings", evidence);
+      assert(
+        maintenanceLayoutEvidence.updateCenterDelta <= 1
+          && maintenanceLayoutEvidence.restartCenterDelta <= 1,
+        "maintenance first-line labels were not vertically centered with their controls",
+        maintenanceLayoutEvidence,
+      );
+      assert(
+        maintenanceLayoutEvidence.headingLeftDelta <= 1
+          && maintenanceLayoutEvidence.eyebrowTitleGapDelta <= 1
+          && maintenanceLayoutEvidence.bodySectionGapDelta <= 1,
+        "Appearance and System section heading geometry was not unified",
+        maintenanceLayoutEvidence,
+      );
+      assert(
+        maintenanceLayoutEvidence.repairBeforeRestart,
+        "playback repair did not precede application restart",
+        maintenanceLayoutEvidence,
+      );
+      assert(
+        maintenanceLayoutEvidence.version === "bilikara v0.8.0",
+        "Settings footer did not expose the v0.8.0 release version",
+        maintenanceLayoutEvidence,
+      );
+      assert(evidence.playerFrameCount === 1, "workspace navigation remounted the player frame", evidence);
+      assert(consoleErrors.length === 0 && pageErrors.length === 0, "settings review produced runtime errors", {
+        consoleErrors,
+        pageErrors,
+      });
+      return { passed: true, identity, evidence, paths, consoleErrors, pageErrors };
+    }
+
     const startupReadinessEvidence = await page.evaluate(() => {
       const originalData = state.data;
       const originalRemoteSignature = state.remoteAccessRenderSignature;
@@ -537,7 +728,6 @@ async function run() {
         toolbarHeight: document.querySelector(".topbar")?.getBoundingClientRect().height || 0,
         globalActions: [
           "#remote-mini-trigger",
-          "#display-settings-toggle",
           "#presentation-settings-toggle",
           "#cache-settings-toggle",
         ].map((selector) => {
@@ -551,9 +741,15 @@ async function run() {
             labelSize: Number.parseFloat(getComputedStyle(action.querySelector(".control-label")).fontSize),
           };
         }),
-        serviceUsesGear: document.querySelectorAll("#cache-settings-toggle .global-action-icon circle").length === 1
+        serviceUsesRuntimeGauge: document.querySelectorAll("#cache-settings-toggle .global-action-icon circle").length === 3
           && document.querySelector("#cache-settings-toggle .global-action-icon path")
-            ?.getAttribute("d")?.startsWith("M12.22 2h-.44"),
+            ?.getAttribute("d") === "M3 12A9 9 0 1 1 18.36 18.36"
+          && document.querySelectorAll("#cache-settings-toggle .global-action-icon path")[1]
+            ?.getAttribute("d") === "m12 12 4.3-4.8"
+          && document.querySelectorAll("#cache-settings-toggle .global-action-icon path")[3]
+            ?.getAttribute("d") === "M3 20.2h12",
+        settingsUsesGear: document.querySelector("#work-rail-settings .work-rail-icon path")
+          ?.getAttribute("d")?.startsWith("M12.22 2h-.44"),
         stageControlIconPath: elements.stageControlsToggle.querySelector("path")?.getAttribute("d") || "",
         stageControlTheme: {
           background: getComputedStyle(elements.stageControlsToggle).backgroundColor,
@@ -602,11 +798,12 @@ async function run() {
       shellInitial.globalActions,
     );
     assert(
-      shellInitial.serviceUsesGear
+      shellInitial.serviceUsesRuntimeGauge
+        && shellInitial.settingsUsesGear
         && shellInitial.stageControlIconPath === "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
         && shellInitial.stageControlTheme.background !== "rgba(0, 0, 0, 0)"
         && shellInitial.stageControlTheme.background !== shellInitial.stageControlTheme.color,
-      "Host Service did not use a distinct gear or playback Controls did not reuse the Remote icon on a theme button",
+      "Runtime and global Settings icons were not semantically distinct, or playback Controls lost the Remote icon",
       shellInitial,
     );
     assert(
@@ -686,12 +883,27 @@ async function run() {
       incomingContentAnimation: getComputedStyle(
         document.querySelector("#host-workspace-history").firstElementChild,
       ).animationName,
+      incomingContentEasing: getComputedStyle(
+        document.querySelector("#host-workspace-history").firstElementChild,
+      ).animationTimingFunction,
       outgoingSurfaceTransform: getComputedStyle(
         document.querySelector("#host-workspace-queue"),
       ).transform,
       incomingSurfaceTransform: getComputedStyle(
         document.querySelector("#host-workspace-history"),
       ).transform,
+      outgoingSurfaceBackground: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).backgroundColor,
+      outgoingSurfaceBorderColor: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).borderTopColor,
+      outgoingSurfaceShadow: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).boxShadow,
+      incomingSurfaceBackground: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).backgroundColor,
       stableNodes: document.querySelector("#host-workspace-queue") === window.__hostShellQueueNodes.queue
         && document.querySelector("#host-workspace-history") === window.__hostShellQueueNodes.history
         && elements.playlist === window.__hostShellQueueNodes.playlist
@@ -707,8 +919,13 @@ async function run() {
         && directHistory.incomingSurfaceAnimation === "none"
         && directHistory.outgoingContentAnimation === "host-tool-content-forward-out"
         && directHistory.incomingContentAnimation === "host-tool-content-forward-in"
+        && directHistory.incomingContentEasing === "cubic-bezier(0.16, 1, 0.3, 1)"
         && directHistory.outgoingSurfaceTransform === "none"
         && directHistory.incomingSurfaceTransform === "none"
+        && directHistory.outgoingSurfaceBackground === "rgba(0, 0, 0, 0)"
+        && directHistory.outgoingSurfaceBorderColor === "rgba(0, 0, 0, 0)"
+        && directHistory.outgoingSurfaceShadow === "none"
+        && directHistory.incomingSurfaceBackground !== "rgba(0, 0, 0, 0)"
         && directHistory.stableNodes,
       "History did not use the forward rail-order transition on stable workspace nodes",
       directHistory,
@@ -737,12 +954,27 @@ async function run() {
       incomingContentAnimation: getComputedStyle(
         document.querySelector("#host-workspace-queue").firstElementChild,
       ).animationName,
+      incomingContentEasing: getComputedStyle(
+        document.querySelector("#host-workspace-queue").firstElementChild,
+      ).animationTimingFunction,
       outgoingSurfaceTransform: getComputedStyle(
         document.querySelector("#host-workspace-history"),
       ).transform,
       incomingSurfaceTransform: getComputedStyle(
         document.querySelector("#host-workspace-queue"),
       ).transform,
+      outgoingSurfaceBackground: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).backgroundColor,
+      outgoingSurfaceBorderColor: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).borderTopColor,
+      outgoingSurfaceShadow: getComputedStyle(
+        document.querySelector("#host-workspace-history"),
+      ).boxShadow,
+      incomingSurfaceBackground: getComputedStyle(
+        document.querySelector("#host-workspace-queue"),
+      ).backgroundColor,
     }));
     assert(
       backwardTransition.direction === "backward"
@@ -750,8 +982,13 @@ async function run() {
         && backwardTransition.incomingSurfaceAnimation === "none"
         && backwardTransition.outgoingContentAnimation === "host-tool-content-backward-out"
         && backwardTransition.incomingContentAnimation === "host-tool-content-backward-in"
+        && backwardTransition.incomingContentEasing === "cubic-bezier(0.16, 1, 0.3, 1)"
         && backwardTransition.outgoingSurfaceTransform === "none"
-        && backwardTransition.incomingSurfaceTransform === "none",
+        && backwardTransition.incomingSurfaceTransform === "none"
+        && backwardTransition.outgoingSurfaceBackground === "rgba(0, 0, 0, 0)"
+        && backwardTransition.outgoingSurfaceBorderColor === "rgba(0, 0, 0, 0)"
+        && backwardTransition.outgoingSurfaceShadow === "none"
+        && backwardTransition.incomingSurfaceBackground !== "rgba(0, 0, 0, 0)",
       "Queue did not use the backward rail-order transition",
       backwardTransition,
     );
@@ -799,7 +1036,7 @@ async function run() {
     );
     await shellPage.keyboard.press("End");
     assert(
-      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "users"
+      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "settings"
         && await shellPage.evaluate(() => state.activeHostWorkspace) === "queue",
       "End did not move rail focus without activation",
     );
@@ -810,7 +1047,7 @@ async function run() {
     );
     await shellPage.keyboard.press("ArrowUp");
     assert(
-      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "users",
+      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "settings",
       "ArrowUp did not wrap manual rail focus",
     );
     await shellPage.keyboard.press("Space");
@@ -822,10 +1059,10 @@ async function run() {
         .map((panel) => panel.dataset.hostWorkspacePanel))],
     }));
     assert(
-      navigationState.active === "users"
-        && navigationState.activeElement === "workspace-users-heading"
-        && navigationState.visible.join(",") === "users",
-      "Space activation did not select Users and focus its heading",
+      navigationState.active === "settings"
+        && navigationState.activeElement === "workspace-settings-heading"
+        && navigationState.visible.join(",") === "settings",
+      "Space activation did not select Settings and focus its heading",
       navigationState,
     );
     await shellPage.locator("#work-rail-request").focus();
@@ -1781,7 +2018,7 @@ async function run() {
     assert(nextButtonNode, "Next was not owned by Queue's current-song card");
     const nextVisibility = {};
     await shellPage.locator("#next-button").click();
-    for (const workspace of ["queue", "history", "request", "random", "users"]) {
+    for (const workspace of ["queue", "history", "request", "random", "users", "settings"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
       await shellPage.waitForTimeout(180);
       nextVisibility[workspace] = await shellPage.locator("#next-button").isVisible();
@@ -1798,7 +2035,7 @@ async function run() {
     assert(
       nextEvidence.calls.join(",") === "queue"
         && nextVisibility.queue
-        && ["history", "request", "random", "users"].every((workspace) => !nextVisibility[workspace])
+        && ["history", "request", "random", "users", "settings"].every((workspace) => !nextVisibility[workspace])
         && nextEvidence.oneButton === 1
         && nextEvidence.sameButton
         && nextEvidence.sameSession
@@ -1905,7 +2142,7 @@ async function run() {
     }
 
     const wideWidths = {};
-    for (const workspace of ["queue", "history", "request", "random", "users"]) {
+    for (const workspace of ["queue", "history", "request", "random", "users", "settings"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
       wideWidths[workspace] = await shellPage.evaluate(() => ({
         workspace: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
@@ -2021,11 +2258,10 @@ async function run() {
     );
 
     await shellPage.locator("#work-rail-queue").click();
-    await shellPage.locator("#display-settings-toggle").click();
-    assert(await shellPage.locator("#display-settings-panel").isVisible(), "compact toolbar lost Display settings");
-    await shellPage.keyboard.press("Escape");
+    await shellPage.locator("#work-rail-settings").click();
+    assert(await shellPage.locator("#host-workspace-settings").isVisible(), "compact shell lost the Settings workspace");
     await shellPage.locator("#cache-settings-toggle").click();
-    assert(await shellPage.locator("#cache-panel").isVisible(), "compact toolbar lost Service settings");
+    assert(await shellPage.locator("#cache-panel").isVisible(), "compact toolbar lost Runtime settings");
     await shellPage.keyboard.press("Escape");
 
     const shellWideScreenshotPath = suffixedPath(screenshotPath, "-wide");
@@ -2072,7 +2308,7 @@ async function run() {
         inert: elements.hostWorkspaceRegion.inert,
       }));
       const tools = {};
-      for (const workspace of ["queue", "history", "request", "random", "users"]) {
+      for (const workspace of ["queue", "history", "request", "random", "users", "settings"]) {
         await shellPage.locator(`#work-rail-${workspace}`).click();
         if (initialToolSheet.layout === "overlay") {
           const expanded = await shellPage.locator(`#work-rail-${workspace}`).getAttribute("aria-expanded");
@@ -2125,6 +2361,7 @@ async function run() {
             request: ["#workspace-request-heading", "#host-workspace-request .request-subview-tabs"],
             random: ["#gatcha-title", "#gatcha-panel .gatcha-head-actions"],
             users: ["#workspace-users-heading", null],
+            settings: ["#workspace-settings-heading", null],
           };
           const [headingSelector, actionsSelector] = headerSelectors[name] || [];
           const headingRect = headingSelector
@@ -2484,6 +2721,37 @@ async function run() {
         && inlineControlFrames.every(([, frame]) => frame.tools.queue.controlsOpen),
       "no width-and-height-fit frame expanded the one control deck inline by default",
       responsiveFrames,
+    );
+
+    await shellPage.setViewportSize({ width: 1024, height: 1400 });
+    await shellPage.waitForTimeout(160);
+    await shellPage.setViewportSize({ width: 1024, height: 1300 });
+    await shellPage.waitForTimeout(180);
+    const narrowControlsAfterHeightReduction = await shellPage.evaluate(() => {
+      const player = elements.playerPanel.getBoundingClientRect();
+      const tray = elements.stageControlTray.getBoundingClientRect();
+      const region = elements.hostWorkspaceRegion.getBoundingClientRect();
+      return {
+        toolLayout: elements.appShell.dataset.narrowToolLayout,
+        controlLayout: elements.appShell.dataset.stageControlsLayout,
+        controlsOpen: state.stageControlTrayOpen
+          && !elements.stageControlTray.hidden
+          && !elements.stageControlTray.inert,
+        triggerHidden: !elements.stageControlsToggle.offsetWidth
+          && !elements.stageControlsToggle.offsetHeight,
+        workspaceBelowStage: region.top >= player.bottom + 8,
+        unusedStageAfterControls: player.bottom - tray.bottom,
+      };
+    });
+    assert(
+      narrowControlsAfterHeightReduction.toolLayout === "resident"
+        && narrowControlsAfterHeightReduction.controlLayout === "inline"
+        && narrowControlsAfterHeightReduction.controlsOpen
+        && narrowControlsAfterHeightReduction.triggerHidden
+        && narrowControlsAfterHeightReduction.workspaceBelowStage
+        && narrowControlsAfterHeightReduction.unusedStageAfterControls <= 12,
+      "reducing a tall narrow window kept a fit playback deck collapsed after the resident layout settled",
+      narrowControlsAfterHeightReduction,
     );
 
     await shellPage.setViewportSize({ width: 1240, height: 800 });
@@ -2954,12 +3222,55 @@ async function run() {
     await shellPage.setViewportSize({ width: 1600, height: 900 });
     await shellPage.waitForTimeout(120);
     await shellPage.locator("#work-rail-random").click();
+    const gatchaPrerequisiteEvidence = await shellPage.evaluate(() => {
+      state.data = {
+        ...(state.data || {}),
+        session_users: [],
+        bbdown: {
+          ...(state.data?.bbdown || {}),
+          login: { logged_in: false },
+          logged_in: false,
+        },
+      };
+      renderRequesterSelect([]);
+      renderGatchaWorkspace();
+      const login = elements.gatchaLoginNotice.getBoundingClientRect();
+      const users = elements.gatchaSessionUserNotice.getBoundingClientRect();
+      const loginStyle = getComputedStyle(elements.gatchaLoginNotice);
+      return {
+        loginVisible: !elements.gatchaLoginNotice.hidden,
+        usersVisible: !elements.gatchaSessionUserNotice.hidden,
+        ordered: users.top >= login.bottom - 1,
+        border: loginStyle.borderTopWidth,
+        background: loginStyle.backgroundColor,
+        drawDisabled: elements.gatchaButton.disabled,
+      };
+    });
+    assert(
+      gatchaPrerequisiteEvidence.loginVisible
+        && gatchaPrerequisiteEvidence.usersVisible
+        && gatchaPrerequisiteEvidence.ordered
+        && gatchaPrerequisiteEvidence.border === "0px"
+        && gatchaPrerequisiteEvidence.background === "rgba(0, 0, 0, 0)"
+        && gatchaPrerequisiteEvidence.drawDisabled,
+      "Gatcha did not expose ordered borderless login and Session User prerequisites",
+      gatchaPrerequisiteEvidence,
+    );
+    if (gatchaPrerequisiteScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaPrerequisiteScreenshotPath, fullPage: false });
+    }
     const gatchaInitial = await shellPage.evaluate(() => {
       state.data = {
         ...(state.data || {}),
         session_users: ["Exact Requester"],
+        bbdown: {
+          ...(state.data?.bbdown || {}),
+          login: { logged_in: true },
+          logged_in: true,
+        },
       };
       renderRequesterSelect(state.data.session_users);
+      renderGatchaWorkspace();
       elements.requesterSelect.value = "Exact Requester";
       window.__gatchaNodes = {
         panel: elements.gatchaPanel,
@@ -2977,6 +3288,9 @@ async function run() {
           .filter((view) => !view.hidden)
           .map((view) => view.dataset.gatchaView),
         drawVisible: !elements.gatchaButton.hidden,
+        drawDisabled: elements.gatchaButton.disabled,
+        loginNoticeHidden: elements.gatchaLoginNotice.hidden,
+        sessionNoticeHidden: elements.gatchaSessionUserNotice.hidden,
         poolVisible: !elements.gatchaPoolConfigToggle.hidden,
         candidateCount: document.querySelectorAll("#gatcha-panel").length,
         poolCount: document.querySelectorAll("#gatcha-pool-config-modal").length,
@@ -2989,6 +3303,9 @@ async function run() {
         && gatchaInitial.candidate === null
         && gatchaInitial.visibleViews.join(",") === "idle"
         && gatchaInitial.drawVisible
+        && !gatchaInitial.drawDisabled
+        && gatchaInitial.loginNoticeHidden
+        && gatchaInitial.sessionNoticeHidden
         && gatchaInitial.poolVisible
         && gatchaInitial.candidateCount === 1
         && gatchaInitial.poolCount === 1
@@ -3249,12 +3566,16 @@ async function run() {
     const failedAdd = await shellPage.evaluate(() => ({
       candidate: state.gatchaCandidate?.bvid,
       message: state.gatchaMessage,
+      toast: elements.appToast.textContent.trim(),
+      toastError: elements.appToast.classList.contains("is-error"),
       call: window.__gatchaAddCalls.at(-1),
       quickDraft: elements.urlInput.value,
     }));
     assert(
       failedAdd.candidate === "BVADDFAIL"
-        && failedAdd.message === "visible add failure"
+        && failedAdd.message === ""
+        && failedAdd.toast === "visible add failure"
+        && failedAdd.toastError
         && failedAdd.call.url.endsWith("BVADDFAIL")
         && failedAdd.call.position === "tail"
         && failedAdd.call.options.requesterName === "Exact Requester"
@@ -3269,7 +3590,9 @@ async function run() {
     await shellPage.waitForFunction(() => !state.gatchaRequestBusy);
     assert(
       await shellPage.evaluate(() => state.gatchaCandidate?.bvid === "BVADDSTALE"
-        && state.gatchaMessageIsError),
+        && !state.gatchaMessage
+        && elements.appToast.classList.contains("is-error")
+        && !elements.appToast.classList.contains("hidden")),
       "stale Gatcha add cleared its candidate",
     );
 
@@ -3974,7 +4297,24 @@ async function run() {
       frame: elements.playerFrame,
       video: state.hostPlaybackSession?.video,
       audio: state.hostPlaybackSession?.audio,
+      enterIconCount: elements.playerFullscreenButton.querySelectorAll(".fullscreen-enter-icon").length,
+      enterIconWidth: elements.playerFullscreenButton.querySelector(".fullscreen-enter-icon")
+        ?.getBoundingClientRect().width || 0,
+      enterIconPath: elements.playerFullscreenButton.querySelector(".fullscreen-enter-icon path")
+        ?.getAttribute("d") || "",
+      actionIconsDisplay: getComputedStyle(
+        elements.playerFullscreenButton.querySelector(".fullscreen-action-icons"),
+      ).display,
     }));
+    assert(
+      fullscreenIdentityBefore.enterIconCount === 1
+        && fullscreenIdentityBefore.enterIconWidth >= 18
+        && fullscreenIdentityBefore.enterIconPath
+          === "M14 10l6-6M15 4h5v5M10 14l-6 6M4 15v5h5"
+        && fullscreenIdentityBefore.actionIconsDisplay === "none",
+      "windowed Stage did not show the paired enter-fullscreen icon",
+      fullscreenIdentityBefore,
+    );
     const fullscreenPlayerRequestsBefore = shellPlayerRequests.length;
     await shellPage.locator("#player-fullscreen-button").click();
     await shellPage.waitForFunction(() => document.fullscreenElement === elements.playerPanel);
@@ -4027,6 +4367,13 @@ async function run() {
         visible: getComputedStyle(elements.playerFullscreenRemotePopover).visibility === "visible",
         phoneIcons: elements.playerFullscreenButton.querySelectorAll(".fullscreen-phone-icon").length,
         exitIcons: elements.playerFullscreenButton.querySelectorAll(".fullscreen-exit-icon").length,
+        phoneWidth: elements.playerFullscreenButton.querySelector(".fullscreen-phone-icon")
+          .getBoundingClientRect().width,
+        exitHoverLabel: elements.playerFullscreenButton.querySelector(".fullscreen-exit-hover-label")
+          .textContent.trim(),
+        exitHoverLabelOpacity: getComputedStyle(
+          elements.playerFullscreenButton.querySelector(".fullscreen-exit-hover-label"),
+        ).opacity,
         label: elements.playerFullscreenButton.getAttribute("aria-label"),
       };
     });
@@ -4034,6 +4381,9 @@ async function run() {
       playerFullscreenRemoteEvidence.visible
         && playerFullscreenRemoteEvidence.phoneIcons === 1
         && playerFullscreenRemoteEvidence.exitIcons === 1
+        && playerFullscreenRemoteEvidence.phoneWidth <= 1
+        && playerFullscreenRemoteEvidence.exitHoverLabel === "退出全屏"
+        && Number(playerFullscreenRemoteEvidence.exitHoverLabelOpacity) >= 0.99
         && playerFullscreenRemoteEvidence.popup.top >= playerFullscreenRemoteEvidence.button.bottom
         && playerFullscreenRemoteEvidence.popup.right <= playerFullscreenRemoteEvidence.button.right + 1
         && playerFullscreenRemoteEvidence.popup.left < playerFullscreenRemoteEvidence.button.left
@@ -5728,9 +6078,8 @@ async function run() {
       await page.locator("#stage-controls-close").click();
     }
 
-    await page.locator("#cache-settings-toggle").click();
-    await page.locator("#cache-panel-advanced-trigger").click();
-    const cachePanel = page.locator("#cache-panel");
+    await page.locator("#work-rail-settings").click();
+    const settingsPanel = page.locator("#host-workspace-settings");
     const confirmPopover = page.locator("#confirm-popover");
 
     await page.locator("#data-reset-button").click();
@@ -5748,22 +6097,20 @@ async function run() {
     );
     await page.locator("#confirm-cancel").click();
     assert(!await confirmPopover.isVisible(), "child Cancel did not close its confirmation");
-    assert(await cachePanel.isVisible(), "child Cancel closed the parent service-settings menu");
+    assert(await settingsPanel.isVisible(), "child Cancel closed the Settings workspace");
 
     await page.locator("#player-reset-button").click();
     await page.locator("#confirm-ok").click();
     await confirmPopover.waitFor({ state: "hidden" });
-    assert(await cachePanel.isVisible(), "child Confirm closed the parent service-settings menu");
+    assert(await settingsPanel.isVisible(), "child Confirm closed the Settings workspace");
 
     await page.locator("#data-reset-button").click();
     await page.keyboard.press("Escape");
-    assert(!await confirmPopover.isVisible(), "Escape did not close the service-settings child layer");
-    assert(await cachePanel.isVisible(), "one Escape closed both child and parent settings layers");
+    assert(!await confirmPopover.isVisible(), "Escape did not close the Settings child layer");
+    assert(await settingsPanel.isVisible(), "one Escape closed the Settings workspace with its child layer");
     await page.keyboard.press("Escape");
-    assert(!await cachePanel.isVisible(), "a later Escape did not close parent service settings");
+    assert(await settingsPanel.isVisible(), "ordinary Escape unexpectedly closed the resident Settings workspace");
 
-    await page.locator("#cache-settings-toggle").click();
-    await page.locator("#cache-panel-advanced-trigger").click();
     const allAdvancedInfoButtons = page.locator("#cache-advanced-inline-view .cache-advanced-info-button");
     const advancedInfoRegions = page.locator("#cache-advanced-inline-view .cache-contextual-info-region:visible");
     const advancedInfoButtons = page.locator("#cache-advanced-inline-view .cache-advanced-info-button:visible");
@@ -5888,8 +6235,8 @@ async function run() {
     assert(await page.locator(".cache-advanced-info.is-visible").count() === 1, "Host exposed more than one explanation");
     await page.locator("#cache-panel-version").click();
     assert(await page.locator(".cache-advanced-info.is-visible").count() === 0, "outside click did not close pinned Host information");
-    assert(await cachePanel.isVisible(), "outside information click closed the parent service-settings panel");
-    assert(await page.locator("#cache-advanced-inline-view").isVisible(), "outside information click closed advanced settings");
+    assert(await settingsPanel.isVisible(), "outside information click closed the Settings workspace");
+    assert(await page.locator("#cache-advanced-inline-view").isVisible(), "outside information click hid system maintenance");
 
     await advancedInfoButtons.nth(1).click();
     await page.keyboard.press("Escape");
@@ -5898,8 +6245,8 @@ async function run() {
       await advancedInfoButtons.nth(1).evaluate((element) => document.activeElement === element),
       "Escape moved focus away from the Host information trigger",
     );
-    assert(await cachePanel.isVisible(), "information Escape closed the parent service-settings panel");
-    assert(await page.locator("#cache-advanced-inline-view").isVisible(), "information Escape closed advanced settings");
+    assert(await settingsPanel.isVisible(), "information Escape closed the Settings workspace");
+    assert(await page.locator("#cache-advanced-inline-view").isVisible(), "information Escape hid system maintenance");
 
     const serviceHealthClass = await page.locator("#service-status-indicator").getAttribute("class");
     await page.evaluate(() => {
@@ -5922,8 +6269,7 @@ async function run() {
         state.data.app_update = nextUpdate;
         renderUpdatePreviewControl();
         return {
-          outerUpdateRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
-          advancedIndicator: !elements.advancedUpdateIndicator.classList.contains("hidden"),
+          settingsIndicator: !elements.settingsUpdateIndicator.classList.contains("hidden"),
           rowHighlighted: elements.appUpdateRow.classList.contains("has-update"),
           versionBadge: elements.updateVersionBadge.classList.contains("hidden")
             ? ""
@@ -5931,11 +6277,17 @@ async function run() {
           buttonText: elements.updateCheckButton.textContent,
           statusText: elements.appUpdateStatus.textContent,
           automaticChecked: elements.updateAutomaticCheckbox.checked,
-          menuIndicatorAccessible: elements.advancedUpdateIndicator.getAttribute("aria-label"),
+          settingsIndicatorAccessible: elements.settingsUpdateIndicator.getAttribute("aria-label"),
           versionBadgeBorder: getComputedStyle(elements.updateVersionBadge).borderTopWidth,
           versionBadgeBackground: getComputedStyle(elements.updateVersionBadge).backgroundColor,
-          versionTitleBottom: elements.appUpdateRow.querySelector(".cache-panel-label").getBoundingClientRect().bottom,
-          versionBadgeTop: elements.updateVersionBadge.getBoundingClientRect().top,
+          versionTitleCenter: (() => {
+            const rect = elements.appUpdateRow.querySelector(".cache-panel-label").getBoundingClientRect();
+            return (rect.top + rect.bottom) / 2;
+          })(),
+          versionBadgeCenter: (() => {
+            const rect = elements.updateVersionBadge.getBoundingClientRect();
+            return (rect.top + rect.bottom) / 2;
+          })(),
           previewTop: elements.updatePreviewCheckbox.closest("label").getBoundingClientRect().top,
           automaticTop: elements.updateAutomaticCheckbox.closest("label").getBoundingClientRect().top,
           buttonWidth: elements.updateCheckButton.getBoundingClientRect().width,
@@ -5960,7 +6312,7 @@ async function run() {
     for (const [name, update] of Object.entries(noBadgeStates)) {
       const rendered = await renderUpdateState(update);
       assert(
-        !rendered.outerUpdateRing && !rendered.advancedIndicator
+        !rendered.settingsIndicator
           && !rendered.rowHighlighted && !rendered.versionBadge,
         `${name} update state showed an availability badge`,
         rendered,
@@ -5985,28 +6337,29 @@ async function run() {
     const installableRendered = await renderUpdateState(installableUpdate);
     const shortUpdateLabel = await page.evaluate(() => t("service.update"));
     assert(
-      !installableRendered.outerUpdateRing && installableRendered.advancedIndicator
+      installableRendered.settingsIndicator
         && !installableRendered.rowHighlighted
         && installableRendered.versionBadge.includes("v0.8.1")
         && installableRendered.buttonText === shortUpdateLabel
         && installableRendered.statusText === ""
         && installableRendered.versionBadgeBorder !== "0px"
         && installableRendered.versionBadgeBackground !== "rgba(0, 0, 0, 0)"
-        && installableRendered.versionBadgeTop >= installableRendered.versionTitleBottom
+        && Math.abs(
+          installableRendered.versionBadgeCenter - installableRendered.versionTitleCenter
+        ) <= 1.5
         && installableRendered.previewTop < installableRendered.automaticTop
         && Math.abs(installableRendered.buttonHeight - installableRendered.peerButtonHeight) <= 1
         && installableRendered.buttonTextFits
-        && installableRendered.menuIndicatorAccessible?.includes("v0.8.1"),
-      "eligible installable update did not keep its marker inside Service, show the exact version, and keep a short action",
+        && installableRendered.settingsIndicatorAccessible?.includes("v0.8.1"),
+      "eligible installable update did not mark Settings, show the exact version, and keep a short action",
       installableRendered,
     );
     assert(
       await page.locator("#service-status-indicator").getAttribute("class") === serviceHealthClass,
       "update availability altered the independent service-health indicator",
     );
-    await page.locator("#cache-panel-advanced-trigger").click();
-    assert(!await page.locator("#cache-advanced-inline-view").isVisible(), "advanced settings did not collapse for indicator proof");
-    assert(await page.locator("#advanced-update-indicator").isVisible(), "collapsed advanced entry hid the update indicator");
+    await page.locator("#work-rail-queue").click();
+    assert(await page.locator("#settings-update-indicator").isVisible(), "leaving Settings cleared the update indicator");
     const updateDotThemeEvidence = await page.evaluate(() => {
       const previousTheme = document.documentElement.dataset.theme || "light";
       const colors = {};
@@ -6015,14 +6368,14 @@ async function run() {
         const rootStyle = getComputedStyle(document.documentElement);
         colors[theme] = {
           token: rootStyle.getPropertyValue("--update-available-dot").trim(),
-          rendered: getComputedStyle(elements.advancedUpdateIndicator).backgroundColor,
+          rendered: getComputedStyle(elements.settingsUpdateIndicator).backgroundColor,
         };
       }
       document.documentElement.dataset.theme = previousTheme;
       const usersButton = document.querySelector("#work-rail-users");
       usersButton.classList.add("needs-attention");
       const attentionDot = getComputedStyle(usersButton, "::after");
-      const updateDot = getComputedStyle(elements.advancedUpdateIndicator);
+      const updateDot = getComputedStyle(elements.settingsUpdateIndicator);
       const geometry = {
         attention: {
           width: attentionDot.width,
@@ -6045,10 +6398,10 @@ async function run() {
         && new Set(Object.values(updateDotThemeEvidence.colors).map(({ rendered }) => rendered)).size === 3
         && JSON.stringify(updateDotThemeEvidence.geometry.attention)
           === JSON.stringify(updateDotThemeEvidence.geometry.update),
-      "Service-menu update dot did not match the Session Users attention dot across themes",
+      "Settings update dot did not match the Session Users attention dot across themes",
       updateDotThemeEvidence,
     );
-    await page.locator("#cache-panel-advanced-trigger").click();
+    await page.locator("#work-rail-settings").click();
 
     await renderUpdateState(installableUpdate);
     await page.locator("#update-check-button").click();
@@ -6126,8 +6479,7 @@ async function run() {
     await page.locator('label[for="update-automatic-checkbox"]').click();
     const automaticOffRendered = await page.evaluate(() => ({
       automatic: state.updateAutomaticEnabled,
-      outerRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
-      menuDot: !elements.advancedUpdateIndicator.classList.contains("hidden"),
+      settingsDot: !elements.settingsUpdateIndicator.classList.contains("hidden"),
       row: elements.appUpdateRow.classList.contains("has-update"),
       badgeHidden: elements.updateVersionBadge.classList.contains("hidden"),
       status: elements.appUpdateStatus.textContent,
@@ -6135,8 +6487,7 @@ async function run() {
     }));
     assert(
       !automaticOffRendered.automatic
-        && !automaticOffRendered.outerRing
-        && !automaticOffRendered.menuDot
+        && !automaticOffRendered.settingsDot
         && !automaticOffRendered.row
         && automaticOffRendered.badgeHidden
         && !automaticOffRendered.status
@@ -6166,7 +6517,7 @@ async function run() {
       updateCheckRequests,
     );
     assert(
-      !await page.locator("#service-update-indicator").evaluate((element) => element.classList.contains("has-update")),
+      !await page.locator("#settings-update-indicator").isVisible(),
       "stable result remained highlighted while the preview channel was being re-evaluated",
     );
     assert(updateInstallRequests.length === 1, "preview toggle caused automatic installation");
@@ -6177,12 +6528,12 @@ async function run() {
       latest_version: "v0.9.0-preview.1",
     }, true);
     assert(
-      !previewRendered.outerUpdateRing && previewRendered.advancedIndicator,
-      "eligible preview result did not become current inside the Service menu",
+      previewRendered.settingsIndicator,
+      "eligible preview result did not become current inside Settings",
     );
     const staleStableRendered = await renderUpdateState(installableUpdate, true);
     assert(
-      !staleStableRendered.outerUpdateRing && !staleStableRendered.advancedIndicator,
+      !staleStableRendered.settingsIndicator,
       "stale stable result overwrote the selected preview channel",
     );
     await renderUpdateState({
@@ -6295,10 +6646,13 @@ async function run() {
     );
     await remotePopover.locator(".remote-mini-popover-card").click({ position: { x: 12, y: 12 } });
     assert(await remotePopover.isVisible(), "clicking inside the QR popup closed it");
-    assert(await cachePanel.isVisible(), "QR popup interaction closed parent service settings");
+    assert(await settingsPanel.isVisible(), "QR popup interaction closed the Settings workspace");
     assert(
-      Number(await remotePopover.evaluate((element) => getComputedStyle(element).zIndex))
-        > Number(await cachePanel.evaluate((element) => getComputedStyle(element).zIndex)),
+      await remotePopover.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + (rect.width / 2), rect.top + 12);
+        return Boolean(hit && element.contains(hit));
+      }),
       "QR popup was not above Host settings surfaces",
     );
     await page.evaluate(() => { window.__TAURI__ = {}; });
@@ -6314,7 +6668,7 @@ async function run() {
     await page.evaluate(() => { delete window.__TAURI__; });
     await page.locator("#remote-mini-popover-close").click();
     assert(!await remotePopover.isVisible(), "explicit QR close action did not close the popup");
-    assert(await cachePanel.isVisible(), "explicit QR close action closed parent service settings");
+    assert(await settingsPanel.isVisible(), "explicit QR close action closed the Settings workspace");
     await remoteTrigger.click();
     await page.keyboard.press("Escape");
     const qrEscapeEvidence = await page.evaluate(() => ({
@@ -6326,12 +6680,12 @@ async function run() {
       rowMenu: Boolean(state.openRowMenuTrigger),
     }));
     assert(!await remotePopover.isVisible(), "Escape did not close pinned QR popup", qrEscapeEvidence);
-    assert(await cachePanel.isVisible(), "QR Escape closed parent service settings");
+    assert(await settingsPanel.isVisible(), "QR Escape closed the Settings workspace");
     assert(await page.locator("#remote-mini-popover").count() === 1, "QR popup nodes were duplicated");
     await remoteTrigger.click();
     await page.locator("h1").click();
     assert(!await remotePopover.isVisible(), "true outside click did not close pinned QR popup");
-    assert(!await cachePanel.isVisible(), "true outside click did not retain parent outside-click behavior");
+    assert(await settingsPanel.isVisible(), "outside QR click unexpectedly closed the Settings workspace");
 
     await page.locator("#work-rail-request").click();
     await page.locator('[data-request-view="quick"]').click();
@@ -6410,13 +6764,78 @@ async function run() {
     const requestTabsWithNotice = [];
     for (const view of ["search", "discover", "sources", "quick"]) {
       await page.locator(`[data-request-view="${view}"]`).click();
-      requestTabsWithNotice.push({ view, visible: await requestUserNotice.isVisible() });
+      requestTabsWithNotice.push(await page.evaluate((activeView) => {
+        const notice = elements.requestSessionUserNotice;
+        const subview = elements.requestWorkspace.querySelector(`[data-request-panel="${activeView}"]`);
+        const visibleInput = Array.from(subview?.querySelectorAll("input") || [])
+          .find((input) => input.getClientRects().length > 0);
+        const secondaryTabs = subview?.querySelector(".request-mode-tabs");
+        const geometry = () => ({
+          inputTop: visibleInput?.getBoundingClientRect().top ?? null,
+          tabsTop: secondaryTabs?.getBoundingClientRect().top ?? null,
+        });
+        const withNotice = geometry();
+        notice.hidden = true;
+        notice.setAttribute("aria-hidden", "true");
+        syncRequestSessionUserNoticePlacement();
+        const withoutNotice = geometry();
+        notice.hidden = false;
+        notice.setAttribute("aria-hidden", "false");
+        syncRequestSessionUserNoticePlacement();
+        const noticeRect = notice.getBoundingClientRect();
+        const inputRect = visibleInput?.getBoundingClientRect();
+        const tabsRect = secondaryTabs?.getBoundingClientRect();
+        return {
+          view: activeView,
+          visible: Boolean(notice.offsetWidth || notice.offsetHeight),
+          owner: notice.parentElement?.id || notice.parentElement?.className || "",
+          afterInput: !inputRect || noticeRect.top >= inputRect.bottom - 1,
+          afterSecondaryTabs: !tabsRect || noticeRect.top >= tabsRect.bottom - 1,
+          inputStable: withNotice.inputTop === withoutNotice.inputTop,
+          tabsStable: withNotice.tabsTop === withoutNotice.tabsTop,
+        };
+      }, view));
     }
     assert(
-      requestTabsWithNotice.every((entry) => entry.visible),
-      "one or more Request tabs hid the empty-user notice",
+      requestTabsWithNotice.every((entry) => entry.visible
+        && entry.afterInput
+        && entry.afterSecondaryTabs
+        && entry.inputStable
+        && entry.tabsStable),
+      "one or more Request tabs misplaced the empty-user notice or shifted controls above it",
       requestTabsWithNotice,
     );
+
+    await page.locator('[data-request-view="sources"]').click();
+    await page.locator('[data-sources-mode="favorites"]').click();
+    await page.waitForTimeout(80);
+    const favoriteNoticeLayout = await page.evaluate(() => {
+      state.favlistBrowseSelectedFolderId = "";
+      state.favlistBrowseData = { folders: [], items: [] };
+      state.favlistBrowseRenderSignature = "";
+      renderFavlistBrowse();
+      const action = document.querySelector("#request-sources-favorites .source-action-row")
+        .getBoundingClientRect();
+      const notice = elements.requestSessionUserNotice.getBoundingClientRect();
+      const firstCard = elements.favlistGrid.firstElementChild?.getBoundingClientRect();
+      return {
+        noticeAfterSearch: notice.top >= action.bottom - 1,
+        cardAfterNotice: Boolean(firstCard) && firstCard.top >= notice.bottom - 1,
+        noticeGap: notice.top - action.bottom,
+        cardGap: firstCard ? firstCard.top - notice.bottom : null,
+      };
+    });
+    assert(
+      favoriteNoticeLayout.noticeAfterSearch
+        && favoriteNoticeLayout.cardAfterNotice
+        && favoriteNoticeLayout.noticeGap <= 14
+        && favoriteNoticeLayout.cardGap <= 16,
+      "Favorites warning or cards did not follow the search row in document order",
+      favoriteNoticeLayout,
+    );
+    if (requestEmptyFavoritesScreenshotPath) {
+      await page.screenshot({ path: requestEmptyFavoritesScreenshotPath, fullPage: false });
+    }
 
     await page.locator('[data-request-view="search"]').click();
     await page.locator('[data-search-mode="shared"]').click();
@@ -6465,6 +6884,42 @@ async function run() {
       "Local search rendered a second no-result card below its status message",
       localEmptyEvidence,
     );
+
+    const requestFailureToastEvidence = await page.evaluate(async () => {
+      const originalSubmitAddRequest = submitAddRequest;
+      state.data = { ...(state.data || {}), session_users: ["Toast Tester"] };
+      renderRequesterSelect(state.data.session_users);
+      elements.requesterSelect.value = "Toast Tester";
+      setLarkSearchMessage(t("request.parsing"));
+      submitAddRequest = async () => { throw new Error("HTTP 412"); };
+      try {
+        await handleAddByUrl("BV1ToastFailure", "tail", null, "lark");
+      } finally {
+        submitAddRequest = originalSubmitAddRequest;
+      }
+      const evidence = {
+        toastVisible: !elements.appToast.classList.contains("hidden"),
+        toastText: elements.appToast.textContent.trim(),
+        toastError: elements.appToast.classList.contains("is-error"),
+        inlineText: elements.larkSearchMessage.textContent.trim(),
+      };
+      state.data = { ...(state.data || {}), session_users: [] };
+      renderRequesterSelect([]);
+      return evidence;
+    });
+    assert(
+      requestFailureToastEvidence.toastVisible
+        && requestFailureToastEvidence.toastText === "HTTP 412"
+        && requestFailureToastEvidence.toastError
+        && !requestFailureToastEvidence.inlineText,
+      "request action failure stayed inline instead of using the bottom red toast",
+      requestFailureToastEvidence,
+    );
+    await page.evaluate(() => {
+      if (state.appToastTimer) window.clearTimeout(state.appToastTimer);
+      state.appToastTimer = null;
+      elements.appToast.classList.add("hidden");
+    });
 
     await page.locator('[data-request-view="discover"]').click();
     await page.evaluate(() => activateDiscoverMode("name"));
@@ -6679,14 +7134,24 @@ async function run() {
       overflowingMetrics,
     );
     await page.setViewportSize({ width: 840, height: 1000 });
-    assert(
-      await sessionUserList.evaluate((element) => element.scrollHeight > element.clientHeight),
-      "responsive resize lost overflowing user-list ownership",
-    );
-    await page.locator("#cache-settings-toggle").click();
-    if (!await page.locator("#cache-advanced-inline-view").isVisible()) {
-      await page.locator("#cache-panel-advanced-trigger").click();
+    await page.waitForTimeout(220);
+    if (await page.locator("#session-users-panel").evaluate((element) => element.hidden)) {
+      await page.locator("#work-rail-users").click();
     }
+    await page.waitForTimeout(220);
+    const resizedOverflowingMetrics = await sessionUserList.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      childCount: element.children.length,
+      panelHidden: element.closest("[data-host-workspace-panel]")?.hidden,
+      activeWorkspace: document.querySelector("#host-workspace-region")?.dataset.activeWorkspace,
+    }));
+    assert(
+      resizedOverflowingMetrics.scrollHeight > resizedOverflowingMetrics.clientHeight,
+      "responsive resize lost overflowing user-list ownership",
+      resizedOverflowingMetrics,
+    );
+    await page.locator("#work-rail-settings").click();
     for (let index = 0; index < await advancedInfoButtons.count(); index += 1) {
       const infoButton = advancedInfoButtons.nth(index);
       await advancedInfoRegions.nth(index).locator(".cache-panel-label").hover();
@@ -7065,8 +7530,7 @@ async function run() {
     await coarsePage.locator("#stage-control-tray .stage-control-tray-head strong").tap();
     assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
     await coarsePage.locator("#stage-controls-close").tap();
-    await coarsePage.locator("#cache-settings-toggle").click();
-    await coarsePage.locator("#cache-panel-advanced-trigger").click();
+    await coarsePage.locator("#work-rail-settings").click();
     await coarsePage.locator('label[for="update-automatic-checkbox"]').tap();
     assert(
       !await coarsePage.locator("#update-automatic-checkbox").isChecked()
@@ -7296,9 +7760,8 @@ async function run() {
     const compactTopMenuEvidence = [];
     for (const entry of [
       ["remote", "#remote-mini-trigger", "#remote-mini-popover"],
-      ["display", "#display-settings-toggle", "#display-settings-panel"],
       ["presentation", "#presentation-settings-toggle", "#presentation-settings-panel"],
-      ["service", "#cache-settings-toggle", "#cache-panel"],
+      ["runtime", "#cache-settings-toggle", "#cache-panel"],
     ]) {
       const [name, triggerSelector, popupSelector] = entry;
       await titlebarPage.locator(triggerSelector).click();
@@ -7332,14 +7795,14 @@ async function run() {
       compactTopMenuEvidence.every((entry) => (
         entry.anchorDelta <= 1 && entry.opensDown && entry.insideViewport
       ))
-        && new Set(compactTopMenuEvidence.map((entry) => Math.round(entry.popupLeft))).size >= 3,
+        && new Set(compactTopMenuEvidence.map((entry) => Math.round(entry.popupLeft))).size >= 2,
       "compact top menus ignored their own trigger anchors or escaped the viewport",
       compactTopMenuEvidence,
     );
 
-    await titlebarPage.locator("#display-settings-toggle").click();
+    await titlebarPage.locator("#work-rail-settings").click();
     const ultraDisplayEvidence = await titlebarPage.evaluate(() => {
-      const panel = document.querySelector("#display-settings-panel");
+      const panel = document.querySelector("#host-workspace-settings");
       const panelRect = panel.getBoundingClientRect();
       return {
         toolbarDirection: getComputedStyle(document.querySelector(".topbar")).flexDirection,
@@ -7347,27 +7810,29 @@ async function run() {
         height: panelRect.height,
         leftGap: panelRect.left,
         rightGap: innerWidth - panelRect.right,
-        rowDirections: Array.from(panel.querySelectorAll(":scope > .cache-panel-row"))
+        rowDirections: Array.from(panel.querySelectorAll(".settings-control-row"))
           .map((row) => getComputedStyle(row).flexDirection),
+        selected: document.querySelector("#work-rail-settings").getAttribute("aria-selected"),
+        legacyTopEntry: Boolean(document.querySelector("#display-settings")),
         horizontalPageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
       };
     });
     assert(
       ultraDisplayEvidence.toolbarDirection === "row"
-        && ultraDisplayEvidence.width >= 330
-        && ultraDisplayEvidence.width <= 342
-        && ultraDisplayEvidence.height < 260
-        && ultraDisplayEvidence.leftGap >= 12
+        && ultraDisplayEvidence.width >= 300
+        && ultraDisplayEvidence.height >= 300
+        && ultraDisplayEvidence.leftGap >= 0
         && ultraDisplayEvidence.rightGap >= 8
         && ultraDisplayEvidence.rowDirections.every((direction) => direction === "row")
+        && ultraDisplayEvidence.selected === "true"
+        && !ultraDisplayEvidence.legacyTopEntry
         && !ultraDisplayEvidence.horizontalPageScroll,
-      "ultra-narrow Display settings revived a full-width/stacked mobile menu",
+      "narrow Settings workspace did not reuse the resident Host tool layout",
       ultraDisplayEvidence,
     );
     if (ultraDisplayScreenshotPath) {
       await titlebarPage.screenshot({ path: ultraDisplayScreenshotPath, fullPage: false });
     }
-    await titlebarPage.keyboard.press("Escape");
 
     await titlebarPage.locator("#remote-mini-trigger").click();
     const ultraRemoteEvidence = await titlebarPage.evaluate(() => {
@@ -7589,7 +8054,7 @@ async function run() {
             title: "副屏播放窗口",
             videoUrl: "",
             displayMetadata: { requester: "本场用户", duration: "03:40", detail: "Bilikara" },
-            theme: "light",
+            theme: "blue",
             overlay: {
               visible: true,
               heading: "NEXT SONG",
@@ -7606,6 +8071,7 @@ async function run() {
               totalText: "",
             },
           },
+          language: "en",
           clock: {
             itemIdentity: "output-proof-song",
             mediaTime: 72,
@@ -7641,6 +8107,8 @@ async function run() {
         videoCount: document.querySelectorAll("video[data-presentation-output-video]").length,
         overlayVisible: Boolean(document.querySelector(".player-delay-overlay")),
         status: document.querySelector("#controller-status").textContent.trim(),
+        language: document.documentElement.lang,
+        theme: document.documentElement.dataset.theme,
       };
     });
     assert(
@@ -7653,6 +8121,8 @@ async function run() {
         && outputLayoutEvidence.exitLabel.length > 0
         && outputLayoutEvidence.phoneIcons === 1
         && outputLayoutEvidence.exitIcons === 1
+        && outputLayoutEvidence.language === "en"
+        && outputLayoutEvidence.theme === "blue"
         && outputLayoutEvidence.playbackControlCount === 0
         && outputLayoutEvidence.overlayVisible,
       "audience output did not retain a true fullscreen surface with the upper-right QR/exit affordance",
@@ -7670,6 +8140,12 @@ async function run() {
         button: { left: button.left, top: button.top, right: button.right, bottom: button.bottom },
         popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
         link: document.querySelector("#controller-remote-url-link").href,
+        phoneWidth: document.querySelector(".presentation-output-phone-icon")
+          .getBoundingClientRect().width,
+        exitHoverLabel: document.querySelector(".presentation-output-exit-label").textContent.trim(),
+        exitHoverLabelOpacity: getComputedStyle(
+          document.querySelector(".presentation-output-exit-label"),
+        ).opacity,
       };
     });
     assert(
@@ -7677,7 +8153,10 @@ async function run() {
         && outputRemoteEvidence.popup.top >= outputRemoteEvidence.button.bottom
         && outputRemoteEvidence.popup.right <= outputRemoteEvidence.button.right + 1
         && outputRemoteEvidence.popup.left < outputRemoteEvidence.button.left
-        && outputRemoteEvidence.link === "http://192.0.2.44:8000/remote",
+        && outputRemoteEvidence.link === "http://192.0.2.44:8000/remote"
+        && outputRemoteEvidence.phoneWidth <= 1
+        && outputRemoteEvidence.exitHoverLabel === "Exit Fullscreen"
+        && Number(outputRemoteEvidence.exitHoverLabelOpacity) >= 0.99,
       "dual-screen output QR popup did not open toward the lower left with the LAN URL",
       outputRemoteEvidence,
     );
@@ -7748,10 +8227,8 @@ async function run() {
       });
       renderPresentationDisplayList();
       state.cacheSettingsOpen = false;
-      state.displaySettingsOpen = false;
       state.presentationSettingsOpen = true;
       syncCachePanelVisibility();
-      syncDisplayPanelVisibility();
       syncPresentationPanelVisibility();
       const manual = {
         targetSectionVisible: !elements.presentationHostTargetSection.classList.contains("hidden"),
@@ -7859,6 +8336,8 @@ async function run() {
           requestEmpty: requestEmptyScreenshotPath,
           requestEmptyDiscover: requestEmptyDiscoverScreenshotPath,
           requestEmptySearch: requestEmptySearchScreenshotPath,
+          requestEmptyFavorites: requestEmptyFavoritesScreenshotPath,
+          gatchaPrerequisites: gatchaPrerequisiteScreenshotPath,
           usersEmpty: usersEmptyScreenshotPath,
           dualScreenHost: presentationHostScreenshotPath,
           dualScreenHostNarrow: presentationHostNarrowScreenshotPath,

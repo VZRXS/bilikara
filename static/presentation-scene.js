@@ -37,6 +37,7 @@
    * @property {string} videoUrl
    * @property {{requester: string, duration: string, detail: string}} displayMetadata
    * @property {"light"|"dark"|"blue"} theme
+   * @property {"zh"|"en"|"ja"} language
    * @property {Object|null} overlay
    */
 
@@ -86,6 +87,7 @@
         detail: text(metadata.detail),
       },
       theme: supportedThemes.has(scene.theme) ? scene.theme : "light",
+      language: ["zh", "en", "ja"].includes(scene.language) ? scene.language : "zh",
       overlay: normalizeOverlay(scene.overlay),
     };
   }

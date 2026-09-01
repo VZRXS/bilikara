@@ -38,12 +38,13 @@ class AppUpdateFrontendTest(unittest.TestCase):
         start_index = self.source.index(start)
         return self.source[start_index : self.source.index(end, start_index)]
 
-    def test_update_preferences_keep_marker_inside_service_menu(self):
+    def test_update_preferences_and_marker_live_in_settings_workspace(self):
         self.assertIn('updateAutomatic: "bilikara.update.automatic"', self.source)
         self.assertIn("updateAutomaticEnabled: true", self.source)
         self.assertIn('id="update-automatic-checkbox"', self.html)
-        self.assertIn('id="service-update-indicator"', self.html)
-        self.assertIn('id="advanced-update-indicator"', self.html)
+        self.assertIn('id="settings-update-indicator"', self.html)
+        self.assertNotIn('id="service-update-indicator"', self.html)
+        self.assertNotIn('id="advanced-update-indicator"', self.html)
         self.assertIn('id="update-version-badge"', self.html)
         self.assertIn('id="app-update-status"', self.html)
         self.assertIn('class="service-status-wrap"', self.html)
@@ -54,7 +55,7 @@ class AppUpdateFrontendTest(unittest.TestCase):
             self.html.index('for="update-automatic-checkbox"'),
         )
         self.assertNotIn(".service-status-ring.has-update", self.css)
-        self.assertIn(".app-update-indicator", self.css)
+        self.assertIn(".work-rail-update-dot", self.css)
         self.assertIn("--update-available-dot: var(--accent)", self.css)
         update_button_rule = self.css[
             self.css.index(".cache-update-button {") : self.css.index(
@@ -202,8 +203,8 @@ class FakeElement {{
 function element(id = "") {{ const value = new FakeElement(); value.id = id; return value; }}
 const elements = {{
   updateAutomaticCheckbox: element(), updatePreviewCheckbox: element(),
-  updateCheckButton: element("update-check-button"), serviceUpdateIndicator: element(),
-  advancedUpdateIndicator: element(), appUpdateRow: element(), appUpdateStatus: element(),
+  updateCheckButton: element("update-check-button"), settingsUpdateIndicator: element(),
+  appUpdateRow: element(), appUpdateStatus: element(),
   updateVersionBadge: element(), cacheSettings: element(),
 }};
 const state = {{
@@ -234,8 +235,7 @@ async function apiPost(path, payload) {{ posts.push({{ path, payload }}); return
 {operation_source}
 function indicatorState() {{
   return {{
-    service: elements.serviceUpdateIndicator.classList.contains("has-update"),
-    advanced: !elements.advancedUpdateIndicator.classList.contains("hidden"),
+    settings: !elements.settingsUpdateIndicator.classList.contains("hidden"),
     row: elements.appUpdateRow.classList.contains("has-update"),
     badge: !elements.updateVersionBadge.classList.contains("hidden"),
     button: elements.updateCheckButton.textContent,
@@ -286,24 +286,21 @@ function indicatorState() {{
         result = self.run_node(script)
         for name in ("unknown", "checking", "current", "failed", "stalePreview"):
             with self.subTest(name=name):
-                self.assertFalse(result["states"][name]["service"])
-                self.assertFalse(result["states"][name]["advanced"])
+                self.assertFalse(result["states"][name]["settings"])
                 self.assertFalse(result["states"][name]["row"])
                 self.assertFalse(result["states"][name]["badge"])
         for name in ("installable", "viewOnly"):
             with self.subTest(name=name):
-                self.assertFalse(result["states"][name]["service"])
-                self.assertTrue(result["states"][name]["advanced"])
+                self.assertTrue(result["states"][name]["settings"])
                 self.assertFalse(result["states"][name]["row"])
                 self.assertTrue(result["states"][name]["badge"])
         self.assertEqual(result["states"]["installable"]["button"], "service.update:")
         self.assertEqual(result["states"]["installable"]["status"], "")
         self.assertEqual(result["states"]["viewOnly"]["button"], "service.viewVersion:v0.8.2")
-        self.assertFalse(result["states"]["automaticOff"]["service"])
+        self.assertFalse(result["states"]["automaticOff"]["settings"])
         self.assertFalse(result["states"]["automaticOff"]["badge"])
         self.assertEqual(result["states"]["automaticOff"]["button"], "service.checkUpdate:")
-        self.assertFalse(result["states"]["manualVisible"]["service"])
-        self.assertTrue(result["states"]["manualVisible"]["advanced"])
+        self.assertTrue(result["states"]["manualVisible"]["settings"])
         self.assertFalse(result["states"]["manualVisible"]["row"])
         self.assertEqual(result["states"]["manualVisible"]["status"], "")
         self.assertEqual(result["messagesBeforeActions"], 0)

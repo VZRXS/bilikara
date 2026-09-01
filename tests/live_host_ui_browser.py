@@ -32,6 +32,7 @@ def main(args: argparse.Namespace) -> int:
         os.environ["BILIKARA_HOST"] = "127.0.0.1"
         os.environ["BILIKARA_PORT"] = "0"
         os.environ["BILIKARA_REQUIRE_RUST_LIB"] = "1"
+        os.environ["BILIKARA_VERSION"] = "v0.8.0"
 
         from http.server import ThreadingHTTPServer
 
@@ -53,6 +54,8 @@ def main(args: argparse.Namespace) -> int:
         ]
         if args.screenshot:
             command.append(str(Path(args.screenshot).resolve()))
+        if args.mode:
+            command.append(args.mode)
         try:
             completed = subprocess.run(
                 command,
@@ -85,4 +88,5 @@ if __name__ == "__main__":
     parser.add_argument("--playwright-module-root")
     parser.add_argument("--chromium")
     parser.add_argument("--screenshot")
+    parser.add_argument("--mode")
     raise SystemExit(main(parser.parse_args()))

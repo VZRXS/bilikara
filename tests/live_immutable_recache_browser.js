@@ -239,32 +239,18 @@ async function installReplacementObserver(page) {
 }
 
 async function clickCurrentRecache(page) {
-  const settingsToggle = page.locator("#cache-settings-toggle");
-  if ((await settingsToggle.getAttribute("aria-expanded")) !== "true") {
-    await settingsToggle.click();
-  }
-  const advancedToggle = page.locator("#cache-panel-advanced-trigger");
-  if ((await advancedToggle.getAttribute("aria-expanded")) !== "true") {
-    await advancedToggle.click();
-  }
+  await page.locator("#work-rail-settings").click();
   const button = page.locator("#current-cache-retry-button");
   await button.click();
   await waitFor(
     async () => (await button.getAttribute("aria-busy")) !== "true",
     "current recache button remained busy",
   );
-  await settingsToggle.click();
+  await page.locator("#work-rail-queue").click();
 }
 
 async function clickPlayerReset(page) {
-  const settingsToggle = page.locator("#cache-settings-toggle");
-  if ((await settingsToggle.getAttribute("aria-expanded")) !== "true") {
-    await settingsToggle.click();
-  }
-  const advancedToggle = page.locator("#cache-panel-advanced-trigger");
-  if ((await advancedToggle.getAttribute("aria-expanded")) !== "true") {
-    await advancedToggle.click();
-  }
+  await page.locator("#work-rail-settings").click();
   await page.locator("#player-reset-button").click();
   const confirm = page.locator("#confirm-popover");
   assert(
@@ -550,14 +536,7 @@ async function failedPlayerReset(page) {
     });
   }, { times: 1 });
 
-  const settingsToggle = page.locator("#cache-settings-toggle");
-  if ((await settingsToggle.getAttribute("aria-expanded")) !== "true") {
-    await settingsToggle.click();
-  }
-  const advancedToggle = page.locator("#cache-panel-advanced-trigger");
-  if ((await advancedToggle.getAttribute("aria-expanded")) !== "true") {
-    await advancedToggle.click();
-  }
+  await page.locator("#work-rail-settings").click();
   await page.locator("#player-reset-button").click();
   const responsePromise = page.waitForResponse(
     (response) => response.url() === `${baseUrl}/api/player/reset`
