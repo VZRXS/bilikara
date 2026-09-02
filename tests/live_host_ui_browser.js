@@ -847,10 +847,14 @@ async function run() {
         nextInQueueCurrent: Boolean(document.querySelector("#queue-current #next-button")),
         nextInStage: Boolean(document.querySelector(".player-panel #next-button")),
         nextCount: document.querySelectorAll("#next-button").length,
-        transitionVeilOpacity: Number(getComputedStyle(
-          elements.hostWorkspaceRegion,
-          "::after",
+        railHighlightReady: elements.hostWorkspaceRail?.dataset.highlightReady || "",
+        railHighlightOpacity: Number(getComputedStyle(
+          elements.hostWorkspaceRail,
+          "::before",
         ).opacity),
+        selectedButtonBackground: getComputedStyle(
+          document.querySelector("#work-rail-queue"),
+        ).backgroundColor,
       };
     });
     assert(
@@ -861,7 +865,9 @@ async function run() {
         && directListInitial.nextInQueueCurrent
         && !directListInitial.nextInStage
         && directListInitial.nextCount === 1
-        && directListInitial.transitionVeilOpacity === 0,
+        && directListInitial.railHighlightReady === "true"
+        && directListInitial.railHighlightOpacity === 1
+        && directListInitial.selectedButtonBackground === "rgba(0, 0, 0, 0)",
       "Queue was not the one accessible default direct list workspace",
       directListInitial,
     );
@@ -909,14 +915,17 @@ async function run() {
       incomingSurfaceBackground: getComputedStyle(
         document.querySelector("#host-workspace-history"),
       ).backgroundColor,
-      transitionVeilAnimation: getComputedStyle(
-        elements.hostWorkspaceRegion,
-        "::after",
-      ).animationName,
-      transitionVeilOpacity: Number(getComputedStyle(
-        elements.hostWorkspaceRegion,
-        "::after",
-      ).opacity),
+      railHighlightTransition: getComputedStyle(
+        elements.hostWorkspaceRail,
+        "::before",
+      ).transitionDuration,
+      railHighlightTransform: getComputedStyle(
+        elements.hostWorkspaceRail,
+        "::before",
+      ).transform,
+      activeButtonBackground: getComputedStyle(
+        document.querySelector("#work-rail-history"),
+      ).backgroundColor,
       stableNodes: document.querySelector("#host-workspace-queue") === window.__hostShellQueueNodes.queue
         && document.querySelector("#host-workspace-history") === window.__hostShellQueueNodes.history
         && elements.playlist === window.__hostShellQueueNodes.playlist
@@ -930,18 +939,18 @@ async function run() {
         && directHistory.historyVisible
         && directHistory.outgoingSurfaceAnimation === "none"
         && directHistory.incomingSurfaceAnimation === "none"
-        && directHistory.outgoingContentAnimation === "host-tool-content-forward-out"
-        && directHistory.incomingContentAnimation === "host-tool-content-forward-in"
-        && directHistory.incomingContentEasing === "cubic-bezier(0.16, 1, 0.3, 1)"
+        && directHistory.outgoingContentAnimation === "host-tool-content-out"
+        && directHistory.incomingContentAnimation === "host-tool-content-in"
+        && directHistory.incomingContentEasing === "linear"
         && directHistory.outgoingSurfaceTransform === "none"
         && directHistory.incomingSurfaceTransform === "none"
         && directHistory.outgoingSurfaceBackground === "rgba(0, 0, 0, 0)"
         && directHistory.outgoingSurfaceBorderColor === "rgba(0, 0, 0, 0)"
         && directHistory.outgoingSurfaceShadow === "none"
         && directHistory.incomingSurfaceBackground !== "rgba(0, 0, 0, 0)"
-        && directHistory.transitionVeilAnimation === "host-tool-transition-veil"
-        && directHistory.transitionVeilOpacity >= 0.35
-        && directHistory.transitionVeilOpacity <= 0.47
+        && directHistory.railHighlightTransition.split(",").map((value) => value.trim()).includes("0.21s")
+        && directHistory.railHighlightTransform !== "none"
+        && directHistory.activeButtonBackground === "rgba(0, 0, 0, 0)"
         && directHistory.stableNodes,
       "History did not use the forward rail-order transition on stable workspace nodes",
       directHistory,
@@ -949,13 +958,15 @@ async function run() {
     if (toolForwardTransitionScreenshotPath) {
       await shellPage.screenshot({ path: toolForwardTransitionScreenshotPath, fullPage: false });
     }
-    await shellPage.waitForTimeout(120);
+    await shellPage.waitForTimeout(130);
     const settledForwardTransition = await shellPage.evaluate(() => ({
       direction: elements.hostWorkspaceRegion.dataset.toolTransitionDirection || "",
-      veilOpacity: Number(getComputedStyle(elements.hostWorkspaceRegion, "::after").opacity),
+      incomingAnimation: getComputedStyle(
+        document.querySelector("#host-workspace-history").firstElementChild,
+      ).animationName,
     }));
     assert(
-      !settledForwardTransition.direction && settledForwardTransition.veilOpacity === 0,
+      !settledForwardTransition.direction && settledForwardTransition.incomingAnimation === "none",
       "forward tool transition did not settle promptly",
       settledForwardTransition,
     );
@@ -1001,9 +1012,9 @@ async function run() {
       backwardTransition.direction === "backward"
         && backwardTransition.outgoingSurfaceAnimation === "none"
         && backwardTransition.incomingSurfaceAnimation === "none"
-        && backwardTransition.outgoingContentAnimation === "host-tool-content-backward-out"
-        && backwardTransition.incomingContentAnimation === "host-tool-content-backward-in"
-        && backwardTransition.incomingContentEasing === "cubic-bezier(0.16, 1, 0.3, 1)"
+        && backwardTransition.outgoingContentAnimation === "host-tool-content-out"
+        && backwardTransition.incomingContentAnimation === "host-tool-content-in"
+        && backwardTransition.incomingContentEasing === "linear"
         && backwardTransition.outgoingSurfaceTransform === "none"
         && backwardTransition.incomingSurfaceTransform === "none"
         && backwardTransition.outgoingSurfaceBackground === "rgba(0, 0, 0, 0)"
@@ -1018,12 +1029,69 @@ async function run() {
     }
     await shellPage.waitForTimeout(120);
     await shellPage.locator("#work-rail-history").click();
-    await shellPage.waitForTimeout(180);
+    await shellPage.waitForTimeout(200);
     assert(
       shellPlayedSessionRequests.length === 1,
       "History direct switching repeated its bounded lazy session load",
       shellPlayedSessionRequests,
     );
+    await shellPage.locator("#work-rail-request").click();
+    await shellPage.waitForTimeout(24);
+    await shellPage.locator("#work-rail-random").click();
+    await shellPage.waitForTimeout(24);
+    await shellPage.locator("#work-rail-users").click();
+    const rapidTransitionInFlight = await shellPage.evaluate(() => ({
+      active: state.activeHostWorkspace,
+      target: state.hostWorkspaceTransition?.to || "",
+      animatedPanels: Array.from(elements.hostWorkspacePanels || [])
+        .filter((panel) => (
+          panel.classList.contains("is-tool-transition-in")
+          || panel.classList.contains("is-tool-transition-out")
+          || panel.classList.contains("is-tool-transition-resume")
+        ))
+        .map((panel) => panel.dataset.hostWorkspacePanel),
+    }));
+    assert(
+      rapidTransitionInFlight.active === "users"
+        && rapidTransitionInFlight.target === "users"
+        && rapidTransitionInFlight.animatedPanels.length <= 2,
+      "rapid tool switching queued or retained an intermediate target",
+      rapidTransitionInFlight,
+    );
+    await shellPage.waitForTimeout(230);
+    const rapidTransitionSettled = await shellPage.evaluate(() => {
+      const usersPanel = document.querySelector("#session-users-panel");
+      const usersButton = document.querySelector("#work-rail-users");
+      return {
+        active: state.activeHostWorkspace,
+        transition: state.hostWorkspaceTransition,
+        visible: Array.from(elements.hostWorkspacePanels || [])
+          .filter((panel) => !panel.hidden)
+          .map((panel) => panel.dataset.hostWorkspacePanel),
+        animatedPanels: document.querySelectorAll(
+          ".is-tool-transition-in, .is-tool-transition-out, .is-tool-transition-resume",
+        ).length,
+        contentOpacity: Number(getComputedStyle(usersPanel.firstElementChild).opacity),
+        contentTransform: getComputedStyle(usersPanel.firstElementChild).transform,
+        highlightY: Number.parseFloat(
+          elements.hostWorkspaceRail.style.getPropertyValue("--work-rail-highlight-y"),
+        ),
+        targetY: usersButton.offsetTop,
+      };
+    });
+    assert(
+      rapidTransitionSettled.active === "users"
+        && rapidTransitionSettled.transition === null
+        && rapidTransitionSettled.visible.join(",") === "users"
+        && rapidTransitionSettled.animatedPanels === 0
+        && rapidTransitionSettled.contentOpacity === 1
+        && rapidTransitionSettled.contentTransform === "none"
+        && rapidTransitionSettled.highlightY === rapidTransitionSettled.targetY,
+      "rapid tool switching did not converge to the final content and highlight",
+      rapidTransitionSettled,
+    );
+    await shellPage.locator("#work-rail-history").click();
+    await shellPage.waitForTimeout(200);
     await shellPage.locator("#work-rail-queue").focus();
     await shellPage.keyboard.press("ArrowDown");
     assert(
@@ -2041,7 +2109,7 @@ async function run() {
     await shellPage.locator("#next-button").click();
     for (const workspace of ["queue", "history", "request", "random", "users", "settings"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
-      await shellPage.waitForTimeout(180);
+      await shellPage.waitForTimeout(210);
       nextVisibility[workspace] = await shellPage.locator("#next-button").isVisible();
     }
     const nextEvidence = await shellPage.evaluate(() => ({
@@ -2183,6 +2251,7 @@ async function run() {
       wideWidths,
     );
     await shellPage.locator("#work-rail-request").click();
+    await shellPage.waitForTimeout(200);
     const wideRequestSubviews = {};
     for (const subview of ["quick", "search", "discover", "sources"]) {
       wideRequestSubviews[subview] = await collectRequestSubviewLayout(subview);
@@ -2259,6 +2328,7 @@ async function run() {
       state.backupBannerDismissed = false;
       showBackupBanner();
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise((resolve) => setTimeout(resolve, backupBannerMotionMs + 20));
       const visibleStyle = getComputedStyle(banner);
       const shown = {
         regionHeight: region.getBoundingClientRect().height,
@@ -2354,8 +2424,8 @@ async function run() {
           if (expanded !== "true") {
             await shellPage.locator(`#work-rail-${workspace}`).click();
           }
-          await shellPage.waitForTimeout(180);
         }
+        await shellPage.waitForTimeout(210);
         tools[workspace] = await shellPage.evaluate((name) => {
           const colorAlpha = (value) => {
             const color = String(value || "");
@@ -2504,6 +2574,7 @@ async function run() {
         }, workspace);
       }
       await shellPage.locator("#work-rail-request").click();
+      await shellPage.waitForTimeout(210);
       const requestSubviews = {};
       for (const subview of ["quick", "search", "discover", "sources"]) {
         requestSubviews[subview] = await collectRequestSubviewLayout(subview);
@@ -7302,16 +7373,19 @@ async function run() {
     );
     assert(await floatingOverlay.isVisible(), "floating playback operation closed its console");
 
-    const remoteInfoRegions = remotePage.locator(".remote-contextual-info-region");
-    const remoteInfoButtons = remotePage.locator(".remote-info-button");
-    assert(await remoteInfoButtons.count() === 3, "Remote lost a playback information trigger");
+    const remoteInfoRegions = remotePage.locator(
+      "#floating-control-overlay .remote-contextual-info-region",
+    );
+    const remoteInfoButtons = remoteInfoRegions.locator(".remote-info-button");
+    const allRemoteInfoButtons = remotePage.locator(".remote-info-button");
+    assert(await allRemoteInfoButtons.count() === 4, "Remote lost a contextual information trigger");
     assert(
-      await remoteInfoButtons.locator(".contextual-info-glyph").allTextContents()
+      await allRemoteInfoButtons.locator(".contextual-info-glyph").allTextContents()
         .then((glyphs) => glyphs.every((glyph) => glyph.trim() === "i")),
       "Remote playback controls lost the unified i glyph",
     );
-    for (let index = 0; index < await remoteInfoButtons.count(); index += 1) {
-      const button = remoteInfoButtons.nth(index);
+    for (let index = 0; index < await allRemoteInfoButtons.count(); index += 1) {
+      const button = allRemoteInfoButtons.nth(index);
       const tooltip = remotePage.locator(`#${await button.getAttribute("aria-describedby")}`);
       assert(await tooltip.getAttribute("role") === "tooltip", "Remote information lost its tooltip relationship", index);
     }
@@ -7376,7 +7450,7 @@ async function run() {
       "Remote Escape moved focus away from the information trigger",
     );
     assert(await floatingOverlay.isVisible(), "Remote information Escape closed the floating console");
-    assert(await remotePage.locator(".remote-tooltip-bubble").count() === 3, "Remote duplicated tooltip nodes");
+    assert(await remotePage.locator(".remote-tooltip-bubble").count() === 4, "Remote duplicated tooltip nodes");
     await remotePage.locator("#floating-control-close").click();
     await floatingOverlay.waitFor({ state: "hidden" });
     assert(!await floatingOverlay.isVisible(), "Remote floating playback console did not close normally");
@@ -7617,7 +7691,9 @@ async function run() {
       }
       elements.floatingControlOverlay?.classList.remove("hidden");
     });
-    const coarseRemoteInfo = coarsePage.locator(".remote-info-button").first();
+    const coarseRemoteInfo = coarsePage.locator(
+      "#floating-control-overlay .remote-info-button",
+    ).first();
     await coarseRemoteInfo.scrollIntoViewIfNeeded();
     const coarseRemoteMetrics = await coarseRemoteInfo.evaluate((button) => {
       const glyph = button.querySelector(".contextual-info-glyph");

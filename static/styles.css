@@ -7962,6 +7962,11 @@ body {
 }
 
 .work-rail {
+  --work-rail-highlight-y: 0px;
+  --work-rail-highlight-height: 48px;
+  --work-rail-highlight-inset: 4px;
+  position: relative;
+  isolation: isolate;
   min-height: 0;
   padding: 6px 4px;
   display: flex;
@@ -7975,7 +7980,44 @@ body {
   overflow: hidden;
 }
 
+.work-rail::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  will-change: opacity, transform;
+  top: 0;
+  left: var(--work-rail-highlight-inset);
+  right: var(--work-rail-highlight-inset);
+  height: var(--work-rail-highlight-height);
+  border: 1px solid rgba(208, 90, 63, 0.24);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  transform: translate3d(0, var(--work-rail-highlight-y), 0);
+  transition:
+    opacity 100ms ease-out,
+    transform 210ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.work-rail[data-highlight-ready="true"]::before {
+  opacity: 1;
+}
+
+.work-rail.is-highlight-jumping::before {
+  opacity: 0;
+  transition:
+    opacity 60ms ease-in,
+    transform 0s linear;
+}
+
+.work-rail.is-highlight-static::before {
+  transition: none;
+}
+
 .work-rail-button {
+  position: relative;
+  z-index: 1;
   width: 100%;
   min-width: 0;
   min-height: 48px;
@@ -7992,15 +8034,16 @@ body {
   line-height: 1.12;
   text-align: center;
   overflow-wrap: anywhere;
+  transition: color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .work-rail-button[aria-selected="true"] {
   color: var(--accent-deep);
-  border-color: rgba(208, 90, 63, 0.24);
-  background: var(--accent-soft);
+  border-color: transparent;
+  background: transparent;
 }
 
-.work-rail-button:hover {
+.work-rail-button:hover:not([aria-selected="true"]) {
   color: var(--ink);
   background: rgba(208, 90, 63, 0.08);
 }
@@ -8053,6 +8096,8 @@ body {
 }
 
 .host-workspace-region {
+  --host-tool-out-x: -2px;
+  --host-tool-in-x: 6px;
   position: relative;
   height: 100%;
   padding: 0;
@@ -8073,21 +8118,6 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-}
-
-.host-workspace-region::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  border-radius: 18px;
-  background: var(--panel);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.host-workspace-region[data-tool-transition-direction]::after {
-  animation: host-tool-transition-veil 180ms cubic-bezier(0.45, 0, 0.55, 1) both;
 }
 
 .host-workspace-fragment {
@@ -8120,97 +8150,77 @@ body {
   z-index: 1;
 }
 
+.host-workspace-fragment.is-tool-transition-resume {
+  position: relative;
+  z-index: 1;
+}
+
 .host-workspace-fragment.is-tool-transition-in > *,
-.host-workspace-fragment.is-tool-transition-out > * {
+.host-workspace-fragment.is-tool-transition-out > *,
+.host-workspace-fragment.is-tool-transition-resume > * {
   will-change: opacity, transform;
 }
 
-.host-workspace-region[data-tool-transition-direction="forward"]
-  .host-workspace-fragment.is-tool-transition-out > * {
-  animation: host-tool-content-forward-out 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.host-workspace-fragment.is-tool-transition-out > * {
+  animation: host-tool-content-out 70ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
-.host-workspace-region[data-tool-transition-direction="forward"]
-  .host-workspace-fragment.is-tool-transition-in > * {
-  animation: host-tool-content-forward-in 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.host-workspace-fragment.is-tool-transition-in > * {
+  animation: host-tool-content-in 190ms linear both;
 }
 
-.host-workspace-region[data-tool-transition-direction="backward"]
-  .host-workspace-fragment.is-tool-transition-out > * {
-  animation: host-tool-content-backward-out 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.host-workspace-fragment.is-tool-transition-resume > * {
+  animation: host-tool-content-resume 120ms cubic-bezier(0, 0, 0.2, 1) both;
 }
 
-.host-workspace-region[data-tool-transition-direction="backward"]
-  .host-workspace-fragment.is-tool-transition-in > * {
-  animation: host-tool-content-backward-in 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes host-tool-content-forward-out {
+@keyframes host-tool-content-out {
   from {
-    opacity: 1;
-    transform: translateY(0);
+    opacity: var(--host-tool-start-opacity, 1);
+    transform: translateX(var(--host-tool-start-x, 0px));
   }
 
   to {
     opacity: 0;
-    transform: translateY(-14px);
+    transform: translateX(var(--host-tool-out-x));
   }
 }
 
-@keyframes host-tool-content-forward-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes host-tool-content-backward-out {
-  from {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
-  to {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-}
-
-@keyframes host-tool-content-backward-in {
-  from {
-    opacity: 0;
-    transform: translateY(-14px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes host-tool-transition-veil {
+@keyframes host-tool-content-in {
   0%,
-  100% {
+  36.842% {
     opacity: 0;
+    transform: translateX(var(--host-tool-in-x));
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
   }
 
-  50% {
-    opacity: 0.46;
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes host-tool-content-resume {
+  from {
+    opacity: var(--host-tool-start-opacity, 0);
+    transform: translateX(var(--host-tool-start-x, 0px));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .host-workspace-region[data-tool-transition-direction]::after,
+  .work-rail::before,
   .host-workspace-fragment.is-tool-transition-in,
   .host-workspace-fragment.is-tool-transition-out,
+  .host-workspace-fragment.is-tool-transition-resume,
   .host-workspace-fragment.is-tool-transition-in > *,
-  .host-workspace-fragment.is-tool-transition-out > * {
+  .host-workspace-fragment.is-tool-transition-out > *,
+  .host-workspace-fragment.is-tool-transition-resume > * {
     animation: none !important;
+    transition: none !important;
   }
 }
 
@@ -9456,6 +9466,7 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 .work-rail {
+  --work-rail-highlight-inset: 7px;
   width: var(--host-rail-width);
   height: 100%;
   min-height: 0;
@@ -9649,6 +9660,11 @@ body[data-tauri-platform="macos"] .topbar {
        reclaiming sheet space without adding a second responsive policy. */
     --host-peer-panel-padding: 10px 12px;
     --host-peer-request-head-padding: 10px 12px;
+  }
+
+  .host-workspace-region {
+    --host-tool-out-x: 0px;
+    --host-tool-in-x: 0px;
   }
 
   .host-content-region {

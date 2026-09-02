@@ -440,6 +440,12 @@ const state = {
   hostNarrowToolSheetActive: false,
   hostWorkspaceTransition: null,
   hostWorkspaceTransitionTimer: null,
+  hostWorkspaceRailHighlightWorkspace: "",
+  hostWorkspaceRailHighlightY: null,
+  hostWorkspaceRailHighlightHeight: null,
+  hostWorkspaceRailHighlightTimer: null,
+  hostWorkspaceRailHighlightToken: 0,
+  hostWorkspaceRailResizeObserver: null,
   hostWorkspaceScrollPositions: {
     queue: 0,
     request: 0,
@@ -499,6 +505,7 @@ const elements = {
   topbar: document.querySelector(".topbar"),
   hostContentRegion: document.querySelector(".host-content-region"),
   leftColumn: document.querySelector(".left-column"),
+  hostWorkspaceRail: document.getElementById("work-rail"),
   hostWorkspaceRegion: document.getElementById("host-workspace-region"),
   hostWorkspaceButtons: document.querySelectorAll("[data-host-workspace]"),
   hostWorkspacePanels: document.querySelectorAll("[data-host-workspace-panel]"),
@@ -3753,9 +3760,11 @@ function handleHorizontalTabKeydown(event, values, activate) {
   return true;
 }
 
-function renderHostWorkspaceSelection() {
+function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
   const previousNarrowToolLayout = elements.appShell?.dataset.narrowToolLayout || "";
-  const nextNarrowToolLayout = syncNarrowToolLayout();
+  const nextNarrowToolLayout = measureNarrowLayout || !previousNarrowToolLayout
+    ? syncNarrowToolLayout()
+    : previousNarrowToolLayout;
   const activeWorkspace = normalizeHostWorkspaceName(state.activeHostWorkspace, "queue");
   const focusedWorkspace = normalizeHostWorkspaceName(
     state.focusedHostWorkspace,
@@ -3815,11 +3824,14 @@ function renderHostWorkspaceSelection() {
     button.tabIndex = workspace === focusedWorkspace ? 0 : -1;
     button.classList.toggle("needs-attention", workspace === "users" && !sessionUsersAvailable);
   });
+  syncHostWorkspaceRailHighlight(activeWorkspace);
   elements.hostWorkspacePanels?.forEach((panel) => {
     const workspace = normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, "");
-    const transitionRole = workspaceTransition && workspace === workspaceTransition.from
-      ? "out"
-      : (workspaceTransition && workspace === workspaceTransition.to ? "in" : "");
+    const transitionRole = workspaceTransition?.resume && workspace === workspaceTransition.to
+      ? "resume"
+      : (workspaceTransition && workspace === workspaceTransition.from
+        ? "out"
+        : (workspaceTransition && workspace === workspaceTransition.to ? "in" : ""));
     const visible = workspace === activeWorkspace
       && !requestOverlayClosed
       && !narrowToolSheetClosed;
@@ -3828,6 +3840,8 @@ function renderHostWorkspaceSelection() {
     panel.setAttribute("aria-hidden", String(!visible));
     panel.classList.toggle("is-tool-transition-in", transitionRole === "in");
     panel.classList.toggle("is-tool-transition-out", transitionRole === "out");
+    panel.classList.toggle("is-tool-transition-resume", transitionRole === "resume");
+    applyHostWorkspaceTransitionVisual(panel, workspaceTransition, transitionRole);
   });
   if (elements.hostWorkspaceBackdrop) {
     elements.hostWorkspaceBackdrop.hidden = !requestOverlay;
@@ -3867,14 +3881,185 @@ const hostWorkspaceRailOrder = Object.freeze([
   "settings",
 ]);
 
+const hostWorkspaceContentTransitionMs = 190;
+const hostWorkspaceResumeTransitionMs = 120;
+const hostWorkspaceRailJumpFadeMs = 60;
+
+function hostWorkspaceReducedMotion() {
+  return typeof window !== "undefined" && Boolean(
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
+  );
+}
+
+function hostWorkspaceContentVisual(panel) {
+  const content = panel?.firstElementChild || panel;
+  if (!content || typeof getComputedStyle !== "function") {
+    return { opacity: 1, translateX: 0 };
+  }
+  const style = getComputedStyle(content);
+  const opacity = Math.max(0, Math.min(1, Number.parseFloat(style.opacity) || 0));
+  const transform = String(style.transform || "none");
+  let translateX = 0;
+  if (transform !== "none") {
+    try {
+      if (typeof DOMMatrixReadOnly === "function") {
+        translateX = new DOMMatrixReadOnly(transform).m41;
+      } else {
+        const matrix = transform.match(/^matrix\(([^)]+)\)$/);
+        translateX = matrix ? Number.parseFloat(matrix[1].split(",")[4]) || 0 : 0;
+      }
+    } catch {
+      translateX = 0;
+    }
+  }
+  return { opacity, translateX };
+}
+
+function currentHostWorkspaceVisualSource(fallbackWorkspace) {
+  const fallback = normalizeHostWorkspaceName(fallbackWorkspace, "queue");
+  const candidates = Array.from(elements.hostWorkspacePanels || [])
+    .filter((panel) => {
+      if (!panel.hidden) {
+        return true;
+      }
+      return panel.classList.contains("is-tool-transition-out")
+        || panel.classList.contains("is-tool-transition-in")
+        || panel.classList.contains("is-tool-transition-resume");
+    })
+    .map((panel) => ({
+      workspace: normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, ""),
+      ...hostWorkspaceContentVisual(panel),
+    }))
+    .filter((candidate) => candidate.workspace);
+  candidates.sort((left, right) => right.opacity - left.opacity);
+  return candidates[0] || {
+    workspace: fallback,
+    opacity: 1,
+    translateX: 0,
+  };
+}
+
+function applyHostWorkspaceTransitionVisual(panel, transition, role) {
+  panel.style?.removeProperty?.("--host-tool-start-opacity");
+  panel.style?.removeProperty?.("--host-tool-start-x");
+  if (!transition || !role) {
+    return;
+  }
+  if (role === "out") {
+    panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.outgoingOpacity ?? 1));
+    panel.style?.setProperty?.("--host-tool-start-x", `${transition.outgoingTranslateX ?? 0}px`);
+  } else if (role === "resume") {
+    panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.incomingOpacity ?? 0));
+    panel.style?.setProperty?.("--host-tool-start-x", `${transition.incomingTranslateX ?? 0}px`);
+  }
+}
+
+function restartHostWorkspaceTransitionAnimations() {
+  let cleared = false;
+  elements.hostWorkspacePanels?.forEach((panel) => {
+    if (
+      panel.classList.contains("is-tool-transition-in")
+      || panel.classList.contains("is-tool-transition-out")
+      || panel.classList.contains("is-tool-transition-resume")
+    ) {
+      cleared = true;
+    }
+    panel.classList.remove?.(
+      "is-tool-transition-in",
+      "is-tool-transition-out",
+      "is-tool-transition-resume",
+    );
+  });
+  if (cleared) {
+    elements.hostWorkspaceRegion?.getBoundingClientRect?.();
+  }
+}
+
+function setHostWorkspaceRailHighlightGeometry(rail, y, height) {
+  rail.style.setProperty("--work-rail-highlight-y", `${Math.round(y)}px`);
+  rail.style.setProperty("--work-rail-highlight-height", `${Math.round(height)}px`);
+  rail.dataset.highlightReady = "true";
+  state.hostWorkspaceRailHighlightY = y;
+  state.hostWorkspaceRailHighlightHeight = height;
+}
+
+function syncHostWorkspaceRailHighlight(workspace, { immediate = false } = {}) {
+  const rail = elements.hostWorkspaceRail;
+  const targetWorkspace = normalizeHostWorkspaceName(workspace, "");
+  const button = hostWorkspaceButton(targetWorkspace);
+  if (!rail || !button) {
+    return;
+  }
+  const y = button.offsetTop;
+  const height = button.offsetHeight;
+  if (!(height > 0)) {
+    return;
+  }
+  const previousWorkspace = state.hostWorkspaceRailHighlightWorkspace;
+  const selectionChanged = Boolean(previousWorkspace && previousWorkspace !== targetWorkspace);
+  state.hostWorkspaceRailHighlightWorkspace = targetWorkspace;
+  const reducedMotion = hostWorkspaceReducedMotion();
+  if (
+    immediate
+    || reducedMotion
+    || !rail.dataset.highlightReady
+    || !selectionChanged
+    || state.hostWorkspaceRailHighlightY === null
+  ) {
+    if (state.hostWorkspaceRailHighlightTimer) {
+      globalThis.clearTimeout(state.hostWorkspaceRailHighlightTimer);
+      state.hostWorkspaceRailHighlightTimer = null;
+    }
+    rail.classList.add("is-highlight-static");
+    rail.classList.remove("is-highlight-jumping");
+    setHostWorkspaceRailHighlightGeometry(rail, y, height);
+    rail.getBoundingClientRect?.();
+    rail.classList.remove("is-highlight-static");
+    return;
+  }
+  const distance = Math.abs(y - state.hostWorkspaceRailHighlightY);
+  const jumpThreshold = Math.max(height, state.hostWorkspaceRailHighlightHeight || height) * 2.5;
+  if (distance <= jumpThreshold && !rail.classList.contains("is-highlight-jumping")) {
+    setHostWorkspaceRailHighlightGeometry(rail, y, height);
+    return;
+  }
+  if (state.hostWorkspaceRailHighlightTimer) {
+    globalThis.clearTimeout(state.hostWorkspaceRailHighlightTimer);
+  }
+  const token = state.hostWorkspaceRailHighlightToken + 1;
+  state.hostWorkspaceRailHighlightToken = token;
+  rail.classList.add("is-highlight-jumping");
+  state.hostWorkspaceRailHighlightTimer = globalThis.setTimeout(() => {
+    if (state.hostWorkspaceRailHighlightToken !== token) {
+      return;
+    }
+    setHostWorkspaceRailHighlightGeometry(rail, y, height);
+    rail.getBoundingClientRect?.();
+    rail.classList.remove("is-highlight-jumping");
+    state.hostWorkspaceRailHighlightTimer = null;
+  }, hostWorkspaceRailJumpFadeMs);
+}
+
+function initializeHostWorkspaceRailHighlight() {
+  state.hostWorkspaceRailResizeObserver?.disconnect?.();
+  if (typeof ResizeObserver === "function" && elements.hostWorkspaceRail) {
+    state.hostWorkspaceRailResizeObserver = new ResizeObserver(() => {
+      syncHostWorkspaceRailHighlight(state.activeHostWorkspace, { immediate: true });
+    });
+    state.hostWorkspaceRailResizeObserver.observe(elements.hostWorkspaceRail);
+    elements.hostWorkspaceButtons?.forEach((button) => {
+      state.hostWorkspaceRailResizeObserver.observe(button);
+    });
+  }
+  syncHostWorkspaceRailHighlight(state.activeHostWorkspace, { immediate: true });
+}
+
 function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
   const from = normalizeHostWorkspaceName(fromWorkspace, "");
   const to = normalizeHostWorkspaceName(toWorkspace, "");
   const fromIndex = hostWorkspaceRailOrder.indexOf(from);
   const toIndex = hostWorkspaceRailOrder.indexOf(to);
-  const reducedMotion = typeof window !== "undefined" && Boolean(
-    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
-  );
+  const reducedMotion = hostWorkspaceReducedMotion();
   if (!from || !to || from === to || fromIndex < 0 || toIndex < 0 || reducedMotion) {
     if (state.hostWorkspaceTransitionTimer) {
       globalThis.clearTimeout(state.hostWorkspaceTransitionTimer);
@@ -3886,10 +4071,18 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
   if (state.hostWorkspaceTransitionTimer) {
     globalThis.clearTimeout(state.hostWorkspaceTransitionTimer);
   }
+  const visualSource = currentHostWorkspaceVisualSource(from);
+  restartHostWorkspaceTransitionAnimations();
+  const resume = visualSource.workspace === to;
   const transition = {
-    from,
+    from: resume ? "" : visualSource.workspace,
     to,
     direction: toIndex > fromIndex ? "forward" : "backward",
+    resume,
+    outgoingOpacity: visualSource.opacity,
+    outgoingTranslateX: visualSource.translateX,
+    incomingOpacity: resume ? visualSource.opacity : 0,
+    incomingTranslateX: resume ? visualSource.translateX : 6,
     token: Number(state.hostWorkspaceTransition?.token || 0) + 1,
   };
   state.hostWorkspaceTransition = transition;
@@ -3899,8 +4092,8 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
     }
     state.hostWorkspaceTransition = null;
     state.hostWorkspaceTransitionTimer = null;
-    renderHostWorkspaceSelection();
-  }, 180);
+    renderHostWorkspaceSelection({ measureNarrowLayout: false });
+  }, resume ? hostWorkspaceResumeTransitionMs : hostWorkspaceContentTransitionMs);
   return transition;
 }
 
@@ -4103,7 +4296,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
   } else {
     state.hostWorkspaceOverlayOpen = false;
   }
-  renderHostWorkspaceSelection();
+  renderHostWorkspaceSelection({ measureNarrowLayout: false });
   if (nextWorkspace === "request" && typeof syncRequestSubviewSelection === "function") {
     syncRequestSubviewSelection();
     if (typeof restoreRequestScrollPosition === "function") {
@@ -4706,6 +4899,7 @@ function initializeHostShell() {
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
   renderHostWorkspaceSelection();
+  initializeHostWorkspaceRailHighlight();
   renderGatchaWorkspace();
   initializeWindowChrome();
   initializePersistentStageFitting();
