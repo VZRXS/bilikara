@@ -65,6 +65,53 @@
             </div>
           </div>
         </div>
+        <div class="status-chip internet-remote-status-chip" id="internet-remote-settings">
+          <button type="button" class="status-chip-toggle" id="internet-remote-settings-toggle"
+            aria-expanded="false" aria-controls="internet-remote-settings-panel">
+            <span class="status-chip-label-row">
+              <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12.5a7 7 0 0 1 14 0"></path><path d="M8 12.5a4 4 0 0 1 8 0"></path>
+                <circle cx="12" cy="16.5" r="1.5"></circle>
+              </svg>
+              <span class="control-label" data-i18n="internetRemote.title">远程模式</span>
+              <span class="presentation-state-dot" id="internet-remote-state-dot" aria-hidden="true"></span>
+            </span>
+            <div class="service-mode-summary" id="internet-remote-summary" data-i18n="internetRemote.local">本地</div>
+            <p class="cache-chip-meta" id="internet-remote-meta" data-i18n="internetRemote.localHint">同一局域网访问</p>
+          </button>
+          <div class="cache-panel internet-remote-panel hidden" id="internet-remote-settings-panel" role="region"
+            aria-labelledby="internet-remote-settings-toggle">
+            <div class="internet-remote-mode-row" role="group" data-i18n-aria-label="internetRemote.modeLabel">
+              <button type="button" class="internet-remote-mode is-active" id="internet-remote-local-mode"
+                aria-pressed="true" data-i18n="internetRemote.local">本地</button>
+              <button type="button" class="internet-remote-mode" id="internet-remote-internet-mode"
+                aria-pressed="false" data-i18n="internetRemote.internet">公网</button>
+            </div>
+            <p class="cache-panel-hint" data-i18n="internetRemote.description">
+              公网模式只通过 Worker 建立 WebRTC，连接后控制数据在设备间直传。
+            </p>
+            <label class="internet-remote-field" for="internet-remote-password">
+              <span data-i18n="internetRemote.password">房间密码</span>
+              <span class="internet-remote-password-row">
+                <input id="internet-remote-password" type="text" inputmode="numeric" minlength="4" maxlength="32"
+                  autocomplete="off" spellcheck="false">
+                <button type="button" class="icon-button" id="internet-remote-regenerate"
+                  data-i18n-title="internetRemote.regenerate" title="重新生成">↻</button>
+              </span>
+            </label>
+            <div class="internet-remote-actions">
+              <button type="button" class="next-button" id="internet-remote-restart"
+                data-i18n="internetRemote.create">创建公网房间</button>
+            </div>
+            <div class="internet-remote-room hidden" id="internet-remote-room">
+              <img id="internet-remote-qr" class="remote-qr-image" alt="公网 Remote 二维码">
+              <a id="internet-remote-url" class="remote-url-link" href="#" target="_blank" rel="noreferrer"></a>
+              <p class="cache-panel-hint" id="internet-remote-expiry"></p>
+            </div>
+            <p class="cache-panel-hint" id="internet-remote-status" role="status" aria-live="polite"></p>
+          </div>
+        </div>
         <div class="status-chip presentation-status-chip hidden" id="presentation-settings">
           <button type="button" class="status-chip-toggle" id="presentation-settings-toggle" aria-expanded="false"
             aria-controls="presentation-settings-panel">
@@ -1463,6 +1510,8 @@
   <script src="/presentation-scene.js" defer></script>
   <script src="/presentation-renderer.js" defer></script>
   <script src="/presentation-sync.js" defer></script>
+  <script src="/internet-remote-transport.js" defer></script>
+  <script src="/internet-remote-host.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 

@@ -869,6 +869,20 @@ h2 {
   box-shadow: var(--shadow);
 }
 
+.internet-remote-status-chip { z-index: 68; }
+.internet-remote-panel { width: min(390px, calc(100vw - 32px)); }
+.internet-remote-mode-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; border-radius: 12px; background: rgba(127, 127, 127, 0.12); }
+.internet-remote-mode { min-height: 36px; border-radius: 9px; color: var(--muted); background: transparent; }
+.internet-remote-mode.is-active { color: var(--text); background: var(--chip-bg); box-shadow: var(--shadow); }
+.internet-remote-field { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); font-size: 12px; }
+.internet-remote-password-row { display: grid; grid-template-columns: 1fr 38px; gap: 8px; }
+.internet-remote-password-row input { min-width: 0; padding: 9px 11px; border: var(--chip-border); border-radius: 10px; color: var(--text); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font: inherit; }
+.internet-remote-actions { display: flex; margin-top: 12px; }
+.internet-remote-actions .next-button { width: 100%; }
+.internet-remote-room { display: grid; justify-items: center; gap: 8px; margin-top: 14px; }
+.internet-remote-room .remote-qr-image { width: 180px; height: 180px; background: white; }
+.internet-remote-room .remote-url-link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .mode-control {
   display: flex;
   flex-direction: column;
@@ -5487,6 +5501,11 @@ select:disabled {
 .presentation-state-dot.is-active {
   background: var(--green);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.presentation-state-dot.is-error {
+  background: var(--red);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 14%, transparent);
 }
 
 .presentation-output-panel {

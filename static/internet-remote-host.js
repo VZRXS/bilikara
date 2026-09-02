@@ -1,0 +1,534 @@
+(function installInternetRemoteHost() {
+  "use strict";
+
+  const SIGNAL_ORIGIN = "https://rtc.kevinx96.icu";
+  const transport = window.BilikaraInternetTransport;
+  if (!transport) return;
+
+  const peers = new Map();
+  const state = {
+    mode: "local",
+    available: typeof RTCPeerConnection !== "undefined",
+    busy: false,
+    roomId: "",
+    hostToken: "",
+    joinToken: "",
+    hostPeerId: "",
+    expiresAt: 0,
+    expired: false,
+    password: "",
+    socket: null,
+    reconnectTimer: null,
+    expiryTimer: null,
+    stopped: true,
+    stateRevision: 0,
+    authFailures: [],
+    catalogRequests: [],
+    messages: {},
+  };
+
+  let elements = null;
+
+  function tr(key, fallback, values = {}) {
+    let message = state.messages[key] || fallback;
+    for (const [name, value] of Object.entries(values)) {
+      message = message.split(`{${name}}`).join(String(value));
+    }
+    return message;
+  }
+
+  function setStatus(message, tone = "") {
+    elements.status.textContent = message;
+    elements.dot.classList.toggle("is-active", tone === "good");
+    elements.dot.classList.toggle("is-error", tone === "bad");
+  }
+
+  function render() {
+    const online = state.mode === "internet";
+    elements.local.classList.toggle("is-active", !online);
+    elements.internet.classList.toggle("is-active", online);
+    elements.local.setAttribute("aria-pressed", String(!online));
+    elements.internet.setAttribute("aria-pressed", String(online));
+    elements.summary.textContent = online
+      ? tr("internetRemote.internet", "公网")
+      : tr("internetRemote.local", "本地");
+    elements.meta.textContent = online
+      ? state.roomId
+        ? tr("internetRemote.remoteCount", "{count} 台 Remote", { count: peers.size })
+        : tr("internetRemote.notCreated", "尚未创建房间")
+      : tr("internetRemote.localHint", "同一局域网访问");
+    elements.restart.disabled = state.busy || !online || !state.available;
+    elements.local.disabled = state.busy;
+    elements.internet.disabled = state.busy || !state.available;
+    elements.internet.toggleAttribute("aria-busy", state.busy);
+    elements.password.disabled = state.busy || !online;
+    elements.regenerate.disabled = state.busy || !online;
+    elements.restart.toggleAttribute("aria-busy", state.busy);
+    elements.restart.textContent = state.busy
+      ? tr("internetRemote.creating", "创建中…")
+      : state.roomId
+        ? tr("internetRemote.rebuild", "重建公网房间")
+        : tr("internetRemote.create", "创建公网房间");
+    elements.room.classList.toggle("hidden", !online || !state.roomId);
+  }
+
+  async function localPost(path, body) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  function signalUrl() {
+    return `${SIGNAL_ORIGIN.replace(/^http/u, "ws")}/v1/rooms/${state.roomId}/socket`;
+  }
+
+  function sendSignal(to, type, payload) {
+    if (state.socket?.readyState !== WebSocket.OPEN) throw new Error("信令连接未就绪");
+    state.socket.send(JSON.stringify({ to, type, payload }));
+  }
+
+  async function createPeer(peerId) {
+    closePeer(peerId, false);
+    const pc = new RTCPeerConnection(transport.iceConfiguration);
+    const peer = {
+      id: peerId,
+      pc,
+      control: null,
+      bulk: null,
+      decoders: { control: new transport.Decoder(), bulk: new transport.Decoder() },
+      authorized: false,
+      epoch: "",
+      authFailures: [],
+      messageTimes: [],
+      requestTimes: [],
+      catalogRequests: [],
+      addRequests: [],
+      queuedMessages: 0,
+      deadlineTimer: null,
+      queue: Promise.resolve(),
+      outbound: { control: Promise.resolve(), bulk: Promise.resolve() },
+      pendingState: null,
+      stateSending: false,
+    };
+    peers.set(peerId, peer);
+    peer.deadlineTimer = setTimeout(() => {
+      if (!peer.authorized) {
+        setStatus(tr("internetRemote.authTimeout", "Remote 连接或认证超时"), "bad");
+        closePeer(peerId);
+      }
+    }, 20_000);
+    wireChannel(peer, pc.createDataChannel("bilikara-control", { ordered: true }), "control");
+    wireChannel(peer, pc.createDataChannel("bilikara-bulk", { ordered: true }), "bulk");
+    pc.addEventListener("connectionstatechange", () => {
+      if (["failed", "closed"].includes(pc.connectionState)) closePeer(peerId, true, peer);
+      render();
+    });
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await transport.waitForIceGathering(pc);
+      if (peers.get(peerId) !== peer) return;
+      sendSignal(peerId, "offer", pc.localDescription);
+      render();
+    } catch (error) {
+      if (peers.get(peerId) !== peer) return;
+      closePeer(peerId, true, peer);
+      throw error;
+    }
+  }
+
+  function wireChannel(peer, channel, lane) {
+    peer[lane] = channel;
+    channel.addEventListener("message", (event) => {
+      const now = Date.now();
+      peer.messageTimes = recentFailures(peer.messageTimes, now);
+      let messages;
+      try { messages = peer.decoders[lane].consume(event.data); }
+      catch (error) {
+        setStatus(`Remote 消息被拒绝：${error.message}`, "bad");
+        closePeer(peer.id, true, peer);
+        return;
+      }
+      if (peer.messageTimes.length + messages.length > 180 || peer.queuedMessages + messages.length > 64) {
+        setStatus("Remote 消息频率过高", "bad");
+        closePeer(peer.id, true, peer);
+        return;
+      }
+      peer.queuedMessages += messages.length;
+      peer.messageTimes.push(...messages.map(() => now));
+      peer.queue = peer.queue.then(async () => {
+        try {
+          for (const message of messages) await handlePeerMessage(peer, lane, message);
+        } finally {
+          peer.queuedMessages -= messages.length;
+        }
+      }).catch((error) => {
+        setStatus(`Remote 消息被拒绝：${error.message}`, "bad");
+        closePeer(peer.id);
+      });
+    });
+    channel.addEventListener("open", () => {
+      if (peer.control?.readyState === "open" && peer.bulk?.readyState === "open") {
+        transport.send(peer.control, { type: "auth.required" });
+      }
+      render();
+    });
+    channel.addEventListener("close", () => {
+      if (peers.get(peer.id) === peer && peer.pc.connectionState !== "connected") closePeer(peer.id);
+    });
+  }
+
+  function recentFailures(values, now = Date.now()) {
+    return values.filter((value) => now - value < 60_000);
+  }
+
+  function sendPeer(peer, lane, message) {
+    const operation = peer.outbound[lane].then(async () => {
+      if (peers.get(peer.id) !== peer || peer[lane]?.readyState !== "open") return;
+      await transport.waitForBufferedAmount(peer[lane]);
+      if (peers.get(peer.id) === peer && peer[lane]?.readyState === "open") {
+        transport.send(peer[lane], message);
+      }
+    });
+    peer.outbound[lane] = operation.catch(() => {});
+    return operation;
+  }
+
+  function admitRequest(peer, kind, now = Date.now()) {
+    peer.requestTimes = recentFailures(peer.requestTimes, now);
+    if (peer.requestTimes.length >= 120) throw new Error("Remote 请求频率过高");
+    peer.requestTimes.push(now);
+    if (kind === "catalog.search" || kind === "catalog.song_detail") {
+      peer.catalogRequests = recentFailures(peer.catalogRequests, now);
+      state.catalogRequests = recentFailures(state.catalogRequests, now);
+      if (peer.catalogRequests.length >= 12 || state.catalogRequests.length >= 60) {
+        throw new Error("搜索过于频繁，请稍后再试");
+      }
+      peer.catalogRequests.push(now);
+      state.catalogRequests.push(now);
+    }
+    if (kind === "playlist.add") {
+      peer.addRequests = recentFailures(peer.addRequests, now);
+      if (peer.addRequests.length >= 20) throw new Error("点歌过于频繁，请稍后再试");
+      peer.addRequests.push(now);
+    }
+  }
+
+  function queueState(peer, remoteState) {
+    peer.pendingState = remoteState;
+    if (peer.stateSending) return;
+    peer.stateSending = true;
+    void (async () => {
+      try {
+        while (peer.pendingState && peers.get(peer.id) === peer && peer.authorized) {
+          const next = peer.pendingState;
+          peer.pendingState = null;
+          await sendPeer(peer, "bulk", { type: "state", data: next });
+        }
+      } catch (error) {
+        setStatus(`Remote 发送失败：${error.message}`, "bad");
+        closePeer(peer.id, true, peer);
+      } finally {
+        peer.stateSending = false;
+      }
+    })();
+  }
+
+  async function handlePeerMessage(peer, lane, message) {
+    if (peers.get(peer.id) !== peer) return;
+    if (!message || typeof message !== "object") throw new Error("消息格式无效");
+    if (message.type === "ping") {
+      transport.send(peer.control, { type: "pong", at: message.at });
+      return;
+    }
+    if (message.type === "auth") {
+      if (lane !== "control" || peer.authorized) throw new Error("认证状态无效");
+      const now = Date.now();
+      peer.authFailures = recentFailures(peer.authFailures, now);
+      state.authFailures = recentFailures(state.authFailures, now);
+      if (peer.authFailures.length >= 5 || state.authFailures.length >= 20) {
+        transport.send(peer.control, { type: "auth.failed", reason: "too_many_attempts" });
+        closePeer(peer.id);
+        return;
+      }
+      const password = String(message.password || "");
+      const epoch = String(message.epoch || "");
+      if (!/^[A-Za-z0-9_-]{22}$/u.test(epoch) || !transport.constantTimeTextEqual(password, state.password)) {
+        peer.authFailures.push(now);
+        state.authFailures.push(now);
+        transport.send(peer.control, { type: "auth.failed", reason: "wrong_password" });
+        return;
+      }
+      await localPost("/api/internet-remote/peer/open", {
+        peer_id: peer.id,
+        epoch,
+        profile: "controller",
+      });
+      peer.epoch = epoch;
+      peer.authorized = true;
+      clearTimeout(peer.deadlineTimer);
+      peer.deadlineTimer = null;
+      await sendPeer(peer, "control", { type: "auth.ok" });
+      await publishState(peer);
+      setStatus(tr("internetRemote.running", "公网房间运行中"), "good");
+      return;
+    }
+    if (!peer.authorized || message.type !== "request" || message.lane !== lane) {
+      throw new Error("Remote 尚未认证或通道不匹配");
+    }
+    admitRequest(peer, String(message.envelope?.kind || ""));
+    const result = await localPost("/api/internet-remote/dispatch", {
+      peer_id: peer.id,
+      lane,
+      message: JSON.stringify(message.envelope),
+    });
+    await sendPeer(peer, lane, { type: "response", ...result });
+    if (result?.data?.revision || result?.data?.state?.revision) void publishState();
+  }
+
+  async function publishState(target = null) {
+    const response = await fetch("/api/internet-remote/state", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) return;
+    const remoteState = payload.data;
+    if (!target && remoteState.revision === state.stateRevision) return;
+    state.stateRevision = remoteState.revision;
+    const targets = target ? [target] : [...peers.values()];
+    for (const peer of targets) {
+      if (peer.authorized && peer.bulk?.readyState === "open") {
+        queueState(peer, remoteState);
+      }
+    }
+  }
+
+  function closePeer(peerId, evictSignal = true, expectedPeer = null) {
+    const peer = peers.get(peerId);
+    if (!peer || (expectedPeer && peer !== expectedPeer)) return;
+    peers.delete(peerId);
+    clearTimeout(peer.deadlineTimer);
+    if (evictSignal && state.socket?.readyState === WebSocket.OPEN) {
+      try { sendSignal(peerId, "leave", {}); } catch { /* signaling is best effort */ }
+    }
+    peer.control?.close();
+    peer.bulk?.close();
+    peer.pc.close();
+    if (peer.authorized) {
+      localPost("/api/internet-remote/peer/close", { peer_id: peerId }).catch(() => {});
+    }
+    render();
+  }
+
+  function connectSignaling() {
+    if (state.stopped || !state.roomId) return;
+    const socket = new WebSocket(signalUrl(), [
+      "bilikara-v1",
+      `host.${state.hostToken}.${state.hostPeerId}`,
+    ]);
+    state.socket = socket;
+    socket.addEventListener("open", () => setStatus(tr("internetRemote.waiting", "等待 Remote 加入"), "good"));
+    socket.addEventListener("message", (event) => {
+      let message;
+      try { message = JSON.parse(String(event.data)); } catch { return; }
+      if (message.type === "peer.join" && typeof message.peer_id === "string") {
+        createPeer(message.peer_id).catch((error) => setStatus(error.message, "bad"));
+      } else if (message.type === "answer" && typeof message.from === "string") {
+        const peer = peers.get(message.from);
+        if (peer) peer.pc.setRemoteDescription(message.payload).catch(() => closePeer(message.from));
+      }
+    });
+    socket.addEventListener("close", (event) => {
+      if (state.socket === socket) state.socket = null;
+      if (!state.stopped && event.code !== 4003) {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = setTimeout(connectSignaling, 1500);
+      } else if (!state.stopped) {
+        expireRoom();
+      }
+    });
+    socket.addEventListener("error", () => setStatus(tr("internetRemote.signalingRetry", "信令暂时不可用，正在重连"), "bad"));
+  }
+
+  async function startRoom() {
+    if (state.busy || !state.available) return;
+    const password = elements.password.value.trim();
+    if (password.length < 4 || password.length > 32) {
+      setStatus(tr("internetRemote.passwordInvalid", "房间密码需为 4–32 个字符"), "bad");
+      return;
+    }
+    state.busy = true;
+    render();
+    stopRoom(false);
+    state.mode = "internet";
+    state.password = password;
+    state.hostToken = transport.randomBase64Url(32);
+    state.joinToken = transport.randomBase64Url(32);
+    state.hostPeerId = transport.randomBase64Url(16);
+    try {
+      const response = await fetch(`${SIGNAL_ORIGIN}/v1/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          host_token_hash: await transport.sha256(state.hostToken),
+          join_token_hash: await transport.sha256(state.joinToken),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      const createdAt = Number(payload.created_at);
+      const expiresAt = Number(payload.expires_at);
+      const workerLifetime = expiresAt - createdAt;
+      if (
+        !/^[A-Za-z0-9_-]{27}$/u.test(String(payload.room_id || ""))
+        || !Number.isSafeInteger(createdAt)
+        || !Number.isSafeInteger(expiresAt)
+        || workerLifetime < 60_000
+        || workerLifetime > (8 * 60 * 60 * 1000) + 5_000
+      ) throw new Error("invalid signaling response");
+      state.roomId = payload.room_id;
+      state.expiresAt = expiresAt;
+      state.expired = false;
+      state.stopped = false;
+      const remoteUrl = `${SIGNAL_ORIGIN}/remote.html#room=${encodeURIComponent(state.roomId)}&join=${encodeURIComponent(state.joinToken)}&expires=${encodeURIComponent(state.expiresAt)}`;
+      elements.url.href = remoteUrl;
+      elements.url.textContent = remoteUrl;
+      const qr = await localPost("/api/internet-remote/qr", { url: remoteUrl });
+      elements.qr.src = qr.image;
+      elements.expiry.textContent = tr("internetRemote.expiry", "房间有效至 {time}", {
+        time: new Date(state.expiresAt).toLocaleString(),
+      });
+      state.expiryTimer = setTimeout(expireRoom, workerLifetime + 1_000);
+      connectSignaling();
+    } catch (error) {
+      setStatus(tr("internetRemote.createFailed", "创建失败：{error}", { error: error.message }), "bad");
+      stopRoom(false);
+    } finally {
+      state.busy = false;
+      render();
+    }
+  }
+
+  function expireRoom() {
+    if (!state.roomId || state.expired) return;
+    state.expired = true;
+    state.stopped = true;
+    clearTimeout(state.reconnectTimer);
+    state.socket?.close(1000, "room expired");
+    state.socket = null;
+    for (const peerId of [...peers.keys()]) closePeer(peerId);
+    setStatus(tr("internetRemote.expired", "公网房间已过期，请重建房间"), "bad");
+    render();
+  }
+
+  function stopRoom(resetMode = true) {
+    state.stopped = true;
+    clearTimeout(state.reconnectTimer);
+    clearTimeout(state.expiryTimer);
+    state.reconnectTimer = null;
+    state.expiryTimer = null;
+    state.socket?.close(1000, "Host stopped Internet Remote");
+    state.socket = null;
+    for (const peerId of [...peers.keys()]) closePeer(peerId);
+    state.roomId = "";
+    state.expiresAt = 0;
+    state.expired = false;
+    state.password = "";
+    if (resetMode) state.mode = "local";
+    setStatus(state.mode === "local"
+      ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
+      : tr("internetRemote.notCreated", "尚未创建公网房间"));
+    render();
+  }
+
+  function initialize() {
+    elements = {
+      settings: document.getElementById("internet-remote-settings"),
+      toggle: document.getElementById("internet-remote-settings-toggle"),
+      panel: document.getElementById("internet-remote-settings-panel"),
+      local: document.getElementById("internet-remote-local-mode"),
+      internet: document.getElementById("internet-remote-internet-mode"),
+      summary: document.getElementById("internet-remote-summary"),
+      meta: document.getElementById("internet-remote-meta"),
+      dot: document.getElementById("internet-remote-state-dot"),
+      password: document.getElementById("internet-remote-password"),
+      regenerate: document.getElementById("internet-remote-regenerate"),
+      restart: document.getElementById("internet-remote-restart"),
+      room: document.getElementById("internet-remote-room"),
+      qr: document.getElementById("internet-remote-qr"),
+      url: document.getElementById("internet-remote-url"),
+      expiry: document.getElementById("internet-remote-expiry"),
+      status: document.getElementById("internet-remote-status"),
+    };
+    if (Object.values(elements).some((element) => !element)) return;
+    elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
+    elements.toggle.addEventListener("click", () => {
+      const open = elements.panel.classList.toggle("hidden") === false;
+      elements.toggle.setAttribute("aria-expanded", String(open));
+      if (open) document.dispatchEvent(new CustomEvent("bilikara:top-control-popover"));
+    });
+    elements.local.addEventListener("click", () => stopRoom(true));
+    elements.internet.addEventListener("click", () => {
+      state.mode = "internet";
+      render();
+      if (!state.roomId) void startRoom();
+    });
+    elements.restart.addEventListener("click", () => void startRoom());
+    elements.regenerate.addEventListener("click", () => {
+      elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
+    });
+    const events = new EventSource("/api/events");
+    events.addEventListener("state", () => {
+      if (state.mode === "internet") void publishState();
+    });
+    window.addEventListener("beforeunload", () => stopRoom(false));
+    document.addEventListener("click", (event) => {
+      if (!elements.panel.classList.contains("hidden") && !elements.settings.contains(event.target)) {
+        elements.panel.classList.add("hidden");
+        elements.toggle.setAttribute("aria-expanded", "false");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !elements.panel.classList.contains("hidden")) {
+        elements.panel.classList.add("hidden");
+        elements.toggle.setAttribute("aria-expanded", "false");
+        elements.toggle.focus({ preventScroll: true });
+      }
+    });
+    setStatus(state.available
+      ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
+      : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
+    render();
+  }
+
+  document.addEventListener("bilikara:i18n", (event) => {
+    if (event.detail?.messages && typeof event.detail.messages === "object") {
+      state.messages = event.detail.messages;
+      if (elements) {
+        setStatus(state.available
+          ? state.mode === "local"
+            ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
+            : state.expired
+              ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
+              : state.roomId
+              ? tr("internetRemote.running", "公网房间运行中")
+              : tr("internetRemote.notCreated", "尚未创建公网房间")
+          : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
+        render();
+      }
+    }
+  });
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize);
+  else initialize();
+})();

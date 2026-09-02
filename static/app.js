@@ -620,6 +620,8 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  internetRemoteSettingsToggle: document.getElementById("internet-remote-settings-toggle"),
+  internetRemoteSettingsPanel: document.getElementById("internet-remote-settings-panel"),
   presentationSettings: document.getElementById("presentation-settings"),
   presentationSettingsToggle: document.getElementById("presentation-settings-toggle"),
   presentationSettingsPanel: document.getElementById("presentation-settings-panel"),
@@ -1061,6 +1063,18 @@ function applyStaticI18n(root = document) {
   document.documentElement.lang = state.language === "ja" ? "ja" : state.language === "en" ? "en" : "zh-CN";
 }
 
+function announceStaticI18n() {
+  document.dispatchEvent(new CustomEvent("bilikara:i18n", {
+    detail: {
+      language: state.language,
+      messages: {
+        ...(state.translations?.zh || {}),
+        ...(state.translations?.[state.language] || {}),
+      },
+    },
+  }));
+}
+
 function renderLanguageSwitch() {
   elements.languageSwitch?.querySelectorAll("button[data-language]").forEach((button) => {
     button.classList.toggle("active", button.dataset.language === state.language);
@@ -1100,6 +1114,7 @@ function setLanguage(language) {
   writeLocalPreference(storageKeys.language, nextLanguage);
   invalidateLanguageSensitiveRenderCache();
   applyStaticI18n();
+  announceStaticI18n();
   renderLanguageSwitch();
   render();
   if (state.catalogAdvancedTool === "maintenance") {
@@ -1154,6 +1169,7 @@ async function loadTranslations() {
   }
   state.translationsLoaded = true;
   applyStaticI18n();
+  announceStaticI18n();
   renderLanguageSwitch();
 }
 
@@ -9054,6 +9070,7 @@ function schedulePlaybackContextualTooltipPositionSync() {
 function compactTopControlPopoverEntries() {
   return [
     [elements.remoteMiniTrigger, elements.remoteMiniPopover],
+    [elements.internetRemoteSettingsToggle, elements.internetRemoteSettingsPanel],
     [elements.presentationSettingsToggle, elements.presentationSettingsPanel],
     [elements.cacheSettingsToggle, elements.cachePanel],
   ];
@@ -9100,6 +9117,8 @@ function scheduleTopControlPopoverPositionSync() {
     syncTopControlPopoverPositions,
   );
 }
+
+document.addEventListener("bilikara:top-control-popover", scheduleTopControlPopoverPositionSync);
 
 function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   if (!info) {
@@ -14486,6 +14505,15 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
               setSplitPlaybackIntent(video, audio, shouldPlay, {
                 source: "remote-toggle-intent",
               });
+            } else if (action === "toggle-play") {
+              // Preserve the existing pending-start contract: a legacy toggle
+              // arriving while startup is unresolved confirms playback instead
+              // of inverting the optimistic local intent back to pause.
+              if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
+                setSplitPlaybackIntent(video, audio, shouldPlay, {
+                  source: "remote-toggle-intent",
+                });
+              }
             } else if (
               !shouldPlay
               || !requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })

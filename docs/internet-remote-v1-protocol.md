@@ -1,9 +1,10 @@
 # Internet Remote v1 protocol boundary
 
-Status: Rust protocol core plus transient peer sessions and sanitized AppState
-projection. There is no Internet listener, Worker binding, WebRTC transport,
-or UI entry in Bilikara yet. The existing Local Remote HTTP/SSE behavior is
-unchanged.
+Status: implemented as an opt-in preview. The Host toolbar keeps Local Remote
+as the default and exposes a separate Local / Internet switch. Internet mode
+creates an eight-hour signaling room and a shared QR code; every Remote scans
+the same QR code and enters the Host-displayed room password. The existing
+Local Remote HTTP/SSE behavior is unchanged and remains available.
 
 ## Boundary
 
@@ -13,6 +14,7 @@ After transport authentication, the intended path is:
 
 ```text
 WebRTC DataChannel bytes
+  -> Host browser transport (password gate, rate limits, bounded queue)
   -> bounded frame assembly
   -> decode_remote_request_v1
   -> per-device capability check
@@ -23,6 +25,12 @@ WebRTC DataChannel bytes
 The initial decoder lives in `rust/src/internet_remote_protocol.rs`. It is pure
 and deterministic: callers supply the expected lane, current connection epoch,
 last accepted sequence, and approved profile.
+
+The only Python entrypoints are loopback-only adapters under
+`/api/internet-remote/*`. They cannot be reached by another LAN client and are
+never exposed through the signaling Worker. Python performs the retained Host
+I/O after Rust admits a typed request; it does not own peer, replay, capability,
+or AppState policy.
 
 ## Envelope
 
@@ -86,14 +94,66 @@ cookies, diagnostics, update state, Gatcha maintenance state, or tool settings.
 authoritative `AppSnapshot`. It also admits only HTTPS Bilibili CDN covers;
 Python must not independently recompute the projection.
 
-## Remaining merge gates
+## Transport and room security
 
-1. Request-result deduplication, revocation generation, and bounded in-flight
-   RPCs around the existing Rust-owned peer epoch/sequence state.
-2. Typed Host-effect dispatch after runtime validation.
-3. DataChannel framing/backpressure and authenticated connection adapter.
-4. Standalone signaling Worker hardening and room-password authentication.
-5. Host/Remote UI integration, abuse tests, and security review.
+`internet-remote-worker/` is a standalone signaling Worker. One opaque room is
+one SQLite-backed Durable Object with one Host and at most ten Remote signaling
+sockets. It stores only SHA-256 token hashes plus Worker-generated creation and
+expiry times. It has no Bilikara D1 binding and never receives search, queue,
+playback, media, or room-password data. WebSockets use the Hibernation API, and
+Worker Rate Limit bindings cover room creation and per-room socket admission.
 
-No later slice may expose the current LAN server or reuse its HTTP routes as
-the Internet capability model.
+The Host and shared join bearer tokens are carried in the WebSocket subprotocol,
+not in a URL query. The Remote URL keeps its room ID and join token in the URL
+fragment, which is not sent as part of HTTP requests. The human password is sent
+only after WebRTC DTLS is established. It is neither uploaded to the Worker nor
+stored by the Remote page. The Host allows five failed attempts per peer and 20
+per minute across the room. Unauthenticated or incomplete peers are evicted
+after 20 seconds.
+
+This is an online password gate, not a PAKE. A leaked QR link alone does not
+authorize Bilikara commands, but it can consume signaling attempts; the Host can
+invalidate it immediately by rebuilding the room. A public room directory is
+intentionally excluded until a PAKE or equivalent low-entropy password protocol
+is available.
+
+After both ordered reliable DataChannels open, signaling detaches on the Remote
+while the Host signaling socket stays hibernatable so additional Remotes and
+network recovery can join. Control and bulk traffic use separate channels.
+Search and state payloads use bulk; playback controls use control. Logical
+messages are capped at 512 KiB and split into 12 KiB frames. The Host serializes
+outbound frames per lane, coalesces superseded state updates, and waits for the
+DataChannel buffer to drain. Each peer also has bounded pending work and
+per-minute message/request/search/add admission limits before an external Host
+request can occur.
+
+Cover images are restricted to HTTPS Bilibili CDN URLs and rendered with
+`referrerpolicy="no-referrer"`. Authentication relies on WebRTC's encrypted
+channel and does not parse browser-specific certificate fingerprints, avoiding
+Safari-specific SDP fingerprint extraction.
+
+## Recovery
+
+The Remote keeps a random endpoint ID and its non-secret display name in browser
+storage. Passwords are never persisted. On a connectivity transition it opens
+a new signaling socket,
+replaces the previous peer connection, creates a new epoch, authenticates again,
+and resends its session identity. Rust resets that peer's replay window when the
+new epoch opens. Old connection callbacks are identity-checked so they cannot
+close or mutate the replacement peer.
+
+Room creation and expiry come from Worker time. The Host schedules the returned
+TTL as a duration and treats the Durable Object's expiry close code as
+authoritative, so a badly skewed Host wall clock cannot create an already-expired
+room or extend its lifetime.
+
+## Deployment boundary
+
+The Worker is deliberately not part of the main static/Tauri deployment. Deploy
+`internet-remote-worker/` separately and attach `rtc.kevinx96.icu`; the Host
+adapter treats that exact HTTPS origin as its signaling service and as the only
+QR URL accepted by the loopback QR generator. Deploying the main
+`bilikara-tauri` static project must never overwrite this Worker.
+
+No later slice may expose the current LAN server, add arbitrary URL/HTTP proxy
+operations, or reuse the LAN route table as the Internet capability model.

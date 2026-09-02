@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import atexit
+import base64
 from collections import deque
 from email.utils import formatdate
 import hmac
+import io
 import ipaddress
 import json
 import math
@@ -1767,6 +1769,25 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         str(body.get("lane") or ""),
                         message,
                     )
+                elif route == "/api/internet-remote/qr":
+                    remote_url = str(body.get("url") or "")
+                    if (
+                        len(remote_url) > 2048
+                        or not remote_url.startswith(
+                            "https://rtc.kevinx96.icu/remote.html#"
+                        )
+                    ):
+                        raise ValueError("invalid Internet Remote URL")
+                    try:
+                        import qrcode  # type: ignore[import-not-found]
+                    except ImportError as exc:
+                        raise RuntimeError("QR generator is unavailable") from exc
+                    qr_buffer = io.BytesIO()
+                    qrcode.make(remote_url).save(qr_buffer, format="PNG")
+                    result = {
+                        "image": "data:image/png;base64,"
+                        + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
+                    }
                 else:
                     self._write_json(
                         {"ok": False, "error": "not found"},
