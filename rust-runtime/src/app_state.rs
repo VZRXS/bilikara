@@ -1,8 +1,9 @@
+use crate::internet_remote::{InternetRemoteError, InternetRemotePeers, project_remote_state};
 use bilikara_rust::{
     AvDelayAction, AvDelayState, DuplicateActiveItem, DuplicateHistoryEntry,
     PlaylistDuplicateRequest, PlaylistIdentity, PlaylistOrderItem, PlaylistOrderOperation,
-    PlaylistOrderRequest, PlaylistSlotType, decide_av_delay, decide_playlist_duplicate,
-    plan_playlist_order,
+    PlaylistOrderRequest, PlaylistSlotType, RemoteLane, RemoteProfile, decide_av_delay,
+    decide_playlist_duplicate, plan_playlist_order,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -596,6 +597,25 @@ pub enum AppStateRequest {
         event: CacheEvent,
         now: f64,
     },
+    OpenInternetRemotePeer {
+        schema_version: u32,
+        peer_id: String,
+        epoch: String,
+        profile: RemoteProfile,
+    },
+    CloseInternetRemotePeer {
+        schema_version: u32,
+        peer_id: String,
+    },
+    ValidateInternetRemoteMessage {
+        schema_version: u32,
+        peer_id: String,
+        lane: RemoteLane,
+        message: String,
+    },
+    InternetRemoteState {
+        schema_version: u32,
+    },
     Shutdown {
         schema_version: u32,
     },
@@ -648,6 +668,10 @@ impl AppStateRequest {
             | Self::BeginCacheAttempt { schema_version, .. }
             | Self::AuthorizeCachePublication { schema_version, .. }
             | Self::ApplyCacheEvent { schema_version, .. }
+            | Self::OpenInternetRemotePeer { schema_version, .. }
+            | Self::CloseInternetRemotePeer { schema_version, .. }
+            | Self::ValidateInternetRemoteMessage { schema_version, .. }
+            | Self::InternetRemoteState { schema_version }
             | Self::Shutdown { schema_version } => *schema_version,
         }
     }
@@ -698,6 +722,10 @@ impl AppStateRequest {
             | Self::QueryDuplicate { .. }
             | Self::BeginCacheAttempt { .. }
             | Self::AuthorizeCachePublication { .. }
+            | Self::OpenInternetRemotePeer { .. }
+            | Self::CloseInternetRemotePeer { .. }
+            | Self::ValidateInternetRemoteMessage { .. }
+            | Self::InternetRemoteState { .. }
             | Self::Shutdown { .. } => None,
         }
     }
@@ -705,23 +733,23 @@ impl AppStateRequest {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AvDelaySnapshot {
-    schema_version: u32,
-    global_delay_ms: i32,
-    local_delay_ms: i32,
-    effective_delay_ms: i32,
-    locked: bool,
-    has_local_adjustment: bool,
-    lock_button_enabled: bool,
+    pub(crate) schema_version: u32,
+    pub(crate) global_delay_ms: i32,
+    pub(crate) local_delay_ms: i32,
+    pub(crate) effective_delay_ms: i32,
+    pub(crate) locked: bool,
+    pub(crate) has_local_adjustment: bool,
+    pub(crate) lock_button_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PlayerSettingsSnapshot {
-    av_offset_ms: i32,
-    av_delay: AvDelaySnapshot,
-    volume_percent: i32,
-    is_muted: bool,
-    song_advance_delay_seconds: i32,
-    key_shift: i32,
+    pub(crate) av_offset_ms: i32,
+    pub(crate) av_delay: AvDelaySnapshot,
+    pub(crate) volume_percent: i32,
+    pub(crate) is_muted: bool,
+    pub(crate) song_advance_delay_seconds: i32,
+    pub(crate) key_shift: i32,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -801,7 +829,7 @@ pub struct AppStateSuccess {
     status: &'static str,
     committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    snapshot: Option<AppSnapshot>,
+    pub(crate) snapshot: Option<AppSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     persistence: Option<PersistenceSnapshot>,
     effects: PersistenceEffects,
@@ -859,6 +887,7 @@ pub struct AppState {
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
+    internet_remote_peers: InternetRemotePeers,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -900,6 +929,7 @@ impl Default for AppState {
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
             identity_namespace,
+            internet_remote_peers: InternetRemotePeers::default(),
         }
     }
 }
@@ -3472,6 +3502,10 @@ fn apply_mutation(
         | AppStateRequest::Snapshot { .. }
         | AppStateRequest::BeginCacheAttempt { .. }
         | AppStateRequest::AuthorizeCachePublication { .. }
+        | AppStateRequest::OpenInternetRemotePeer { .. }
+        | AppStateRequest::CloseInternetRemotePeer { .. }
+        | AppStateRequest::ValidateInternetRemoteMessage { .. }
+        | AppStateRequest::InternetRemoteState { .. }
         | AppStateRequest::Shutdown { .. } => Err(ExecuteError::Internal(
             "lifecycle request reached mutation dispatcher".to_owned(),
         )),
@@ -3507,6 +3541,7 @@ impl AppState {
                         let persistence = data.persistence_snapshot();
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
+                        self.internet_remote_peers.clear();
                         AppStateResponse::Success(Box::new(AppStateSuccess {
                             schema_version: SCHEMA_VERSION,
                             status: "completed",
@@ -3540,6 +3575,108 @@ impl AppState {
                     persistence: Some(data.persistence_snapshot()),
                     effects: PersistenceEffects::default(),
                     result: json!({"snapshot": true}),
+                }))
+            }
+            AppStateRequest::OpenInternetRemotePeer {
+                peer_id,
+                epoch,
+                profile,
+                ..
+            } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                if let Err(error) = self.internet_remote_peers.open(&peer_id, &epoch, profile) {
+                    return internet_remote_error_response(error);
+                }
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"opened": true, "peer_id": peer_id}),
+                }))
+            }
+            AppStateRequest::CloseInternetRemotePeer { peer_id, .. } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let closed = self.internet_remote_peers.close(&peer_id);
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"closed": closed, "peer_id": peer_id}),
+                }))
+            }
+            AppStateRequest::ValidateInternetRemoteMessage {
+                peer_id,
+                lane,
+                message,
+                ..
+            } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                let validation = match self
+                    .internet_remote_peers
+                    .validate(&peer_id, lane, &message, &snapshot)
+                {
+                    Ok(validation) => validation,
+                    Err(error) => return internet_remote_error_response(error),
+                };
+                let result = match serde_json::to_value(validation) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return internal_error_response(&format!(
+                            "failed to encode Internet Remote validation: {error}"
+                        ));
+                    }
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result,
+                }))
+            }
+            AppStateRequest::InternetRemoteState { .. } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                let remote_state = project_remote_state(&snapshot);
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"remote_state": remote_state}),
                 }))
             }
             AppStateRequest::BeginCacheAttempt {
@@ -3687,6 +3824,7 @@ impl AppState {
             }
             AppStateRequest::Shutdown { .. } => {
                 let was_initialized = self.data.take().is_some();
+                self.internet_remote_peers.clear();
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
@@ -3814,6 +3952,18 @@ fn invalid_request_response(kind: &str, message: &str) -> AppStateResponse {
         error: AppStateError {
             kind: kind.to_owned(),
             message: message.to_owned(),
+            details: None,
+        },
+    })
+}
+
+fn internet_remote_error_response(error: InternetRemoteError) -> AppStateResponse {
+    AppStateResponse::Failure(AppStateFailure {
+        schema_version: SCHEMA_VERSION,
+        status: "rejected",
+        error: AppStateError {
+            kind: error.kind().to_owned(),
+            message: error.message().to_owned(),
             details: None,
         },
     })
@@ -4058,6 +4208,77 @@ mod tests {
             AppStateResponse::Failure(failure) => failure,
             AppStateResponse::Success(success) => panic!("unexpected success: {success:?}"),
         }
+    }
+
+    #[test]
+    fn internet_remote_sessions_live_inside_app_state_and_reset_with_it() {
+        let mut state = AppState::default();
+        let snapshot = initialize(&mut state, seed());
+        let peer_id = "peer-one".to_owned();
+        let epoch = "abcdefghijklmnopqrstuv".to_owned();
+        let opened = success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.clone(),
+            epoch: epoch.clone(),
+            profile: RemoteProfile::Controller,
+        }));
+        assert!(!opened.committed);
+        assert_eq!(opened.result["opened"], json!(true));
+
+        let message = json!({
+            "v": 1,
+            "lane": "control",
+            "epoch": epoch,
+            "seq": 1,
+            "id": "123e4567-e89b-42d3-a456-426614174000",
+            "kind": "state.get",
+            "body": {"since_revision": snapshot.revision},
+        })
+        .to_string();
+        let validation = success(
+            state.execute(AppStateRequest::ValidateInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: peer_id.clone(),
+                lane: RemoteLane::Control,
+                message: message.clone(),
+            }),
+        );
+        assert_eq!(validation.result["accepted"], json!(true));
+        assert_eq!(validation.result["request"]["kind"], json!("state.get"));
+        assert_eq!(
+            validation.result["remote_state"]["revision"],
+            json!(snapshot.revision)
+        );
+
+        let replay = failure(
+            state.execute(AppStateRequest::ValidateInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: peer_id.clone(),
+                lane: RemoteLane::Control,
+                message,
+            }),
+        );
+        assert_eq!(replay.error.kind, "replayed_internet_remote_sequence");
+
+        initialize(&mut state, seed());
+        let cleared = failure(
+            state.execute(AppStateRequest::ValidateInternetRemoteMessage {
+                schema_version: 1,
+                peer_id,
+                lane: RemoteLane::Control,
+                message: json!({
+                    "v": 1,
+                    "lane": "control",
+                    "epoch": "abcdefghijklmnopqrstuv",
+                    "seq": 2,
+                    "id": "123e4567-e89b-42d3-a456-426614174001",
+                    "kind": "connection.health",
+                    "body": {},
+                })
+                .to_string(),
+            }),
+        );
+        assert_eq!(cleared.error.kind, "unknown_internet_remote_peer");
     }
 
     fn begin_cache_attempt(state: &mut AppState, item_id: &str) -> (u64, AppStateSuccess) {

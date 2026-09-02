@@ -1,8 +1,9 @@
 # Internet Remote v1 protocol boundary
 
-Status: Rust protocol core only. There is no Internet listener, Worker binding,
-WebRTC transport, or UI entry in Bilikara yet. The existing Local Remote
-HTTP/SSE behavior is unchanged.
+Status: Rust protocol core plus transient peer sessions and sanitized AppState
+projection. There is no Internet listener, Worker binding, WebRTC transport,
+or UI entry in Bilikara yet. The existing Local Remote HTTP/SSE behavior is
+unchanged.
 
 ## Boundary
 
@@ -50,9 +51,11 @@ Validation occurs before dispatch:
 7. Field-specific size/range limits.
 8. Capability profile.
 
-Command-result deduplication, epoch ownership, and last-sequence mutation are
-stateful session responsibilities and must be added to Rust AppState/runtime;
-the decoder does not create a second mutable authority.
+Epoch ownership and lane-specific last-sequence mutation live in the
+process-wide Rust AppState. Opening a new epoch resets that peer's replay
+window, and AppState initialization/shutdown clears all transient Internet
+Remote peers. The decoder remains pure and does not create a second mutable
+authority.
 
 ## Capabilities
 
@@ -66,9 +69,11 @@ does not grant it automatically. Maintenance operations such as application
 updates, diagnostics, Gatcha refresh, downloader configuration, arbitrary URL
 fetch/open, and raw HTTP requests are not protocol kinds.
 
-Playlist additions refer to a Host-issued `catalog_item_id`, not a URL or an
-unchecked Bilibili request object. Other mutations carry an expected AppState
-revision so the future dispatcher can reject stale UI actions.
+Playlist additions refer to a canonical BVID with an optional positive page
+suffix such as `BV1ab411c7mD_p2`, not a URL or an unchecked Bilibili request
+object. Other mutations carry an expected AppState revision. The runtime
+consumes their sequence but returns `accepted: false` plus a fresh sanitized
+state when the revision is stale.
 
 ## Remote state
 
@@ -77,18 +82,17 @@ item shape contains display metadata, public cache projection, audio-variant
 labels, and Bilibili cover URL only. It has no local paths, resolved media URLs,
 cookies, diagnostics, update state, Gatcha maintenance state, or tool settings.
 
-The next runtime slice must construct and validate this DTO from one
-authoritative `AppSnapshot`; it must not let Python independently recompute the
-projection.
+`rust-runtime/src/internet_remote.rs` constructs this DTO directly from one
+authoritative `AppSnapshot`. It also admits only HTTPS Bilibili CDN covers;
+Python must not independently recompute the projection.
 
 ## Remaining merge gates
 
-1. Rust-owned connection/session state: epoch, sequence, request-result cache,
-   approved capabilities, revocation generation, and bounded in-flight RPCs.
-2. `AppSnapshot -> RemoteStateV1` projection and typed request dispatch in
-   `rust-runtime`.
+1. Request-result deduplication, revocation generation, and bounded in-flight
+   RPCs around the existing Rust-owned peer epoch/sequence state.
+2. Typed Host-effect dispatch after runtime validation.
 3. DataChannel framing/backpressure and authenticated connection adapter.
-4. Standalone signaling Worker hardening and room-password PAKE design.
+4. Standalone signaling Worker hardening and room-password authentication.
 5. Host/Remote UI integration, abuse tests, and security review.
 
 No later slice may expose the current LAN server or reuse its HTTP routes as

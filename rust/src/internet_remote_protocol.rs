@@ -415,12 +415,7 @@ fn valid_revision(value: u64) -> bool {
 
 fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError> {
     let valid_item = |value: &str| valid_text(value, MAX_ITEM_ID_BYTES, MAX_ITEM_ID_BYTES);
-    let valid_catalog = |value: &str| {
-        (16..=MAX_CATALOG_ID_BYTES).contains(&value.len())
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    };
+    let valid_catalog = |value: &str| valid_catalog_item_id(value);
     let valid_expected = |value: u64| valid_revision(value);
     let valid = match request {
         RemoteRequestV1::ConnectionHealth
@@ -496,6 +491,23 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
     valid
         .then_some(())
         .ok_or(RemoteProtocolError::InvalidRequestBody)
+}
+
+fn valid_catalog_item_id(value: &str) -> bool {
+    if value.len() > MAX_CATALOG_ID_BYTES {
+        return false;
+    }
+    let (bvid, page) = value.split_once("_p").unwrap_or((value, ""));
+    if bvid.len() != 12
+        || !bvid.starts_with("BV")
+        || !bvid[2..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    page.is_empty()
+        || (page.len() <= 6
+            && !page.starts_with('0')
+            && page.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProtocolError> {
@@ -896,6 +908,40 @@ mod tests {
             assert_eq!(
                 decode_remote_request_v1(&message, context(RemoteProfile::Controller)),
                 Err(RemoteProtocolError::InvalidRequestBody)
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_ids_are_bvids_with_an_optional_positive_page() {
+        for catalog_item_id in ["BV1ab411c7mD", "BV1ab411c7mD_p1", "BV1ab411c7mD_p123"] {
+            let decoded = decode_remote_request_v1(
+                &request(
+                    "catalog.song_detail",
+                    json!({"catalog_item_id": catalog_item_id}),
+                ),
+                context(RemoteProfile::Viewer),
+            )
+            .unwrap();
+            assert_eq!(decoded.request.operation(), RemoteOperation::SongDetail);
+        }
+        for catalog_item_id in [
+            "https://www.bilibili.com/video/BV1ab411c7mD",
+            "BV1ab411c7mD_p0",
+            "BV1ab411c7mD_p01",
+            "BV1ab411c7mD_p1_extra",
+            "av123",
+        ] {
+            assert_eq!(
+                decode_remote_request_v1(
+                    &request(
+                        "catalog.song_detail",
+                        json!({"catalog_item_id": catalog_item_id}),
+                    ),
+                    context(RemoteProfile::Viewer),
+                ),
+                Err(RemoteProtocolError::InvalidRequestBody),
+                "catalog_item_id {catalog_item_id}"
             );
         }
     }
