@@ -8,6 +8,8 @@ dist/
 .vscode/
 APP_VERSION
 .tmp/
+.pnpm-store/
+internet-remote-worker/
 bilikara-api/
 src-tauri/target/
 node_modules/
