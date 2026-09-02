@@ -42,6 +42,7 @@ async function run() {
   const requestEmptyDiscoverScreenshotPath = suffixedPath(screenshotPath, "-request-empty-discover");
   const requestEmptySearchScreenshotPath = suffixedPath(screenshotPath, "-request-empty-search-results");
   const requestEmptyFavoritesScreenshotPath = suffixedPath(screenshotPath, "-request-empty-favorites");
+  const sourceOwnerDetailScreenshotPath = suffixedPath(screenshotPath, "-source-owner-detail");
   const gatchaPrerequisiteScreenshotPath = suffixedPath(screenshotPath, "-gatcha-prerequisites");
   const usersEmptyScreenshotPath = suffixedPath(screenshotPath, "-users-empty-dot");
   const toolForwardTransitionScreenshotPath = suffixedPath(screenshotPath, "-tool-forward-transition");
@@ -4885,26 +4886,41 @@ async function run() {
       const title = () => overlay
         ?.querySelector("[data-delay-next-title]")?.textContent?.trim() || "";
       const before = title();
-      state.data.playlist[0] = {
+      const changedItem = {
         ...state.data.playlist[0],
-        title: "队列变化不应刷新报幕",
-        display_title: "队列变化不应刷新报幕",
+        title: "队列变化应刷新报幕",
+        display_title: "队列变化应刷新报幕",
       };
+      state.data.playlist[0] = changedItem;
       renderPresentationHostSurface();
       const afterQueueChange = title();
-      state.data.playback_generation = Number(state.data.playback_generation || 0) + 1;
+      const queueModel = state.presentationHostAnnouncementModel;
+      state.data.playlist[0] = { ...changedItem, cache_progress: 47 };
+      renderPresentationHostSurface();
+      const afterCacheProgress = title();
+      const cacheProgressKeptModel = queueModel === state.presentationHostAnnouncementModel;
+      state.data.playlist = [];
+      renderPresentationHostSurface();
+      const afterQueueEmpty = title();
+      state.data.playlist = [changedItem];
       renderPresentationHostSurface();
       return {
         before,
         afterQueueChange,
-        afterSongChange: title(),
+        afterCacheProgress,
+        cacheProgressKeptModel,
+        afterQueueEmpty,
+        afterQueueRefill: title(),
       };
     });
     assert(
       presentationHostSnapshotEvidence.before === "下一首验收歌曲"
-        && presentationHostSnapshotEvidence.afterQueueChange === "下一首验收歌曲"
-        && presentationHostSnapshotEvidence.afterSongChange === "队列变化不应刷新报幕",
-      "dual-screen Host announcement refreshed outside a song transition or failed to refresh on one",
+        && presentationHostSnapshotEvidence.afterQueueChange === "队列变化应刷新报幕"
+        && presentationHostSnapshotEvidence.afterCacheProgress === "队列变化应刷新报幕"
+        && presentationHostSnapshotEvidence.cacheProgressKeptModel
+        && presentationHostSnapshotEvidence.afterQueueEmpty === "准备下一首"
+        && presentationHostSnapshotEvidence.afterQueueRefill === "队列变化应刷新报幕",
+      "dual-screen Host announcement ignored queue changes or churned on cache-only progress",
       presentationHostSnapshotEvidence,
     );
     await shellPage.setViewportSize({ width: 1200, height: 800 });
@@ -5780,6 +5796,57 @@ async function run() {
     await page.waitForSelector("#follow-up-grid button[data-uid='42']");
     await page.locator("#follow-up-grid button[data-uid='42']").click();
     await page.waitForSelector("#follow-song-results .search-result-item");
+    const sourceDetailBeforeWheel = await page.evaluate(() => {
+      const results = elements.followSongResults;
+      const first = results.querySelector(".search-result-item");
+      while (first && results.children.length < 12) {
+        results.appendChild(first.cloneNode(true));
+      }
+      results.scrollTop = 0;
+      elements.sourcesFollowedScroll.scrollTop = 0;
+      const header = elements.followUpItemsView.querySelector(".follow-browser-head").getBoundingClientRect();
+      const search = elements.followSearchForm.getBoundingClientRect();
+      const cards = results.getBoundingClientRect();
+      return {
+        headerTop: header.top,
+        searchTop: search.top,
+        cardsTop: cards.top,
+        cardsAfterSearch: cards.top >= search.bottom - 1,
+        outerOverflow: getComputedStyle(elements.sourcesFollowedScroll).overflowY,
+        cardsOverflow: getComputedStyle(results).overflowY,
+        outerDetailClass: elements.sourcesFollowedScroll.classList.contains("is-detail-view"),
+        cardsScrollable: results.scrollHeight > results.clientHeight,
+      };
+    });
+    await page.locator("#follow-song-results .search-result-item").first().hover();
+    await page.mouse.wheel(0, 360);
+    await page.waitForTimeout(120);
+    const sourceDetailAfterWheel = await page.evaluate(() => {
+      const header = elements.followUpItemsView.querySelector(".follow-browser-head").getBoundingClientRect();
+      const search = elements.followSearchForm.getBoundingClientRect();
+      return {
+        cardsScrollTop: elements.followSongResults.scrollTop,
+        outerScrollTop: elements.sourcesFollowedScroll.scrollTop,
+        headerTop: header.top,
+        searchTop: search.top,
+      };
+    });
+    assert(
+      sourceDetailBeforeWheel.outerDetailClass
+        && sourceDetailBeforeWheel.outerOverflow === "hidden"
+        && sourceDetailBeforeWheel.cardsOverflow === "auto"
+        && sourceDetailBeforeWheel.cardsScrollable
+        && sourceDetailBeforeWheel.cardsAfterSearch
+        && sourceDetailAfterWheel.cardsScrollTop > 0
+        && sourceDetailAfterWheel.outerScrollTop === 0
+        && sourceDetailAfterWheel.headerTop === sourceDetailBeforeWheel.headerTop
+        && sourceDetailAfterWheel.searchTop === sourceDetailBeforeWheel.searchTop,
+      "UP detail did not keep its title/search fixed with card-only scrolling",
+      { sourceDetailBeforeWheel, sourceDetailAfterWheel },
+    );
+    if (sourceOwnerDetailScreenshotPath) {
+      await page.screenshot({ path: sourceOwnerDetailScreenshotPath, fullPage: false });
+    }
     await page.locator("#follow-browse-back").click();
     await page.locator('[data-sources-mode="favorites"]').click();
     const sourcesBeforeFavoriteOpen = sourceBrowseRequests.length;
@@ -6949,6 +7016,7 @@ async function run() {
     const searchControlGeometry = await page.evaluate(() => {
       const input = elements.larkSearchQuery;
       const button = elements.larkSearchButton;
+      const panel = input.closest(".request-mode-panel").getBoundingClientRect();
       return {
         inputHeight: input.getBoundingClientRect().height,
         inputRadius: getComputedStyle(input).borderRadius,
@@ -6956,6 +7024,8 @@ async function run() {
         buttonHeight: button.getBoundingClientRect().height,
         buttonRadius: getComputedStyle(button).borderRadius,
         buttonFontSize: getComputedStyle(button).fontSize,
+        inputLeftInset: input.getBoundingClientRect().left - panel.left,
+        buttonRightInset: panel.right - button.getBoundingClientRect().right,
       };
     });
     await page.locator("#lark-search-query").fill("zero-results");
@@ -7033,6 +7103,7 @@ async function run() {
     const discoverControlGeometry = await page.evaluate(() => {
       const input = elements.discoverNamePanel.querySelector("[data-d1-browse-query]");
       const button = elements.discoverNamePanel.querySelector("[data-d1-browse-submit]");
+      const panel = input.closest(".request-mode-panel").getBoundingClientRect();
       return {
         inputHeight: input.getBoundingClientRect().height,
         inputRadius: getComputedStyle(input).borderRadius,
@@ -7040,12 +7111,91 @@ async function run() {
         buttonHeight: button.getBoundingClientRect().height,
         buttonRadius: getComputedStyle(button).borderRadius,
         buttonFontSize: getComputedStyle(button).fontSize,
+        inputLeftInset: input.getBoundingClientRect().left - panel.left,
+        buttonRightInset: panel.right - button.getBoundingClientRect().right,
       };
     });
     assert(
       JSON.stringify(discoverControlGeometry) === JSON.stringify(searchControlGeometry),
       "Discover search controls did not match the Search-tab control geometry",
       { searchControlGeometry, discoverControlGeometry },
+    );
+    const discoverEmptyLayouts = [];
+    for (const mode of ["name", "artist"]) {
+      await page.locator(`[data-discover-mode="${mode}"]`).click();
+      await page.evaluate((activeMode) => {
+        const modeState = d1BrowseModeState(activeMode);
+        Object.assign(modeState, {
+          level: "alphabet",
+          letter: "",
+          tag: "",
+          locale: "",
+          query: "",
+          data: null,
+          tagData: null,
+          itemData: null,
+          loading: false,
+          error: "",
+        });
+        restoreD1BrowseMode(activeMode);
+        renderD1BrowseView();
+        syncRequestSessionUserNoticePlacement();
+      }, mode);
+      discoverEmptyLayouts.push(await page.evaluate((activeMode) => {
+        const panel = document.querySelector(`[data-discover-panel="${activeMode}"]`);
+        const form = panel.querySelector("[data-d1-browse-search]").getBoundingClientRect();
+        const notice = elements.requestSessionUserNotice.getBoundingClientRect();
+        const alphabet = panel.querySelector("[data-d1-browse-alphabet]").getBoundingClientRect();
+        const navigation = panel.querySelector(".tag-browser-nav");
+        const result = panel.querySelector(".tag-browser-tags .search-empty").getBoundingClientRect();
+        return {
+          mode: activeMode,
+          noticeAfterSearch: notice.top >= form.bottom - 1,
+          alphabetAfterNotice: alphabet.top >= notice.bottom - 1,
+          resultAfterAlphabet: result.top >= alphabet.bottom - 1,
+          navigationHidden: getComputedStyle(navigation).display === "none",
+          navigationText: navigation.textContent.trim(),
+        };
+      }, mode));
+    }
+    assert(
+      discoverEmptyLayouts.every((entry) => entry.noticeAfterSearch
+        && entry.alphabetAfterNotice
+        && entry.resultAfterAlphabet
+        && entry.navigationHidden
+        && !entry.navigationText.includes("按名称浏览")
+        && !entry.navigationText.includes("按歌手浏览")),
+      "Name/Artist empty-user layouts displaced results or retained the redundant browse title",
+      discoverEmptyLayouts,
+    );
+    await page.evaluate(() => {
+      state.categoryBrowseLevel = "home";
+      state.categoryBrowseSelectedId = "";
+      activateDiscoverMode("categories");
+      renderCategoryBrowseView();
+      syncRequestSessionUserNoticePlacement();
+    });
+    await page.locator("#request-discover-categories .category-browser-card").first()
+      .evaluate((button) => button.click());
+    await page.waitForFunction(() => state.categoryBrowseLevel === "detail" && !state.categoryBrowseLoading);
+    const categoryEmptyLayout = await page.evaluate(() => {
+      const panel = elements.discoverCategoriesPanel;
+      const form = panel.querySelector("[data-category-browse-search]").getBoundingClientRect();
+      const notice = elements.requestSessionUserNotice.getBoundingClientRect();
+      const tabs = panel.querySelector("[data-category-browser-tabs]").getBoundingClientRect();
+      const navigation = panel.querySelector(".tag-browser-nav").getBoundingClientRect();
+      const results = panel.querySelector("[data-category-browse-results]").getBoundingClientRect();
+      return {
+        noticeAfterSearch: notice.top >= form.bottom - 1,
+        tabsAfterNotice: tabs.top >= notice.bottom - 1,
+        navigationAfterTabs: navigation.top >= tabs.bottom - 1,
+        resultsAfterNavigation: results.top >= navigation.bottom - 1,
+      };
+    });
+    assert(
+      Object.values(categoryEmptyLayout).every(Boolean),
+      "Category empty-user notice displaced the result-card row",
+      categoryEmptyLayout,
     );
     if (requestEmptyDiscoverScreenshotPath) {
       await page.screenshot({ path: requestEmptyDiscoverScreenshotPath, fullPage: false });

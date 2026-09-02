@@ -2603,12 +2603,19 @@ function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
 function presentationHostAnnouncementSnapshot() {
   const currentItem = state.data?.current_item || null;
   const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const announcementItems = playlist.slice(0, 3).map((item) => ({
+    identity: String(item?.item_incarnation_id || item?.id || ""),
+    title: delayOverlayTitleForItem(item),
+    requester: String(item?.requester_name || ""),
+    durationSeconds: durationSecondsForItem(item),
+  }));
   const snapshotKey = JSON.stringify({
     presentationGeneration: Number(state.presentationSession?.generation || 0),
     playbackGeneration: Number(state.data?.playback_generation || 0),
     currentItemIdentity: String(
       currentItem?.item_incarnation_id || currentItem?.id || "",
     ),
+    announcementItems,
     language: state.language,
   });
   if (
@@ -3365,7 +3372,9 @@ function activeRequestScrollOwner() {
     if (mode === "favorites") {
       return elements.sourcesFavoritesScroll;
     }
-    return elements.sourcesFollowedScroll;
+    return state.followBrowseSelectedUid
+      ? elements.followSongResults
+      : elements.sourcesFollowedScroll;
   }
   return null;
 }
@@ -7019,12 +7028,12 @@ function renderD1BrowseView() {
   const mode = d1BrowseModeState(kind);
   const level = normalizedD1BrowseLevel(mode.level);
   state.d1BrowseLevel = level;
-  const title = d1BrowseTitle(kind);
   const queryInput = view.querySelector("[data-d1-browse-query]");
   const submitButton = view.querySelector("[data-d1-browse-submit]");
   const alphabet = view.querySelector("[data-d1-browse-alphabet]");
   const backButton = view.querySelector("[data-d1-browse-back]");
   const current = view.querySelector("[data-d1-browse-current]");
+  const navigation = current?.closest(".tag-browser-nav");
   const tagGrid = view.querySelector("[data-d1-browse-tags]");
   const results = view.querySelector("[data-d1-browse-results]");
   const message = view.querySelector("[data-d1-browse-message]");
@@ -7058,11 +7067,12 @@ function renderD1BrowseView() {
     backButton.classList.toggle("hidden", level === "alphabet");
     backButton.disabled = false;
   }
+  navigation?.classList.toggle("hidden", level === "alphabet");
 
   const tags = Array.isArray(mode.tagData?.tags) ? mode.tagData.tags : [];
   const items = Array.isArray(mode.itemData?.items) ? mode.itemData.items : [];
   if (current) {
-    const parts = [title];
+    const parts = [];
     if (level !== "alphabet" && state.d1BrowseLetter) {
       parts.push(state.d1BrowseLetter);
     }
@@ -7964,6 +7974,8 @@ function renderFollowBrowse() {
   }
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  elements.sourcesFollowedScroll?.classList.toggle("is-detail-view", hasSelectedUid);
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
     selected: state.followBrowseSelectedUid,
@@ -7976,7 +7988,6 @@ function renderFollowBrowse() {
   }
   state.followBrowseRenderSignature = signature;
 
-  const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
   elements.followUpListView?.classList.toggle("hidden", hasSelectedUid);
   elements.followUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
 
@@ -20237,13 +20248,13 @@ elements.followUpGrid?.addEventListener("click", async (event) => {
     t("follow.loadingItems"),
     () => loadFollowBrowse({ uid, query: "" }),
   );
-  if (elements.sourcesFollowedScroll) {
-    elements.sourcesFollowedScroll.scrollTop = state.sourceItemScrollPositions.followed;
+  if (elements.followSongResults) {
+    elements.followSongResults.scrollTop = state.sourceItemScrollPositions.followed;
   }
 });
 
 elements.followBrowseBack?.addEventListener("click", () => {
-  state.sourceItemScrollPositions.followed = Number(elements.sourcesFollowedScroll?.scrollTop || 0);
+  state.sourceItemScrollPositions.followed = Number(elements.followSongResults?.scrollTop || 0);
   state.followBrowseSelectedUid = "";
   if (elements.followSearchQuery) {
     elements.followSearchQuery.value = "";
@@ -20377,9 +20388,19 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
 });
 
 elements.sourcesFollowedScroll?.addEventListener("scroll", () => {
-  const bucket = state.followBrowseSelectedUid ? state.sourceItemScrollPositions : state.sourceParentScrollPositions;
-  bucket.followed = Number(elements.sourcesFollowedScroll.scrollTop || 0);
-  state.requestScrollPositions.sources.uids = bucket.followed;
+  if (state.followBrowseSelectedUid) {
+    return;
+  }
+  state.sourceParentScrollPositions.followed = Number(elements.sourcesFollowedScroll.scrollTop || 0);
+  state.requestScrollPositions.sources.uids = state.sourceParentScrollPositions.followed;
+});
+
+elements.followSongResults?.addEventListener("scroll", () => {
+  if (!state.followBrowseSelectedUid) {
+    return;
+  }
+  state.sourceItemScrollPositions.followed = Number(elements.followSongResults.scrollTop || 0);
+  state.requestScrollPositions.sources.uids = state.sourceItemScrollPositions.followed;
 });
 
 elements.sourcesFavoritesScroll?.addEventListener("scroll", () => {

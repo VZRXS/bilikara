@@ -9802,7 +9802,7 @@ body.is-presentation-stage-only .left-column {
   --host-peer-action-height: 40px;
   --host-peer-action-font-size: 14px;
   --host-peer-head-padding-inline: 16px;
-  --host-control-height: 48px;
+  --host-control-height: var(--host-peer-action-height);
   --host-control-font-size: 14px;
   --host-control-radius: 14px;
   --source-action-control-height: var(--host-control-height);
@@ -10102,6 +10102,162 @@ body.is-presentation-stage-only .left-column {
 .source-browse-scroll {
   padding-right: 4px;
   scrollbar-gutter: stable;
+}
+
+/* Request keeps its query geometry aligned across Search, Discover, and
+   Sources. The outer Discover panels are containers, not scroll owners. */
+.request-discover-view > .request-mode-panel {
+  padding: 14px 16px 16px;
+  scrollbar-gutter: auto;
+}
+
+.request-discover-view .tag-browser-search {
+  width: 100%;
+}
+
+.request-discover-view .tag-browser-search button {
+  justify-self: end;
+}
+
+/* The session-user prerequisite is inserted after the query form. Pin every
+   child to its semantic row so the extra notice cannot take the results row. */
+.request-discover-view .tag-browser > .tag-browser-search {
+  grid-row: 1;
+}
+
+.request-discover-view .tag-browser > .tag-browser-alphabet {
+  grid-row: 2;
+}
+
+.request-discover-view .tag-browser > .tag-browser-nav {
+  grid-row: 3;
+}
+
+.request-discover-view .tag-browser > :is(.tag-browser-tags, [data-d1-browse-results]) {
+  grid-row: 4;
+}
+
+.request-discover-view .tag-browser > .tag-browser-message {
+  grid-row: 5;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice {
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice > .request-session-user-notice {
+  grid-row: 2;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-alphabet {
+  grid-row: 3;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-nav {
+  grid-row: 4;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice > :is(.tag-browser-tags, [data-d1-browse-results]) {
+  grid-row: 5;
+}
+
+.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-message {
+  grid-row: 6;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice {
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-search {
+  grid-row: 1;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .request-session-user-notice {
+  grid-row: 2;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-tabs {
+  grid-row: 3;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .tag-browser-nav {
+  grid-row: 4;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-results {
+  grid-row: 5;
+}
+
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .tag-browser-message {
+  grid-row: 6;
+}
+
+/* In an UP detail, only the card list scrolls; its title and query controls
+   remain fixed and the outer Sources scrollbar is suppressed. */
+#request-sources-followed-scroll.is-detail-view {
+  overflow-y: hidden;
+  padding-right: 0;
+  scrollbar-gutter: auto;
+}
+
+#request-sources-followed-scroll.is-detail-view .follow-browser {
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+#request-sources-followed-scroll.is-detail-view .follow-up-items-view {
+  height: 100%;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+#request-sources-followed-scroll.is-detail-view #follow-song-results {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+/* Conventional workspace actions share the 40 px Fullscreen/Queue geometry.
+   Segmented tabs and image/content cards retain their distinct affordances. */
+.request-workspace :is(
+  .request-query-form button,
+  .tag-browser-search button,
+  .tag-browser-back,
+  .follow-search-form button,
+  .source-action-row button,
+  .search-result-add
+),
+.gatcha-panel .gatcha-actions :is(.toolbar-button, .next-button),
+.session-users-panel .session-user-form button {
+  height: var(--host-peer-action-height);
+  min-height: var(--host-peer-action-height);
+  padding-block: 0;
+  border-radius: var(--host-control-radius);
+  font-size: var(--host-peer-action-font-size);
+  line-height: 1;
+}
+
+.tag-letter-button {
+  height: var(--host-peer-action-height);
+  border-radius: var(--host-control-radius);
+}
+
+.gatcha-main-btn {
+  height: var(--host-peer-action-height);
+  min-height: var(--host-peer-action-height);
+  border-radius: var(--host-control-radius) !important;
+}
+
+.confirm-export-controls .confirm-source,
+.confirm-export-controls .confirm-page-size {
+  height: var(--host-peer-action-height);
+  min-height: var(--host-peer-action-height);
+  border-radius: var(--host-control-radius);
+  font-size: var(--host-peer-action-font-size);
 }
 
 /* The web workspace used a friendly dice glyph and a compact vertical rhythm. */

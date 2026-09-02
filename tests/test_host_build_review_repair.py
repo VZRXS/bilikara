@@ -543,6 +543,28 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn(".request-discover-view > .request-mode-panel {\n  overflow: hidden;", self.styles)
         self.assertIn(".request-discover-view .category-browser,", self.styles)
         self.assertIn("height: 100%;\n  overflow: hidden;", self.styles)
+        self.assertIn(
+            ".tag-browser.has-request-session-user-notice",
+            self.styles,
+        )
+        self.assertIn(
+            ".category-browser-detail.has-request-session-user-notice",
+            self.styles,
+        )
+
+    def test_follow_owner_detail_assigns_scrolling_to_cards_only(self):
+        owner = self.script[
+            self.script.index("function activeRequestScrollOwner") :
+            self.script.index("function normalizedD1BrowseLevel")
+        ]
+        self.assertIn("state.followBrowseSelectedUid", owner)
+        self.assertIn("elements.followSongResults", owner)
+        self.assertIn(
+            '#request-sources-followed-scroll.is-detail-view #follow-song-results',
+            self.styles,
+        )
+        self.assertIn("overflow-y: hidden", self.styles)
+        self.assertIn("overflow-y: auto", self.styles)
 
     def test_player_fullscreen_overrides_persistent_card_and_webkit_insets(self):
         for selector in (
@@ -963,7 +985,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg)", self.styles)
         self.assertIn("*::-webkit-scrollbar-thumb", self.styles)
         self.assertIn("scrollbar-gutter: auto", self.styles)
-        self.assertIn("--host-control-height: 48px", self.styles)
+        self.assertIn(
+            "--host-control-height: var(--host-peer-action-height)",
+            self.styles,
+        )
         self.assertIn("--host-control-font-size: 14px", self.styles)
         self.assertIn(".request-subview-tabs,\n.request-mode-tabs", self.styles)
         self.assertIn("container-type: inline-size", self.styles)
