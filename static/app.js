@@ -13858,7 +13858,7 @@ function renderEmptyHostPlaybackState() {
   const empty = document.createElement("div");
   empty.className = "empty-state";
   const text = document.createElement("p");
-  text.textContent = t("player.emptyShort");
+  text.textContent = t("player.empty");
   empty.appendChild(text);
   replaceHostPlayerView(empty);
 }

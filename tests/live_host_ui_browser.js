@@ -22,11 +22,28 @@ async function run() {
   await page.addInitScript(() => {
     const nativeSetInterval = window.setInterval.bind(window);
     window.__hostAcceptanceIntervalIds = [];
+    window.__emptyPlayerCopyHistory = [];
     window.setInterval = (...args) => {
       const intervalId = nativeSetInterval(...args);
       window.__hostAcceptanceIntervalIds.push(intervalId);
       return intervalId;
     };
+    document.addEventListener("DOMContentLoaded", () => {
+      const playerFrame = document.querySelector("#player-frame");
+      if (!playerFrame) return;
+      const recordEmptyCopy = () => {
+        const copy = playerFrame.querySelector(".empty-state p")?.textContent?.trim() || "";
+        if (copy && window.__emptyPlayerCopyHistory.at(-1) !== copy) {
+          window.__emptyPlayerCopyHistory.push(copy);
+        }
+      };
+      recordEmptyCopy();
+      new MutationObserver(recordEmptyCopy).observe(playerFrame, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }, { once: true });
   });
   const maintenanceBusyScreenshotPath = suffixedPath(screenshotPath, "-maintenance-busy");
   const sessionUsersScreenshotPath = suffixedPath(screenshotPath, "-session-users-drag");
@@ -322,6 +339,7 @@ async function run() {
       url: window.location.href,
       title: document.title,
       bodyTextLength: String(document.body?.innerText || "").trim().length,
+      emptyPlayerCopyHistory: [...window.__emptyPlayerCopyHistory],
       frameworkOverlay: Boolean(document.querySelector(
         "nextjs-portal, vite-error-overlay, #webpack-dev-server-client-overlay",
       )),
@@ -329,6 +347,13 @@ async function run() {
     assert(identity.url === `${baseUrl}/`, "browser opened the wrong Host page", identity);
     assert(identity.title && identity.bodyTextLength > 0, "Host page was blank", identity);
     assert(!identity.frameworkOverlay, "Host page showed a framework error overlay", identity);
+    assert(
+      identity.emptyPlayerCopyHistory.length === 1
+        && identity.emptyPlayerCopyHistory[0]
+          === "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。",
+      "empty player copy changed during startup",
+      identity.emptyPlayerCopyHistory,
+    );
     await Promise.race([
       startupUpdateSeen,
       new Promise((_, reject) => setTimeout(() => reject(new Error("startup update check was not requested")), 3000)),

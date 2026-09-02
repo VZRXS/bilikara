@@ -485,6 +485,18 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn('<div class="gatcha-icon" aria-hidden="true">🎲</div>', idle_view)
         self.assertNotIn("<svg", idle_view)
 
+    def test_empty_player_uses_one_i18n_key_before_and_after_runtime_render(self):
+        empty_renderer = self.script[
+            self.script.index("function renderEmptyHostPlaybackState") :
+            self.script.index("function renderPreparingHostPlaybackState")
+        ]
+        self.assertIn('t("player.empty")', empty_renderer)
+        self.assertNotIn("player.emptyShort", empty_renderer)
+        self.assertNotIn('"player.emptyShort"', json.dumps(self.translations))
+        expected = "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。"
+        self.assertEqual(self.translations["languages"]["zh"]["player.empty"], expected)
+        self.assertIn(f'data-i18n="player.empty">{expected}</p>', self.markup)
+
     def test_peer_workspace_and_dialog_headers_share_one_geometry_contract(self):
         self.assertIn("--host-peer-eyebrow-size: 12px", self.styles)
         self.assertIn("--host-peer-title-size: 24px", self.styles)
