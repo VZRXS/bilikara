@@ -69,6 +69,14 @@ from .lark_pool_client import (
     trigger_cloudflare_maintenance_job,
     verify_cloudflare_bilikara_secret,
 )
+from .internet_remote import (
+    InternetRemoteDispatchError,
+    close_peer as close_internet_remote_peer,
+    dispatch as dispatch_internet_remote,
+    open_peer as open_internet_remote_peer,
+    remote_state as internet_remote_state,
+    submit_rating_background,
+)
 from .cache import CacheManager
 from .rust_backend import PlaybackCapabilityError
 from .config import (
@@ -663,6 +671,30 @@ class AppContext:
                 old_key = key_order.popleft()
                 self._rating_submission_keys.discard(old_key)
             return True
+
+    def submit_rating_in_background(
+        self, session_user_name: str, play_id: str, bvid: str, score: int
+    ) -> bool:
+        if not self.register_rating_submission(session_user_name, play_id):
+            return False
+        submit_rating_background(session_user_name, play_id, bvid, score)
+        return True
+
+    def open_internet_remote_peer(
+        self, peer_id: str, epoch: str, profile: str = "controller"
+    ) -> dict[str, object]:
+        return open_internet_remote_peer(self, peer_id, epoch, profile)
+
+    def close_internet_remote_peer(self, peer_id: str) -> dict[str, object]:
+        return close_internet_remote_peer(self, peer_id)
+
+    def internet_remote_state(self) -> dict[str, object]:
+        return internet_remote_state(self)
+
+    def dispatch_internet_remote(
+        self, peer_id: str, lane: str, message: str
+    ) -> dict[str, object]:
+        return dispatch_internet_remote(self, peer_id, lane, message)
 
     def advance_to_next(self, expected_playback_generation: int) -> None:
         self.store.advance_to_next(
@@ -1403,6 +1435,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
             return
+        if route == "/api/internet-remote/state":
+            if not self._is_local_client():
+                self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self._write_json({"ok": True, "data": CONTEXT.internet_remote_state()})
+            return
         if route == "/api/remote-identity":
             self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
             return
@@ -1703,6 +1741,40 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route.startswith("/api/internet-remote/"):
+                if not self._is_local_client():
+                    self._write_json(
+                        {"ok": False, "error": "forbidden"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                if route == "/api/internet-remote/peer/open":
+                    result = CONTEXT.open_internet_remote_peer(
+                        str(body.get("peer_id") or ""),
+                        str(body.get("epoch") or ""),
+                        str(body.get("profile") or "controller"),
+                    )
+                elif route == "/api/internet-remote/peer/close":
+                    result = CONTEXT.close_internet_remote_peer(
+                        str(body.get("peer_id") or "")
+                    )
+                elif route == "/api/internet-remote/dispatch":
+                    message = body.get("message")
+                    if not isinstance(message, str):
+                        raise ValueError("message must be a string")
+                    result = CONTEXT.dispatch_internet_remote(
+                        str(body.get("peer_id") or ""),
+                        str(body.get("lane") or ""),
+                        message,
+                    )
+                else:
+                    self._write_json(
+                        {"ok": False, "error": "not found"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
             export_diagnostics = body.get("export_diagnostics") if isinstance(body, dict) else None
             if route == "/api/diagnostics/markdown":
                 if not self._is_local_client():
@@ -2335,7 +2407,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/player/control":
                 action = str(body.get("action") or "").strip()
                 item_id = str(body.get("item_id") or "").strip()
-                if action not in {"toggle-play", "seek-relative", "seek-absolute", "next-track"}:
+                if action not in {
+                    "toggle-play",
+                    "play",
+                    "pause",
+                    "seek-relative",
+                    "seek-absolute",
+                    "next-track",
+                }:
                     raise ValueError("invalid player control action")
                 delta_seconds = int(body.get("delta_seconds") or 0)
                 target_seconds = None
@@ -2648,6 +2727,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         "reason": exc.kind,
                     },
                 }
+            )
+        except InternetRemoteDispatchError as exc:
+            self._write_json(
+                {"ok": False, "error": str(exc), "code": exc.kind},
+                status=HTTPStatus.BAD_REQUEST,
             )
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

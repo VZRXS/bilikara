@@ -14475,21 +14475,29 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
         ) {
           setSplitPlaybackStartState("established", video, audio);
         }
-        if (action === "toggle-play") {
+        if (action === "toggle-play" || action === "play" || action === "pause") {
+          const shouldPlay = action === "play"
+            ? true
+            : action === "pause"
+              ? false
+              : !state.localShouldBePlaying;
           if (audio) {
             if (hasEstablishedTauriWebKitSession) {
-              setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
+              setSplitPlaybackIntent(video, audio, shouldPlay, {
                 source: "remote-toggle-intent",
               });
-            } else if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
-              setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
+            } else if (
+              !shouldPlay
+              || !requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })
+            ) {
+              setSplitPlaybackIntent(video, audio, shouldPlay, {
                 source: "remote-toggle-intent",
               });
             }
-          } else if (video.paused) {
+          } else if (shouldPlay && video.paused) {
             state.localShouldBePlaying = true;
             video.play().catch(() => {});
-          } else {
+          } else if (!shouldPlay && !video.paused) {
             state.localShouldBePlaying = false;
             video.pause();
           }

@@ -16,6 +16,7 @@ const MAX_PEER_ID_BYTES: usize = 128;
 struct PeerSession {
     epoch: String,
     profile: RemoteProfile,
+    session_name: Option<String>,
     control_last_sequence: Option<u64>,
     bulk_last_sequence: Option<u64>,
 }
@@ -33,6 +34,8 @@ pub(crate) struct InternetRemoteValidation {
     pub accepted: bool,
     pub stale_revision: bool,
     pub current_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
     pub request: RemoteRequestV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_state: Option<RemoteStateV1>,
@@ -103,6 +106,7 @@ impl InternetRemotePeers {
             PeerSession {
                 epoch: epoch.to_owned(),
                 profile,
+                session_name: None,
                 control_last_sequence: None,
                 bulk_last_sequence: None,
             },
@@ -149,12 +153,22 @@ impl InternetRemotePeers {
             RemoteLane::Bulk => peer.bulk_last_sequence = Some(decoded.seq),
         }
 
-        Ok(validation_result(peer_id, decoded, snapshot))
+        if let RemoteRequestV1::SessionSetIdentity { name } = &decoded.request {
+            peer.session_name = Some(name.clone());
+        }
+
+        Ok(validation_result(
+            peer_id,
+            peer.session_name.clone(),
+            decoded,
+            snapshot,
+        ))
     }
 }
 
 fn validation_result(
     peer_id: &str,
+    session_name: Option<String>,
     decoded: RemoteRequestEnvelopeV1,
     snapshot: &AppSnapshot,
 ) -> InternetRemoteValidation {
@@ -172,6 +186,7 @@ fn validation_result(
         accepted: !stale_revision,
         stale_revision,
         current_revision: snapshot.revision,
+        session_name,
         request: decoded.request,
         remote_state: include_state.then(|| project_remote_state(snapshot)),
     }
@@ -404,6 +419,44 @@ mod tests {
         assert!(!stale.accepted);
         assert!(stale.stale_revision);
         assert!(stale.remote_state.is_some());
+    }
+
+    #[test]
+    fn validated_identity_is_retained_for_subsequent_requests() {
+        let snapshot = empty_snapshot();
+        let mut peers = InternetRemotePeers::default();
+        peers
+            .open("peer-one", EPOCH, RemoteProfile::Controller)
+            .unwrap();
+        let identity = json!({
+            "v": 1,
+            "lane": "control",
+            "epoch": EPOCH,
+            "seq": 1,
+            "id": "123e4567-e89b-42d3-a456-426614174000",
+            "kind": "session.set_identity",
+            "body": {"name": "Alice"},
+        })
+        .to_string();
+        let set = peers
+            .validate("peer-one", RemoteLane::Control, &identity, &snapshot)
+            .unwrap();
+        assert_eq!(set.session_name.as_deref(), Some("Alice"));
+
+        let health = json!({
+            "v": 1,
+            "lane": "control",
+            "epoch": EPOCH,
+            "seq": 2,
+            "id": "223e4567-e89b-42d3-a456-426614174000",
+            "kind": "connection.health",
+            "body": {},
+        })
+        .to_string();
+        let next = peers
+            .validate("peer-one", RemoteLane::Control, &health, &snapshot)
+            .unwrap();
+        assert_eq!(next.session_name.as_deref(), Some("Alice"));
     }
 
     #[test]

@@ -1177,6 +1177,41 @@ class PlaylistStore:
                 command, include_now=include_now, **fields
             )["result"]
 
+    def open_internet_remote_peer(
+        self, peer_id: str, epoch: str, profile: str = "controller"
+    ) -> dict[str, Any]:
+        return self._request(
+            "open_internet_remote_peer",
+            include_now=False,
+            peer_id=peer_id,
+            epoch=epoch,
+            profile=profile,
+        )
+
+    def close_internet_remote_peer(self, peer_id: str) -> dict[str, Any]:
+        return self._request(
+            "close_internet_remote_peer",
+            include_now=False,
+            peer_id=peer_id,
+        )
+
+    def validate_internet_remote_message(
+        self, peer_id: str, lane: str, message: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "validate_internet_remote_message",
+            include_now=False,
+            peer_id=peer_id,
+            lane=lane,
+            message=message,
+        )
+
+    def internet_remote_state(self) -> dict[str, Any]:
+        return self._request(
+            "internet_remote_state",
+            include_now=False,
+        )
+
     def _request_unlocked(
         self,
         command: str,
