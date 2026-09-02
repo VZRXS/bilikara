@@ -651,8 +651,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 with patch.object(
                     manager, "_ensure_native_cache_runtime"
-                ), patch(
-                    "bilikara.cache.rust_runtime.cache_runtime_request",
+                ), patch.object(
+                    manager,
+                    "_native_cache_request",
                     side_effect=lambda _command, **_fields: responses.get_nowait(),
                 ), patch.object(
                     manager, "_drain_native_cache_events"
