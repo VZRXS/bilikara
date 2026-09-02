@@ -440,12 +440,6 @@ const state = {
   hostNarrowToolSheetActive: false,
   hostWorkspaceTransition: null,
   hostWorkspaceTransitionTimer: null,
-  hostWorkspaceRailHighlightWorkspace: "",
-  hostWorkspaceRailHighlightY: null,
-  hostWorkspaceRailHighlightHeight: null,
-  hostWorkspaceRailHighlightTimer: null,
-  hostWorkspaceRailHighlightToken: 0,
-  hostWorkspaceRailResizeObserver: null,
   hostWorkspaceScrollPositions: {
     queue: 0,
     request: 0,
@@ -505,7 +499,6 @@ const elements = {
   topbar: document.querySelector(".topbar"),
   hostContentRegion: document.querySelector(".host-content-region"),
   leftColumn: document.querySelector(".left-column"),
-  hostWorkspaceRail: document.getElementById("work-rail"),
   hostWorkspaceRegion: document.getElementById("host-workspace-region"),
   hostWorkspaceButtons: document.querySelectorAll("[data-host-workspace]"),
   hostWorkspacePanels: document.querySelectorAll("[data-host-workspace-panel]"),
@@ -3824,7 +3817,6 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
     button.tabIndex = workspace === focusedWorkspace ? 0 : -1;
     button.classList.toggle("needs-attention", workspace === "users" && !sessionUsersAvailable);
   });
-  syncHostWorkspaceRailHighlight(activeWorkspace);
   elements.hostWorkspacePanels?.forEach((panel) => {
     const workspace = normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, "");
     const transitionRole = workspaceTransition?.resume && workspace === workspaceTransition.to
@@ -3883,7 +3875,6 @@ const hostWorkspaceRailOrder = Object.freeze([
 
 const hostWorkspaceContentTransitionMs = 190;
 const hostWorkspaceResumeTransitionMs = 120;
-const hostWorkspaceRailJumpFadeMs = 60;
 
 function hostWorkspaceReducedMotion() {
   return typeof window !== "undefined" && Boolean(
@@ -3894,25 +3885,11 @@ function hostWorkspaceReducedMotion() {
 function hostWorkspaceContentVisual(panel) {
   const content = panel?.firstElementChild || panel;
   if (!content || typeof getComputedStyle !== "function") {
-    return { opacity: 1, translateX: 0 };
+    return { opacity: 1 };
   }
   const style = getComputedStyle(content);
   const opacity = Math.max(0, Math.min(1, Number.parseFloat(style.opacity) || 0));
-  const transform = String(style.transform || "none");
-  let translateX = 0;
-  if (transform !== "none") {
-    try {
-      if (typeof DOMMatrixReadOnly === "function") {
-        translateX = new DOMMatrixReadOnly(transform).m41;
-      } else {
-        const matrix = transform.match(/^matrix\(([^)]+)\)$/);
-        translateX = matrix ? Number.parseFloat(matrix[1].split(",")[4]) || 0 : 0;
-      }
-    } catch {
-      translateX = 0;
-    }
-  }
-  return { opacity, translateX };
+  return { opacity };
 }
 
 function currentHostWorkspaceVisualSource(fallbackWorkspace) {
@@ -3935,22 +3912,18 @@ function currentHostWorkspaceVisualSource(fallbackWorkspace) {
   return candidates[0] || {
     workspace: fallback,
     opacity: 1,
-    translateX: 0,
   };
 }
 
 function applyHostWorkspaceTransitionVisual(panel, transition, role) {
   panel.style?.removeProperty?.("--host-tool-start-opacity");
-  panel.style?.removeProperty?.("--host-tool-start-x");
   if (!transition || !role) {
     return;
   }
   if (role === "out") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.outgoingOpacity ?? 1));
-    panel.style?.setProperty?.("--host-tool-start-x", `${transition.outgoingTranslateX ?? 0}px`);
   } else if (role === "resume") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.incomingOpacity ?? 0));
-    panel.style?.setProperty?.("--host-tool-start-x", `${transition.incomingTranslateX ?? 0}px`);
   }
 }
 
@@ -3973,85 +3946,6 @@ function restartHostWorkspaceTransitionAnimations() {
   if (cleared) {
     elements.hostWorkspaceRegion?.getBoundingClientRect?.();
   }
-}
-
-function setHostWorkspaceRailHighlightGeometry(rail, y, height) {
-  rail.style.setProperty("--work-rail-highlight-y", `${Math.round(y)}px`);
-  rail.style.setProperty("--work-rail-highlight-height", `${Math.round(height)}px`);
-  rail.dataset.highlightReady = "true";
-  state.hostWorkspaceRailHighlightY = y;
-  state.hostWorkspaceRailHighlightHeight = height;
-}
-
-function syncHostWorkspaceRailHighlight(workspace, { immediate = false } = {}) {
-  const rail = elements.hostWorkspaceRail;
-  const targetWorkspace = normalizeHostWorkspaceName(workspace, "");
-  const button = hostWorkspaceButton(targetWorkspace);
-  if (!rail || !button) {
-    return;
-  }
-  const y = button.offsetTop;
-  const height = button.offsetHeight;
-  if (!(height > 0)) {
-    return;
-  }
-  const previousWorkspace = state.hostWorkspaceRailHighlightWorkspace;
-  const selectionChanged = Boolean(previousWorkspace && previousWorkspace !== targetWorkspace);
-  state.hostWorkspaceRailHighlightWorkspace = targetWorkspace;
-  const reducedMotion = hostWorkspaceReducedMotion();
-  if (
-    immediate
-    || reducedMotion
-    || !rail.dataset.highlightReady
-    || !selectionChanged
-    || state.hostWorkspaceRailHighlightY === null
-  ) {
-    if (state.hostWorkspaceRailHighlightTimer) {
-      globalThis.clearTimeout(state.hostWorkspaceRailHighlightTimer);
-      state.hostWorkspaceRailHighlightTimer = null;
-    }
-    rail.classList.add("is-highlight-static");
-    rail.classList.remove("is-highlight-jumping");
-    setHostWorkspaceRailHighlightGeometry(rail, y, height);
-    rail.getBoundingClientRect?.();
-    rail.classList.remove("is-highlight-static");
-    return;
-  }
-  const distance = Math.abs(y - state.hostWorkspaceRailHighlightY);
-  const jumpThreshold = Math.max(height, state.hostWorkspaceRailHighlightHeight || height) * 2.5;
-  if (distance <= jumpThreshold && !rail.classList.contains("is-highlight-jumping")) {
-    setHostWorkspaceRailHighlightGeometry(rail, y, height);
-    return;
-  }
-  if (state.hostWorkspaceRailHighlightTimer) {
-    globalThis.clearTimeout(state.hostWorkspaceRailHighlightTimer);
-  }
-  const token = state.hostWorkspaceRailHighlightToken + 1;
-  state.hostWorkspaceRailHighlightToken = token;
-  rail.classList.add("is-highlight-jumping");
-  state.hostWorkspaceRailHighlightTimer = globalThis.setTimeout(() => {
-    if (state.hostWorkspaceRailHighlightToken !== token) {
-      return;
-    }
-    setHostWorkspaceRailHighlightGeometry(rail, y, height);
-    rail.getBoundingClientRect?.();
-    rail.classList.remove("is-highlight-jumping");
-    state.hostWorkspaceRailHighlightTimer = null;
-  }, hostWorkspaceRailJumpFadeMs);
-}
-
-function initializeHostWorkspaceRailHighlight() {
-  state.hostWorkspaceRailResizeObserver?.disconnect?.();
-  if (typeof ResizeObserver === "function" && elements.hostWorkspaceRail) {
-    state.hostWorkspaceRailResizeObserver = new ResizeObserver(() => {
-      syncHostWorkspaceRailHighlight(state.activeHostWorkspace, { immediate: true });
-    });
-    state.hostWorkspaceRailResizeObserver.observe(elements.hostWorkspaceRail);
-    elements.hostWorkspaceButtons?.forEach((button) => {
-      state.hostWorkspaceRailResizeObserver.observe(button);
-    });
-  }
-  syncHostWorkspaceRailHighlight(state.activeHostWorkspace, { immediate: true });
 }
 
 function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
@@ -4080,9 +3974,7 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
     direction: toIndex > fromIndex ? "forward" : "backward",
     resume,
     outgoingOpacity: visualSource.opacity,
-    outgoingTranslateX: visualSource.translateX,
     incomingOpacity: resume ? visualSource.opacity : 0,
-    incomingTranslateX: resume ? visualSource.translateX : 6,
     token: Number(state.hostWorkspaceTransition?.token || 0) + 1,
   };
   state.hostWorkspaceTransition = transition;
@@ -4899,7 +4791,6 @@ function initializeHostShell() {
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
   renderHostWorkspaceSelection();
-  initializeHostWorkspaceRailHighlight();
   renderGatchaWorkspace();
   initializeWindowChrome();
   initializePersistentStageFitting();

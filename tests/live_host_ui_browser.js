@@ -847,11 +847,6 @@ async function run() {
         nextInQueueCurrent: Boolean(document.querySelector("#queue-current #next-button")),
         nextInStage: Boolean(document.querySelector(".player-panel #next-button")),
         nextCount: document.querySelectorAll("#next-button").length,
-        railHighlightReady: elements.hostWorkspaceRail?.dataset.highlightReady || "",
-        railHighlightOpacity: Number(getComputedStyle(
-          elements.hostWorkspaceRail,
-          "::before",
-        ).opacity),
         selectedButtonBackground: getComputedStyle(
           document.querySelector("#work-rail-queue"),
         ).backgroundColor,
@@ -865,9 +860,7 @@ async function run() {
         && directListInitial.nextInQueueCurrent
         && !directListInitial.nextInStage
         && directListInitial.nextCount === 1
-        && directListInitial.railHighlightReady === "true"
-        && directListInitial.railHighlightOpacity === 1
-        && directListInitial.selectedButtonBackground === "rgba(0, 0, 0, 0)",
+        && directListInitial.selectedButtonBackground !== "rgba(0, 0, 0, 0)",
       "Queue was not the one accessible default direct list workspace",
       directListInitial,
     );
@@ -897,6 +890,12 @@ async function run() {
       incomingContentEasing: getComputedStyle(
         document.querySelector("#host-workspace-history").firstElementChild,
       ).animationTimingFunction,
+      outgoingContentTransform: getComputedStyle(
+        document.querySelector("#host-workspace-queue").firstElementChild,
+      ).transform,
+      incomingContentTransform: getComputedStyle(
+        document.querySelector("#host-workspace-history").firstElementChild,
+      ).transform,
       outgoingSurfaceTransform: getComputedStyle(
         document.querySelector("#host-workspace-queue"),
       ).transform,
@@ -915,14 +914,6 @@ async function run() {
       incomingSurfaceBackground: getComputedStyle(
         document.querySelector("#host-workspace-history"),
       ).backgroundColor,
-      railHighlightTransition: getComputedStyle(
-        elements.hostWorkspaceRail,
-        "::before",
-      ).transitionDuration,
-      railHighlightTransform: getComputedStyle(
-        elements.hostWorkspaceRail,
-        "::before",
-      ).transform,
       activeButtonBackground: getComputedStyle(
         document.querySelector("#work-rail-history"),
       ).backgroundColor,
@@ -942,15 +933,15 @@ async function run() {
         && directHistory.outgoingContentAnimation === "host-tool-content-out"
         && directHistory.incomingContentAnimation === "host-tool-content-in"
         && directHistory.incomingContentEasing === "linear"
+        && directHistory.outgoingContentTransform === "none"
+        && directHistory.incomingContentTransform === "none"
         && directHistory.outgoingSurfaceTransform === "none"
         && directHistory.incomingSurfaceTransform === "none"
         && directHistory.outgoingSurfaceBackground === "rgba(0, 0, 0, 0)"
         && directHistory.outgoingSurfaceBorderColor === "rgba(0, 0, 0, 0)"
         && directHistory.outgoingSurfaceShadow === "none"
         && directHistory.incomingSurfaceBackground !== "rgba(0, 0, 0, 0)"
-        && directHistory.railHighlightTransition.split(",").map((value) => value.trim()).includes("0.21s")
-        && directHistory.railHighlightTransform !== "none"
-        && directHistory.activeButtonBackground === "rgba(0, 0, 0, 0)"
+        && directHistory.activeButtonBackground !== "rgba(0, 0, 0, 0)"
         && directHistory.stableNodes,
       "History did not use the forward rail-order transition on stable workspace nodes",
       directHistory,
@@ -1061,7 +1052,6 @@ async function run() {
     await shellPage.waitForTimeout(230);
     const rapidTransitionSettled = await shellPage.evaluate(() => {
       const usersPanel = document.querySelector("#session-users-panel");
-      const usersButton = document.querySelector("#work-rail-users");
       return {
         active: state.activeHostWorkspace,
         transition: state.hostWorkspaceTransition,
@@ -1073,10 +1063,9 @@ async function run() {
         ).length,
         contentOpacity: Number(getComputedStyle(usersPanel.firstElementChild).opacity),
         contentTransform: getComputedStyle(usersPanel.firstElementChild).transform,
-        highlightY: Number.parseFloat(
-          elements.hostWorkspaceRail.style.getPropertyValue("--work-rail-highlight-y"),
-        ),
-        targetY: usersButton.offsetTop,
+        activeButtonBackground: getComputedStyle(
+          document.querySelector("#work-rail-users"),
+        ).backgroundColor,
       };
     });
     assert(
@@ -1086,8 +1075,8 @@ async function run() {
         && rapidTransitionSettled.animatedPanels === 0
         && rapidTransitionSettled.contentOpacity === 1
         && rapidTransitionSettled.contentTransform === "none"
-        && rapidTransitionSettled.highlightY === rapidTransitionSettled.targetY,
-      "rapid tool switching did not converge to the final content and highlight",
+        && rapidTransitionSettled.activeButtonBackground !== "rgba(0, 0, 0, 0)",
+      "rapid tool switching did not converge to the final content and tab state",
       rapidTransitionSettled,
     );
     await shellPage.locator("#work-rail-history").click();
@@ -2145,6 +2134,8 @@ async function run() {
       const currentOnly = {
         currentVisible: !elements.queueCurrent.classList.contains("hidden"),
         emptyText: elements.playlist.textContent,
+        hint: elements.playlist.querySelector(".queue-empty p + p")?.textContent || "",
+        align: getComputedStyle(elements.playlist.querySelector(".queue-empty")).textAlign,
       };
       state.data.current_item = null;
       state.queueCurrentRenderSignature = "";
@@ -2154,6 +2145,8 @@ async function run() {
       const noCurrent = {
         currentHidden: elements.queueCurrent.classList.contains("hidden"),
         emptyText: elements.playlist.textContent,
+        hint: elements.playlist.querySelector(".queue-empty p + p")?.textContent || "",
+        align: getComputedStyle(elements.playlist.querySelector(".queue-empty")).textAlign,
       };
       state.data.current_item = current;
       state.data.playlist = [...window.__queueAcceptance.playlist];
@@ -2166,8 +2159,12 @@ async function run() {
     assert(
       emptyQueueEvidence.currentOnly.currentVisible
         && emptyQueueEvidence.currentOnly.emptyText.length > 0
+        && emptyQueueEvidence.currentOnly.hint === "可以继续前往“点歌”界面点下一首。"
+        && emptyQueueEvidence.currentOnly.align === "left"
         && emptyQueueEvidence.noCurrent.currentHidden
         && emptyQueueEvidence.noCurrent.emptyText.length > 0
+        && emptyQueueEvidence.noCurrent.hint === "请前往“点歌”界面点歌。"
+        && emptyQueueEvidence.noCurrent.align === "left"
         && emptyQueueEvidence.currentOnly.emptyText !== emptyQueueEvidence.noCurrent.emptyText,
       "current-only and no-current Queue states were not distinct and honest",
       emptyQueueEvidence,
@@ -6827,7 +6824,7 @@ async function run() {
         && requestUserNoticeEvidence.background === "rgba(0, 0, 0, 0)"
         && requestUserNoticeEvidence.border === "0px"
         && Number(requestUserNoticeEvidence.weight) >= 700
-        && requestUserNoticeEvidence.align === "center",
+        && requestUserNoticeEvidence.align === "left",
       "Request empty-user notice did not match the borderless Session Users prompt",
       requestUserNoticeEvidence,
     );

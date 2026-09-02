@@ -657,10 +657,14 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.styles,
         )
         self.assertIn("animation: host-tool-content-in 190ms linear both", self.styles)
-        self.assertIn("--host-tool-out-x: -2px", self.styles)
-        self.assertIn("--host-tool-in-x: 6px", self.styles)
-        self.assertIn("transform 210ms cubic-bezier(0.2, 0.8, 0.2, 1)", self.styles)
-        self.assertIn("syncHostWorkspaceRailHighlight(activeWorkspace)", self.script)
+        transition_styles = self.styles[
+            self.styles.index(".host-workspace-fragment.is-tool-transition-out") :
+            self.styles.index(".request-workspace {")
+        ]
+        self.assertNotIn("translateX", transition_styles)
+        self.assertNotIn("translateY", transition_styles)
+        self.assertIn("background-color 150ms ease-out", self.styles)
+        self.assertNotIn("syncHostWorkspaceRailHighlight", self.script)
         self.assertIn(
             "renderHostWorkspaceSelection({ measureNarrowLayout: false })",
             self.script,
@@ -824,7 +828,34 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("background: transparent", notice)
         self.assertIn("color: var(--accent)", notice)
         self.assertIn("font-weight: 700", notice)
-        self.assertIn("text-align: center", notice)
+        self.assertIn("text-align: left", notice)
+        message_surfaces = self.styles[
+            self.styles.index(".message-surface,") :
+            self.styles.index(".message-inline:empty,")
+        ]
+        self.assertIn("text-align: left", message_surfaces)
+        session_empty = re.findall(
+            r"(?m)^\.session-user-list \.session-user-empty\s*\{([^}]*)\}",
+            self.styles,
+        )
+        self.assertTrue(session_empty)
+        self.assertIn("text-align: left", session_empty[-1])
+        self.assertEqual(
+            self.translations["languages"]["zh"]["list.emptyHint"],
+            "请前往“点歌”界面点歌。",
+        )
+        self.assertEqual(
+            self.translations["languages"]["zh"]["list.emptyWithCurrentHint"],
+            "可以继续前往“点歌”界面点下一首。",
+        )
+        self.assertEqual(
+            self.translations["languages"]["en"]["list.emptyHint"],
+            "Request songs from the Request workspace.",
+        )
+        self.assertEqual(
+            self.translations["languages"]["ja"]["list.emptyHint"],
+            "「リクエスト」画面から曲を予約してください。",
+        )
         self.assertIn("function syncRequestSessionUserNoticePlacement()", self.script)
         self.assertIn('placement.anchor.insertAdjacentElement("afterend", notice)', self.script)
         self.assertIn("showSessionUsersRequiredToast", self.script)

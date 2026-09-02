@@ -7962,11 +7962,6 @@ body {
 }
 
 .work-rail {
-  --work-rail-highlight-y: 0px;
-  --work-rail-highlight-height: 48px;
-  --work-rail-highlight-inset: 4px;
-  position: relative;
-  isolation: isolate;
   min-height: 0;
   padding: 6px 4px;
   display: flex;
@@ -7980,44 +7975,8 @@ body {
   overflow: hidden;
 }
 
-.work-rail::before {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0;
-  will-change: opacity, transform;
-  top: 0;
-  left: var(--work-rail-highlight-inset);
-  right: var(--work-rail-highlight-inset);
-  height: var(--work-rail-highlight-height);
-  border: 1px solid rgba(208, 90, 63, 0.24);
-  border-radius: 10px;
-  background: var(--accent-soft);
-  transform: translate3d(0, var(--work-rail-highlight-y), 0);
-  transition:
-    opacity 100ms ease-out,
-    transform 210ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.work-rail[data-highlight-ready="true"]::before {
-  opacity: 1;
-}
-
-.work-rail.is-highlight-jumping::before {
-  opacity: 0;
-  transition:
-    opacity 60ms ease-in,
-    transform 0s linear;
-}
-
-.work-rail.is-highlight-static::before {
-  transition: none;
-}
-
 .work-rail-button {
   position: relative;
-  z-index: 1;
   width: 100%;
   min-width: 0;
   min-height: 48px;
@@ -8034,13 +7993,16 @@ body {
   line-height: 1.12;
   text-align: center;
   overflow-wrap: anywhere;
-  transition: color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition:
+    color 150ms ease-out,
+    border-color 150ms ease-out,
+    background-color 150ms ease-out;
 }
 
 .work-rail-button[aria-selected="true"] {
   color: var(--accent-deep);
-  border-color: transparent;
-  background: transparent;
+  border-color: rgba(208, 90, 63, 0.24);
+  background: var(--accent-soft);
 }
 
 .work-rail-button:hover:not([aria-selected="true"]) {
@@ -8096,8 +8058,6 @@ body {
 }
 
 .host-workspace-region {
-  --host-tool-out-x: -2px;
-  --host-tool-in-x: 6px;
   position: relative;
   height: 100%;
   padding: 0;
@@ -8158,7 +8118,7 @@ body {
 .host-workspace-fragment.is-tool-transition-in > *,
 .host-workspace-fragment.is-tool-transition-out > *,
 .host-workspace-fragment.is-tool-transition-resume > * {
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 
 .host-workspace-fragment.is-tool-transition-out > * {
@@ -8176,12 +8136,10 @@ body {
 @keyframes host-tool-content-out {
   from {
     opacity: var(--host-tool-start-opacity, 1);
-    transform: translateX(var(--host-tool-start-x, 0px));
   }
 
   to {
     opacity: 0;
-    transform: translateX(var(--host-tool-out-x));
   }
 }
 
@@ -8189,30 +8147,26 @@ body {
   0%,
   36.842% {
     opacity: 0;
-    transform: translateX(var(--host-tool-in-x));
     animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
   }
 
   100% {
     opacity: 1;
-    transform: translateX(0);
   }
 }
 
 @keyframes host-tool-content-resume {
   from {
     opacity: var(--host-tool-start-opacity, 0);
-    transform: translateX(var(--host-tool-start-x, 0px));
   }
 
   to {
     opacity: 1;
-    transform: translateX(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .work-rail::before,
+  .work-rail-button,
   .host-workspace-fragment.is-tool-transition-in,
   .host-workspace-fragment.is-tool-transition-out,
   .host-workspace-fragment.is-tool-transition-resume,
@@ -9466,7 +9420,6 @@ body[data-tauri-platform="macos"] .topbar {
 }
 
 .work-rail {
-  --work-rail-highlight-inset: 7px;
   width: var(--host-rail-width);
   height: 100%;
   min-height: 0;
@@ -9516,6 +9469,7 @@ body[data-tauri-platform="macos"] .topbar {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  text-align: left;
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
@@ -9660,11 +9614,6 @@ body[data-tauri-platform="macos"] .topbar {
        reclaiming sheet space without adding a second responsive policy. */
     --host-peer-panel-padding: 10px 12px;
     --host-peer-request-head-padding: 10px 12px;
-  }
-
-  .host-workspace-region {
-    --host-tool-out-x: 0px;
-    --host-tool-in-x: 0px;
   }
 
   .host-content-region {
@@ -10556,7 +10505,7 @@ body.is-tauri-fullscreen-active .left-column {
   font-size: 13px;
   font-weight: 700;
   line-height: 1.5;
-  text-align: center;
+  text-align: left;
 }
 
 .request-session-user-notice[hidden] {
@@ -10839,7 +10788,7 @@ body.is-tauri-fullscreen-active .left-column {
   background: transparent;
   color: var(--accent);
   font-weight: 700;
-  text-align: center;
+  text-align: left;
   line-height: 1.5;
   white-space: normal;
   overflow: visible;
