@@ -8,6 +8,7 @@ mod cache_planning;
 mod download_candidate_planning;
 mod ffi;
 mod filename;
+mod internet_remote_protocol;
 mod media_download_candidate_planning;
 mod media_page_selection;
 mod platform;
@@ -53,6 +54,14 @@ pub use ffi::{
     rust_release_list_api_from_latest, rust_safe_filename, rust_select_audio_stream,
     rust_select_media_pages, rust_select_preferred_audio_source, rust_select_release,
     rust_select_update_asset, rust_select_video_stream, rust_version_sort_key, rust_version_tuple,
+};
+pub use internet_remote_protocol::{
+    INTERNET_REMOTE_PROTOCOL_VERSION, MAX_CONTROL_MESSAGE_BYTES, MAX_REMOTE_STATE_ITEMS,
+    MAX_SAFE_JSON_INTEGER, MAX_SEARCH_RESULTS, RemoteAudioVariantV1, RemoteCacheStatusV1,
+    RemoteCapability, RemoteLane, RemoteOperation, RemotePlaybackModeV1, RemotePlaybackStatusV1,
+    RemotePlayerSettingsV1, RemotePlaylistItemV1, RemoteProfile, RemoteProtocolError,
+    RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1, RemoteValidationContext,
+    decode_remote_request_v1, profile_allows,
 };
 pub use media_download_candidate_planning::{
     MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,
