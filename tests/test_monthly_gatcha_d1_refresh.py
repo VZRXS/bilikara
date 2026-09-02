@@ -49,6 +49,51 @@ class MonthlyGatchaD1RefreshTest(unittest.TestCase):
         self.assertIn("already running locally", duplicate["error"])
         self.assertEqual(calls, [([], "worker-secret")])
 
+    def test_upload_entries_uses_authenticated_bounded_batches(self):
+        entries = [
+            {"bvid": f"BV{index:010d}", "title": f"song {index}"}
+            for index in range(1_201)
+        ]
+        requests = []
+
+        def fake_request(url, *, method="GET", payload=None, secret="", timeout=60.0):
+            requests.append((url, method, payload, secret, timeout))
+            count = len(payload["records"])
+            return {"success": True, "attempted": count, "added": count}
+
+        with patch.object(monthly_refresh, "_request_json", side_effect=fake_request):
+            result = monthly_refresh._upload_entries(
+                entries,
+                api_url="https://api.example.test",
+                secret="worker-secret",
+                batch_size=500,
+                dry_run=False,
+            )
+
+        self.assertEqual([len(request[2]["records"]) for request in requests], [500, 500, 201])
+        self.assertTrue(all(request[0].endswith("/batch-add?sync_google=1") for request in requests))
+        self.assertTrue(all(request[1] == "POST" for request in requests))
+        self.assertTrue(all(request[3] == "worker-secret" for request in requests))
+        self.assertEqual(result["attempted"], 1_201)
+        self.assertEqual(result["added"], 1_201)
+
+    def test_page_any_probe_detects_a_missing_middle_video(self):
+        first_page = [
+            {"bvid": "BVNEW0000001"},
+            {"bvid": "BVMID0000001"},
+            {"bvid": "BVOLD0000001"},
+        ]
+        d1_bvids = {"BVNEW0000001", "BVOLD0000001"}
+
+        should_refresh, reason = monthly_refresh._needs_refresh(
+            first_page,
+            d1_bvids,
+            probe_mode="page-any",
+        )
+
+        self.assertTrue(should_refresh)
+        self.assertIn("BVMID0000001", reason)
+
     def test_default_uid_source_uses_runtime_data_directory(self):
         self.assertEqual(monthly_refresh.DEFAULT_UIDS_PATH, config.DATA_DIR / "gatcha_uids.json")
 

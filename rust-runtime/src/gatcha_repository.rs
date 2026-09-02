@@ -22,6 +22,12 @@ const FAVLIST_ITEMS_URL: &str = "https://api.bilibili.com/x/v3/fav/resource/list
 const GATCHA_REQUEST_DELAY: Duration = Duration::from_secs(5);
 const FAVLIST_REQUEST_DELAY: Duration = Duration::from_secs(3);
 
+#[derive(Debug)]
+struct UidFetchResult {
+    entries: Vec<Value>,
+    first_bvid: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatchaPaths {
@@ -362,6 +368,8 @@ fn load_cache(path: &Path) -> Value {
         "schema_version": CACHE_SCHEMA_VERSION,
         "uids": payload.get("uids").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({})),
         "profiles": payload.get("profiles").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({})),
+        "uid_checkpoints": payload.get("uid_checkpoints").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({})),
+        "refresh_summary": payload.get("refresh_summary").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({})),
         "updated_at": number_map(&payload, "updated_at"),
     })
 }
@@ -501,11 +509,14 @@ fn add_uid(
         .cloned()
         .unwrap_or_default();
     let incremental = !dedupe_entries(&existing).is_empty();
-    let fresh = fetch_uid_entries(client, &uid, keywords, incremental.then_some(1))?;
+    let checkpoint = incremental
+        .then(|| uid_refresh_checkpoint(&cache, &uid, &existing))
+        .flatten();
+    let fresh = fetch_uid_entries(client, &uid, keywords, checkpoint.as_deref())?;
     let (entries, added_count) = if incremental {
-        merge_incremental_entries(&existing, &fresh)
+        merge_incremental_entries(&existing, &fresh.entries)
     } else {
-        let entries = dedupe_entries(&fresh);
+        let entries = dedupe_entries(&fresh.entries);
         let count = entries.len();
         (entries, count)
     };
@@ -526,6 +537,7 @@ fn add_uid(
         .as_object_mut()
         .ok_or_else(|| error("state", "invalid Gacha profile cache"))?;
     cache_profiles.insert(uid.clone(), profile.clone());
+    persist_uid_checkpoint(cache_object, &uid, fresh.first_bvid.as_deref())?;
     atomic_write_json(&paths.cache_file, &cache)?;
     Ok(json!({
         "uid": uid,
@@ -549,15 +561,19 @@ fn refresh_all(
     keywords: &[String],
     client: &BilibiliHttpClient,
 ) -> Result<Value, GatchaRepositoryError> {
-    let (configured, legacy_cache) = {
+    let (configured, legacy_cache, initial_checkpoints) = {
         let _guard = repository_guard()?;
         let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
         let raw_cache = read_object(&paths.cache_file).unwrap_or_default();
+        let configured = normalized_strings(uid_payload.get("uids"));
+        let initial_checkpoints =
+            uid_refresh_checkpoints(&load_cache(&paths.cache_file), &configured);
         (
-            normalized_strings(uid_payload.get("uids")),
+            configured,
             integer_value(raw_cache.get("schema_version")).unwrap_or(0)
                 < CACHE_SCHEMA_VERSION as i64
                 || !raw_cache.get("profiles").is_some_and(Value::is_object),
+            initial_checkpoints,
         )
     };
     let mut results = Vec::new();
@@ -569,16 +585,17 @@ fn refresh_all(
                 let _guard = repository_guard()?;
                 let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
                 let cache = load_cache(&paths.cache_file);
+                let existing = cache
+                    .pointer(&format!("/uids/{uid}"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 (
                     uid_payload
                         .pointer(&format!("/profiles/{uid}"))
                         .filter(|value| valid_profile(value))
                         .cloned(),
-                    cache
-                        .pointer(&format!("/uids/{uid}"))
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default(),
+                    existing,
                 )
             };
             let profile = known_profile
@@ -588,9 +605,19 @@ fn refresh_all(
                 .map(Ok)
                 .unwrap_or_else(|| fetch_profile(client, uid))?;
             let incremental = !legacy_cache && !dedupe_entries(&existing).is_empty();
-            let fresh = fetch_uid_entries(client, uid, keywords, incremental.then_some(1))?;
-            let (added_count, total_count) =
-                persist_refreshed_uid(paths, uid, &profile, &existing, &fresh, incremental)?;
+            let stop_bvid = incremental
+                .then(|| initial_checkpoints.get(uid).cloned().flatten())
+                .flatten();
+            let fresh = fetch_uid_entries(client, uid, keywords, stop_bvid.as_deref())?;
+            let (added_count, total_count) = persist_refreshed_uid(
+                paths,
+                uid,
+                &profile,
+                &existing,
+                &fresh.entries,
+                fresh.first_bvid.as_deref(),
+                incremental,
+            )?;
             Ok::<Value, GatchaRepositoryError>(json!({
                 "uid": uid,
                 "mode": if incremental { "incremental" } else { "full" },
@@ -629,6 +656,7 @@ fn persist_refreshed_uid(
     profile: &Value,
     baseline_entries: &[Value],
     fresh_entries: &[Value],
+    first_bvid: Option<&str>,
     incremental: bool,
 ) -> Result<(usize, usize), GatchaRepositoryError> {
     let _guard = repository_guard()?;
@@ -676,6 +704,7 @@ fn persist_refreshed_uid(
         .as_object_mut()
         .ok_or_else(|| error("state", "invalid Gacha profile cache"))?
         .insert(uid.to_owned(), profile.clone());
+    persist_uid_checkpoint(cache_object, uid, first_bvid)?;
     cache_object.insert("updated_at".to_owned(), json!(updated_at));
     atomic_write_json(&paths.cache_file, &cache)?;
     Ok((added_count, total_count))
@@ -923,14 +952,74 @@ fn fetch_profile(client: &BilibiliHttpClient, uid: &str) -> Result<Value, Gatcha
     Ok(profile)
 }
 
+fn uid_refresh_checkpoint(cache: &Value, uid: &str, existing: &[Value]) -> Option<String> {
+    if let Some(checkpoint) = cache
+        .pointer(&format!("/uid_checkpoints/{uid}"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(checkpoint.to_owned());
+    }
+
+    let added_count = cache
+        .pointer("/refresh_summary/uids")
+        .and_then(Value::as_array)
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                let object = result.as_object()?;
+                (first_text(object, &["uid"]).as_deref() == Some(uid)
+                    && first_text(object, &["mode"]).as_deref() == Some("incremental"))
+                .then(|| integer(object, &["added_count"]).unwrap_or(0).max(0) as usize)
+            })
+        })
+        .unwrap_or(0);
+
+    existing
+        .get(added_count)
+        .or_else(|| existing.first())
+        .and_then(Value::as_object)
+        .and_then(|entry| first_text(entry, &["bvid"]))
+}
+
+fn uid_refresh_checkpoints(cache: &Value, uids: &[String]) -> BTreeMap<String, Option<String>> {
+    uids.iter()
+        .map(|uid| {
+            let existing = cache
+                .pointer(&format!("/uids/{uid}"))
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            (uid.clone(), uid_refresh_checkpoint(cache, uid, existing))
+        })
+        .collect()
+}
+
+fn persist_uid_checkpoint(
+    cache: &mut Map<String, Value>,
+    uid: &str,
+    first_bvid: Option<&str>,
+) -> Result<(), GatchaRepositoryError> {
+    let checkpoints = cache
+        .entry("uid_checkpoints")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha UID checkpoints"))?;
+    if let Some(first_bvid) = first_bvid.map(str::trim).filter(|value| !value.is_empty()) {
+        checkpoints.insert(uid.to_owned(), Value::String(first_bvid.to_owned()));
+    }
+    Ok(())
+}
+
 fn fetch_uid_entries(
     client: &BilibiliHttpClient,
     uid: &str,
     keywords: &[String],
-    max_pages: Option<usize>,
-) -> Result<Vec<Value>, GatchaRepositoryError> {
+    stop_bvid: Option<&str>,
+) -> Result<UidFetchResult, GatchaRepositoryError> {
     let mut output = Vec::new();
     let mut seen = HashSet::new();
+    let mut first_bvid = None;
     let page_size = 50usize;
     let mut page = 1usize;
     loop {
@@ -960,6 +1049,14 @@ fn fetch_uid_entries(
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        if page == 1 {
+            first_bvid = videos
+                .iter()
+                .filter_map(Value::as_object)
+                .find_map(|video| first_text(video, &["bvid"]));
+        }
+        let reached_checkpoint =
+            stop_bvid.is_some_and(|checkpoint| page_contains_bvid(videos, checkpoint));
         for video in videos.iter().filter_map(Value::as_object) {
             let bvid = first_text(video, &["bvid"]).unwrap_or_default();
             let title = first_text(video, &["title"]).unwrap_or_default();
@@ -991,12 +1088,23 @@ fn fetch_uid_entries(
             add_video_extras(object, video);
             output.push(entry);
         }
-        if max_pages.is_some_and(|limit| page >= limit) || videos.len() < page_size {
+        if reached_checkpoint || videos.len() < page_size {
             break;
         }
         page += 1;
     }
-    Ok(output)
+    Ok(UidFetchResult {
+        entries: output,
+        first_bvid,
+    })
+}
+
+fn page_contains_bvid(videos: &[Value], checkpoint: &str) -> bool {
+    videos
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|video| first_text(video, &["bvid"]))
+        .any(|bvid| bvid == checkpoint)
 }
 
 fn fetch_favlist_folders(
@@ -2132,6 +2240,7 @@ mod tests {
             &json!({"uid": "1", "name": "owner", "space_url": "https://space.bilibili.com/1"}),
             &[],
             &[json!({"bvid": "BVFRESH", "title": "fresh"})],
+            Some("BVFRESH"),
             false,
         )
         .expect("persist refreshed uid");
@@ -2143,7 +2252,88 @@ mod tests {
         assert_eq!(cache["uids"]["1"][1]["bvid"], "BVCONCURRENT");
         assert_eq!(cache["uids"]["2"][0]["bvid"], "BVOTHER");
         assert_eq!(cache["profiles"]["1"]["name"], "owner");
+        assert_eq!(cache["uid_checkpoints"]["1"], "BVFRESH");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_checkpoint_uses_the_entry_before_the_last_incremental_additions() {
+        let cache = json!({
+            "uid_checkpoints": {},
+            "refresh_summary": {
+                "uids": [{
+                    "uid": "42",
+                    "mode": "incremental",
+                    "added_count": 1
+                }]
+            }
+        });
+        let existing = vec![
+            json!({"bvid": "BVNEW0000001", "title": "new"}),
+            json!({"bvid": "BVOLD0000001", "title": "old boundary"}),
+        ];
+
+        assert_eq!(
+            uid_refresh_checkpoint(&cache, "42", &existing).as_deref(),
+            Some("BVOLD0000001")
+        );
+    }
+
+    #[test]
+    fn persisted_checkpoint_takes_priority_over_legacy_refresh_summary() {
+        let cache = json!({
+            "uid_checkpoints": {"42": "BVRAW0000001"},
+            "refresh_summary": {
+                "uids": [{"uid": "42", "mode": "incremental", "added_count": 1}]
+            }
+        });
+        let existing = vec![
+            json!({"bvid": "BVNEW0000001", "title": "new"}),
+            json!({"bvid": "BVOLD0000001", "title": "old boundary"}),
+        ];
+
+        assert_eq!(
+            uid_refresh_checkpoint(&cache, "42", &existing).as_deref(),
+            Some("BVRAW0000001")
+        );
+    }
+
+    #[test]
+    fn refresh_checkpoints_are_frozen_before_progress_summary_is_replaced() {
+        let mut cache = json!({
+            "uids": {
+                "42": [
+                    {"bvid": "BVNEW0000001", "title": "new"},
+                    {"bvid": "BVOLD0000001", "title": "old boundary"}
+                ]
+            },
+            "uid_checkpoints": {},
+            "refresh_summary": {
+                "uids": [{"uid": "42", "mode": "incremental", "added_count": 1}]
+            }
+        });
+        let checkpoints = uid_refresh_checkpoints(&cache, &["42".to_owned()]);
+        cache["refresh_summary"] = json!({"uids": []});
+
+        assert_eq!(
+            checkpoints.get("42").and_then(Option::as_deref),
+            Some("BVOLD0000001")
+        );
+        assert_eq!(
+            uid_refresh_checkpoint(&cache, "42", cache["uids"]["42"].as_array().unwrap())
+                .as_deref(),
+            Some("BVNEW0000001")
+        );
+    }
+
+    #[test]
+    fn checkpoint_detection_uses_raw_posts_before_keyword_filtering() {
+        let videos = vec![
+            json!({"bvid": "BVNEW0000001", "title": "karaoke new"}),
+            json!({"bvid": "BVRAW0000001", "title": "ordinary upload"}),
+        ];
+
+        assert!(page_contains_bvid(&videos, "BVRAW0000001"));
     }
 
     #[test]

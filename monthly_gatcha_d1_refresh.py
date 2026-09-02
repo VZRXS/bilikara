@@ -16,7 +16,6 @@ from typing import Any
 import bilikara.bilibili as bilibili
 import bilikara.lark_pool_client as pool_client
 from bilikara.config import DATA_DIR
-from bilikara.lark_pool_client import append_cloudflare_pool_entries
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -79,7 +78,14 @@ def _load_configured_uids(path: Path) -> list[str]:
     return _dedupe_ordered(_load_uid_lines(path))
 
 
-def _request_json(url: str, *, secret: str = "", timeout: float = 60.0) -> Any:
+def _request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: object | None = None,
+    secret: str = "",
+    timeout: float = 60.0,
+) -> Any:
     headers = {
         "Accept": "application/json",
         "Cache-Control": "no-store",
@@ -91,7 +97,11 @@ def _request_json(url: str, *, secret: str = "", timeout: float = 60.0) -> Any:
     }
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
-    request = urllib.request.Request(url, headers=headers, method="GET")
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(url, headers=headers, data=data, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -210,10 +220,40 @@ def _fetch_all_uid_entries(mid: str, *, retry_delay: float, max_retries: int) ->
     return entries
 
 
-def _upload_entries(entries: list[dict], *, dry_run: bool) -> dict[str, Any]:
+def _upload_entries(
+    entries: list[dict],
+    *,
+    api_url: str,
+    secret: str,
+    batch_size: int,
+    dry_run: bool,
+) -> dict[str, Any]:
     if dry_run:
         return {"attempted": len(entries), "added": 0, "updated_existing": 0, "dry_run": True}
-    return append_cloudflare_pool_entries(entries)
+    if not secret:
+        raise RuntimeError("BILIKARA_ADMIN_SECRET is required to upload D1 records.")
+    normalized_batch_size = max(1, min(2000, int(batch_size)))
+    result: dict[str, Any] = {
+        "attempted": 0,
+        "added": 0,
+        "updated_existing": 0,
+        "skipped_existing": 0,
+        "skipped_blacklisted": 0,
+    }
+    for index in range(0, len(entries), normalized_batch_size):
+        chunk = entries[index : index + normalized_batch_size]
+        response = _request_json(
+            f"{str(api_url or '').rstrip('/')}/batch-add?sync_google=1",
+            method="POST",
+            payload={"records": chunk},
+            secret=secret,
+            timeout=120.0,
+        )
+        if not isinstance(response, dict) or not response.get("success"):
+            raise RuntimeError(f"D1 batch upload returned an invalid payload: {response}")
+        for key in result:
+            result[key] += int(response.get(key) or 0)
+    return result
 
 
 def _combine_uids(local_uids: list[str], d1_mids: set[str], *, uid_mode: str) -> list[str]:
@@ -228,7 +268,7 @@ def main(argv: list[str] | None = None, *, secret_override: str = "") -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Monthly full-UID D1 refresh: export D1 once, probe each UID's first Bilibili page, "
-            "and fully refresh only UIDs whose latest visible BV is missing from D1."
+            "and fully refresh only UIDs with a missing first-page BV in D1."
         ),
     )
     parser.add_argument("--uid-source", default=str(DEFAULT_UIDS_PATH), help="UID JSON/text file. Default: data/gatcha_uids.json")
@@ -247,6 +287,12 @@ def main(argv: list[str] | None = None, *, secret_override: str = "") -> int:
     parser.add_argument("--delay", type=float, default=2.0, help="Seconds to sleep after each UID. Default: 2.")
     parser.add_argument("--export-limit", type=int, default=5000, help="D1 export page size used by the Worker. Default: 5000.")
     parser.add_argument("--export-timeout", type=float, default=120.0, help="Seconds before D1 export times out. Default: 120.")
+    parser.add_argument(
+        "--upload-batch-size",
+        type=int,
+        default=500,
+        help="Missing D1 records per authenticated /batch-add request. Maximum: 2000. Default: 500.",
+    )
     parser.add_argument(
         "--max-visible-total",
         type=int,
@@ -268,8 +314,8 @@ def main(argv: list[str] | None = None, *, secret_override: str = "") -> int:
     parser.add_argument(
         "--probe-mode",
         choices=("latest", "page-any"),
-        default="latest",
-        help="latest checks only the newest visible BV; page-any refreshes if any first-page BV is missing.",
+        default="page-any",
+        help="page-any refreshes if any first-page BV is missing; latest checks only the newest visible BV. Default: page-any.",
     )
     parser.add_argument("--force", action="store_true", help="Refresh and upload every UID without first-page D1 comparison.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and decide, but do not upload to D1.")
@@ -372,13 +418,24 @@ def main(argv: list[str] | None = None, *, secret_override: str = "") -> int:
                 retry_delay=args.bili_retry_delay,
                 max_retries=args.bili_max_retries,
             )
-            upload = _upload_entries(entries, dry_run=args.dry_run)
-            for bvid in _entry_bvids(entries):
+            missing_entries = [
+                entry
+                for entry in entries
+                if str(entry.get("bvid") or "").strip() not in d1_bvids
+            ]
+            upload = _upload_entries(
+                missing_entries,
+                api_url=api_url,
+                secret=secret,
+                batch_size=args.upload_batch_size,
+                dry_run=args.dry_run,
+            )
+            for bvid in _entry_bvids(missing_entries):
                 d1_bvids.add(bvid)
             refreshed += 1
             print(
                 "  refreshed "
-                f"entries={len(entries)} "
+                f"entries={len(entries)} missing={len(missing_entries)} "
                 f"d1_attempted={upload.get('attempted', 0)} "
                 f"d1_added={upload.get('added', 0)} "
                 f"d1_updated={upload.get('updated_existing', 0)}",
