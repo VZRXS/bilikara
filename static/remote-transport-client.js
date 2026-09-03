@@ -44,6 +44,7 @@
     epoch: "",
     sequences: { control: 0, bulk: 0 },
     pending: new Map(),
+    revisionMutationTail: Promise.resolve(),
     remoteState: null,
     identity: localStorage.getItem(identityStorageKey) || "",
     password: "",
@@ -325,14 +326,43 @@
       kind,
       body,
     };
-    lowLevel.send(state[lane], { type: "request", lane, envelope });
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         state.pending.delete(id);
         reject(new Error("Host 响应超时"));
       }, timeoutMs);
       state.pending.set(id, { resolve, reject, timeout });
+      try {
+        lowLevel.send(state[lane], { type: "request", lane, envelope });
+      } catch (error) {
+        clearTimeout(timeout);
+        state.pending.delete(id);
+        reject(error);
+      }
     });
+  }
+
+  const revisionBoundMutationPaths = new Set([
+    "/api/playlist/add",
+    "/api/playlist/reorder",
+    "/api/playlist/resort",
+    "/api/playlist/remove",
+    "/api/playlist/move-next",
+    "/api/playlist/play-now",
+    "/api/cache/retry",
+    "/api/player/audio-variant",
+  ]);
+
+  function isRevisionBoundMutation(method, pathname) {
+    return method === "POST" && revisionBoundMutationPaths.has(pathname);
+  }
+
+  async function acquireRevisionMutationTurn() {
+    const previous = state.revisionMutationTail;
+    let release;
+    state.revisionMutationTail = new Promise((resolve) => { release = resolve; });
+    await previous.catch(() => {});
+    return release;
   }
 
   function expectedRevision() {
@@ -350,22 +380,49 @@
     const variants = projectedVariants.length ? projectedVariants : [{
       id: String(item.selected_audio_variant_id || "main"),
       label: "Main",
+      page: Number(item.page || 1),
     }];
-    const pages = variants.map((variant, index) => Number(String(variant.id || "").match(/^p(\d+)/u)?.[1] || index + 1));
+    const fallbackPages = variants.map((variant, index) => Number(
+      variant.page || String(variant.id || "").match(/^p(\d+)/u)?.[1] || index + 1,
+    ));
+    const selectedPages = Array.isArray(item.selected_pages) && item.selected_pages.length
+      ? item.selected_pages.map(Number)
+      : fallbackPages;
+    const availablePages = Array.isArray(item.available_pages) && item.available_pages.length
+      ? item.available_pages.map(Number)
+      : fallbackPages;
+    const selectedParts = Array.isArray(item.selected_parts) && item.selected_parts.length
+      ? item.selected_parts.map(String)
+      : variants.map((variant) => variant.label);
+    const availableParts = Array.isArray(item.available_parts) && item.available_parts.length
+      ? item.available_parts.map(String)
+      : variants.map((variant) => variant.label);
     return {
       ...item,
       original_url: itemUrl(item),
       resolved_url: itemUrl(item),
       item_incarnation_id: item.id,
       video_media_url: "internet-remote://video",
-      selected_pages: pages.length ? pages : [Number(item.page || 1)],
-      available_pages: pages.length ? pages : [Number(item.page || 1)],
-      selected_parts: variants.map((variant) => variant.label),
-      available_parts: variants.map((variant) => variant.label),
+      selected_pages: selectedPages.length ? selectedPages : [Number(item.page || 1)],
+      selected_durations: Array.isArray(item.selected_durations) ? item.selected_durations.map(Number) : [],
+      selected_parts: selectedParts,
+      available_pages: availablePages.length ? availablePages : [Number(item.page || 1)],
+      available_durations: Array.isArray(item.available_durations) ? item.available_durations.map(Number) : [],
+      available_parts: availableParts,
       audio_variants: variants.map((variant) => ({
         ...variant,
         audio_url: `internet-remote://audio/${encodeURIComponent(variant.id || "main")}`,
       })),
+    };
+  }
+
+  function localHistoryItem(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const url = itemUrl(entry);
+    return {
+      ...entry,
+      original_url: url,
+      resolved_url: url,
     };
   }
 
@@ -375,13 +432,13 @@
     const current = localItem(remoteState.current_item);
     return {
       schema_version: 1,
-      state_revision: Number(remoteState.revision || 0),
+      state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
       playback_mode: remoteState.playback_mode || "local",
       current_item: current,
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
-      history: [],
+      history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
       session_history: [],
       session_played: [],
       session_users: Array.isArray(remoteState.session_users) ? remoteState.session_users : [],
@@ -413,7 +470,18 @@
 
   function publishState(next) {
     if (!next || typeof next !== "object") return;
+    const currentRevision = Number(
+      state.remoteState?.state_revision ?? state.remoteState?.revision ?? -1,
+    );
+    const nextRevision = Number(next.state_revision ?? next.revision ?? -1);
+    if (
+      state.remoteState
+      && Number.isFinite(currentRevision)
+      && Number.isFinite(nextRevision)
+      && nextRevision < currentRevision
+    ) return;
     state.remoteState = {
+      ...state.remoteState,
       ...next,
       gatcha: next.gatcha || state.remoteState?.gatcha,
       gatcha_pool_config: next.gatcha_pool_config || state.remoteState?.gatcha_pool_config,
@@ -457,6 +525,9 @@
     if (init.body) {
       try { body = JSON.parse(String(init.body)); } catch { return jsonResponse({ ok: false, error: "请求格式无效" }, 400); }
     }
+    const releaseRevisionMutation = isRevisionBoundMutation(method, url.pathname)
+      ? await acquireRevisionMutationTurn()
+      : null;
     try {
       let response;
       if (method === "GET" && url.pathname === "/api/remote-identity") {
@@ -499,6 +570,8 @@
         response = await request("gatcha.browse", {
           uid: url.searchParams.get("uid") || "",
           query: url.searchParams.get("q") || "",
+          offset: Math.max(0, Number(url.searchParams.get("offset") || 0)),
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 100))),
         }, "bulk");
         return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
       }
@@ -618,6 +691,8 @@
         failure.binding = error.payload.binding;
       }
       return jsonResponse(failure, status);
+    } finally {
+      releaseRevisionMutation?.();
     }
   }
 

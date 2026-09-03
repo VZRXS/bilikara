@@ -68,6 +68,11 @@
       originClass: pageOriginClass(),
       errorCode: details.errorCode ? String(details.errorCode).slice(0, 64) : null,
       errorMessage: details.errorMessage ? String(details.errorMessage).slice(0, 256) : null,
+      operation: details.operation
+        ? String(details.operation).replace(/[^a-z0-9._-]/giu, "_").slice(0, 64)
+        : null,
+      accepted: typeof details.accepted === "boolean" ? details.accepted : null,
+      stale: typeof details.stale === "boolean" ? details.stale : null,
     };
     diagnosticEvents.push(event);
     if (diagnosticEvents.length > DIAGNOSTIC_EVENT_LIMIT) diagnosticEvents.shift();
@@ -99,14 +104,17 @@
     elements.internet.classList.toggle("is-active", online);
     elements.local.setAttribute("aria-pressed", String(!online));
     elements.internet.setAttribute("aria-pressed", String(online));
+    elements.settings.classList.toggle("is-internet-mode", online);
+    elements.localContent.classList.toggle("hidden", online);
+    elements.internetContent.classList.toggle("hidden", !online);
     elements.summary.textContent = online
-      ? tr("internetRemote.internet", "公网")
-      : tr("internetRemote.local", "本地");
+      ? tr("internetRemote.internet", "公网模式")
+      : tr("internetRemote.local", "本地模式");
     elements.meta.textContent = online
       ? state.roomId
         ? tr("internetRemote.remoteCount", "{count} 台 Remote", { count: peers.size })
         : tr("internetRemote.notCreated", "尚未创建房间")
-      : tr("internetRemote.localHint", "同一局域网访问");
+      : tr("internetRemote.localHint", "同一局域网内直接扫码");
     elements.restart.disabled = state.busy || !online || !state.available;
     elements.local.disabled = state.busy;
     elements.internet.disabled = state.busy || !state.available;
@@ -148,6 +156,17 @@
 
   function signalUrl() {
     return `${SIGNAL_ORIGIN.replace(/^http/u, "ws")}/v1/rooms/${state.roomId}/socket`;
+  }
+
+  function releaseRoom(roomId, hostToken) {
+    if (!/^[A-Za-z0-9_-]{27}$/u.test(roomId) || !/^[A-Za-z0-9_-]{43}$/u.test(hostToken)) {
+      return Promise.resolve();
+    }
+    return fetch(`${SIGNAL_ORIGIN}/v1/rooms/${encodeURIComponent(roomId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${hostToken}` },
+      keepalive: true,
+    }).then(() => undefined).catch(() => undefined);
   }
 
   function sanitizedManualBinding(value) {
@@ -415,9 +434,19 @@
     if (!peer.authorized || message.type !== "request" || message.lane !== lane) {
       throw new Error("Remote 尚未认证或通道不匹配");
     }
+    const operation = String(message.envelope?.kind || "unknown");
+    const dispatchStartedAt = performance.now();
+    recordDiagnostic("request.dispatch", "started", { operation });
     try {
-      admitRequest(peer, String(message.envelope?.kind || ""));
+      admitRequest(peer, operation);
     } catch (error) {
+      recordDiagnostic("request.dispatch", "completed", {
+        operation,
+        accepted: false,
+        stale: false,
+        errorCode: "internet_remote_rate_limited",
+        elapsedMs: performance.now() - dispatchStartedAt,
+      });
       await sendPeer(peer, lane, {
         type: "response",
         request_id: String(message.envelope?.id || ""),
@@ -437,7 +466,23 @@
         message: JSON.stringify(message.envelope),
       }, 300_000);
     } catch (error) {
-      if (isFatalProtocolError(error.code)) throw error;
+      if (isFatalProtocolError(error.code)) {
+        recordDiagnostic("request.dispatch", "completed", {
+          operation,
+          accepted: false,
+          stale: false,
+          errorCode: String(error.code),
+          elapsedMs: performance.now() - dispatchStartedAt,
+        });
+        throw error;
+      }
+      recordDiagnostic("request.dispatch", "completed", {
+        operation,
+        accepted: false,
+        stale: false,
+        errorCode: String(error.code || "internet_remote_request_failed"),
+        elapsedMs: performance.now() - dispatchStartedAt,
+      });
       await sendPeer(peer, lane, {
         type: "response",
         request_id: String(message.envelope?.id || ""),
@@ -450,6 +495,12 @@
       });
       return;
     }
+    recordDiagnostic("request.dispatch", "completed", {
+      operation,
+      accepted: result?.accepted !== false,
+      stale: Boolean(result?.stale),
+      elapsedMs: performance.now() - dispatchStartedAt,
+    });
     await sendPeer(peer, lane, { type: "response", ...result });
     if (result?.data?.revision || result?.data?.state?.revision) void publishState();
   }
@@ -459,8 +510,9 @@
     const payload = await response.json();
     if (!response.ok || !payload.ok) return;
     const remoteState = payload.data;
-    if (!target && remoteState.revision === state.stateRevision) return;
-    state.stateRevision = remoteState.revision;
+    const nextRevision = Number(remoteState.state_revision || 0);
+    if (!target && nextRevision <= state.stateRevision) return;
+    state.stateRevision = Math.max(state.stateRevision, nextRevision);
     const targets = target ? [target] : [...peers.values()];
     for (const peer of targets) {
       if (peer.authorized && peer.bulk?.readyState === "open") {
@@ -554,7 +606,7 @@
     }
     state.busy = true;
     render();
-    stopRoom(false);
+    await stopRoom(false);
     state.mode = "internet";
     state.password = password;
     state.hostToken = transport.randomBase64Url(32);
@@ -576,7 +628,11 @@
         elapsedMs: performance.now() - startedAt,
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(payload.error === "room_capacity_reached"
+          ? tr("internetRemote.capacityReached", "公网房间已达临时上限（10 间），请稍后再试。")
+          : payload.error || `HTTP ${response.status}`);
+      }
       const createdAt = Number(payload.created_at);
       const expiresAt = Number(payload.expires_at);
       const workerLifetime = expiresAt - createdAt;
@@ -611,7 +667,7 @@
         ...failure,
         elapsedMs: performance.now() - startedAt,
       });
-      stopRoom(false);
+      void stopRoom(false);
       setStatus(tr("internetRemote.createFailed", "创建失败：{error}", {
         error: failure.errorMessage,
       }), "bad");
@@ -634,6 +690,8 @@
   }
 
   function stopRoom(resetMode = true) {
+    const roomId = state.roomId;
+    const hostToken = state.hostToken;
     state.stopped = true;
     clearTimeout(state.reconnectTimer);
     clearTimeout(state.expiryTimer);
@@ -643,6 +701,9 @@
     state.socket = null;
     for (const peerId of [...peers.keys()]) closePeer(peerId);
     state.roomId = "";
+    state.hostToken = "";
+    state.joinToken = "";
+    state.hostPeerId = "";
     state.expiresAt = 0;
     state.expired = false;
     state.password = "";
@@ -651,15 +712,18 @@
       ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
       : tr("internetRemote.notCreated", "尚未创建公网房间"));
     render();
+    return releaseRoom(roomId, hostToken);
   }
 
   function initialize() {
     elements = {
-      settings: document.getElementById("internet-remote-settings"),
-      toggle: document.getElementById("internet-remote-settings-toggle"),
-      panel: document.getElementById("internet-remote-settings-panel"),
+      settings: document.getElementById("remote-mini-control"),
+      toggle: document.getElementById("remote-mini-trigger"),
+      panel: document.getElementById("remote-mini-popover"),
       local: document.getElementById("internet-remote-local-mode"),
       internet: document.getElementById("internet-remote-internet-mode"),
+      localContent: document.getElementById("internet-remote-local-content"),
+      internetContent: document.getElementById("internet-remote-internet-content"),
       summary: document.getElementById("internet-remote-summary"),
       meta: document.getElementById("internet-remote-meta"),
       dot: document.getElementById("internet-remote-state-dot"),
@@ -674,12 +738,7 @@
     };
     if (Object.values(elements).some((element) => !element)) return;
     elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
-    elements.toggle.addEventListener("click", () => {
-      const open = elements.panel.classList.toggle("hidden") === false;
-      elements.toggle.setAttribute("aria-expanded", String(open));
-      if (open) document.dispatchEvent(new CustomEvent("bilikara:top-control-popover"));
-    });
-    elements.local.addEventListener("click", () => stopRoom(true));
+    elements.local.addEventListener("click", () => void stopRoom(true));
     elements.internet.addEventListener("click", () => {
       state.mode = "internet";
       render();
@@ -693,20 +752,7 @@
     events.addEventListener("state", () => {
       if (state.mode === "internet") void publishState();
     });
-    window.addEventListener("beforeunload", () => stopRoom(false));
-    document.addEventListener("click", (event) => {
-      if (!elements.panel.classList.contains("hidden") && !elements.settings.contains(event.target)) {
-        elements.panel.classList.add("hidden");
-        elements.toggle.setAttribute("aria-expanded", "false");
-      }
-    });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !elements.panel.classList.contains("hidden")) {
-        elements.panel.classList.add("hidden");
-        elements.toggle.setAttribute("aria-expanded", "false");
-        elements.toggle.focus({ preventScroll: true });
-      }
-    });
+    window.addEventListener("beforeunload", () => void stopRoom(false));
     setStatus(state.available
       ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
       : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");

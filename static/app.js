@@ -620,8 +620,6 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
-  internetRemoteSettingsToggle: document.getElementById("internet-remote-settings-toggle"),
-  internetRemoteSettingsPanel: document.getElementById("internet-remote-settings-panel"),
   presentationSettings: document.getElementById("presentation-settings"),
   presentationSettingsToggle: document.getElementById("presentation-settings-toggle"),
   presentationSettingsPanel: document.getElementById("presentation-settings-panel"),
@@ -9070,7 +9068,6 @@ function schedulePlaybackContextualTooltipPositionSync() {
 function compactTopControlPopoverEntries() {
   return [
     [elements.remoteMiniTrigger, elements.remoteMiniPopover],
-    [elements.internetRemoteSettingsToggle, elements.internetRemoteSettingsPanel],
     [elements.presentationSettingsToggle, elements.presentationSettingsPanel],
     [elements.cacheSettingsToggle, elements.cachePanel],
   ];

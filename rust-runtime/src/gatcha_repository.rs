@@ -66,6 +66,10 @@ pub enum GatchaOperation {
         uid: String,
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default = "default_browse_limit")]
+        limit: usize,
     },
     BrowseFavlist {
         #[serde(default)]
@@ -210,7 +214,12 @@ fn execute_gatcha_operation(
             draw_candidate(&request.paths, *cookie_available)
         }
         GatchaOperation::Search { query, limit } => search(&request.paths, query, *limit),
-        GatchaOperation::BrowseUid { uid, query } => browse_uid(&request.paths, uid, query),
+        GatchaOperation::BrowseUid {
+            uid,
+            query,
+            offset,
+            limit,
+        } => browse_uid(&request.paths, uid, query, *offset, *limit),
         GatchaOperation::BrowseFavlist { folder_id, query } => {
             browse_favlist(&request.paths, folder_id, query)
         }
@@ -1552,6 +1561,8 @@ fn browse_uid(
     paths: &GatchaPaths,
     selected_uid: &str,
     query: &str,
+    offset: usize,
+    limit: usize,
 ) -> Result<Value, GatchaRepositoryError> {
     let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
     let cache = load_cache(&paths.cache_file);
@@ -1598,7 +1609,7 @@ fn browse_uid(
         ""
     };
     let needle = query.trim().to_lowercase();
-    let items = if valid_selected.is_empty() {
+    let matched_items: Vec<Value> = if valid_selected.is_empty() {
         Vec::new()
     } else {
         cache_uids
@@ -1620,10 +1631,23 @@ fn browse_uid(
             })
             .unwrap_or_default()
     };
+    let bounded_limit = limit.clamp(1, 10_000);
+    let matched_count = matched_items.len();
+    let items: Vec<Value> = matched_items
+        .into_iter()
+        .skip(offset)
+        .take(bounded_limit)
+        .collect();
+    let next_offset = offset.saturating_add(items.len()).min(matched_count);
     Ok(json!({
         "owners": owners,
         "selected_uid": valid_selected,
         "query": query.trim(),
+        "offset": offset,
+        "limit": bounded_limit,
+        "matched_count": matched_count,
+        "has_more": next_offset < matched_count,
+        "next_offset": next_offset,
         "items": items,
         "updated_at": number(&cache, "updated_at"),
     }))
@@ -2058,6 +2082,10 @@ fn default_search_limit() -> usize {
     30
 }
 
+fn default_browse_limit() -> usize {
+    10_000
+}
+
 fn default_user_agent() -> String {
     "Mozilla/5.0".to_owned()
 }
@@ -2111,6 +2139,57 @@ mod tests {
             request.operation,
             GatchaOperation::Candidate { .. }
         ));
+    }
+
+    #[test]
+    fn uid_browse_returns_stable_bounded_pages() {
+        let root = temp_root("browse-pages");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version": 2, "uids": ["42"], "profiles": {}, "updated_at": 1}),
+        )
+        .expect("write uids");
+        let items: Vec<Value> = (0..205)
+            .map(|index| {
+                json!({
+                    "bvid": format!("BV{:010}", index),
+                    "title": format!("song-{index:03}"),
+                    "owner_name": "Singer"
+                })
+            })
+            .collect();
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({
+                "schema_version": 3,
+                "uids": {"42": items},
+                "profiles": {},
+                "updated_at": 2
+            }),
+        )
+        .expect("write cache");
+
+        let request = GatchaRepositoryRequest {
+            schema_version: 1,
+            paths,
+            default_uids: vec![],
+            operation: GatchaOperation::BrowseUid {
+                uid: "42".to_owned(),
+                query: String::new(),
+                offset: 100,
+                limit: 100,
+            },
+        };
+        let page = execute_gatcha(&request).expect("browse page");
+
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(100));
+        assert_eq!(page["items"][0]["title"], "song-100");
+        assert_eq!(page["matched_count"], 205);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["next_offset"], 200);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

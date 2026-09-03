@@ -882,6 +882,13 @@ h2 {
 .internet-remote-room { display: grid; justify-items: center; gap: 8px; margin-top: 14px; }
 .internet-remote-room .remote-qr-image { width: 180px; height: 180px; background: white; }
 .internet-remote-room .remote-url-link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.internet-remote-status-summary { display: flex; width: 100%; min-width: 0; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.internet-remote-status-summary strong { color: var(--ink); }
+.internet-remote-status-summary #internet-remote-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.internet-remote-local-content { display: grid; width: 100%; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 12px; }
+.internet-remote-internet-content { display: grid; width: 100%; gap: 2px; }
+.internet-remote-mode-copy { grid-column: 1 / -1; margin: 0; line-height: 1.55; }
+.remote-mini-control.is-internet-mode .remote-mini-trigger > .remote-mini-qr-wrap { display: none; }
 
 .mode-control {
   display: flex;
@@ -11128,6 +11135,26 @@ body.is-presentation-stage-only #audio-variant-backdrop {
   width: auto;
   min-width: 0;
   text-align: left;
+}
+
+#remote-mini-popover {
+  width: min(390px, calc(100vw - 24px));
+}
+
+#remote-mini-popover .remote-mini-popover-card {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+@media (max-width: 420px) {
+  #remote-mini-popover .internet-remote-local-content {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+
+  #remote-mini-popover .internet-remote-local-content .remote-copy {
+    width: 100%;
+  }
 }
 
 .topbar .presentation-output-panel {

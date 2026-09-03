@@ -3670,12 +3670,23 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::GatchaBrowse { uid, query } => {
+            RemoteRequestV1::GatchaBrowse {
+                uid,
+                query,
+                offset,
+                limit,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "gatcha_browse", "uid": uid, "query": query})),
+                    Some(json!({
+                        "kind": "gatcha_browse",
+                        "uid": uid,
+                        "query": query,
+                        "offset": offset,
+                        "limit": limit,
+                    })),
                     false,
                 );
             }

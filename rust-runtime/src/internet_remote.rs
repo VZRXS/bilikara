@@ -1,9 +1,10 @@
-use crate::app_state::{AppSnapshot, PlaylistItem};
+use crate::app_state::{AppSnapshot, HistoryEntry, PlaylistItem};
 use bilikara_rust::{
     INTERNET_REMOTE_PROTOCOL_VERSION, MAX_REMOTE_STATE_ITEMS, RemoteAudioVariantV1,
-    RemoteCacheStatusV1, RemoteLane, RemotePlaybackModeV1, RemotePlayerSettingsV1,
-    RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError, RemoteRequestEnvelopeV1,
-    RemoteRequestV1, RemoteStateV1, RemoteValidationContext, decode_remote_request_v1,
+    RemoteCacheStatusV1, RemoteHistoryEntryV1, RemoteLane, RemotePlaybackModeV1,
+    RemotePlayerSettingsV1, RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError,
+    RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1, RemoteValidationContext,
+    decode_remote_request_v1,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -340,6 +341,12 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
             .take(MAX_REMOTE_STATE_ITEMS)
             .map(project_item)
             .collect(),
+        history: snapshot
+            .history
+            .iter()
+            .take(MAX_REMOTE_STATE_ITEMS)
+            .map(project_history)
+            .collect(),
         session_users: snapshot.session_users.clone(),
         player_settings: RemotePlayerSettingsV1 {
             effective_av_delay_ms: snapshot.player_settings.av_offset_ms,
@@ -352,7 +359,48 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
     }
 }
 
+fn project_history(entry: &HistoryEntry) -> RemoteHistoryEntryV1 {
+    let (bvid, page) = public_history_identity(&entry.key);
+    RemoteHistoryEntryV1 {
+        bvid,
+        page,
+        display_title: entry.display_title.chars().take(512).collect(),
+        requested_at: entry.requested_at,
+        requester_name: entry.requester_name.chars().take(96).collect(),
+        request_count: entry.request_count,
+    }
+}
+
+fn public_history_identity(key: &str) -> (String, u32) {
+    let mut parts = key.split(':');
+    let identity = parts.next().unwrap_or_default();
+    let valid_bvid = identity.len() == 12
+        && identity.starts_with("BV")
+        && identity[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric());
+    if !valid_bvid {
+        return (String::new(), 1);
+    }
+    let page = parts
+        .find_map(|part| part.strip_prefix('p'))
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+    (identity.to_owned(), page)
+}
+
 fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
+    let (selected_pages, selected_durations, selected_parts) = project_parts(
+        &item.selected_pages,
+        &item.selected_durations,
+        &item.selected_parts,
+    );
+    let (available_pages, available_durations, available_parts) = project_parts(
+        &item.available_pages,
+        &item.available_durations,
+        &item.available_parts,
+    );
     bilikara_rust::RemotePlaylistItemV1 {
         id: item.id.clone(),
         bvid: item.bvid.clone(),
@@ -364,6 +412,12 @@ fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
         requester_name: item.requester_name.clone(),
         cache_status: cache_status(&item.cache_status),
         cache_progress: item.cache_progress.clamp(0.0, 100.0) as f32,
+        selected_pages,
+        selected_durations,
+        selected_parts,
+        available_pages,
+        available_durations,
+        available_parts,
         audio_variants: item
             .audio_variants
             .iter()
@@ -386,7 +440,55 @@ fn project_audio_variant(variant: &serde_json::Map<String, Value>) -> Option<Rem
     Some(RemoteAudioVariantV1 {
         id: id.to_owned(),
         label: label.chars().take(80).collect(),
+        page: variant
+            .get("page")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| audio_variant_page(id)),
     })
+}
+
+fn audio_variant_page(id: &str) -> u32 {
+    id.strip_prefix('p')
+        .and_then(|value| value.split('_').next())
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+}
+
+fn project_parts(
+    pages: &[i64],
+    durations: &[i64],
+    parts: &[String],
+) -> (Vec<u32>, Vec<u32>, Vec<String>) {
+    let mut projected_pages = Vec::with_capacity(pages.len().min(256));
+    let mut projected_durations = Vec::with_capacity(projected_pages.capacity());
+    let mut projected_parts = Vec::with_capacity(projected_pages.capacity());
+    for (index, page) in pages.iter().take(256).enumerate() {
+        let Ok(page) = u32::try_from(*page) else {
+            continue;
+        };
+        if page == 0 {
+            continue;
+        }
+        projected_pages.push(page);
+        projected_durations.push(
+            durations
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                .clamp(0, i64::from(u32::MAX)) as u32,
+        );
+        let label = parts
+            .get(index)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.chars().take(80).collect())
+            .unwrap_or_else(|| format!("P{page}"));
+        projected_parts.push(label);
+    }
+    (projected_pages, projected_durations, projected_parts)
 }
 
 fn cache_status(value: &str) -> RemoteCacheStatusV1 {
@@ -445,7 +547,7 @@ mod tests {
     use crate::app_state::{
         AppState, AppStateRequest, AppStateResponse, AppStateSeed, PlayerSettingsSeed,
     };
-    use serde_json::json;
+    use serde_json::{Map, json};
 
     const EPOCH: &str = "abcdefghijklmnopqrstuv";
 
@@ -595,5 +697,102 @@ mod tests {
         );
         assert!(safe_cover_url("https://user@i1.hdslb.com/test.jpg").is_empty());
         assert!(safe_cover_url("https://example.com/test.jpg").is_empty());
+    }
+
+    #[test]
+    fn projection_includes_bounded_public_history_without_raw_urls() {
+        let mut snapshot = empty_snapshot();
+        snapshot.history = vec![HistoryEntry {
+            key: "BV1ab411c7mD:p2:a1".to_owned(),
+            display_title: "Song P2".to_owned(),
+            original_url: "https://private.example/secret".to_owned(),
+            resolved_url: "file:///D:/secret.mp4".to_owned(),
+            requested_at: 12.5,
+            title: "Song".to_owned(),
+            part_title: "P2".to_owned(),
+            owner_mid: 1,
+            owner_name: "Singer".to_owned(),
+            owner_url: "https://space.bilibili.com/1".to_owned(),
+            requester_name: "Alice".to_owned(),
+            request_count: 3,
+        }];
+
+        let projected = project_remote_state(&snapshot);
+
+        assert_eq!(projected.history.len(), 1);
+        assert_eq!(projected.history[0].bvid, "BV1ab411c7mD");
+        assert_eq!(projected.history[0].page, 2);
+        assert_eq!(projected.history[0].display_title, "Song P2");
+        assert_eq!(projected.history[0].requester_name, "Alice");
+        assert_eq!(projected.history[0].request_count, 3);
+    }
+
+    #[test]
+    fn projection_preserves_public_part_and_audio_variant_metadata() {
+        let item = PlaylistItem {
+            id: "song-a".to_owned(),
+            original_url: "https://www.bilibili.com/video/BV1ab411c7mD".to_owned(),
+            resolved_url: "https://www.bilibili.com/video/BV1ab411c7mD?p=1".to_owned(),
+            bvid: "BV1ab411c7mD".to_owned(),
+            aid: 1,
+            cid: 101,
+            page: 1,
+            title: "Song".to_owned(),
+            part_title: "On Vocal".to_owned(),
+            display_title: "Song - On Vocal".to_owned(),
+            cover_url: "https://i1.hdslb.com/bfs/archive/test.jpg".to_owned(),
+            embed_url: String::new(),
+            selected_pages: vec![1],
+            selected_cids: vec![101],
+            selected_durations: vec![120],
+            selected_parts: vec!["On Vocal".to_owned()],
+            available_pages: vec![1, 2],
+            available_cids: vec![101, 202],
+            available_durations: vec![120, 121],
+            available_parts: vec!["On Vocal".to_owned(), "Off Vocal".to_owned()],
+            audio_variants: vec![Map::from_iter([
+                ("id".to_owned(), json!("p1_on_vocal")),
+                ("label".to_owned(), json!("On Vocal")),
+                ("page".to_owned(), json!(1)),
+                ("audio_url".to_owned(), json!("/media/private/audio-p1.m4a")),
+            ])],
+            selected_audio_variant_id: "p1_on_vocal".to_owned(),
+            video_page: 1,
+            manual_selection: true,
+            owner_mid: 42,
+            owner_name: "Singer".to_owned(),
+            owner_url: "https://space.bilibili.com/42".to_owned(),
+            requester_name: "Alice".to_owned(),
+            queue_slot_type: "cycle".to_owned(),
+            cache_status: "ready".to_owned(),
+            cache_progress: 100.0,
+            cache_message: "ready".to_owned(),
+            video_relative_path: "private/video.mp4".to_owned(),
+            video_media_url: "/media/private/video.mp4".to_owned(),
+            item_incarnation_id: "i-private-token".to_owned(),
+            artifact_set_id: "a-private-token".to_owned(),
+            artifact_relative_directory: "private".to_owned(),
+        };
+
+        let projected = project_item(&item);
+
+        assert_eq!(projected.selected_pages, vec![1]);
+        assert_eq!(projected.selected_durations, vec![120]);
+        assert_eq!(projected.selected_parts, vec!["On Vocal"]);
+        assert_eq!(projected.available_pages, vec![1, 2]);
+        assert_eq!(projected.available_durations, vec![120, 121]);
+        assert_eq!(projected.available_parts, vec!["On Vocal", "Off Vocal"]);
+        assert_eq!(projected.audio_variants[0].page, 1);
+
+        let encoded = serde_json::to_string(&projected).unwrap();
+        for forbidden in [
+            "selected_cids",
+            "available_cids",
+            "audio_url",
+            "video_relative_path",
+            "item_incarnation_id",
+        ] {
+            assert!(!encoded.contains(forbidden), "forbidden field {forbidden}");
+        }
     }
 }

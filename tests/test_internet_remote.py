@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -70,6 +71,104 @@ class FakeContext:
 
 
 class InternetRemoteAdapterTest(unittest.TestCase):
+    def test_remote_state_adds_host_transport_revision_and_live_player_status(self):
+        class StateStore:
+            def internet_remote_state(self):
+                return {
+                    "remote_state": {
+                        "v": 1,
+                        "revision": 7,
+                        "playback_generation": 3,
+                        "current_item": {"id": "song-a"},
+                        "playlist": [{"id": "song-b"}],
+                        "history": [{"display_title": "Earlier"}],
+                        "player_status": None,
+                    }
+                }
+
+            def snapshot(self):
+                return {"current_item": {"id": "song-a"}, "playback_program": {"item_id": "song-a"}, "playback_generation": 3}
+
+        context = SimpleNamespace(
+            store=StateStore(),
+            state_revision_snapshot=lambda: 19,
+            player_status_snapshot=lambda _snapshot: {
+                "is_paused": False,
+                "current_time": 12.5,
+                "duration": 123.0,
+            },
+        )
+
+        with (
+            patch.object(internet_remote, "gatcha_task_snapshot", return_value={}),
+            patch.object(internet_remote, "gatcha_pool_config_snapshot", return_value={}),
+        ):
+            projected = internet_remote.remote_state(context)
+
+        self.assertEqual(projected["state_revision"], 19)
+        self.assertEqual(projected["history"], [{"display_title": "Earlier"}])
+        self.assertEqual(
+            projected["player_status"],
+            {"playing": True, "position_seconds": 12.5, "duration_seconds": 123.0},
+        )
+
+    def test_decorator_refreshes_a_stale_rust_projection_before_stamping_revision(self):
+        class StateStore:
+            def __init__(self):
+                self.lock = threading.RLock()
+                self.revision = 8
+
+            def internet_remote_state(self):
+                return {
+                    "remote_state": {
+                        "v": 1,
+                        "revision": 8,
+                        "playback_generation": 4,
+                        "current_item": {"id": "song-new"},
+                        "playlist": [
+                            {"id": "queued-a"},
+                            {"id": "queued-b"},
+                            {"id": "queued-c"},
+                        ],
+                        "history": [],
+                        "player_settings": {},
+                        "player_status": None,
+                    }
+                }
+
+            def snapshot(self):
+                return {
+                    "revision": 8,
+                    "current_item": {"id": "song-new"},
+                    "playback_program": {"item_id": "song-new"},
+                    "playback_generation": 4,
+                }
+
+        context = SimpleNamespace(
+            store=StateStore(),
+            state_revision_snapshot=lambda: 20,
+            player_status_snapshot=lambda _snapshot: None,
+        )
+        stale = {
+            "v": 1,
+            "revision": 7,
+            "playback_generation": 3,
+            "current_item": {"id": "song-old"},
+            "playlist": [{"id": "queued-a"}],
+            "history": [],
+            "player_settings": {},
+            "player_status": None,
+        }
+
+        projected = internet_remote._decorate_remote_state(context, stale)
+
+        self.assertEqual(projected["revision"], 8)
+        self.assertEqual(projected["state_revision"], 20)
+        self.assertEqual(
+            [item["id"] for item in projected["playlist"]],
+            ["queued-a", "queued-b", "queued-c"],
+        )
+
     def test_dispatch_passes_wire_message_to_the_rust_owned_module(self):
         context = FakeContext(response())
 
@@ -126,6 +225,41 @@ class InternetRemoteAdapterTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_follow_browse_effect_forwards_bounded_page_to_repository(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "gatcha_browse",
+                    "uid": "42",
+                    "query": "song",
+                    "offset": 100,
+                    "limit": 50,
+                }
+            )
+        )
+        repository_page = {
+            "owners": [],
+            "selected_uid": "42",
+            "query": "song",
+            "offset": 100,
+            "limit": 50,
+            "matched_count": 151,
+            "has_more": True,
+            "next_offset": 150,
+            "items": [],
+        }
+
+        with patch.object(
+            internet_remote,
+            "browse_gatcha_cache",
+            return_value=repository_page,
+        ) as browse:
+            result = internet_remote.dispatch(context, "peer-one", "bulk", "wire")
+
+        browse.assert_called_once_with("42", "song", offset=100, limit=50)
+        self.assertEqual(result["data"]["next_offset"], 150)
+        self.assertTrue(result["data"]["has_more"])
 
     def test_catalog_add_uses_rust_completion_and_its_cache_effect(self):
         dispatch_response = response(

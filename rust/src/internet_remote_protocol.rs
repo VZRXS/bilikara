@@ -206,7 +206,12 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "gatcha.search")]
     GatchaSearch { query: String, limit: u16 },
     #[serde(rename = "gatcha.browse")]
-    GatchaBrowse { uid: String, query: String },
+    GatchaBrowse {
+        uid: String,
+        query: String,
+        offset: u32,
+        limit: u16,
+    },
     #[serde(rename = "gatcha.favlist_browse")]
     GatchaFavlistBrowse { folder_id: String, query: String },
     #[serde(rename = "gatcha.pool_config_get")]
@@ -433,6 +438,14 @@ struct CatalogCategoryBrowseBody {
 struct GatchaBrowseBody {
     uid: String,
     query: String,
+    #[serde(default)]
+    offset: u32,
+    #[serde(default = "default_browse_limit")]
+    limit: u16,
+}
+
+const fn default_browse_limit() -> u16 {
+    MAX_BROWSE_RESULTS
 }
 
 #[derive(Debug, Deserialize)]
@@ -683,9 +696,12 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 && (1..=MAX_BROWSE_RESULTS).contains(limit)
         }
         RemoteRequestV1::SongDetail { catalog_item_id } => valid_catalog(catalog_item_id),
-        RemoteRequestV1::GatchaBrowse { uid, query } => {
+        RemoteRequestV1::GatchaBrowse {
+            uid, query, limit, ..
+        } => {
             valid_optional_numeric_id(uid)
                 && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+                && (1..=MAX_BROWSE_RESULTS).contains(limit)
         }
         RemoteRequestV1::GatchaFavlistBrowse { folder_id, query } => {
             (folder_id.is_empty() || valid_folder_selector(folder_id))
@@ -877,6 +893,8 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::GatchaBrowse {
                 uid: body.uid,
                 query: body.query,
+                offset: body.offset,
+                limit: body.limit,
             }
         }
         "gatcha.favlist_browse" => {
@@ -1099,6 +1117,7 @@ pub enum RemoteCacheStatusV1 {
 pub struct RemoteAudioVariantV1 {
     pub id: String,
     pub label: String,
+    pub page: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1114,8 +1133,25 @@ pub struct RemotePlaylistItemV1 {
     pub requester_name: String,
     pub cache_status: RemoteCacheStatusV1,
     pub cache_progress: f32,
+    pub selected_pages: Vec<u32>,
+    pub selected_durations: Vec<u32>,
+    pub selected_parts: Vec<String>,
+    pub available_pages: Vec<u32>,
+    pub available_durations: Vec<u32>,
+    pub available_parts: Vec<String>,
     pub audio_variants: Vec<RemoteAudioVariantV1>,
     pub selected_audio_variant_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteHistoryEntryV1 {
+    pub bvid: String,
+    pub page: u32,
+    pub display_title: String,
+    pub requested_at: f64,
+    pub requester_name: String,
+    pub request_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1146,6 +1182,7 @@ pub struct RemoteStateV1 {
     pub playback_mode: RemotePlaybackModeV1,
     pub current_item: Option<RemotePlaylistItemV1>,
     pub playlist: Vec<RemotePlaylistItemV1>,
+    pub history: Vec<RemoteHistoryEntryV1>,
     pub session_users: Vec<String>,
     pub player_settings: RemotePlayerSettingsV1,
     pub player_status: Option<RemotePlaybackStatusV1>,
@@ -1220,6 +1257,51 @@ mod tests {
                 .request
                 .operation(),
             RemoteOperation::PlaylistRemove
+        );
+    }
+
+    #[test]
+    fn gatcha_browse_supports_bounded_pagination_with_legacy_defaults() {
+        let legacy = decode_remote_request_v1(
+            &request("gatcha.browse", json!({"uid": "42", "query": ""})),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy.request,
+            RemoteRequestV1::GatchaBrowse {
+                offset: 0,
+                limit: 100,
+                ..
+            }
+        ));
+
+        let paged = decode_remote_request_v1(
+            &request(
+                "gatcha.browse",
+                json!({"uid": "42", "query": "song", "offset": 100, "limit": 50}),
+            ),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert!(matches!(
+            paged.request,
+            RemoteRequestV1::GatchaBrowse {
+                offset: 100,
+                limit: 50,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            decode_remote_request_v1(
+                &request(
+                    "gatcha.browse",
+                    json!({"uid": "42", "query": "", "offset": 0, "limit": 101}),
+                ),
+                context(RemoteProfile::Viewer),
+            ),
+            Err(RemoteProtocolError::InvalidRequestBody)
         );
     }
 
@@ -1563,13 +1645,21 @@ mod tests {
                 requester_name: "Guest".into(),
                 cache_status: RemoteCacheStatusV1::Ready,
                 cache_progress: 1.0,
+                selected_pages: vec![1],
+                selected_durations: vec![180],
+                selected_parts: vec!["伴奏".into()],
+                available_pages: vec![1],
+                available_durations: vec![180],
+                available_parts: vec!["伴奏".into()],
                 audio_variants: vec![RemoteAudioVariantV1 {
                     id: "main".into(),
                     label: "伴奏".into(),
+                    page: 1,
                 }],
                 selected_audio_variant_id: "main".into(),
             }),
             playlist: vec![],
+            history: vec![],
             session_users: vec!["Guest".into()],
             player_settings: RemotePlayerSettingsV1 {
                 effective_av_delay_ms: 0,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import re
 import threading
+from contextlib import nullcontext
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -55,12 +57,91 @@ def remote_state(context: Any) -> dict[str, Any]:
     state = result.get("remote_state")
     if not isinstance(state, dict):
         raise RuntimeError("Rust AppState omitted Internet Remote state")
-    public = dict(state)
+    public = _decorate_remote_state(context, state)
     public["gatcha"] = _public_gatcha_task(gatcha_task_snapshot())
     public["gatcha_pool_config"] = _public_gatcha_pool_config(
         gatcha_pool_config_snapshot()
     )
     return public
+
+
+def _decorate_remote_response(
+    context: Any,
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    public = dict(response)
+    data = public.get("data")
+    if _looks_like_remote_state(data):
+        public["data"] = _decorate_remote_state(context, data)
+    elif isinstance(data, dict) and _looks_like_remote_state(data.get("state")):
+        public["data"] = {
+            **data,
+            "state": _decorate_remote_state(context, data["state"]),
+        }
+    return public
+
+
+def _looks_like_remote_state(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("playlist"), list)
+        and isinstance(value.get("player_settings"), dict)
+        and "revision" in value
+    )
+
+
+def _decorate_remote_state(context: Any, state: dict[str, Any]) -> dict[str, Any]:
+    store_lock = getattr(context.store, "lock", None)
+    lock_context = store_lock if hasattr(store_lock, "__enter__") else nullcontext()
+    with lock_context:
+        public = dict(state)
+        store_revision = getattr(context.store, "revision", None)
+        try:
+            candidate_revision = int(public.get("revision") or 0)
+            current_revision = (
+                int(store_revision)
+                if store_revision is not None
+                else candidate_revision
+            )
+        except (TypeError, ValueError):
+            candidate_revision = 0
+            current_revision = 0
+        if current_revision != candidate_revision:
+            refreshed = context.store.internet_remote_state().get("remote_state")
+            if not isinstance(refreshed, dict):
+                raise RuntimeError("Rust AppState omitted refreshed Internet Remote state")
+            public = dict(refreshed)
+
+        snapshot = context.store.snapshot()
+        status_snapshot = getattr(context, "player_status_snapshot", None)
+        status = status_snapshot(snapshot) if callable(status_snapshot) else None
+        revision_snapshot = getattr(context, "state_revision_snapshot", None)
+        if callable(revision_snapshot):
+            public["state_revision"] = max(0, int(revision_snapshot()))
+        else:
+            public["state_revision"] = max(0, int(public.get("revision") or 0))
+        public["player_status"] = _public_player_status(status)
+        return public
+
+
+def _public_player_status(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def bounded_number(raw: object) -> float:
+        try:
+            number = float(raw or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(number):
+            return 0.0
+        return max(0.0, min(number, 24 * 60 * 60.0))
+
+    return {
+        "playing": not bool(value.get("is_paused")),
+        "position_seconds": bounded_number(value.get("current_time")),
+        "duration_seconds": bounded_number(value.get("duration")),
+    }
 
 
 def dispatch(context: Any, peer_id: str, lane: str, message: str) -> dict[str, Any]:
@@ -78,7 +159,10 @@ def dispatch(context: Any, peer_id: str, lane: str, message: str) -> dict[str, A
             message,
             reset_av_delay=context.cache_manager.reset_offset_on_next,
         )
-        return _run_host_effect(context, peer_id, response)
+        return _decorate_remote_response(
+            context,
+            _run_host_effect(context, peer_id, response),
+        )
     except PlaylistStoreCommandError as exc:
         raise InternetRemoteDispatchError(exc.kind, str(exc)) from exc
 
@@ -163,7 +247,12 @@ def _run_host_effect(
         return public_response
     if kind == "gatcha_browse":
         public_response["data"] = _public_gatcha_browse(
-            browse_gatcha_cache(str(effect["uid"]), str(effect["query"]))
+            browse_gatcha_cache(
+                str(effect["uid"]),
+                str(effect["query"]),
+                offset=int(effect["offset"]),
+                limit=int(effect["limit"]),
+            )
         )
         return public_response
     if kind == "gatcha_favlist_browse":
@@ -431,12 +520,19 @@ def _public_folder(value: object) -> dict[str, Any]:
 
 def _public_gatcha_browse(result: object) -> dict[str, Any]:
     value = result if isinstance(result, dict) else {}
+    offset = max(0, int(value.get("offset") or 0))
+    limit = max(1, min(100, int(value.get("limit") or 100)))
     return {
         "owners": [_public_owner(item) for item in (value.get("owners") or [])][
             :256
         ],
         "selected_uid": _bounded_text(value.get("selected_uid"), 24),
         "query": _bounded_text(value.get("query"), 400),
+        "offset": offset,
+        "limit": limit,
+        "matched_count": max(0, int(value.get("matched_count") or 0)),
+        "has_more": bool(value.get("has_more")),
+        "next_offset": max(offset, int(value.get("next_offset") or offset)),
         "items": _public_catalog_items(value.get("items")),
         "updated_at": float(value.get("updated_at") or 0),
     }

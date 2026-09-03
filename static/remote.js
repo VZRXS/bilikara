@@ -2922,7 +2922,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   };
 }
 
-async function fetchGatchaBrowse(uid = "", query = "") {
+async function fetchGatchaBrowse(uid = "", query = "", { offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
   const normalizedQuery = String(query || "").trim();
@@ -2932,6 +2932,8 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
   const queryString = params.toString();
   const response = await fetch(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
@@ -4486,6 +4488,7 @@ function renderSourcesFollowBrowse() {
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const hasMore = Boolean(state.followBrowseData?.has_more);
   const taskBusy = gatchaTaskBusy();
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
@@ -4493,6 +4496,7 @@ function renderSourcesFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     owners,
     items,
+    hasMore,
     uidSaving: state.gatchaUidSaving,
     taskBusy,
     language: state.language,
@@ -4585,7 +4589,10 @@ function renderSourcesFollowBrowse() {
     elements.sourcesFollowTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
   if (elements.sourcesFollowCount) {
-    const totalCount = Number(owner?.count || items.length || 0);
+    const matchedCount = Number(state.followBrowseData?.matched_count);
+    const totalCount = Number.isFinite(matchedCount)
+      ? matchedCount
+      : Number(owner?.count || items.length || 0);
     elements.sourcesFollowCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
   }
   renderSearchResultItems(
@@ -4599,7 +4606,15 @@ function renderSourcesFollowBrowse() {
   );
 }
 
-async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
+async function loadFollowBrowse({
+  uid = state.followBrowseSelectedUid,
+  query = "",
+  keepQuery = false,
+  append = false,
+} = {}) {
+  if (state.followBrowseLoading) {
+    return;
+  }
   const seq = state.followBrowseSeq + 1;
   state.followBrowseSeq = seq;
   state.followBrowseLoading = true;
@@ -4607,11 +4622,24 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
   state.followBrowseSelectedUid = String(uid || "").trim();
   renderSourcesFollowBrowse();
   try {
-    const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
+    const offset = append ? Number(state.followBrowseData?.next_offset || 0) : 0;
+    const nextData = await fetchGatchaBrowse(
+      state.followBrowseSelectedUid,
+      query,
+      { offset, limit: 100 },
+    );
     if (state.followBrowseSeq !== seq) {
       return;
     }
-    state.followBrowseData = nextData;
+    const previousItems = append && Array.isArray(state.followBrowseData?.items)
+      ? state.followBrowseData.items
+      : [];
+    state.followBrowseData = {
+      ...nextData,
+      items: append
+        ? [...previousItems, ...(Array.isArray(nextData.items) ? nextData.items : [])]
+        : (Array.isArray(nextData.items) ? nextData.items : []),
+    };
     state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
     if (!keepQuery && elements.sourcesFollowSearchQuery) {
       elements.sourcesFollowSearchQuery.value = String(nextData.query || "");

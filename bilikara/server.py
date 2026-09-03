@@ -526,6 +526,10 @@ class AppContext:
         payload["state_revision"] = state_revision
         return payload
 
+    def state_revision_snapshot(self) -> int:
+        with self._state_change_condition:
+            return self._state_revision
+
     def serialized_sse_state_event(self) -> tuple[int, bytes]:
         while True:
             with self._sse_payload_condition:
@@ -1574,7 +1578,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             selected_uid = route_query.get("uid", [""])[0]
             search_query = route_query.get("q", [""])[0]
             try:
-                self._write_json({"ok": True, "data": browse_gatcha_cache(selected_uid, search_query)})
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                limit = max(1, min(10_000, int(route_query.get("limit", ["10000"])[0] or "10000")))
+            except (TypeError, ValueError):
+                limit = 10_000
+            try:
+                self._write_json({
+                    "ok": True,
+                    "data": browse_gatcha_cache(
+                        selected_uid,
+                        search_query,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                })
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return

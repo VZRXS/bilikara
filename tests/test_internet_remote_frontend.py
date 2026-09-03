@@ -35,6 +35,16 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('href="/remote"', self.host_html)
         self.assertIn('state.mode = "local"', self.host_js)
 
+    def test_host_uses_one_mobile_remote_entry_with_local_and_public_tabs(self):
+        self.assertNotIn('class="status-chip internet-remote-status-chip"', self.host_html)
+        popover = self.host_html.index('id="remote-mini-popover"')
+        local_mode = self.host_html.index('id="internet-remote-local-mode"')
+        internet_mode = self.host_html.index('id="internet-remote-internet-mode"')
+        self.assertLess(popover, local_mode)
+        self.assertLess(popover, internet_mode)
+        self.assertIn('id="internet-remote-local-content"', self.host_html)
+        self.assertIn('id="internet-remote-internet-content"', self.host_html)
+
     def test_internet_remote_scripts_load_before_the_host_application(self):
         transport = self.host_html.index('src="/internet-remote-transport.js"')
         adapter = self.host_html.index('src="/internet-remote-host.js"')
@@ -56,12 +66,14 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             "internetRemote.title",
             "internetRemote.local",
             "internetRemote.localHint",
+            "internetRemote.localDescription",
             "internetRemote.modeLabel",
             "internetRemote.internet",
             "internetRemote.description",
             "internetRemote.password",
             "internetRemote.regenerate",
             "internetRemote.create",
+            "internetRemote.capacityReached",
         }
         for language, messages in languages.items():
             with self.subTest(language=language):
@@ -158,6 +170,66 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         ):
             with self.subTest(request_kind=request_kind):
                 self.assertIn(f'"{request_kind}"', self.remote_transport)
+
+    def test_follow_browse_uses_bounded_offset_pagination(self):
+        self.assertIn('params.set("offset", String(offset))', self.remote_js)
+        self.assertIn('params.set("limit", String(limit))', self.remote_js)
+        self.assertIn('id="follow-browse-more"', self.remote_html)
+        self.assertIn('id="modal-follow-browse-more"', self.remote_html)
+        browse_route = self.remote_transport.index(
+            'url.pathname === "/api/gatcha/browse"'
+        )
+        browse_source = self.remote_transport[browse_route:browse_route + 700]
+        self.assertIn('offset:', browse_source)
+        self.assertIn('limit:', browse_source)
+
+    def test_public_state_maps_history_and_host_transport_revision(self):
+        self.assertIn("function localHistoryItem", self.remote_transport)
+        self.assertIn(
+            "history: (remoteState.history || []).map(localHistoryItem).filter(Boolean)",
+            self.remote_transport,
+        )
+        self.assertIn(
+            "remoteState.state_revision ?? remoteState.revision",
+            self.remote_transport,
+        )
+        self.assertIn("nextRevision <= state.stateRevision", self.host_js)
+
+    def test_public_items_preserve_authoritative_part_binding_metadata(self):
+        start = self.remote_transport.index("function localItem")
+        end = self.remote_transport.index("function localHistoryItem", start)
+        source = self.remote_transport[start:end]
+        for field in (
+            "item.selected_pages",
+            "item.selected_durations",
+            "item.selected_parts",
+            "item.available_pages",
+            "item.available_durations",
+            "item.available_parts",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+        self.assertIn("variant.page", source)
+
+    def test_public_state_never_rolls_back_to_an_older_transport_revision(self):
+        self.assertIn("nextRevision < currentRevision", self.remote_transport)
+        self.assertIn("nextRevision <= state.stateRevision", self.host_js)
+
+    def test_revision_bound_remote_mutations_are_serialized_before_reading_revision(self):
+        self.assertIn("revisionMutationTail: Promise.resolve()", self.remote_transport)
+        self.assertIn("async function acquireRevisionMutationTurn", self.remote_transport)
+        self.assertIn("isRevisionBoundMutation(method, url.pathname)", self.remote_transport)
+        self.assertIn("releaseRevisionMutation?.()", self.remote_transport)
+
+    def test_host_diagnostics_record_datachannel_request_outcomes(self):
+        self.assertIn('recordDiagnostic("request.dispatch", "started"', self.host_js)
+        self.assertIn('recordDiagnostic("request.dispatch", "completed"', self.host_js)
+        self.assertIn("operation:", self.host_js)
+
+    def test_host_releases_public_room_capacity_when_stopped(self):
+        self.assertIn('method: "DELETE"', self.host_js)
+        self.assertIn("Authorization: `Bearer ${hostToken}`", self.host_js)
+        self.assertIn("keepalive: true", self.host_js)
 
     def test_search_covers_are_requested_without_a_referrer(self):
         start = self.remote_js.index("function createSearchResultCover")
