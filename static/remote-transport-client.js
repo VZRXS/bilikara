@@ -301,6 +301,7 @@
         if (message.accepted === false) {
           const error = new Error(String(message.error || message.message || message.code || "Host 拒绝了请求"));
           error.code = String(message.code || "internet_remote_request_rejected");
+          if (message.binding) error.payload = { binding: message.binding };
           pending.reject(error);
         } else {
           pending.resolve(message);
@@ -564,6 +565,8 @@
           catalog_item_id: catalogId(body.url, body.selected_video_page),
           position: body.position === "next" ? "next" : "tail",
           allow_repeat: Boolean(body.allow_repeat),
+          selected_video_page: body.selected_video_page,
+          selected_audio_pages: body.selected_audio_pages,
           expected_revision: expectedRevision(),
         });
       } else if (method === "POST" && url.pathname === "/api/playlist/reorder") {
@@ -610,7 +613,11 @@
     } catch (error) {
       const code = String(error?.code || "internet_remote_request_failed");
       const status = code === "internet_remote_rate_limited" ? 429 : 502;
-      return jsonResponse({ ok: false, code, error: String(error?.message || error || "请求失败") }, status);
+      const failure = { ok: false, code, error: String(error?.message || error || "请求失败") };
+      if (code === "manual_binding_required" && error?.payload?.binding) {
+        failure.binding = error.payload.binding;
+      }
+      return jsonResponse(failure, status);
     }
   }
 

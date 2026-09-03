@@ -18,6 +18,7 @@ const MAX_BROWSE_FILTER_BYTES: usize = 400;
 const MAX_BROWSE_FILTER_CHARS: usize = 100;
 const MAX_BROWSE_TAGS: usize = 10;
 const MAX_GATCHA_EXCLUSIONS: usize = 256;
+const MAX_SELECTED_AUDIO_PAGES: usize = 256;
 const MAX_NUMERIC_ID_BYTES: usize = 24;
 const MAX_SESSION_NAME_BYTES: usize = 96;
 const MAX_SESSION_NAME_CHARS: usize = 24;
@@ -237,6 +238,8 @@ pub enum RemoteRequestV1 {
         catalog_item_id: String,
         position: RemotePlaylistPositionV1,
         allow_repeat: bool,
+        selected_video_page: Option<u32>,
+        selected_audio_pages: Vec<u32>,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.remove")]
@@ -475,6 +478,10 @@ struct CatalogMutationBody {
     position: RemotePlaylistPositionV1,
     #[serde(default)]
     allow_repeat: bool,
+    #[serde(default)]
+    selected_video_page: Option<u32>,
+    #[serde(default)]
+    selected_audio_pages: Vec<u32>,
     expected_revision: u64,
 }
 
@@ -706,9 +713,15 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         }
         RemoteRequestV1::PlaylistAdd {
             catalog_item_id,
+            selected_video_page,
+            selected_audio_pages,
             expected_revision,
             ..
-        } => valid_catalog(catalog_item_id) && valid_expected(*expected_revision),
+        } => {
+            valid_catalog(catalog_item_id)
+                && valid_manual_binding_selection(*selected_video_page, selected_audio_pages)
+                && valid_expected(*expected_revision)
+        }
         RemoteRequestV1::PlaylistRemove {
             item_id,
             expected_revision,
@@ -785,6 +798,25 @@ fn valid_catalog_item_id(value: &str) -> bool {
         || (page.len() <= 6
             && !page.starts_with('0')
             && page.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn valid_manual_binding_selection(
+    selected_video_page: Option<u32>,
+    selected_audio_pages: &[u32],
+) -> bool {
+    match selected_video_page {
+        None => selected_audio_pages.is_empty(),
+        Some(page) => {
+            page > 0
+                && !selected_audio_pages.is_empty()
+                && selected_audio_pages.len() <= MAX_SELECTED_AUDIO_PAGES
+                && selected_audio_pages.iter().all(|value| *value > 0)
+                && selected_audio_pages
+                    .iter()
+                    .enumerate()
+                    .all(|(index, value)| !selected_audio_pages[..index].contains(value))
+        }
+    }
 }
 
 fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProtocolError> {
@@ -892,6 +924,8 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 catalog_item_id: body.catalog_item_id,
                 position: body.position,
                 allow_repeat: body.allow_repeat,
+                selected_video_page: body.selected_video_page,
+                selected_audio_pages: body.selected_audio_pages,
                 expected_revision: body.expected_revision,
             }
         }
@@ -1198,6 +1232,8 @@ mod tests {
                     "catalog_item_id": "BV1ab411c7mD",
                     "position": "next",
                     "allow_repeat": true,
+                    "selected_video_page": 2,
+                    "selected_audio_pages": [1, 3],
                     "expected_revision": 4,
                 }),
             ),
@@ -1209,8 +1245,10 @@ mod tests {
             RemoteRequestV1::PlaylistAdd {
                 position: RemotePlaylistPositionV1::Next,
                 allow_repeat: true,
+                selected_video_page: Some(2),
+                selected_audio_pages,
                 ..
-            }
+            } if selected_audio_pages == vec![1, 3]
         ));
 
         let compatible = decode_remote_request_v1(
@@ -1229,8 +1267,10 @@ mod tests {
             RemoteRequestV1::PlaylistAdd {
                 position: RemotePlaylistPositionV1::Tail,
                 allow_repeat: false,
+                selected_video_page: None,
+                selected_audio_pages,
                 ..
-            }
+            } if selected_audio_pages.is_empty()
         ));
     }
 
@@ -1400,6 +1440,50 @@ mod tests {
         for message in cases {
             assert_eq!(
                 decode_remote_request_v1(&message, context(RemoteProfile::Controller)),
+                Err(RemoteProtocolError::InvalidRequestBody)
+            );
+        }
+    }
+
+    #[test]
+    fn playlist_add_rejects_incomplete_or_unsafe_manual_binding_selections() {
+        let invalid_bodies = [
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "selected_video_page": 0,
+                "selected_audio_pages": [1],
+                "expected_revision": 4,
+            }),
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "selected_audio_pages": [1],
+                "expected_revision": 4,
+            }),
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "selected_video_page": 1,
+                "selected_audio_pages": [],
+                "expected_revision": 4,
+            }),
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "selected_video_page": 1,
+                "selected_audio_pages": [2, 2],
+                "expected_revision": 4,
+            }),
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "selected_video_page": 1,
+                "selected_audio_pages": vec![2; MAX_SELECTED_AUDIO_PAGES + 1],
+                "expected_revision": 4,
+            }),
+        ];
+        for body in invalid_bodies {
+            assert_eq!(
+                decode_remote_request_v1(
+                    &request("playlist.add", body),
+                    context(RemoteProfile::Controller),
+                ),
                 Err(RemoteProtocolError::InvalidRequestBody)
             );
         }

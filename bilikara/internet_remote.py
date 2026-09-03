@@ -245,13 +245,33 @@ def _run_host_effect(
         )
         return public_response
     if kind == "fetch_playlist_item":
-        item = _fetch_catalog_item(str(effect["catalog_item_id"]))
-        completion = context.store.complete_internet_remote_playlist_add(
-            peer_id,
-            str(public_response["request_id"]),
-            item,
-            reset_av_delay=context.cache_manager.reset_offset_on_next,
-        )
+        request_id = str(public_response["request_id"])
+        selected_video_page = effect.get("selected_video_page")
+        selected_audio_pages = [
+            int(value) for value in (effect.get("selected_audio_pages") or [])
+        ]
+        try:
+            item = _fetch_catalog_item(
+                str(effect["catalog_item_id"]),
+                selected_video_page=(
+                    int(selected_video_page)
+                    if selected_video_page is not None
+                    else None
+                ),
+                selected_audio_pages=selected_audio_pages,
+            )
+            completion = context.store.complete_internet_remote_playlist_add(
+                peer_id,
+                request_id,
+                item,
+                reset_av_delay=context.cache_manager.reset_offset_on_next,
+            )
+        except Exception:
+            try:
+                context.store.cancel_internet_remote_playlist_add(peer_id, request_id)
+            except Exception:
+                pass
+            raise
         completed = _run_host_effect(context, peer_id, completion)
         if completed.get("accepted"):
             _append_catalog_item(item)
@@ -268,11 +288,17 @@ def _catalog_parts(catalog_id: str) -> tuple[str, int]:
     return match.group(1), int(match.group(2) or 1)
 
 
-def _fetch_catalog_item(catalog_id: str):
+def _fetch_catalog_item(
+    catalog_id: str,
+    *,
+    selected_video_page: int | None = None,
+    selected_audio_pages: list[int] | None = None,
+):
     bvid, page = _catalog_parts(catalog_id)
     return fetch_video_item(
         f"https://www.bilibili.com/video/{bvid}?p={page}",
-        selected_video_page=page,
+        selected_video_page=selected_video_page,
+        selected_audio_pages=selected_audio_pages,
     )
 
 

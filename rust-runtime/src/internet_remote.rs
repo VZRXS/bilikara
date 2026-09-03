@@ -27,11 +27,18 @@ struct PeerSession {
 pub(crate) struct PendingPlaylistAdd {
     pub request_id: String,
     pub sequence: u64,
-    pub expected_revision: u64,
     pub catalog_item_id: String,
+    pub selected_video_page: Option<u32>,
+    pub selected_audio_pages: Vec<u32>,
     pub position: RemotePlaylistPositionV1,
     pub allow_repeat: bool,
     pub session_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistAddBindingSelection<'a> {
+    pub video_page: u32,
+    pub audio_pages: &'a [u32],
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -203,7 +210,7 @@ impl InternetRemotePeers {
         catalog_item_id: &str,
         position: RemotePlaylistPositionV1,
         allow_repeat: bool,
-        expected_revision: u64,
+        binding_selection: Option<PlaylistAddBindingSelection<'_>>,
     ) -> Result<(), InternetRemoteError> {
         let peer = self
             .peers
@@ -218,11 +225,16 @@ impl InternetRemotePeers {
         if peer.pending_playlist_adds.len() >= MAX_PENDING_PLAYLIST_ADDS_PER_PEER {
             return Err(InternetRemoteError::TooManyPendingRequests);
         }
+        let (selected_video_page, selected_audio_pages) = binding_selection.map_or_else(
+            || (None, Vec::new()),
+            |selection| (Some(selection.video_page), selection.audio_pages.to_vec()),
+        );
         let pending = PendingPlaylistAdd {
             request_id: validation.request_id.clone(),
             sequence: validation.sequence,
-            expected_revision,
             catalog_item_id: catalog_item_id.to_owned(),
+            selected_video_page,
+            selected_audio_pages,
             position,
             allow_repeat,
             session_name: session_name.to_owned(),
@@ -244,6 +256,18 @@ impl InternetRemotePeers {
         peer.pending_playlist_adds
             .remove(request_id)
             .ok_or(InternetRemoteError::PendingRequestMissing)
+    }
+
+    pub(crate) fn cancel_playlist_add(
+        &mut self,
+        peer_id: &str,
+        request_id: &str,
+    ) -> Result<bool, InternetRemoteError> {
+        let peer = self
+            .peers
+            .get_mut(peer_id)
+            .ok_or(InternetRemoteError::UnknownPeer)?;
+        Ok(peer.pending_playlist_adds.remove(request_id).is_some())
     }
 }
 
@@ -275,10 +299,7 @@ fn validation_result(
 
 fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
     match request {
-        RemoteRequestV1::PlaylistAdd {
-            expected_revision, ..
-        }
-        | RemoteRequestV1::PlaylistRemove {
+        RemoteRequestV1::PlaylistRemove {
             expected_revision, ..
         }
         | RemoteRequestV1::PlaylistMove {

@@ -177,6 +177,42 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('isFatalProtocolError(error.code)', source)
         self.assertIn('code: String(error.code || "internet_remote_request_failed")', source)
 
+    def test_manual_binding_error_payload_crosses_both_browser_adapters(self):
+        local_post_start = self.host_js.index("async function localPost")
+        local_post_end = self.host_js.index("function signalUrl", local_post_start)
+        self.assertIn(
+            "error.payload = payload",
+            self.host_js[local_post_start:local_post_end],
+        )
+
+        host_dispatch_start = self.host_js.index("async function handlePeerMessage")
+        host_dispatch_end = self.host_js.index("async function publishState", host_dispatch_start)
+        self.assertIn(
+            "binding: sanitizedManualBinding(error.payload?.binding)",
+            self.host_js[host_dispatch_start:host_dispatch_end],
+        )
+
+        self.assertIn(
+            "error.payload = { binding: message.binding }",
+            self.remote_transport,
+        )
+        self.assertIn(
+            "failure.binding = error.payload.binding",
+            self.remote_transport,
+        )
+
+    def test_playlist_add_preserves_optional_manual_binding_selection(self):
+        start = self.remote_transport.index(
+            'if (method === "POST" && url.pathname === "/api/playlist/add")'
+        )
+        end = self.remote_transport.index(
+            'else if (method === "POST" && url.pathname === "/api/playlist/reorder")',
+            start,
+        )
+        source = self.remote_transport[start:end]
+        self.assertIn("selected_video_page: body.selected_video_page", source)
+        self.assertIn("selected_audio_pages: body.selected_audio_pages", source)
+
     def test_remote_identity_registration_is_idempotent_in_the_browser_adapter(self):
         start = self.remote_transport.index(
             'if (method === "POST" && ["/api/remote-identity/register"'
@@ -233,6 +269,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             with self.subTest(asset=asset):
                 self.assertIn(f'"{asset}"', self.asset_sync)
         self.assertIn('Join-Path $staticRoot "pic"', self.asset_sync)
+        self.assertIn('$ErrorActionPreference = "Stop"', self.asset_sync)
+        self.assertIn("[System.IO.Path]::IsPathRooted($Destination)", self.asset_sync)
 
 
 if __name__ == "__main__":

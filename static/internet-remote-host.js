@@ -137,6 +137,7 @@
         const error = new Error(payload.error || `HTTP ${response.status}`);
         error.code = String(payload.code || `http_${response.status}`);
         error.httpStatus = response.status;
+        error.payload = payload;
         throw error;
       }
       return payload.data;
@@ -147,6 +148,36 @@
 
   function signalUrl() {
     return `${SIGNAL_ORIGIN.replace(/^http/u, "ws")}/v1/rooms/${state.roomId}/socket`;
+  }
+
+  function sanitizedManualBinding(value) {
+    if (!value || typeof value !== "object" || !Array.isArray(value.pages)) return null;
+    const pages = value.pages.slice(0, 256).flatMap((entry) => {
+      const page = Number(entry?.page);
+      const cid = Number(entry?.cid);
+      const duration = Number(entry?.duration);
+      if (!Number.isSafeInteger(page) || page <= 0
+          || !Number.isSafeInteger(cid) || cid <= 0
+          || !Number.isFinite(duration) || duration < 0) {
+        return [];
+      }
+      return [{
+        page,
+        cid,
+        duration,
+        part: String(entry?.part || "").slice(0, 512),
+      }];
+    });
+    if (!pages.length) return null;
+    const requestedPreferredPage = Number(value.preferred_page);
+    const preferredPage = pages.some((entry) => entry.page === requestedPreferredPage)
+      ? requestedPreferredPage
+      : pages[0].page;
+    return {
+      title: String(value.title || "").slice(0, 512),
+      preferred_page: preferredPage,
+      pages,
+    };
   }
 
   function sendSignal(to, type, payload) {
@@ -415,6 +446,7 @@
         stale: false,
         code: String(error.code || "internet_remote_request_failed"),
         error: String(error.message || "请求失败").slice(0, 256),
+        binding: sanitizedManualBinding(error.payload?.binding),
       });
       return;
     }

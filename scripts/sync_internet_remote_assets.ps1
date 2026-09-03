@@ -3,9 +3,15 @@ param(
     [string]$Destination
 )
 
+$ErrorActionPreference = "Stop"
+
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $staticRoot = Join-Path $repositoryRoot "static"
-$destinationRoot = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
+$destinationRoot = if ([System.IO.Path]::IsPathRooted($Destination)) {
+    [System.IO.Path]::GetFullPath($Destination)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
+}
 $files = @(
     "export-download.js",
     "export-guard.js",

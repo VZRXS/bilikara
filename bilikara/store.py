@@ -1233,6 +1233,18 @@ class PlaylistStore:
             reset_av_delay=bool(reset_av_delay),
         )
 
+    def cancel_internet_remote_playlist_add(
+        self,
+        peer_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "cancel_internet_remote_playlist_add",
+            include_now=False,
+            peer_id=peer_id,
+            request_id=request_id,
+        )
+
     def _request_unlocked(
         self,
         command: str,

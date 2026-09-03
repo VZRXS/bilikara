@@ -27,6 +27,7 @@ class FakeStore:
         self.completion_response = completion_response
         self.dispatch_calls = []
         self.completion_calls = []
+        self.cancel_calls = []
 
     def dispatch_internet_remote_message(
         self, peer_id, lane, message, *, reset_av_delay=False
@@ -39,6 +40,10 @@ class FakeStore:
     ):
         self.completion_calls.append((peer_id, request_id, item, reset_av_delay))
         return dict(self.completion_response)
+
+    def cancel_internet_remote_playlist_add(self, peer_id, request_id):
+        self.cancel_calls.append((peer_id, request_id))
+        return {"cancelled": True}
 
 
 class FakeCacheManager:
@@ -167,6 +172,87 @@ class InternetRemoteAdapterTest(unittest.TestCase):
             ],
         )
         append.assert_called_once_with(fake_item)
+
+    def test_catalog_add_preserves_an_unselected_binding_request(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "fetch_playlist_item",
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "selected_video_page": None,
+                    "selected_audio_pages": [],
+                }
+            ),
+            response(effect={"kind": "sync_cache"}, revision=8),
+        )
+        fake_item = SimpleNamespace()
+
+        with (
+            patch.object(
+                internet_remote, "_fetch_catalog_item", return_value=fake_item
+            ) as fetch,
+            patch.object(internet_remote, "_append_catalog_item"),
+        ):
+            internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        fetch.assert_called_once_with(
+            "BV1ab411c7mD",
+            selected_video_page=None,
+            selected_audio_pages=[],
+        )
+
+    def test_catalog_add_forwards_an_explicit_manual_binding(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "fetch_playlist_item",
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "selected_video_page": 2,
+                    "selected_audio_pages": [1, 3],
+                }
+            ),
+            response(effect={"kind": "sync_cache"}, revision=8),
+        )
+        fake_item = SimpleNamespace()
+
+        with (
+            patch.object(
+                internet_remote, "_fetch_catalog_item", return_value=fake_item
+            ) as fetch,
+            patch.object(internet_remote, "_append_catalog_item"),
+        ):
+            internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        fetch.assert_called_once_with(
+            "BV1ab411c7mD",
+            selected_video_page=2,
+            selected_audio_pages=[1, 3],
+        )
+
+    def test_failed_catalog_fetch_releases_the_rust_pending_reservation(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "fetch_playlist_item",
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "selected_video_page": None,
+                    "selected_audio_pages": [],
+                }
+            )
+        )
+
+        with patch.object(
+            internet_remote,
+            "_fetch_catalog_item",
+            side_effect=RuntimeError("binding required"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "binding required"):
+                internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        self.assertEqual(
+            context.store.cancel_calls,
+            [("peer-one", "123e4567-e89b-42d3-a456-426614174000")],
+        )
 
     def test_stale_catalog_completion_never_appends_or_syncs(self):
         context = FakeContext(

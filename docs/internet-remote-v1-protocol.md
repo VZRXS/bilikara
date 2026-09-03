@@ -82,9 +82,20 @@ protocol kinds.
 
 Playlist additions refer to a canonical BVID with an optional positive page
 suffix such as `BV1ab411c7mD_p2`, not a URL or an unchecked Bilibili request
-object. Other mutations carry an expected AppState revision. The runtime
-consumes their sequence but returns `accepted: false` plus a fresh sanitized
-state when the revision is stale.
+object. An addition is safely rebased onto the latest authoritative playlist
+after its Host-side metadata fetch; duplicate and session checks run against
+that latest state. Destructive and ordering mutations carry an expected
+AppState revision. The runtime consumes their sequence but returns
+`accepted: false` plus a fresh sanitized state when the revision is stale.
+
+An initial `playlist.add` leaves `selected_video_page` absent and
+`selected_audio_pages` empty so the Host can apply the normal automatic binding
+policy. If manual binding is required, the Host returns a bounded, sanitized
+page list; the follow-up request must carry one positive video page and at least
+one unique positive audio page. Rust retains and validates that selection across
+the Host I/O completion boundary. A failed fetch or binding attempt explicitly
+cancels its pending Rust reservation, so repeated application errors cannot
+exhaust the per-peer pending-request capacity.
 
 ## Remote state
 
