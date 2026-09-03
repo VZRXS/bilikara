@@ -5995,7 +5995,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? t("search.blacklistRelease")
           : isDelete
-            ? "删除 D1 条目"
+            ? "拉黑并删除 D1 条目"
             : "重置标签字段";
   }
   if (elements.developerTagResetText) {
@@ -6007,7 +6007,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? `确认解除 ${title} (${snapshot.bvid}) 的黑名单？此操作不会立即恢复视频。`
           : isDelete
-            ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+            ? `确认将 ${title} (${snapshot.bvid}) 加入黑名单并从 D1 删除？`
             : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
   }
   renderDeveloperActionFields(snapshot.fields);
@@ -6019,7 +6019,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? "只解除写入拦截；后续收藏夹刷新可以再次收录该视频。"
           : isDelete
-            ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+            ? "只拉黑当前 BV；后续收藏夹不会重新写入，可在黑名单页解除或恢复。"
             : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
   }
   if (elements.developerTagResetConfirm) {
@@ -6031,7 +6031,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? t("search.blacklistRelease")
           : isDelete
-            ? "确认删除"
+            ? "确认拉黑并删除"
             : "确认重置";
     elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete || isReject);
   }
@@ -6039,7 +6039,9 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
     const mid = String(snapshot.fields?.mid || "").trim();
     elements.developerTagResetDeleteMid.classList.toggle("hidden", !isDelete || !mid);
     elements.developerTagResetDeleteMid.disabled = false;
-    elements.developerTagResetDeleteMid.textContent = mid ? `按 MID 删除 ${mid}` : "按 MID 删除";
+    elements.developerTagResetDeleteMid.textContent = mid
+      ? `拉黑 MID ${mid} 的现有稿件`
+      : "按 MID 拉黑现有稿件";
   }
   elements.developerTagResetModal?.classList.remove("hidden");
 }
@@ -6086,7 +6088,7 @@ async function deleteDeveloperD1Entry(snapshot) {
   if (reviewCacheExhausted) {
     await loadPendingReviewItems({ force: true });
   }
-  setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+  setAppMessage(`已将 ${snapshot.bvid} 加入黑名单并从 D1 删除。`);
 }
 
 async function rejectPendingReviewEntry(snapshot) {
@@ -6118,7 +6120,7 @@ async function restoreDeveloperBlacklistEntry(snapshot, restoreVideo) {
 async function deleteDeveloperD1EntriesByMid(snapshot) {
   const mid = String(snapshot.fields?.mid || "").trim();
   if (!mid) {
-    throw new Error("缺少 MID，无法按 MID 删除。");
+    throw new Error("缺少 MID，无法拉黑现有稿件。");
   }
   const result = await apiPost("/api/admin-video/delete-mid", {
     mid,
@@ -6138,7 +6140,7 @@ async function deleteDeveloperD1EntriesByMid(snapshot) {
     }
   }
   const deleted = Number(result?.deleted_count ?? result?.changed ?? 0);
-  setAppMessage(`已按 MID ${mid} 删除 ${deleted} 条 D1 条目。`);
+  setAppMessage(`已将 D1 中 MID ${mid} 的 ${deleted} 条现有稿件加入黑名单并删除。`);
 }
 
 async function resetDeveloperTagFields(snapshot) {
@@ -6268,7 +6270,7 @@ async function confirmDeveloperDeleteMid() {
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
   } catch (error) {
-    setAppMessage(error?.message || "按 MID 删除失败。", true);
+    setAppMessage(error?.message || "按 MID 拉黑现有稿件失败。", true);
   } finally {
     state.developerTagResetSaving = false;
     if (elements.developerTagResetConfirm) {
@@ -6345,7 +6347,7 @@ function createDeveloperDeleteButton(item) {
   button.dataset.devAction = "delete-entry";
   button.dataset.item = JSON.stringify(snapshot);
   button.textContent = "删除";
-  button.title = "删除 D1 条目";
+  button.title = "拉黑并删除 D1 条目";
   return button;
 }
 
