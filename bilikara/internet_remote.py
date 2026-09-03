@@ -89,9 +89,9 @@ def dispatch(context: Any, peer_id: str, lane: str, message: str) -> dict[str, A
             )
         context.add_item(
             item,
-            position="tail",
+            position=str(body.get("position") or "tail"),
             requester_name=requester_name,
-            allow_repeat=False,
+            allow_repeat=bool(body.get("allow_repeat")),
         )
         state = remote_state(context)
     _append_catalog_item(item)
@@ -114,12 +114,19 @@ def _dispatch_locked(
         context.move_to_next(str(body["item_id"]))
     elif kind == "playlist.play_now":
         context.move_to_front(str(body["item_id"]))
-    elif kind in {"playback.play", "playback.pause", "playback.seek_relative", "playback.next"}:
+    elif kind in {
+        "playback.play",
+        "playback.pause",
+        "playback.toggle",
+        "playback.seek_relative",
+        "playback.next",
+    }:
         snapshot = context.store.snapshot()
         current = snapshot.get("current_item") or {}
         action = {
             "playback.play": "play",
             "playback.pause": "pause",
+            "playback.toggle": "toggle-play",
             "playback.seek_relative": "seek-relative",
             "playback.next": "next-track",
         }[kind]

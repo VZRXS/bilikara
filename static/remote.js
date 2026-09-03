@@ -7002,6 +7002,10 @@ function disconnectClient() {
   }
   clearStateFallbackTimer();
   closeEventStream();
+  if (window.BilikaraRemoteTransport?.mode === "internet") {
+    window.BilikaraRemoteTransport.disconnect();
+    return;
+  }
   if (state.disconnectSent) {
     return;
   }

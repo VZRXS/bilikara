@@ -32,6 +32,14 @@ pub enum RemoteProfile {
     Controller,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemotePlaylistPositionV1 {
+    #[default]
+    Tail,
+    Next,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCapability {
     ConnectionHealth,
@@ -59,6 +67,7 @@ pub enum RemoteOperation {
     PlaylistPlayNow,
     PlaybackPlay,
     PlaybackPause,
+    PlaybackToggle,
     PlaybackSeekRelative,
     PlaybackNext,
     PlayerSetVolume,
@@ -85,6 +94,7 @@ impl RemoteOperation {
             | Self::PlaylistPlayNow => RemoteCapability::PlaylistWrite,
             Self::PlaybackPlay
             | Self::PlaybackPause
+            | Self::PlaybackToggle
             | Self::PlaybackSeekRelative
             | Self::PlaybackNext => RemoteCapability::PlaybackControl,
             Self::PlayerSetVolume
@@ -136,6 +146,8 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "playlist.add")]
     PlaylistAdd {
         catalog_item_id: String,
+        position: RemotePlaylistPositionV1,
+        allow_repeat: bool,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.remove")]
@@ -165,6 +177,8 @@ pub enum RemoteRequestV1 {
     PlaybackPlay,
     #[serde(rename = "playback.pause")]
     PlaybackPause,
+    #[serde(rename = "playback.toggle")]
+    PlaybackToggle,
     #[serde(rename = "playback.seek_relative")]
     PlaybackSeekRelative { delta_seconds: i32 },
     #[serde(rename = "playback.next")]
@@ -209,6 +223,7 @@ impl RemoteRequestV1 {
             Self::PlaylistPlayNow { .. } => RemoteOperation::PlaylistPlayNow,
             Self::PlaybackPlay => RemoteOperation::PlaybackPlay,
             Self::PlaybackPause => RemoteOperation::PlaybackPause,
+            Self::PlaybackToggle => RemoteOperation::PlaybackToggle,
             Self::PlaybackSeekRelative { .. } => RemoteOperation::PlaybackSeekRelative,
             Self::PlaybackNext => RemoteOperation::PlaybackNext,
             Self::PlayerSetVolume { .. } => RemoteOperation::PlayerSetVolume,
@@ -297,6 +312,10 @@ struct CatalogItemBody {
 #[serde(deny_unknown_fields)]
 struct CatalogMutationBody {
     catalog_item_id: String,
+    #[serde(default)]
+    position: RemotePlaylistPositionV1,
+    #[serde(default)]
+    allow_repeat: bool,
     expected_revision: u64,
 }
 
@@ -421,6 +440,7 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::ConnectionHealth
         | RemoteRequestV1::PlaybackPlay
         | RemoteRequestV1::PlaybackPause
+        | RemoteRequestV1::PlaybackToggle
         | RemoteRequestV1::PlaybackNext => true,
         RemoteRequestV1::StateGet { since_revision } => since_revision.is_none_or(valid_revision),
         RemoteRequestV1::CatalogSearch { query, limit } => {
@@ -431,6 +451,7 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::PlaylistAdd {
             catalog_item_id,
             expected_revision,
+            ..
         } => valid_catalog(catalog_item_id) && valid_expected(*expected_revision),
         RemoteRequestV1::PlaylistRemove {
             item_id,
@@ -539,6 +560,8 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: CatalogMutationBody = body(value)?;
             RemoteRequestV1::PlaylistAdd {
                 catalog_item_id: body.catalog_item_id,
+                position: body.position,
+                allow_repeat: body.allow_repeat,
                 expected_revision: body.expected_revision,
             }
         }
@@ -577,11 +600,12 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 expected_revision: body.expected_revision,
             }
         }
-        "playback.play" | "playback.pause" | "playback.next" => {
+        "playback.play" | "playback.pause" | "playback.toggle" | "playback.next" => {
             let _: EmptyBody = body(value)?;
             match kind {
                 "playback.play" => RemoteRequestV1::PlaybackPlay,
                 "playback.pause" => RemoteRequestV1::PlaybackPause,
+                "playback.toggle" => RemoteRequestV1::PlaybackToggle,
                 _ => RemoteRequestV1::PlaybackNext,
             }
         }
@@ -833,6 +857,61 @@ mod tests {
                 .operation(),
             RemoteOperation::PlaylistRemove
         );
+    }
+
+    #[test]
+    fn playlist_add_preserves_position_and_repeat_policy_with_safe_defaults() {
+        let explicit = decode_remote_request_v1(
+            &request(
+                "playlist.add",
+                json!({
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "position": "next",
+                    "allow_repeat": true,
+                    "expected_revision": 4,
+                }),
+            ),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert!(matches!(
+            explicit.request,
+            RemoteRequestV1::PlaylistAdd {
+                position: RemotePlaylistPositionV1::Next,
+                allow_repeat: true,
+                ..
+            }
+        ));
+
+        let compatible = decode_remote_request_v1(
+            &request(
+                "playlist.add",
+                json!({
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "expected_revision": 4,
+                }),
+            ),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert!(matches!(
+            compatible.request,
+            RemoteRequestV1::PlaylistAdd {
+                position: RemotePlaylistPositionV1::Tail,
+                allow_repeat: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn controller_can_toggle_playback_without_exposing_a_generic_command() {
+        let decoded = decode_remote_request_v1(
+            &request("playback.toggle", json!({})),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert_eq!(decoded.request.operation(), RemoteOperation::PlaybackToggle);
     }
 
     #[test]

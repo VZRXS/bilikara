@@ -38,9 +38,13 @@ class FakeStore:
 class FakeContext:
     def __init__(self, validation):
         self.store = FakeStore(validation)
+        self.added = []
 
     def add_session_user(self, name):
         self.store.users.add(name)
+
+    def add_item(self, item, *, position, requester_name, allow_repeat):
+        self.added.append((item, position, requester_name, allow_repeat))
 
 
 def validation(kind, body, *, name="Alice", revision=7):
@@ -69,7 +73,12 @@ class InternetRemoteAdapterTest(unittest.TestCase):
         context = FakeContext(
             validation(
                 "playlist.add",
-                {"catalog_item_id": "BV1ab411c7mD", "expected_revision": 7},
+                {
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "position": "next",
+                    "allow_repeat": True,
+                    "expected_revision": 7,
+                },
             )
         )
         context.store.users.add("Alice")
@@ -84,7 +93,41 @@ class InternetRemoteAdapterTest(unittest.TestCase):
 
         self.assertFalse(response["accepted"])
         self.assertTrue(response["stale"])
-        self.assertFalse(hasattr(context, "added"))
+        self.assertEqual(context.added, [])
+
+    def test_catalog_add_forwards_validated_position_and_repeat_policy(self):
+        context = FakeContext(
+            validation(
+                "playlist.add",
+                {
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "position": "next",
+                    "allow_repeat": True,
+                    "expected_revision": 7,
+                },
+            )
+        )
+        context.store.users.add("Alice")
+        fake_item = SimpleNamespace(
+            owner_mid=1,
+            bvid="BV1ab411c7mD",
+            title="Song",
+            display_title="Song",
+            resolved_url="https://www.bilibili.com/video/BV1ab411c7mD",
+            original_url="https://www.bilibili.com/video/BV1ab411c7mD",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/1",
+            cover_url="https://i0.hdslb.com/song.jpg",
+        )
+
+        with (
+            patch.object(internet_remote, "_fetch_catalog_item", return_value=fake_item),
+            patch.object(internet_remote, "_append_catalog_item"),
+        ):
+            response = internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        self.assertTrue(response["accepted"])
+        self.assertEqual(context.added, [(fake_item, "next", "Alice", True)])
 
     def test_public_catalog_projection_drops_non_bilibili_cover(self):
         projected = internet_remote._public_catalog_item(

@@ -59,9 +59,9 @@ pub use internet_remote_protocol::{
     INTERNET_REMOTE_PROTOCOL_VERSION, MAX_CONTROL_MESSAGE_BYTES, MAX_REMOTE_STATE_ITEMS,
     MAX_SAFE_JSON_INTEGER, MAX_SEARCH_RESULTS, RemoteAudioVariantV1, RemoteCacheStatusV1,
     RemoteCapability, RemoteLane, RemoteOperation, RemotePlaybackModeV1, RemotePlaybackStatusV1,
-    RemotePlayerSettingsV1, RemotePlaylistItemV1, RemoteProfile, RemoteProtocolError,
-    RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1, RemoteValidationContext,
-    decode_remote_request_v1, profile_allows,
+    RemotePlayerSettingsV1, RemotePlaylistItemV1, RemotePlaylistPositionV1, RemoteProfile,
+    RemoteProtocolError, RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1,
+    RemoteValidationContext, decode_remote_request_v1, profile_allows,
 };
 pub use media_download_candidate_planning::{
     MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,
