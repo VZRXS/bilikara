@@ -25,13 +25,7 @@ class RemoteSearchHardeningTest(unittest.TestCase):
             "function renderSearchResultItems", "function appendSearchResultItems"
         )
         cls.sync_source = cls._slice(
-            "function syncBilikaraSearchViews", "async function executeCanonicalBilikaraSearch"
-        )
-        cls.modal_view_source = cls._slice(
-            "function renderSearchModalView", "function selectedFollowOwner"
-        )
-        cls.modal_open_source = cls._slice(
-            "function setSearchModalOpen", "function openSearchResultDetail"
+            "function syncBilikaraSearchView", "async function executeCanonicalBilikaraSearch"
         )
         cls.drag_source = cls._slice(
             "function makeElementDraggable", "function showFloatingControlOverlay"
@@ -178,7 +172,7 @@ console.log(JSON.stringify({{ eager: rows.map((row) => row.eagerCover) }}));
         )
         self.assertEqual(batch["eager"], [True, True, True, True, True, True, False, False])
 
-    def test_pending_expanded_search_keeps_same_scroll_container_mounted(self):
+    def test_pending_shared_search_keeps_same_result_container_mounted(self):
         result = self.run_node(
             f"""
 class MockClassList {{
@@ -202,27 +196,11 @@ class MockResults {{
   get innerHTML() {{ return this._innerHTML; }}
   appendChild(child) {{ this.children.push(child); return child; }}
 }}
-const expandedResults = new MockResults();
-const modalClassList = new MockClassList("hidden");
-let modalOpenLayouts = 0;
-const originalRemove = modalClassList.remove.bind(modalClassList);
-modalClassList.remove = (...names) => {{
-  if (names.includes("hidden")) modalOpenLayouts += 1;
-  originalRemove(...names);
-}};
+const sharedResults = new MockResults();
 const elements = {{
   larkSearchQuery: {{ value: "pending query" }},
-  searchModalLarkQuery: {{ value: "", focus() {{}} }},
-  larkSearchResults: null,
-  searchModalLarkResults: expandedResults,
-  searchModal: {{ classList: modalClassList }},
-  searchModalTabs: [],
-  searchModalSearchView: {{ classList: new MockClassList() }},
-  modalFollowBrowserView: {{ classList: new MockClassList() }},
-  favlistBrowserView: {{ classList: new MockClassList() }},
-  searchModalOtherView: {{ classList: new MockClassList() }},
+  larkSearchResults: sharedResults,
 }};
-const state = {{ searchModalOpen: false, searchModalView: "search" }};
 const canonicalBilikaraSearch = {{
   query: "pending query",
   items: [],
@@ -232,10 +210,7 @@ const canonicalBilikaraSearch = {{
   seq: 1,
   loading: true,
 }};
-let requestCalls = 0;
-async function executeCanonicalBilikaraSearch() {{ requestCalls += 1; }}
 function setLarkSearchMessage() {{}}
-function setSearchModalLarkMessage() {{}}
 function t(key) {{ return key; }}
 const rows = [];
 function createSearchResultRow(item, options) {{
@@ -245,41 +220,33 @@ function createSearchResultRow(item, options) {{
 }}
 const expandedSearchEagerCoverCount = 6;
 const document = {{ body: {{ classList: new MockClassList() }}, createElement() {{ return {{}}; }} }};
-const window = {{
-  clearTimeout() {{}},
-  setTimeout(callback) {{ callback(); return 1; }},
-}};
-let searchModalCloseTimer = 0;
+function renderLarkSearchResults(items) {{
+  sharedResults.innerHTML = "";
+  sharedResults.classList.remove("hidden");
+  items.forEach((item) => sharedResults.appendChild(createSearchResultRow(item, {{ eagerCover: false }})));
+}}
 
 {self.render_source}
 {self.sync_source}
-{self.modal_view_source}
-{self.modal_open_source}
 
-setSearchModalOpen(true);
+syncBilikaraSearchView();
 const pending = {{
-  sameContainer: elements.searchModalLarkResults === expandedResults,
-  hidden: expandedResults.classList.contains("hidden"),
-  childCount: expandedResults.children.length,
-  requestCalls,
-  modalOpen: state.searchModalOpen,
-  bodyLocked: document.body.classList.contains("remote-search-modal-open"),
+  sameContainer: elements.larkSearchResults === sharedResults,
+  hidden: sharedResults.classList.contains("hidden"),
+  childCount: sharedResults.children.length,
 }};
 
 canonicalBilikaraSearch.items = Array.from({{ length: 8 }}, (_, index) => ({{ id: index }}));
 canonicalBilikaraSearch.message = "found";
 canonicalBilikaraSearch.loading = false;
-syncBilikaraSearchViews();
+syncBilikaraSearchView();
 console.log(JSON.stringify({{
   pending,
   completed: {{
-    sameContainer: elements.searchModalLarkResults === expandedResults,
-    hidden: expandedResults.classList.contains("hidden"),
-    rowCount: expandedResults.children.length,
-    rowIds: expandedResults.children.map((row) => row.id),
-    requestCalls,
-    modalOpen: state.searchModalOpen,
-    modalOpenLayouts,
+    sameContainer: elements.larkSearchResults === sharedResults,
+    hidden: sharedResults.classList.contains("hidden"),
+    rowCount: sharedResults.children.length,
+    rowIds: sharedResults.children.map((row) => row.id),
   }},
 }}));
 """
@@ -289,11 +256,8 @@ console.log(JSON.stringify({{
             result["pending"],
             {
                 "sameContainer": True,
-                "hidden": False,
+                "hidden": True,
                 "childCount": 0,
-                "requestCalls": 0,
-                "modalOpen": True,
-                "bodyLocked": True,
             },
         )
         self.assertEqual(
@@ -303,9 +267,6 @@ console.log(JSON.stringify({{
                 "hidden": False,
                 "rowCount": 8,
                 "rowIds": list(range(8)),
-                "requestCalls": 0,
-                "modalOpen": True,
-                "modalOpenLayouts": 1,
             },
         )
 

@@ -326,7 +326,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
 
         self.assertEqual(host_js.count("if (openSearchResultDetail(event,"), 5)
-        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 4)
+        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 3)
         for source in (host_js, remote_js):
             self.assertIn("const searchResultItemByElement = new WeakMap();", source)
             self.assertIn("searchResultItemByElement.get(card)", source)
@@ -582,12 +582,11 @@ function selectedRequesterName() {{ return "tester"; }}
 async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
 function applyStateSnapshot() {{}}
 function closeBindingSheet() {{ bindingCloseCount += 1; }}
-function setFollowBrowseMessage() {{}}
 function renderGatchaUidView() {{}}
 function openBindingSheet() {{}}
 {remote_confirm}
 (async () => {{
-  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalSearch", clearInput: false }};
+  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalFollow", clearInput: false }};
   await confirmBindingSheet();
   const afterDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
   state.bindingIntent = {{ url: "https://example.test/list", source: "search", clearInput: false }};
@@ -1005,7 +1004,13 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
             self.assertIn("--rating-close-hover-bg: rgba(109, 98, 88, 0.28);", css)
         for selector in (".remote-qr-popover-close", ".floating-control-close", ".rating-close"):
             self.assertIn(selector, remote_css)
-        self.assertGreaterEqual(remote_css.count("background: var(--rating-close-bg);"), 5)
+        shared_remote_close_rule = re.search(
+            r"\.remote-qr-popover-close,\s*\.remote-search-modal-close,\s*"
+            r"\.binding-sheet-close,\s*\.rating-close,\s*"
+            r"\.floating-control-close\s*\{([^}]*)\}",
+            remote_css,
+        ).group(1)
+        self.assertIn("background: var(--rating-close-bg);", shared_remote_close_rule)
         self.assertGreaterEqual(remote_css.count("background: var(--rating-close-hover-bg);"), 3)
 
     def test_mobile_remote_song_detail_close_has_only_minimal_optical_correction(self):

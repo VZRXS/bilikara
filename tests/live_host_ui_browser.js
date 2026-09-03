@@ -1,6 +1,7 @@
 "use strict";
 
 const { chromium } = require("playwright");
+const { runRemoteRequestWorkspaceGate } = require("./live_remote_request_workspace_browser");
 
 const [baseUrl, executablePath, screenshotPath, runMode] = process.argv.slice(2);
 
@@ -18,6 +19,21 @@ function suffixedPath(path, suffix) {
 
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
+  let remoteRequestWorkspace;
+  try {
+    remoteRequestWorkspace = await runRemoteRequestWorkspaceGate(
+      browser,
+      baseUrl,
+      screenshotPath,
+    );
+  } catch (error) {
+    await browser.close();
+    throw error;
+  }
+  if (runMode === "remote-request-workspace") {
+    await browser.close();
+    return { passed: true, remoteRequestWorkspace };
+  }
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
   await page.addInitScript(() => {
     const nativeSetInterval = window.setInterval.bind(window);
@@ -7720,17 +7736,52 @@ async function run() {
     assert(await remotePage.locator("#remote-settings-content").isVisible(), "Remote settings section did not expand");
     const remoteSettingMetrics = await remotePage.locator("#remote-settings-content .remote-menu-setting-row").evaluateAll((rows) => rows.map((row) => {
       const button = row.querySelector(".mode-button");
+      const label = row.querySelector(".remote-menu-setting-label");
+      const labelStyle = getComputedStyle(label);
+      const sectionTitle = document.querySelector("#remote-settings-toggle .remote-menu-section-title");
+      const sectionTitleStyle = getComputedStyle(sectionTitle);
       const rect = button.getBoundingClientRect();
-      return { height: rect.height, fontWeight: getComputedStyle(button).fontWeight };
+      return {
+        label: label?.textContent?.trim() || "",
+        height: rect.height,
+        fontWeight: getComputedStyle(button).fontWeight,
+        labelFontSize: labelStyle.fontSize,
+        labelFontWeight: labelStyle.fontWeight,
+        labelColor: labelStyle.color,
+        labelTextTransform: labelStyle.textTransform,
+        sectionTitleFontSize: sectionTitleStyle.fontSize,
+        sectionTitleColor: sectionTitleStyle.color,
+      };
     }));
-    assert(
-      remoteSettingMetrics.every(({ height, fontWeight }) => height >= 30 && height <= 40 && fontWeight === "400"),
-      "Remote menu setting controls changed their Host-sized geometry or weight",
-      remoteSettingMetrics,
+    const expandedRemoteSettingsBackground = await remotePage.locator("#remote-settings-toggle").evaluate(
+      (toggle) => getComputedStyle(toggle).backgroundColor,
     );
-    const remoteLayoutInfo = remotePage.locator('[aria-describedby="remote-menu-layout-info"]');
-    await remoteLayoutInfo.click();
-    assert(await remotePage.locator("#remote-menu-layout-info").isVisible(), "Remote layout explanation did not open from its i button");
+    assert(
+      remoteSettingMetrics.length === 2
+        && JSON.stringify(remoteSettingMetrics.map(({ label }) => label)) === JSON.stringify(["语言", "切换主题"])
+        && remoteSettingMetrics.every(({ height, fontWeight }) => height >= 30 && height <= 40 && fontWeight === "400")
+        && remoteSettingMetrics.every((metric) => (
+          metric.labelFontSize === metric.sectionTitleFontSize
+            && metric.labelFontWeight === "400"
+            && metric.labelColor === metric.sectionTitleColor
+            && metric.labelTextTransform === "uppercase"
+        ))
+        && expandedRemoteSettingsBackground === "rgba(0, 0, 0, 0)"
+        && await remotePage.locator("#layout-mode-switch, [data-layout-mode]").count() === 0,
+      "Remote appearance menu did not retain neutral section state and Host-sized language/theme controls",
+      { remoteSettingMetrics, expandedRemoteSettingsBackground },
+    );
+    const remoteLanguageInfo = remotePage.locator('[aria-describedby="remote-menu-language-info"]');
+    const remoteThemeInfo = remotePage.locator('[aria-describedby="remote-menu-theme-info"]');
+    await remoteLanguageInfo.click();
+    assert(await remotePage.locator("#remote-menu-language-info").isVisible(), "Remote language explanation did not open from its i button");
+    await remotePage.evaluate(() => closeRemoteContextualInfo());
+    await remoteThemeInfo.click();
+    assert(
+      await remotePage.locator("#remote-menu-theme-info").isVisible(),
+      "Remote theme explanation did not open from its i button",
+    );
+    await remotePage.evaluate(() => closeRemoteContextualInfo());
     await remotePage.locator('#language-switch button[data-language="en"]').click();
     assert(await remoteMenuPanel.isVisible(), "Remote language interaction closed the menu");
     await remotePage.evaluate(() => {
@@ -8816,6 +8867,7 @@ async function run() {
     }
     return {
       passed: true,
+      remoteRequestWorkspace,
       identity,
       startupReadinessEvidence,
       wheelScrollTop,

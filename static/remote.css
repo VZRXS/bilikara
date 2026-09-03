@@ -36,17 +36,25 @@
   --switch-bg: rgba(255, 255, 255, 0.72);
   --switch-border: 1px solid rgba(255, 255, 255, 0.9);
 
-  --view-toggle-bg: rgba(67, 53, 41, 0.06);
-  --toggle-active-bg: rgba(255, 255, 255, 0.95);
-  --toggle-active-color: var(--accent-deep);
-  --toggle-active-shadow: 0 8px 18px rgba(79, 56, 39, 0.08);
+  --remote-segmented-control-bg: rgba(67, 53, 41, 0.06);
+  --remote-segmented-control-idle-color: var(--muted);
+  --remote-segmented-control-active-bg: rgba(255, 255, 255, 0.95);
+  --remote-segmented-control-active-color: var(--accent-deep);
+  --remote-segmented-control-active-shadow: none;
 
   --input-bg: rgba(255, 255, 255, 0.84);
   --input-border: 1px solid var(--line);
 
   --btn-secondary-bg: rgba(255, 255, 255, 0.82);
   --btn-border: 1px solid rgba(67, 53, 41, 0.08);
-
+  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-color: var(--on-accent);
+  --remote-primary-button-disabled-bg: var(--accent);
+  --remote-primary-button-disabled-color: var(--on-accent);
+  --remote-secondary-button-bg: var(--btn-secondary-bg);
+  --remote-secondary-button-color: var(--ink);
+  --remote-secondary-button-disabled-bg: rgba(109, 98, 88, 0.16);
+  --remote-secondary-button-disabled-color: var(--muted);
   --modal-card-bg: rgba(255, 250, 244, 0.98);
   --modal-card-border: 1px solid rgba(208, 90, 63, 0.22);
   --desktop-modal-border: 1px solid rgba(87, 63, 43, 0.1);
@@ -296,7 +304,7 @@ h1 {
 
 /* Host keeps the top-bar control at its neutral surface while its panel is open. */
 .remote-menu-toggle[aria-expanded="true"] {
-  border-color: var(--line);
+  border-color: transparent;
   background: var(--remote-menu-trigger-bg);
 }
 
@@ -506,19 +514,9 @@ h1 {
   text-align: left;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .remote-menu-section-toggle:hover {
-    background: var(--accent-soft);
-  }
-}
-
 .remote-menu-section-toggle:focus-visible {
   outline: 2px solid var(--remote-focus-border-color);
   outline-offset: 2px;
-}
-
-.remote-menu-section-toggle:active:not(:disabled) {
-  background: var(--accent-soft);
 }
 
 .remote-menu-section-toggle-label {
@@ -570,10 +568,12 @@ h1 {
 }
 
 .remote-menu-setting-label {
-  color: var(--ink);
-  font-size: 14px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.3;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .remote-menu-panel .mode-switch {
@@ -785,51 +785,83 @@ h1 {
   min-width: 0;
 }
 
-.search-panel .panel-head {
-  flex-wrap: wrap;
-}
-
-.search-panel .panel-head>div:first-child {
-  flex: 1 1 100%;
+.remote-request-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  column-gap: 10px;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 14px;
 }
 
-.search-panel .panel-head .panel-head-actions {
-  flex: 1 1 100%;
-  display: flex;
-  justify-content: stretch;
-  align-items: stretch;
-}
-
-.search-panel .panel-head .panel-head-actions>button {
-  flex: 1 1 0;
-  height: 40px;
+.remote-request-head > :first-child {
   min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
 }
 
-
-.search-panel .panel-head .panel-tag,
-.search-panel .panel-head .panel-title {
-  grid-column: 1;
+.remote-request-tabs,
+.remote-search-mode-tabs,
+.view-toggle {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  padding: 0 4px;
+  border-radius: 18px;
+  background: var(--remote-segmented-control-bg);
 }
 
+.remote-request-tabs {
+  width: max-content;
+  max-width: 100%;
+  grid-template-columns: repeat(2, max-content);
+  flex: 0 1 auto;
+}
 
-.search-expand-button {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  min-height: 38px;
+.remote-request-view,
+.remote-search-mode-panel {
+  min-width: 0;
+}
+
+.remote-request-view[hidden],
+.remote-search-mode-panel[hidden] {
+  display: none;
+}
+
+.remote-search-toolbar {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.remote-search-mode-tabs {
+  flex: 1 1 190px;
+  min-width: min(190px, 100%);
+}
+
+.remote-search-mode-tab {
+  white-space: normal;
+}
+
+.remote-search-toolbar .search-more-browse {
+  flex: 0 0 auto;
+  min-height: 44px;
+  margin-inline-start: auto;
   padding-inline: 12px;
   white-space: nowrap;
+}
+
+.remote-search-mode-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.remote-search-mode-panel > .search-results {
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+  padding-right: 0;
 }
 
 .now-playing-panel {
@@ -1013,11 +1045,6 @@ h1 {
   margin-top: 14px;
   display: grid;
   gap: 10px;
-}
-
-.remote-shell.layout-mode-basic .search-panel,
-.remote-shell.layout-mode-basic .gatcha-panel {
-  display: none !important;
 }
 
 .remote-setting-panel {
@@ -1907,8 +1934,8 @@ select:disabled {
 }
 
 .primary-button {
-  background: var(--accent);
-  color: white;
+  background: var(--remote-primary-button-bg);
+  color: var(--remote-primary-button-color);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1921,8 +1948,8 @@ select:disabled {
 .secondary-button,
 .ghost-button,
 .toggle-button {
-  background: var(--btn-secondary-bg);
-  color: var(--ink);
+  background: var(--remote-secondary-button-bg);
+  color: var(--remote-secondary-button-color);
 }
 
 .remote-identity-row .secondary-button,
@@ -1930,8 +1957,8 @@ select:disabled {
   min-height: 44px;
   padding: 10px 12px;
   white-space: nowrap;
-  background: var(--btn-secondary-bg);
-  color: var(--ink);
+  background: var(--remote-secondary-button-bg);
+  color: var(--remote-secondary-button-color);
 }
 
 .player-control-row button[data-control-action="next-track"] {
@@ -1941,13 +1968,19 @@ select:disabled {
   box-shadow: none;
 }
 
-.primary-button:disabled,
+.primary-button:disabled {
+  cursor: not-allowed;
+  background: var(--remote-primary-button-disabled-bg);
+  color: var(--remote-primary-button-disabled-color);
+  opacity: 0.72;
+}
+
 .secondary-button:disabled,
 .ghost-button:disabled,
 .toggle-button:disabled {
   cursor: not-allowed;
-  background: var(--rating-close-bg);
-  color: var(--muted);
+  background: var(--remote-secondary-button-disabled-bg);
+  color: var(--remote-secondary-button-disabled-color);
   opacity: 0.62;
 }
 
@@ -2007,26 +2040,52 @@ select:disabled {
 }
 
 .view-toggle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
   margin-bottom: 14px;
-  padding: 6px;
-  border-radius: 18px;
-  background: var(--view-toggle-bg);
 }
 
+.remote-request-tab,
+.remote-search-mode-tab,
 .toggle-button {
-  padding: 11px 12px;
+  min-width: 0;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0 solid transparent;
+  border-block-width: 4px;
+  border-radius: 18px;
+  padding: 10px 0;
   background: transparent;
-  color: var(--muted);
+  background-clip: padding-box;
+  color: var(--remote-segmented-control-idle-color);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
   transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 
+.remote-request-tab {
+  min-width: 44px;
+  padding-inline: 22px;
+  white-space: nowrap;
+}
+
+.remote-request-tab[aria-selected="true"],
+.remote-search-mode-tab[aria-selected="true"],
 .toggle-button.active {
-  background: var(--toggle-active-bg);
-  color: var(--toggle-active-color);
-  box-shadow: var(--toggle-active-shadow);
+  background-color: var(--remote-segmented-control-active-bg);
+  color: var(--remote-segmented-control-active-color);
+  box-shadow: var(--remote-segmented-control-active-shadow);
+}
+
+.remote-request-tab:focus-visible,
+.remote-search-mode-tab:focus-visible,
+.toggle-button:focus-visible,
+.search-more-browse:focus-visible {
+  outline: 2px solid var(--remote-focus-border-color);
+  outline-offset: 2px;
 }
 
 .history-export-row {
@@ -2092,9 +2151,8 @@ select:disabled {
   grid-auto-rows: max-content;
   margin-top: 2px;
   min-height: 0;
-  max-height: var(--remote-follow-grid-height);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
   padding-right: 4px;
 }
 
@@ -2357,136 +2415,6 @@ select:disabled {
   white-space: nowrap;
 }
 
-.follow-browse-toggle,
-.lark-search-toggle {
-  min-height: 40px;
-  padding-inline: 12px;
-  white-space: nowrap;
-}
-
-.remote-search-stage {
-  --remote-search-stage-height: 360px;
-  --remote-follow-grid-height: 360px;
-  position: relative;
-  min-width: 0;
-  max-width: 100%;
-  height: var(--remote-search-stage-height);
-  perspective: 1400px;
-}
-
-.remote-search-stage.hidden {
-  display: none;
-}
-
-.remote-search-stage-inner {
-  display: grid;
-  height: 100%;
-  min-width: 0;
-  max-width: 100%;
-  transform-style: preserve-3d;
-  transition: transform 400ms ease;
-}
-
-.remote-search-stage:not(.is-flipping) .remote-search-stage-inner,
-.remote-search-stage.is-preparing-flip .remote-search-stage-inner {
-  transition: none;
-}
-
-.remote-search-stage.is-lark-view .remote-search-stage-inner {
-  transform: rotateY(120deg);
-}
-
-.remote-search-stage.is-browse-view .remote-search-stage-inner {
-  transform: rotateY(-120deg);
-}
-
-.remote-search-stage.is-browse-view:not(.is-flipping) .remote-search-stage-inner,
-.remote-search-stage.is-lark-view:not(.is-flipping) .remote-search-stage-inner {
-  transform: none !important;
-}
-
-.remote-search-face {
-  grid-area: 1 / 1;
-  display: grid;
-  gap: 12px;
-  align-content: start;
-  min-height: 0;
-  height: 100%;
-  min-width: 0;
-  max-width: 100%;
-  backface-visibility: hidden;
-  pointer-events: none;
-}
-
-.remote-search-face-front {
-  grid-template-rows: auto auto minmax(0, var(--remote-follow-grid-height));
-  pointer-events: auto;
-}
-
-.remote-search-face-lark {
-  grid-template-rows: auto auto minmax(0, var(--remote-follow-grid-height));
-  pointer-events: none;
-  transform: rotateY(240deg);
-}
-
-.remote-search-face-back {
-  grid-template-rows: minmax(0, 1fr) auto;
-  transform: rotateY(120deg);
-}
-
-.remote-search-stage.is-browse-view:not(.is-flipping) .remote-search-face-back,
-.remote-search-stage.is-lark-view:not(.is-flipping) .remote-search-face-lark {
-  transform: none;
-}
-
-.remote-search-stage.is-browse-view .remote-search-face-front,
-.remote-search-stage.is-lark-view .remote-search-face-front {
-  pointer-events: none;
-}
-
-.remote-search-stage.is-browse-view .remote-search-face-back,
-.remote-search-stage.is-lark-view .remote-search-face-lark {
-  pointer-events: auto;
-}
-
-.remote-search-stage:not(.is-browse-view):not(.is-flipping) .remote-search-face-back,
-.remote-search-stage.is-browse-view:not(.is-flipping) .remote-search-face-front,
-.remote-search-stage.is-browse-view:not(.is-flipping) .remote-search-face-lark,
-.remote-search-stage:not(.is-lark-view):not(.is-flipping) .remote-search-face-lark,
-.remote-search-stage.is-lark-view:not(.is-flipping) .remote-search-face-front,
-.remote-search-stage.is-lark-view:not(.is-flipping) .remote-search-face-back {
-  display: none;
-  content-visibility: hidden;
-}
-
-.remote-search-stage.is-flip-pruned[data-previous-view="search"] .remote-search-face-front,
-.remote-search-stage.is-flip-pruned[data-previous-view="browse"] .remote-search-face-back,
-.remote-search-stage.is-flip-pruned[data-previous-view="lark"] .remote-search-face-lark {
-  display: none;
-  visibility: hidden;
-  pointer-events: none;
-  content-visibility: hidden;
-}
-
-.remote-search-stage.is-flip-pruned[data-next-view="search"] .remote-search-face-back,
-.remote-search-stage.is-flip-pruned[data-next-view="search"] .remote-search-face-lark,
-.remote-search-stage.is-flip-pruned[data-next-view="browse"] .remote-search-face-front,
-.remote-search-stage.is-flip-pruned[data-next-view="browse"] .remote-search-face-lark,
-.remote-search-stage.is-flip-pruned[data-next-view="lark"] .remote-search-face-front,
-.remote-search-stage.is-flip-pruned[data-next-view="lark"] .remote-search-face-back {
-  display: none;
-  visibility: hidden;
-  pointer-events: none;
-  content-visibility: hidden;
-}
-
-.remote-search-stage.is-flipping[data-skipped-view="search"] .remote-search-face-front,
-.remote-search-stage.is-flipping[data-skipped-view="browse"] .remote-search-face-back,
-.remote-search-stage.is-flipping[data-skipped-view="lark"] .remote-search-face-lark {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .follow-browser {
   display: grid;
   gap: 12px;
@@ -2496,24 +2424,11 @@ select:disabled {
   display: none;
 }
 
-#follow-up-list-view,
-#follow-up-items-view {
-  display: grid;
-  gap: 12px;
-  min-height: 0;
-  min-width: 0;
-}
-
-.follow-up-items-view,
-#follow-up-items-view {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
   gap: 8px;
-  max-height: var(--remote-follow-grid-height);
+  max-height: none;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px 4px 4px 0;
@@ -2602,13 +2517,6 @@ select:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 16px;
-}
-
-#follow-browse-count {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--muted);
 }
 
 .follow-search-form {
@@ -2719,7 +2627,7 @@ body.remote-search-modal-open {
 
 .remote-search-modal-tab {
   flex: 0 0 auto;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 14px;
   border: 1px solid rgba(87, 63, 43, 0.1);
   border-radius: 999px;
@@ -3545,10 +3453,6 @@ body.remote-search-modal-open {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .search-results {
-    max-height: min(var(--remote-follow-grid-height), 46vh);
-  }
-
   .gatcha-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3665,8 +3569,26 @@ body.remote-search-modal-open {
 }
 
 @media (max-width: 420px) {
+  :root:lang(ja) .remote-search-mode-tabs {
+    flex-basis: 100%;
+    min-width: 100%;
+  }
+
   #remote-av-sync-panel .remote-step-button .step-symbol {
     display: none;
+  }
+}
+
+@media (max-width: 350px) {
+  .remote-request-head {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .remote-request-tabs {
+    width: 100%;
+    flex-basis: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -4456,16 +4378,24 @@ body.remote-identity-modal-open {
   --switch-bg: rgba(19, 17, 15, 0.72);
   --switch-border: 1px solid rgba(246, 241, 235, 0.15);
 
-  --view-toggle-bg: rgba(246, 241, 235, 0.06);
-  --toggle-active-bg: rgba(246, 241, 235, 0.15);
-  --toggle-active-color: var(--accent);
-  --toggle-active-shadow: none;
+  --remote-segmented-control-bg: rgba(246, 241, 235, 0.06);
+  --remote-segmented-control-idle-color: var(--muted);
+  --remote-segmented-control-active-bg: rgba(246, 241, 235, 0.15);
+  --remote-segmented-control-active-color: var(--accent);
+  --remote-segmented-control-active-shadow: none;
 
   --input-bg: rgba(30, 26, 23, 0.84);
   --input-border: 1px solid rgba(246, 241, 235, 0.15);
 
   --btn-secondary-bg: rgba(48, 41, 37, 0.82);
-
+  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-color: var(--on-accent);
+  --remote-primary-button-disabled-bg: var(--accent);
+  --remote-primary-button-disabled-color: var(--on-accent);
+  --remote-secondary-button-bg: var(--btn-secondary-bg);
+  --remote-secondary-button-color: var(--ink);
+  --remote-secondary-button-disabled-bg: rgba(246, 241, 235, 0.1);
+  --remote-secondary-button-disabled-color: var(--muted);
   --modal-card-bg: rgba(30, 26, 23, 0.98);
   --modal-card-border: 1px solid rgba(224, 108, 83, 0.22);
   --desktop-modal-border: 1px solid rgba(224, 108, 83, 0.22);
@@ -4576,14 +4506,23 @@ body.remote-identity-modal-open {
   --key-shift-border: 1px solid rgba(148, 202, 233, 0.16);
   --switch-bg: rgba(2, 6, 23, 0.72);
   --switch-border: 1px solid rgba(148, 202, 233, 0.18);
-  --view-toggle-bg: rgba(148, 202, 233, 0.08);
-  --toggle-active-bg: rgba(56, 189, 248, 0.18);
-  --toggle-active-color: var(--ink);
-  --toggle-active-shadow: 0 0 18px rgba(56, 189, 248, 0.14);
+  --remote-segmented-control-bg: rgba(148, 202, 233, 0.08);
+  --remote-segmented-control-idle-color: var(--muted);
+  --remote-segmented-control-active-bg: rgba(56, 189, 248, 0.18);
+  --remote-segmented-control-active-color: var(--ink);
+  --remote-segmented-control-active-shadow: none;
   --input-bg: rgba(8, 18, 32, 0.86);
   --input-border: 1px solid rgba(148, 202, 233, 0.18);
   --btn-secondary-bg: rgba(15, 30, 50, 0.84);
   --btn-border: 1px solid rgba(148, 202, 233, 0.14);
+  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-color: #06111f;
+  --remote-primary-button-disabled-bg: var(--accent);
+  --remote-primary-button-disabled-color: #06111f;
+  --remote-secondary-button-bg: var(--btn-secondary-bg);
+  --remote-secondary-button-color: var(--ink);
+  --remote-secondary-button-disabled-bg: rgba(148, 202, 233, 0.14);
+  --remote-secondary-button-disabled-color: var(--muted);
   --modal-card-bg: rgba(8, 18, 32, 0.98);
   --modal-card-border: 1px solid rgba(125, 211, 252, 0.22);
   --desktop-modal-border: 1px solid rgba(125, 211, 252, 0.22);
@@ -4715,14 +4654,23 @@ body.remote-identity-modal-open {
   --key-shift-border: 1px solid rgba(255, 255, 255, 0.12);
   --switch-bg: rgba(5, 8, 16, 0.72);
   --switch-border: 1px solid rgba(255, 255, 255, 0.14);
-  --view-toggle-bg: rgba(255, 255, 255, 0.06);
-  --toggle-active-bg: rgba(0, 210, 255, 0.18);
-  --toggle-active-color: var(--ink);
-  --toggle-active-shadow: 0 0 18px rgba(0, 210, 255, 0.12);
+  --remote-segmented-control-bg: rgba(255, 255, 255, 0.06);
+  --remote-segmented-control-idle-color: var(--muted);
+  --remote-segmented-control-active-bg: rgba(0, 210, 255, 0.18);
+  --remote-segmented-control-active-color: var(--ink);
+  --remote-segmented-control-active-shadow: none;
   --input-bg: rgba(17, 25, 40, 0.86);
   --input-border: 1px solid rgba(255, 255, 255, 0.12);
   --btn-secondary-bg: rgba(30, 41, 59, 0.84);
   --btn-border: 1px solid rgba(255, 255, 255, 0.1);
+  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-color: #06111f;
+  --remote-primary-button-disabled-bg: var(--accent);
+  --remote-primary-button-disabled-color: #06111f;
+  --remote-secondary-button-bg: var(--btn-secondary-bg);
+  --remote-secondary-button-color: var(--ink);
+  --remote-secondary-button-disabled-bg: rgba(255, 255, 255, 0.12);
+  --remote-secondary-button-disabled-color: var(--muted);
   --modal-card-bg: rgba(17, 25, 40, 0.98);
   --modal-card-border: 1px solid rgba(0, 210, 255, 0.22);
   --desktop-modal-border: 1px solid rgba(0, 210, 255, 0.22);

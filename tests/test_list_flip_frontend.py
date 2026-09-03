@@ -309,12 +309,12 @@ console.log(JSON.stringify({ sequence }));
         self.assertNotIn('id="open-favorites-button"', request_workspace)
 
         expected_labels = {
-            "request.quickTab": {"zh": "快速点歌", "en": "Quick Request", "ja": "クイック予約"},
+            "request.quickTab": {"zh": "快速点歌", "en": "Quick", "ja": "クイック"},
             "request.searchTab": {"zh": "搜索", "en": "Search", "ja": "検索"},
             "request.discoverTab": {"zh": "发现", "en": "Discover", "ja": "見つける"},
             "request.sourcesTab": {"zh": "来源", "en": "Sources", "ja": "ソース"},
-            "search.sharedCatalog": {"zh": "共享曲库", "en": "Shared catalog", "ja": "共有カタログ"},
-            "search.localLibrary": {"zh": "本地曲库", "en": "Local library", "ja": "ローカルライブラリ"},
+            "search.sharedCatalog": {"zh": "共享曲库", "en": "Shared", "ja": "共有ライブラリ"},
+            "search.localLibrary": {"zh": "本地曲库", "en": "Local", "ja": "ローカルライブラリ"},
             "sources.addUid": {"zh": "添加 UID", "en": "Add UID", "ja": "UID を追加"},
             "sources.ownerList": {"zh": "UP 主列表", "en": "Uploader List", "ja": "UP 主一覧"},
             "sources.favorites": {"zh": "收藏夹", "en": "Favorites", "ja": "お気に入り"},

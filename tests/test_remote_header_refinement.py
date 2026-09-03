@@ -167,7 +167,7 @@ function setTextContent(target, key) {{ target.textContent = key; }}
         self.assertEqual(header.count('class="remote-menu-icon"'), 1)
         self.assertEqual(header.count('class="tool-status-indicator is-loading"'), 2)
         self.assertEqual(header.count('class="remote-menu-section-toggle-chevron"'), 2)
-        self.assertEqual(header.count('class="remote-info-button'), 4)
+        self.assertEqual(header.count('class="remote-info-button'), 3)
         self.assertIn('id="remote-connection-status-trigger"', header)
         self.assertIn('aria-describedby="remote-connection-status-text"', header)
         self.assertIn('data-i18n-aria-label="remote.connectionIndicatorLabel"', header)
@@ -209,7 +209,6 @@ function setTextContent(target, key) {{ target.textContent = key; }}
             "remote-settings-toggle",
             "remote-settings-content",
             "language-switch",
-            "layout-mode-switch",
             "theme-switch",
             "remote-qr-toggle",
             "remote-qr-content",
@@ -219,15 +218,17 @@ function setTextContent(target, key) {{ target.textContent = key; }}
         ):
             self.assertIn(f'id="{required_id}"', panel)
         self.assertIn('data-i18n="top.language"', panel)
-        self.assertIn('data-i18n="top.layout"', panel)
         self.assertIn('data-i18n="top.theme"', panel)
         self.assertIn('data-i18n="settings.appearance"', panel)
         self.assertIn('aria-controls="remote-qr-content"', panel)
         self.assertIn('aria-controls="remote-settings-content"', panel)
         self.assertIn('aria-expanded="false"', panel)
         self.assertEqual(panel.count('class="remote-menu-section-toggle"'), 2)
-        self.assertEqual(panel.count('class="remote-menu-setting-label-row remote-contextual-info-region"'), 3)
+        self.assertEqual(panel.count('class="remote-menu-setting-label-row remote-contextual-info-region"'), 2)
         self.assertLess(panel.index('data-i18n="top.mobileRemote"'), panel.index('data-i18n="settings.appearance"'))
+        self.assertNotIn('id="layout-mode-switch"', panel)
+        self.assertNotIn('data-layout-mode=', panel)
+        self.assertNotIn('data-i18n="top.layout"', panel)
         self.assertNotIn('id="remote-layout-summary"', panel)
         self.assertNotIn('class="remote-menu-setting-hint"', panel)
         self.assertNotIn('class="remote-menu-section-action"', panel)
@@ -433,6 +434,10 @@ console.log(JSON.stringify({
         remote_toggle = self._first_base_rule(self.styles, ".remote-menu-section-toggle")
         self.assertEqual(remote_toggle["color"], "var(--ink)")
         self.assertEqual(remote_toggle["min-height"], "44px")
+        self.assertNotRegex(
+            self.styles,
+            r"\.remote-menu-section-toggle:(?:active|hover)[^\{]*\{[^}]*background:",
+        )
         self.assert_declaration_parity(
             ".cache-panel-menu-chevron",
             ".remote-menu-section-toggle-chevron",
@@ -517,11 +522,16 @@ console.log(JSON.stringify({
         self.assertIn("var(--chip-border)", self.styles)
         self.assertRegex(
             self.styles,
-            r"\.remote-identity-row \.secondary-button,\s*\.queue-header-action\s*\{[^}]*background: var\(--btn-secondary-bg\)",
+            r"\.remote-identity-row \.secondary-button,\s*\.queue-header-action\s*\{[^}]*background: var\(--remote-secondary-button-bg\)",
         )
         self.assertIn(".remote-menu-toggle:focus-visible", self.styles)
         self.assertIn("var(--remote-menu-trigger-hover-bg)", self.styles)
         self.assertIn("var(--remote-menu-trigger-hover-border)", self.styles)
+        expanded_trigger_rule = re.search(
+            r'\.remote-menu-toggle\[aria-expanded="true"\]\s*\{([^}]*)\}',
+            self.styles,
+        ).group(1)
+        self.assertIn("border-color: transparent", expanded_trigger_rule)
         self.assertIn(".remote-menu-section-toggle", self.styles)
         self.assertIn(".remote-menu-section-toggle-chevron", self.styles)
         self.assertIn(".remote-menu-panel .remote-tooltip-bubble", self.styles)
@@ -530,6 +540,17 @@ console.log(JSON.stringify({
         ).group(1)
         self.assertIn("opacity: 1", status_opacity_rule)
         self.assertIn("max-height: min(620px, calc(100dvh - 68px));", self.styles)
+        self.assert_declaration_parity(
+            ".cache-panel-label",
+            ".remote-menu-setting-label",
+            (
+                "color",
+                "font-size",
+                "line-height",
+                "letter-spacing",
+                "text-transform",
+            ),
+        )
         self.assertIn("font-weight: 400", re.search(r"\.remote-menu-setting-label\s*\{([^}]*)\}", self.styles).group(1))
         mode_button_rule = re.search(r"\.remote-menu-panel \.mode-button\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("min-height: 30px", mode_button_rule)
