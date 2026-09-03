@@ -15,88 +15,69 @@
   </head>
   <body>
     <main class="remote-shell layout-mode-full" id="remote-shell">
-      <header class="hero-card">
-        <p class="eyebrow" data-i18n="remote.heroTag">Mobile Request</p>
+      <header class="remote-header" id="remote-header">
         <h1 data-i18n="remote.heroTitle">bilikara 点歌台</h1>
-        <p class="hero-copy" data-i18n="remote.heroCopy">在同一个局域网里，用手机查看当前点歌列表、继续点歌，也可以远程控制正在播放的视频。</p>
-        <div class="hero-controls">
-          <div class="mode-control display-control" id="display-control">
-            <button
-              type="button"
-              id="display-settings-toggle"
-              class="remote-display-settings-toggle"
-              aria-expanded="false"
-              aria-controls="display-settings-popover"
-            >
-              <span class="panel-tag" data-i18n="top.displaySettings">界面设置</span>
-              <span id="remote-layout-summary" class="summary-layout-text" data-i18n="layout.fullLayout">完整布局</span>
-              <span class="display-chip-meta">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="globe-icon">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="2" y1="12" x2="22" y2="12"></line>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                </svg>
-                <span>Language</span>
+        <div class="remote-header-menu" id="remote-header-menu">
+          <button
+            type="button"
+            id="remote-menu-toggle"
+            class="remote-menu-toggle"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="remote-menu-panel"
+            aria-label="打开菜单，连接状态：正在连接"
+            data-i18n-aria-label="remote.menuLabel"
+          >
+            <span class="remote-menu-icon" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+            <span class="tool-status-indicator is-loading" id="remote-connection-indicator" aria-hidden="true"></span>
+          </button>
+          <div
+            id="remote-menu-panel"
+            class="remote-menu-panel hidden"
+            role="region"
+            aria-labelledby="remote-menu-toggle"
+          >
+            <div class="remote-menu-status-row remote-contextual-info-region" id="remote-connection-status-row" role="status">
+              <span class="remote-menu-status-label" data-i18n="remote.connectionStatusLabel">连接状态</span>
+              <span class="remote-menu-status-info">
+                <span id="remote-connection-status-value" class="remote-menu-status-value" aria-hidden="true" data-i18n="remote.connectionConnecting">正在连接</span>
+                <span class="info-trigger-wrap remote-menu-status-info-trigger">
+                  <button
+                    type="button"
+                    id="remote-connection-status-trigger"
+                    class="remote-info-button remote-connection-status-trigger"
+                    aria-expanded="false"
+                    aria-describedby="remote-connection-status-text"
+                    data-i18n-aria-label="remote.connectionIndicatorLabel"
+                    aria-label="连接状态：正在连接"
+                  >
+                    <span id="remote-connection-status-indicator" class="tool-status-indicator is-loading" aria-hidden="true"></span>
+                  </button>
+                  <span id="remote-connection-status-text" class="remote-tooltip-bubble" role="tooltip" data-i18n="remote.connectionConnecting">正在连接</span>
+                </span>
               </span>
-            </button>
-            <div id="display-settings-popover" class="remote-qr-popover display-popover hidden">
-              <div class="remote-qr-popover-card">
-                <div class="popover-row">
-                  <div>
-                    <p class="popover-label" data-i18n="top.language">语言</p>
-                    <p class="popover-hint" data-i18n="display.languageHint">切换界面显示语言</p>
-                  </div>
-                  <div class="mode-switch language-switch" id="language-switch">
-                    <button type="button" class="mode-button" data-language="en">EN</button>
-                    <button type="button" class="mode-button" data-language="ja">JA</button>
-                    <button type="button" class="mode-button active" data-language="zh">ZH</button>
-                  </div>
-                </div>
-                <div class="popover-row">
-                  <div>
-                    <p class="popover-label" data-i18n="top.layout">切换布局</p>
-                    <p class="popover-hint" data-i18n="display.layoutHint">基础或完整界面布局</p>
-                  </div>
-                  <div class="mode-switch" id="layout-mode-switch">
-                    <button type="button" class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
-                    <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
-                  </div>
-                </div>
-                <div class="popover-row">
-                  <div>
-                    <p class="popover-label" data-i18n="top.theme">切换主题</p>
-                    <p class="popover-hint" data-i18n="display.themeHint">切换界面色彩主题</p>
-                  </div>
-                  <div class="mode-switch theme-switch" id="theme-switch">
-                    <button type="button" class="mode-button active" data-theme="light" aria-label="奶茶暖橘">
-                      <span class="theme-preview-pill light-preview"></span>
-                    </button>
-                    <button type="button" class="mode-button" data-theme="dark" aria-label="暗黑可可">
-                      <span class="theme-preview-pill dark-preview"></span>
-                    </button>
-                    <button type="button" class="mode-button" data-theme="blue" aria-label="蓝黑霓虹">
-                      <span class="theme-preview-pill blue-preview"></span>
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
-          </div>
-          <div class="mode-control remote-qr-control" id="remote-qr-control">
-            <span class="panel-tag" data-i18n="top.mobileRemote">手机点歌</span>
-            <button
-              type="button"
-              id="remote-qr-toggle"
-              class="remote-mini-qr-button"
-              aria-expanded="false"
-              aria-controls="remote-qr-popover"
-            >
-              <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机点歌二维码缩略图" data-i18n-alt="remote.miniQrAlt" />
-              <span id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder" data-i18n="remote.miniQrLoading">生成中</span>
-            </button>
-            <div id="remote-qr-popover" class="remote-qr-popover hidden">
-              <div class="remote-qr-popover-card">
-                <button type="button" id="remote-qr-popover-close" class="remote-qr-popover-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+
+            <div class="remote-menu-divider" aria-hidden="true"></div>
+
+            <section class="remote-menu-section remote-menu-qr-section" aria-labelledby="remote-menu-qr-title">
+              <button
+                type="button"
+                id="remote-qr-toggle"
+                class="remote-menu-section-toggle"
+                aria-expanded="false"
+                aria-controls="remote-qr-content"
+              >
+                <span class="remote-menu-section-toggle-label">
+                  <span class="remote-menu-section-title" id="remote-menu-qr-title" data-i18n="top.mobileRemote">手机点歌</span>
+                </span>
+                <span class="remote-menu-section-toggle-chevron" aria-hidden="true"></span>
+              </button>
+              <div id="remote-qr-content" class="remote-menu-qr-content hidden">
                 <div class="remote-qr-popover-image-wrap">
                   <img id="remote-popover-qr-image" class="remote-popover-qr-image hidden" alt="手机点歌二维码" data-i18n-alt="remote.qrAlt" />
                   <div id="remote-popover-qr-placeholder" class="remote-popover-qr-placeholder" data-i18n="remote.qrLoading">正在生成二维码...</div>
@@ -105,7 +86,86 @@
                 <a id="remote-popover-url-link" class="remote-popover-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
                 <p id="remote-popover-url-hint" class="remote-popover-url-hint" data-i18n="remote.defaultHint">请确保手机和服务端在同一个局域网内。</p>
               </div>
-            </div>
+            </section>
+
+            <div class="remote-menu-divider" aria-hidden="true"></div>
+
+            <section class="remote-menu-section remote-menu-settings-section" aria-labelledby="remote-menu-settings-title">
+              <button
+                type="button"
+                id="remote-settings-toggle"
+                class="remote-menu-section-toggle"
+                aria-expanded="false"
+                aria-controls="remote-settings-content"
+              >
+                <span class="remote-menu-section-title" id="remote-menu-settings-title" data-i18n="settings.appearance">外观</span>
+                <span class="remote-menu-section-toggle-chevron" aria-hidden="true"></span>
+              </button>
+              <div id="remote-settings-content" class="remote-menu-settings-content hidden">
+                <div class="remote-menu-setting-row">
+                  <div class="remote-menu-setting-copy">
+                    <div class="remote-menu-setting-label-row remote-contextual-info-region">
+                      <p class="remote-menu-setting-label" data-i18n="top.language">语言</p>
+                      <span class="info-trigger-wrap">
+                        <button type="button" class="remote-info-button" aria-expanded="false"
+                          aria-describedby="remote-menu-language-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="remote-tooltip-bubble" id="remote-menu-language-info" role="tooltip"
+                          data-i18n="display.languageHint">切换界面显示语言</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="mode-switch language-switch" id="language-switch">
+                    <button type="button" class="mode-button" data-language="en">EN</button>
+                    <button type="button" class="mode-button" data-language="ja">JA</button>
+                    <button type="button" class="mode-button active" data-language="zh">ZH</button>
+                  </div>
+                </div>
+                <div class="remote-menu-setting-row">
+                  <div class="remote-menu-setting-copy">
+                    <div class="remote-menu-setting-label-row remote-contextual-info-region">
+                      <p class="remote-menu-setting-label" data-i18n="top.layout">切换布局</p>
+                      <span class="info-trigger-wrap">
+                        <button type="button" class="remote-info-button" aria-expanded="false"
+                          aria-describedby="remote-menu-layout-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="remote-tooltip-bubble" id="remote-menu-layout-info" role="tooltip"
+                          data-i18n="display.layoutHint">基础或完整界面布局</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="mode-switch" id="layout-mode-switch">
+                    <button type="button" class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
+                    <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
+                  </div>
+                </div>
+                <div class="remote-menu-setting-row">
+                  <div class="remote-menu-setting-copy">
+                    <div class="remote-menu-setting-label-row remote-contextual-info-region">
+                      <p class="remote-menu-setting-label" data-i18n="top.theme">切换主题</p>
+                      <span class="info-trigger-wrap">
+                        <button type="button" class="remote-info-button" aria-expanded="false"
+                          aria-describedby="remote-menu-theme-info" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                        <span class="remote-tooltip-bubble" id="remote-menu-theme-info" role="tooltip"
+                          data-i18n="display.themeHint">切换界面色彩主题</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="mode-switch theme-switch" id="theme-switch">
+                    <button type="button" class="mode-button active" data-theme="light" data-i18n-aria-label="display.themeLight" aria-label="奶茶暖橘">
+                      <span class="theme-preview-pill light-preview" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="mode-button" data-theme="dark" data-i18n-aria-label="display.themeDark" aria-label="暗黑可可">
+                      <span class="theme-preview-pill dark-preview" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="mode-button" data-theme="blue" data-i18n-aria-label="display.themeBlue" aria-label="蓝黑霓虹">
+                      <span class="theme-preview-pill blue-preview" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       </header>
@@ -140,7 +200,6 @@
             <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15" data-i18n="remote.seekForward15">快进 15 秒</button>
             <button type="button" class="secondary-button" data-control-action="next-track" data-i18n="player.nextSong">切歌</button>
           </div>
-          <p id="player-control-hint" class="player-control-hint"></p>
         </div>
       </section>
 
@@ -150,7 +209,6 @@
             <p class="panel-tag" data-i18n="request.tag">Song Request</p>
             <h2 class="panel-title" data-i18n="request.title">点歌</h2>
           </div>
-          <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button" data-i18n="request.resort">重新排序</button>
         </div>
         <form id="request-form" class="request-form">
           <div class="requester-row remote-identity-row">
@@ -177,12 +235,15 @@
       </section>
 
       <section class="panel queue-panel">
-        <div class="panel-head panel-head-stack">
-          <div>
+        <div class="panel-head panel-head-stack queue-panel-head">
+          <div class="queue-panel-heading">
             <p class="panel-tag" id="list-tag" data-i18n="list.tag">Requests</p>
-            <h2 class="list-heading" id="list-title" data-i18n="list.title">点歌列表</h2>
+            <h2 class="list-heading" id="list-title">
+              <span id="list-title-text" data-i18n="list.title">点歌列表</span>
+              <span id="list-count" class="list-count">(0首)</span>
+            </h2>
           </div>
-          <span id="list-count" class="count-chip" data-i18n="follow.zeroCount">0 首</span>
+          <button type="button" id="resort-playlist-button" class="secondary-button queue-header-action" data-i18n="request.resort">重新排序</button>
         </div>
 
         <div class="view-toggle" role="tablist" aria-label="切换点歌列表和历史记录" data-i18n-aria-label="remote.queueViewToggle">

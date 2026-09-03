@@ -7,6 +7,7 @@ const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const eventStreamRetryJitterRatio = 0.2;
 const stateFallbackRefreshMs = 1000;
+const remoteConnectionOfflineGraceMs = 3000;
 const larkSearchTableCount = 5;
 const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
@@ -254,6 +255,13 @@ const state = {
   gatchaFlipFrame: null,
   gatchaPruneTimer: null,
   gatchaMidpointCallback: null,
+  remoteMenuOpen: false,
+  remoteQrSectionOpen: false,
+  remoteSettingsSectionOpen: false,
+  remoteConnectionPhase: "connecting",
+  remoteConnectionOfflineTimer: null,
+  remoteConnectionFailureStartedAt: null,
+  remoteIssueSignatures: new Set(),
   followBrowseData: null,
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
@@ -326,7 +334,6 @@ const state = {
   queueRenderSignature: "",
   historyRenderSignature: "",
   layoutMode: "full",
-  displaySettingsOpen: false,
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
@@ -338,17 +345,18 @@ const elements = {
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
-  displaySettingsToggle: document.getElementById("display-settings-toggle"),
-  displaySettingsPanel: document.getElementById("display-settings-popover"),
-  displayLayoutSummary: document.getElementById("remote-layout-summary"),
-  displayPopoverClose: document.getElementById("display-popover-close"),
+  remoteMenuToggle: document.getElementById("remote-menu-toggle"),
+  remoteMenuPanel: document.getElementById("remote-menu-panel"),
+  remoteConnectionIndicator: document.getElementById("remote-connection-indicator"),
+  remoteConnectionStatusIndicator: document.getElementById("remote-connection-status-indicator"),
+  remoteConnectionStatusTrigger: document.getElementById("remote-connection-status-trigger"),
+  remoteConnectionStatusValue: document.getElementById("remote-connection-status-value"),
+  remoteConnectionStatusText: document.getElementById("remote-connection-status-text"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
-  remoteQrControl: document.getElementById("remote-qr-control"),
   remoteQrToggle: document.getElementById("remote-qr-toggle"),
-  remoteMiniQrImage: document.getElementById("remote-mini-qr-image"),
-  remoteMiniQrPlaceholder: document.getElementById("remote-mini-qr-placeholder"),
-  remoteQrPopover: document.getElementById("remote-qr-popover"),
-  remoteQrPopoverClose: document.getElementById("remote-qr-popover-close"),
+  remoteQrContent: document.getElementById("remote-qr-content"),
+  remoteSettingsToggle: document.getElementById("remote-settings-toggle"),
+  remoteSettingsContent: document.getElementById("remote-settings-content"),
   remotePopoverQrImage: document.getElementById("remote-popover-qr-image"),
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
@@ -362,7 +370,6 @@ const elements = {
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
   floatingPlayerControlPanel: document.getElementById("floating-player-control-panel"),
-  playerControlHint: document.getElementById("player-control-hint"),
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
   remoteAvOffsetResetButton: document.getElementById("remote-av-offset-reset-button"),
@@ -532,6 +539,7 @@ const elements = {
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
+  listTitleText: document.getElementById("list-title-text"),
   listCount: document.getElementById("list-count"),
   queueViewButton: document.getElementById("queue-view-button"),
   historyViewButton: document.getElementById("history-view-button"),
@@ -757,6 +765,7 @@ function setLanguage(language) {
   const nextLanguage = normalizeLanguage(language);
   if (state.language === nextLanguage) {
     renderLanguageSwitch();
+    renderRemoteConnectionStatus();
     return;
   }
   state.language = nextLanguage;
@@ -764,6 +773,7 @@ function setLanguage(language) {
   invalidateLanguageSensitiveRenderCache();
   applyStaticI18n();
   renderLanguageSwitch();
+  renderRemoteConnectionStatus();
   if (state.data) {
     render();
   }
@@ -914,8 +924,6 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
-  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
-  setTextContent(elements.displayLayoutSummary, layoutKey);
 }
 
 function setLayoutMode(mode) {
@@ -929,22 +937,111 @@ function setLayoutMode(mode) {
   renderLayoutMode();
 }
 
-function setRemoteQrPopoverOpen(open) {
-  state.remoteQrPopoverOpen = Boolean(open);
-  if (state.remoteQrPopoverOpen) {
-    setDisplaySettingsOpen(false);
+function remoteConnectionStatusKey(phase = state.remoteConnectionPhase) {
+  if (phase === "connected") {
+    return "remote.connectionConnected";
   }
-  elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
-  elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+  if (phase === "reconnecting") {
+    return "remote.connectionReconnecting";
+  }
+  if (phase === "offline") {
+    return "remote.connectionOffline";
+  }
+  return "remote.connectionConnecting";
 }
 
-function setDisplaySettingsOpen(open) {
-  state.displaySettingsOpen = Boolean(open);
-  if (state.displaySettingsOpen) {
-    setRemoteQrPopoverOpen(false);
+function normalizeRemoteConnectionPhase(phase) {
+  return phase === "connected"
+    || phase === "reconnecting"
+    || phase === "offline"
+    ? phase
+    : "connecting";
+}
+
+function syncRemoteConnectionIndicatorNode(indicator, phase) {
+  if (!indicator) {
+    return;
   }
-  elements.displaySettingsPanel?.classList.toggle("hidden", !state.displaySettingsOpen);
-  elements.displaySettingsToggle?.setAttribute("aria-expanded", String(state.displaySettingsOpen));
+  const normalizedPhase = normalizeRemoteConnectionPhase(phase);
+  if (indicator.dataset.connectionPhase === normalizedPhase) {
+    return;
+  }
+  indicator.dataset.connectionPhase = normalizedPhase;
+  indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
+  if (normalizedPhase === "connected") {
+    indicator.classList.add("is-ready");
+    indicator.textContent = "✓";
+  } else if (normalizedPhase === "offline") {
+    indicator.classList.add("is-failed");
+    indicator.textContent = "×";
+  } else {
+    indicator.classList.add("is-loading");
+    indicator.textContent = "";
+  }
+}
+
+function syncRemoteConnectionIndicator(phase) {
+  const normalizedPhase = normalizeRemoteConnectionPhase(phase);
+  syncRemoteConnectionIndicatorNode(elements.remoteConnectionIndicator, normalizedPhase);
+  syncRemoteConnectionIndicatorNode(elements.remoteConnectionStatusIndicator, normalizedPhase);
+}
+
+function renderRemoteConnectionStatus() {
+  const phase = normalizeRemoteConnectionPhase(state.remoteConnectionPhase);
+  const statusText = t(remoteConnectionStatusKey(phase));
+  syncRemoteConnectionIndicator(phase);
+  setTextContent(elements.remoteConnectionStatusValue, remoteConnectionStatusKey(phase));
+  setTextContent(elements.remoteConnectionStatusText, remoteConnectionStatusKey(phase));
+  if (elements.remoteConnectionStatusTrigger) {
+    elements.remoteConnectionStatusTrigger.setAttribute(
+      "aria-label",
+      t("remote.connectionIndicatorLabel", { status: statusText }),
+    );
+  }
+  if (elements.remoteMenuToggle) {
+    elements.remoteMenuToggle.setAttribute("aria-label", t("remote.menuLabel", { status: statusText }));
+  }
+}
+
+function setRemoteConnectionPhase(phase) {
+  const nextPhase = normalizeRemoteConnectionPhase(phase);
+  if (state.remoteConnectionPhase === nextPhase) {
+    return false;
+  }
+  state.remoteConnectionPhase = nextPhase;
+  renderRemoteConnectionStatus();
+  return true;
+}
+
+function setRemoteMenuOpen(open, { restoreFocus = false } = {}) {
+  const nextOpen = Boolean(open);
+  state.remoteMenuOpen = nextOpen;
+  elements.remoteMenuPanel?.classList.toggle("hidden", !nextOpen);
+  elements.remoteMenuToggle?.setAttribute("aria-expanded", String(nextOpen));
+  if (!nextOpen) {
+    setRemoteQrSectionOpen(false);
+    setRemoteSettingsSectionOpen(false);
+    if (typeof closeRemoteContextualInfo === "function") {
+      closeRemoteContextualInfo();
+    }
+    if (restoreFocus && typeof elements.remoteMenuToggle?.focus === "function") {
+      elements.remoteMenuToggle.focus({ preventScroll: true });
+    }
+  }
+}
+
+function setRemoteQrSectionOpen(open) {
+  state.remoteQrSectionOpen = Boolean(open);
+  elements.remoteQrContent?.classList.toggle("hidden", !state.remoteQrSectionOpen);
+  elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrSectionOpen));
+  elements.remoteQrToggle?.classList.toggle("is-expanded", state.remoteQrSectionOpen);
+}
+
+function setRemoteSettingsSectionOpen(open) {
+  state.remoteSettingsSectionOpen = Boolean(open);
+  elements.remoteSettingsContent?.classList.toggle("hidden", !state.remoteSettingsSectionOpen);
+  elements.remoteSettingsToggle?.setAttribute("aria-expanded", String(state.remoteSettingsSectionOpen));
+  elements.remoteSettingsToggle?.classList.toggle("is-expanded", state.remoteSettingsSectionOpen);
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -971,7 +1068,6 @@ function renderRemoteAccess(remoteAccess) {
     elements.remotePopoverUrlHint.textContent = displayHint;
   }
   renderRemoteQr(displayUrl, [
-    { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
     { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
   ]);
 }
@@ -2303,6 +2399,70 @@ async function fetchState(options = {}) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   applyStateSnapshot(payload.data, { forceRender: force || !state.data });
+  noteRemoteFallbackSuccess();
+}
+
+function clearRemoteConnectionOfflineTimer() {
+  if (state.remoteConnectionOfflineTimer === null || state.remoteConnectionOfflineTimer === undefined) {
+    return;
+  }
+  window.clearTimeout(state.remoteConnectionOfflineTimer);
+  state.remoteConnectionOfflineTimer = null;
+}
+
+function remoteIssueSignatureSet() {
+  if (!(state.remoteIssueSignatures instanceof Set)) {
+    state.remoteIssueSignatures = new Set();
+  }
+  return state.remoteIssueSignatures;
+}
+
+function reportRemoteIssue(signature, message, isError = true) {
+  const normalizedSignature = String(signature || "").trim();
+  if (!normalizedSignature || remoteIssueSignatureSet().has(normalizedSignature)) {
+    return false;
+  }
+  remoteIssueSignatureSet().add(normalizedSignature);
+  if (typeof setAppMessage === "function") {
+    setAppMessage(message, isError);
+  }
+  return true;
+}
+
+function clearRemoteIssue(signature) {
+  const normalizedSignature = String(signature || "").trim();
+  if (!normalizedSignature) {
+    return false;
+  }
+  return remoteIssueSignatureSet().delete(normalizedSignature);
+}
+
+function clearRemoteIssueByPrefix(prefix, keepSignature = "") {
+  const normalizedPrefix = String(prefix || "").trim();
+  const normalizedKeepSignature = String(keepSignature || "").trim();
+  if (!normalizedPrefix) {
+    return 0;
+  }
+  let cleared = 0;
+  for (const signature of remoteIssueSignatureSet()) {
+    if (
+      signature !== normalizedKeepSignature
+      && (signature === normalizedPrefix || signature.startsWith(`${normalizedPrefix}:`))
+    ) {
+      remoteIssueSignatureSet().delete(signature);
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
+function noteRemoteFallbackSuccess() {
+  clearRemoteConnectionOfflineTimer();
+  state.remoteConnectionFailureStartedAt = null;
+  clearRemoteIssue("remote-connection-offline");
+  if (!state.eventStreamHealthy && typeof setRemoteConnectionPhase === "function") {
+    setRemoteConnectionPhase(remoteConnectionRecoveryPhase());
+  }
 }
 
 function clearStateFallbackTimer() {
@@ -2339,13 +2499,61 @@ async function refreshCacheStatusOnly() {
   try {
     await fetchState({ force: false });
   } catch (e) {
-    // Keep the last successful state rendered until the next bounded fallback.
+    noteRemoteFallbackFailure();
   } finally {
     state.stateFallbackFetchInFlight = false;
     if (!state.eventStreamHealthy) {
       scheduleStateFallbackRefresh();
     }
   }
+}
+
+function armRemoteConnectionOfflineGrace() {
+  if (
+    state.remoteConnectionOfflineTimer !== null
+    && state.remoteConnectionOfflineTimer !== undefined
+  ) {
+    return;
+  }
+  if (state.remoteConnectionFailureStartedAt === null || state.remoteConnectionFailureStartedAt === undefined) {
+    return;
+  }
+  const graceMs = typeof remoteConnectionOfflineGraceMs === "number"
+    ? remoteConnectionOfflineGraceMs
+    : 3000;
+  const startedAt = state.remoteConnectionFailureStartedAt;
+  state.remoteConnectionOfflineTimer = window.setTimeout(() => {
+    state.remoteConnectionOfflineTimer = null;
+    if (
+      state.eventStreamHealthy
+      || state.remoteConnectionFailureStartedAt !== startedAt
+    ) {
+      return;
+    }
+    if (typeof setRemoteConnectionPhase === "function") {
+      setRemoteConnectionPhase("offline");
+    }
+    reportRemoteIssue("remote-connection-offline", t("remote.connectionOfflineToast"));
+  }, graceMs);
+}
+
+function noteRemoteFallbackFailure() {
+  if (state.eventStreamHealthy) {
+    return;
+  }
+  if (remoteIssueSignatureSet().has("remote-connection-offline")) {
+    if (typeof setRemoteConnectionPhase === "function") {
+      setRemoteConnectionPhase("offline");
+    }
+    return;
+  }
+  if (state.remoteConnectionFailureStartedAt === null || state.remoteConnectionFailureStartedAt === undefined) {
+    state.remoteConnectionFailureStartedAt = Date.now();
+  }
+  if (typeof setRemoteConnectionPhase === "function") {
+    setRemoteConnectionPhase(remoteConnectionRecoveryPhase());
+  }
+  armRemoteConnectionOfflineGrace();
 }
 
 function currentStateRevision(snapshot = state.data) {
@@ -2539,13 +2747,26 @@ function eventStreamStateIsCurrent(snapshot) {
   return !state.data || nextRevision >= currentStateRevision();
 }
 
+function remoteConnectionRecoveryPhase() {
+  return state.remoteConnectionPhase === "connecting" && !state.eventStreamHealthy
+    ? "connecting"
+    : "reconnecting";
+}
+
 function connectStateStream() {
+  const recoveryPhase = remoteConnectionRecoveryPhase();
   if (typeof window.EventSource !== "function") {
     state.eventStreamHealthy = false;
+    if (typeof setRemoteConnectionPhase === "function") {
+      setRemoteConnectionPhase(recoveryPhase);
+    }
     scheduleStateFallbackRefresh();
     return;
   }
   closeEventStream();
+  if (typeof setRemoteConnectionPhase === "function") {
+    setRemoteConnectionPhase(recoveryPhase);
+  }
   const source = new window.EventSource(`/api/events?client_id=${encodeURIComponent(state.clientId)}`);
   state.eventSource = source;
   scheduleStateFallbackRefresh();
@@ -2564,6 +2785,12 @@ function connectStateStream() {
       state.eventStreamHealthy = true;
       state.eventStreamRetryMs = eventStreamInitialRetryMs;
       clearStateFallbackTimer();
+      clearRemoteConnectionOfflineTimer();
+      state.remoteConnectionFailureStartedAt = null;
+      clearRemoteIssue("remote-connection-offline");
+      if (typeof setRemoteConnectionPhase === "function") {
+        setRemoteConnectionPhase("connected");
+      }
     } catch {
       // Ignore malformed events and wait for the next valid snapshot.
     }
@@ -2573,7 +2800,11 @@ function connectStateStream() {
     if (state.eventSource !== source) {
       return;
     }
+    const nextPhase = remoteConnectionRecoveryPhase();
     closeEventStream();
+    if (typeof setRemoteConnectionPhase === "function") {
+      setRemoteConnectionPhase(nextPhase);
+    }
     const reconnectDelayMs = scheduleEventStreamReconnect();
     scheduleStateFallbackRefresh(reconnectDelayMs + stateFallbackRefreshMs);
   });
@@ -6000,15 +6231,28 @@ function renderPlayerControls(currentItem, playbackMode) {
     if (elements.floatingPlayerControlPanel) {
       elements.floatingPlayerControlPanel.classList.add("hidden");
     }
-    elements.playerControlHint.textContent = "";
+    if (typeof clearRemoteIssueByPrefix === "function") {
+      clearRemoteIssueByPrefix("player-control-unsupported");
+      clearRemoteIssueByPrefix("player-control-cache-pending");
+    }
     return;
   }
 
+  const unsupportedIssueSignature = remotePlayerIssueSignature(
+    "player-control-unsupported",
+    currentItem,
+  );
+  const cachePendingIssueSignature = remotePlayerIssueSignature(
+    "player-control-cache-pending",
+    currentItem,
+  );
   const canControl = canRemoteControlPlayer(currentItem, playbackMode);
   const playerStatus = currentPlayerStatus(currentItem);
   const isPaused = playerStatus ? Boolean(playerStatus.is_paused) : true;
   const controlSignature = JSON.stringify({
     itemId: currentItem.id || "",
+    itemIncarnationId: currentItem.item_incarnation_id || "",
+    playbackGeneration: state.data?.playback_generation || 0,
     playbackMode,
     canControl,
     hasLocalSplitMedia: hasLocalSplitMedia(currentItem),
@@ -6055,16 +6299,29 @@ function renderPlayerControls(currentItem, playbackMode) {
   updateToggleState(floatingToggleButton);
 
   if (playbackMode !== "local") {
-    elements.playerControlHint.textContent = t("remote.controlUnsupported");
+    if (typeof clearRemoteIssueByPrefix === "function") {
+      clearRemoteIssueByPrefix("player-control-cache-pending");
+    }
+    if (typeof reportRemoteIssue === "function") {
+      clearRemoteIssueByPrefix("player-control-unsupported", unsupportedIssueSignature);
+      reportRemoteIssue(unsupportedIssueSignature, t("remote.controlUnsupported"));
+    }
     return;
   }
   if (!hasLocalSplitMedia(currentItem)) {
-    elements.playerControlHint.textContent = t("remote.controlCachePending");
+    if (typeof clearRemoteIssueByPrefix === "function") {
+      clearRemoteIssueByPrefix("player-control-unsupported");
+    }
+    if (typeof reportRemoteIssue === "function") {
+      clearRemoteIssueByPrefix("player-control-cache-pending", cachePendingIssueSignature);
+      reportRemoteIssue(cachePendingIssueSignature, t("remote.controlCachePending"));
+    }
     return;
   }
-  elements.playerControlHint.textContent = isPaused
-    ? t("remote.controlPausedHint")
-    : t("remote.controlPlayingHint");
+  if (typeof clearRemoteIssueByPrefix === "function") {
+    clearRemoteIssueByPrefix("player-control-unsupported");
+    clearRemoteIssueByPrefix("player-control-cache-pending");
+  }
 }
 
 function renderListHeader(playlist, history) {
@@ -6081,8 +6338,12 @@ function renderListHeader(playlist, history) {
   state.listHeaderRenderSignature = signature;
 
   elements.listTag.textContent = isHistoryView ? t("history.tag") : t("list.tag");
-  elements.listTitle.textContent = isHistoryView ? t("history.title") : t("list.title");
-  elements.listCount.textContent = t("follow.countSongs", { count: isHistoryView ? history.length : playlist.length });
+  setTextContent(elements.listTitleText, isHistoryView ? "history.title" : "list.title");
+  setTextContent(
+    elements.listCount,
+    isHistoryView ? "history.count" : "list.count",
+    { count: isHistoryView ? history.length : playlist.length },
+  );
 
   elements.queueViewButton.classList.toggle("active", !isHistoryView);
   elements.queueViewButton.setAttribute("aria-selected", String(!isHistoryView));
@@ -6741,6 +7002,15 @@ async function confirmGatchaCandidate() {
   }
 }
 
+function remotePlayerIssueSignature(kind, currentItem, playbackGeneration = state.data?.playback_generation) {
+  return [
+    String(kind || "").trim(),
+    String(currentItem?.id || "").trim(),
+    String(currentItem?.item_incarnation_id || "").trim(),
+    String(playbackGeneration ?? "").trim(),
+  ].join(":");
+}
+
 async function sendPlayerControl(action, deltaSeconds = 0) {
   const currentItem = state.data?.current_item;
   const playbackMode = frontendPlaybackMode(state.data?.playback_mode);
@@ -6754,6 +7024,11 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
     return;
   }
 
+  const issueSignature = remotePlayerIssueSignature(
+    `player-command:${action}`,
+    currentItem,
+    expectedPlaybackGeneration,
+  );
   const message = action === "toggle-play"
     ? t("remote.controlSentToggle")
     : deltaSeconds > 0
@@ -6773,27 +7048,42 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
       playback_generation: expectedPlaybackGeneration,
     });
     if (outcome.commandApplied) {
+      if (typeof clearRemoteIssue === "function") {
+        clearRemoteIssue(issueSignature);
+      }
       setFormMessage(message);
     } else {
       clearPlayerControlStatusSync(controlSync);
       renderAfterPlayerControlStatusSync();
+      if (typeof reportRemoteIssue === "function") {
+        reportRemoteIssue(issueSignature, t("remote.controlRejected"));
+      }
     }
   } catch (error) {
     clearPlayerControlStatusSync(controlSync);
     setFormMessage(error.message, true);
+    if (typeof reportRemoteIssue === "function") {
+      reportRemoteIssue(issueSignature, error.message || t("remote.controlCommandFailed"));
+    }
   }
   state.playerControlPendingAction = "";
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
 }
 
 async function sendPlayerNext() {
-  if (!state.data?.current_item) {
+  const currentItem = state.data?.current_item;
+  if (!currentItem) {
     return;
   }
   const expectedPlaybackGeneration = state.data.playback_generation;
   if (!Number.isSafeInteger(expectedPlaybackGeneration) || expectedPlaybackGeneration < 1) {
     return;
   }
+  const issueSignature = remotePlayerIssueSignature(
+    "player-command:next-track",
+    currentItem,
+    expectedPlaybackGeneration,
+  );
   try {
     state.playerControlPendingAction = "next-track";
     renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
@@ -6801,10 +7091,18 @@ async function sendPlayerNext() {
       playback_generation: expectedPlaybackGeneration,
     });
     if (outcome.commandApplied) {
+      if (typeof clearRemoteIssue === "function") {
+        clearRemoteIssue(issueSignature);
+      }
       setFormMessage(t("remote.nextSent"));
+    } else if (typeof reportRemoteIssue === "function") {
+      reportRemoteIssue(issueSignature, t("remote.controlRejected"));
     }
   } catch (error) {
     setFormMessage(error.message, true);
+    if (typeof reportRemoteIssue === "function") {
+      reportRemoteIssue(issueSignature, error.message || t("remote.controlCommandFailed"));
+    }
   }
   state.playerControlPendingAction = "";
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
@@ -7369,20 +7667,16 @@ elements.themeSwitch?.addEventListener("click", (event) => {
   applyTheme(button.dataset.theme);
 });
 
+elements.remoteMenuToggle?.addEventListener("click", () => {
+  setRemoteMenuOpen(!state.remoteMenuOpen);
+});
+
 elements.remoteQrToggle?.addEventListener("click", () => {
-  setRemoteQrPopoverOpen(!state.remoteQrPopoverOpen);
+  setRemoteQrSectionOpen(!state.remoteQrSectionOpen);
 });
 
-elements.remoteQrPopoverClose?.addEventListener("click", () => {
-  setRemoteQrPopoverOpen(false);
-});
-
-elements.displaySettingsToggle?.addEventListener("click", () => {
-  setDisplaySettingsOpen(!state.displaySettingsOpen);
-});
-
-elements.displayPopoverClose?.addEventListener("click", () => {
-  setDisplaySettingsOpen(false);
+elements.remoteSettingsToggle?.addEventListener("click", () => {
+  setRemoteSettingsSectionOpen(!state.remoteSettingsSectionOpen);
 });
 
 const remoteContextualInfoHoverDelayMs = 160;
@@ -7399,7 +7693,7 @@ function positionRemoteContextualTooltip(wrap) {
   }
   const viewportInset = 8;
   const tooltipGap = 7;
-  const containerRect = wrap.closest(".binding-sheet-panel, .floating-control-card")?.getBoundingClientRect();
+  const containerRect = wrap.closest(".binding-sheet-panel, .floating-control-card, .remote-menu-panel")?.getBoundingClientRect();
   const boundaryLeft = Math.max(viewportInset, (containerRect?.left ?? viewportInset) + (containerRect ? 8 : 0));
   const boundaryRight = Math.min(
     window.innerWidth - viewportInset,
@@ -7590,12 +7884,8 @@ document.addEventListener("click", (event) => {
     closeRemoteContextualInfo();
   }
 
-  if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
-    setRemoteQrPopoverOpen(false);
-  }
-
-  if (state.displaySettingsOpen && !event.target.closest("#display-control")) {
-    setDisplaySettingsOpen(false);
+  if (state.remoteMenuOpen && !event.target.closest("#remote-header-menu")) {
+    setRemoteMenuOpen(false);
   }
 });
 
@@ -7609,8 +7899,10 @@ document.addEventListener("keydown", (event) => {
     if (state.searchModalOpen) {
       setSearchModalOpen(false);
     }
-    setRemoteQrPopoverOpen(false);
-    setDisplaySettingsOpen(false);
+    if (state.remoteMenuOpen) {
+      setRemoteMenuOpen(false, { restoreFocus: true });
+      event.preventDefault();
+    }
   }
 });
 
@@ -8439,6 +8731,7 @@ async function startRemoteSession() {
   hydrateLocalPreferences();
   initFloatingControlConsole();
   await loadTranslations();
+  renderRemoteConnectionStatus();
   initSearchDetailController();
   renderLayoutMode();
   renderRemoteIdentity();

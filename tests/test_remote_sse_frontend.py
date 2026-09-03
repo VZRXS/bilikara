@@ -45,7 +45,10 @@ class RemoteSseFrontendTest(unittest.TestCase):
         start = source.index("function currentPlayerStatus")
         end = source.index("function renderPlayerControls", start)
         cls.player_status_sync_source = source[start:end]
-        start = source.index("async function sendPlayerControl")
+        start = source.index("function remoteIssueSignatureSet")
+        end = source.index("function noteRemoteFallbackSuccess", start)
+        cls.issue_source = source[start:end]
+        start = source.index("function remotePlayerIssueSignature")
         end = source.index("function disconnectClient", start)
         cls.player_control_source = source[start:end]
 
@@ -200,6 +203,9 @@ let nextTimerId = 1;
 const timers = new Map();
 const requests = [];
 const stateGetSnapshots = [];
+const stateGetFailures = [];
+const connectionPhases = [];
+const appMessages = [];
 const renderedCacheStatuses = [];
 const renderedCacheProgress = [];
 const renderedQueueLengths = [];
@@ -267,6 +273,10 @@ const state = {{
   eventStreamHealthy: false,
   eventStreamReconnectTimer: null,
   eventStreamRetryMs: eventStreamInitialRetryMs,
+  remoteConnectionPhase: "connecting",
+  remoteConnectionOfflineTimer: null,
+  remoteConnectionFailureStartedAt: null,
+  remoteIssueSignatures: new Set(),
   currentNowPlayingSignature: "",
   playerControlStatusSync: null,
 }};
@@ -280,6 +290,15 @@ const elements = {{
 function clientHeaders() {{ return {{}}; }}
 function localizedApiMessage(value) {{ return String(value || ""); }}
 function t(key) {{ return key; }}
+function setRemoteConnectionPhase(phase) {{
+  if (state.remoteConnectionPhase !== phase) {{
+    state.remoteConnectionPhase = phase;
+    connectionPhases.push(phase);
+  }}
+}}
+function setAppMessage(message, isError) {{
+  appMessages.push({{ message: String(message), isError: Boolean(isError) }});
+}}
 function requesterBadgeText() {{ return ""; }}
 function ownerLineText() {{ return ""; }}
 function renderOwnerBadgeLabel() {{}}
@@ -302,6 +321,13 @@ function render() {{
 }}
 async function fetch(url) {{
   requests.push({{ url, at: nowMs }});
+  if (stateGetFailures.length) {{
+    stateGetFailures.shift();
+    return {{
+      ok: false,
+      async json() {{ return {{ ok: false, error: "fallback failed" }}; }},
+    }};
+  }}
   const snapshot = stateGetSnapshots.length
     ? stateGetSnapshots.shift()
     : state.data;
@@ -451,6 +477,84 @@ function snapshot(revision, cacheStatus, progress = 0, queueSize = 0) {{
         self.assertIsNone(result["fallbackTimer"])
         self.assertEqual(result["finalRevision"], 3)
 
+    def test_remote_connection_phase_tracks_sse_and_bounded_fallback_recovery(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  stateGetSnapshots.push(snapshot(1, "ready", 100));
+  await fetchState();
+  const initialPhase = state.remoteConnectionPhase;
+
+  connectStateStream();
+  const first = FakeEventSource.instances[0];
+  await first.emit("open");
+  const phaseAfterOpen = state.remoteConnectionPhase;
+  await first.emit("state", "not-json");
+  const readyAfterMalformed = state.eventStreamHealthy;
+  await first.emit("state", snapshot(0, "stale", 0));
+  const readyAfterStale = state.eventStreamHealthy;
+  await first.emit("state", snapshot(1, "ready", 100));
+  const phaseAfterValidState = state.remoteConnectionPhase;
+
+  await first.emit("error");
+  const phaseAfterError = state.remoteConnectionPhase;
+  const messagesAfterError = appMessages.length;
+  stateGetSnapshots.push(snapshot(2, "downloading", 40));
+  await advanceTime(2000);
+  const phaseAfterFallbackSuccess = state.remoteConnectionPhase;
+  const healthyAfterFallbackSuccess = state.eventStreamHealthy;
+
+  stateGetFailures.push(true, true, true, true, true);
+  await advanceTime(4000);
+  const phaseAfterOfflineGrace = state.remoteConnectionPhase;
+  const messagesAfterOffline = appMessages.length;
+  await advanceTime(1000);
+  const phaseAfterRepeatedFailure = state.remoteConnectionPhase;
+  const messagesAfterRepeatedFailure = appMessages.length;
+
+  const recoverySource = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+  await recoverySource.emit("state", snapshot(3, "ready", 100));
+  const phaseAfterRecovery = state.remoteConnectionPhase;
+  process.stdout.write(JSON.stringify({
+    initialPhase,
+    phaseAfterOpen,
+    readyAfterMalformed,
+    readyAfterStale,
+    phaseAfterValidState,
+    phaseAfterError,
+    messagesAfterError,
+    phaseAfterFallbackSuccess,
+    healthyAfterFallbackSuccess,
+    phaseAfterOfflineGrace,
+    messagesAfterOffline,
+    phaseAfterRepeatedFailure,
+    messagesAfterRepeatedFailure,
+    phaseAfterRecovery,
+    offlineIssuePresent: state.remoteIssueSignatures.has("remote-connection-offline"),
+    eventSourceCount: FakeEventSource.instances.length,
+    stateRequestUrls: requests.map((request) => request.url),
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["initialPhase"], "connecting")
+        self.assertEqual(result["phaseAfterOpen"], "connecting")
+        self.assertFalse(result["readyAfterMalformed"])
+        self.assertFalse(result["readyAfterStale"])
+        self.assertEqual(result["phaseAfterValidState"], "connected")
+        self.assertEqual(result["phaseAfterError"], "reconnecting")
+        self.assertEqual(result["messagesAfterError"], 0)
+        self.assertEqual(result["phaseAfterFallbackSuccess"], "reconnecting")
+        self.assertFalse(result["healthyAfterFallbackSuccess"])
+        self.assertEqual(result["phaseAfterOfflineGrace"], "offline")
+        self.assertEqual(result["messagesAfterOffline"], 1)
+        self.assertEqual(result["phaseAfterRepeatedFailure"], "offline")
+        self.assertEqual(result["messagesAfterRepeatedFailure"], 1)
+        self.assertEqual(result["phaseAfterRecovery"], "connected")
+        self.assertFalse(result["offlineIssuePresent"])
+        self.assertEqual(result["eventSourceCount"], 2)
+        self.assertTrue(all(url == "/api/state" for url in result["stateRequestUrls"]))
+
     def test_transient_sse_reconnect_has_no_parallel_full_state_get(self):
         result = self.run_state_transport_node(
             """
@@ -538,6 +642,7 @@ const state = {{
   currentPlaybackClockStartedAt: 0,
   currentPlaybackClockPaused: true,
   currentPlaybackClockTimer: null,
+  remoteIssueSignatures: new Set(),
 }};
 const clockText = {{ textContent: "" }};
 const elements = {{
@@ -805,6 +910,7 @@ function playerSnapshot(revision, generation, itemId, updatedAt, currentTime, is
 {self.clock_value_source}
 {self.player_status_sync_source}
 {self.clock_render_source}
+{self.issue_source}
 {self.player_control_source}
 {body}
 """
@@ -909,6 +1015,47 @@ function playerSnapshot(revision, generation, itemId, updatedAt, currentTime, is
         self.assertIsNone(result["pending"])
         self.assertEqual(result["pendingAction"], "")
         self.assertEqual(result["activeStatusTimers"], 0)
+
+    def test_failed_player_commands_use_incarnation_scoped_deduplicated_toasts(self):
+        result = self.run_player_control_sync_node(
+            """
+(async () => {
+  globalThis.setAppMessage = (message, isError) => messages.push({ message: String(message), isError: Boolean(isError) });
+  commandApplied = false;
+  applyStateSnapshot(playerSnapshot(1, 7, "song-a", 100, 10));
+  state.data.current_item.item_incarnation_id = "incarnation-a";
+  await sendPlayerControl("seek-relative", 15);
+  await sendPlayerControl("seek-relative", 15);
+  state.data = {
+    ...state.data,
+    playback_generation: 8,
+    current_item: {
+      ...state.data.current_item,
+      item_incarnation_id: "incarnation-b",
+    },
+  };
+  await sendPlayerControl("seek-relative", 15);
+  process.stdout.write(JSON.stringify({
+    messages,
+    issueSignatures: [...state.remoteIssueSignatures],
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(
+            result["messages"],
+            [
+                {"message": "remote.controlRejected", "isError": True},
+                {"message": "remote.controlRejected", "isError": True},
+            ],
+        )
+        self.assertEqual(
+            result["issueSignatures"],
+            [
+                "player-command:seek-relative:song-a:incarnation-a:7",
+                "player-command:seek-relative:song-a:incarnation-b:8",
+            ],
+        )
 
     def test_remote_program_relative_controls_capture_the_observed_rust_generation(self):
         script = f"""

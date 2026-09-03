@@ -7495,11 +7495,20 @@ async function run() {
     await remotePage.evaluate(() => {
       closeEventStream();
       clearStateFallbackTimer();
+      state.remoteIdentity = {
+        registered: true,
+        name: "Browser QA",
+        sessionId: "browser-remote-session",
+      };
+      state.remoteIdentityChecking = false;
+      state.remoteIdentitySaving = false;
+      state.remoteIdentityModalMode = "register";
       elements.remoteIdentityModal?.classList.add("hidden");
       document.body.classList.remove("remote-identity-modal-open");
       if (elements.remoteShell) {
         elements.remoteShell.inert = false;
       }
+      renderRemoteIdentity();
       const currentItem = {
         id: "browser-remote-item",
         item_incarnation_id: "browser-remote-incarnation",
@@ -7520,6 +7529,235 @@ async function run() {
       renderPlayerControls(currentItem, "local");
       renderFloatingControlTrigger(currentItem, "local");
     });
+
+    const remoteMenuToggle = remotePage.locator("#remote-menu-toggle");
+    const remoteMenuPanel = remotePage.locator("#remote-menu-panel");
+    await remoteMenuToggle.click();
+    assert(await remoteMenuPanel.isVisible(), "Remote unified menu did not open");
+    const remoteStatusValue = remotePage.locator("#remote-connection-status-value");
+    const remoteStatusValueText = (await remoteStatusValue.textContent()).trim();
+    assert(remoteStatusValueText, "Remote menu did not expose visible connection status text");
+    assert(
+      (await remoteMenuToggle.getAttribute("aria-label")).includes(remoteStatusValueText),
+      "Remote menu status text was not synchronized with the trigger label",
+      { remoteStatusValueText, label: await remoteMenuToggle.getAttribute("aria-label") },
+    );
+    const remoteMenuSectionToggles = remoteMenuPanel.locator(".remote-menu-section-toggle");
+    assert(await remoteMenuSectionToggles.count() === 2, "Remote menu did not expose the two collapsible sections");
+    const remoteMenuRowMetrics = await remotePage.locator(
+      "#remote-connection-status-row, #remote-qr-toggle, #remote-settings-toggle",
+    ).evaluateAll((rows) => {
+      const panel = document.querySelector("#remote-menu-panel");
+      const panelRect = panel.getBoundingClientRect();
+      const panelStyle = getComputedStyle(panel);
+      const contentInset = panel.clientLeft + parseFloat(panelStyle.paddingLeft);
+      return {
+        contentInset,
+        rows: Object.fromEntries(rows.map((row) => {
+          const rect = row.getBoundingClientRect();
+          return [row.id, {
+            height: rect.height,
+            leftInset: rect.left - panelRect.left,
+            rightInset: panelRect.right - rect.right,
+          }];
+        })),
+      };
+    });
+    const remoteMenuRowsById = remoteMenuRowMetrics.rows;
+    const remoteMenuRowIds = [
+      "remote-connection-status-row",
+      "remote-qr-toggle",
+      "remote-settings-toggle",
+    ];
+    assert(
+      remoteMenuRowIds.every((id) => remoteMenuRowsById[id])
+        && remoteMenuRowsById["remote-connection-status-row"].height >= 18
+        && remoteMenuRowsById["remote-connection-status-row"].height <= 32
+        && Math.abs(remoteMenuRowsById["remote-qr-toggle"].height - 44) < 0.5
+        && Math.abs(remoteMenuRowsById["remote-settings-toggle"].height - 44) < 0.5
+        && remoteMenuRowIds.every((id) => {
+          const { leftInset, rightInset } = remoteMenuRowsById[id];
+          return Math.abs(leftInset - rightInset) < 0.5
+            && Math.abs(leftInset - remoteMenuRowMetrics.contentInset) < 0.5;
+        }),
+      "Remote menu did not preserve intrinsic status height, 44px section targets, and Host panel insets",
+      remoteMenuRowMetrics,
+    );
+    await remotePage.waitForTimeout(250);
+    const remoteMenuPresentation = await remotePage.evaluate(() => {
+      const panel = document.querySelector("#remote-menu-panel");
+      const panelRect = panel.getBoundingClientRect();
+      const panelStyle = getComputedStyle(panel);
+      const trigger = document.querySelector("#remote-menu-toggle");
+      const triggerStyle = getComputedStyle(trigger);
+      const triggerRect = trigger.getBoundingClientRect();
+      const statusRow = document.querySelector("#remote-connection-status-row");
+      const sections = [...document.querySelectorAll("#remote-menu-panel .remote-menu-section")];
+      const dividers = [...document.querySelectorAll("#remote-menu-panel .remote-menu-divider")];
+      const sectionMetrics = sections.map((section) => {
+        const toggle = section.querySelector(".remote-menu-section-toggle");
+        return {
+          id: toggle?.id || "",
+          wrapperHeight: section.getBoundingClientRect().height,
+          toggleHeight: toggle?.getBoundingClientRect().height || 0,
+        };
+      });
+      const webkitBackdropFilter = panelStyle.getPropertyValue("-webkit-backdrop-filter")
+        || panelStyle.webkitBackdropFilter
+        || "";
+      return {
+        panel: {
+          box: {
+            left: panelRect.left,
+            top: panelRect.top,
+            right: panelRect.right,
+            bottom: panelRect.bottom,
+            width: panelRect.width,
+            height: panelRect.height,
+          },
+          padding: {
+            top: parseFloat(panelStyle.paddingTop),
+            right: parseFloat(panelStyle.paddingRight),
+            bottom: parseFloat(panelStyle.paddingBottom),
+            left: parseFloat(panelStyle.paddingLeft),
+          },
+          gap: parseFloat(panelStyle.gap),
+          borderRadius: parseFloat(panelStyle.borderTopLeftRadius),
+          backdropFilter: panelStyle.backdropFilter,
+          webkitBackdropFilter,
+        },
+        trigger: {
+          border: triggerStyle.border,
+          background: triggerStyle.backgroundColor,
+          boxShadow: triggerStyle.boxShadow,
+        },
+        statusRowHeight: statusRow.getBoundingClientRect().height,
+        sectionWrappers: Object.fromEntries(
+          sectionMetrics.map(({ id, wrapperHeight }) => [id, wrapperHeight]),
+        ),
+        sectionToggles: Object.fromEntries(
+          sectionMetrics.map(({ id, toggleHeight }) => [id, toggleHeight]),
+        ),
+        dividerHeights: dividers.map((divider) => divider.getBoundingClientRect().height),
+        dividerCount: dividers.length,
+        triggerPanelGap: panelRect.top - triggerRect.bottom,
+        horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+          || document.body.scrollWidth > innerWidth,
+      };
+    });
+    const remoteMenuSectionIds = ["remote-qr-toggle", "remote-settings-toggle"];
+    const remoteMenuPanelEvidence = remoteMenuPresentation.panel;
+    const remoteMenuSectionWrappers = remoteMenuPresentation.sectionWrappers;
+    const remoteMenuSectionToggleHeights = remoteMenuPresentation.sectionToggles;
+    assert(
+      Math.abs(remoteMenuPanelEvidence.box.width - 340) < 0.5
+        && Math.abs(remoteMenuPresentation.triggerPanelGap - 12) < 1
+        && Object.values(remoteMenuPanelEvidence.padding).every((padding) => Math.abs(padding - 16) < 0.5)
+        && Math.abs(remoteMenuPanelEvidence.gap - 14) < 0.5
+        && Math.abs(remoteMenuPanelEvidence.borderRadius - 20) < 0.5
+        && remoteMenuPanelEvidence.backdropFilter === "none"
+        && ["", "none"].includes(remoteMenuPanelEvidence.webkitBackdropFilter.trim())
+        && remoteMenuPanelEvidence.box.height >= 150
+        && remoteMenuPanelEvidence.box.height <= 180
+        && !remoteMenuPresentation.horizontalOverflow
+        && remoteMenuPresentation.dividerCount === 2
+        && remoteMenuPresentation.dividerHeights.length === 2
+        && remoteMenuPresentation.dividerHeights.every((height) => Math.abs(height - 1) < 0.5)
+        && remoteMenuPresentation.statusRowHeight >= 18
+        && remoteMenuPresentation.statusRowHeight <= 32
+        && remoteMenuSectionIds.every((id) => {
+          const toggleHeight = remoteMenuSectionToggleHeights[id];
+          const wrapperHeight = remoteMenuSectionWrappers[id];
+          return Math.abs(toggleHeight - 44) < 0.5
+            && Math.abs(wrapperHeight - (toggleHeight - 20)) < 0.5;
+        })
+        && !remoteMenuPresentation.trigger.border.startsWith("0px none")
+        && remoteMenuPresentation.trigger.background !== "rgba(0, 0, 0, 0)"
+        && remoteMenuPresentation.trigger.boxShadow === "none",
+      "Remote menu did not preserve Host panel surface, divider rhythm, compact wrappers, and 44px touch targets",
+      remoteMenuPresentation,
+    );
+    const remoteSecondarySurface = await remotePage.evaluate(() => {
+      const rename = document.querySelector("#remote-identity-rename");
+      const reorder = document.querySelector("#resort-playlist-button");
+      const renameStyle = getComputedStyle(rename);
+      const reorderStyle = getComputedStyle(reorder);
+      return {
+        renameDisabled: rename.disabled,
+        renameBackground: renameStyle.backgroundColor,
+        renameColor: renameStyle.color,
+        reorderBackground: reorderStyle.backgroundColor,
+        reorderColor: reorderStyle.color,
+      };
+    });
+    assert(
+      !remoteSecondarySurface.renameDisabled
+        && remoteSecondarySurface.renameBackground === remoteSecondarySurface.reorderBackground
+        && remoteSecondarySurface.renameColor === remoteSecondarySurface.reorderColor,
+      "Remote rename and reorder actions did not share the enabled secondary-button surface",
+      remoteSecondarySurface,
+    );
+    for (let index = 0; index < await remoteMenuSectionToggles.count(); index += 1) {
+      assert(
+        await remoteMenuSectionToggles.nth(index).getAttribute("aria-expanded") === "false",
+        "Remote menu section was not collapsed by default",
+        index,
+      );
+    }
+    const remoteStatusTrigger = remotePage.locator("#remote-connection-status-trigger");
+    const remoteStatusTooltip = remotePage.locator("#remote-connection-status-text");
+    await remoteStatusTrigger.click();
+    assert(await remoteStatusTooltip.isVisible(), "Remote status indicator did not open its status bubble");
+    assert(await remoteMenuPanel.isVisible(), "Remote status bubble interaction closed the menu");
+    const statusText = (await remoteStatusTooltip.textContent()).trim();
+    assert(
+      (await remoteStatusTrigger.getAttribute("aria-label")).includes(statusText),
+      "Remote status bubble and accessible label were not synchronized",
+      { statusText, label: await remoteStatusTrigger.getAttribute("aria-label") },
+    );
+    await remoteStatusTrigger.click();
+    await remotePage.locator("#remote-settings-toggle").click();
+    assert(await remotePage.locator("#remote-settings-content").isVisible(), "Remote settings section did not expand");
+    const remoteSettingMetrics = await remotePage.locator("#remote-settings-content .remote-menu-setting-row").evaluateAll((rows) => rows.map((row) => {
+      const button = row.querySelector(".mode-button");
+      const rect = button.getBoundingClientRect();
+      return { height: rect.height, fontWeight: getComputedStyle(button).fontWeight };
+    }));
+    assert(
+      remoteSettingMetrics.every(({ height, fontWeight }) => height >= 30 && height <= 40 && fontWeight === "400"),
+      "Remote menu setting controls changed their Host-sized geometry or weight",
+      remoteSettingMetrics,
+    );
+    const remoteLayoutInfo = remotePage.locator('[aria-describedby="remote-menu-layout-info"]');
+    await remoteLayoutInfo.click();
+    assert(await remotePage.locator("#remote-menu-layout-info").isVisible(), "Remote layout explanation did not open from its i button");
+    await remotePage.locator('#language-switch button[data-language="en"]').click();
+    assert(await remoteMenuPanel.isVisible(), "Remote language interaction closed the menu");
+    await remotePage.evaluate(() => {
+      closeRemoteContextualInfo();
+      setLanguage("zh");
+    });
+    await remotePage.locator("#remote-settings-toggle").click();
+    await remotePage.keyboard.press("Escape");
+    assert(
+      !await remoteMenuPanel.isVisible()
+        && await remoteMenuToggle.getAttribute("aria-expanded") === "false"
+        && await remotePage.evaluate(() => document.activeElement?.id) === "remote-menu-toggle",
+      "Remote menu Escape did not close and restore focus",
+    );
+    await remoteMenuToggle.click();
+    await remotePage.locator("#remote-qr-toggle").click();
+    assert(await remotePage.locator("#remote-qr-content").isVisible(), "Remote QR section did not expand inline");
+    assert(await remoteMenuPanel.isVisible(), "Remote QR interaction closed the menu");
+    await remoteMenuToggle.click();
+    await remoteMenuToggle.click();
+    assert(
+      await remotePage.locator("#remote-qr-toggle").getAttribute("aria-expanded") === "false"
+        && !await remotePage.locator("#remote-qr-content").isVisible(),
+      "Remote menu reopen did not reset the QR section to its collapsed default",
+    );
+    await remoteMenuToggle.click();
+
     const floatingTrigger = remotePage.locator("#floating-control-trigger");
     const floatingOverlay = remotePage.locator("#floating-control-overlay");
     await floatingTrigger.click();
@@ -7549,7 +7787,9 @@ async function run() {
       "#floating-control-overlay .remote-contextual-info-region",
     );
     const remoteInfoButtons = remoteInfoRegions.locator(".remote-info-button");
-    const allRemoteInfoButtons = remotePage.locator(".remote-info-button");
+    const allRemoteInfoButtons = remotePage.locator(
+      "#binding-sheet .remote-info-button, #floating-control-overlay .remote-info-button",
+    );
     assert(await allRemoteInfoButtons.count() === 4, "Remote lost a contextual information trigger");
     assert(
       await allRemoteInfoButtons.locator(".contextual-info-glyph").allTextContents()
@@ -7622,7 +7862,12 @@ async function run() {
       "Remote Escape moved focus away from the information trigger",
     );
     assert(await floatingOverlay.isVisible(), "Remote information Escape closed the floating console");
-    assert(await remotePage.locator(".remote-tooltip-bubble").count() === 4, "Remote duplicated tooltip nodes");
+    assert(
+      await remotePage.locator(
+        "#binding-sheet .remote-tooltip-bubble, #floating-control-overlay .remote-tooltip-bubble",
+      ).count() === 4,
+      "Remote duplicated tooltip nodes",
+    );
     await remotePage.locator("#floating-control-close").click();
     await floatingOverlay.waitFor({ state: "hidden" });
     assert(!await floatingOverlay.isVisible(), "Remote floating playback console did not close normally");
