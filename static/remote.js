@@ -1909,10 +1909,10 @@ function renderRatingPromptContent() {
   if (coverUrl) {
     const image = document.createElement("img");
     image.className = "rating-cover";
-    image.src = coverUrl;
     image.alt = "";
     image.loading = "lazy";
     image.referrerPolicy = "no-referrer";
+    image.src = coverUrl;
     media.appendChild(image);
   } else {
     const placeholder = document.createElement("div");
@@ -4167,10 +4167,10 @@ function renderFavlistBrowse() {
         if (folder.avatar_url) {
           const avatar = document.createElement("img");
           avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.src = folder.avatar_url;
           avatar.alt = "";
           avatar.loading = "lazy";
           avatar.referrerPolicy = "no-referrer";
+          avatar.src = folder.avatar_url;
           button.append(avatar);
         }
 
@@ -4554,10 +4554,10 @@ function renderSourcesFollowBrowse() {
         if (owner.avatar_url) {
           const avatar = document.createElement("img");
           avatar.className = "follow-up-avatar";
-          avatar.src = owner.avatar_url;
           avatar.alt = "";
           avatar.loading = "lazy";
           avatar.referrerPolicy = "no-referrer";
+          avatar.src = owner.avatar_url;
           button.append(avatar);
         }
 

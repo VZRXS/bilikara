@@ -67,15 +67,18 @@ authority.
 
 ## Capabilities
 
-`viewer` allows only connection health, sanitized state reads, catalog search,
-and song detail. `controller` additionally allows the bounded playlist,
-playback, player-setting, session-identity, rating, and referenced-item cache
-operations explicitly enumerated in the Rust module.
+`viewer` allows only connection health, sanitized state reads, catalog search
+and browse, local Gatcha browse, pool-config reads, random candidates, and song
+detail. `controller` additionally allows the bounded playlist, playback,
+player-setting, session-identity, rating, referenced-item cache, and Gatcha
+management operations explicitly enumerated in the Rust module.
 
 The controller allowlist is intentionally explicit. Adding a new capability
-does not grant it automatically. Maintenance operations such as application
-updates, diagnostics, Gatcha refresh, downloader configuration, arbitrary URL
-fetch/open, and raw HTTP requests are not protocol kinds.
+does not grant it automatically. Gatcha management uses dedicated typed
+messages and retained Host I/O; it is not access to the Python route table.
+Maintenance operations such as application updates, diagnostics, downloader
+configuration, arbitrary URL fetch/open, and raw HTTP requests are not
+protocol kinds.
 
 Playlist additions refer to a canonical BVID with an optional positive page
 suffix such as `BV1ab411c7mD_p2`, not a URL or an unchecked Bilibili request
@@ -88,11 +91,16 @@ state when the revision is stale.
 `RemoteStateV1` is a dedicated DTO rather than a serialized `AppSnapshot`. Its
 item shape contains display metadata, public cache projection, audio-variant
 labels, and Bilibili cover URL only. It has no local paths, resolved media URLs,
-cookies, diagnostics, update state, Gatcha maintenance state, or tool settings.
+cookies, diagnostics, update state, or tool settings. The Host adapter adds only
+the bounded public projection of the existing Rust Gatcha task status and pool
+configuration needed by the shared Remote UI; task results and local records
+are not forwarded.
 
 `rust-runtime/src/internet_remote.rs` constructs this DTO directly from one
-authoritative `AppSnapshot`. It also admits only HTTPS Bilibili CDN covers;
-Python must not independently recompute the projection.
+authoritative `AppSnapshot`. Bilibili CDN covers in `http://` or protocol-relative
+form are normalized to HTTPS, while credentials, nonstandard ports, fragments,
+and non-Bilibili hosts are rejected. Python applies the same rule to retained
+catalog/Gatcha I/O results and does not independently recompute AppState.
 
 ## Transport and room security
 
@@ -125,7 +133,9 @@ messages are capped at 512 KiB and split into 12 KiB frames. The Host serializes
 outbound frames per lane, coalesces superseded state updates, and waits for the
 DataChannel buffer to drain. Each peer also has bounded pending work and
 per-minute message/request/search/add admission limits before an external Host
-request can occur.
+request can occur. Bilibili-backed Gatcha operations have a separate room-wide
+ten-minute budget, while control and bulk messages retain independent ordered
+queues so a long browse operation cannot block playback heartbeats.
 
 Cover images are restricted to HTTPS Bilibili CDN URLs and rendered with
 `referrerpolicy="no-referrer"`. Authentication relies on WebRTC's encrypted

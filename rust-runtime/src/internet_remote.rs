@@ -380,15 +380,30 @@ fn cache_status(value: &str) -> RemoteCacheStatusV1 {
 
 fn safe_cover_url(value: &str) -> String {
     let normalized = value.trim();
-    let Some(rest) = normalized.strip_prefix("https://") else {
+    let candidate = if normalized.starts_with("//") {
+        format!("https:{normalized}")
+    } else {
+        normalized.to_owned()
+    };
+    let Ok(mut parsed) = url::Url::parse(&candidate) else {
         return String::new();
     };
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    if host == "hdslb.com" || host.ends_with(".hdslb.com") {
-        normalized.to_owned()
-    } else {
-        String::new()
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some_and(|port| port != 443)
+    {
+        return String::new();
     }
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if host != "hdslb.com" && !host.ends_with(".hdslb.com") {
+        return String::new();
+    }
+    if parsed.set_scheme("https").is_err() {
+        return String::new();
+    }
+    parsed.set_fragment(None);
+    parsed.to_string()
 }
 
 fn valid_epoch(value: &str) -> bool {
@@ -544,12 +559,20 @@ mod tests {
     }
 
     #[test]
-    fn projection_only_keeps_bilibili_https_covers() {
+    fn projection_normalizes_bilibili_covers_to_https_and_rejects_other_hosts() {
         assert_eq!(
             safe_cover_url("https://i1.hdslb.com/bfs/archive/test.jpg"),
             "https://i1.hdslb.com/bfs/archive/test.jpg"
         );
-        assert!(safe_cover_url("http://i1.hdslb.com/test.jpg").is_empty());
+        assert_eq!(
+            safe_cover_url("http://i1.hdslb.com/test.jpg"),
+            "https://i1.hdslb.com/test.jpg"
+        );
+        assert_eq!(
+            safe_cover_url("//i1.hdslb.com/test.jpg"),
+            "https://i1.hdslb.com/test.jpg"
+        );
+        assert!(safe_cover_url("https://user@i1.hdslb.com/test.jpg").is_empty());
         assert!(safe_cover_url("https://example.com/test.jpg").is_empty());
     }
 }

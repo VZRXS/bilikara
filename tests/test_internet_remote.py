@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara import internet_remote
+from bilikara import internet_remote, rust_runtime
 
 
 def response(*, effect=None, accepted=True, stale=False, revision=7):
@@ -55,9 +55,13 @@ class FakeContext:
         self.store = FakeStore(dispatch_response, completion_response)
         self.cache_manager = FakeCacheManager()
         self.player_controls = []
+        self.notify_count = 0
 
     def issue_player_control(self, **fields):
         self.player_controls.append(fields)
+
+    def _notify_state_changed(self):
+        self.notify_count += 1
 
 
 class InternetRemoteAdapterTest(unittest.TestCase):
@@ -71,6 +75,24 @@ class InternetRemoteAdapterTest(unittest.TestCase):
             context.store.dispatch_calls,
             [("peer-one", "control", "wire", True)],
         )
+
+    def test_rust_protocol_rejections_keep_their_machine_readable_kind(self):
+        context = FakeContext(response())
+        rejected = rust_runtime.RustAppStateRejectedError(
+            "rejected",
+            "invalid_internet_remote_request",
+            "invalid request",
+            response={"error": {"kind": "invalid_internet_remote_request"}},
+        )
+        def reject(*args, **kwargs):
+            raise internet_remote.PlaylistStoreCommandError(rejected)
+
+        context.store.dispatch_internet_remote_message = reject
+
+        with self.assertRaises(internet_remote.InternetRemoteDispatchError) as raised:
+            internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        self.assertEqual(raised.exception.kind, "invalid_internet_remote_request")
 
     def test_typed_player_effect_is_executed_without_exposing_it_to_remote(self):
         context = FakeContext(
@@ -181,6 +203,119 @@ class InternetRemoteAdapterTest(unittest.TestCase):
 
         self.assertEqual(projected["catalog_item_id"], "BV1ab411c7mD")
         self.assertEqual(projected["cover_url"], "")
+
+    def test_public_catalog_projection_normalizes_bilibili_covers_to_https(self):
+        cases = {
+            "http://i1.hdslb.com/bfs/archive/example.jpg": (
+                "https://i1.hdslb.com/bfs/archive/example.jpg"
+            ),
+            "//i2.hdslb.com/bfs/archive/example.jpg": (
+                "https://i2.hdslb.com/bfs/archive/example.jpg"
+            ),
+            "https://i0.hdslb.com/bfs/archive/example.jpg": (
+                "https://i0.hdslb.com/bfs/archive/example.jpg"
+            ),
+        }
+        for raw_url, expected in cases.items():
+            with self.subTest(raw_url=raw_url):
+                projected = internet_remote._public_catalog_item(
+                    {
+                        "bvid": "BV1ab411c7mD",
+                        "title": "Song",
+                        "cover_url": raw_url,
+                    }
+                )
+                self.assertEqual(projected["cover_url"], expected)
+
+    def test_public_catalog_projection_rejects_bilibili_lookalike_and_credentials(self):
+        for raw_url in (
+            "https://i1.hdslb.com.evil.test/image.jpg",
+            "https://user@i1.hdslb.com/image.jpg",
+            "https://i1.hdslb.com:8443/image.jpg",
+        ):
+            with self.subTest(raw_url=raw_url):
+                projected = internet_remote._public_catalog_item(
+                    {"bvid": "BV1ab411c7mD", "cover_url": raw_url}
+                )
+                self.assertEqual(projected["cover_url"], "")
+
+    def test_catalog_browse_effect_projects_items_without_exposing_raw_fields(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "catalog_browse",
+                    "browse_kind": "name",
+                    "letter": "A",
+                    "query": "",
+                    "tag": "",
+                    "locale": "ja",
+                    "limit": 100,
+                }
+            )
+        )
+        raw = {
+            "kind": "name",
+            "letter": "A",
+            "tags": [],
+            "items": [
+                {
+                    "bvid": "BV1ab411c7mD",
+                    "title": "Song",
+                    "cover_url": "http://i1.hdslb.com/song.jpg",
+                    "local_path": "D:/secret/song.mp4",
+                }
+            ],
+        }
+        with (
+            patch.object(internet_remote, "browse_d1_pool", return_value=raw),
+            patch.object(
+                internet_remote,
+                "annotate_gatcha_local_status",
+                side_effect=lambda items: items,
+            ),
+        ):
+            result = internet_remote.dispatch(context, "peer-one", "bulk", "wire")
+
+        self.assertEqual(
+            result["data"]["items"][0]["cover_url"],
+            "https://i1.hdslb.com/song.jpg",
+        )
+        self.assertNotIn("local_path", result["data"]["items"][0])
+
+    def test_gatcha_pool_config_effect_updates_rust_repository_through_host_io(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "gatcha_pool_config_set",
+                    "uid_weight": 60,
+                    "favlist_weight": 40,
+                    "excluded_uids": ["123"],
+                    "excluded_favlist_folders": ["123:456"],
+                }
+            )
+        )
+        detail = {
+            "uid_weight": 60,
+            "favlist_weight": 40,
+            "excluded_uids": ["123"],
+            "excluded_favlist_folders": ["123:456"],
+            "uid_options": [],
+            "favlist_folder_options": [],
+        }
+        with (
+            patch.object(internet_remote, "update_gatcha_pool_config", return_value=detail) as update,
+            patch.object(internet_remote, "gatcha_pool_config_detail", return_value=detail),
+        ):
+            result = internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        self.assertEqual(result["data"]["uid_weight"], 60)
+        self.assertEqual(context.notify_count, 1)
+        update.assert_called_once_with(
+            uid_weight=60,
+            favlist_weight=40,
+            excluded_uids=["123"],
+            excluded_favlist_folders=["123:456"],
+        )
 
     def test_catalog_id_never_accepts_a_url(self):
         with self.assertRaises(internet_remote.InternetRemoteDispatchError):

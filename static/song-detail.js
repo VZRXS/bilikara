@@ -271,9 +271,9 @@
       elements.cover.classList.toggle("is-empty", !coverUrl);
       if (coverUrl) {
         const image = document.createElement("img");
-        image.src = coverUrl;
         image.alt = "";
         image.referrerPolicy = "no-referrer";
+        image.src = coverUrl;
         image.decoding = "async";
         elements.cover.prepend(image);
       }

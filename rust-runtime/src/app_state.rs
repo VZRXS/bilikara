@@ -3594,6 +3594,52 @@ impl AppState {
                     false,
                 );
             }
+            RemoteRequestV1::CatalogBrowse {
+                kind,
+                letter,
+                query,
+                tag,
+                locale,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "catalog_browse",
+                        "browse_kind": kind,
+                        "letter": letter,
+                        "query": query,
+                        "tag": tag,
+                        "locale": locale,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::CatalogCategoryBrowse {
+                tags,
+                tag45s,
+                query,
+                offset,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "catalog_category_browse",
+                        "tags": tags,
+                        "tag45s": tag45s,
+                        "query": query,
+                        "offset": offset,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
             RemoteRequestV1::SongDetail { catalog_item_id } => {
                 return internet_remote_reply(
                     data,
@@ -3602,6 +3648,124 @@ impl AppState {
                     Some(json!({
                         "kind": "catalog_song_detail",
                         "catalog_item_id": catalog_item_id,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaSearch { query, limit } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_search", "query": query, "limit": limit})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaBrowse { uid, query } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_browse", "uid": uid, "query": query})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistBrowse { folder_id, query } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_favlist_browse",
+                        "folder_id": folder_id,
+                        "query": query,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaPoolConfigGet => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_pool_config_get"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaCandidate => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_candidate"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaPoolConfigSet {
+                uid_weight,
+                favlist_weight,
+                excluded_uids,
+                excluded_favlist_folders,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_pool_config_set",
+                        "uid_weight": uid_weight,
+                        "favlist_weight": favlist_weight,
+                        "excluded_uids": excluded_uids,
+                        "excluded_favlist_folders": excluded_favlist_folders,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaUidPreview { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_uid_preview", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaUidAdd { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_uid_add", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaRefresh => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_refresh"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistPreview { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_favlist_preview", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistRefresh { uid, folder_ids } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_favlist_refresh",
+                        "uid": uid,
+                        "folder_ids": folder_ids,
                     })),
                     false,
                 );
@@ -5038,16 +5202,92 @@ mod tests {
         assert!(!identity.committed);
         assert_eq!(identity.result["revision"], json!(initial.revision));
         assert_eq!(identity.result["data"]["name"], json!("Alice"));
-        let search = remote_message(
+        let repeated_identity = remote_message(
             &mut state,
             peer_id,
             epoch,
             2,
+            "session.set_identity",
+            json!({"name": "Alice"}),
+            10.5,
+        );
+        assert!(!repeated_identity.committed);
+        assert_eq!(repeated_identity.result["data"]["name"], json!("Alice"));
+        let search = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
             "catalog.search",
             json!({"query": "song", "limit": 10}),
             11.0,
         );
-        assert_eq!(search.result["_host_effect"]["kind"], json!("catalog_search"));
+        assert_eq!(
+            search.result["_host_effect"]["kind"],
+            json!("catalog_search")
+        );
+    }
+
+    #[test]
+    fn internet_remote_shared_browse_and_gatcha_emit_only_typed_host_effects() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+
+        let browse = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "catalog.browse",
+            json!({
+                "kind": "artist",
+                "letter": "A",
+                "query": "",
+                "tag": "",
+                "locale": "ja",
+                "limit": 100,
+            }),
+            11.0,
+        );
+        assert_eq!(
+            browse.result["_host_effect"]["kind"],
+            json!("catalog_browse")
+        );
+        assert_eq!(
+            browse.result["_host_effect"]["browse_kind"],
+            json!("artist")
+        );
+
+        let gatcha = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
+            "gatcha.uid_add",
+            json!({"uid": "123456"}),
+            12.0,
+        );
+        assert_eq!(
+            gatcha.result["_host_effect"],
+            json!({"kind": "gatcha_uid_add", "uid": "123456"})
+        );
     }
 
     fn begin_cache_attempt(state: &mut AppState, item_id: &str) -> (u64, AppStateSuccess) {

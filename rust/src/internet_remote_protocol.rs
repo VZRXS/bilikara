@@ -5,6 +5,7 @@ pub const INTERNET_REMOTE_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 16 * 1024;
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_SEARCH_RESULTS: u16 = 80;
+pub const MAX_BROWSE_RESULTS: u16 = 100;
 pub const MAX_REMOTE_STATE_ITEMS: usize = 1_000;
 
 const MAX_EPOCH_BYTES: usize = 22;
@@ -13,6 +14,11 @@ const MAX_ITEM_ID_BYTES: usize = 512;
 const MAX_AUDIO_VARIANT_ID_BYTES: usize = 128;
 const MAX_SEARCH_QUERY_BYTES: usize = 400;
 const MAX_SEARCH_QUERY_CHARS: usize = 100;
+const MAX_BROWSE_FILTER_BYTES: usize = 400;
+const MAX_BROWSE_FILTER_CHARS: usize = 100;
+const MAX_BROWSE_TAGS: usize = 10;
+const MAX_GATCHA_EXCLUSIONS: usize = 256;
+const MAX_NUMERIC_ID_BYTES: usize = 24;
 const MAX_SESSION_NAME_BYTES: usize = 96;
 const MAX_SESSION_NAME_CHARS: usize = 24;
 const MAX_SEEK_DELTA_SECONDS: i32 = 300;
@@ -51,6 +57,7 @@ pub enum RemoteCapability {
     SessionIdentityWrite,
     RatingWrite,
     CacheRetry,
+    GatchaManage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +65,20 @@ pub enum RemoteOperation {
     ConnectionHealth,
     StateGet,
     CatalogSearch,
+    CatalogBrowse,
+    CatalogCategoryBrowse,
     SongDetail,
+    GatchaSearch,
+    GatchaBrowse,
+    GatchaFavlistBrowse,
+    GatchaPoolConfigGet,
+    GatchaCandidate,
+    GatchaPoolConfigSet,
+    GatchaUidPreview,
+    GatchaUidAdd,
+    GatchaRefresh,
+    GatchaFavlistPreview,
+    GatchaFavlistRefresh,
     PlaylistAdd,
     PlaylistRemove,
     PlaylistMove,
@@ -85,7 +105,15 @@ impl RemoteOperation {
         match self {
             Self::ConnectionHealth => RemoteCapability::ConnectionHealth,
             Self::StateGet => RemoteCapability::StateRead,
-            Self::CatalogSearch | Self::SongDetail => RemoteCapability::CatalogRead,
+            Self::CatalogSearch
+            | Self::CatalogBrowse
+            | Self::CatalogCategoryBrowse
+            | Self::SongDetail
+            | Self::GatchaSearch
+            | Self::GatchaBrowse
+            | Self::GatchaFavlistBrowse
+            | Self::GatchaPoolConfigGet
+            | Self::GatchaCandidate => RemoteCapability::CatalogRead,
             Self::PlaylistAdd
             | Self::PlaylistRemove
             | Self::PlaylistMove
@@ -105,6 +133,12 @@ impl RemoteOperation {
             Self::SessionSetIdentity => RemoteCapability::SessionIdentityWrite,
             Self::RatingSubmit => RemoteCapability::RatingWrite,
             Self::CacheRetry => RemoteCapability::CacheRetry,
+            Self::GatchaPoolConfigSet
+            | Self::GatchaUidPreview
+            | Self::GatchaUidAdd
+            | Self::GatchaRefresh
+            | Self::GatchaFavlistPreview
+            | Self::GatchaFavlistRefresh => RemoteCapability::GatchaManage,
         }
     }
 }
@@ -128,8 +162,16 @@ pub const fn profile_allows(profile: RemoteProfile, operation: RemoteOperation) 
                 | RemoteCapability::SessionIdentityWrite
                 | RemoteCapability::RatingWrite
                 | RemoteCapability::CacheRetry
+                | RemoteCapability::GatchaManage
         ),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteCatalogBrowseKindV1 {
+    Name,
+    Artist,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -141,8 +183,55 @@ pub enum RemoteRequestV1 {
     StateGet { since_revision: Option<u64> },
     #[serde(rename = "catalog.search")]
     CatalogSearch { query: String, limit: u16 },
+    #[serde(rename = "catalog.browse")]
+    CatalogBrowse {
+        kind: RemoteCatalogBrowseKindV1,
+        letter: String,
+        query: String,
+        tag: String,
+        locale: String,
+        limit: u16,
+    },
+    #[serde(rename = "catalog.category_browse")]
+    CatalogCategoryBrowse {
+        tags: Vec<String>,
+        tag45s: Vec<String>,
+        query: String,
+        offset: u32,
+        limit: u16,
+    },
     #[serde(rename = "catalog.song_detail")]
     SongDetail { catalog_item_id: String },
+    #[serde(rename = "gatcha.search")]
+    GatchaSearch { query: String, limit: u16 },
+    #[serde(rename = "gatcha.browse")]
+    GatchaBrowse { uid: String, query: String },
+    #[serde(rename = "gatcha.favlist_browse")]
+    GatchaFavlistBrowse { folder_id: String, query: String },
+    #[serde(rename = "gatcha.pool_config_get")]
+    GatchaPoolConfigGet,
+    #[serde(rename = "gatcha.candidate")]
+    GatchaCandidate,
+    #[serde(rename = "gatcha.pool_config_set")]
+    GatchaPoolConfigSet {
+        uid_weight: u8,
+        favlist_weight: u8,
+        excluded_uids: Vec<String>,
+        excluded_favlist_folders: Vec<String>,
+    },
+    #[serde(rename = "gatcha.uid_preview")]
+    GatchaUidPreview { uid: String },
+    #[serde(rename = "gatcha.uid_add")]
+    GatchaUidAdd { uid: String },
+    #[serde(rename = "gatcha.refresh")]
+    GatchaRefresh,
+    #[serde(rename = "gatcha.favlist_preview")]
+    GatchaFavlistPreview { uid: String },
+    #[serde(rename = "gatcha.favlist_refresh")]
+    GatchaFavlistRefresh {
+        uid: String,
+        folder_ids: Vec<String>,
+    },
     #[serde(rename = "playlist.add")]
     PlaylistAdd {
         catalog_item_id: String,
@@ -214,7 +303,20 @@ impl RemoteRequestV1 {
             Self::ConnectionHealth => RemoteOperation::ConnectionHealth,
             Self::StateGet { .. } => RemoteOperation::StateGet,
             Self::CatalogSearch { .. } => RemoteOperation::CatalogSearch,
+            Self::CatalogBrowse { .. } => RemoteOperation::CatalogBrowse,
+            Self::CatalogCategoryBrowse { .. } => RemoteOperation::CatalogCategoryBrowse,
             Self::SongDetail { .. } => RemoteOperation::SongDetail,
+            Self::GatchaSearch { .. } => RemoteOperation::GatchaSearch,
+            Self::GatchaBrowse { .. } => RemoteOperation::GatchaBrowse,
+            Self::GatchaFavlistBrowse { .. } => RemoteOperation::GatchaFavlistBrowse,
+            Self::GatchaPoolConfigGet => RemoteOperation::GatchaPoolConfigGet,
+            Self::GatchaCandidate => RemoteOperation::GatchaCandidate,
+            Self::GatchaPoolConfigSet { .. } => RemoteOperation::GatchaPoolConfigSet,
+            Self::GatchaUidPreview { .. } => RemoteOperation::GatchaUidPreview,
+            Self::GatchaUidAdd { .. } => RemoteOperation::GatchaUidAdd,
+            Self::GatchaRefresh => RemoteOperation::GatchaRefresh,
+            Self::GatchaFavlistPreview { .. } => RemoteOperation::GatchaFavlistPreview,
+            Self::GatchaFavlistRefresh { .. } => RemoteOperation::GatchaFavlistRefresh,
             Self::PlaylistAdd { .. } => RemoteOperation::PlaylistAdd,
             Self::PlaylistRemove { .. } => RemoteOperation::PlaylistRemove,
             Self::PlaylistMove { .. } => RemoteOperation::PlaylistMove,
@@ -300,6 +402,63 @@ struct StateGetBody {
 struct CatalogSearchBody {
     query: String,
     limit: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogBrowseBody {
+    kind: RemoteCatalogBrowseKindV1,
+    letter: String,
+    query: String,
+    tag: String,
+    locale: String,
+    limit: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogCategoryBrowseBody {
+    tags: Vec<String>,
+    tag45s: Vec<String>,
+    query: String,
+    offset: u32,
+    limit: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaBrowseBody {
+    uid: String,
+    query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaFavlistBrowseBody {
+    folder_id: String,
+    query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaPoolConfigBody {
+    uid_weight: u8,
+    favlist_weight: u8,
+    excluded_uids: Vec<String>,
+    excluded_favlist_folders: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaUidBody {
+    uid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaFavlistRefreshBody {
+    uid: String,
+    folder_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,6 +563,45 @@ fn valid_text(value: &str, max_bytes: usize, max_chars: usize) -> bool {
         && !value.trim().is_empty()
 }
 
+fn valid_optional_text(value: &str, max_bytes: usize, max_chars: usize) -> bool {
+    value.is_empty()
+        || (!value.contains('\0')
+            && !value.chars().any(char::is_control)
+            && value.len() <= max_bytes
+            && value.chars().count() <= max_chars
+            && value.trim() == value)
+}
+
+fn valid_numeric_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_NUMERIC_ID_BYTES
+        && !value.starts_with('0')
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn valid_optional_numeric_id(value: &str) -> bool {
+    value.is_empty() || valid_numeric_id(value)
+}
+
+fn valid_folder_selector(value: &str) -> bool {
+    if let Some((uid, folder_id)) = value.split_once(':') {
+        valid_numeric_id(uid) && valid_numeric_id(folder_id) && !folder_id.contains(':')
+    } else {
+        valid_numeric_id(value)
+    }
+}
+
+fn valid_browse_tags(values: &[String]) -> bool {
+    values.len() <= MAX_BROWSE_TAGS
+        && values
+            .iter()
+            .all(|value| valid_text(value, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS))
+}
+
+fn valid_exclusions(values: &[String], validator: impl Fn(&str) -> bool) -> bool {
+    values.len() <= MAX_GATCHA_EXCLUSIONS && values.iter().all(|value| validator(value))
+}
+
 fn valid_base64url(value: &str, exact_bytes: usize) -> bool {
     value.len() == exact_bytes
         && value
@@ -441,13 +639,71 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         | RemoteRequestV1::PlaybackPlay
         | RemoteRequestV1::PlaybackPause
         | RemoteRequestV1::PlaybackToggle
-        | RemoteRequestV1::PlaybackNext => true,
+        | RemoteRequestV1::PlaybackNext
+        | RemoteRequestV1::GatchaPoolConfigGet
+        | RemoteRequestV1::GatchaCandidate
+        | RemoteRequestV1::GatchaRefresh => true,
         RemoteRequestV1::StateGet { since_revision } => since_revision.is_none_or(valid_revision),
-        RemoteRequestV1::CatalogSearch { query, limit } => {
+        RemoteRequestV1::CatalogSearch { query, limit }
+        | RemoteRequestV1::GatchaSearch { query, limit } => {
             valid_text(query, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_QUERY_CHARS)
                 && (1..=MAX_SEARCH_RESULTS).contains(limit)
         }
+        RemoteRequestV1::CatalogBrowse {
+            letter,
+            query,
+            tag,
+            locale,
+            limit,
+            ..
+        } => {
+            valid_optional_text(letter, 8, 2)
+                && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+                && valid_optional_text(tag, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+                && valid_optional_text(locale, 32, 16)
+                && (1..=MAX_BROWSE_RESULTS).contains(limit)
+        }
+        RemoteRequestV1::CatalogCategoryBrowse {
+            tags,
+            tag45s,
+            query,
+            limit,
+            ..
+        } => {
+            valid_browse_tags(tags)
+                && valid_browse_tags(tag45s)
+                && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+                && (1..=MAX_BROWSE_RESULTS).contains(limit)
+        }
         RemoteRequestV1::SongDetail { catalog_item_id } => valid_catalog(catalog_item_id),
+        RemoteRequestV1::GatchaBrowse { uid, query } => {
+            valid_optional_numeric_id(uid)
+                && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+        }
+        RemoteRequestV1::GatchaFavlistBrowse { folder_id, query } => {
+            (folder_id.is_empty() || valid_folder_selector(folder_id))
+                && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+        }
+        RemoteRequestV1::GatchaPoolConfigSet {
+            uid_weight,
+            favlist_weight,
+            excluded_uids,
+            excluded_favlist_folders,
+        } => {
+            *uid_weight <= 100
+                && *favlist_weight <= 100
+                && u16::from(*uid_weight) + u16::from(*favlist_weight) == 100
+                && valid_exclusions(excluded_uids, valid_numeric_id)
+                && valid_exclusions(excluded_favlist_folders, valid_folder_selector)
+        }
+        RemoteRequestV1::GatchaUidPreview { uid }
+        | RemoteRequestV1::GatchaUidAdd { uid }
+        | RemoteRequestV1::GatchaFavlistPreview { uid } => valid_numeric_id(uid),
+        RemoteRequestV1::GatchaFavlistRefresh { uid, folder_ids } => {
+            valid_numeric_id(uid)
+                && !folder_ids.is_empty()
+                && valid_exclusions(folder_ids, valid_numeric_id)
+        }
         RemoteRequestV1::PlaylistAdd {
             catalog_item_id,
             expected_revision,
@@ -550,10 +806,84 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 limit: body.limit,
             }
         }
+        "catalog.browse" => {
+            let body: CatalogBrowseBody = body(value)?;
+            RemoteRequestV1::CatalogBrowse {
+                kind: body.kind,
+                letter: body.letter,
+                query: body.query,
+                tag: body.tag,
+                locale: body.locale,
+                limit: body.limit,
+            }
+        }
+        "catalog.category_browse" => {
+            let body: CatalogCategoryBrowseBody = body(value)?;
+            RemoteRequestV1::CatalogCategoryBrowse {
+                tags: body.tags,
+                tag45s: body.tag45s,
+                query: body.query,
+                offset: body.offset,
+                limit: body.limit,
+            }
+        }
         "catalog.song_detail" => {
             let body: CatalogItemBody = body(value)?;
             RemoteRequestV1::SongDetail {
                 catalog_item_id: body.catalog_item_id,
+            }
+        }
+        "gatcha.search" => {
+            let body: CatalogSearchBody = body(value)?;
+            RemoteRequestV1::GatchaSearch {
+                query: body.query,
+                limit: body.limit,
+            }
+        }
+        "gatcha.browse" => {
+            let body: GatchaBrowseBody = body(value)?;
+            RemoteRequestV1::GatchaBrowse {
+                uid: body.uid,
+                query: body.query,
+            }
+        }
+        "gatcha.favlist_browse" => {
+            let body: GatchaFavlistBrowseBody = body(value)?;
+            RemoteRequestV1::GatchaFavlistBrowse {
+                folder_id: body.folder_id,
+                query: body.query,
+            }
+        }
+        "gatcha.pool_config_get" | "gatcha.candidate" | "gatcha.refresh" => {
+            let _: EmptyBody = body(value)?;
+            match kind {
+                "gatcha.pool_config_get" => RemoteRequestV1::GatchaPoolConfigGet,
+                "gatcha.candidate" => RemoteRequestV1::GatchaCandidate,
+                _ => RemoteRequestV1::GatchaRefresh,
+            }
+        }
+        "gatcha.pool_config_set" => {
+            let body: GatchaPoolConfigBody = body(value)?;
+            RemoteRequestV1::GatchaPoolConfigSet {
+                uid_weight: body.uid_weight,
+                favlist_weight: body.favlist_weight,
+                excluded_uids: body.excluded_uids,
+                excluded_favlist_folders: body.excluded_favlist_folders,
+            }
+        }
+        "gatcha.uid_preview" | "gatcha.uid_add" | "gatcha.favlist_preview" => {
+            let body: GatchaUidBody = body(value)?;
+            match kind {
+                "gatcha.uid_preview" => RemoteRequestV1::GatchaUidPreview { uid: body.uid },
+                "gatcha.uid_add" => RemoteRequestV1::GatchaUidAdd { uid: body.uid },
+                _ => RemoteRequestV1::GatchaFavlistPreview { uid: body.uid },
+            }
+        }
+        "gatcha.favlist_refresh" => {
+            let body: GatchaFavlistRefreshBody = body(value)?;
+            RemoteRequestV1::GatchaFavlistRefresh {
+                uid: body.uid,
+                folder_ids: body.folder_ids,
             }
         }
         "playlist.add" => {
@@ -905,6 +1235,90 @@ mod tests {
     }
 
     #[test]
+    fn shared_remote_browse_requests_are_typed_and_bounded() {
+        let browse = decode_remote_request_v1(
+            &request(
+                "catalog.browse",
+                json!({
+                    "kind": "artist",
+                    "letter": "A",
+                    "query": "",
+                    "tag": "anime",
+                    "locale": "ja",
+                    "limit": 100,
+                }),
+            ),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert!(matches!(
+            browse.request,
+            RemoteRequestV1::CatalogBrowse {
+                kind: RemoteCatalogBrowseKindV1::Artist,
+                limit: 100,
+                ..
+            }
+        ));
+
+        let category = decode_remote_request_v1(
+            &request(
+                "catalog.category_browse",
+                json!({
+                    "tags": ["anime"],
+                    "tag45s": ["female"],
+                    "query": "",
+                    "offset": 100,
+                    "limit": 100,
+                }),
+            ),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert_eq!(
+            category.request.operation(),
+            RemoteOperation::CatalogCategoryBrowse
+        );
+    }
+
+    #[test]
+    fn gatcha_management_requires_controller_and_rejects_unsafe_ids() {
+        let refresh = request("gatcha.refresh", json!({}));
+        assert_eq!(
+            decode_remote_request_v1(&refresh, context(RemoteProfile::Viewer)),
+            Err(RemoteProtocolError::CapabilityDenied)
+        );
+        assert_eq!(
+            decode_remote_request_v1(&refresh, context(RemoteProfile::Controller))
+                .unwrap()
+                .request
+                .operation(),
+            RemoteOperation::GatchaRefresh
+        );
+
+        for message in [
+            request("gatcha.uid_preview", json!({"uid": "https://example.test"})),
+            request(
+                "gatcha.favlist_refresh",
+                json!({"uid": "123", "folder_ids": []}),
+            ),
+            request(
+                "gatcha.pool_config_set",
+                json!({
+                    "uid_weight": 80,
+                    "favlist_weight": 80,
+                    "excluded_uids": [],
+                    "excluded_favlist_folders": [],
+                }),
+            ),
+        ] {
+            assert_eq!(
+                decode_remote_request_v1(&message, context(RemoteProfile::Controller)),
+                Err(RemoteProtocolError::InvalidRequestBody)
+            );
+        }
+    }
+
+    #[test]
     fn controller_can_toggle_playback_without_exposing_a_generic_command() {
         let decoded = decode_remote_request_v1(
             &request("playback.toggle", json!({})),
@@ -1031,7 +1445,6 @@ mod tests {
             "app.shutdown",
             "app.update",
             "diagnostics.export",
-            "gatcha.refresh",
             "cache.configure",
             "http.request",
             "url.open",

@@ -27,6 +27,7 @@
     stateRevision: 0,
     authFailures: [],
     catalogRequests: [],
+    gatchaNetworkRequests: [],
     messages: {},
   };
 
@@ -121,9 +122,9 @@
     elements.room.classList.toggle("hidden", !online || !state.roomId);
   }
 
-  async function localPost(path, body) {
+  async function localPost(path, body, timeoutMs = 15_000) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(path, {
         method: "POST",
@@ -132,7 +133,12 @@
         signal: controller.signal,
       });
       const payload = await response.json();
-      if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (!response.ok || !payload.ok) {
+        const error = new Error(payload.error || `HTTP ${response.status}`);
+        error.code = String(payload.code || `http_${response.status}`);
+        error.httpStatus = response.status;
+        throw error;
+      }
       return payload.data;
     } finally {
       clearTimeout(timeout);
@@ -164,9 +170,10 @@
       requestTimes: [],
       catalogRequests: [],
       addRequests: [],
+      gatchaNetworkRequests: [],
       queuedMessages: 0,
       deadlineTimer: null,
-      queue: Promise.resolve(),
+      queues: { control: Promise.resolve(), bulk: Promise.resolve() },
       outbound: { control: Promise.resolve(), bulk: Promise.resolve() },
       pendingState: null,
       stateSending: false,
@@ -215,13 +222,28 @@
         closePeer(peer.id, true, peer);
         return;
       }
-      peer.queuedMessages += messages.length;
       peer.messageTimes.push(...messages.map(() => now));
-      peer.queue = peer.queue.then(async () => {
+      const queued = [];
+      try {
+        for (const message of messages) {
+          if (lane === "control" && message?.type === "ping") {
+            transport.send(peer.control, { type: "pong", at: message.at });
+          } else {
+            queued.push(message);
+          }
+        }
+      } catch (error) {
+        setStatus(`Remote 消息被拒绝：${error.message}`, "bad");
+        closePeer(peer.id, true, peer);
+        return;
+      }
+      if (!queued.length) return;
+      peer.queuedMessages += queued.length;
+      peer.queues[lane] = peer.queues[lane].then(async () => {
         try {
-          for (const message of messages) await handlePeerMessage(peer, lane, message);
+          for (const message of queued) await handlePeerMessage(peer, lane, message);
         } finally {
-          peer.queuedMessages -= messages.length;
+          peer.queuedMessages -= queued.length;
         }
       }).catch((error) => {
         setStatus(`Remote 消息被拒绝：${error.message}`, "bad");
@@ -259,7 +281,17 @@
     peer.requestTimes = recentFailures(peer.requestTimes, now);
     if (peer.requestTimes.length >= 120) throw new Error("Remote 请求频率过高");
     peer.requestTimes.push(now);
-    if (kind === "catalog.search" || kind === "catalog.song_detail") {
+    if ([
+      "catalog.search",
+      "catalog.browse",
+      "catalog.category_browse",
+      "catalog.song_detail",
+      "gatcha.search",
+      "gatcha.browse",
+      "gatcha.favlist_browse",
+      "gatcha.pool_config_get",
+      "gatcha.candidate",
+    ].includes(kind)) {
       peer.catalogRequests = recentFailures(peer.catalogRequests, now);
       state.catalogRequests = recentFailures(state.catalogRequests, now);
       if (peer.catalogRequests.length >= 12 || state.catalogRequests.length >= 60) {
@@ -272,6 +304,21 @@
       peer.addRequests = recentFailures(peer.addRequests, now);
       if (peer.addRequests.length >= 20) throw new Error("点歌过于频繁，请稍后再试");
       peer.addRequests.push(now);
+    }
+    if ([
+      "gatcha.uid_preview",
+      "gatcha.uid_add",
+      "gatcha.refresh",
+      "gatcha.favlist_preview",
+      "gatcha.favlist_refresh",
+    ].includes(kind)) {
+      peer.gatchaNetworkRequests = peer.gatchaNetworkRequests.filter((value) => now - value < 600_000);
+      state.gatchaNetworkRequests = state.gatchaNetworkRequests.filter((value) => now - value < 600_000);
+      if (peer.gatchaNetworkRequests.length >= 6 || state.gatchaNetworkRequests.length >= 20) {
+        throw new Error("Gatcha 请求过于频繁，请十分钟后再试");
+      }
+      peer.gatchaNetworkRequests.push(now);
+      state.gatchaNetworkRequests.push(now);
     }
   }
 
@@ -337,12 +384,40 @@
     if (!peer.authorized || message.type !== "request" || message.lane !== lane) {
       throw new Error("Remote 尚未认证或通道不匹配");
     }
-    admitRequest(peer, String(message.envelope?.kind || ""));
-    const result = await localPost("/api/internet-remote/dispatch", {
-      peer_id: peer.id,
-      lane,
-      message: JSON.stringify(message.envelope),
-    });
+    try {
+      admitRequest(peer, String(message.envelope?.kind || ""));
+    } catch (error) {
+      await sendPeer(peer, lane, {
+        type: "response",
+        request_id: String(message.envelope?.id || ""),
+        sequence: Number(message.envelope?.seq || 0),
+        accepted: false,
+        stale: false,
+        code: "internet_remote_rate_limited",
+        error: error.message,
+      });
+      return;
+    }
+    let result;
+    try {
+      result = await localPost("/api/internet-remote/dispatch", {
+        peer_id: peer.id,
+        lane,
+        message: JSON.stringify(message.envelope),
+      }, 300_000);
+    } catch (error) {
+      if (isFatalProtocolError(error.code)) throw error;
+      await sendPeer(peer, lane, {
+        type: "response",
+        request_id: String(message.envelope?.id || ""),
+        sequence: Number(message.envelope?.seq || 0),
+        accepted: false,
+        stale: false,
+        code: String(error.code || "internet_remote_request_failed"),
+        error: String(error.message || "请求失败").slice(0, 256),
+      });
+      return;
+    }
     await sendPeer(peer, lane, { type: "response", ...result });
     if (result?.data?.revision || result?.data?.state?.revision) void publishState();
   }
@@ -417,6 +492,25 @@
       recordDiagnostic("signaling.connect", "error", { errorCode: "websocket_error" });
       setStatus(tr("internetRemote.signalingRetry", "信令暂时不可用，正在重连"), "bad");
     });
+  }
+
+  function isFatalProtocolError(code) {
+    return [
+      "invalid_internet_remote_peer_id",
+      "invalid_internet_remote_epoch",
+      "unknown_internet_remote_peer",
+      "internet_remote_message_too_large",
+      "malformed_internet_remote_envelope",
+      "unsupported_internet_remote_version",
+      "invalid_internet_remote_lane",
+      "stale_internet_remote_epoch",
+      "invalid_internet_remote_sequence",
+      "replayed_internet_remote_sequence",
+      "invalid_internet_remote_request_id",
+      "unknown_internet_remote_request",
+      "invalid_internet_remote_request",
+      "internet_remote_capability_denied",
+    ].includes(String(code || ""));
   }
 
   async function startRoom() {

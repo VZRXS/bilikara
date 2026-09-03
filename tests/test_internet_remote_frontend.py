@@ -21,6 +21,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         cls.remote_transport = (
             ROOT / "static" / "remote-transport-client.js"
         ).read_text(encoding="utf-8")
+        cls.remote_css = (ROOT / "static" / "remote.css").read_text(
+            encoding="utf-8"
+        )
         cls.remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
         cls.asset_sync = (
             ROOT / "scripts" / "sync_internet_remote_assets.ps1"
@@ -99,11 +102,98 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_internet_adapter_is_an_explicit_api_allowlist(self):
         self.assertIn('url.pathname === "/api/playlist/reorder"', self.remote_transport)
         self.assertIn('url.pathname === "/api/player/control"', self.remote_transport)
-        self.assertIn('["/api/lark/search", "/api/gatcha/search"]', self.remote_transport)
+        self.assertIn('url.pathname === "/api/lark/search"', self.remote_transport)
+        self.assertIn('url.pathname === "/api/gatcha/search"', self.remote_transport)
         self.assertIn("internet_remote_unavailable", self.remote_transport)
         self.assertIn("url.origin !== global.location.origin", self.remote_transport)
         self.assertNotIn('request("http.request"', self.remote_transport)
         self.assertNotIn("/api/internet-remote/dispatch", self.remote_transport)
+
+    def test_internet_mode_keeps_shared_browse_and_gatcha_ui_visible(self):
+        for selector in (
+            ".gatcha-panel",
+            '[data-target="follow"]',
+            '[data-target="favlist"]',
+            '[data-target="category"]',
+            '[data-target="name"]',
+            '[data-target="artist"]',
+        ):
+            with self.subTest(selector=selector):
+                self.assertNotIn(
+                    f'html[data-remote-transport="internet"] {selector}',
+                    self.remote_css,
+                )
+
+    def test_internet_adapter_maps_shared_browse_and_gatcha_endpoints(self):
+        expected_routes = {
+            "/api/d1/browse",
+            "/api/d1/category-browse",
+            "/api/gatcha/browse",
+            "/api/gatcha/favlist/browse",
+            "/api/gatcha/pool-config",
+            "/api/gatcha/candidate",
+            "/api/gatcha/uids/preview",
+            "/api/gatcha/uids/add",
+            "/api/gatcha/refresh",
+            "/api/gatcha/favlist/preview",
+            "/api/gatcha/favlist",
+        }
+        for route in expected_routes:
+            with self.subTest(route=route):
+                self.assertIn(f'url.pathname === "{route}"', self.remote_transport)
+
+        for request_kind in (
+            "catalog.browse",
+            "catalog.category_browse",
+            "gatcha.browse",
+            "gatcha.favlist_browse",
+            "gatcha.pool_config_get",
+            "gatcha.candidate",
+            "gatcha.pool_config_set",
+            "gatcha.uid_preview",
+            "gatcha.uid_add",
+            "gatcha.refresh",
+            "gatcha.favlist_preview",
+            "gatcha.favlist_refresh",
+        ):
+            with self.subTest(request_kind=request_kind):
+                self.assertIn(f'"{request_kind}"', self.remote_transport)
+
+    def test_search_covers_are_requested_without_a_referrer(self):
+        start = self.remote_js.index("function createSearchResultCover")
+        end = self.remote_js.index("function createSearchResultRow", start)
+        source = self.remote_js[start:end]
+        self.assertIn('image.referrerPolicy = "no-referrer"', source)
+        self.assertLess(
+            source.index('image.referrerPolicy = "no-referrer"'),
+            source.index("image.src = coverUrl"),
+        )
+
+    def test_application_rejections_do_not_disconnect_the_peer(self):
+        start = self.host_js.index("async function handlePeerMessage")
+        end = self.host_js.index("async function publishState", start)
+        source = self.host_js[start:end]
+        self.assertIn('accepted: false', source)
+        self.assertIn('isFatalProtocolError(error.code)', source)
+        self.assertIn('code: String(error.code || "internet_remote_request_failed")', source)
+
+    def test_remote_identity_registration_is_idempotent_in_the_browser_adapter(self):
+        start = self.remote_transport.index(
+            'if (method === "POST" && ["/api/remote-identity/register"'
+        )
+        end = self.remote_transport.index(
+            'if (method === "POST" && url.pathname === "/api/gatcha/pool-config")',
+            start,
+        )
+        source = self.remote_transport[start:end]
+        same_name = source.index("requestedName === state.identity")
+        rust_request = source.index('request("session.set_identity"')
+        self.assertLess(same_name, rust_request)
+
+    def test_control_and_bulk_requests_have_independent_ordered_queues(self):
+        self.assertIn('queues: { control: Promise.resolve(), bulk: Promise.resolve() }', self.host_js)
+        self.assertIn('peer.queues[lane] = peer.queues[lane].then', self.host_js)
+        self.assertIn('lane === "control" && message?.type === "ping"', self.host_js)
 
     def test_local_transport_remains_native_fetch_and_event_source(self):
         self.assertIn('mode: "local"', self.remote_transport)

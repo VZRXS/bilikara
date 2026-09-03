@@ -298,13 +298,19 @@
       if (pending) {
         state.pending.delete(message.request_id);
         clearTimeout(pending.timeout);
-        pending.resolve(message);
+        if (message.accepted === false) {
+          const error = new Error(String(message.error || message.message || message.code || "Host 拒绝了请求"));
+          error.code = String(message.code || "internet_remote_request_rejected");
+          pending.reject(error);
+        } else {
+          pending.resolve(message);
+        }
       }
       if (message.stale && message.data) publishState(message.data);
     }
   }
 
-  function request(kind, body, lane = "control") {
+  function request(kind, body, lane = "control", timeoutMs = 15_000) {
     if (!state.authorized || state[lane]?.readyState !== "open") {
       return Promise.reject(new Error("尚未连接 Host"));
     }
@@ -323,7 +329,7 @@
       const timeout = setTimeout(() => {
         state.pending.delete(id);
         reject(new Error("Host 响应超时"));
-      }, 15_000);
+      }, timeoutMs);
       state.pending.set(id, { resolve, reject, timeout });
     });
   }
@@ -399,14 +405,19 @@
         duration: Number(status.duration_seconds || 0),
         updated_at: Date.now() / 1000,
       } : null,
-      gatcha: { busy: false },
+      gatcha: remoteState.gatcha || state.remoteState?.gatcha || { busy: false },
+      gatcha_pool_config: remoteState.gatcha_pool_config || state.remoteState?.gatcha_pool_config || {},
     };
   }
 
   function publishState(next) {
     if (!next || typeof next !== "object") return;
-    state.remoteState = next;
-    const data = JSON.stringify(localState(next));
+    state.remoteState = {
+      ...next,
+      gatcha: next.gatcha || state.remoteState?.gatcha,
+      gatcha_pool_config: next.gatcha_pool_config || state.remoteState?.gatcha_pool_config,
+    };
+    const data = JSON.stringify(localState(state.remoteState));
     for (const listener of listeners) listener({ type: "state", data });
   }
 
@@ -424,6 +435,14 @@
   function publicSearchItem(item) {
     const url = itemUrl(item);
     return { ...item, url, original_url: url, resolved_url: url };
+  }
+
+  function publicCatalogPayload(payload) {
+    const data = payload && typeof payload === "object" ? payload : {};
+    return {
+      ...data,
+      items: (Array.isArray(data.items) ? data.items : []).map(publicSearchItem),
+    };
   }
 
   async function fetchInternet(input, init = {}) {
@@ -446,16 +465,99 @@
         response = await request("state.get", { since_revision: null }, "bulk");
         return jsonResponse({ ok: true, data: localState(response.data) });
       }
-      if (method === "GET" && ["/api/lark/search", "/api/gatcha/search"].includes(url.pathname)) {
+      if (method === "GET" && url.pathname === "/api/lark/search") {
         response = await request("catalog.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)) }, "bulk");
         return jsonResponse({ ok: true, data: { items: (response.data?.items || []).map(publicSearchItem) } });
       }
+      if (method === "GET" && url.pathname === "/api/gatcha/search") {
+        response = await request("gatcha.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)) }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
+      }
+      if (method === "GET" && url.pathname === "/api/d1/browse") {
+        response = await request("catalog.browse", {
+          kind: url.searchParams.get("kind") === "artist" ? "artist" : "name",
+          letter: url.searchParams.get("letter") || "",
+          query: url.searchParams.get("q") || "",
+          tag: url.searchParams.get("tag") || "",
+          locale: url.searchParams.get("locale") || "",
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 100))),
+        }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
+      }
+      if (method === "GET" && url.pathname === "/api/d1/category-browse") {
+        response = await request("catalog.category_browse", {
+          tags: url.searchParams.getAll("tag"),
+          tag45s: url.searchParams.getAll("tag45"),
+          query: url.searchParams.get("q") || "",
+          offset: Math.max(0, Number(url.searchParams.get("offset") || 0)),
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 100))),
+        }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
+      }
+      if (method === "GET" && url.pathname === "/api/gatcha/browse") {
+        response = await request("gatcha.browse", {
+          uid: url.searchParams.get("uid") || "",
+          query: url.searchParams.get("q") || "",
+        }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
+      }
+      if (method === "GET" && url.pathname === "/api/gatcha/favlist/browse") {
+        response = await request("gatcha.favlist_browse", {
+          folder_id: url.searchParams.get("folder_id") || "",
+          query: url.searchParams.get("q") || "",
+        }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
+      }
+      if (method === "GET" && url.pathname === "/api/gatcha/pool-config") {
+        response = await request("gatcha.pool_config_get", {}, "bulk");
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "GET" && url.pathname === "/api/gatcha/candidate") {
+        response = await request("gatcha.candidate", {}, "bulk");
+        return jsonResponse({ ok: true, data: publicSearchItem(response.data || {}) });
+      }
       if (method === "POST" && ["/api/remote-identity/register", "/api/remote-identity/rename"].includes(url.pathname)) {
-        response = await request("session.set_identity", { name: String(body.name || "").trim() });
+        const requestedName = String(body.name || "").trim();
+        if (requestedName === state.identity) {
+          return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+        }
+        response = await request("session.set_identity", { name: requestedName });
         state.identity = String(response.data?.name || body.name || "").trim();
         localStorage.setItem(identityStorageKey, state.identity);
         if (response.data?.state) publishState(response.data.state);
         return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/pool-config") {
+        response = await request("gatcha.pool_config_set", {
+          uid_weight: Number(body.uid_weight ?? 50),
+          favlist_weight: Number(body.favlist_weight ?? 50),
+          excluded_uids: Array.isArray(body.excluded_uids) ? body.excluded_uids.map(String) : [],
+          excluded_favlist_folders: Array.isArray(body.excluded_favlist_folders) ? body.excluded_favlist_folders.map(String) : [],
+        });
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/uids/preview") {
+        response = await request("gatcha.uid_preview", { uid: String(body.uid || "") }, "bulk", 120_000);
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/uids/add") {
+        response = await request("gatcha.uid_add", { uid: String(body.uid || "") }, "bulk", 300_000);
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/refresh") {
+        response = await request("gatcha.refresh", {}, "bulk", 30_000);
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/favlist/preview") {
+        response = await request("gatcha.favlist_preview", { uid: String(body.uid || "") }, "bulk", 120_000);
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
+      if (method === "POST" && url.pathname === "/api/gatcha/favlist") {
+        response = await request("gatcha.favlist_refresh", {
+          uid: String(body.uid || ""),
+          folder_ids: Array.isArray(body.folder_ids) ? body.folder_ids.map(String) : [],
+        }, "bulk", 300_000);
+        return jsonResponse({ ok: true, data: response.data || {} });
       }
       if (method === "POST" && url.pathname === "/api/playlist/add") {
         response = await request("playlist.add", {
@@ -506,7 +608,9 @@
       if (next?.revision !== undefined) publishState(next);
       return jsonResponse({ ok: true, stale: Boolean(response?.stale), data: localState(next) });
     } catch (error) {
-      return jsonResponse({ ok: false, code: "internet_remote_request_failed", error: String(error?.message || error || "请求失败") }, 502);
+      const code = String(error?.code || "internet_remote_request_failed");
+      const status = code === "internet_remote_rate_limited" ? 429 : 502;
+      return jsonResponse({ ok: false, code, error: String(error?.message || error || "请求失败") }, status);
     }
   }
 

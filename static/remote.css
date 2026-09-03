@@ -4830,12 +4830,6 @@ html[data-remote-transport="internet-pending"] body {
 }
 
 html[data-remote-transport="internet"] #remote-qr-control,
-html[data-remote-transport="internet"] .gatcha-panel,
-html[data-remote-transport="internet"] [data-target="follow"],
-html[data-remote-transport="internet"] [data-target="favlist"],
-html[data-remote-transport="internet"] [data-target="category"],
-html[data-remote-transport="internet"] [data-target="name"],
-html[data-remote-transport="internet"] [data-target="artist"],
 html[data-remote-transport="internet"] #history-export-row {
   display: none !important;
 }
