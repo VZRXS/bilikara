@@ -54,6 +54,27 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             with self.subTest(language=language):
                 self.assertTrue(required.issubset(messages))
 
+    def test_room_creation_failure_remains_visible_after_cleanup(self):
+        start = self.host_js.index("async function startRoom")
+        end = self.host_js.index("function expireRoom", start)
+        source = self.host_js[start:end]
+        catch = source.index("} catch (error) {")
+        cleanup = source.index("stopRoom(false);", catch)
+        failure_status = source.index('setStatus(tr("internetRemote.createFailed"', catch)
+        self.assertLess(cleanup, failure_status)
+
+    def test_internet_remote_exposes_only_sanitized_bounded_diagnostics(self):
+        self.assertIn("window.BilikaraInternetRemoteDiagnostics", self.host_js)
+        self.assertIn("getSnapshot()", self.host_js)
+        self.assertIn("DIAGNOSTIC_EVENT_LIMIT = 64", self.host_js)
+        record_start = self.host_js.index("function recordDiagnostic")
+        record_end = self.host_js.index("window.BilikaraInternetRemoteDiagnostics", record_start)
+        record_source = self.host_js[record_start:record_end]
+        self.assertNotIn("roomId", record_source)
+        self.assertNotIn("hostToken", record_source)
+        self.assertNotIn("joinToken", record_source)
+        self.assertNotIn("password", record_source)
+
 
 if __name__ == "__main__":
     unittest.main()

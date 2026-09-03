@@ -347,6 +347,15 @@ def _normalized_ip_address(value: object) -> ipaddress.IPv4Address | ipaddress.I
     return address
 
 
+def _loopback_companion_host(host: str) -> str | None:
+    if not (getattr(sys, "frozen", False) and os.name == "nt"):
+        return None
+    address = _normalized_ip_address(host)
+    if address is None or address.is_loopback or address.is_unspecified:
+        return None
+    return "127.0.0.1"
+
+
 def _url_host(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
@@ -354,6 +363,9 @@ def _url_host(host: str) -> str:
 def _local_ui_host(bind_host: str) -> str:
     if bind_host in {"0.0.0.0", "::"}:
         return "127.0.0.1"
+    companion = _loopback_companion_host(bind_host)
+    if companion:
+        return companion
     return bind_host
 
 
@@ -575,6 +587,7 @@ class AppContext:
         self,
         browser_info: dict[str, object] | None = None,
         export_diagnostics: list[dict[str, object]] | None = None,
+        internet_remote_diagnostics: list[dict[str, object]] | None = None,
     ) -> DiagnosticArtifact:
         store_snapshot = self.store.snapshot()
         current_item = store_snapshot.get("current_item")
@@ -603,6 +616,7 @@ class AppContext:
             runtime_state=runtime_state,
             browser_info=browser_info,
             export_diagnostics=export_diagnostics,
+            internet_remote_diagnostics=internet_remote_diagnostics,
             local_usernames=local_usernames,
         )
 
@@ -1797,14 +1811,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": result})
                 return
             export_diagnostics = body.get("export_diagnostics") if isinstance(body, dict) else None
+            internet_remote_diagnostics = (
+                body.get("internet_remote_diagnostics")
+                if isinstance(body, dict)
+                else None
+            )
             if route == "/api/diagnostics/markdown":
                 if not self._is_local_client():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                if export_diagnostics is not None:
+                if export_diagnostics is not None or internet_remote_diagnostics is not None:
                     artifact = CONTEXT.build_diagnostics(
                         self._diagnostic_browser_info(body),
                         export_diagnostics=export_diagnostics,
+                        internet_remote_diagnostics=internet_remote_diagnostics,
                     )
                 else:
                     artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
@@ -1832,10 +1852,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     return
                 self._log_diagnostics_stage("diagnostics_authorized", diagnostic_context)
                 try:
-                    if export_diagnostics is not None:
+                    if export_diagnostics is not None or internet_remote_diagnostics is not None:
                         artifact = CONTEXT.build_diagnostics(
                             self._diagnostic_browser_info(body),
                             export_diagnostics=export_diagnostics,
+                            internet_remote_diagnostics=internet_remote_diagnostics,
                         )
                     else:
                         artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
@@ -3309,6 +3330,22 @@ def _serve(
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     bound_host, bound_port = server.server_address[:2]
     actual_port = bound_port
+    loopback_server = None
+    loopback_host = _loopback_companion_host(host)
+    if loopback_host:
+        try:
+            loopback_server = ThreadingHTTPServer(
+                (loopback_host, actual_port),
+                BilikaraHandler,
+            )
+        except Exception:
+            server.server_close()
+            raise
+        threading.Thread(
+            target=loopback_server.serve_forever,
+            daemon=True,
+            name="bilikara-loopback-http",
+        ).start()
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
@@ -3342,6 +3379,9 @@ def _serve(
     finally:
         CONTEXT.shutdown()
         server.server_close()
+        if loopback_server is not None:
+            loopback_server.shutdown()
+            loopback_server.server_close()
 
 
 def run(
@@ -3389,6 +3429,9 @@ def _playlist_export_logo_path() -> Path | None:
 def _port_probe_hosts(host: str) -> tuple[str, ...]:
     if host == "0.0.0.0":
         return (host, "127.0.0.1")
+    companion = _loopback_companion_host(host)
+    if companion:
+        return (host, companion)
     return (host,)
 
 

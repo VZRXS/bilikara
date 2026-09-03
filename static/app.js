@@ -16840,6 +16840,13 @@ function diagnosticBrowserInfo() {
   };
 }
 
+function internetRemoteDiagnosticsSnapshot() {
+  const diagnostics = window.BilikaraInternetRemoteDiagnostics;
+  return diagnostics && typeof diagnostics.getSnapshot === "function"
+    ? diagnostics.getSnapshot()
+    : [];
+}
+
 function setDiagnosticsBusy(busy) {
   state.diagnosticsBusy = Boolean(busy);
   if (elements.diagnosticCopyButton) {
@@ -16861,6 +16868,7 @@ async function diagnosticResponse(path) {
     body: JSON.stringify({
       browser: diagnosticBrowserInfo(),
       export_diagnostics: exportDiagnostics,
+      internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
     }),
   });
   if (!response.ok) {
@@ -16946,6 +16954,7 @@ async function downloadDiagnosticsPackage() {
       JSON.stringify({
         browser: diagnosticBrowserInfo(),
         export_diagnostics: exportDiagnostics,
+        internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
       }),
       t("service.diagnosticsFailed"),
       { format: "zip", source: "diagnostics", surface: "host" },

@@ -111,8 +111,9 @@ def _default_host() -> str:
     if override:
         return override
 
-    # Preserve the preview.1 packaged-Windows behavior: the desktop shell and
-    # standalone bundle both open the concrete physical-adapter address.
+    # Packaged Windows keeps its concrete LAN listener for the existing Local
+    # Remote. The server adds a separate loopback-only companion listener for
+    # the Host UI, without exposing virtual adapters.
     if getattr(sys, "frozen", False) and os.name == "nt":
         physical_host = _detect_windows_physical_host()
         if physical_host:

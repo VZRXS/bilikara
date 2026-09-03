@@ -5,6 +5,9 @@
   const transport = window.BilikaraInternetTransport;
   if (!transport) return;
 
+  const diagnosticEvents = [];
+  const DIAGNOSTIC_EVENT_LIMIT = 64;
+
   const peers = new Map();
   const state = {
     mode: "local",
@@ -28,6 +31,52 @@
   };
 
   let elements = null;
+
+  function diagnosticError(error) {
+    const name = String(error?.name || "Error").slice(0, 64);
+    const errorCode = name === "AbortError"
+      ? "timeout"
+      : name === "TypeError"
+        ? "network_error"
+        : name.replace(/[^A-Za-z0-9_.-]/gu, "_").toLowerCase() || "error";
+    const errorMessage = String(error?.message || error || "unknown error")
+      .replace(/https?:\/\/[^\s]+/giu, "[REDACTED_URL]")
+      .replace(/[A-Za-z0-9_-]{20,}/gu, "[REDACTED_VALUE]")
+      .replace(/[\r\n]+/gu, " ")
+      .slice(0, 256);
+    return { errorCode, errorMessage };
+  }
+
+  function pageOriginClass() {
+    const protocol = String(window.location.protocol || "").toLowerCase();
+    const hostname = String(window.location.hostname || "").toLowerCase();
+    if (protocol === "tauri:" || hostname === "tauri.localhost") return "tauri";
+    if (["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname)) return "loopback";
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/u.test(hostname)) return "lan";
+    return "other";
+  }
+
+  function recordDiagnostic(stage, status, details = {}) {
+    const event = {
+      timestamp: new Date().toISOString(),
+      stage: String(stage || "unknown").slice(0, 64),
+      status: String(status || "unknown").slice(0, 32),
+      httpStatus: Number.isInteger(details.httpStatus) ? details.httpStatus : null,
+      elapsedMs: Number.isFinite(details.elapsedMs) ? Math.max(0, Math.round(details.elapsedMs)) : null,
+      peerCount: peers.size,
+      originClass: pageOriginClass(),
+      errorCode: details.errorCode ? String(details.errorCode).slice(0, 64) : null,
+      errorMessage: details.errorMessage ? String(details.errorMessage).slice(0, 256) : null,
+    };
+    diagnosticEvents.push(event);
+    if (diagnosticEvents.length > DIAGNOSTIC_EVENT_LIMIT) diagnosticEvents.shift();
+  }
+
+  window.BilikaraInternetRemoteDiagnostics = Object.freeze({
+    getSnapshot() {
+      return diagnosticEvents.map((event) => ({ ...event }));
+    },
+  });
 
   function tr(key, fallback, values = {}) {
     let message = state.messages[key] || fallback;
@@ -332,12 +381,16 @@
 
   function connectSignaling() {
     if (state.stopped || !state.roomId) return;
+    recordDiagnostic("signaling.connect", "started");
     const socket = new WebSocket(signalUrl(), [
       "bilikara-v1",
       `host.${state.hostToken}.${state.hostPeerId}`,
     ]);
     state.socket = socket;
-    socket.addEventListener("open", () => setStatus(tr("internetRemote.waiting", "等待 Remote 加入"), "good"));
+    socket.addEventListener("open", () => {
+      recordDiagnostic("signaling.connect", "connected");
+      setStatus(tr("internetRemote.waiting", "等待 Remote 加入"), "good");
+    });
     socket.addEventListener("message", (event) => {
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
@@ -349,6 +402,9 @@
       }
     });
     socket.addEventListener("close", (event) => {
+      recordDiagnostic("signaling.connect", "closed", {
+        errorCode: event.code === 1000 ? null : `websocket_${event.code}`,
+      });
       if (state.socket === socket) state.socket = null;
       if (!state.stopped && event.code !== 4003) {
         clearTimeout(state.reconnectTimer);
@@ -357,7 +413,10 @@
         expireRoom();
       }
     });
-    socket.addEventListener("error", () => setStatus(tr("internetRemote.signalingRetry", "信令暂时不可用，正在重连"), "bad"));
+    socket.addEventListener("error", () => {
+      recordDiagnostic("signaling.connect", "error", { errorCode: "websocket_error" });
+      setStatus(tr("internetRemote.signalingRetry", "信令暂时不可用，正在重连"), "bad");
+    });
   }
 
   async function startRoom() {
@@ -375,6 +434,8 @@
     state.hostToken = transport.randomBase64Url(32);
     state.joinToken = transport.randomBase64Url(32);
     state.hostPeerId = transport.randomBase64Url(16);
+    const startedAt = performance.now();
+    recordDiagnostic("room.create", "started");
     try {
       const response = await fetch(`${SIGNAL_ORIGIN}/v1/rooms`, {
         method: "POST",
@@ -383,6 +444,10 @@
           host_token_hash: await transport.sha256(state.hostToken),
           join_token_hash: await transport.sha256(state.joinToken),
         }),
+      });
+      recordDiagnostic("room.create", "response", {
+        httpStatus: response.status,
+        elapsedMs: performance.now() - startedAt,
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -409,10 +474,21 @@
         time: new Date(state.expiresAt).toLocaleString(),
       });
       state.expiryTimer = setTimeout(expireRoom, workerLifetime + 1_000);
+      recordDiagnostic("room.create", "created", {
+        httpStatus: response.status,
+        elapsedMs: performance.now() - startedAt,
+      });
       connectSignaling();
     } catch (error) {
-      setStatus(tr("internetRemote.createFailed", "创建失败：{error}", { error: error.message }), "bad");
+      const failure = diagnosticError(error);
+      recordDiagnostic("room.create", "failed", {
+        ...failure,
+        elapsedMs: performance.now() - startedAt,
+      });
       stopRoom(false);
+      setStatus(tr("internetRemote.createFailed", "创建失败：{error}", {
+        error: failure.errorMessage,
+      }), "bad");
     } finally {
       state.busy = false;
       render();

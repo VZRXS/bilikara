@@ -31,6 +31,8 @@ pub struct DiagnosticRequest {
     #[serde(default)]
     pub export_diagnostics: Vec<Value>,
     #[serde(default)]
+    pub internet_remote_diagnostics: Vec<Value>,
+    #[serde(default)]
     pub local_usernames: Vec<String>,
     #[serde(default)]
     pub connectivity_override: Option<Value>,
@@ -66,6 +68,8 @@ pub fn build_diagnostic_artifact(
     let policy = redact_value(request.cache_policy.clone(), "", &names);
     let runtime = redact_value(request.runtime_state.clone(), "", &names);
     let exports = sanitize_exports(&request.export_diagnostics, &names);
+    let internet_remote =
+        sanitize_internet_remote_diagnostics(&request.internet_remote_diagnostics, &names);
     let disk = disk_snapshot(&request.app_home, &names);
     let connectivity = request.connectivity_override.clone().unwrap_or_else(|| {
         probe_connectivity(
@@ -88,6 +92,10 @@ pub fn build_diagnostic_artifact(
     files.insert("disk.json".to_owned(), json_bytes(&disk));
     files.insert("connectivity.json".to_owned(), json_bytes(&connectivity));
     files.insert("export-diagnostics.json".to_owned(), json_bytes(&exports));
+    files.insert(
+        "internet-remote-diagnostics.json".to_owned(),
+        json_bytes(&internet_remote),
+    );
     for (name, payload) in configs {
         files.insert(format!("config/{name}"), json_bytes(&payload));
     }
@@ -103,6 +111,7 @@ pub fn build_diagnostic_artifact(
         disk: &disk,
         connectivity: &connectivity,
         exports: &exports,
+        internet_remote: &internet_remote,
         logs: &logs,
     });
     let zip_bytes = build_zip(&markdown, &files)?;
@@ -276,6 +285,47 @@ fn sanitize_exports(values: &[Value], names: &[String]) -> Value {
     Value::Array(entries)
 }
 
+fn sanitize_internet_remote_diagnostics(values: &[Value], names: &[String]) -> Value {
+    let entries = values
+        .iter()
+        .rev()
+        .take(64)
+        .rev()
+        .filter_map(Value::as_object)
+        .map(|source| {
+            let text = |key: &str, max_chars: usize| {
+                source
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(|value| {
+                        Value::String(redact_text(value, names).chars().take(max_chars).collect())
+                    })
+                    .unwrap_or(Value::Null)
+            };
+            let bounded_integer = |key: &str, maximum: i64| {
+                source
+                    .get(key)
+                    .and_then(Value::as_i64)
+                    .filter(|value| (0..=maximum).contains(value))
+                    .map(Value::from)
+                    .unwrap_or(Value::Null)
+            };
+            json!({
+                "timestamp": text("timestamp", 64),
+                "stage": text("stage", 64),
+                "status": text("status", 32),
+                "httpStatus": bounded_integer("httpStatus", 999),
+                "elapsedMs": bounded_integer("elapsedMs", 3_600_000),
+                "peerCount": bounded_integer("peerCount", 100),
+                "originClass": text("originClass", 16),
+                "errorCode": text("errorCode", 64),
+                "errorMessage": text("errorMessage", 256),
+            })
+        })
+        .collect();
+    Value::Array(entries)
+}
+
 fn disk_snapshot(path: &Path, names: &[String]) -> Value {
     match (fs2::total_space(path), fs2::available_space(path)) {
         (Ok(total), Ok(free)) => json!({
@@ -421,6 +471,7 @@ struct MarkdownInputs<'a> {
     disk: &'a Value,
     connectivity: &'a Value,
     exports: &'a Value,
+    internet_remote: &'a Value,
     logs: &'a BTreeMap<String, String>,
 }
 
@@ -433,6 +484,7 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
         disk,
         connectivity,
         exports,
+        internet_remote,
         logs,
     } = inputs;
     let tools = tools_and_tasks.get("tools").and_then(Value::as_object);
@@ -560,6 +612,39 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
         }
     } else {
         lines.push("No recent export attempts recorded.".to_owned());
+    }
+    lines.extend([
+        String::new(),
+        "## Recent Internet Remote Diagnostics".to_owned(),
+        String::new(),
+    ]);
+    if let Some(entries) = internet_remote
+        .as_array()
+        .filter(|entries| !entries.is_empty())
+    {
+        lines.push(
+            "| Timestamp | Stage | Status | Origin | HTTP | Elapsed | Peers | Error |".to_owned(),
+        );
+        lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
+        for item in entries {
+            let error = item
+                .get("errorMessage")
+                .or_else(|| item.get("errorCode"))
+                .map_or("-".to_owned(), |value| value_label(Some(value)));
+            lines.push(format!(
+                "| {} | {} | {} | {} | {} | {} ms | {} | {} |",
+                markdown_table_cell(&value_label(item.get("timestamp"))),
+                markdown_table_cell(&value_label(item.get("stage"))),
+                markdown_table_cell(&value_label(item.get("status"))),
+                markdown_table_cell(&value_label(item.get("originClass"))),
+                markdown_table_cell(&value_label(item.get("httpStatus"))),
+                markdown_table_cell(&value_label(item.get("elapsedMs"))),
+                markdown_table_cell(&value_label(item.get("peerCount"))),
+                markdown_table_cell(&error),
+            ));
+        }
+    } else {
+        lines.push("No recent Internet Remote attempts recorded.".to_owned());
     }
     if !logs.is_empty() {
         let mut recent = Vec::new();
@@ -746,10 +831,50 @@ mod tests {
             disk: &empty,
             connectivity: &empty,
             exports: &json!([]),
+            internet_remote: &json!([]),
             logs: &logs,
         });
 
         assert!(markdown.contains("| Tool | Installed | Version | State | Message |"));
         assert!(markdown.contains("legacy BBDown prewarm failed"));
+    }
+
+    #[test]
+    fn internet_remote_sanitizer_is_bounded_and_drops_secrets() {
+        let values = (0..70)
+            .map(|index| {
+                json!({
+                    "timestamp": "2026-09-03T00:00:00Z",
+                    "stage": "room.create",
+                    "status": "failed",
+                    "httpStatus": 403,
+                    "elapsedMs": index,
+                    "peerCount": 2,
+                    "originClass": "loopback",
+                    "errorCode": "network_error",
+                    "errorMessage": "token=secret room rejected",
+                    "roomId": "must-not-survive",
+                    "hostToken": "must-not-survive",
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let result = sanitize_internet_remote_diagnostics(&values, &[]);
+        let entries = result.as_array().unwrap();
+        assert_eq!(entries.len(), 64);
+        assert!(entries[0].get("roomId").is_none());
+        assert!(entries[0].get("hostToken").is_none());
+        assert!(
+            !entries[0]["errorMessage"]
+                .as_str()
+                .unwrap()
+                .contains("secret")
+        );
+        assert!(
+            entries[0]["errorMessage"]
+                .as_str()
+                .unwrap()
+                .contains(REDACTED)
+        );
     }
 }

@@ -74,6 +74,10 @@ class FrontendExportBehaviorTest(unittest.TestCase):
         self.assertIn("await saveTauriBackendDownload(", download_source)
         self.assertIn("browser: diagnosticBrowserInfo()", download_source)
         self.assertIn("export_diagnostics: exportDiagnostics", download_source)
+        self.assertIn(
+            "internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot()",
+            download_source,
+        )
         self.assertIn("if (tauriStatus !== null)", download_source)
         self.assertIn('tauriStatus === "saved"', download_source)
         self.assertIn('await diagnosticResponse("/api/diagnostics/package")', download_source)
