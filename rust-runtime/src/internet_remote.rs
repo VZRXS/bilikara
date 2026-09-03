@@ -1,15 +1,16 @@
 use crate::app_state::{AppSnapshot, PlaylistItem};
 use bilikara_rust::{
     INTERNET_REMOTE_PROTOCOL_VERSION, MAX_REMOTE_STATE_ITEMS, RemoteAudioVariantV1,
-    RemoteCacheStatusV1, RemoteLane, RemotePlaybackModeV1, RemotePlayerSettingsV1, RemoteProfile,
-    RemoteProtocolError, RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1,
-    RemoteValidationContext, decode_remote_request_v1,
+    RemoteCacheStatusV1, RemoteLane, RemotePlaybackModeV1, RemotePlayerSettingsV1,
+    RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError, RemoteRequestEnvelopeV1,
+    RemoteRequestV1, RemoteStateV1, RemoteValidationContext, decode_remote_request_v1,
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
 const MAX_INTERNET_REMOTE_PEERS: usize = 32;
+const MAX_PENDING_PLAYLIST_ADDS_PER_PEER: usize = 8;
 const MAX_PEER_ID_BYTES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,18 @@ struct PeerSession {
     session_name: Option<String>,
     control_last_sequence: Option<u64>,
     bulk_last_sequence: Option<u64>,
+    pending_playlist_adds: HashMap<String, PendingPlaylistAdd>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingPlaylistAdd {
+    pub request_id: String,
+    pub sequence: u64,
+    pub expected_revision: u64,
+    pub catalog_item_id: String,
+    pub position: RemotePlaylistPositionV1,
+    pub allow_repeat: bool,
+    pub session_name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,6 +60,9 @@ pub(crate) enum InternetRemoteError {
     InvalidEpoch,
     TooManyPeers,
     UnknownPeer,
+    IdentityRequired,
+    PendingRequestMissing,
+    TooManyPendingRequests,
     Protocol(RemoteProtocolError),
 }
 
@@ -57,6 +73,9 @@ impl InternetRemoteError {
             Self::InvalidEpoch => "invalid_internet_remote_epoch",
             Self::TooManyPeers => "too_many_internet_remote_peers",
             Self::UnknownPeer => "unknown_internet_remote_peer",
+            Self::IdentityRequired => "internet_remote_identity_required",
+            Self::PendingRequestMissing => "internet_remote_pending_request_missing",
+            Self::TooManyPendingRequests => "too_many_internet_remote_pending_requests",
             Self::Protocol(error) => match error {
                 RemoteProtocolError::MessageTooLarge => "internet_remote_message_too_large",
                 RemoteProtocolError::MalformedEnvelope => "malformed_internet_remote_envelope",
@@ -80,6 +99,9 @@ impl InternetRemoteError {
             Self::InvalidEpoch => "Internet Remote epoch is invalid",
             Self::TooManyPeers => "Internet Remote peer limit has been reached",
             Self::UnknownPeer => "Internet Remote peer is not registered",
+            Self::IdentityRequired => "Set an Internet Remote identity before this operation",
+            Self::PendingRequestMissing => "Internet Remote request is no longer pending",
+            Self::TooManyPendingRequests => "Too many Internet Remote requests are pending",
             Self::Protocol(_) => "Internet Remote message was rejected",
         }
     }
@@ -109,6 +131,7 @@ impl InternetRemotePeers {
                 session_name: None,
                 control_last_sequence: None,
                 bulk_last_sequence: None,
+                pending_playlist_adds: HashMap::new(),
             },
         );
         Ok(())
@@ -153,16 +176,74 @@ impl InternetRemotePeers {
             RemoteLane::Bulk => peer.bulk_last_sequence = Some(decoded.seq),
         }
 
-        if let RemoteRequestV1::SessionSetIdentity { name } = &decoded.request {
-            peer.session_name = Some(name.clone());
-        }
-
         Ok(validation_result(
             peer_id,
             peer.session_name.clone(),
             decoded,
             snapshot,
         ))
+    }
+
+    pub(crate) fn commit_identity(
+        &mut self,
+        peer_id: &str,
+        name: String,
+    ) -> Result<(), InternetRemoteError> {
+        let peer = self
+            .peers
+            .get_mut(peer_id)
+            .ok_or(InternetRemoteError::UnknownPeer)?;
+        peer.session_name = Some(name);
+        Ok(())
+    }
+
+    pub(crate) fn begin_playlist_add(
+        &mut self,
+        validation: &InternetRemoteValidation,
+        catalog_item_id: &str,
+        position: RemotePlaylistPositionV1,
+        allow_repeat: bool,
+        expected_revision: u64,
+    ) -> Result<(), InternetRemoteError> {
+        let peer = self
+            .peers
+            .get_mut(&validation.peer_id)
+            .ok_or(InternetRemoteError::UnknownPeer)?;
+        let session_name = validation
+            .session_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or(InternetRemoteError::IdentityRequired)?;
+        if peer.pending_playlist_adds.len() >= MAX_PENDING_PLAYLIST_ADDS_PER_PEER {
+            return Err(InternetRemoteError::TooManyPendingRequests);
+        }
+        let pending = PendingPlaylistAdd {
+            request_id: validation.request_id.clone(),
+            sequence: validation.sequence,
+            expected_revision,
+            catalog_item_id: catalog_item_id.to_owned(),
+            position,
+            allow_repeat,
+            session_name: session_name.to_owned(),
+        };
+        peer.pending_playlist_adds
+            .insert(validation.request_id.clone(), pending);
+        Ok(())
+    }
+
+    pub(crate) fn take_playlist_add(
+        &mut self,
+        peer_id: &str,
+        request_id: &str,
+    ) -> Result<PendingPlaylistAdd, InternetRemoteError> {
+        let peer = self
+            .peers
+            .get_mut(peer_id)
+            .ok_or(InternetRemoteError::UnknownPeer)?;
+        peer.pending_playlist_adds
+            .remove(request_id)
+            .ok_or(InternetRemoteError::PendingRequestMissing)
     }
 }
 
@@ -441,7 +522,10 @@ mod tests {
         let set = peers
             .validate("peer-one", RemoteLane::Control, &identity, &snapshot)
             .unwrap();
-        assert_eq!(set.session_name.as_deref(), Some("Alice"));
+        assert_eq!(set.session_name, None);
+        peers
+            .commit_identity("peer-one", "Alice".to_owned())
+            .unwrap();
 
         let health = json!({
             "v": 1,

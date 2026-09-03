@@ -1195,21 +1195,42 @@ class PlaylistStore:
             peer_id=peer_id,
         )
 
-    def validate_internet_remote_message(
-        self, peer_id: str, lane: str, message: str
-    ) -> dict[str, Any]:
-        return self._request(
-            "validate_internet_remote_message",
-            include_now=False,
-            peer_id=peer_id,
-            lane=lane,
-            message=message,
-        )
-
     def internet_remote_state(self) -> dict[str, Any]:
         return self._request(
             "internet_remote_state",
             include_now=False,
+        )
+
+    def dispatch_internet_remote_message(
+        self,
+        peer_id: str,
+        lane: str,
+        message: str,
+        *,
+        reset_av_delay: bool = False,
+    ) -> dict[str, Any]:
+        return self._request(
+            "dispatch_internet_remote_message",
+            peer_id=peer_id,
+            lane=lane,
+            message=message,
+            reset_av_delay=bool(reset_av_delay),
+        )
+
+    def complete_internet_remote_playlist_add(
+        self,
+        peer_id: str,
+        request_id: str,
+        item: PlaylistItem,
+        *,
+        reset_av_delay: bool = False,
+    ) -> dict[str, Any]:
+        return self._request(
+            "complete_internet_remote_playlist_add",
+            peer_id=peer_id,
+            request_id=request_id,
+            item=item.serialize(),
+            reset_av_delay=bool(reset_av_delay),
         )
 
     def _request_unlocked(
