@@ -3880,26 +3880,43 @@ impl AppState {
                 Some(json!({"kind": "sync_cache"})),
                 None,
             ),
-            RemoteRequestV1::PlaybackPlay
-            | RemoteRequestV1::PlaybackPause
-            | RemoteRequestV1::PlaybackToggle
+            RemoteRequestV1::PlaybackPlay { .. }
+            | RemoteRequestV1::PlaybackPause { .. }
+            | RemoteRequestV1::PlaybackToggle { .. }
             | RemoteRequestV1::PlaybackSeekRelative { .. }
-            | RemoteRequestV1::PlaybackNext => {
-                let (action, delta_seconds) = match request {
-                    RemoteRequestV1::PlaybackPlay => ("play", 0),
-                    RemoteRequestV1::PlaybackPause => ("pause", 0),
-                    RemoteRequestV1::PlaybackToggle => ("toggle-play", 0),
-                    RemoteRequestV1::PlaybackSeekRelative { delta_seconds } => {
-                        ("seek-relative", delta_seconds)
-                    }
-                    RemoteRequestV1::PlaybackNext => ("next-track", 0),
+            | RemoteRequestV1::PlaybackNext { .. } => {
+                let (action, item_id, playback_generation, delta_seconds) = match request {
+                    RemoteRequestV1::PlaybackPlay {
+                        item_id,
+                        playback_generation,
+                    } => ("play", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackPause {
+                        item_id,
+                        playback_generation,
+                    } => ("pause", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackToggle {
+                        item_id,
+                        playback_generation,
+                    } => ("toggle-play", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackSeekRelative {
+                        item_id,
+                        playback_generation,
+                        delta_seconds,
+                    } => ("seek-relative", item_id, playback_generation, delta_seconds),
+                    RemoteRequestV1::PlaybackNext {
+                        playback_generation,
+                    } => (
+                        "next-track",
+                        snapshot
+                            .current_item
+                            .as_ref()
+                            .map(|item| item.id.clone())
+                            .unwrap_or_default(),
+                        playback_generation,
+                        0,
+                    ),
                     _ => unreachable!("playback request group changed"),
                 };
-                let item_id = snapshot
-                    .current_item
-                    .as_ref()
-                    .map(|item| item.id.clone())
-                    .unwrap_or_default();
                 return internet_remote_reply(
                     data,
                     &validation,
@@ -3907,7 +3924,7 @@ impl AppState {
                     Some(json!({
                         "kind": "player_control",
                         "action": action,
-                        "playback_generation": snapshot.playback_generation,
+                        "playback_generation": playback_generation,
                         "item_id": item_id,
                         "delta_seconds": delta_seconds,
                     })),
@@ -3944,26 +3961,19 @@ impl AppState {
             RemoteRequestV1::PlayerSetAudioVariant {
                 item_id,
                 variant_id,
+                expected_item_incarnation_id,
                 ..
-            } => {
-                let Some(item) = data.find_item(&item_id) else {
-                    return execute_error_response(rejected(
-                        "item_not_found",
-                        "playlist item does not exist",
-                    ));
-                };
-                (
-                    AppStateRequest::SetAudioVariant {
-                        schema_version: SCHEMA_VERSION,
-                        item_id,
-                        expected_item_incarnation_id: item.item_incarnation_id.clone(),
-                        variant_id,
-                        now,
-                    },
-                    None,
-                    None,
-                )
-            }
+            } => (
+                AppStateRequest::SetAudioVariant {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    expected_item_incarnation_id,
+                    variant_id,
+                    now,
+                },
+                None,
+                None,
+            ),
             RemoteRequestV1::PlayerSetAvDelay { effective_delay_ms } => (
                 AppStateRequest::ApplyAvDelay {
                     schema_version: SCHEMA_VERSION,
@@ -4032,13 +4042,11 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::CacheRetry { item_id, .. } => {
-                let Some(item) = data.find_item(&item_id) else {
-                    return execute_error_response(rejected(
-                        "item_not_found",
-                        "playlist item does not exist",
-                    ));
-                };
+            RemoteRequestV1::CacheRetry {
+                item_id,
+                expected_item_incarnation_id,
+                ..
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
@@ -4046,7 +4054,7 @@ impl AppState {
                     Some(json!({
                         "kind": "retry_cache",
                         "item_id": item_id,
-                        "item_incarnation_id": item.item_incarnation_id,
+                        "item_incarnation_id": expected_item_incarnation_id,
                     })),
                     false,
                 );
@@ -5178,7 +5186,11 @@ mod tests {
             epoch,
             3,
             "playback.seek_relative",
-            json!({"delta_seconds": 10}),
+            json!({
+                "item_id": completion.result["data"]["current_item"]["id"],
+                "playback_generation": completion.result["data"]["playback_generation"],
+                "delta_seconds": 10,
+            }),
             13.0,
         );
         assert!(!playback.committed);
@@ -5187,6 +5199,124 @@ mod tests {
             json!("player_control")
         );
         assert_eq!(playback.result["_host_effect"]["delta_seconds"], json!(10));
+    }
+
+    #[test]
+    fn internet_remote_rejects_stale_playback_and_item_incarnation_targets() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob")];
+        let program_a = initialize(&mut state, initial);
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+
+        let program_b = success(state.execute(AppStateRequest::MoveToFront {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            reset_av_delay: false,
+            now: 11.0,
+        }))
+        .snapshot
+        .expect("program B snapshot");
+        let before_stale_playback = state.data.clone();
+        let stale_playback = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "playback.seek_relative",
+            json!({
+                "item_id": "a",
+                "playback_generation": program_a.playback_generation,
+                "delta_seconds": 15,
+            }),
+            12.0,
+        );
+        assert_eq!(stale_playback.result["accepted"], json!(false));
+        assert_eq!(stale_playback.result["stale"], json!(true));
+        assert!(stale_playback.result.get("_host_effect").is_none());
+        assert_eq!(state.data, before_stale_playback);
+        assert_eq!(
+            stale_playback.result["data"]["current_item"]["id"],
+            json!("b"),
+        );
+
+        let stale_incarnation = program_b
+            .current_item
+            .as_ref()
+            .expect("program B item")
+            .item_incarnation_id
+            .clone();
+        success(state.execute(AppStateRequest::RemoveItem {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            now: 13.0,
+        }));
+        success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("b", "BV-b-new", ""),
+            position: "tail".to_owned(),
+            requester_name: "Bob".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 14.0,
+        }));
+        let live = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .expect("live snapshot");
+        let live_incarnation = live
+            .playlist
+            .iter()
+            .find(|entry| entry.id == "b")
+            .or_else(|| live.current_item.as_ref().filter(|entry| entry.id == "b"))
+            .expect("replacement item")
+            .item_incarnation_id
+            .clone();
+        assert_ne!(live_incarnation, stale_incarnation);
+
+        for (seq, kind, body) in [
+            (
+                2,
+                "player.set_audio_variant",
+                json!({
+                    "item_id": "b",
+                    "variant_id": "p1_off_vocal",
+                    "expected_item_incarnation_id": stale_incarnation,
+                    "expected_revision": live.revision,
+                }),
+            ),
+            (
+                3,
+                "cache.retry",
+                json!({
+                    "item_id": "b",
+                    "expected_item_incarnation_id": stale_incarnation,
+                    "expected_revision": live.revision,
+                }),
+            ),
+        ] {
+            let data_before = state.data.clone();
+            let rejected = remote_message(
+                &mut state,
+                peer_id,
+                epoch,
+                seq,
+                kind,
+                body,
+                15.0 + seq as f64,
+            );
+            assert_eq!(rejected.result["accepted"], json!(false), "{kind}");
+            assert_eq!(rejected.result["stale"], json!(true), "{kind}");
+            assert!(rejected.result.get("_host_effect").is_none(), "{kind}");
+            assert_eq!(state.data, data_before, "{kind}");
+        }
     }
 
     #[test]

@@ -88,6 +88,12 @@ after its Host-side metadata fetch; duplicate and session checks run against
 that latest state. Destructive and ordering mutations carry an expected
 AppState revision. The runtime consumes their sequence but returns
 `accepted: false` plus a fresh sanitized state when the revision is stale.
+Playback commands additionally carry the item ID and playback generation that
+were visible when the user acted. Audio-variant changes and cache retries carry
+the item's opaque incarnation ID. Rust compares those click-time identities to
+the same authoritative snapshot used for dispatch and rejects a mismatch before
+emitting any Host effect, so an ordered but delayed command cannot be rebound to
+a newer song or to a re-created item that happens to reuse the same public ID.
 
 An initial `playlist.add` leaves `selected_video_page` absent and
 `selected_audio_pages` empty so the Host can apply the normal automatic binding
@@ -102,11 +108,12 @@ exhaust the per-peer pending-request capacity.
 
 `RemoteStateV1` is a dedicated DTO rather than a serialized `AppSnapshot`. Its
 item shape contains display metadata, public cache projection, audio-variant
-labels, and Bilibili cover URL only. It has no local paths, resolved media URLs,
-cookies, diagnostics, update state, or tool settings. The Host adapter adds only
-the bounded public projection of the existing Rust Gatcha task status and pool
-configuration needed by the shared Remote UI; task results and local records
-are not forwarded.
+labels, Bilibili cover URL, and an opaque item-incarnation token used only for
+optimistic concurrency. The token is not a credential and grants no capability.
+The DTO has no local paths, resolved media URLs, cookies, diagnostics, update
+state, or tool settings. The Host adapter adds only the bounded public projection
+of the existing Rust Gatcha task status and pool configuration needed by the
+shared Remote UI; task results and local records are not forwarded.
 
 `rust-runtime/src/internet_remote.rs` constructs this DTO directly from one
 authoritative `AppSnapshot`. Bilibili CDN covers in `http://` or protocol-relative

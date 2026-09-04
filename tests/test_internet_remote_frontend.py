@@ -160,6 +160,47 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertNotIn('request("http.request"', self.remote_transport)
         self.assertNotIn("/api/internet-remote/dispatch", self.remote_transport)
 
+    def test_internet_adapter_preserves_click_time_command_identity(self):
+        self.assertIn(
+            'item_incarnation_id: String(item.item_incarnation_id || "")',
+            self.remote_transport,
+        )
+        control_start = self.remote_transport.index(
+            'url.pathname === "/api/player/control"'
+        )
+        control_end = self.remote_transport.index(
+            'url.pathname === "/api/player/key-shift"', control_start
+        )
+        control = self.remote_transport[control_start:control_end]
+        self.assertIn('item_id: String(body.item_id || "")', control)
+        self.assertIn(
+            "playback_generation: Number(body.playback_generation)", control
+        )
+
+        cache_start = self.remote_transport.index(
+            'url.pathname === "/api/cache/retry"'
+        )
+        cache_end = self.remote_transport.index(
+            'url.pathname === "/api/player/control"', cache_start
+        )
+        cache = self.remote_transport[cache_start:cache_end]
+        self.assertIn(
+            'expected_item_incarnation_id: String(body.expected_item_incarnation_id || "")',
+            cache,
+        )
+
+        variant_start = self.remote_transport.index(
+            'url.pathname === "/api/player/audio-variant"'
+        )
+        variant_end = self.remote_transport.index(
+            'url.pathname === "/api/rating/submit"', variant_start
+        )
+        variant = self.remote_transport[variant_start:variant_end]
+        self.assertIn(
+            'expected_item_incarnation_id: String(body.expected_item_incarnation_id || "")',
+            variant,
+        )
+
     def test_internet_mode_keeps_shared_browse_and_gatcha_ui_visible(self):
         for selector in (
             ".gatcha-panel",

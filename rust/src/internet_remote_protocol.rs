@@ -11,6 +11,7 @@ pub const MAX_REMOTE_STATE_ITEMS: usize = 1_000;
 const MAX_EPOCH_BYTES: usize = 22;
 const MAX_CATALOG_ID_BYTES: usize = 128;
 const MAX_ITEM_ID_BYTES: usize = 512;
+const ITEM_INCARNATION_ID_BYTES: usize = 51;
 const MAX_AUDIO_VARIANT_ID_BYTES: usize = 128;
 const MAX_SEARCH_QUERY_BYTES: usize = 400;
 const MAX_SEARCH_QUERY_CHARS: usize = 100;
@@ -276,15 +277,28 @@ pub enum RemoteRequestV1 {
         expected_revision: u64,
     },
     #[serde(rename = "playback.play")]
-    PlaybackPlay,
+    PlaybackPlay {
+        item_id: String,
+        playback_generation: u64,
+    },
     #[serde(rename = "playback.pause")]
-    PlaybackPause,
+    PlaybackPause {
+        item_id: String,
+        playback_generation: u64,
+    },
     #[serde(rename = "playback.toggle")]
-    PlaybackToggle,
+    PlaybackToggle {
+        item_id: String,
+        playback_generation: u64,
+    },
     #[serde(rename = "playback.seek_relative")]
-    PlaybackSeekRelative { delta_seconds: i32 },
+    PlaybackSeekRelative {
+        item_id: String,
+        playback_generation: u64,
+        delta_seconds: i32,
+    },
     #[serde(rename = "playback.next")]
-    PlaybackNext,
+    PlaybackNext { playback_generation: u64 },
     #[serde(rename = "player.set_volume")]
     PlayerSetVolume { volume_percent: u8 },
     #[serde(rename = "player.set_muted")]
@@ -295,6 +309,7 @@ pub enum RemoteRequestV1 {
     PlayerSetAudioVariant {
         item_id: String,
         variant_id: String,
+        expected_item_incarnation_id: String,
         expected_revision: u64,
     },
     #[serde(rename = "player.set_av_delay")]
@@ -306,6 +321,7 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "cache.retry")]
     CacheRetry {
         item_id: String,
+        expected_item_incarnation_id: String,
         expected_revision: u64,
     },
 }
@@ -336,11 +352,11 @@ impl RemoteRequestV1 {
             Self::PlaylistResort { .. } => RemoteOperation::PlaylistResort,
             Self::PlaylistMoveNext { .. } => RemoteOperation::PlaylistMoveNext,
             Self::PlaylistPlayNow { .. } => RemoteOperation::PlaylistPlayNow,
-            Self::PlaybackPlay => RemoteOperation::PlaybackPlay,
-            Self::PlaybackPause => RemoteOperation::PlaybackPause,
-            Self::PlaybackToggle => RemoteOperation::PlaybackToggle,
+            Self::PlaybackPlay { .. } => RemoteOperation::PlaybackPlay,
+            Self::PlaybackPause { .. } => RemoteOperation::PlaybackPause,
+            Self::PlaybackToggle { .. } => RemoteOperation::PlaybackToggle,
             Self::PlaybackSeekRelative { .. } => RemoteOperation::PlaybackSeekRelative,
-            Self::PlaybackNext => RemoteOperation::PlaybackNext,
+            Self::PlaybackNext { .. } => RemoteOperation::PlaybackNext,
             Self::PlayerSetVolume { .. } => RemoteOperation::PlayerSetVolume,
             Self::PlayerSetMuted { .. } => RemoteOperation::PlayerSetMuted,
             Self::PlayerSetKeyShift { .. } => RemoteOperation::PlayerSetKeyShift,
@@ -516,6 +532,14 @@ struct ItemMutationBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct IncarnationMutationBody {
+    item_id: String,
+    expected_item_incarnation_id: String,
+    expected_revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MoveItemBody {
     item_id: String,
     target_index: u32,
@@ -531,7 +555,22 @@ struct RevisionBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SeekRelativeBody {
+    item_id: String,
+    playback_generation: u64,
     delta_seconds: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaybackItemBody {
+    item_id: String,
+    playback_generation: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaybackGenerationBody {
+    playback_generation: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,6 +596,7 @@ struct KeyShiftBody {
 struct AudioVariantBody {
     item_id: String,
     variant_id: String,
+    expected_item_incarnation_id: String,
     expected_revision: u64,
 }
 
@@ -659,16 +699,26 @@ fn valid_revision(value: u64) -> bool {
     value <= MAX_SAFE_JSON_INTEGER
 }
 
+fn valid_playback_generation(value: u64) -> bool {
+    (1..=MAX_SAFE_JSON_INTEGER).contains(&value)
+}
+
+fn valid_item_incarnation_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == ITEM_INCARNATION_ID_BYTES
+        && bytes[0] == b'i'
+        && bytes[1] == b'-'
+        && bytes[34] == b'-'
+        && bytes[2..34].iter().all(u8::is_ascii_hexdigit)
+        && bytes[35..].iter().all(u8::is_ascii_hexdigit)
+}
+
 fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError> {
     let valid_item = |value: &str| valid_text(value, MAX_ITEM_ID_BYTES, MAX_ITEM_ID_BYTES);
     let valid_catalog = |value: &str| valid_catalog_item_id(value);
     let valid_expected = |value: u64| valid_revision(value);
     let valid = match request {
         RemoteRequestV1::ConnectionHealth
-        | RemoteRequestV1::PlaybackPlay
-        | RemoteRequestV1::PlaybackPause
-        | RemoteRequestV1::PlaybackToggle
-        | RemoteRequestV1::PlaybackNext
         | RemoteRequestV1::GatchaPoolConfigGet
         | RemoteRequestV1::GatchaCandidate
         | RemoteRequestV1::GatchaRefresh => true,
@@ -764,10 +814,6 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         | RemoteRequestV1::PlaylistPlayNow {
             item_id,
             expected_revision,
-        }
-        | RemoteRequestV1::CacheRetry {
-            item_id,
-            expected_revision,
         } => valid_item(item_id) && valid_expected(*expected_revision),
         RemoteRequestV1::PlaylistMove {
             item_id,
@@ -779,16 +825,38 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 && valid_expected(*expected_revision)
         }
         RemoteRequestV1::PlaylistResort { expected_revision } => valid_expected(*expected_revision),
-        RemoteRequestV1::PlaybackSeekRelative { delta_seconds } => {
-            *delta_seconds != 0
+        RemoteRequestV1::PlaybackPlay {
+            item_id,
+            playback_generation,
+        }
+        | RemoteRequestV1::PlaybackPause {
+            item_id,
+            playback_generation,
+        }
+        | RemoteRequestV1::PlaybackToggle {
+            item_id,
+            playback_generation,
+        } => valid_item(item_id) && valid_playback_generation(*playback_generation),
+        RemoteRequestV1::PlaybackSeekRelative {
+            item_id,
+            playback_generation,
+            delta_seconds,
+        } => {
+            valid_item(item_id)
+                && valid_playback_generation(*playback_generation)
+                && *delta_seconds != 0
                 && (-MAX_SEEK_DELTA_SECONDS..=MAX_SEEK_DELTA_SECONDS).contains(delta_seconds)
         }
+        RemoteRequestV1::PlaybackNext {
+            playback_generation,
+        } => valid_playback_generation(*playback_generation),
         RemoteRequestV1::PlayerSetVolume { volume_percent } => *volume_percent <= 100,
         RemoteRequestV1::PlayerSetMuted { .. } => true,
         RemoteRequestV1::PlayerSetKeyShift { key_shift } => (-6..=6).contains(key_shift),
         RemoteRequestV1::PlayerSetAudioVariant {
             item_id,
             variant_id,
+            expected_item_incarnation_id,
             expected_revision,
         } => {
             valid_item(item_id)
@@ -797,6 +865,7 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                     MAX_AUDIO_VARIANT_ID_BYTES,
                     MAX_AUDIO_VARIANT_ID_BYTES,
                 )
+                && valid_item_incarnation_id(expected_item_incarnation_id)
                 && valid_expected(*expected_revision)
         }
         RemoteRequestV1::PlayerSetAvDelay { effective_delay_ms } => {
@@ -807,6 +876,15 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         }
         RemoteRequestV1::RatingSubmit { play_id, score } => {
             valid_item(play_id) && (1..=5).contains(score)
+        }
+        RemoteRequestV1::CacheRetry {
+            item_id,
+            expected_item_incarnation_id,
+            expected_revision,
+        } => {
+            valid_item(item_id)
+                && valid_item_incarnation_id(expected_item_incarnation_id)
+                && valid_expected(*expected_revision)
         }
     };
     valid
@@ -964,7 +1042,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 expected_revision: body.expected_revision,
             }
         }
-        "playlist.remove" | "playlist.move_next" | "playlist.play_now" | "cache.retry" => {
+        "playlist.remove" | "playlist.move_next" | "playlist.play_now" => {
             let body: ItemMutationBody = body(value)?;
             match kind {
                 "playlist.remove" => RemoteRequestV1::PlaylistRemove {
@@ -979,10 +1057,15 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                     item_id: body.item_id,
                     expected_revision: body.expected_revision,
                 },
-                _ => RemoteRequestV1::CacheRetry {
-                    item_id: body.item_id,
-                    expected_revision: body.expected_revision,
-                },
+                _ => unreachable!("playlist item mutation kind changed"),
+            }
+        }
+        "cache.retry" => {
+            let body: IncarnationMutationBody = body(value)?;
+            RemoteRequestV1::CacheRetry {
+                item_id: body.item_id,
+                expected_item_incarnation_id: body.expected_item_incarnation_id,
+                expected_revision: body.expected_revision,
             }
         }
         "playlist.move" => {
@@ -999,19 +1082,35 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 expected_revision: body.expected_revision,
             }
         }
-        "playback.play" | "playback.pause" | "playback.toggle" | "playback.next" => {
-            let _: EmptyBody = body(value)?;
+        "playback.play" | "playback.pause" | "playback.toggle" => {
+            let body: PlaybackItemBody = body(value)?;
             match kind {
-                "playback.play" => RemoteRequestV1::PlaybackPlay,
-                "playback.pause" => RemoteRequestV1::PlaybackPause,
-                "playback.toggle" => RemoteRequestV1::PlaybackToggle,
-                _ => RemoteRequestV1::PlaybackNext,
+                "playback.play" => RemoteRequestV1::PlaybackPlay {
+                    item_id: body.item_id,
+                    playback_generation: body.playback_generation,
+                },
+                "playback.pause" => RemoteRequestV1::PlaybackPause {
+                    item_id: body.item_id,
+                    playback_generation: body.playback_generation,
+                },
+                _ => RemoteRequestV1::PlaybackToggle {
+                    item_id: body.item_id,
+                    playback_generation: body.playback_generation,
+                },
             }
         }
         "playback.seek_relative" => {
             let body: SeekRelativeBody = body(value)?;
             RemoteRequestV1::PlaybackSeekRelative {
+                item_id: body.item_id,
+                playback_generation: body.playback_generation,
                 delta_seconds: body.delta_seconds,
+            }
+        }
+        "playback.next" => {
+            let body: PlaybackGenerationBody = body(value)?;
+            RemoteRequestV1::PlaybackNext {
+                playback_generation: body.playback_generation,
             }
         }
         "player.set_volume" => {
@@ -1037,6 +1136,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::PlayerSetAudioVariant {
                 item_id: body.item_id,
                 variant_id: body.variant_id,
+                expected_item_incarnation_id: body.expected_item_incarnation_id,
                 expected_revision: body.expected_revision,
             }
         }
@@ -1141,6 +1241,7 @@ pub struct RemoteAudioVariantV1 {
 #[serde(deny_unknown_fields)]
 pub struct RemotePlaylistItemV1 {
     pub id: String,
+    pub item_incarnation_id: String,
     pub bvid: String,
     pub page: u32,
     pub display_title: String,
@@ -1511,13 +1612,108 @@ mod tests {
     }
 
     #[test]
-    fn controller_can_toggle_playback_without_exposing_a_generic_command() {
+    fn controller_playback_requests_require_click_time_target_identity() {
         let decoded = decode_remote_request_v1(
-            &request("playback.toggle", json!({})),
+            &request(
+                "playback.toggle",
+                json!({"item_id": "item-1", "playback_generation": 7}),
+            ),
             context(RemoteProfile::Controller),
         )
         .unwrap();
         assert_eq!(decoded.request.operation(), RemoteOperation::PlaybackToggle);
+
+        let seek = decode_remote_request_v1(
+            &request(
+                "playback.seek_relative",
+                json!({
+                    "item_id": "item-1",
+                    "playback_generation": 7,
+                    "delta_seconds": 15,
+                }),
+            ),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert!(matches!(
+            seek.request,
+            RemoteRequestV1::PlaybackSeekRelative {
+                ref item_id,
+                playback_generation: 7,
+                delta_seconds: 15,
+            } if item_id == "item-1"
+        ));
+
+        let next = decode_remote_request_v1(
+            &request("playback.next", json!({"playback_generation": 7})),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert!(matches!(
+            next.request,
+            RemoteRequestV1::PlaybackNext {
+                playback_generation: 7,
+            }
+        ));
+
+        for missing_target in [
+            request("playback.toggle", json!({})),
+            request("playback.seek_relative", json!({"delta_seconds": 15})),
+            request("playback.next", json!({})),
+        ] {
+            assert_eq!(
+                decode_remote_request_v1(&missing_target, context(RemoteProfile::Controller),),
+                Err(RemoteProtocolError::InvalidRequestBody),
+            );
+        }
+    }
+
+    #[test]
+    fn item_mutations_require_click_time_incarnation_identity() {
+        for (kind, body) in [
+            (
+                "player.set_audio_variant",
+                json!({
+                    "item_id": "item-1",
+                    "variant_id": "p1_off_vocal",
+                    "expected_item_incarnation_id": "i-0123456789abcdef0123456789abcdef-0000000000000001",
+                    "expected_revision": 4,
+                }),
+            ),
+            (
+                "cache.retry",
+                json!({
+                    "item_id": "item-1",
+                    "expected_item_incarnation_id": "i-0123456789abcdef0123456789abcdef-0000000000000001",
+                    "expected_revision": 4,
+                }),
+            ),
+        ] {
+            assert!(
+                decode_remote_request_v1(&request(kind, body), context(RemoteProfile::Controller),)
+                    .is_ok()
+            );
+        }
+
+        for (kind, body) in [
+            (
+                "player.set_audio_variant",
+                json!({
+                    "item_id": "item-1",
+                    "variant_id": "p1_off_vocal",
+                    "expected_revision": 4,
+                }),
+            ),
+            (
+                "cache.retry",
+                json!({"item_id": "item-1", "expected_revision": 4}),
+            ),
+        ] {
+            assert_eq!(
+                decode_remote_request_v1(&request(kind, body), context(RemoteProfile::Controller)),
+                Err(RemoteProtocolError::InvalidRequestBody),
+            );
+        }
     }
 
     #[test]
@@ -1706,6 +1902,7 @@ mod tests {
             playback_mode: RemotePlaybackModeV1::Local,
             current_item: Some(RemotePlaylistItemV1 {
                 id: "item-1".into(),
+                item_incarnation_id: "i-0123456789abcdef0123456789abcdef-0000000000000001".into(),
                 bvid: "BV1example".into(),
                 page: 1,
                 display_title: "Song".into(),

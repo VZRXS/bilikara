@@ -444,7 +444,7 @@
       ...item,
       original_url: itemUrl(item),
       resolved_url: itemUrl(item),
-      item_incarnation_id: item.id,
+      item_incarnation_id: String(item.item_incarnation_id || ""),
       video_media_url: "internet-remote://video",
       selected_pages: selectedPages.length ? selectedPages : [Number(item.page || 1)],
       selected_durations: Array.isArray(item.selected_durations) ? item.selected_durations.map(Number) : [],
@@ -691,19 +691,37 @@
         response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/playlist/resort") {
         response = await request("playlist.resort", { expected_revision: expectedRevision() });
-      } else if (method === "POST" && ["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now", "/api/cache/retry"].includes(url.pathname)) {
+      } else if (method === "POST" && ["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now"].includes(url.pathname)) {
         const kinds = {
           "/api/playlist/remove": "playlist.remove",
           "/api/playlist/move-next": "playlist.move_next",
           "/api/playlist/play-now": "playlist.play_now",
-          "/api/cache/retry": "cache.retry",
         };
         response = await request(kinds[url.pathname], { item_id: String(body.item_id || ""), expected_revision: expectedRevision() });
+      } else if (method === "POST" && url.pathname === "/api/cache/retry") {
+        response = await request("cache.retry", {
+          item_id: String(body.item_id || ""),
+          expected_item_incarnation_id: String(body.expected_item_incarnation_id || ""),
+          expected_revision: expectedRevision(),
+        });
       } else if (method === "POST" && url.pathname === "/api/player/control") {
         const action = String(body.action || "");
-        response = await request(action === "seek-relative" ? "playback.seek_relative" : "playback.toggle", action === "seek-relative" ? { delta_seconds: Number(body.delta_seconds || 0) } : {});
+        const kinds = {
+          play: "playback.play",
+          pause: "playback.pause",
+          "toggle-play": "playback.toggle",
+          "seek-relative": "playback.seek_relative",
+        };
+        const payload = {
+          item_id: String(body.item_id || ""),
+          playback_generation: Number(body.playback_generation),
+        };
+        if (action === "seek-relative") payload.delta_seconds = Number(body.delta_seconds || 0);
+        response = await request(kinds[action] || "playback.toggle", payload);
       } else if (method === "POST" && url.pathname === "/api/player/next") {
-        response = await request("playback.next", {});
+        response = await request("playback.next", {
+          playback_generation: Number(body.playback_generation),
+        });
       } else if (method === "POST" && url.pathname === "/api/player/key-shift") {
         response = await request("player.set_key_shift", { key_shift: Number(body.key_shift || 0) });
       } else if (method === "POST" && url.pathname === "/api/player/volume") {
@@ -716,7 +734,12 @@
         response = await request("player.set_av_delay", { effective_delay_ms: Math.max(-5000, Math.min(5000, Math.round(effective))) });
         return jsonResponse({ ok: true, data: localState(response.data).player_settings.av_delay });
       } else if (method === "POST" && url.pathname === "/api/player/audio-variant") {
-        response = await request("player.set_audio_variant", { item_id: String(body.item_id || ""), variant_id: String(body.variant_id || ""), expected_revision: expectedRevision() });
+        response = await request("player.set_audio_variant", {
+          item_id: String(body.item_id || ""),
+          variant_id: String(body.variant_id || ""),
+          expected_item_incarnation_id: String(body.expected_item_incarnation_id || ""),
+          expected_revision: expectedRevision(),
+        });
       } else if (method === "POST" && url.pathname === "/api/rating/submit") {
         response = await request("rating.submit", { play_id: String(body.play_id || ""), score: Number(body.score || 0) });
         return jsonResponse({ ok: true, data: response.data });

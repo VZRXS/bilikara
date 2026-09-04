@@ -54,6 +54,7 @@ pub(crate) struct InternetRemoteValidation {
     pub sequence: u64,
     pub accepted: bool,
     pub stale_revision: bool,
+    pub stale_target: bool,
     pub current_revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
@@ -280,7 +281,9 @@ fn validation_result(
 ) -> InternetRemoteValidation {
     let expected_revision = expected_revision(&decoded.request);
     let stale_revision = expected_revision.is_some_and(|value| value != snapshot.revision);
-    let include_state = stale_revision
+    let stale_target = stale_request_target(&decoded.request, snapshot);
+    let stale = stale_revision || stale_target;
+    let include_state = stale
         || matches!(
             decoded.request,
             RemoteRequestV1::ConnectionHealth | RemoteRequestV1::StateGet { .. }
@@ -289,12 +292,66 @@ fn validation_result(
         peer_id: peer_id.to_owned(),
         request_id: decoded.id,
         sequence: decoded.seq,
-        accepted: !stale_revision,
+        accepted: !stale,
         stale_revision,
+        stale_target,
         current_revision: snapshot.revision,
         session_name,
         request: decoded.request,
         remote_state: include_state.then(|| project_remote_state(snapshot)),
+    }
+}
+
+fn stale_request_target(request: &RemoteRequestV1, snapshot: &AppSnapshot) -> bool {
+    let current_matches = |item_id: &str, playback_generation: u64| {
+        playback_generation == snapshot.playback_generation
+            && snapshot
+                .current_item
+                .as_ref()
+                .is_some_and(|item| item.id == item_id)
+    };
+    let incarnation_matches = |item_id: &str, expected_item_incarnation_id: &str| {
+        snapshot
+            .current_item
+            .iter()
+            .chain(snapshot.playlist.iter())
+            .any(|item| {
+                item.id == item_id && item.item_incarnation_id == expected_item_incarnation_id
+            })
+    };
+
+    match request {
+        RemoteRequestV1::PlaybackPlay {
+            item_id,
+            playback_generation,
+        }
+        | RemoteRequestV1::PlaybackPause {
+            item_id,
+            playback_generation,
+        }
+        | RemoteRequestV1::PlaybackToggle {
+            item_id,
+            playback_generation,
+        }
+        | RemoteRequestV1::PlaybackSeekRelative {
+            item_id,
+            playback_generation,
+            ..
+        } => !current_matches(item_id, *playback_generation),
+        RemoteRequestV1::PlaybackNext {
+            playback_generation,
+        } => *playback_generation != snapshot.playback_generation,
+        RemoteRequestV1::PlayerSetAudioVariant {
+            item_id,
+            expected_item_incarnation_id,
+            ..
+        }
+        | RemoteRequestV1::CacheRetry {
+            item_id,
+            expected_item_incarnation_id,
+            ..
+        } => !incarnation_matches(item_id, expected_item_incarnation_id),
+        _ => false,
     }
 }
 
@@ -403,6 +460,7 @@ fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
     );
     bilikara_rust::RemotePlaylistItemV1 {
         id: item.id.clone(),
+        item_incarnation_id: item.item_incarnation_id.clone(),
         bvid: item.bvid.clone(),
         page: item.page.clamp(1, i64::from(u32::MAX)) as u32,
         display_title: item.display_title.clone(),
@@ -769,7 +827,7 @@ mod tests {
             cache_message: "ready".to_owned(),
             video_relative_path: "private/video.mp4".to_owned(),
             video_media_url: "/media/private/video.mp4".to_owned(),
-            item_incarnation_id: "i-private-token".to_owned(),
+            item_incarnation_id: "i-0123456789abcdef0123456789abcdef-0000000000000001".to_owned(),
             artifact_set_id: "a-private-token".to_owned(),
             artifact_relative_directory: "private".to_owned(),
         };
@@ -783,6 +841,10 @@ mod tests {
         assert_eq!(projected.available_durations, vec![120, 121]);
         assert_eq!(projected.available_parts, vec!["On Vocal", "Off Vocal"]);
         assert_eq!(projected.audio_variants[0].page, 1);
+        assert_eq!(
+            projected.item_incarnation_id,
+            "i-0123456789abcdef0123456789abcdef-0000000000000001",
+        );
 
         let encoded = serde_json::to_string(&projected).unwrap();
         for forbidden in [
@@ -790,7 +852,6 @@ mod tests {
             "available_cids",
             "audio_url",
             "video_relative_path",
-            "item_incarnation_id",
         ] {
             assert!(!encoded.contains(forbidden), "forbidden field {forbidden}");
         }
