@@ -9,6 +9,9 @@
   const lowLevel = global.BilikaraInternetTransport;
   const identityStorageKey = "bilikara.internetRemote.identity.v1";
   const endpointStorageKey = "bilikara.internetRemote.endpoint.v1";
+  const heartbeatIntervalMs = 2_000;
+  const heartbeatTimeoutMs = 8_000;
+  const playlistAddRequestTimeoutMs = 60_000;
 
   function jsonResponse(payload, status = 200) {
     return new Response(JSON.stringify(payload), {
@@ -54,6 +57,8 @@
     disconnectedTimer: null,
     heartbeatTimer: null,
     lastPongAt: 0,
+    heartbeatProbeAt: 0,
+    heartbeatLastTickAt: 0,
     readyPromise: null,
     readyResolve: null,
     overlay: null,
@@ -143,6 +148,7 @@
     const wasAuthorized = state.authorized;
     clearTimeout(state.disconnectedTimer);
     state.disconnectedTimer = null;
+    stopHeartbeat();
     state.authorized = false;
     if (wasAuthorized) {
       state.readyPromise = null;
@@ -252,7 +258,10 @@
   function handleDataMessage(message) {
     if (!message || typeof message !== "object") return;
     if (message.type === "pong") {
-      state.lastPongAt = Date.now();
+      const acknowledgedAt = Number(message.at || 0);
+      if (Number.isFinite(acknowledgedAt) && acknowledgedAt >= state.heartbeatProbeAt) {
+        state.lastPongAt = acknowledgedAt;
+      }
       return;
     }
     if (message.type === "auth.failed") {
@@ -267,7 +276,6 @@
     if (message.type === "auth.ok") {
       state.authorized = true;
       state.reconnectAttempts = 0;
-      state.lastPongAt = Date.now();
       request("session.set_identity", { name: state.identity }).then((response) => {
         const next = response?.data?.state;
         if (next) publishState(next);
@@ -277,16 +285,7 @@
         state.connectButton.removeAttribute("aria-busy");
         state.readyResolve?.();
       }).catch(fail);
-      clearInterval(state.heartbeatTimer);
-      state.heartbeatTimer = setInterval(() => {
-        if (Date.now() - state.lastPongAt > 8_000) {
-          scheduleReconnect();
-          return;
-        }
-        if (state.control?.readyState === "open") {
-          lowLevel.send(state.control, { type: "ping", at: Date.now() });
-        }
-      }, 2_000);
+      startHeartbeat();
       setTimeout(() => state.socket?.close(1000, "WebRTC connected"), 1_000);
       return;
     }
@@ -309,6 +308,50 @@
         }
       }
       if (message.stale && message.data) publishState(message.data);
+    }
+  }
+
+  function stopHeartbeat() {
+    clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = null;
+    state.lastPongAt = 0;
+    state.heartbeatProbeAt = 0;
+    state.heartbeatLastTickAt = 0;
+  }
+
+  function probeHeartbeat({ freshGrace = false } = {}) {
+    const now = Date.now();
+    const tickGap = state.heartbeatLastTickAt ? now - state.heartbeatLastTickAt : 0;
+    state.heartbeatLastTickAt = now;
+    if (!state.authorized || state.control?.readyState !== "open") {
+      if (state.authorized) scheduleReconnect();
+      return;
+    }
+
+    const awaitingPong = state.heartbeatProbeAt > state.lastPongAt;
+    const timerWasSuspended = tickGap > heartbeatTimeoutMs;
+    if (awaitingPong && !freshGrace && !timerWasSuspended) {
+      if (now - state.heartbeatProbeAt > heartbeatTimeoutMs) scheduleReconnect();
+      return;
+    }
+
+    const probeAt = Math.max(now, state.heartbeatProbeAt + 1);
+    state.heartbeatProbeAt = probeAt;
+    lowLevel.send(state.control, { type: "ping", at: probeAt });
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    probeHeartbeat({ freshGrace: true });
+    state.heartbeatTimer = setInterval(probeHeartbeat, heartbeatIntervalMs);
+  }
+
+  function refreshHeartbeatAfterForeground() {
+    if (document.visibilityState === "hidden") return;
+    if (state.authorized && state.control?.readyState === "open") {
+      probeHeartbeat({ freshGrace: true });
+    } else if (state.password) {
+      scheduleReconnect();
     }
   }
 
@@ -643,7 +686,7 @@
           selected_video_page: body.selected_video_page,
           selected_audio_pages: body.selected_audio_pages,
           expected_revision: expectedRevision(),
-        });
+        }, "control", playlistAddRequestTimeoutMs);
       } else if (method === "POST" && url.pathname === "/api/playlist/reorder") {
         response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/playlist/resort") {
@@ -747,6 +790,7 @@
 
   function scheduleReconnect() {
     if (!state.password || !navigator.onLine || state.reconnectTimer) return;
+    stopHeartbeat();
     if (state.authorized) {
       state.authorized = false;
       state.readyPromise = null;
@@ -765,7 +809,7 @@
 
   function disconnect() {
     clearTimeout(state.reconnectTimer);
-    clearInterval(state.heartbeatTimer);
+    stopHeartbeat();
     state.password = "";
     state.readyPromise = null;
     state.readyResolve = null;
@@ -781,6 +825,8 @@
   }
 
   global.addEventListener("online", scheduleReconnect);
+  global.addEventListener("pageshow", refreshHeartbeatAfterForeground);
+  document.addEventListener("visibilitychange", refreshHeartbeatAfterForeground);
   document.documentElement.dataset.remoteTransport = "internet-pending";
   global.fetch = fetchInternet;
   global.EventSource = InternetStateSource;

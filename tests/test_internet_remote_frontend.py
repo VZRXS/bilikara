@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -315,6 +317,85 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         source = self.remote_transport[start:end]
         self.assertIn("selected_video_page: body.selected_video_page", source)
         self.assertIn("selected_audio_pages: body.selected_audio_pages", source)
+
+    def test_playlist_add_waits_for_host_metadata_resolution(self):
+        self.assertIn(
+            "const playlistAddRequestTimeoutMs = 60_000;", self.remote_transport
+        )
+        start = self.remote_transport.index(
+            'if (method === "POST" && url.pathname === "/api/playlist/add")'
+        )
+        end = self.remote_transport.index(
+            'else if (method === "POST" && url.pathname === "/api/playlist/reorder")',
+            start,
+        )
+        source = self.remote_transport[start:end]
+        self.assertIn('}, "control", playlistAddRequestTimeoutMs)', source)
+
+    def test_foreground_resume_probes_live_channel_before_reconnecting(self):
+        self.assertIn("function probeHeartbeat", self.remote_transport)
+        self.assertIn("function refreshHeartbeatAfterForeground", self.remote_transport)
+        self.assertIn(
+            'global.addEventListener("pageshow", refreshHeartbeatAfterForeground)',
+            self.remote_transport,
+        )
+        self.assertIn(
+            'document.addEventListener("visibilitychange"', self.remote_transport
+        )
+        refresh_start = self.remote_transport.index(
+            "function refreshHeartbeatAfterForeground"
+        )
+        refresh_end = self.remote_transport.index("function request", refresh_start)
+        refresh_source = self.remote_transport[refresh_start:refresh_end]
+        self.assertIn("probeHeartbeat({ freshGrace: true })", refresh_source)
+
+    def test_heartbeat_grants_a_fresh_probe_after_timer_suspension(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        start = self.remote_transport.index("function probeHeartbeat")
+        end = self.remote_transport.index("function startHeartbeat", start)
+        probe_source = self.remote_transport[start:end]
+        script = f"""
+const heartbeatTimeoutMs = 8000;
+let now = 1000;
+Date.now = () => now;
+let reconnects = 0;
+const sent = [];
+const state = {{
+  authorized: true,
+  control: {{ readyState: "open" }},
+  lastPongAt: 0,
+  heartbeatProbeAt: 0,
+  heartbeatLastTickAt: 0,
+}};
+const lowLevel = {{ send: (_channel, message) => sent.push(message.at) }};
+function scheduleReconnect() {{ reconnects += 1; }}
+{probe_source}
+probeHeartbeat();
+now = 3000;
+probeHeartbeat();
+now = 12001;
+probeHeartbeat();
+state.lastPongAt = state.heartbeatProbeAt;
+now = 14001;
+probeHeartbeat();
+for (now of [16001, 18001, 20001, 22001, 24001]) probeHeartbeat();
+console.log(JSON.stringify({{ sent, reconnects }}));
+"""
+        completed = subprocess.run(
+            [node, "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout.strip()),
+            {"sent": [1000, 12001, 14001], "reconnects": 1},
+        )
 
     def test_remote_identity_registration_is_idempotent_in_the_browser_adapter(self):
         start = self.remote_transport.index(
