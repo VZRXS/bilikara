@@ -121,11 +121,20 @@ pub fn normalize_media(
     if source_probe.codec == "flac" {
         return normalize_flac_mp4(&request.source, &request.destination, source_probe);
     }
+    let preserve_aac_config = if source_probe.codec == "aac" {
+        aac_decoder_specific_config(&request.source)?.is_some_and(|config| config.len() > 2)
+    } else {
+        false
+    };
     let raw_path = temporary_path(&request.destination, "remux");
     let fast_path = temporary_path(&request.destination, "faststart");
     let result = (|| {
-        remux_single_track(&request.source, &raw_path, request.expected_kind)?;
-        relocate_moov_to_front(&raw_path, &fast_path)?;
+        if preserve_aac_config {
+            preserve_mp4_container(&request.source, &fast_path, &source_probe)?;
+        } else {
+            remux_single_track(&request.source, &raw_path, request.expected_kind)?;
+            relocate_moov_to_front(&raw_path, &fast_path)?;
+        }
         let output_probe = probe_path(&fast_path, request.expected_kind)?;
         if !output_probe.fast_start {
             return Err(MediaError::invalid_media(
@@ -260,6 +269,11 @@ fn probe_path(path: &Path, expected_kind: ExpectedMediaKind) -> Result<MediaProb
             ));
         }
     };
+    if codec == "aac" {
+        let config = aac_decoder_specific_config(path)?
+            .ok_or_else(|| MediaError::invalid_media("AAC decoder configuration is missing"))?;
+        validate_aac_decoder_specific_config(&config)?;
+    }
     let timescale = track.timescale();
     if timescale == 0 {
         return Err(MediaError::invalid_media(
@@ -299,6 +313,236 @@ fn probe_path(path: &Path, expected_kind: ExpectedMediaKind) -> Result<MediaProb
         file_bytes,
         fragmented,
         fast_start,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MpegDescriptor {
+    tag: u8,
+    payload_start: usize,
+    payload_end: usize,
+}
+
+fn read_mpeg_descriptor(
+    bytes: &[u8],
+    cursor: &mut usize,
+    end: usize,
+) -> Result<MpegDescriptor, MediaError> {
+    if *cursor >= end || end > bytes.len() {
+        return Err(MediaError::invalid_media("truncated MPEG descriptor"));
+    }
+    let tag = bytes[*cursor];
+    *cursor += 1;
+    let mut size = 0_usize;
+    let mut complete = false;
+    for _ in 0..4 {
+        if *cursor >= end {
+            return Err(MediaError::invalid_media(
+                "truncated MPEG descriptor length",
+            ));
+        }
+        let byte = bytes[*cursor];
+        *cursor += 1;
+        size = size
+            .checked_mul(128)
+            .and_then(|value| value.checked_add((byte & 0x7f) as usize))
+            .ok_or_else(|| MediaError::invalid_media("MPEG descriptor is too large"))?;
+        if byte & 0x80 == 0 {
+            complete = true;
+            break;
+        }
+    }
+    if !complete {
+        return Err(MediaError::invalid_media("invalid MPEG descriptor length"));
+    }
+    let payload_start = *cursor;
+    let payload_end = payload_start
+        .checked_add(size)
+        .filter(|value| *value <= end)
+        .ok_or_else(|| MediaError::invalid_media("truncated MPEG descriptor payload"))?;
+    *cursor = payload_end;
+    Ok(MpegDescriptor {
+        tag,
+        payload_start,
+        payload_end,
+    })
+}
+
+fn find_mpeg_descriptor(
+    bytes: &[u8],
+    mut cursor: usize,
+    end: usize,
+    tag: u8,
+) -> Result<Option<MpegDescriptor>, MediaError> {
+    while cursor < end {
+        let descriptor = read_mpeg_descriptor(bytes, &mut cursor, end)?;
+        if descriptor.tag == tag {
+            return Ok(Some(descriptor));
+        }
+    }
+    Ok(None)
+}
+
+fn aac_decoder_specific_config(path: &Path) -> Result<Option<Vec<u8>>, MediaError> {
+    let moov = top_level_boxes(path)?
+        .into_iter()
+        .find(|entry| entry.kind == *b"moov")
+        .ok_or_else(|| MediaError::invalid_media("MP4 moov box is missing"))?;
+    let mut file = File::open(path).map_err(|_| MediaError::io("failed to open MP4"))?;
+    let mut bytes = vec![
+        0_u8;
+        usize::try_from(moov.size)
+            .map_err(|_| MediaError::invalid_media("MP4 moov box is too large"))?
+    ];
+    file.seek(SeekFrom::Start(moov.start))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|_| MediaError::io("failed to read MP4 moov box"))?;
+
+    let children = child_boxes(&bytes, moov.header_size as usize, bytes.len())?;
+    for trak in children.into_iter().filter(|entry| entry.kind == *b"trak") {
+        let trak_children = child_boxes(
+            &bytes,
+            (trak.start + trak.header_size) as usize,
+            (trak.start + trak.size) as usize,
+        )?;
+        let Some(mdia) = trak_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"mdia")
+        else {
+            continue;
+        };
+        let mdia_children = child_boxes(
+            &bytes,
+            (mdia.start + mdia.header_size) as usize,
+            (mdia.start + mdia.size) as usize,
+        )?;
+        let Some(minf) = mdia_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"minf")
+        else {
+            continue;
+        };
+        let minf_children = child_boxes(
+            &bytes,
+            (minf.start + minf.header_size) as usize,
+            (minf.start + minf.size) as usize,
+        )?;
+        let Some(stbl) = minf_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"stbl")
+        else {
+            continue;
+        };
+        let stbl_children = child_boxes(
+            &bytes,
+            (stbl.start + stbl.header_size) as usize,
+            (stbl.start + stbl.size) as usize,
+        )?;
+        let Some(stsd) = stbl_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"stsd")
+        else {
+            continue;
+        };
+        let entries_start = stsd.start + stsd.header_size + 8;
+        if entries_start > stsd.start + stsd.size {
+            return Err(MediaError::invalid_media("truncated MP4 stsd box"));
+        }
+        let entries = child_boxes(
+            &bytes,
+            entries_start as usize,
+            (stsd.start + stsd.size) as usize,
+        )?;
+        if let Some(entry) = entries.into_iter().find(|entry| entry.kind == *b"mp4a") {
+            let config_start = entry.start + entry.header_size + 28;
+            if config_start > entry.start + entry.size {
+                return Err(MediaError::invalid_media("truncated MP4 AAC sample entry"));
+            }
+            let configs = child_boxes(
+                &bytes,
+                config_start as usize,
+                (entry.start + entry.size) as usize,
+            )?;
+            let Some(esds) = configs.into_iter().find(|config| config.kind == *b"esds") else {
+                return Err(MediaError::invalid_media("MP4 AAC esds box is missing"));
+            };
+            let descriptor_start = usize::try_from(esds.start + esds.header_size + 4)
+                .map_err(|_| MediaError::invalid_media("MP4 AAC config is too large"))?;
+            let descriptor_end = usize::try_from(esds.start + esds.size)
+                .map_err(|_| MediaError::invalid_media("MP4 AAC config is too large"))?;
+            let es = find_mpeg_descriptor(&bytes, descriptor_start, descriptor_end, 0x03)?
+                .ok_or_else(|| MediaError::invalid_media("AAC ES descriptor is missing"))?;
+            if es.payload_start + 3 > es.payload_end {
+                return Err(MediaError::invalid_media("truncated AAC ES descriptor"));
+            }
+            let flags = bytes[es.payload_start + 2];
+            let mut decoder_start = es.payload_start + 3;
+            if flags & 0x80 != 0 {
+                decoder_start = decoder_start.saturating_add(2);
+            }
+            if flags & 0x40 != 0 {
+                if decoder_start >= es.payload_end {
+                    return Err(MediaError::invalid_media("truncated AAC ES URL"));
+                }
+                let url_length = bytes[decoder_start] as usize;
+                decoder_start = decoder_start.saturating_add(1 + url_length);
+            }
+            if flags & 0x20 != 0 {
+                decoder_start = decoder_start.saturating_add(2);
+            }
+            if decoder_start > es.payload_end {
+                return Err(MediaError::invalid_media("truncated AAC ES descriptor"));
+            }
+            let decoder = find_mpeg_descriptor(&bytes, decoder_start, es.payload_end, 0x04)?
+                .ok_or_else(|| MediaError::invalid_media("AAC decoder descriptor is missing"))?;
+            let decoder_specific_start = decoder.payload_start.saturating_add(13);
+            if decoder_specific_start > decoder.payload_end {
+                return Err(MediaError::invalid_media(
+                    "truncated AAC decoder descriptor",
+                ));
+            }
+            let decoder_specific =
+                find_mpeg_descriptor(&bytes, decoder_specific_start, decoder.payload_end, 0x05)?
+                    .ok_or_else(|| {
+                        MediaError::invalid_media("AAC decoder-specific descriptor is missing")
+                    })?;
+            return Ok(Some(
+                bytes[decoder_specific.payload_start..decoder_specific.payload_end].to_vec(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+fn aac_audio_object_type(config: &[u8]) -> Option<u8> {
+    let first = *config.first()?;
+    let object_type = first >> 3;
+    if object_type != 31 {
+        return Some(object_type);
+    }
+    let second = *config.get(1)?;
+    Some(32 + ((first & 0x07) << 3) + (second >> 5))
+}
+
+fn validate_aac_decoder_specific_config(config: &[u8]) -> Result<(), MediaError> {
+    let object_type = aac_audio_object_type(config)
+        .ok_or_else(|| MediaError::invalid_media("AAC decoder configuration is empty"))?;
+    if config.len() < 2 {
+        return Err(MediaError::invalid_media(
+            "AAC decoder configuration is truncated",
+        ));
+    }
+    if matches!(object_type, 5 | 29) && config.len() < 4 {
+        return Err(MediaError::invalid_media(
+            "AAC SBR/PS decoder configuration is truncated",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn cached_audio_requires_refresh(path: &Path) -> bool {
+    aac_decoder_specific_config(path).is_ok_and(|config| {
+        config.is_some_and(|value| validate_aac_decoder_specific_config(&value).is_err())
     })
 }
 
@@ -1046,6 +1290,39 @@ fn has_leading_moov(path: &Path) -> Result<bool, MediaError> {
     Ok(matches!((moov, mdat), (Some(moov), Some(mdat)) if moov < mdat))
 }
 
+fn preserve_mp4_container(
+    source: &Path,
+    destination: &Path,
+    source_probe: &MediaProbe,
+) -> Result<(), MediaError> {
+    if source_probe.fast_start {
+        return copy_file_no_replace(source, destination);
+    }
+    if source_probe.fragmented {
+        return Err(MediaError::invalid_media(
+            "fragmented AAC with an extended decoder configuration is not fast-start",
+        ));
+    }
+    relocate_moov_to_front(source, destination)
+}
+
+fn copy_file_no_replace(source: &Path, destination: &Path) -> Result<(), MediaError> {
+    let mut input = File::open(source).map_err(|_| MediaError::io("failed to open MP4"))?;
+    let length = input
+        .metadata()
+        .map_err(|_| MediaError::io("failed to stat MP4"))?
+        .len();
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|_| MediaError::io("failed to create preserved MP4"))?;
+    copy_range(&mut input, &mut output, 0, length)?;
+    output
+        .sync_all()
+        .map_err(|_| MediaError::io("failed to flush preserved MP4"))
+}
+
 fn relocate_moov_to_front(source: &Path, destination: &Path) -> Result<(), MediaError> {
     let boxes = top_level_boxes(source)?;
     let ftyp = boxes
@@ -1311,6 +1588,57 @@ mod tests {
         write_audio_fixture(path, &samples);
     }
 
+    fn write_he_aac_fixture(path: &Path) {
+        write_aac_fixture(path);
+        let mut bytes = fs::read(path).expect("read AAC fixture");
+        let esds = bytes
+            .windows(4)
+            .position(|value| value == b"esds")
+            .expect("esds box");
+        let es_descriptor = esds + 8;
+        assert_eq!(bytes[es_descriptor], 0x03);
+        let decoder_descriptor = es_descriptor + 2 + 3;
+        assert_eq!(bytes[decoder_descriptor], 0x04);
+        let decoder_specific = decoder_descriptor + 2 + 13;
+        assert_eq!(bytes[decoder_specific], 0x05);
+        assert_eq!(bytes[decoder_specific + 1], 2);
+
+        bytes[es_descriptor + 1] += 2;
+        bytes[decoder_descriptor + 1] += 2;
+        bytes[decoder_specific + 1] = 4;
+        for kind in [
+            b"esds", b"mp4a", b"stsd", b"stbl", b"minf", b"mdia", b"trak", b"moov",
+        ] {
+            let position = bytes
+                .windows(4)
+                .position(|value| value == kind)
+                .expect("fixture parent box");
+            let size = u32::from_be_bytes(bytes[position - 4..position].try_into().unwrap());
+            bytes[position - 4..position].copy_from_slice(&(size + 2).to_be_bytes());
+        }
+        bytes.splice(
+            decoder_specific + 2..decoder_specific + 4,
+            [0x2b, 0x11, 0x88, 0x00],
+        );
+        fs::write(path, bytes).expect("write HE-AAC fixture");
+    }
+
+    fn decoder_specific_config_for_test(path: &Path) -> Vec<u8> {
+        let bytes = fs::read(path).expect("read AAC fixture");
+        let esds = bytes
+            .windows(4)
+            .position(|value| value == b"esds")
+            .expect("esds box");
+        let es_descriptor = esds + 8;
+        assert_eq!(bytes[es_descriptor], 0x03);
+        let decoder_descriptor = es_descriptor + 2 + 3;
+        assert_eq!(bytes[decoder_descriptor], 0x04);
+        let decoder_specific = decoder_descriptor + 2 + 13;
+        assert_eq!(bytes[decoder_specific], 0x05);
+        let size = bytes[decoder_specific + 1] as usize;
+        bytes[decoder_specific + 2..decoder_specific + 2 + size].to_vec()
+    }
+
     fn write_h264_fixture(path: &Path) {
         let file = File::create(path).expect("create fixture");
         let config = Mp4Config {
@@ -1445,6 +1773,49 @@ mod tests {
         assert_eq!(result.output.sample_bytes, 64);
         assert!(result.output.fast_start);
         assert!(destination.is_file());
+    }
+
+    #[test]
+    fn preserves_he_aac_decoder_configuration_during_normalization() {
+        let root = test_dir("normalize-he-aac");
+        let source = root.join("source.m4a");
+        let truncated = root.join("truncated.m4a");
+        let destination = root.join("output.m4a");
+        write_he_aac_fixture(&source);
+        let expected_config = vec![0x2b, 0x11, 0x88, 0x00];
+        assert_eq!(decoder_specific_config_for_test(&source), expected_config);
+        remux_single_track(&source, &truncated, ExpectedMediaKind::Audio)
+            .expect("reproduce the previous HE-AAC remux");
+        assert_eq!(
+            decoder_specific_config_for_test(&truncated),
+            vec![0x2b, 0x10]
+        );
+        assert!(cached_audio_requires_refresh(&truncated));
+        let error = probe_media(&MediaPathRequest {
+            schema_version: 1,
+            source: truncated,
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("truncated HE-AAC must not be accepted as playable");
+        assert_eq!(error.kind, MediaErrorKind::InvalidMedia);
+        assert!(!cached_audio_requires_refresh(&source));
+
+        let result = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source,
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("normalize HE-AAC media");
+
+        assert_eq!(
+            decoder_specific_config_for_test(&destination),
+            expected_config
+        );
+        assert_eq!(result.source.sample_count, result.output.sample_count);
+        assert_eq!(result.source.sample_bytes, result.output.sample_bytes);
+        assert!(result.output.fast_start);
+        assert!(!cached_audio_requires_refresh(&destination));
     }
 
     #[test]

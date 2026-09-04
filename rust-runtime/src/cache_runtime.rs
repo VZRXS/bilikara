@@ -8,7 +8,8 @@ use crate::http_downloader::{
     download_to_path,
 };
 use crate::media_backend::{
-    ExpectedMediaKind, MediaErrorKind, MediaNormalizeRequest, MediaProbe, normalize_media,
+    ExpectedMediaKind, MediaErrorKind, MediaNormalizeRequest, MediaProbe,
+    cached_audio_requires_refresh, normalize_media,
 };
 use bilikara_rust::{
     AudioStreamDescriptor, AudioStreamSelection, AudioStreamSelectionRequest, QualityPolicyRequest,
@@ -2087,7 +2088,7 @@ fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
     }
     job.existing_audio_variants.iter().all(|variant| {
         safe_relative_cache_path(&job.cache_root, &variant.relative_path)
-            .is_some_and(|path| nonempty_file(&path))
+            .is_some_and(|path| reusable_audio_file(&path))
     })
 }
 
@@ -2103,8 +2104,12 @@ fn completed_artifacts_ready(cache_root: &Path, result: &CacheReadyResult) -> bo
             .audio_url
             .strip_prefix("/media/")
             .and_then(|relative| safe_relative_cache_path(cache_root, relative))
-            .is_some_and(|path| nonempty_file(&path))
+            .is_some_and(|path| reusable_audio_file(&path))
     })
+}
+
+fn reusable_audio_file(path: &Path) -> bool {
+    nonempty_file(path) && !cached_audio_requires_refresh(path)
 }
 
 fn safe_relative_cache_path(root: &Path, relative: &str) -> Option<PathBuf> {
