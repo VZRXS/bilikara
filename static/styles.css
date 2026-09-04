@@ -876,7 +876,9 @@ h2 {
 .internet-remote-mode.is-active { color: var(--text); background: var(--chip-bg); box-shadow: var(--shadow); }
 .internet-remote-field { display: grid; gap: 7px; margin-top: 14px; color: var(--muted); font-size: 12px; }
 .internet-remote-password-row { display: grid; grid-template-columns: 1fr 38px; gap: 8px; }
-.internet-remote-password-row input { min-width: 0; padding: 9px 11px; border: var(--chip-border); border-radius: 10px; color: var(--text); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font: inherit; }
+.internet-remote-password-row input,
+.internet-remote-duration-input { min-width: 0; padding: 9px 11px; border: var(--chip-border); border-radius: 10px; color: var(--text); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font: inherit; }
+.internet-remote-duration-input { width: 100%; box-sizing: border-box; }
 .internet-remote-actions { display: flex; margin-top: 12px; }
 .internet-remote-actions .next-button { width: 100%; }
 .internet-remote-room { display: grid; justify-items: center; gap: 8px; margin-top: 14px; }

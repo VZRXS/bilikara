@@ -91,6 +91,14 @@
                       data-i18n-title="internetRemote.regenerate" title="重新生成">↻</button>
                   </span>
                 </label>
+                <label class="internet-remote-field" for="internet-remote-duration">
+                  <span data-i18n="internetRemote.duration">房间有效期（小时）</span>
+                  <input id="internet-remote-duration" class="internet-remote-duration-input" type="number"
+                    inputmode="numeric" min="1" max="24" step="1" value="12"
+                    aria-describedby="internet-remote-duration-hint">
+                  <span id="internet-remote-duration-hint" class="cache-panel-hint"
+                    data-i18n="internetRemote.durationHint">可设置 1–24 小时；修改后重建房间生效。</span>
+                </label>
                 <div class="internet-remote-actions">
                   <button type="button" class="next-button" id="internet-remote-restart"
                     data-i18n="internetRemote.create">创建公网房间</button>

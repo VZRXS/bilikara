@@ -96,6 +96,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             "internetRemote.internet",
             "internetRemote.description",
             "internetRemote.password",
+            "internetRemote.duration",
+            "internetRemote.durationHint",
+            "internetRemote.durationInvalid",
             "internetRemote.regenerate",
             "internetRemote.create",
             "internetRemote.capacityReached",
@@ -103,6 +106,17 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         for language, messages in languages.items():
             with self.subTest(language=language):
                 self.assertTrue(required.issubset(messages))
+
+    def test_host_requests_a_bounded_configurable_room_lifetime(self):
+        self.assertIn('id="internet-remote-duration"', self.host_html)
+        self.assertIn('min="1" max="24" step="1" value="12"', self.host_html)
+        self.assertIn("DEFAULT_ROOM_LIFETIME_HOURS = 12", self.host_js)
+        self.assertIn("MIN_ROOM_LIFETIME_HOURS = 1", self.host_js)
+        self.assertIn("MAX_ROOM_LIFETIME_HOURS = 24", self.host_js)
+        self.assertIn("lifetime_hours: lifetimeHours", self.host_js)
+        self.assertIn('!/^\\d+$/u.test(durationValue)', self.host_js)
+        self.assertIn('tr("internetRemote.durationInvalid"', self.host_js)
+        self.assertNotIn("workerLifetime > (8 * 60 * 60 * 1000)", self.host_js)
 
     def test_room_creation_failure_remains_visible_after_cleanup(self):
         start = self.host_js.index("async function startRoom")

@@ -2,9 +2,10 @@
 
 Status: implemented as an opt-in preview. The Host toolbar keeps Local Remote
 as the default and exposes a separate Local / Internet switch. Internet mode
-creates an eight-hour signaling room and a shared QR code; every Remote scans
-the same QR code and enters the Host-displayed room password. The existing
-Local Remote HTTP/SSE behavior is unchanged and remains available.
+creates a signaling room lasting one to twenty-four hours (twelve hours by
+default) and a shared QR code; every Remote scans the same QR code and enters
+the Host-displayed room password. The existing Local Remote HTTP/SSE behavior
+is unchanged and remains available.
 
 ## Boundary
 
@@ -121,6 +122,9 @@ sockets. It stores only SHA-256 token hashes plus Worker-generated creation and
 expiry times. It has no Bilikara D1 binding and never receives search, queue,
 playback, media, or room-password data. WebSockets use the Hibernation API, and
 Worker Rate Limit bindings cover room creation and per-room socket admission.
+Current Hosts request an integer lifetime from one through twenty-four hours;
+omitting the field preserves the legacy eight-hour lifetime for already-released
+Hosts.
 
 The Host and shared join bearer tokens are carried in the WebSocket subprotocol,
 not in a URL query. The Remote URL keeps its room ID and join token in the URL
@@ -166,7 +170,12 @@ close or mutate the replacement peer.
 Room creation and expiry come from Worker time. The Host schedules the returned
 TTL as a duration and treats the Durable Object's expiry close code as
 authoritative, so a badly skewed Host wall clock cannot create an already-expired
-room or extend its lifetime.
+room or extend its lifetime. If the Host has not connected yet or its signaling
+socket disappears, the Durable Object preserves the room for at most fifteen
+minutes for reconnection. One alarm tracks the earlier of that reconnect
+deadline and the selected room expiry; reconnecting clears the grace deadline,
+while reaching either deadline without a Host releases the room and its capacity
+slot. A connected Host is never expired solely by a stale reconnect deadline.
 
 ## Deployment boundary
 

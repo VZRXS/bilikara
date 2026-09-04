@@ -2,6 +2,10 @@
   "use strict";
 
   const SIGNAL_ORIGIN = "https://rtc.kevinx96.icu";
+  const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
+  const DEFAULT_ROOM_LIFETIME_HOURS = 12;
+  const MIN_ROOM_LIFETIME_HOURS = 1;
+  const MAX_ROOM_LIFETIME_HOURS = 24;
   const transport = window.BilikaraInternetTransport;
   if (!transport) return;
 
@@ -154,6 +158,7 @@
     elements.internet.disabled = state.busy || !state.available;
     elements.internet.toggleAttribute("aria-busy", state.busy);
     elements.password.disabled = state.busy || !online;
+    elements.duration.disabled = state.busy || !online;
     elements.regenerate.disabled = state.busy || !online;
     elements.restart.toggleAttribute("aria-busy", state.busy);
     elements.restart.textContent = state.busy
@@ -639,6 +644,17 @@
       setStatus(tr("internetRemote.passwordInvalid", "房间密码需为 4–32 个字符"), "bad");
       return;
     }
+    const durationValue = elements.duration.value.trim();
+    const lifetimeHours = Number(durationValue);
+    if (
+      !/^\d+$/u.test(durationValue)
+      || !Number.isSafeInteger(lifetimeHours)
+      || lifetimeHours < MIN_ROOM_LIFETIME_HOURS
+      || lifetimeHours > MAX_ROOM_LIFETIME_HOURS
+    ) {
+      setStatus(tr("internetRemote.durationInvalid", "房间有效期需为 1–24 个整数小时"), "bad");
+      return;
+    }
     state.busy = true;
     render();
     await stopRoom(false);
@@ -656,6 +672,7 @@
         body: JSON.stringify({
           host_token_hash: await transport.sha256(state.hostToken),
           join_token_hash: await transport.sha256(state.joinToken),
+          lifetime_hours: lifetimeHours,
         }),
       });
       recordDiagnostic("room.create", "response", {
@@ -675,8 +692,8 @@
         !/^[A-Za-z0-9_-]{27}$/u.test(String(payload.room_id || ""))
         || !Number.isSafeInteger(createdAt)
         || !Number.isSafeInteger(expiresAt)
-        || workerLifetime < 60_000
-        || workerLifetime > (8 * 60 * 60 * 1000) + 5_000
+        || workerLifetime < (MIN_ROOM_LIFETIME_HOURS * MILLISECONDS_PER_HOUR) - 5_000
+        || workerLifetime > (MAX_ROOM_LIFETIME_HOURS * MILLISECONDS_PER_HOUR) + 5_000
       ) throw new Error("invalid signaling response");
       state.roomId = payload.room_id;
       state.expiresAt = expiresAt;
@@ -767,6 +784,7 @@
       meta: document.getElementById("internet-remote-meta"),
       dot: document.getElementById("internet-remote-state-dot"),
       password: document.getElementById("internet-remote-password"),
+      duration: document.getElementById("internet-remote-duration"),
       regenerate: document.getElementById("internet-remote-regenerate"),
       restart: document.getElementById("internet-remote-restart"),
       room: document.getElementById("internet-remote-room"),
@@ -777,6 +795,7 @@
     };
     if (Object.values(elements).some((element) => !element)) return;
     elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
+    elements.duration.value = String(DEFAULT_ROOM_LIFETIME_HOURS);
     elements.local.addEventListener("click", () => void stopRoom(true));
     elements.internet.addEventListener("click", () => {
       state.mode = "internet";
