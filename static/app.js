@@ -12827,6 +12827,13 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
 
+  // waiting/stalled can be queued by a seek that has already been superseded.
+  // Reconcile the sticky event flag with the live media state so a missed
+  // canplay event cannot leave an otherwise-ready audio track paused forever.
+  if (!audio.seeking && audio.readyState >= 3) {
+    state.localAudioPlaybackBlocked = false;
+  }
+
   const videoTime = Number(video.currentTime || 0);
   if (video.ended) {
     if (audio.readyState >= 2 && !state.localAudioPlaybackBlocked) {
