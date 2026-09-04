@@ -31,6 +31,13 @@ class D1BrowseFrontendTest(unittest.TestCase):
         load_source = source[
             source.index("async function loadD1Browse(") : source.index(end_marker)
         ]
+        remote_mode_helper = ""
+        if relative_path == "static/remote.js":
+            remote_mode_helper = """
+function d1BrowseModeState(kind) {
+  return state.d1BrowseModes[kind === "artist" ? "artist" : "name"];
+}
+"""
         script = f"""
 const state = {{
   d1BrowseKind: "",
@@ -41,11 +48,16 @@ const state = {{
   d1BrowseData: null,
   d1BrowseLoading: false,
   d1BrowseSeq: 0,
+  d1BrowseModes: {{
+    name: {{ letter: "", tag: "", locale: "", query: "", data: null, loading: false, seq: 0, error: "" }},
+    artist: {{ letter: "", tag: "", locale: "", query: "", data: null, loading: false, seq: 0, error: "" }},
+  }},
 }};
 const {item_limit} = 451;
 const {tag_limit} = 199;
 const requests = [];
 function renderD1BrowseView() {{}}
+{remote_mode_helper}
 async function fetchD1Browse(options) {{
   requests.push(options);
   return {{ tags: [], items: [{{ bvid: "BV1xx411c7mD" }}] }};
@@ -63,10 +75,11 @@ async function fetchD1Browse(options) {{
       {{ tag: "Alias Extended", locale: "zh" }},
     ],
   }});
+  const independentMode = state.d1BrowseModes[{json.dumps(kind)} === "artist" ? "artist" : "name"];
   console.log(JSON.stringify({{
     requestCount: requests.length,
     request: requests[0],
-    bvid: state.d1BrowseData?.items?.[0]?.bvid,
+    bvid: independentMode.data?.items?.[0]?.bvid || state.d1BrowseData?.items?.[0]?.bvid,
   }}));
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """

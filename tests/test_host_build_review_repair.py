@@ -105,7 +105,6 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("--remote-close-control-size: 32px", self.remote_styles)
         self.assertIn(
             ".remote-qr-popover-close,\n"
-            ".remote-search-modal-close,\n"
             ".binding-sheet-close,\n"
             ".rating-close,\n"
             ".floating-control-close",

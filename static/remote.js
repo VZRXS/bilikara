@@ -16,7 +16,6 @@ const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const categoryBrowsePageSize = 100;
 const searchResultItemByElement = new WeakMap();
 let searchDetailController = null;
-let searchModalCloseTimer = 0;
 const categoryBrowseDefinitionsRaw = [
   { key: "hotBlood", tags: ["热血", "战斗"] },
   { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
@@ -229,7 +228,6 @@ const state = {
   eventStreamReconnectTimer: null,
   eventStreamRetryMs: eventStreamInitialRetryMs,
   gatchaCandidate: null,
-  gatchaUidVisible: false,
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
@@ -237,14 +235,8 @@ const state = {
   gatchaTaskWatchStartedAt: Date.now() / 1000,
   remoteRequestView: "quick",
   remoteSearchMode: "shared",
-  searchModalOpen: false,
-  searchModalView: "follow",
-  gatchaStageView: "",
-  gatchaStageAngle: 0,
-  gatchaFlipTimer: null,
-  gatchaFlipFrame: null,
-  gatchaPruneTimer: null,
-  gatchaMidpointCallback: null,
+  remoteDiscoverMode: "categories",
+  remoteSourcesMode: "uids",
   remoteMenuOpen: false,
   remoteQrSectionOpen: false,
   remoteSettingsSectionOpen: false,
@@ -255,20 +247,30 @@ const state = {
   followBrowseData: null,
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
-  modalFollowBrowseRenderSignature: "",
+  followBrowseSeq: 0,
+  followBrowseError: "",
+  sourcesFollowBrowseRenderSignature: "",
   favlistBrowseData: null,
   favlistBrowseSelectedFolderId: "",
   favlistBrowseLoading: false,
+  favlistBrowseSeq: 0,
+  favlistBrowseError: "",
   favlistBrowseRenderSignature: "",
   favlistBrowseReloadTimer: null,
-  d1BrowseKind: "",
-  d1BrowseLetter: "",
-  d1BrowseTag: "",
-  d1BrowseLocale: "",
-  d1BrowseQuery: "",
-  d1BrowseData: null,
-  d1BrowseLoading: false,
-  d1BrowseSeq: 0,
+  d1BrowseModes: {
+    name: { letter: "", tag: "", locale: "", query: "", data: null, loading: false, seq: 0, error: "" },
+    artist: { letter: "", tag: "", locale: "", query: "", data: null, loading: false, seq: 0, error: "" },
+  },
+  requestDetailSelections: {
+    shared: { selectedKey: "", focusElement: null },
+    local: { selectedKey: "", focusElement: null },
+    categories: { selectedKey: "", focusElement: null },
+    name: { selectedKey: "", focusElement: null },
+    artist: { selectedKey: "", focusElement: null },
+    uids: { selectedKey: "", focusElement: null },
+    favorites: { selectedKey: "", focusElement: null },
+  },
+  activeRequestDetailOwner: "",
   categoryBrowseSelectedId: "",
   categoryBrowseQuery: "",
   categoryBrowseItems: [],
@@ -414,11 +416,21 @@ const elements = {
   reorderConfirmSheetClose: document.getElementById("reorder-confirm-sheet-close"),
   reorderConfirmSheetCancel: document.getElementById("reorder-confirm-sheet-cancel"),
   reorderConfirmSheetConfirm: document.getElementById("reorder-confirm-sheet-confirm"),
+  requestPanel: document.querySelector(".request-panel"),
   requestForm: document.getElementById("request-form"),
   remoteRequestViewButtons: document.querySelectorAll("[data-remote-request-view]"),
   remoteRequestViewPanels: document.querySelectorAll("[data-remote-request-panel]"),
   remoteSearchModeButtons: document.querySelectorAll("[data-remote-search-mode]"),
   remoteSearchModePanels: document.querySelectorAll("[data-remote-search-panel]"),
+  remoteDiscoverModeButtons: document.querySelectorAll("[data-remote-discover-mode]"),
+  remoteDiscoverModePanels: document.querySelectorAll("[data-remote-discover-panel]"),
+  remoteRequestDiscoverPanel: document.getElementById("remote-request-discover-panel"),
+  remoteDiscoverCategoriesPanel: document.getElementById("remote-discover-categories-panel"),
+  remoteDiscoverNamePanel: document.getElementById("remote-discover-name-panel"),
+  remoteDiscoverArtistPanel: document.getElementById("remote-discover-artist-panel"),
+  remoteSourcesModeButtons: document.querySelectorAll("[data-remote-sources-mode]"),
+  remoteSourcesModePanels: document.querySelectorAll("[data-remote-sources-panel]"),
+  remoteRequestSourcesPanel: document.getElementById("remote-request-sources-panel"),
   remoteIdentityName: document.getElementById("remote-identity-name"),
   remoteIdentityRename: document.getElementById("remote-identity-rename"),
   remoteIdentityModal: document.getElementById("remote-identity-modal"),
@@ -436,12 +448,6 @@ const elements = {
   searchButton: document.getElementById("search-button"),
   searchMessage: document.getElementById("search-message"),
   searchResults: document.getElementById("search-results"),
-  searchLibraryOpen: document.getElementById("search-library-open"),
-  searchModal: document.getElementById("search-modal"),
-  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
-  searchModalClose: document.getElementById("search-modal-close"),
-  searchModalTabs: document.querySelectorAll(".remote-search-modal-tab"),
-  favlistBrowserView: document.getElementById("favlist-browser-view"),
   favlistListView: document.getElementById("favlist-list-view"),
   favlistGrid: document.getElementById("favlist-grid"),
   favlistItemsView: document.getElementById("favlist-items-view"),
@@ -454,26 +460,24 @@ const elements = {
   favlistSearchButton: document.getElementById("favlist-search-button"),
   favlistSongResults: document.getElementById("favlist-song-results"),
   favlistBrowseMessage: document.getElementById("favlist-browse-message"),
-  modalFollowBrowserView: document.getElementById("modal-follow-browser-view"),
-  modalFollowUpListView: document.getElementById("modal-follow-up-list-view"),
-  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
-  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
-  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
-  modalFollowUpGrid: document.getElementById("modal-follow-up-grid"),
-  modalFollowUpItemsView: document.getElementById("modal-follow-up-items-view"),
-  modalFollowBrowseBack: document.getElementById("modal-follow-browse-back"),
-  modalFollowBrowseAvatar: document.getElementById("modal-follow-browse-avatar"),
-  modalFollowBrowseTitle: document.getElementById("modal-follow-browse-title"),
-  modalFollowBrowseCount: document.getElementById("modal-follow-browse-count"),
-  modalFollowSearchForm: document.getElementById("modal-follow-search-form"),
-  modalFollowSearchQuery: document.getElementById("modal-follow-search-query"),
-  modalFollowSearchButton: document.getElementById("modal-follow-search-button"),
-  modalFollowSongResults: document.getElementById("modal-follow-song-results"),
-  modalFollowBrowseMessage: document.getElementById("modal-follow-browse-message"),
-  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
-  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
-  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
-  searchModalOtherView: document.getElementById("search-modal-other-view"),
+  sourcesFollowListView: document.getElementById("sources-follow-list-view"),
+  sourcesFollowUidForm: document.getElementById("sources-follow-uid-form"),
+  sourcesFollowUidInput: document.getElementById("sources-follow-uid-input"),
+  sourcesAddFollowUidButton: document.getElementById("sources-add-follow-uid-button"),
+  sourcesFollowGrid: document.getElementById("sources-follow-grid"),
+  sourcesFollowItemsView: document.getElementById("sources-follow-items-view"),
+  sourcesFollowBack: document.getElementById("sources-follow-back"),
+  sourcesFollowAvatar: document.getElementById("sources-follow-avatar"),
+  sourcesFollowTitle: document.getElementById("sources-follow-title"),
+  sourcesFollowCount: document.getElementById("sources-follow-count"),
+  sourcesFollowSearchForm: document.getElementById("sources-follow-search-form"),
+  sourcesFollowSearchQuery: document.getElementById("sources-follow-search-query"),
+  sourcesFollowSearchButton: document.getElementById("sources-follow-search-button"),
+  sourcesFollowResults: document.getElementById("sources-follow-results"),
+  sourcesFollowMessage: document.getElementById("sources-follow-message"),
+  sourcesFavlistPullForm: document.getElementById("sources-favlist-pull-form"),
+  sourcesFavlistUidInput: document.getElementById("sources-favlist-uid-input"),
+  sourcesPullFavlistButton: document.getElementById("sources-pull-favlist-button"),
   larkSearchForm: document.getElementById("lark-search-form"),
   larkSearchQuery: document.getElementById("lark-search-query"),
   larkSearchButton: document.getElementById("lark-search-button"),
@@ -484,7 +488,6 @@ const elements = {
   refreshButton: document.getElementById("refresh-button"),
   openRatingButton: document.getElementById("open-rating-button"),
   gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
-  gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
@@ -492,14 +495,7 @@ const elements = {
   gatchaInitView: document.getElementById("gatcha-init-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
-  gatchaStage: document.getElementById("gatcha-stage"),
-  gatchaStageInner: document.getElementById("gatcha-stage-inner"),
-  gatchaUidView: document.getElementById("gatcha-uid-view"),
-  gatchaUidForm: document.getElementById("gatcha-uid-form"),
-  gatchaUidInput: document.getElementById("gatcha-uid-input"),
-  addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
   refreshGatchaCacheButton: document.getElementById("refresh-gatcha-cache-button"),
-  pullGatchaFavlistButton: document.getElementById("pull-gatcha-favlist-button"),
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
@@ -714,7 +710,7 @@ function renderLanguageSwitch() {
 
 function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
-  state.modalFollowBrowseRenderSignature = "";
+  state.sourcesFollowBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
@@ -741,9 +737,11 @@ function setLanguage(language) {
     render();
   }
   syncBilikaraSearchView();
-  if (state.searchModalOpen) {
-    renderSearchModalView(state.searchModalView);
-  }
+  renderCategoryBrowseView();
+  renderD1BrowseView("name");
+  renderD1BrowseView("artist");
+  renderSourcesFollowBrowse();
+  renderFavlistBrowse();
 }
 
 function applyTheme(theme) {
@@ -868,12 +866,24 @@ function scheduleViewportScaleReset(force = false) {
 
 function normalizeRemoteRequestView(value, fallback = "quick") {
   const candidate = String(value || "").trim().toLowerCase();
-  return candidate === "quick" || candidate === "search" ? candidate : fallback;
+  return ["quick", "search", "discover", "sources"].includes(candidate)
+    ? candidate
+    : fallback;
 }
 
 function normalizeRemoteSearchMode(value, fallback = "shared") {
   const candidate = String(value || "").trim().toLowerCase();
   return candidate === "shared" || candidate === "local" ? candidate : fallback;
+}
+
+function normalizeRemoteDiscoverMode(value, fallback = "categories") {
+  const candidate = String(value || "").trim().toLowerCase();
+  return ["categories", "name", "artist"].includes(candidate) ? candidate : fallback;
+}
+
+function normalizeRemoteSourcesMode(value, fallback = "uids") {
+  const candidate = String(value || "").trim().toLowerCase();
+  return candidate === "uids" || candidate === "favorites" ? candidate : fallback;
 }
 
 function setRemoteTabPanelVisibility(panel, visible) {
@@ -902,6 +912,83 @@ function syncRemoteSearchModeSelection() {
   });
 }
 
+function syncRemoteDiscoverModeSelection() {
+  const activeMode = normalizeRemoteDiscoverMode(state.remoteDiscoverMode);
+  state.remoteDiscoverMode = activeMode;
+  elements.remoteDiscoverModeButtons?.forEach((button) => {
+    const mode = normalizeRemoteDiscoverMode(button.dataset.remoteDiscoverMode, "");
+    const selected = mode === activeMode;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  elements.remoteDiscoverModePanels?.forEach((panel) => {
+    setRemoteTabPanelVisibility(
+      panel,
+      panel.dataset.remoteDiscoverPanel === activeMode,
+    );
+  });
+  if (activeMode === "categories") {
+    renderCategoryBrowseView();
+  } else {
+    renderD1BrowseView(activeMode);
+  }
+}
+
+function syncRemoteSourcesModeSelection() {
+  const activeMode = normalizeRemoteSourcesMode(state.remoteSourcesMode);
+  state.remoteSourcesMode = activeMode;
+  elements.remoteSourcesModeButtons?.forEach((button) => {
+    const mode = normalizeRemoteSourcesMode(button.dataset.remoteSourcesMode, "");
+    const selected = mode === activeMode;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  elements.remoteSourcesModePanels?.forEach((panel) => {
+    setRemoteTabPanelVisibility(
+      panel,
+      panel.dataset.remoteSourcesPanel === activeMode,
+    );
+  });
+  if (activeMode === "uids") {
+    renderSourcesFollowBrowse();
+  } else {
+    renderFavlistBrowse();
+  }
+}
+
+function ensureActiveRemoteSourcesLoaded() {
+  const activeMode = normalizeRemoteSourcesMode(state.remoteSourcesMode);
+  if (activeMode === "uids" && !state.followBrowseData && !state.followBrowseLoading) {
+    void loadFollowBrowse({ uid: "", query: "" });
+  } else if (activeMode === "favorites" && !state.favlistBrowseData && !state.favlistBrowseLoading) {
+    void loadFavlistBrowse({ folderId: "", query: "" });
+  }
+}
+
+function revealRemoteTab(button, { instant = false } = {}) {
+  if (!button || typeof button.scrollIntoView !== "function") {
+    return;
+  }
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  button.scrollIntoView({
+    behavior: instant || reducedMotion ? "auto" : "smooth",
+    block: "nearest",
+    inline: "nearest",
+  });
+}
+
+function closeRequestDetailForNavigation() {
+  if (!searchDetailController?.isOpen?.()) {
+    return;
+  }
+  searchDetailController.close({
+    immediate: true,
+    restoreFocus: false,
+    reason: "navigation",
+  });
+  state.activeRequestDetailOwner = "";
+}
+
 function syncRemoteRequestViewSelection() {
   const activeView = normalizeRemoteRequestView(state.remoteRequestView);
   state.remoteRequestView = activeView;
@@ -924,6 +1011,8 @@ function syncRemoteRequestViewSelection() {
     );
   });
   syncRemoteSearchModeSelection();
+  syncRemoteDiscoverModeSelection();
+  syncRemoteSourcesModeSelection();
 }
 
 function activateRemoteRequestView(view, { focusTab = false } = {}) {
@@ -932,12 +1021,19 @@ function activateRemoteRequestView(view, { focusTab = false } = {}) {
     return false;
   }
   const changed = state.remoteRequestView !== nextView;
+  if (changed) {
+    closeRequestDetailForNavigation();
+  }
   state.remoteRequestView = nextView;
   syncRemoteRequestViewSelection();
+  if (nextView === "sources") {
+    ensureActiveRemoteSourcesLoaded();
+  }
+  const selectedTab = Array.from(elements.remoteRequestViewButtons || [])
+    .find((button) => button.dataset.remoteRequestView === nextView && !button.hidden);
+  revealRemoteTab(selectedTab);
   if (focusTab) {
-    Array.from(elements.remoteRequestViewButtons || [])
-      .find((button) => button.dataset.remoteRequestView === nextView && !button.hidden)
-      ?.focus({ preventScroll: true });
+    selectedTab?.focus({ preventScroll: true });
   }
   return changed;
 }
@@ -948,11 +1044,53 @@ function activateRemoteSearchMode(mode, { focusTab = false } = {}) {
     return false;
   }
   const changed = state.remoteSearchMode !== nextMode;
+  if (changed) {
+    closeRequestDetailForNavigation();
+  }
   state.remoteSearchMode = nextMode;
   syncRemoteSearchModeSelection();
   if (focusTab) {
     Array.from(elements.remoteSearchModeButtons || [])
       .find((button) => button.dataset.remoteSearchMode === nextMode)
+      ?.focus({ preventScroll: true });
+  }
+  return changed;
+}
+
+function activateRemoteDiscoverMode(mode, { focusTab = false } = {}) {
+  const nextMode = normalizeRemoteDiscoverMode(mode, "");
+  if (!nextMode) {
+    return false;
+  }
+  const changed = state.remoteDiscoverMode !== nextMode;
+  if (changed) {
+    closeRequestDetailForNavigation();
+  }
+  state.remoteDiscoverMode = nextMode;
+  syncRemoteDiscoverModeSelection();
+  if (focusTab) {
+    Array.from(elements.remoteDiscoverModeButtons || [])
+      .find((button) => button.dataset.remoteDiscoverMode === nextMode)
+      ?.focus({ preventScroll: true });
+  }
+  return changed;
+}
+
+function activateRemoteSourcesMode(mode, { focusTab = false } = {}) {
+  const nextMode = normalizeRemoteSourcesMode(mode, "");
+  if (!nextMode) {
+    return false;
+  }
+  const changed = state.remoteSourcesMode !== nextMode;
+  if (changed) {
+    closeRequestDetailForNavigation();
+  }
+  state.remoteSourcesMode = nextMode;
+  syncRemoteSourcesModeSelection();
+  ensureActiveRemoteSourcesLoaded();
+  if (focusTab) {
+    Array.from(elements.remoteSourcesModeButtons || [])
+      .find((button) => button.dataset.remoteSourcesMode === nextMode)
       ?.focus({ preventScroll: true });
   }
   return changed;
@@ -980,7 +1118,7 @@ function handleRemoteHorizontalTabKeydown(event, values, currentValue, activate)
 function handleRemoteRequestTabKeydown(event) {
   return handleRemoteHorizontalTabKeydown(
     event,
-    ["quick", "search"],
+    ["quick", "search", "discover", "sources"],
     String(event.currentTarget?.dataset?.remoteRequestView || ""),
     activateRemoteRequestView,
   );
@@ -992,6 +1130,24 @@ function handleRemoteSearchModeTabKeydown(event) {
     ["shared", "local"],
     String(event.currentTarget?.dataset?.remoteSearchMode || ""),
     activateRemoteSearchMode,
+  );
+}
+
+function handleRemoteDiscoverModeTabKeydown(event) {
+  return handleRemoteHorizontalTabKeydown(
+    event,
+    ["categories", "name", "artist"],
+    String(event.currentTarget?.dataset?.remoteDiscoverMode || ""),
+    activateRemoteDiscoverMode,
+  );
+}
+
+function handleRemoteSourcesModeTabKeydown(event) {
+  return handleRemoteHorizontalTabKeydown(
+    event,
+    ["uids", "favorites"],
+    String(event.currentTarget?.dataset?.remoteSourcesMode || ""),
+    activateRemoteSourcesMode,
   );
 }
 
@@ -1215,24 +1371,29 @@ function setLarkSearchMessage(message, isError = false) {
 }
 
 function setMessageForSource(source, message, isError = false) {
-  if (source === "search") {
+  if (source === "search" || source === "local") {
     setSearchMessage(message, isError);
     return;
   }
-  if (source === "lark") {
+  if (source === "lark" || source === "shared") {
     setLarkSearchMessage(message, isError);
     return;
   }
-  if (source === "modalFavlist") {
+  if (source === "favorites") {
     setFavlistBrowseMessage(message, isError);
     return;
   }
-  if (source === "modalFollow") {
-    setModalFollowBrowseMessage(message, isError);
+  if (source === "uids") {
+    setSourcesFollowBrowseMessage(message, isError);
     return;
   }
-  if (source === "modalBrowse") {
-    const messageElement = elements.searchModalOtherView?.querySelector(".tag-browser-message");
+  if (["categories", "name", "artist"].includes(source)) {
+    const panel = source === "categories"
+      ? elements.remoteDiscoverCategoriesPanel
+      : source === "artist"
+        ? elements.remoteDiscoverArtistPanel
+        : elements.remoteDiscoverNamePanel;
+    const messageElement = panel?.querySelector(".tag-browser-message");
     if (messageElement) {
       messageElement.textContent = message || "";
       messageElement.classList.toggle("is-error", Boolean(isError));
@@ -1294,126 +1455,6 @@ function localizedCacheMessage(message, cacheStatus = "") {
     return localized;
   }
   return raw;
-}
-
-function setGatchaStageView(showUid, onMidpoint) {
-  if (!elements.gatchaStage) {
-    if (typeof onMidpoint === "function") {
-      onMidpoint();
-    }
-    return;
-  }
-  const nextView = showUid ? "uid" : "draw";
-  const previousView = state.gatchaStageView || "draw";
-  const isInitialRender = !state.gatchaStageView;
-  if (state.gatchaStageView === nextView) {
-    if (elements.gatchaStage.classList.contains("is-flipping") && !elements.gatchaStage.classList.contains("is-flip-pruned")) {
-      state.gatchaMidpointCallback = onMidpoint;
-      return;
-    }
-    if (typeof onMidpoint === "function") {
-      onMidpoint();
-    }
-    return;
-  }
-  state.gatchaStageView = nextView;
-
-  if (state.gatchaFlipTimer) {
-    window.clearTimeout(state.gatchaFlipTimer);
-    state.gatchaFlipTimer = null;
-  }
-  if (state.gatchaPruneTimer) {
-    window.clearTimeout(state.gatchaPruneTimer);
-    state.gatchaPruneTimer = null;
-  }
-  elements.gatchaStage.classList.remove("is-flip-pruned");
-  if (state.gatchaFlipFrame) {
-    window.cancelAnimationFrame(state.gatchaFlipFrame);
-    state.gatchaFlipFrame = null;
-    elements.gatchaStage.classList.remove("is-preparing-flip", "is-flip-pruned");
-  }
-
-  const applyGatchaStageClass = (activeView) => {
-    elements.gatchaStage.classList.toggle("is-uid-view", activeView === "uid");
-  };
-  const clearFlip = () => {
-    elements.gatchaStage?.classList.remove("is-flipping", "is-preparing-flip", "is-flip-pruned");
-    elements.gatchaStage?.removeAttribute("data-previous-view");
-    state.gatchaFlipTimer = null;
-  };
-
-  if (isInitialRender) {
-    state.gatchaStageAngle = nextView === "uid" ? 180 : 0;
-    if (elements.gatchaStageInner) {
-      elements.gatchaStageInner.style.transform = `rotateY(${state.gatchaStageAngle}deg)`;
-    }
-    applyGatchaStageClass(nextView);
-    elements.gatchaStage.classList.remove("is-flipping", "is-preparing-flip", "is-flip-pruned");
-    elements.gatchaStage.removeAttribute("data-previous-view");
-    if (typeof onMidpoint === "function") {
-      onMidpoint();
-    }
-    return;
-  }
-
-  const startAngle = state.gatchaStageAngle;
-  state.gatchaStageAngle += nextView === "uid" ? 180 : -180;
-  state.gatchaMidpointCallback = onMidpoint;
-  elements.gatchaStage.dataset.previousView = previousView;
-  elements.gatchaStage.classList.add("is-preparing-flip", "is-flipping");
-  if (elements.gatchaStageInner) {
-    elements.gatchaStageInner.style.transform = `rotateY(${startAngle}deg)`;
-    elements.gatchaStageInner.getBoundingClientRect();
-  }
-  state.gatchaFlipFrame = window.requestAnimationFrame(() => {
-    state.gatchaFlipFrame = null;
-    elements.gatchaStage?.classList.remove("is-preparing-flip");
-    if (elements.gatchaStageInner) {
-      elements.gatchaStageInner.style.transform = `rotateY(${state.gatchaStageAngle}deg)`;
-    }
-  });
-  state.gatchaPruneTimer = window.setTimeout(() => {
-    state.gatchaPruneTimer = null;
-    elements.gatchaStage?.classList.add("is-flip-pruned");
-    applyGatchaStageClass(nextView);
-    const midpointCallback = state.gatchaMidpointCallback;
-    state.gatchaMidpointCallback = null;
-    if (typeof midpointCallback === "function") {
-      midpointCallback();
-    }
-  }, 150);
-  state.gatchaFlipTimer = window.setTimeout(clearFlip, 420);
-}
-
-function setupRemoteFlipStages() {
-  if (elements.gatchaStage || !elements.gatchaInitView || !elements.gatchaResultView || !elements.gatchaUidView) {
-    return;
-  }
-  const gatchaPanel = elements.gatchaInitView.closest(".gatcha-panel");
-  if (!gatchaPanel) {
-    return;
-  }
-
-  const stage = document.createElement("div");
-  stage.id = "gatcha-stage";
-  stage.className = "gatcha-stage";
-  const inner = document.createElement("div");
-  inner.id = "gatcha-stage-inner";
-  inner.className = "gatcha-stage-inner";
-  const mainFace = document.createElement("div");
-  mainFace.id = "gatcha-main-view";
-  mainFace.className = "gatcha-face gatcha-face-front";
-
-  gatchaPanel.insertBefore(stage, elements.gatchaInitView);
-  stage.appendChild(inner);
-  inner.appendChild(mainFace);
-  mainFace.append(elements.gatchaInitView, elements.gatchaResultView);
-  elements.gatchaUidView.classList.remove("hidden");
-  elements.gatchaUidView.classList.add("gatcha-face", "gatcha-face-back");
-  inner.appendChild(elements.gatchaUidView);
-
-  elements.gatchaStage = stage;
-  elements.gatchaStageInner = inner;
 }
 
 function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
@@ -3216,6 +3257,8 @@ function renderSearchResults(items) {
     const row = document.createElement("div");
     row.className = "search-result-item";
     searchResultItemByElement.set(row, item);
+    row.dataset.url = String(item.url || "");
+    applyRequestResultSelection(row, item, "local");
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3257,6 +3300,8 @@ function renderLarkSearchResults(items) {
     const row = document.createElement("div");
     row.className = "search-result-item";
     searchResultItemByElement.set(row, item);
+    row.dataset.url = String(item.url || "");
+    applyRequestResultSelection(row, item, "shared");
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3291,6 +3336,8 @@ function appendLarkSearchResults(items) {
     const row = document.createElement("div");
     row.className = "search-result-item";
     searchResultItemByElement.set(row, item);
+    row.dataset.url = String(item.url || "");
+    applyRequestResultSelection(row, item, "shared");
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3312,13 +3359,13 @@ function appendLarkSearchResults(items) {
   });
 }
 
-function setModalFollowBrowseMessage(message, isError = false) {
-  if (!elements.modalFollowBrowseMessage) {
+function setSourcesFollowBrowseMessage(message, isError = false) {
+  if (!elements.sourcesFollowMessage) {
     return;
   }
-  elements.modalFollowBrowseMessage.textContent = message || "";
-  elements.modalFollowBrowseMessage.classList.toggle("is-error", Boolean(isError));
-  elements.modalFollowBrowseMessage.classList.toggle("hidden", !message);
+  elements.sourcesFollowMessage.textContent = message || "";
+  elements.sourcesFollowMessage.classList.toggle("is-error", Boolean(isError));
+  elements.sourcesFollowMessage.classList.toggle("hidden", !message);
 }
 
 function setFavlistBrowseMessage(message, isError = false) {
@@ -3330,16 +3377,12 @@ function setFavlistBrowseMessage(message, isError = false) {
   elements.favlistBrowseMessage.classList.toggle("hidden", !message);
 }
 
-function setGatchaUidFlowMessage(target, message, isError = false) {
-  if (target === "follow-modal") {
-    setModalFollowBrowseMessage(message, isError);
-    return;
-  }
-  if (target === "favlist-modal") {
+function setSourceManagementMessage(target, message, isError = false) {
+  if (target === "sources-favorites") {
     setFavlistBrowseMessage(message, isError);
     return;
   }
-  setGatchaUidMessage(message, isError);
+  setSourcesFollowBrowseMessage(message, isError);
 }
 
 function appendSearchResultCoverFallback(cover, item, stateName) {
@@ -3464,9 +3507,11 @@ function renderSearchResultItems(container, items, emptyText = "") {
     return;
   }
   normalizedItems.forEach((item, index) => {
-    container.appendChild(createSearchResultRow(item, {
+    const row = createSearchResultRow(item, {
       eagerCover: index < expandedSearchEagerCoverCount,
-    }));
+    });
+    applyRequestResultSelection(row, item, requestDetailOwnerForContainer(container));
+    container.appendChild(row);
   });
 }
 
@@ -3480,7 +3525,9 @@ function appendSearchResultItems(container, items) {
   }
   container.classList.remove("hidden");
   items.forEach((item) => {
-    container.appendChild(createSearchResultRow(item));
+    const row = createSearchResultRow(item);
+    applyRequestResultSelection(row, item, requestDetailOwnerForContainer(container));
+    container.appendChild(row);
   });
 }
 
@@ -3539,7 +3586,10 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   canonicalBilikaraSearch.hasSearched = true;
   syncBilikaraSearchView();
 
-  if (elements.larkSearchButton) elements.larkSearchButton.disabled = true;
+  if (elements.larkSearchButton) {
+    elements.larkSearchButton.disabled = true;
+    elements.larkSearchButton.setAttribute("aria-busy", "true");
+  }
 
   try {
     const poolItems = await searchLarkPool(query);
@@ -3571,22 +3621,43 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   } finally {
     if (canonicalBilikaraSearch.seq === searchSeq) {
       canonicalBilikaraSearch.loading = false;
-      if (elements.larkSearchButton) elements.larkSearchButton.disabled = false;
+      if (elements.larkSearchButton) {
+        elements.larkSearchButton.disabled = false;
+        elements.larkSearchButton.removeAttribute("aria-busy");
+      }
       syncBilikaraSearchView();
     }
   }
 }
 
-function d1BrowseTitle(kind = state.d1BrowseKind) {
+function d1BrowseModeState(kind = state.remoteDiscoverMode) {
+  const normalizedKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseModes[normalizedKind] ||= {
+    letter: "",
+    tag: "",
+    locale: "",
+    query: "",
+    data: null,
+    loading: false,
+    seq: 0,
+    error: "",
+  };
+  return state.d1BrowseModes[normalizedKind];
+}
+
+function d1BrowseTitle(kind = state.remoteDiscoverMode) {
   return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
 }
 
-function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+function d1BrowsePickLetterText(kind = state.remoteDiscoverMode) {
   return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
 }
 
-function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
-  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+function d1BrowseSearchPlaceholder(kind = state.remoteDiscoverMode) {
+  const mode = d1BrowseModeState(kind);
+  return mode.tag
+    ? t("search.browseItemPlaceholder")
+    : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
 }
 
 function d1BrowseItemKey(item) {
@@ -3647,19 +3718,24 @@ function mergeCategoryBrowseItems(existingItems, nextItems) {
   return items;
 }
 
-function ensureD1BrowseView() {
-  if (!elements.searchModalOtherView) {
+function d1BrowsePanel(kind) {
+  return kind === "artist"
+    ? elements.remoteDiscoverArtistPanel
+    : elements.remoteDiscoverNamePanel;
+}
+
+function ensureD1BrowseView(kind = state.remoteDiscoverMode) {
+  const panel = d1BrowsePanel(kind);
+  if (!panel) {
     return null;
   }
-  elements.searchModalOtherView.classList.add("remote-search-browser-view");
-  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  let view = panel.querySelector("[data-d1-browse-view]");
   if (view) {
     return view;
   }
-  elements.searchModalOtherView.textContent = "";
   view = document.createElement("div");
   view.className = "tag-browser";
-  view.dataset.d1BrowseView = "1";
+  view.dataset.d1BrowseView = kind === "artist" ? "artist" : "name";
   view.innerHTML = `
     <form class="tag-browser-search" data-d1-browse-search>
       <input type="text" autocomplete="off" data-d1-browse-query>
@@ -3674,17 +3750,18 @@ function ensureD1BrowseView() {
     <div class="search-results hidden" data-d1-browse-results></div>
     <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
   `;
-  elements.searchModalOtherView.appendChild(view);
+  panel.appendChild(view);
   return view;
 }
 
-function renderD1BrowseView() {
-  const view = ensureD1BrowseView();
+function renderD1BrowseView(kind = state.remoteDiscoverMode) {
+  const normalizedKind = kind === "artist" ? "artist" : "name";
+  const mode = d1BrowseModeState(normalizedKind);
+  const view = ensureD1BrowseView(normalizedKind);
   if (!view) {
     return;
   }
-  const kind = state.d1BrowseKind || "name";
-  const title = d1BrowseTitle(kind);
+  const title = d1BrowseTitle(normalizedKind);
   const queryInput = view.querySelector("[data-d1-browse-query]");
   const submitButton = view.querySelector("[data-d1-browse-submit]");
   const alphabet = view.querySelector("[data-d1-browse-alphabet]");
@@ -3695,62 +3772,63 @@ function renderD1BrowseView() {
   const message = view.querySelector("[data-d1-browse-message]");
 
   if (queryInput && document.activeElement !== queryInput) {
-    queryInput.value = state.d1BrowseQuery || "";
+    queryInput.value = mode.query || "";
   }
   if (queryInput) {
-    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+    queryInput.placeholder = d1BrowseSearchPlaceholder(normalizedKind);
   }
   if (submitButton) {
     submitButton.textContent = t("search.submit");
-    submitButton.disabled = state.d1BrowseLoading;
+    submitButton.disabled = mode.loading;
+    submitButton.toggleAttribute("aria-busy", mode.loading);
   }
   if (alphabet) {
     alphabet.innerHTML = "";
-    alphabet.classList.toggle("hidden", Boolean(state.d1BrowseLetter));
+    alphabet.classList.toggle("hidden", Boolean(mode.letter));
     d1BrowseLetters.forEach((letter) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "tag-letter-button";
       button.dataset.letter = letter;
       button.textContent = letter;
-      button.classList.toggle("active", state.d1BrowseLetter === letter);
-      button.disabled = state.d1BrowseLoading;
+      button.classList.toggle("active", mode.letter === letter);
+      button.disabled = mode.loading;
       alphabet.appendChild(button);
     });
   }
-  view.classList.toggle("has-letter", Boolean(state.d1BrowseLetter));
-  view.classList.toggle("has-tag", Boolean(state.d1BrowseTag));
+  view.classList.toggle("has-letter", Boolean(mode.letter));
+  view.classList.toggle("has-tag", Boolean(mode.tag));
   if (backButton) {
     backButton.textContent = t("common.back");
-    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
-    backButton.disabled = state.d1BrowseLoading;
+    backButton.classList.toggle("hidden", !mode.letter);
+    backButton.disabled = mode.loading;
   }
 
-  const tags = Array.isArray(state.d1BrowseData?.tags) ? state.d1BrowseData.tags : [];
-  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  const tags = Array.isArray(mode.data?.tags) ? mode.data.tags : [];
+  const items = Array.isArray(mode.data?.items) ? mode.data.items : [];
   if (current) {
     const parts = [title];
-    if (state.d1BrowseLetter) {
-      parts.push(state.d1BrowseLetter);
+    if (mode.letter) {
+      parts.push(mode.letter);
     }
-    if (state.d1BrowseTag) {
-      parts.push(state.d1BrowseTag);
+    if (mode.tag) {
+      parts.push(mode.tag);
     }
     current.textContent = parts.join(" / ");
   }
   if (tagGrid) {
     tagGrid.innerHTML = "";
-    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
-    if (!state.d1BrowseTag) {
-      if (state.d1BrowseLoading) {
+    tagGrid.classList.toggle("hidden", Boolean(mode.tag));
+    if (!mode.tag) {
+      if (mode.loading) {
         const loading = document.createElement("div");
         loading.className = "search-empty";
         loading.textContent = t("search.browseLoading");
         tagGrid.appendChild(loading);
-      } else if (!state.d1BrowseLetter) {
+      } else if (!mode.letter) {
         const empty = document.createElement("div");
         empty.className = "search-empty";
-        empty.textContent = d1BrowsePickLetterText(kind);
+        empty.textContent = d1BrowsePickLetterText(normalizedKind);
         tagGrid.appendChild(empty);
       } else if (!tags.length) {
         const empty = document.createElement("div");
@@ -3777,7 +3855,7 @@ function renderD1BrowseView() {
     }
   }
   if (results) {
-    if (state.d1BrowseTag) {
+    if (mode.tag) {
       renderSearchResultItems(results, items, t("search.larkNoResults"));
     } else {
       results.innerHTML = "";
@@ -3786,64 +3864,61 @@ function renderD1BrowseView() {
   }
   if (message) {
     let text = "";
-    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+    if (mode.tag && !mode.loading) {
       text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
-    } else if (!state.d1BrowseTag && tags.length) {
+    } else if (!mode.tag && tags.length) {
       text = t("search.browseTagsFound", { count: tags.length });
     }
-    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
-    message.classList.toggle("is-error", false);
+    message.textContent = mode.error || (mode.loading ? t("search.browseLoading") : text);
+    message.classList.toggle("is-error", Boolean(mode.error));
   }
 }
 
-async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "" } = {}) {
-  const searchSeq = state.d1BrowseSeq + 1;
-  state.d1BrowseSeq = searchSeq;
-  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
-  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
-  state.d1BrowseQuery = String(query || "").trim();
-  state.d1BrowseTag = String(tag || "").trim();
-  state.d1BrowseLocale = String(locale || "").trim();
-  state.d1BrowseLoading = true;
-  renderD1BrowseView();
+async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "" } = {}) {
+  const normalizedKind = kind === "artist" ? "artist" : "name";
+  const mode = d1BrowseModeState(normalizedKind);
+  const searchSeq = mode.seq + 1;
+  mode.seq = searchSeq;
+  mode.letter = String(letter || "").trim().toUpperCase();
+  mode.query = String(query || "").trim();
+  mode.tag = String(tag || "").trim();
+  mode.locale = String(locale || "").trim();
+  mode.loading = true;
+  mode.error = "";
+  renderD1BrowseView(normalizedKind);
   try {
     const data = await fetchD1Browse({
-      kind: state.d1BrowseKind,
-      letter: state.d1BrowseLetter,
-      query: state.d1BrowseQuery,
-      tag: state.d1BrowseTag,
-      locale: state.d1BrowseLocale,
-      limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      kind: normalizedKind,
+      letter: mode.letter,
+      query: mode.query,
+      tag: mode.tag,
+      locale: mode.locale,
+      limit: mode.tag ? d1BrowseItemLimit : d1BrowseTagLimit,
     });
-    if (state.d1BrowseSeq !== searchSeq) {
+    if (mode.seq !== searchSeq) {
       return;
     }
-    state.d1BrowseData = data || {};
+    mode.data = data || {};
   } catch (error) {
-    const view = ensureD1BrowseView();
-    const message = view?.querySelector("[data-d1-browse-message]");
-    if (message) {
-      message.textContent = error.message;
-      message.classList.add("is-error");
+    if (mode.seq === searchSeq) {
+      mode.error = error.message;
     }
   } finally {
-    if (state.d1BrowseSeq === searchSeq) {
-      state.d1BrowseLoading = false;
-      renderD1BrowseView();
+    if (mode.seq === searchSeq) {
+      mode.loading = false;
+      renderD1BrowseView(normalizedKind);
     }
   }
 }
 
 function ensureCategoryBrowseView() {
-  if (!elements.searchModalOtherView) {
+  if (!elements.remoteDiscoverCategoriesPanel) {
     return null;
   }
-  elements.searchModalOtherView.classList.add("remote-search-browser-view");
-  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  let view = elements.remoteDiscoverCategoriesPanel.querySelector("[data-category-browse-view]");
   if (view) {
     return view;
   }
-  elements.searchModalOtherView.textContent = "";
   view = document.createElement("div");
   view.className = "category-browser";
   view.dataset.categoryBrowseView = "1";
@@ -3865,7 +3940,7 @@ function ensureCategoryBrowseView() {
       <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
     </div>
   `;
-  elements.searchModalOtherView.appendChild(view);
+  elements.remoteDiscoverCategoriesPanel.appendChild(view);
   return view;
 }
 
@@ -3928,6 +4003,7 @@ function renderCategoryBrowseView() {
   if (submitButton) {
     submitButton.textContent = t("search.submit");
     submitButton.disabled = state.categoryBrowseLoading;
+    submitButton.toggleAttribute("aria-busy", state.categoryBrowseLoading);
   }
   if (backButton) {
     backButton.textContent = t("common.back");
@@ -4011,17 +4087,17 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
   }
 }
 
-function maybeLoadMoreCategoryBrowse(scrollContainer) {
+function maybeLoadMoreCategoryBrowse(resultsContainer) {
   if (
     !state.categoryBrowseSelectedId
     || state.categoryBrowseLoading
     || !state.categoryBrowseHasMore
-    || !scrollContainer
+    || !resultsContainer
   ) {
     return;
   }
-  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
-  if (remaining <= 160) {
+  const bounds = resultsContainer.getBoundingClientRect?.();
+  if (bounds && bounds.bottom <= window.innerHeight + 160 && bounds.bottom >= 0) {
     loadCategoryBrowse({ append: true });
   }
 }
@@ -4039,6 +4115,7 @@ function renderFavlistBrowse() {
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const signature = JSON.stringify({
     loading: state.favlistBrowseLoading,
+    error: state.favlistBrowseError,
     selected: state.favlistBrowseSelectedFolderId,
     folders,
     items,
@@ -4052,6 +4129,13 @@ function renderFavlistBrowse() {
   const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
   elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
   elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.disabled = state.favlistBrowseLoading;
+  }
+  if (elements.favlistSearchButton) {
+    elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
+    elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
+  }
 
   if (!hasSelectedFolder) {
     elements.favlistGrid.innerHTML = "";
@@ -4093,7 +4177,10 @@ function renderFavlistBrowse() {
         elements.favlistGrid.appendChild(button);
       });
     }
-    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    setFavlistBrowseMessage(
+      state.favlistBrowseError || (state.favlistBrowseLoading ? t("favlist.loadingFolders") : ""),
+      Boolean(state.favlistBrowseError),
+    );
     return;
   }
 
@@ -4119,7 +4206,10 @@ function renderFavlistBrowse() {
     items,
     state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
   );
-  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+  setFavlistBrowseMessage(
+    state.favlistBrowseError || (state.favlistBrowseLoading ? t("favlist.loadingItems") : ""),
+    Boolean(state.favlistBrowseError),
+  );
 }
 
 async function loadFavlistBrowse({
@@ -4127,12 +4217,17 @@ async function loadFavlistBrowse({
   query = "",
   keepQuery = false,
 } = {}) {
+  const seq = state.favlistBrowseSeq + 1;
+  state.favlistBrowseSeq = seq;
   state.favlistBrowseLoading = true;
+  state.favlistBrowseError = "";
   state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
   renderFavlistBrowse();
-  let caughtError = null;
   try {
     const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    if (state.favlistBrowseSeq !== seq) {
+      return;
+    }
     state.favlistBrowseData = nextData;
     state.favlistBrowseSelectedFolderId = String(
       nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
@@ -4141,54 +4236,132 @@ async function loadFavlistBrowse({
       elements.favlistSearchQuery.value = String(nextData.query || "");
     }
   } catch (error) {
-    caughtError = error;
+    if (state.favlistBrowseSeq === seq) {
+      state.favlistBrowseError = error.message;
+    }
   } finally {
-    state.favlistBrowseLoading = false;
-    renderFavlistBrowse();
-    if (caughtError) {
-      setFavlistBrowseMessage(caughtError.message, true);
+    if (state.favlistBrowseSeq === seq) {
+      state.favlistBrowseLoading = false;
+      renderFavlistBrowse();
     }
   }
 }
 
-function normalizeSearchModalView(value) {
-  const candidate = String(value || "").trim().toLowerCase();
-  return ["follow", "favlist", "category", "name", "artist"].includes(candidate)
-    ? candidate
-    : "follow";
+function requestResultItemKey(item) {
+  return String(
+    item?.bvid
+      || item?.url
+      || item?.id
+      || `${item?.title || ""}\n${searchResultOwnerName(item)}`,
+  ).trim();
 }
 
-function setSearchModalOpen(open) {
-  const shouldOpen = Boolean(open);
-  state.searchModalOpen = shouldOpen;
-  if (shouldOpen) {
-    window.clearTimeout(searchModalCloseTimer);
-    searchModalCloseTimer = 0;
-    elements.searchModal?.classList.remove("hidden", "closing");
-    document.body.classList.add("remote-search-modal-open");
-    renderSearchModalView(state.searchModalView);
-    return;
+function requestDetailOwnerForContainer(container) {
+  if (!container) {
+    return "";
   }
-  searchDetailController?.close({ immediate: true });
-  if (!elements.searchModal || elements.searchModal.classList.contains("hidden")) {
-    document.body.classList.remove("remote-search-modal-open");
-    return;
+  if (container === elements.larkSearchResults || container.closest?.("#remote-search-shared-panel")) {
+    return "shared";
   }
-  if (elements.searchModal.classList.contains("closing")) {
-    return;
+  if (container === elements.searchResults || container.closest?.("#remote-search-local-panel")) {
+    return "local";
   }
-  elements.searchModal.classList.add("closing");
-  window.clearTimeout(searchModalCloseTimer);
-  searchModalCloseTimer = window.setTimeout(() => {
-    elements.searchModal?.classList.add("hidden");
-    elements.searchModal?.classList.remove("closing");
-    document.body.classList.remove("remote-search-modal-open");
-    searchModalCloseTimer = 0;
-  }, 220);
+  if (container === elements.sourcesFollowResults || container.closest?.("#remote-sources-uids-panel")) {
+    return "uids";
+  }
+  if (container === elements.favlistSongResults || container.closest?.("#remote-sources-favorites-panel")) {
+    return "favorites";
+  }
+  if (container.closest?.("#remote-discover-categories-panel")) {
+    return "categories";
+  }
+  if (container.closest?.("#remote-discover-name-panel")) {
+    return "name";
+  }
+  if (container.closest?.("#remote-discover-artist-panel")) {
+    return "artist";
+  }
+  return "";
 }
 
-function openSearchResultDetail(event, container, source) {
-  if (!searchDetailController || !container?.closest("#search-modal")) {
+function requestDetailContainerForOwner(owner) {
+  const containers = {
+    shared: elements.larkSearchResults,
+    local: elements.searchResults,
+    categories: elements.remoteDiscoverCategoriesPanel?.querySelector?.("[data-category-browse-results]"),
+    name: elements.remoteDiscoverNamePanel?.querySelector?.("[data-d1-browse-results]"),
+    artist: elements.remoteDiscoverArtistPanel?.querySelector?.("[data-d1-browse-results]"),
+    uids: elements.sourcesFollowResults,
+    favorites: elements.favlistSongResults,
+  };
+  return containers[owner] || null;
+}
+
+function requestDetailSafeControl(owner) {
+  let buttons = [];
+  let datasetKey = "";
+  let value = owner;
+  if (["shared", "local"].includes(owner)) {
+    buttons = Array.from(elements.remoteSearchModeButtons || []);
+    datasetKey = "remoteSearchMode";
+  } else if (["categories", "name", "artist"].includes(owner)) {
+    buttons = Array.from(elements.remoteDiscoverModeButtons || []);
+    datasetKey = "remoteDiscoverMode";
+  } else if (["uids", "favorites"].includes(owner)) {
+    buttons = Array.from(elements.remoteSourcesModeButtons || []);
+    datasetKey = "remoteSourcesMode";
+  }
+  const secondary = buttons.find((button) => button.dataset?.[datasetKey] === value);
+  if (secondary?.isConnected && !secondary.closest?.("[inert]")) {
+    return secondary;
+  }
+  const topView = ["shared", "local"].includes(owner)
+    ? "search"
+    : ["categories", "name", "artist"].includes(owner)
+      ? "discover"
+      : "sources";
+  return Array.from(elements.remoteRequestViewButtons || [])
+    .find((button) => button.dataset.remoteRequestView === topView) || null;
+}
+
+function applyRequestResultSelection(row, item, owner) {
+  if (!row || !owner) {
+    return;
+  }
+  const itemKey = requestResultItemKey(item);
+  row.dataset.requestResultOwner = owner;
+  row.dataset.requestResultKey = itemKey;
+  const selected = state.requestDetailSelections[owner];
+  const isSelected = Boolean(itemKey && selected?.selectedKey === itemKey);
+  row.classList.toggle("is-selected", isSelected);
+  row.setAttribute("aria-current", isSelected ? "true" : "false");
+}
+
+function resolveRequestDetailReturnFocus(previouslyFocused, item) {
+  const owner = String(item?.detailOwner || "");
+  const selectedKey = String(item?.detailSelectedKey || "");
+  if (
+    previouslyFocused?.isConnected
+    && !previouslyFocused.closest?.("[inert]")
+  ) {
+    return previouslyFocused;
+  }
+  const container = requestDetailContainerForOwner(owner);
+  const recoveredRow = Array.from(container?.querySelectorAll?.(".search-result-item") || [])
+    .find((row) => row.dataset.requestResultKey === selectedKey);
+  if (recoveredRow?.isConnected && !recoveredRow.closest?.("[inert]")) {
+    recoveredRow.tabIndex = -1;
+    return recoveredRow;
+  }
+  if (container?.isConnected && !container.closest?.("[inert]")) {
+    container.tabIndex = -1;
+    return container;
+  }
+  return requestDetailSafeControl(owner);
+}
+
+function openSearchResultDetail(event, container, source = "") {
+  if (!searchDetailController || !container || event.target.closest("button[data-url]")) {
     return false;
   }
   const card = event.target.closest(".search-result-item[data-url]");
@@ -4196,18 +4369,31 @@ function openSearchResultDetail(event, container, source) {
     return false;
   }
   const item = searchResultItemByElement.get(card);
-  if (!item) {
+  const owner = requestDetailOwnerForContainer(container) || source;
+  if (!item || !owner || !state.requestDetailSelections[owner]) {
     return false;
   }
+  const selectedKey = requestResultItemKey(item);
+  state.requestDetailSelections[owner] = { selectedKey, focusElement: card };
+  state.activeRequestDetailOwner = owner;
+  Array.from(container.querySelectorAll?.(".search-result-item") || []).forEach((row) => {
+    const selected = row === card;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-current", selected ? "true" : "false");
+  });
   const avatarUrl = window.BilikaraSongDetail.ownerAvatarFromCachedOwners(
     item,
     state.followBrowseData?.owners,
   );
   event.preventDefault();
+  card.tabIndex = -1;
+  card.focus({ preventScroll: true });
   searchDetailController.open({
     ...item,
     avatar_url: avatarUrl,
-    detailSource: source,
+    detailSource: source || owner,
+    detailOwner: owner,
+    detailSelectedKey: selectedKey,
   });
   return true;
 }
@@ -4216,81 +4402,21 @@ function initSearchDetailController() {
   if (searchDetailController || !window.BilikaraSongDetail) {
     return;
   }
-  const container = elements.searchModal?.querySelector(".remote-search-modal-card");
   searchDetailController = window.BilikaraSongDetail.createSongDetailController({
-    container,
+    container: elements.requestPanel,
     t,
     requestButtonClass: "primary-button",
     nextButtonClass: "secondary-button",
+    resolveReturnFocus: resolveRequestDetailReturnFocus,
+    onClose: () => {
+      state.activeRequestDetailOwner = "";
+    },
     onRequest: (url, position, item) => addByUrl(
       url,
       position,
-      String(item?.detailSource || "modalBrowse"),
+      String(item?.detailSource || item?.detailOwner || "search"),
     ),
   });
-}
-
-function renderSearchModalView(target = state.searchModalView) {
-  const nextTarget = normalizeSearchModalView(target);
-  state.searchModalView = nextTarget;
-  elements.searchModalTabs?.forEach((button) => {
-    const selected = button.dataset.target === nextTarget;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-selected", String(selected));
-    button.tabIndex = selected ? 0 : -1;
-  });
-  const followActive = nextTarget === "follow";
-  const favlistActive = nextTarget === "favlist";
-  const otherActive = ["category", "name", "artist"].includes(nextTarget);
-  elements.modalFollowBrowserView?.classList.toggle("hidden", !followActive);
-  elements.favlistBrowserView?.classList.toggle("hidden", !favlistActive);
-  elements.searchModalOtherView?.classList.toggle("hidden", !otherActive);
-  setRemoteTabPanelVisibility(elements.modalFollowBrowserView, followActive);
-  setRemoteTabPanelVisibility(elements.favlistBrowserView, favlistActive);
-  setRemoteTabPanelVisibility(elements.searchModalOtherView, otherActive);
-  if (otherActive) {
-    elements.searchModalOtherView?.setAttribute("aria-labelledby", `search-modal-${nextTarget}-tab`);
-  }
-
-  if (nextTarget === "follow") {
-    if (!state.followBrowseData && !state.followBrowseLoading) {
-      state.followBrowseSelectedUid = "";
-      if (elements.modalFollowSearchQuery) {
-        elements.modalFollowSearchQuery.value = "";
-      }
-      loadFollowBrowse({ uid: "", query: "" });
-    } else {
-      renderModalFollowBrowse();
-    }
-    return;
-  }
-  if (nextTarget === "favlist") {
-    if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
-      state.favlistBrowseSelectedFolderId = "";
-      if (elements.favlistSearchQuery) {
-        elements.favlistSearchQuery.value = "";
-      }
-      loadFavlistBrowse({ folderId: "", query: "" });
-    } else {
-      renderFavlistBrowse();
-    }
-    return;
-  }
-  if (nextTarget === "category") {
-    renderCategoryBrowseView();
-    return;
-  }
-  if (nextTarget === "name" || nextTarget === "artist") {
-    if (state.d1BrowseKind !== nextTarget) {
-      state.d1BrowseData = null;
-      state.d1BrowseLetter = "";
-      state.d1BrowseTag = "";
-      state.d1BrowseLocale = "";
-      state.d1BrowseQuery = "";
-    }
-    state.d1BrowseKind = nextTarget;
-    renderD1BrowseView();
-  }
 }
 
 function selectedFollowOwner() {
@@ -4353,8 +4479,8 @@ function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
   }, 0);
 }
 
-function renderModalFollowBrowse() {
-  if (!elements.modalFollowBrowserView || !elements.modalFollowUpGrid || !elements.modalFollowSongResults) {
+function renderSourcesFollowBrowse() {
+  if (!elements.sourcesFollowGrid || !elements.sourcesFollowResults) {
     return;
   }
 
@@ -4363,6 +4489,7 @@ function renderModalFollowBrowse() {
   const taskBusy = gatchaTaskBusy();
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
+    error: state.followBrowseError,
     selected: state.followBrowseSelectedUid,
     owners,
     items,
@@ -4370,33 +4497,41 @@ function renderModalFollowBrowse() {
     taskBusy,
     language: state.language,
   });
-  if (signature === state.modalFollowBrowseRenderSignature) {
+  if (signature === state.sourcesFollowBrowseRenderSignature) {
     return;
   }
-  state.modalFollowBrowseRenderSignature = signature;
+  state.sourcesFollowBrowseRenderSignature = signature;
 
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
-  elements.modalFollowUpListView?.classList.toggle("hidden", hasSelectedUid);
-  elements.modalFollowUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
-  if (elements.modalFollowUidInput) {
-    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  elements.sourcesFollowListView?.classList.toggle("hidden", hasSelectedUid);
+  elements.sourcesFollowItemsView?.classList.toggle("hidden", !hasSelectedUid);
+  if (elements.sourcesFollowUidInput) {
+    elements.sourcesFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
   }
-  if (elements.modalAddFollowUidButton) {
-    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    elements.modalAddFollowUidButton.textContent = taskBusy
+  if (elements.sourcesAddFollowUidButton) {
+    elements.sourcesAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.sourcesAddFollowUidButton.toggleAttribute("aria-busy", state.gatchaUidSaving);
+    elements.sourcesAddFollowUidButton.textContent = taskBusy
       ? t("gatcha.globalCooldown")
       : state.gatchaUidSaving
         ? t("gatcha.adding")
         : t("gatcha.add");
   }
+  if (elements.sourcesFollowSearchQuery) {
+    elements.sourcesFollowSearchQuery.disabled = state.followBrowseLoading;
+  }
+  if (elements.sourcesFollowSearchButton) {
+    elements.sourcesFollowSearchButton.disabled = state.followBrowseLoading;
+    elements.sourcesFollowSearchButton.toggleAttribute("aria-busy", state.followBrowseLoading);
+  }
 
   if (!hasSelectedUid) {
-    elements.modalFollowUpGrid.innerHTML = "";
+    elements.sourcesFollowGrid.innerHTML = "";
     if (!owners.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
       empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
-      elements.modalFollowUpGrid.appendChild(empty);
+      elements.sourcesFollowGrid.appendChild(empty);
     } else {
       owners.forEach((owner) => {
         const displayName = followOwnerDisplayName(owner);
@@ -4426,144 +4561,159 @@ function renderModalFollowBrowse() {
           button.append(avatar);
         }
 
-        elements.modalFollowUpGrid.appendChild(button);
+        elements.sourcesFollowGrid.appendChild(button);
       });
     }
-    setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    setSourcesFollowBrowseMessage(
+      state.followBrowseError || (state.followBrowseLoading ? t("follow.loadingOwners") : ""),
+      Boolean(state.followBrowseError),
+    );
     return;
   }
 
   const owner = selectedFollowOwner();
-  if (elements.modalFollowBrowseAvatar) {
+  if (elements.sourcesFollowAvatar) {
     const avatarUrl = String(owner?.avatar_url || "").trim();
-    elements.modalFollowBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    elements.sourcesFollowAvatar.classList.toggle("hidden", !avatarUrl);
     if (avatarUrl) {
-      elements.modalFollowBrowseAvatar.src = avatarUrl;
+      elements.sourcesFollowAvatar.src = avatarUrl;
     } else {
-      elements.modalFollowBrowseAvatar.removeAttribute("src");
+      elements.sourcesFollowAvatar.removeAttribute("src");
     }
   }
-  if (elements.modalFollowBrowseTitle) {
-    elements.modalFollowBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
+  if (elements.sourcesFollowTitle) {
+    elements.sourcesFollowTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
-  if (elements.modalFollowBrowseCount) {
+  if (elements.sourcesFollowCount) {
     const totalCount = Number(owner?.count || items.length || 0);
-    elements.modalFollowBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+    elements.sourcesFollowCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
   }
   renderSearchResultItems(
-    elements.modalFollowSongResults,
+    elements.sourcesFollowResults,
     items,
     state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
   );
-  setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+  setSourcesFollowBrowseMessage(
+    state.followBrowseError || (state.followBrowseLoading ? t("follow.loadingItems") : ""),
+    Boolean(state.followBrowseError),
+  );
 }
 
 async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
+  const seq = state.followBrowseSeq + 1;
+  state.followBrowseSeq = seq;
   state.followBrowseLoading = true;
+  state.followBrowseError = "";
   state.followBrowseSelectedUid = String(uid || "").trim();
-  renderModalFollowBrowse();
+  renderSourcesFollowBrowse();
   try {
     const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
+    if (state.followBrowseSeq !== seq) {
+      return;
+    }
     state.followBrowseData = nextData;
     state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
-    if (!keepQuery && elements.modalFollowSearchQuery) {
-      elements.modalFollowSearchQuery.value = String(nextData.query || "");
+    if (!keepQuery && elements.sourcesFollowSearchQuery) {
+      elements.sourcesFollowSearchQuery.value = String(nextData.query || "");
     }
   } catch (error) {
-    setModalFollowBrowseMessage(error.message, true);
+    if (state.followBrowseSeq === seq) {
+      state.followBrowseError = error.message;
+    }
   } finally {
-    state.followBrowseLoading = false;
-    renderModalFollowBrowse();
+    if (state.followBrowseSeq === seq) {
+      state.followBrowseLoading = false;
+      renderSourcesFollowBrowse();
+    }
   }
 }
 
 async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
-  state.modalFollowBrowseRenderSignature = "";
+  state.sourcesFollowBrowseRenderSignature = "";
   const currentUid = String(state.followBrowseSelectedUid || "").trim();
   const nextUid = currentUid || String(uid || "").trim();
   await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
 }
 
-async function addGatchaUidFromInput(input, { messageTarget = "gatcha" } = {}) {
+async function addGatchaUidFromInput(input, { messageTarget = "sources-follow" } = {}) {
   const uid = String(input?.value || "").trim();
   if (!uid) {
-    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    setSourceManagementMessage(messageTarget, t("gatcha.uidRequired"), true);
     return;
   }
   if (state.gatchaUidSaving) {
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
+    setSourceManagementMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderSourceManagementControls();
     return;
   }
 
   state.gatchaUidSaving = true;
-  renderGatchaUidView();
-  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  renderSourceManagementControls();
+  setSourceManagementMessage(messageTarget, t("gatcha.checkingUid"));
   try {
     const preview = await previewGatchaUid(uid);
     const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
     const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
     const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+    setSourceManagementMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
 
     if (!window.confirm(t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }))) {
-      setGatchaUidFlowMessage(messageTarget, t("remote.uidAddCancelled"));
+      setSourceManagementMessage(messageTarget, t("remote.uidAddCancelled"));
       return;
     }
 
     const normalizedUid = preview?.uid || uid;
     if (gatchaTaskBusy()) {
-      setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
-      renderGatchaUidView();
+      setSourceManagementMessage(messageTarget, gatchaTaskBusyMessage(), true);
+      renderSourceManagementControls();
       return;
     }
-    setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
+    setSourceManagementMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
     const result = await addGatchaUid(normalizedUid);
-    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
+    setSourceManagementMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
     if (input) {
       input.value = "";
     }
     await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || normalizedUid);
   } catch (error) {
-    setGatchaUidFlowMessage(messageTarget, error.message, true);
+    setSourceManagementMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaUidSaving = false;
-    renderGatchaUidView();
+    renderSourceManagementControls();
   }
 }
 
-async function previewGatchaFavlistFromInput(input, { messageTarget = "gatcha" } = {}) {
+async function previewGatchaFavlistFromInput(input, { messageTarget = "sources-favorites" } = {}) {
   const uid = String(input?.value || "").trim();
   if (!uid) {
-    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    setSourceManagementMessage(messageTarget, t("gatcha.uidRequired"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
+    setSourceManagementMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderSourceManagementControls();
     return;
   }
   state.gatchaFavlistSaving = true;
-  renderGatchaUidView();
-  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  renderSourceManagementControls();
+  setSourceManagementMessage(messageTarget, t("gatcha.readingFavlists"));
   try {
     const result = await previewGatchaFavlist(uid);
     openGatchaFavlistSheet(result?.uid || uid, result, { messageTarget });
-    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+    setSourceManagementMessage(messageTarget, t("gatcha.chooseFavlists"));
   } catch (error) {
-    setGatchaUidFlowMessage(messageTarget, error.message, true);
+    setSourceManagementMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
-    renderGatchaUidView();
+    renderSourceManagementControls();
   }
 }
 
 async function handleGatchaDraw() {
-  state.gatchaUidVisible = false;
-  renderGatchaUidView();
+  renderGatchaView();
   setGatchaMessage(t("gatcha.drawing"));
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
@@ -4574,7 +4724,7 @@ async function handleGatchaDraw() {
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    renderGatchaUidView();
+    renderGatchaView();
     setGatchaMessage("");
   } catch (error) {
     setGatchaMessage(error.message, true);
@@ -4599,32 +4749,17 @@ function setGatchaUidMessage(message, isError = false) {
   elements.gatchaUidMessage.classList.toggle("hidden", !message);
 }
 
-function syncGatchaMainContent(showUid, hasCandidate) {
-  elements.gatchaInitView?.classList.toggle("hidden", showUid || hasCandidate);
-  elements.gatchaResultView?.classList.toggle("hidden", showUid || !hasCandidate);
+function syncGatchaMainContent(hasCandidate) {
+  elements.gatchaInitView?.classList.toggle("hidden", hasCandidate);
+  elements.gatchaResultView?.classList.toggle("hidden", !hasCandidate);
 }
 
-function renderGatchaUidView() {
-  syncGatchaTaskTerminalMessage();
-  const showUid = Boolean(state.gatchaUidVisible);
+function renderGatchaView() {
   const hasCandidate = Boolean(state.gatchaCandidate);
-  const taskBusy = gatchaTaskBusy();
   if (elements.gatchaCandidateTitle && state.gatchaCandidate?.title) {
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
   }
-  setGatchaStageView(showUid, () => {
-    syncGatchaMainContent(showUid, hasCandidate);
-  });
-  if (elements.gatchaUidToggle) {
-    elements.gatchaUidToggle.textContent = showUid ? t("gatcha.backToDraw") : t("gatcha.addUid");
-    elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
-  }
-  if (elements.gatchaTag) {
-    elements.gatchaTag.textContent = showUid ? t("gatcha.uidTag") : t("gatcha.tag");
-  }
-  if (elements.gatchaTitle) {
-    elements.gatchaTitle.textContent = showUid ? t("gatcha.uidTitle") : t("gatcha.title");
-  }
+  syncGatchaMainContent(hasCandidate);
   if (elements.gatchaConfirmButton && !elements.gatchaConfirmButton.disabled) {
     elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
   }
@@ -4636,45 +4771,33 @@ function renderGatchaUidView() {
     elements.gatchaRetryButton.disabled = false;
     elements.gatchaRetryButton.textContent = t("gatcha.retry");
   }
-  if (elements.gatchaUidInput) {
-    elements.gatchaUidInput.disabled = state.gatchaUidSaving;
-  }
-  if (elements.addGatchaUidButton) {
-    elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
-  }
+}
+
+function renderSourceManagementControls() {
+  syncGatchaTaskTerminalMessage();
+  const taskBusy = gatchaTaskBusy();
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
+    elements.refreshGatchaCacheButton.toggleAttribute("aria-busy", state.gatchaRefreshSaving);
     elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
   }
-  if (elements.pullGatchaFavlistButton) {
-    elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  if (elements.sourcesFavlistUidInput) {
+    elements.sourcesFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
   }
-  if (elements.modalFavlistUidInput) {
-    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
-  }
-  if (elements.modalPullFavlistButton) {
-    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  if (elements.sourcesPullFavlistButton) {
+    elements.sourcesPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.sourcesPullFavlistButton.toggleAttribute("aria-busy", state.gatchaFavlistSaving);
+    elements.sourcesPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
     }
-    if (elements.pullGatchaFavlistButton) {
-      elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
-    }
-    if (elements.modalPullFavlistButton) {
-      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
+    if (elements.sourcesPullFavlistButton) {
+      elements.sourcesPullFavlistButton.textContent = t("gatcha.globalCooldown");
     }
   }
-  renderModalFollowBrowse();
-}
-
-async function handleGatchaUidSubmit(event) {
-  event.preventDefault();
-  await addGatchaUidFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
+  renderSourcesFollowBrowse();
 }
 
 function render() {
@@ -4693,13 +4816,14 @@ function render() {
   renderRemoteVolumeControls(playbackMode, data.player_settings);
   renderRemoteKeyShiftControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
-  renderModalFollowBrowse();
+  renderSourcesFollowBrowse();
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
   syncListView();
   syncRemoteRequestViewSelection();
-  renderGatchaUidView();
+  renderGatchaView();
+  renderSourceManagementControls();
   renderFloatingControlTrigger(data.current_item, playbackMode);
 }
 
@@ -5230,10 +5354,10 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistSheet(uid, payload, { messageTarget = "gatcha" } = {}) {
+function openGatchaFavlistSheet(uid, payload, { messageTarget = "sources-favorites" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
+    setSourceManagementMessage(messageTarget, t("favlist.none"), true);
     return;
   }
   state.gatchaFavlistIntent = { uid, folders, messageTarget };
@@ -5579,25 +5703,25 @@ async function confirmGatchaFavlistSheet() {
   if (!intent?.uid) {
     return;
   }
-  const messageTarget = intent.messageTarget || "gatcha";
+  const messageTarget = intent.messageTarget || "sources-favorites";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
+    setSourceManagementMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
+    setSourceManagementMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderSourceManagementControls();
     return;
   }
 
   state.gatchaFavlistSaving = true;
-  renderGatchaUidView();
-  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
+  renderSourceManagementControls();
+  setSourceManagementMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistSheet();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    setGatchaUidFlowMessage(messageTarget, t("favlist.pullResult", {
+    setSourceManagementMessage(messageTarget, t("favlist.pullResult", {
       folders: result?.matched_folder_count || 0,
       items: result?.item_count || 0,
     }));
@@ -5610,10 +5734,10 @@ async function confirmGatchaFavlistSheet() {
       });
     }
   } catch (error) {
-    setGatchaUidFlowMessage(messageTarget, error.message, true);
+    setSourceManagementMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
-    renderGatchaUidView();
+    renderSourceManagementControls();
   }
 }
 
@@ -5719,7 +5843,7 @@ async function confirmBindingSheet() {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
-    if (["modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+    if (["search", "lark", "shared", "local", "categories", "name", "artist", "uids", "favorites"].includes(source)) {
       searchDetailController?.close({ immediate: true });
     }
     if (intent.clearInput) {
@@ -5727,7 +5851,7 @@ async function confirmBindingSheet() {
     }
     if (intent.source === "gatcha") {
       state.gatchaCandidate = null;
-      renderGatchaUidView();
+      renderGatchaView();
     }
     setMessageForSource(source, intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail"));
   } catch (error) {
@@ -6716,7 +6840,7 @@ async function addByUrl(url, position = "tail", source = "search") {
     applyStateSnapshot(result.data, { forceRender: true });
     if (source === "gatcha") {
       state.gatchaCandidate = null;
-      renderGatchaUidView();
+      renderGatchaView();
     }
     setMessageForSource(source, t("request.success"));
     return true;
@@ -6909,6 +7033,20 @@ elements.remoteSearchModeButtons?.forEach((button) => {
   button.addEventListener("keydown", handleRemoteSearchModeTabKeydown);
 });
 
+elements.remoteDiscoverModeButtons?.forEach((button) => {
+  button.addEventListener("click", () => {
+    activateRemoteDiscoverMode(button.dataset.remoteDiscoverMode);
+  });
+  button.addEventListener("keydown", handleRemoteDiscoverModeTabKeydown);
+});
+
+elements.remoteSourcesModeButtons?.forEach((button) => {
+  button.addEventListener("click", () => {
+    activateRemoteSourcesMode(button.dataset.remoteSourcesMode);
+  });
+  button.addEventListener("keydown", handleRemoteSourcesModeTabKeydown);
+});
+
 elements.requestForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await submitRequest("tail");
@@ -6924,6 +7062,7 @@ elements.searchForm.addEventListener("submit", async (event) => {
   }
 
   elements.searchButton.disabled = true;
+  elements.searchButton.setAttribute("aria-busy", "true");
   setSearchMessage(t("search.localSearching"));
   try {
     const items = await searchGatchaCache(query);
@@ -6934,41 +7073,30 @@ elements.searchForm.addEventListener("submit", async (event) => {
     setSearchMessage(error.message, true);
   } finally {
     elements.searchButton.disabled = false;
+    elements.searchButton.removeAttribute("aria-busy");
   }
 });
 
 elements.searchResults.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchResults, "local")) {
+    return;
+  }
   const button = event.target.closest("button[data-url]");
   if (!button || button.disabled) {
     return;
   }
   const originalText = button.textContent;
+  const wasDisabled = button.disabled;
   button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   button.textContent = t("search.adding") || "添加中...";
   try {
     await addByUrl(String(button.dataset.url || ""), "tail", "search");
   } finally {
-    button.disabled = false;
+    button.disabled = wasDisabled;
+    button.removeAttribute("aria-busy");
     button.textContent = originalText;
   }
-});
-
-elements.searchLibraryOpen?.addEventListener("click", () => {
-  setSearchModalOpen(true);
-});
-
-elements.searchModalClose?.addEventListener("click", () => {
-  setSearchModalOpen(false);
-});
-
-elements.searchModalBackdrop?.addEventListener("click", () => {
-  setSearchModalOpen(false);
-});
-
-elements.searchModalTabs?.forEach((button) => {
-  button.addEventListener("click", () => {
-    renderSearchModalView(button.dataset.target);
-  });
 });
 
 elements.favlistGrid?.addEventListener("click", async (event) => {
@@ -7007,7 +7135,7 @@ elements.favlistSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.favlistSongResults?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.favlistSongResults, "modalFavlist")) {
+  if (openSearchResultDetail(event, elements.favlistSongResults, "favorites")) {
     return;
   }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
@@ -7023,24 +7151,28 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
     return;
   }
   let originalText = "";
+  let wasDisabled = false;
   if (button) {
     originalText = button.textContent;
+    wasDisabled = button.disabled;
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await addByUrl(url, "tail", "modalFavlist");
+    await addByUrl(url, "tail", "favorites");
   } finally {
     if (button) {
-      button.disabled = false;
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
       button.textContent = originalText;
     }
   }
 });
 
-elements.searchModalOtherView?.addEventListener("submit", (event) => {
+elements.remoteRequestDiscoverPanel?.addEventListener("submit", (event) => {
   const categoryForm = event.target.closest("[data-category-browse-search]");
-  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+  if (categoryForm && elements.remoteRequestDiscoverPanel.contains(categoryForm)) {
     event.preventDefault();
     const input = categoryForm.querySelector("[data-category-browse-query]");
     loadCategoryBrowse({
@@ -7050,44 +7182,50 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
     return;
   }
   const form = event.target.closest("[data-d1-browse-search]");
-  if (!form || !elements.searchModalOtherView.contains(form)) {
+  if (!form || !elements.remoteRequestDiscoverPanel.contains(form)) {
     return;
   }
   event.preventDefault();
+  const kind = form.closest("[data-remote-discover-panel]")?.dataset.remoteDiscoverPanel === "artist"
+    ? "artist"
+    : "name";
+  const mode = d1BrowseModeState(kind);
   const input = form.querySelector("[data-d1-browse-query]");
-  if (!state.d1BrowseLetter) {
+  if (!mode.letter) {
     if (input) {
       input.value = "";
     }
-    state.d1BrowseQuery = "";
-    state.d1BrowseTag = "";
-    state.d1BrowseLocale = "";
-    state.d1BrowseData = null;
-    renderD1BrowseView();
+    mode.query = "";
+    mode.tag = "";
+    mode.locale = "";
+    mode.data = null;
+    mode.error = "";
+    renderD1BrowseView(kind);
     return;
   }
-  if (state.d1BrowseTag) {
+  if (mode.tag) {
     loadD1Browse({
-      kind: state.d1BrowseKind || "name",
-      letter: state.d1BrowseLetter,
+      kind,
+      letter: mode.letter,
       query: input?.value || "",
-      tag: state.d1BrowseTag,
-      locale: state.d1BrowseLocale,
+      tag: mode.tag,
+      locale: mode.locale,
     });
     return;
   }
   loadD1Browse({
-    kind: state.d1BrowseKind || "name",
-    letter: state.d1BrowseLetter,
+    kind,
+    letter: mode.letter,
     query: input?.value || "",
     tag: "",
     locale: "",
   });
 });
 
-elements.searchModalOtherView?.addEventListener("click", (event) => {
+elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => {
   const categoryBackButton = event.target.closest("[data-category-browse-back]");
-  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+  if (categoryBackButton && elements.remoteRequestDiscoverPanel.contains(categoryBackButton)) {
+    state.categoryBrowseSeq += 1;
     state.categoryBrowseSelectedId = "";
     state.categoryBrowseQuery = "";
     state.categoryBrowseItems = [];
@@ -7098,7 +7236,7 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
     return;
   }
   const categoryButton = event.target.closest("[data-category-id]");
-  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+  if (categoryButton && elements.remoteRequestDiscoverPanel.contains(categoryButton)) {
     loadCategoryBrowse({
       categoryId: categoryButton.dataset.categoryId || "",
       query: "",
@@ -7107,29 +7245,39 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
     return;
   }
   const backButton = event.target.closest("[data-d1-browse-back]");
-  if (backButton && elements.searchModalOtherView.contains(backButton)) {
-    if (state.d1BrowseTag) {
+  if (backButton && elements.remoteRequestDiscoverPanel.contains(backButton)) {
+    const kind = backButton.closest("[data-remote-discover-panel]")?.dataset.remoteDiscoverPanel === "artist"
+      ? "artist"
+      : "name";
+    const mode = d1BrowseModeState(kind);
+    if (mode.tag) {
       loadD1Browse({
-        kind: state.d1BrowseKind || "name",
-        letter: state.d1BrowseLetter,
+        kind,
+        letter: mode.letter,
         query: "",
         tag: "",
         locale: "",
       });
-    } else if (state.d1BrowseLetter) {
-      state.d1BrowseLetter = "";
-      state.d1BrowseTag = "";
-      state.d1BrowseLocale = "";
-      state.d1BrowseQuery = "";
-      state.d1BrowseData = null;
-      renderD1BrowseView();
+    } else if (mode.letter) {
+      mode.seq += 1;
+      mode.letter = "";
+      mode.tag = "";
+      mode.locale = "";
+      mode.query = "";
+      mode.data = null;
+      mode.loading = false;
+      mode.error = "";
+      renderD1BrowseView(kind);
     }
     return;
   }
   const letterButton = event.target.closest("[data-letter]");
-  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+  if (letterButton && elements.remoteRequestDiscoverPanel.contains(letterButton)) {
+    const kind = letterButton.closest("[data-remote-discover-panel]")?.dataset.remoteDiscoverPanel === "artist"
+      ? "artist"
+      : "name";
     loadD1Browse({
-      kind: state.d1BrowseKind || "name",
+      kind,
       letter: letterButton.dataset.letter || "",
       query: "",
       tag: "",
@@ -7138,23 +7286,30 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
     return;
   }
   const tagButton = event.target.closest("[data-tag]");
-  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+  if (tagButton && elements.remoteRequestDiscoverPanel.contains(tagButton)) {
+    const kind = tagButton.closest("[data-remote-discover-panel]")?.dataset.remoteDiscoverPanel === "artist"
+      ? "artist"
+      : "name";
+    const mode = d1BrowseModeState(kind);
     loadD1Browse({
-      kind: state.d1BrowseKind || "name",
-      letter: state.d1BrowseLetter,
+      kind,
+      letter: mode.letter,
       query: "",
       tag: tagButton.dataset.tag || "",
       locale: tagButton.dataset.locale || "",
     });
+    return;
   }
-});
-
-elements.searchModalOtherView?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.searchModalOtherView, "modalBrowse")) {
+  const ownerPanel = event.target.closest("[data-remote-discover-panel]");
+  if (!ownerPanel || !elements.remoteRequestDiscoverPanel.contains(ownerPanel)) {
+    return;
+  }
+  const owner = normalizeRemoteDiscoverMode(ownerPanel.dataset.remoteDiscoverPanel, "");
+  if (openSearchResultDetail(event, ownerPanel, owner)) {
     return;
   }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
-  if (!target || !elements.searchModalOtherView.contains(target)) {
+  if (!target || !ownerPanel.contains(target)) {
     return;
   }
   const button = target.closest("button[data-url]");
@@ -7166,27 +7321,36 @@ elements.searchModalOtherView?.addEventListener("click", async (event) => {
     return;
   }
   let originalText = "";
+  let wasDisabled = false;
   if (button) {
     originalText = button.textContent;
+    wasDisabled = button.disabled;
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await addByUrl(url, "tail", "modalBrowse");
+    await addByUrl(url, "tail", owner);
   } finally {
     if (button) {
-      button.disabled = false;
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
       button.textContent = originalText;
     }
   }
 });
 
-elements.searchModalOtherView?.addEventListener("scroll", (event) => {
-  const target = event.target;
-  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
-    maybeLoadMoreCategoryBrowse(target);
+window.addEventListener("scroll", () => {
+  if (
+    state.remoteRequestView === "discover"
+    && state.remoteDiscoverMode === "categories"
+    && state.categoryBrowseSelectedId
+  ) {
+    maybeLoadMoreCategoryBrowse(
+      elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]"),
+    );
   }
-}, true);
+}, { passive: true });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
   canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
@@ -7198,27 +7362,33 @@ elements.larkSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.larkSearchResults, "shared")) {
+    return;
+  }
   const button = event.target.closest("button[data-url]");
   if (!button || button.disabled) {
     return;
   }
   const originalText = button.textContent;
+  const wasDisabled = button.disabled;
   button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   button.textContent = t("search.adding") || "添加中...";
   try {
     await addByUrl(String(button.dataset.url || ""), "tail", "lark");
   } finally {
-    button.disabled = false;
+    button.disabled = wasDisabled;
+    button.removeAttribute("aria-busy");
     button.textContent = originalText;
   }
 });
 
-elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+elements.sourcesFollowUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await addGatchaUidFromInput(elements.modalFollowUidInput, { messageTarget: "follow-modal" });
+  await addGatchaUidFromInput(elements.sourcesFollowUidInput, { messageTarget: "sources-follow" });
 });
 
-elements.modalFollowUpGrid?.addEventListener("click", async (event) => {
+elements.sourcesFollowGrid?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-uid]");
   if (!button) {
     return;
@@ -7228,23 +7398,24 @@ elements.modalFollowUpGrid?.addEventListener("click", async (event) => {
     return;
   }
   state.followBrowseSelectedUid = uid;
-  if (elements.modalFollowSearchQuery) {
-    elements.modalFollowSearchQuery.value = "";
+  if (elements.sourcesFollowSearchQuery) {
+    elements.sourcesFollowSearchQuery.value = "";
   }
   await loadFollowBrowse({ uid, query: "" });
 });
 
-elements.modalFollowBrowseBack?.addEventListener("click", () => {
+elements.sourcesFollowBack?.addEventListener("click", () => {
   state.followBrowseSelectedUid = "";
-  if (elements.modalFollowSearchQuery) {
-    elements.modalFollowSearchQuery.value = "";
+  if (elements.sourcesFollowSearchQuery) {
+    elements.sourcesFollowSearchQuery.value = "";
   }
-  renderModalFollowBrowse();
+  state.sourcesFollowBrowseRenderSignature = "";
+  renderSourcesFollowBrowse();
 });
 
-elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
+elements.sourcesFollowSearchForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const query = String(elements.modalFollowSearchQuery?.value || "").trim();
+  const query = String(elements.sourcesFollowSearchQuery?.value || "").trim();
   await loadFollowBrowse({
     uid: state.followBrowseSelectedUid,
     query,
@@ -7252,12 +7423,12 @@ elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
   });
 });
 
-elements.modalFollowSongResults?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.modalFollowSongResults, "modalFollow")) {
+elements.sourcesFollowResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.sourcesFollowResults, "uids")) {
     return;
   }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
-  if (!target || !elements.modalFollowSongResults.contains(target)) {
+  if (!target || !elements.sourcesFollowResults.contains(target)) {
     return;
   }
   const button = target.closest("button[data-url]");
@@ -7269,16 +7440,20 @@ elements.modalFollowSongResults?.addEventListener("click", async (event) => {
     return;
   }
   let originalText = "";
+  let wasDisabled = false;
   if (button) {
     originalText = button.textContent;
+    wasDisabled = button.disabled;
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await addByUrl(url, "tail", "modalFollow");
+    await addByUrl(url, "tail", "uids");
   } finally {
     if (button) {
-      button.disabled = false;
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
       button.textContent = originalText;
     }
   }
@@ -7541,9 +7716,6 @@ document.addEventListener("keydown", (event) => {
       event.stopImmediatePropagation();
       return;
     }
-    if (state.searchModalOpen) {
-      setSearchModalOpen(false);
-    }
     if (state.remoteMenuOpen) {
       setRemoteMenuOpen(false, { restoreFocus: true });
       event.preventDefault();
@@ -7649,11 +7821,6 @@ elements.remoteIdentityForm?.addEventListener("submit", submitRemoteIdentity);
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
-elements.gatchaUidToggle?.addEventListener("click", () => {
-  state.gatchaUidVisible = !state.gatchaUidVisible;
-  renderGatchaUidView();
-});
-
 elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
   await openPoolConfigSheet();
 });
@@ -7706,16 +7873,14 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);
-
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   if (gatchaTaskBusy()) {
     setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
+    renderSourceManagementControls();
     return;
   }
   state.gatchaRefreshSaving = true;
-  renderGatchaUidView();
+  renderSourceManagementControls();
   setGatchaUidMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
@@ -7732,17 +7897,13 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
     setGatchaUidMessage(error.message, true);
   } finally {
     state.gatchaRefreshSaving = false;
-    renderGatchaUidView();
+    renderSourceManagementControls();
   }
 });
 
-elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  await previewGatchaFavlistFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
-});
-
-elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+elements.sourcesFavlistPullForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, { messageTarget: "favlist-modal" });
+  await previewGatchaFavlistFromInput(elements.sourcesFavlistUidInput, { messageTarget: "sources-favorites" });
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
@@ -8372,7 +8533,6 @@ function renderFloatingControlTrigger(currentItem, playbackMode) {
 }
 
 async function startRemoteSession() {
-  setupRemoteFlipStages();
   hydrateLocalPreferences();
   initFloatingControlConsole();
   await loadTranslations();

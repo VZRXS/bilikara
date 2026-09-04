@@ -303,7 +303,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
         detail = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
         host_init_start = host.index("function initSearchDetailController")
         host_init = host[host_init_start:host.index("\nelements.searchResults.addEventListener", host_init_start)]
-        remote_init = self.function_source(remote, "initSearchDetailController", "renderSearchModalView")
+        remote_init = self.function_source(remote, "initSearchDetailController", "selectedFollowOwner")
 
         self.assertIn("onOpenExternal: openExternalUrl,", host_init)
         self.assertNotIn("onOpenExternal", remote_init)
@@ -326,7 +326,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
 
         self.assertEqual(host_js.count("if (openSearchResultDetail(event,"), 5)
-        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 3)
+        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 5)
         for source in (host_js, remote_js):
             self.assertIn("const searchResultItemByElement = new WeakMap();", source)
             self.assertIn("searchResultItemByElement.get(card)", source)
@@ -334,7 +334,9 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
             self.assertIn("detailSource: source", source)
         self.assertNotIn('container?.closest("#search-modal")', host_js)
         self.assertIn('event.target.closest("button[data-url]")', host_js)
-        self.assertIn('container?.closest("#search-modal")', remote_js)
+        self.assertNotIn('container?.closest("#search-modal")', remote_js)
+        self.assertIn("requestDetailOwnerForContainer(container)", remote_js)
+        self.assertIn("requestDetailSelections", remote_js)
 
     def test_detail_avatar_prefers_matching_owner_name_over_collaboration_mid(self):
         source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
@@ -474,7 +476,7 @@ function setMessageForSource() {{}}
 function t(key) {{ return key; }}
 async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
 function applyStateSnapshot() {{}}
-function renderGatchaUidView() {{}}
+function renderGatchaView() {{}}
 function openBindingSheet() {{}}
 {remote_add}
 (async () => {{
@@ -572,7 +574,6 @@ const elements = {{
   urlInput: {{ value: "request URL" }},
   searchQuery: {{ value: "anime" }},
   searchResults: {{ innerHTML: "existing results" }},
-  searchModal: {{ open: true }},
 }};
 function currentBindingSelection() {{ return {{ selectedVideoPage: 1, selectedAudioPages: [2] }}; }}
 function setMessageForSource() {{}}
@@ -582,14 +583,14 @@ function selectedRequesterName() {{ return "tester"; }}
 async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
 function applyStateSnapshot() {{}}
 function closeBindingSheet() {{ bindingCloseCount += 1; }}
-function renderGatchaUidView() {{}}
+function renderGatchaView() {{}}
 function openBindingSheet() {{}}
 {remote_confirm}
 (async () => {{
-  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalFollow", clearInput: false }};
+  state.bindingIntent = {{ url: "https://example.test/detail", source: "uids", clearInput: false }};
   await confirmBindingSheet();
-  const afterDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
-  state.bindingIntent = {{ url: "https://example.test/list", source: "search", clearInput: false }};
+  const afterDetail = {{ detailCloseCount, bindingCloseCount }};
+  state.bindingIntent = {{ url: "https://example.test/form", source: "request-form", clearInput: false }};
   await confirmBindingSheet();
   console.log(JSON.stringify({{
     afterDetail,
@@ -615,7 +616,7 @@ function openBindingSheet() {{}}
 
         self.assertEqual(
             remote_result["afterDetail"],
-            {"detailCloseCount": 1, "bindingCloseCount": 1, "searchModalOpen": True},
+            {"detailCloseCount": 1, "bindingCloseCount": 1},
         )
         self.assertEqual(remote_result["finalDetailCloseCount"], 1)
         self.assertEqual(remote_result["query"], "anime")
@@ -959,7 +960,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertNotIn("transform: scale(0.5);", remote_css)
         self.assertNotIn("transform: scale(0.5);", detail_css)
 
-    def test_song_detail_and_remote_modal_use_x_close_buttons_and_animated_exit(self):
+    def test_song_detail_uses_x_close_and_retired_remote_modal_is_absent(self):
         host_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         remote_html = (ROOT / "static" / "remote.html").read_text(encoding="utf-8")
         host_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -967,18 +968,19 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
 
         self.assertNotIn('id="search-modal-close"', host_html)
-        close_button = re.search(r'<button[^>]+id="search-modal-close"[\s\S]*?</button>', remote_html)
-        self.assertIsNotNone(close_button)
-        self.assertIn(">×</button>", close_button.group(0))
-        self.assertIn('data-i18n-aria-label="common.close"', close_button.group(0))
+        self.assertNotIn('id="search-modal-close"', remote_html)
+        self.assertNotIn('id="search-modal"', remote_html)
 
         self.assertIn('const container = elements.requestWorkspace;', host_js)
         self.assertNotIn('elements.searchModal.classList.add("closing");', host_js)
-        self.assertIn('elements.searchModal.classList.add("closing");', remote_js)
-        self.assertIn('root.className = "song-detail-view hidden";', (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8"))
-        self.assertIn("}, 220);", remote_js)
+        self.assertNotIn('elements.searchModal.classList.add("closing");', remote_js)
+        self.assertIn("container: elements.requestPanel", remote_js)
+        detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        self.assertIn('root.className = "song-detail-view hidden";', detail_js)
+        self.assertIn(">×</button>", detail_js)
         self.assertIn(".song-detail-view.closing .song-detail-card", detail_css)
-        self.assertIn("#search-modal.closing > .remote-search-modal-card", detail_css)
+        self.assertNotIn("#search-modal", detail_css)
+        self.assertNotIn("remote-search-modal", detail_css)
         self.assertIn("animation: song-detail-card-out 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;", detail_css)
 
     def test_close_button_motion_is_platform_consistent(self):
@@ -993,9 +995,10 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertNotIn("#search-modal-content-placeholder", detail_css)
         self.assertIn("transform 180ms cubic-bezier(0.16, 1, 0.3, 1)", detail_css)
         self.assertIn("background 180ms ease", detail_css)
-        self.assertIn(".remote-search-modal .remote-search-modal-close,\n.remote-search-modal .song-detail-close", detail_css)
+        self.assertIn(".request-panel .song-detail-close", detail_css)
         self.assertIn("touch-action: manipulation;", detail_css)
-        self.assertIn(".remote-search-modal .remote-search-modal-close:hover", detail_css)
+        self.assertIn(".request-panel .song-detail-close:hover", detail_css)
+        self.assertNotIn("remote-search-modal", detail_css + remote_css)
         self.assertIn("transform: scale(1.04);", detail_css)
         self.assertIn("transform: scale(0.96);", detail_css)
         self.assertNotIn("transform: translateY(-1px);", detail_css)
@@ -1005,8 +1008,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         for selector in (".remote-qr-popover-close", ".floating-control-close", ".rating-close"):
             self.assertIn(selector, remote_css)
         shared_remote_close_rule = re.search(
-            r"\.remote-qr-popover-close,\s*\.remote-search-modal-close,\s*"
-            r"\.binding-sheet-close,\s*\.rating-close,\s*"
+            r"\.remote-qr-popover-close,\s*\.binding-sheet-close,\s*\.rating-close,\s*"
             r"\.floating-control-close\s*\{([^}]*)\}",
             remote_css,
         ).group(1)
@@ -1018,7 +1020,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         mobile_css = detail_css.split("@media (max-width: 680px) {", 1)[1].split(
             "@media (prefers-reduced-motion: reduce)", 1
         )[0]
-        close_rule = mobile_css.split(".remote-search-modal .song-detail-close {", 1)[1].split("}", 1)[0]
+        close_rule = mobile_css.split(".request-panel .song-detail-close {", 1)[1].split("}", 1)[0]
 
         self.assertIn("padding-bottom: 3px;", close_rule)
         self.assertNotIn("padding-left", close_rule)

@@ -1,8 +1,3 @@
-.remote-search-modal-card {
-  position: relative;
-  overflow: hidden;
-}
-
 .song-detail-view {
   position: absolute;
   inset: 0;
@@ -21,25 +16,6 @@
 
 .song-detail-view.closing {
   pointer-events: none;
-  animation: song-detail-backdrop-out 0.2s ease-out forwards;
-}
-
-#search-modal:not(.hidden):not(.closing) > .remote-search-modal-card {
-  transform-origin: center;
-  animation: song-detail-card-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-#search-modal.closing > .remote-search-modal-card {
-  animation: song-detail-card-out 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-#search-modal:not(.hidden):not(.closing) > .selection-modal-backdrop,
-#search-modal:not(.hidden):not(.closing) > .remote-search-modal-backdrop {
-  animation: song-detail-backdrop-in 0.2s ease-out;
-}
-
-#search-modal.closing > .selection-modal-backdrop,
-#search-modal.closing > .remote-search-modal-backdrop {
   animation: song-detail-backdrop-out 0.2s ease-out forwards;
 }
 
@@ -76,8 +52,7 @@
 
 .request-workspace .song-detail-close,
 .selection-modal .song-detail-close,
-.remote-search-modal .remote-search-modal-close,
-.remote-search-modal .song-detail-close {
+.request-panel .song-detail-close {
   width: 32px;
   height: 32px;
   min-height: 32px;
@@ -106,8 +81,8 @@
   .request-workspace .song-detail-close:focus-visible,
   .selection-modal .song-detail-close:hover,
   .selection-modal .song-detail-close:focus-visible,
-  .remote-search-modal .remote-search-modal-close:hover,
-  .remote-search-modal .song-detail-close:hover {
+  .request-panel .song-detail-close:hover,
+  .request-panel .song-detail-close:focus-visible {
     background: var(--rating-close-hover-bg);
     transform: scale(1.04);
   }
@@ -115,20 +90,19 @@
 
 .request-workspace .song-detail-close:active:not(:disabled),
 .selection-modal .song-detail-close:active:not(:disabled),
-.remote-search-modal .song-detail-close:active:not(:disabled) {
+.request-panel .song-detail-close:active:not(:disabled) {
   transform: scale(0.96);
 }
 
 .request-workspace .song-detail-close:focus-visible,
 .selection-modal .song-detail-close:focus-visible,
-.remote-search-modal .song-detail-close:focus-visible {
+.request-panel .song-detail-close:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
   outline-offset: 2px;
 }
 
 @media (hover: none), (pointer: coarse) {
-  .remote-search-modal .remote-search-modal-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
-  .remote-search-modal .song-detail-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+  .request-panel .song-detail-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
     transform: scale(0.97);
   }
 }
@@ -364,7 +338,7 @@
     font-size: 23px;
   }
 
-  .remote-search-modal .song-detail-close {
+  .request-panel .song-detail-close {
     padding-bottom: 3px;
   }
 

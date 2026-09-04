@@ -52,24 +52,23 @@ class RemoteSearchHardeningTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout.strip().splitlines()[-1])
 
-    def test_expanded_modal_scroll_containers_have_mobile_scroll_contract(self):
-        selector = """.remote-search-modal-view .search-results,
-.remote-search-browser-view .search-results"""
-        result_rule = self.css.split(selector, 1)[1].split("}", 1)[0]
-        browser_selector = """.remote-search-modal .follow-up-grid,
-.remote-search-modal .tag-browser-tags,
-.remote-search-modal .category-browser-grid"""
-        browser_rule = self.css.split(browser_selector, 1)[1].split("}", 1)[0]
-        for rule in (result_rule, browser_rule):
-            for declaration in (
-                "min-height: 0;",
-                "overflow-y: auto;",
-                "overscroll-behavior: contain;",
-                "-webkit-overflow-scrolling: touch;",
-                "touch-action: pan-y;",
-            ):
-                self.assertIn(declaration, rule)
-        self.assertIn("body.remote-search-modal-open {\n  overflow: hidden;", self.css)
+    def test_inline_browse_results_leave_vertical_scroll_to_the_document(self):
+        result_rule = self.css.split(
+            ".remote-search-browser-view .search-results", 1
+        )[1].split("}", 1)[0]
+        for declaration in (
+            "min-height: 0;",
+            "max-height: none;",
+            "overflow: visible;",
+            "overscroll-behavior: auto;",
+        ):
+            self.assertIn(declaration, result_rule)
+        for obsolete in (
+            ".remote-search-modal",
+            "body.remote-search-modal-open",
+        ):
+            self.assertNotIn(obsolete, self.css)
+        self.assertNotIn("-webkit-overflow-scrolling: touch", result_rule)
 
     def test_initial_cover_batch_is_eager_and_image_failure_has_fallback(self):
         result = self.run_node(
@@ -163,6 +162,8 @@ function createSearchResultRow(item, options) {{
   rows.push(row);
   return row;
 }}
+function applyRequestResultSelection() {{}}
+function requestDetailOwnerForContainer() {{ return "categories"; }}
 function t(key) {{ return key; }}
 const document = {{ createElement() {{ return {{}}; }} }};
 {self.render_source}

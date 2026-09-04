@@ -51,6 +51,8 @@ function mockElement(id) {{
       const event = {{ preventDefault() {{}}, target: this }};
       for (const callback of listeners.get(name) || []) await callback(event);
     }},
+    setAttribute(name, value) {{ this[name] = String(value); }},
+    removeAttribute(name) {{ delete this[name]; }},
   }};
 }}
 

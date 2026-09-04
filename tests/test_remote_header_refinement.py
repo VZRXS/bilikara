@@ -520,9 +520,26 @@ console.log(JSON.stringify({
         self.assertIn("var(--remote-menu-trigger-color)", trigger_rule)
         self.assertIn("var(--chip-bg)", self.styles)
         self.assertIn("var(--chip-border)", self.styles)
-        self.assertRegex(
-            self.styles,
-            r"\.remote-identity-row \.secondary-button,\s*\.queue-header-action\s*\{[^}]*background: var\(--remote-secondary-button-bg\)",
+        identity_action = self._first_base_rule(
+            self.styles, ".remote-identity-row .secondary-button"
+        )
+        queue_action = self._first_base_rule(self.styles, ".queue-header-action")
+        for action in (identity_action, queue_action):
+            self.assertEqual(
+                action["background"], "var(--remote-secondary-button-bg)"
+            )
+            self.assertEqual(action["color"], "var(--remote-secondary-button-color)")
+        self.assertEqual(
+            identity_action["min-height"], "var(--remote-form-control-height)"
+        )
+        self.assertEqual(
+            identity_action["border-radius"], "var(--remote-form-control-radius)"
+        )
+        self.assertEqual(
+            queue_action["min-height"], "var(--remote-peer-action-height)"
+        )
+        self.assertEqual(
+            queue_action["border-radius"], "var(--remote-peer-action-radius)"
         )
         self.assertIn(".remote-menu-toggle:focus-visible", self.styles)
         self.assertIn("var(--remote-menu-trigger-hover-bg)", self.styles)
@@ -531,6 +548,7 @@ console.log(JSON.stringify({
             r'\.remote-menu-toggle\[aria-expanded="true"\]\s*\{([^}]*)\}',
             self.styles,
         ).group(1)
+
         self.assertIn("border-color: transparent", expanded_trigger_rule)
         self.assertIn(".remote-menu-section-toggle", self.styles)
         self.assertIn(".remote-menu-section-toggle-chevron", self.styles)
@@ -580,6 +598,36 @@ console.log(JSON.stringify({
         self.assertNotIn("/api/ping", transport)
         self.assertNotIn("/api/health", transport)
         self.assertNotIn("setInterval", transport)
+
+    def test_secondary_button_borders_match_host_theme_contract(self):
+        def variables(block: str) -> dict[str, str]:
+            return {
+                name: re.sub(r"\s+", " ", value.strip())
+                for name, value in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", block)
+            }
+
+        remote_root = re.search(r"(?m)^:root\s*\{([^}]*)\}", self.styles)
+        host_root = re.search(r"(?m)^:root\s*\{([^}]*)\}", self.host_styles)
+        self.assertIsNotNone(remote_root)
+        self.assertIsNotNone(host_root)
+        self.assertEqual(
+            variables(remote_root.group(1))["--btn-border"],
+            variables(host_root.group(1))["--btn-secondary-border"],
+        )
+
+        for theme in ("dark", "blue"):
+            remote_rules = re.findall(
+                rf':root\[data-theme="{theme}"\]\s*\{{([^}}]*)\}}', self.styles
+            )
+            host_rules = re.findall(
+                rf':root\[data-theme="{theme}"\]\s*\{{([^}}]*)\}}',
+                self.host_styles,
+            )
+            self.assertEqual(len(remote_rules), len(host_rules))
+            self.assertEqual(
+                [variables(rule)["--btn-border"] for rule in remote_rules],
+                [variables(rule)["--btn-secondary-border"] for rule in host_rules],
+            )
 
     def test_now_playing_uses_deduplicated_toasts_for_exceptional_states_only(self):
         self.assertNotIn("player-control-hint", self.markup)
