@@ -3690,7 +3690,12 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::GatchaFavlistBrowse { folder_id, query } => {
+            RemoteRequestV1::GatchaFavlistBrowse {
+                folder_id,
+                query,
+                offset,
+                limit,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
@@ -3699,6 +3704,8 @@ impl AppState {
                         "kind": "gatcha_favlist_browse",
                         "folder_id": folder_id,
                         "query": query,
+                        "offset": offset,
+                        "limit": limit,
                     })),
                     false,
                 );

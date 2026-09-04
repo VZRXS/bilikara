@@ -261,6 +261,42 @@ class InternetRemoteAdapterTest(unittest.TestCase):
         self.assertEqual(result["data"]["next_offset"], 150)
         self.assertTrue(result["data"]["has_more"])
 
+    def test_favlist_browse_effect_forwards_bounded_page_to_repository(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "gatcha_favlist_browse",
+                    "folder_id": "42:100",
+                    "query": "高达",
+                    "offset": 100,
+                    "limit": 50,
+                }
+            )
+        )
+        repository_page = {
+            "folders": [],
+            "selected_folder_id": "42:100",
+            "query": "高达",
+            "offset": 100,
+            "limit": 50,
+            "matched_count": 151,
+            "has_more": True,
+            "next_offset": 150,
+            "items": [],
+        }
+
+        with patch.object(
+            internet_remote,
+            "browse_gatcha_favlist",
+            return_value=repository_page,
+        ) as browse:
+            result = internet_remote.dispatch(context, "peer-one", "bulk", "wire")
+
+        browse.assert_called_once_with("42:100", "高达", offset=100, limit=50)
+        self.assertEqual(result["data"]["matched_count"], 151)
+        self.assertEqual(result["data"]["next_offset"], 150)
+        self.assertTrue(result["data"]["has_more"])
+
     def test_catalog_add_uses_rust_completion_and_its_cache_effect(self):
         dispatch_response = response(
             effect={

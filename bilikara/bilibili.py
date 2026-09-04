@@ -2645,11 +2645,19 @@ def browse_gatcha_cache(
     )
 
 
-def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
+def browse_gatcha_favlist(
+    folder_id: str = "",
+    query: str = "",
+    *,
+    offset: int = 0,
+    limit: int = 10_000,
+) -> dict:
     return _rust_gatcha_repository(
         "browse_favlist",
         folder_id=str(folder_id or ""),
         query=str(query or ""),
+        offset=max(0, int(offset)),
+        limit=max(1, min(10_000, int(limit))),
     )
 
 

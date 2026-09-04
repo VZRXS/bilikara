@@ -260,6 +260,8 @@ def _run_host_effect(
             browse_gatcha_favlist(
                 str(effect["folder_id"]),
                 str(effect["query"]),
+                offset=int(effect["offset"]),
+                limit=int(effect["limit"]),
             )
         )
         return public_response
@@ -540,12 +542,19 @@ def _public_gatcha_browse(result: object) -> dict[str, Any]:
 
 def _public_gatcha_favlist_browse(result: object) -> dict[str, Any]:
     value = result if isinstance(result, dict) else {}
+    offset = max(0, int(value.get("offset") or 0))
+    limit = max(1, min(100, int(value.get("limit") or 100)))
     return {
         "folders": [_public_folder(item) for item in (value.get("folders") or [])][
             :256
         ],
         "selected_folder_id": _bounded_text(value.get("selected_folder_id"), 64),
         "query": _bounded_text(value.get("query"), 400),
+        "offset": offset,
+        "limit": limit,
+        "matched_count": max(0, int(value.get("matched_count") or 0)),
+        "has_more": bool(value.get("has_more")),
+        "next_offset": max(offset, int(value.get("next_offset") or offset)),
         "items": _public_catalog_items(value.get("items")),
         "updated_at": float(value.get("updated_at") or 0),
     }

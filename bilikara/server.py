@@ -1603,7 +1603,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             selected_folder_id = route_query.get("folder_id", [""])[0]
             search_query = route_query.get("q", [""])[0]
             try:
-                self._write_json({"ok": True, "data": browse_gatcha_favlist(selected_folder_id, search_query)})
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                limit = max(1, min(10_000, int(route_query.get("limit", ["10000"])[0] or "10000")))
+            except (TypeError, ValueError):
+                limit = 10_000
+            try:
+                self._write_json({
+                    "ok": True,
+                    "data": browse_gatcha_favlist(
+                        selected_folder_id,
+                        search_query,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                })
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return

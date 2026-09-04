@@ -579,6 +579,8 @@
         response = await request("gatcha.favlist_browse", {
           folder_id: url.searchParams.get("folder_id") || "",
           query: url.searchParams.get("q") || "",
+          offset: Math.max(0, Number(url.searchParams.get("offset") || 0)),
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 100))),
         }, "bulk");
         return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
       }

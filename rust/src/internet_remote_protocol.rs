@@ -213,7 +213,12 @@ pub enum RemoteRequestV1 {
         limit: u16,
     },
     #[serde(rename = "gatcha.favlist_browse")]
-    GatchaFavlistBrowse { folder_id: String, query: String },
+    GatchaFavlistBrowse {
+        folder_id: String,
+        query: String,
+        offset: u32,
+        limit: u16,
+    },
     #[serde(rename = "gatcha.pool_config_get")]
     GatchaPoolConfigGet,
     #[serde(rename = "gatcha.candidate")]
@@ -453,6 +458,10 @@ const fn default_browse_limit() -> u16 {
 struct GatchaFavlistBrowseBody {
     folder_id: String,
     query: String,
+    #[serde(default)]
+    offset: u32,
+    #[serde(default = "default_browse_limit")]
+    limit: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -703,9 +712,15 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
                 && (1..=MAX_BROWSE_RESULTS).contains(limit)
         }
-        RemoteRequestV1::GatchaFavlistBrowse { folder_id, query } => {
+        RemoteRequestV1::GatchaFavlistBrowse {
+            folder_id,
+            query,
+            limit,
+            ..
+        } => {
             (folder_id.is_empty() || valid_folder_selector(folder_id))
                 && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
+                && (1..=MAX_BROWSE_RESULTS).contains(limit)
         }
         RemoteRequestV1::GatchaPoolConfigSet {
             uid_weight,
@@ -902,6 +917,8 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::GatchaFavlistBrowse {
                 folder_id: body.folder_id,
                 query: body.query,
+                offset: body.offset,
+                limit: body.limit,
             }
         }
         "gatcha.pool_config_get" | "gatcha.candidate" | "gatcha.refresh" => {
@@ -1298,6 +1315,59 @@ mod tests {
                 &request(
                     "gatcha.browse",
                     json!({"uid": "42", "query": "", "offset": 0, "limit": 101}),
+                ),
+                context(RemoteProfile::Viewer),
+            ),
+            Err(RemoteProtocolError::InvalidRequestBody)
+        );
+    }
+
+    #[test]
+    fn gatcha_favlist_browse_accepts_bounded_pagination_fields() {
+        let paged = decode_remote_request_v1(
+            &request(
+                "gatcha.favlist_browse",
+                json!({
+                    "folder_id": "42:100",
+                    "query": "高达",
+                    "offset": 100,
+                    "limit": 50
+                }),
+            ),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert!(matches!(
+            paged.request,
+            RemoteRequestV1::GatchaFavlistBrowse {
+                offset: 100,
+                limit: 50,
+                ..
+            }
+        ));
+
+        let compatible = decode_remote_request_v1(
+            &request(
+                "gatcha.favlist_browse",
+                json!({"folder_id": "42:100", "query": ""}),
+            ),
+            context(RemoteProfile::Viewer),
+        )
+        .unwrap();
+        assert!(matches!(
+            compatible.request,
+            RemoteRequestV1::GatchaFavlistBrowse {
+                offset: 0,
+                limit: MAX_BROWSE_RESULTS,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            decode_remote_request_v1(
+                &request(
+                    "gatcha.favlist_browse",
+                    json!({"folder_id": "42:100", "query": "", "limit": 101}),
                 ),
                 context(RemoteProfile::Viewer),
             ),
