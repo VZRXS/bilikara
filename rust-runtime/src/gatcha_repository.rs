@@ -66,12 +66,20 @@ pub enum GatchaOperation {
         uid: String,
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default = "default_browse_limit")]
+        limit: usize,
     },
     BrowseFavlist {
         #[serde(default)]
         folder_id: String,
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default = "default_browse_limit")]
+        limit: usize,
     },
     FavlistUpdatedAt,
     PreviewUid {
@@ -210,10 +218,18 @@ fn execute_gatcha_operation(
             draw_candidate(&request.paths, *cookie_available)
         }
         GatchaOperation::Search { query, limit } => search(&request.paths, query, *limit),
-        GatchaOperation::BrowseUid { uid, query } => browse_uid(&request.paths, uid, query),
-        GatchaOperation::BrowseFavlist { folder_id, query } => {
-            browse_favlist(&request.paths, folder_id, query)
-        }
+        GatchaOperation::BrowseUid {
+            uid,
+            query,
+            offset,
+            limit,
+        } => browse_uid(&request.paths, uid, query, *offset, *limit),
+        GatchaOperation::BrowseFavlist {
+            folder_id,
+            query,
+            offset,
+            limit,
+        } => browse_favlist(&request.paths, folder_id, query, *offset, *limit),
         GatchaOperation::FavlistUpdatedAt => {
             let payload = load_favlist(&request.paths.favlist_file);
             Ok(json!({"updated_at": number(&payload, "updated_at")}))
@@ -1552,6 +1568,8 @@ fn browse_uid(
     paths: &GatchaPaths,
     selected_uid: &str,
     query: &str,
+    offset: usize,
+    limit: usize,
 ) -> Result<Value, GatchaRepositoryError> {
     let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
     let cache = load_cache(&paths.cache_file);
@@ -1598,7 +1616,7 @@ fn browse_uid(
         ""
     };
     let needle = query.trim().to_lowercase();
-    let items = if valid_selected.is_empty() {
+    let matched_items: Vec<Value> = if valid_selected.is_empty() {
         Vec::new()
     } else {
         cache_uids
@@ -1620,10 +1638,23 @@ fn browse_uid(
             })
             .unwrap_or_default()
     };
+    let bounded_limit = limit.clamp(1, 10_000);
+    let matched_count = matched_items.len();
+    let items: Vec<Value> = matched_items
+        .into_iter()
+        .skip(offset)
+        .take(bounded_limit)
+        .collect();
+    let next_offset = offset.saturating_add(items.len()).min(matched_count);
     Ok(json!({
         "owners": owners,
         "selected_uid": valid_selected,
         "query": query.trim(),
+        "offset": offset,
+        "limit": bounded_limit,
+        "matched_count": matched_count,
+        "has_more": next_offset < matched_count,
+        "next_offset": next_offset,
         "items": items,
         "updated_at": number(&cache, "updated_at"),
     }))
@@ -1633,6 +1664,8 @@ fn browse_favlist(
     paths: &GatchaPaths,
     selected_folder: &str,
     query: &str,
+    offset: usize,
+    limit: usize,
 ) -> Result<Value, GatchaRepositoryError> {
     let payload = load_favlist(&paths.favlist_file);
     let cache = load_cache(&paths.cache_file);
@@ -1694,7 +1727,7 @@ fn browse_favlist(
     }
     let (selected_uid, selected_id) = split_folder_id(&selected);
     let needle = query.trim().to_lowercase();
-    let items: Vec<Value> = if selected.is_empty() {
+    let matched_items: Vec<Value> = if selected.is_empty() {
         Vec::new()
     } else {
         dedupe_entries(array(&payload, "items"))
@@ -1714,10 +1747,23 @@ fn browse_favlist(
             .map(entry_payload)
             .collect()
     };
+    let bounded_limit = limit.clamp(1, 10_000);
+    let matched_count = matched_items.len();
+    let items: Vec<Value> = matched_items
+        .into_iter()
+        .skip(offset)
+        .take(bounded_limit)
+        .collect();
+    let next_offset = offset.saturating_add(items.len()).min(matched_count);
     Ok(json!({
         "folders": folders,
         "selected_folder_id": selected,
         "query": query.trim(),
+        "offset": offset,
+        "limit": bounded_limit,
+        "matched_count": matched_count,
+        "has_more": next_offset < matched_count,
+        "next_offset": next_offset,
         "items": items,
         "updated_at": number(&payload, "updated_at"),
     }))
@@ -2058,6 +2104,10 @@ fn default_search_limit() -> usize {
     30
 }
 
+fn default_browse_limit() -> usize {
+    10_000
+}
+
 fn default_user_agent() -> String {
     "Mozilla/5.0".to_owned()
 }
@@ -2111,6 +2161,133 @@ mod tests {
             request.operation,
             GatchaOperation::Candidate { .. }
         ));
+    }
+
+    #[test]
+    fn uid_browse_returns_stable_bounded_pages() {
+        let root = temp_root("browse-pages");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version": 2, "uids": ["42"], "profiles": {}, "updated_at": 1}),
+        )
+        .expect("write uids");
+        let items: Vec<Value> = (0..205)
+            .map(|index| {
+                json!({
+                    "bvid": format!("BV{:010}", index),
+                    "title": format!("song-{index:03}"),
+                    "owner_name": "Singer"
+                })
+            })
+            .collect();
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({
+                "schema_version": 3,
+                "uids": {"42": items},
+                "profiles": {},
+                "updated_at": 2
+            }),
+        )
+        .expect("write cache");
+
+        let request = GatchaRepositoryRequest {
+            schema_version: 1,
+            paths,
+            default_uids: vec![],
+            operation: GatchaOperation::BrowseUid {
+                uid: "42".to_owned(),
+                query: String::new(),
+                offset: 100,
+                limit: 100,
+            },
+        };
+        let page = execute_gatcha(&request).expect("browse page");
+
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(100));
+        assert_eq!(page["items"][0]["title"], "song-100");
+        assert_eq!(page["matched_count"], 205);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["next_offset"], 200);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn favlist_browse_filters_before_returning_bounded_pages() {
+        let root = temp_root("favlist-browse-pages");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version": 2, "uids": ["42"], "profiles": {}, "updated_at": 1}),
+        )
+        .expect("write uids");
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({"schema_version": 3, "uids": {}, "profiles": {}, "updated_at": 2}),
+        )
+        .expect("write cache");
+        let items: Vec<Value> = (0..221)
+            .map(|index| {
+                json!({
+                    "bvid": format!("BV{:010}", index),
+                    "title": if index == 150 {
+                        "机动战士高达".to_owned()
+                    } else {
+                        format!("song-{index:03}")
+                    },
+                    "fav_uid": "42",
+                    "fav_folder_id": "100",
+                })
+            })
+            .collect();
+        atomic_write_json(
+            &paths.favlist_file,
+            &json!({
+                "schema_version": 2,
+                "folders": [{"uid": "42", "media_id": "100", "title": "收藏夹", "media_count": 221}],
+                "items": items,
+                "updated_at": 3,
+            }),
+        )
+        .expect("write favlist");
+
+        let first_page = execute_gatcha(&GatchaRepositoryRequest {
+            schema_version: 1,
+            paths: paths.clone(),
+            default_uids: vec![],
+            operation: GatchaOperation::BrowseFavlist {
+                folder_id: "42:100".to_owned(),
+                query: String::new(),
+                offset: 0,
+                limit: 100,
+            },
+        })
+        .expect("browse first page");
+        assert_eq!(first_page["items"].as_array().map(Vec::len), Some(100));
+        assert_eq!(first_page["matched_count"], 221);
+        assert_eq!(first_page["has_more"], true);
+        assert_eq!(first_page["next_offset"], 100);
+
+        let filtered = execute_gatcha(&GatchaRepositoryRequest {
+            schema_version: 1,
+            paths,
+            default_uids: vec![],
+            operation: GatchaOperation::BrowseFavlist {
+                folder_id: "42:100".to_owned(),
+                query: "高达".to_owned(),
+                offset: 0,
+                limit: 100,
+            },
+        })
+        .expect("browse filtered page");
+        assert_eq!(filtered["matched_count"], 1);
+        assert_eq!(filtered["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(filtered["items"][0]["title"], "机动战士高达");
+        assert_eq!(filtered["has_more"], false);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

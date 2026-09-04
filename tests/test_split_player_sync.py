@@ -572,7 +572,8 @@ console.log(JSON.stringify({ changed, videoTime: mountedVideo.currentTime,
         result = self.run_node(
             """
 const video = new FakeMedia(10); const audio = new FakeMedia(10);
-video.paused = false; audio.paused = false; state.localAudioPlaybackBlocked = true;
+video.paused = false; audio.paused = false; audio.readyState = 2;
+state.localAudioPlaybackBlocked = true;
 const action = syncSplitPlayer(video, audio, 0, false);
 console.log(JSON.stringify({ action, videoPaused: video.paused, videoPauseCalls: video.pauseCalls,
   audioPauseCalls: audio.pauseCalls, videoSeekWrites: video.seekWrites,
@@ -586,6 +587,52 @@ console.log(JSON.stringify({ action, videoPaused: video.paused, videoPauseCalls:
         self.assertEqual(result["audioPauseCalls"], 0)
         self.assertEqual(result["videoSeekWrites"], 0)
         self.assertEqual(result["audioSeekWrites"], 0)
+
+    def test_rapid_host_seek_recovers_audio_when_readiness_event_is_lost(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+state.localPlaybackStartState = "established";
+state.localShouldBePlaying = true;
+
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 40 });
+// A waiting/stalled event from the first seek can arrive without a matching
+// canplay event when another host seek supersedes it.
+state.localAudioPlaybackBlocked = true;
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 45 });
+video.seeking = false; audio.seeking = false;
+video.readyState = 4; audio.readyState = 4;
+const settled = settleSplitPlayerSeek(video, audio, true);
+await Promise.resolve(); await Promise.resolve();
+
+console.log(JSON.stringify({
+  settled,
+  audioBlocked: state.localAudioPlaybackBlocked,
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls,
+  audioPlayCalls: audio.playCalls,
+}));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+        )
+        self.assertEqual(
+            result,
+            {
+                "settled": True,
+                "audioBlocked": False,
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
 
     def test_transition_hold_prevents_any_audio_or_video_start(self):
         result = self.run_node(
@@ -4763,9 +4810,11 @@ console.log(JSON.stringify({
 const video = new FakeMedia(10); const audio = new FakeMedia(10);
 mountedVideo = video; mountedAudio = audio;
 video.paused = false; audio.paused = false;
+audio.readyState = 2;
 state.localPlaybackStartState = "established";
 state.localAudioPlaybackBlocked = true;
 const held = syncSplitPlayer(video, audio, 0, false);
+audio.readyState = 4;
 state.localAudioPlaybackBlocked = false;
 nowMs += 1000;
 const recovered = syncSplitPlayer(video, audio, 0, true);

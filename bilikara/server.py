@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import atexit
+import base64
 from collections import deque
 from email.utils import formatdate
 import hmac
+import io
 import ipaddress
 import json
 import math
@@ -68,6 +70,14 @@ from .lark_pool_client import (
     submit_cloudflare_song_rating,
     trigger_cloudflare_maintenance_job,
     verify_cloudflare_bilikara_secret,
+)
+from .internet_remote import (
+    InternetRemoteDispatchError,
+    close_peer as close_internet_remote_peer,
+    dispatch as dispatch_internet_remote,
+    open_peer as open_internet_remote_peer,
+    remote_state as internet_remote_state,
+    submit_rating_background,
 )
 from .cache import CacheManager
 from .rust_backend import PlaybackCapabilityError
@@ -337,6 +347,15 @@ def _normalized_ip_address(value: object) -> ipaddress.IPv4Address | ipaddress.I
     return address
 
 
+def _loopback_companion_host(host: str) -> str | None:
+    if not (getattr(sys, "frozen", False) and os.name == "nt"):
+        return None
+    address = _normalized_ip_address(host)
+    if address is None or address.is_loopback or address.is_unspecified:
+        return None
+    return "127.0.0.1"
+
+
 def _url_host(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
@@ -344,6 +363,9 @@ def _url_host(host: str) -> str:
 def _local_ui_host(bind_host: str) -> str:
     if bind_host in {"0.0.0.0", "::"}:
         return "127.0.0.1"
+    companion = _loopback_companion_host(bind_host)
+    if companion:
+        return companion
     return bind_host
 
 
@@ -504,6 +526,10 @@ class AppContext:
         payload["state_revision"] = state_revision
         return payload
 
+    def state_revision_snapshot(self) -> int:
+        with self._state_change_condition:
+            return self._state_revision
+
     def serialized_sse_state_event(self) -> tuple[int, bytes]:
         while True:
             with self._sse_payload_condition:
@@ -565,6 +591,7 @@ class AppContext:
         self,
         browser_info: dict[str, object] | None = None,
         export_diagnostics: list[dict[str, object]] | None = None,
+        internet_remote_diagnostics: list[dict[str, object]] | None = None,
     ) -> DiagnosticArtifact:
         store_snapshot = self.store.snapshot()
         current_item = store_snapshot.get("current_item")
@@ -593,6 +620,7 @@ class AppContext:
             runtime_state=runtime_state,
             browser_info=browser_info,
             export_diagnostics=export_diagnostics,
+            internet_remote_diagnostics=internet_remote_diagnostics,
             local_usernames=local_usernames,
         )
 
@@ -663,6 +691,30 @@ class AppContext:
                 old_key = key_order.popleft()
                 self._rating_submission_keys.discard(old_key)
             return True
+
+    def submit_rating_in_background(
+        self, session_user_name: str, play_id: str, bvid: str, score: int
+    ) -> bool:
+        if not self.register_rating_submission(session_user_name, play_id):
+            return False
+        submit_rating_background(session_user_name, play_id, bvid, score)
+        return True
+
+    def open_internet_remote_peer(
+        self, peer_id: str, epoch: str, profile: str = "controller"
+    ) -> dict[str, object]:
+        return open_internet_remote_peer(self, peer_id, epoch, profile)
+
+    def close_internet_remote_peer(self, peer_id: str) -> dict[str, object]:
+        return close_internet_remote_peer(self, peer_id)
+
+    def internet_remote_state(self) -> dict[str, object]:
+        return internet_remote_state(self)
+
+    def dispatch_internet_remote(
+        self, peer_id: str, lane: str, message: str
+    ) -> dict[str, object]:
+        return dispatch_internet_remote(self, peer_id, lane, message)
 
     def advance_to_next(self, expected_playback_generation: int) -> None:
         self.store.advance_to_next(
@@ -1403,6 +1455,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
             return
+        if route == "/api/internet-remote/state":
+            if not self._is_local_client():
+                self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self._write_json({"ok": True, "data": CONTEXT.internet_remote_state()})
+            return
         if route == "/api/remote-identity":
             self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
             return
@@ -1520,7 +1578,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             selected_uid = route_query.get("uid", [""])[0]
             search_query = route_query.get("q", [""])[0]
             try:
-                self._write_json({"ok": True, "data": browse_gatcha_cache(selected_uid, search_query)})
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                limit = max(1, min(10_000, int(route_query.get("limit", ["10000"])[0] or "10000")))
+            except (TypeError, ValueError):
+                limit = 10_000
+            try:
+                self._write_json({
+                    "ok": True,
+                    "data": browse_gatcha_cache(
+                        selected_uid,
+                        search_query,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                })
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -1529,7 +1603,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             selected_folder_id = route_query.get("folder_id", [""])[0]
             search_query = route_query.get("q", [""])[0]
             try:
-                self._write_json({"ok": True, "data": browse_gatcha_favlist(selected_folder_id, search_query)})
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                limit = max(1, min(10_000, int(route_query.get("limit", ["10000"])[0] or "10000")))
+            except (TypeError, ValueError):
+                limit = 10_000
+            try:
+                self._write_json({
+                    "ok": True,
+                    "data": browse_gatcha_favlist(
+                        selected_folder_id,
+                        search_query,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                })
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -1703,15 +1793,74 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route.startswith("/api/internet-remote/"):
+                if not self._is_local_client():
+                    self._write_json(
+                        {"ok": False, "error": "forbidden"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                if route == "/api/internet-remote/peer/open":
+                    result = CONTEXT.open_internet_remote_peer(
+                        str(body.get("peer_id") or ""),
+                        str(body.get("epoch") or ""),
+                        str(body.get("profile") or "controller"),
+                    )
+                elif route == "/api/internet-remote/peer/close":
+                    result = CONTEXT.close_internet_remote_peer(
+                        str(body.get("peer_id") or "")
+                    )
+                elif route == "/api/internet-remote/dispatch":
+                    message = body.get("message")
+                    if not isinstance(message, str):
+                        raise ValueError("message must be a string")
+                    result = CONTEXT.dispatch_internet_remote(
+                        str(body.get("peer_id") or ""),
+                        str(body.get("lane") or ""),
+                        message,
+                    )
+                elif route == "/api/internet-remote/qr":
+                    remote_url = str(body.get("url") or "")
+                    if (
+                        len(remote_url) > 2048
+                        or not remote_url.startswith(
+                            "https://rtc.kevinx96.icu/remote.html#"
+                        )
+                    ):
+                        raise ValueError("invalid Internet Remote URL")
+                    try:
+                        import qrcode  # type: ignore[import-not-found]
+                    except ImportError as exc:
+                        raise RuntimeError("QR generator is unavailable") from exc
+                    qr_buffer = io.BytesIO()
+                    qrcode.make(remote_url).save(qr_buffer, format="PNG")
+                    result = {
+                        "image": "data:image/png;base64,"
+                        + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
+                    }
+                else:
+                    self._write_json(
+                        {"ok": False, "error": "not found"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
             export_diagnostics = body.get("export_diagnostics") if isinstance(body, dict) else None
+            internet_remote_diagnostics = (
+                body.get("internet_remote_diagnostics")
+                if isinstance(body, dict)
+                else None
+            )
             if route == "/api/diagnostics/markdown":
                 if not self._is_local_client():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                if export_diagnostics is not None:
+                if export_diagnostics is not None or internet_remote_diagnostics is not None:
                     artifact = CONTEXT.build_diagnostics(
                         self._diagnostic_browser_info(body),
                         export_diagnostics=export_diagnostics,
+                        internet_remote_diagnostics=internet_remote_diagnostics,
                     )
                 else:
                     artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
@@ -1739,10 +1888,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     return
                 self._log_diagnostics_stage("diagnostics_authorized", diagnostic_context)
                 try:
-                    if export_diagnostics is not None:
+                    if export_diagnostics is not None or internet_remote_diagnostics is not None:
                         artifact = CONTEXT.build_diagnostics(
                             self._diagnostic_browser_info(body),
                             export_diagnostics=export_diagnostics,
+                            internet_remote_diagnostics=internet_remote_diagnostics,
                         )
                     else:
                         artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
@@ -2335,7 +2485,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/player/control":
                 action = str(body.get("action") or "").strip()
                 item_id = str(body.get("item_id") or "").strip()
-                if action not in {"toggle-play", "seek-relative", "seek-absolute", "next-track"}:
+                if action not in {
+                    "toggle-play",
+                    "play",
+                    "pause",
+                    "seek-relative",
+                    "seek-absolute",
+                    "next-track",
+                }:
                     raise ValueError("invalid player control action")
                 delta_seconds = int(body.get("delta_seconds") or 0)
                 target_seconds = None
@@ -2648,6 +2805,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         "reason": exc.kind,
                     },
                 }
+            )
+        except InternetRemoteDispatchError as exc:
+            self._write_json(
+                {"ok": False, "error": str(exc), "code": exc.kind},
+                status=HTTPStatus.BAD_REQUEST,
             )
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -3204,6 +3366,22 @@ def _serve(
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     bound_host, bound_port = server.server_address[:2]
     actual_port = bound_port
+    loopback_server = None
+    loopback_host = _loopback_companion_host(host)
+    if loopback_host:
+        try:
+            loopback_server = ThreadingHTTPServer(
+                (loopback_host, actual_port),
+                BilikaraHandler,
+            )
+        except Exception:
+            server.server_close()
+            raise
+        threading.Thread(
+            target=loopback_server.serve_forever,
+            daemon=True,
+            name="bilikara-loopback-http",
+        ).start()
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
@@ -3237,6 +3415,9 @@ def _serve(
     finally:
         CONTEXT.shutdown()
         server.server_close()
+        if loopback_server is not None:
+            loopback_server.shutdown()
+            loopback_server.server_close()
 
 
 def run(
@@ -3284,6 +3465,9 @@ def _playlist_export_logo_path() -> Path | None:
 def _port_probe_hosts(host: str) -> tuple[str, ...]:
     if host == "0.0.0.0":
         return (host, "127.0.0.1")
+    companion = _loopback_companion_host(host)
+    if companion:
+        return (host, companion)
     return (host,)
 
 

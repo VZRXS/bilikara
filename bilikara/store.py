@@ -1177,6 +1177,74 @@ class PlaylistStore:
                 command, include_now=include_now, **fields
             )["result"]
 
+    def open_internet_remote_peer(
+        self, peer_id: str, epoch: str, profile: str = "controller"
+    ) -> dict[str, Any]:
+        return self._request(
+            "open_internet_remote_peer",
+            include_now=False,
+            peer_id=peer_id,
+            epoch=epoch,
+            profile=profile,
+        )
+
+    def close_internet_remote_peer(self, peer_id: str) -> dict[str, Any]:
+        return self._request(
+            "close_internet_remote_peer",
+            include_now=False,
+            peer_id=peer_id,
+        )
+
+    def internet_remote_state(self) -> dict[str, Any]:
+        return self._request(
+            "internet_remote_state",
+            include_now=False,
+        )
+
+    def dispatch_internet_remote_message(
+        self,
+        peer_id: str,
+        lane: str,
+        message: str,
+        *,
+        reset_av_delay: bool = False,
+    ) -> dict[str, Any]:
+        return self._request(
+            "dispatch_internet_remote_message",
+            peer_id=peer_id,
+            lane=lane,
+            message=message,
+            reset_av_delay=bool(reset_av_delay),
+        )
+
+    def complete_internet_remote_playlist_add(
+        self,
+        peer_id: str,
+        request_id: str,
+        item: PlaylistItem,
+        *,
+        reset_av_delay: bool = False,
+    ) -> dict[str, Any]:
+        return self._request(
+            "complete_internet_remote_playlist_add",
+            peer_id=peer_id,
+            request_id=request_id,
+            item=item.serialize(),
+            reset_av_delay=bool(reset_av_delay),
+        )
+
+    def cancel_internet_remote_playlist_add(
+        self,
+        peer_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "cancel_internet_remote_playlist_add",
+            include_now=False,
+            peer_id=peer_id,
+            request_id=request_id,
+        )
+
     def _request_unlocked(
         self,
         command: str,

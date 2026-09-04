@@ -4773,3 +4773,63 @@ button:disabled:active,
 .toggle-button:disabled:active {
   transform: none !important;
 }
+html[data-remote-transport="internet-pending"] body {
+  overflow: hidden;
+}
+
+.internet-remote-join-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--page-bg, #fff7ed) 92%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.internet-remote-join-overlay.hidden {
+  display: none;
+}
+
+.internet-remote-join-card {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--line, #ead8ca);
+  border-radius: 24px;
+  background: var(--panel-bg, #fff);
+  box-shadow: 0 24px 70px rgb(35 24 16 / 18%);
+}
+
+.internet-remote-join-card h1,
+.internet-remote-join-card p {
+  margin: 0;
+}
+
+.internet-remote-join-card label {
+  display: grid;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.internet-remote-join-card input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.internet-remote-join-copy,
+.internet-remote-join-status {
+  color: var(--muted, #76675d);
+  line-height: 1.6;
+}
+
+.internet-remote-join-error {
+  color: var(--danger, #b42318);
+}
+
+html[data-remote-transport="internet"] #remote-qr-control,
+html[data-remote-transport="internet"] #history-export-row {
+  display: none !important;
+}

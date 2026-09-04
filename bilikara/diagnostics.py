@@ -84,6 +84,7 @@ def build_diagnostic_artifact(
     runtime_state: dict[str, Any],
     browser_info: dict[str, Any] | None = None,
     export_diagnostics: list[dict[str, Any]] | None = None,
+    internet_remote_diagnostics: list[dict[str, Any]] | None = None,
     local_usernames: list[str] | None = None,
     connectivity_probe: Callable[[], dict[str, Any]] | None = None,
 ) -> DiagnosticArtifact:
@@ -117,6 +118,7 @@ def build_diagnostic_artifact(
         "cache_policy": cache_policy,
         "runtime_state": runtime_state,
         "export_diagnostics": list(export_diagnostics or []),
+        "internet_remote_diagnostics": list(internet_remote_diagnostics or []),
         "local_usernames": redaction_names,
         "connectivity_targets": _connectivity_targets(),
         "connectivity_timeout_ms": 5000,

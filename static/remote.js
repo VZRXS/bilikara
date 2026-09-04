@@ -13,7 +13,8 @@ const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
 const d1BrowseTagLimit = 450;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
-const categoryBrowsePageSize = 100;
+const browsePageSize = 100;
+const browseAutoLoadThresholdPx = 160;
 const searchResultItemByElement = new WeakMap();
 let searchDetailController = null;
 const categoryBrowseDefinitionsRaw = [
@@ -1909,10 +1910,10 @@ function renderRatingPromptContent() {
   if (coverUrl) {
     const image = document.createElement("img");
     image.className = "rating-cover";
-    image.src = coverUrl;
     image.alt = "";
     image.loading = "lazy";
     image.referrerPolicy = "no-referrer";
+    image.src = coverUrl;
     media.appendChild(image);
   } else {
     const placeholder = document.createElement("div");
@@ -2922,7 +2923,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   };
 }
 
-async function fetchGatchaBrowse(uid = "", query = "") {
+async function fetchGatchaBrowse(uid = "", query = "", { offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
   const normalizedQuery = String(query || "").trim();
@@ -2932,6 +2933,8 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
   const queryString = params.toString();
   const response = await fetch(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
@@ -2944,7 +2947,11 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   return payload.data || { owners: [], items: [] };
 }
 
-async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+async function fetchGatchaFavlistBrowse(
+  folderId = "",
+  query = "",
+  { offset = 0, limit = 100 } = {},
+) {
   const params = new URLSearchParams();
   const normalizedFolderId = String(folderId || "").trim();
   const normalizedQuery = String(query || "").trim();
@@ -2954,6 +2961,8 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
   const queryString = params.toString();
   const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
@@ -3704,7 +3713,7 @@ function selectedCategoryBrowseDefinition() {
   return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
 }
 
-function mergeCategoryBrowseItems(existingItems, nextItems) {
+function mergeBrowseItems(existingItems, nextItems) {
   const seen = new Set();
   const items = [];
   [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
@@ -4066,13 +4075,13 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
       tags: category.tags,
       query: state.categoryBrowseQuery,
       offset: append ? state.categoryBrowseOffset : 0,
-      limit: categoryBrowsePageSize,
+      limit: browsePageSize,
     });
     if (state.categoryBrowseSeq !== searchSeq) {
       return;
     }
     const nextItems = Array.isArray(data.items) ? data.items : [];
-    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseItems = append ? mergeBrowseItems(state.categoryBrowseItems, nextItems) : mergeBrowseItems([], nextItems);
     state.categoryBrowseHasMore = Boolean(data.has_more);
     state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
   } catch (error) {
@@ -4087,19 +4096,68 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
   }
 }
 
-function maybeLoadMoreCategoryBrowse(resultsContainer) {
-  if (
-    !state.categoryBrowseSelectedId
-    || state.categoryBrowseLoading
-    || !state.categoryBrowseHasMore
-    || !resultsContainer
-  ) {
-    return;
+function shouldAutoLoadNextBrowsePage(resultsContainer, { active, loading, hasMore }) {
+  if (!active || loading || !hasMore || !resultsContainer) {
+    return false;
   }
   const bounds = resultsContainer.getBoundingClientRect?.();
-  if (bounds && bounds.bottom <= window.innerHeight + 160 && bounds.bottom >= 0) {
+  return Boolean(
+    bounds
+    && bounds.bottom <= window.innerHeight + browseAutoLoadThresholdPx
+    && bounds.bottom >= 0
+  );
+}
+
+function maybeLoadMoreCategoryBrowse(resultsContainer) {
+  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
+    active: Boolean(state.categoryBrowseSelectedId),
+    loading: state.categoryBrowseLoading,
+    hasMore: state.categoryBrowseHasMore,
+  })) {
     loadCategoryBrowse({ append: true });
   }
+}
+
+function maybeLoadMoreFavlistBrowse(resultsContainer) {
+  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
+    active: Boolean(state.favlistBrowseSelectedFolderId),
+    loading: state.favlistBrowseLoading,
+    hasMore: Boolean(state.favlistBrowseData?.has_more),
+  })) {
+    loadFavlistBrowse({
+      folderId: state.favlistBrowseSelectedFolderId,
+      query: String(state.favlistBrowseData?.query || "").trim(),
+      keepQuery: true,
+      append: true,
+    });
+  }
+}
+
+function maybeLoadMoreFollowBrowse(resultsContainer) {
+  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
+    active: Boolean(state.followBrowseSelectedUid),
+    loading: state.followBrowseLoading,
+    hasMore: Boolean(state.followBrowseData?.has_more),
+  })) {
+    loadFollowBrowse({
+      uid: state.followBrowseSelectedUid,
+      query: String(state.followBrowseData?.query || "").trim(),
+      keepQuery: true,
+      append: true,
+    });
+  }
+}
+
+function paginatedBrowseStatus(items, { loading, hasMore, loadingText, emptyText = "" }) {
+  if (loading) {
+    return items.length ? t("follow.loadingMore") : loadingText;
+  }
+  if (items.length) {
+    return hasMore
+      ? t("search.categoryLoadedMore", { count: items.length })
+      : t("search.categoryLoadedAll", { count: items.length });
+  }
+  return emptyText;
 }
 
 function selectedFavlistFolder() {
@@ -4113,12 +4171,14 @@ function renderFavlistBrowse() {
   }
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const hasMore = Boolean(state.favlistBrowseData?.has_more);
   const signature = JSON.stringify({
     loading: state.favlistBrowseLoading,
     error: state.favlistBrowseError,
     selected: state.favlistBrowseSelectedFolderId,
     folders,
     items,
+    hasMore,
     language: state.language,
   });
   if (signature === state.favlistBrowseRenderSignature) {
@@ -4138,6 +4198,10 @@ function renderFavlistBrowse() {
   }
 
   if (!hasSelectedFolder) {
+    if (elements.favlistSearchButton) {
+      elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
+      elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
+    }
     elements.favlistGrid.innerHTML = "";
     if (!folders.length) {
       const empty = document.createElement("div");
@@ -4167,10 +4231,10 @@ function renderFavlistBrowse() {
         if (folder.avatar_url) {
           const avatar = document.createElement("img");
           avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.src = folder.avatar_url;
           avatar.alt = "";
           avatar.loading = "lazy";
           avatar.referrerPolicy = "no-referrer";
+          avatar.src = folder.avatar_url;
           button.append(avatar);
         }
 
@@ -4198,25 +4262,41 @@ function renderFavlistBrowse() {
     elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
   }
   if (elements.favlistBrowseCount) {
-    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    const matchedCount = Number(state.favlistBrowseData?.matched_count);
+    const totalCount = Number.isFinite(matchedCount)
+      ? matchedCount
+      : Number(folder?.media_count || folder?.count || items.length || 0);
     elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  if (elements.favlistSearchButton) {
+    elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
+    elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
   }
   renderSearchResultItems(
     elements.favlistSongResults,
     items,
     state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
   );
-  setFavlistBrowseMessage(
-    state.favlistBrowseError || (state.favlistBrowseLoading ? t("favlist.loadingItems") : ""),
-    Boolean(state.favlistBrowseError),
-  );
+  if (state.favlistBrowseError) {
+    setFavlistBrowseMessage(state.favlistBrowseError, true);
+  } else {
+    setFavlistBrowseMessage(paginatedBrowseStatus(items, {
+      loading: state.favlistBrowseLoading,
+      hasMore,
+      loadingText: t("favlist.loadingItems"),
+    }));
+  }
 }
 
 async function loadFavlistBrowse({
   folderId = state.favlistBrowseSelectedFolderId,
   query = "",
   keepQuery = false,
+  append = false,
 } = {}) {
+  if (state.favlistBrowseLoading) {
+    return;
+  }
   const seq = state.favlistBrowseSeq + 1;
   state.favlistBrowseSeq = seq;
   state.favlistBrowseLoading = true;
@@ -4224,11 +4304,22 @@ async function loadFavlistBrowse({
   state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
   renderFavlistBrowse();
   try {
-    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    const offset = append ? Number(state.favlistBrowseData?.next_offset || 0) : 0;
+    const nextData = await fetchGatchaFavlistBrowse(
+      state.favlistBrowseSelectedFolderId,
+      query,
+      { offset, limit: browsePageSize },
+    );
     if (state.favlistBrowseSeq !== seq) {
       return;
     }
-    state.favlistBrowseData = nextData;
+    const previousItems = append && Array.isArray(state.favlistBrowseData?.items)
+      ? state.favlistBrowseData.items
+      : [];
+    state.favlistBrowseData = {
+      ...nextData,
+      items: mergeBrowseItems(previousItems, nextData.items),
+    };
     state.favlistBrowseSelectedFolderId = String(
       nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
     );
@@ -4486,6 +4577,7 @@ function renderSourcesFollowBrowse() {
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const hasMore = Boolean(state.followBrowseData?.has_more);
   const taskBusy = gatchaTaskBusy();
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
@@ -4493,6 +4585,7 @@ function renderSourcesFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     owners,
     items,
+    hasMore,
     uidSaving: state.gatchaUidSaving,
     taskBusy,
     language: state.language,
@@ -4554,10 +4647,10 @@ function renderSourcesFollowBrowse() {
         if (owner.avatar_url) {
           const avatar = document.createElement("img");
           avatar.className = "follow-up-avatar";
-          avatar.src = owner.avatar_url;
           avatar.alt = "";
           avatar.loading = "lazy";
           avatar.referrerPolicy = "no-referrer";
+          avatar.src = owner.avatar_url;
           button.append(avatar);
         }
 
@@ -4585,7 +4678,10 @@ function renderSourcesFollowBrowse() {
     elements.sourcesFollowTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
   if (elements.sourcesFollowCount) {
-    const totalCount = Number(owner?.count || items.length || 0);
+    const matchedCount = Number(state.followBrowseData?.matched_count);
+    const totalCount = Number.isFinite(matchedCount)
+      ? matchedCount
+      : Number(owner?.count || items.length || 0);
     elements.sourcesFollowCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
   }
   renderSearchResultItems(
@@ -4593,13 +4689,26 @@ function renderSourcesFollowBrowse() {
     items,
     state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
   );
-  setSourcesFollowBrowseMessage(
-    state.followBrowseError || (state.followBrowseLoading ? t("follow.loadingItems") : ""),
-    Boolean(state.followBrowseError),
-  );
+  if (state.followBrowseError) {
+    setSourcesFollowBrowseMessage(state.followBrowseError, true);
+  } else {
+    setSourcesFollowBrowseMessage(paginatedBrowseStatus(items, {
+      loading: state.followBrowseLoading,
+      hasMore,
+      loadingText: t("follow.loadingItems"),
+    }));
+  }
 }
 
-async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
+async function loadFollowBrowse({
+  uid = state.followBrowseSelectedUid,
+  query = "",
+  keepQuery = false,
+  append = false,
+} = {}) {
+  if (state.followBrowseLoading) {
+    return;
+  }
   const seq = state.followBrowseSeq + 1;
   state.followBrowseSeq = seq;
   state.followBrowseLoading = true;
@@ -4607,11 +4716,22 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
   state.followBrowseSelectedUid = String(uid || "").trim();
   renderSourcesFollowBrowse();
   try {
-    const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
+    const offset = append ? Number(state.followBrowseData?.next_offset || 0) : 0;
+    const nextData = await fetchGatchaBrowse(
+      state.followBrowseSelectedUid,
+      query,
+      { offset, limit: browsePageSize },
+    );
     if (state.followBrowseSeq !== seq) {
       return;
     }
-    state.followBrowseData = nextData;
+    const previousItems = append && Array.isArray(state.followBrowseData?.items)
+      ? state.followBrowseData.items
+      : [];
+    state.followBrowseData = {
+      ...nextData,
+      items: mergeBrowseItems(previousItems, nextData.items),
+    };
     state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
     if (!keepQuery && elements.sourcesFollowSearchQuery) {
       elements.sourcesFollowSearchQuery.value = String(nextData.query || "");
@@ -7002,6 +7122,10 @@ function disconnectClient() {
   }
   clearStateFallbackTimer();
   closeEventStream();
+  if (window.BilikaraRemoteTransport?.mode === "internet") {
+    window.BilikaraRemoteTransport.disconnect();
+    return;
+  }
   if (state.disconnectSent) {
     return;
   }
@@ -7349,6 +7473,12 @@ window.addEventListener("scroll", () => {
     maybeLoadMoreCategoryBrowse(
       elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]"),
     );
+  }
+  if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "uids") {
+    maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
+  }
+  if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "favorites") {
+    maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
   }
 }, { passive: true });
 

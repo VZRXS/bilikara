@@ -108,6 +108,7 @@ const state = {
   requesterSelectRenderSignature: "",
   sessionUsersRenderSignature: "",
   remoteAccessRenderSignature: "",
+  internetRemoteDisplay: null,
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
   gatchaUidFaceRenderSignature: "",
@@ -564,6 +565,8 @@ const elements = {
   playerFullscreenRemoteQrPlaceholder: document.getElementById("player-fullscreen-remote-qr-placeholder"),
   playerFullscreenRemoteUrlLink: document.getElementById("player-fullscreen-remote-url-link"),
   playerFullscreenRemoteUrlHint: document.getElementById("player-fullscreen-remote-url-hint"),
+  playerFullscreenInternetPassword: document.getElementById("player-fullscreen-internet-password"),
+  playerFullscreenInternetPasswordValue: document.getElementById("player-fullscreen-internet-password-value"),
   stageControlsToggle: document.getElementById("stage-controls-toggle"),
   stageControlsClose: document.getElementById("stage-controls-close"),
   stageControlBackdrop: document.getElementById("stage-control-backdrop"),
@@ -1061,6 +1064,18 @@ function applyStaticI18n(root = document) {
   document.documentElement.lang = state.language === "ja" ? "ja" : state.language === "en" ? "en" : "zh-CN";
 }
 
+function announceStaticI18n() {
+  document.dispatchEvent(new CustomEvent("bilikara:i18n", {
+    detail: {
+      language: state.language,
+      messages: {
+        ...(state.translations?.zh || {}),
+        ...(state.translations?.[state.language] || {}),
+      },
+    },
+  }));
+}
+
 function renderLanguageSwitch() {
   elements.languageSwitch?.querySelectorAll("button[data-language]").forEach((button) => {
     button.classList.toggle("active", button.dataset.language === state.language);
@@ -1100,6 +1115,7 @@ function setLanguage(language) {
   writeLocalPreference(storageKeys.language, nextLanguage);
   invalidateLanguageSensitiveRenderCache();
   applyStaticI18n();
+  announceStaticI18n();
   renderLanguageSwitch();
   render();
   if (state.catalogAdvancedTool === "maintenance") {
@@ -1154,6 +1170,7 @@ async function loadTranslations() {
   }
   state.translationsLoaded = true;
   applyStaticI18n();
+  announceStaticI18n();
   renderLanguageSwitch();
 }
 
@@ -5981,7 +5998,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? t("search.blacklistRelease")
           : isDelete
-            ? "删除 D1 条目"
+            ? "拉黑并删除 D1 条目"
             : "重置标签字段";
   }
   if (elements.developerTagResetText) {
@@ -5993,7 +6010,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? `确认解除 ${title} (${snapshot.bvid}) 的黑名单？此操作不会立即恢复视频。`
           : isDelete
-            ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+            ? `确认将 ${title} (${snapshot.bvid}) 加入黑名单并从 D1 删除？`
             : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
   }
   renderDeveloperActionFields(snapshot.fields);
@@ -6005,7 +6022,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? "只解除写入拦截；后续收藏夹刷新可以再次收录该视频。"
           : isDelete
-            ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+            ? "只拉黑当前 BV；后续收藏夹不会重新写入，可在黑名单页解除或恢复。"
             : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
   }
   if (elements.developerTagResetConfirm) {
@@ -6017,7 +6034,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
         : isBlacklistRelease
           ? t("search.blacklistRelease")
           : isDelete
-            ? "确认删除"
+            ? "确认拉黑并删除"
             : "确认重置";
     elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete || isReject);
   }
@@ -6025,7 +6042,9 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
     const mid = String(snapshot.fields?.mid || "").trim();
     elements.developerTagResetDeleteMid.classList.toggle("hidden", !isDelete || !mid);
     elements.developerTagResetDeleteMid.disabled = false;
-    elements.developerTagResetDeleteMid.textContent = mid ? `按 MID 删除 ${mid}` : "按 MID 删除";
+    elements.developerTagResetDeleteMid.textContent = mid
+      ? `拉黑 MID ${mid} 的现有稿件`
+      : "按 MID 拉黑现有稿件";
   }
   elements.developerTagResetModal?.classList.remove("hidden");
 }
@@ -6072,7 +6091,7 @@ async function deleteDeveloperD1Entry(snapshot) {
   if (reviewCacheExhausted) {
     await loadPendingReviewItems({ force: true });
   }
-  setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+  setAppMessage(`已将 ${snapshot.bvid} 加入黑名单并从 D1 删除。`);
 }
 
 async function rejectPendingReviewEntry(snapshot) {
@@ -6104,7 +6123,7 @@ async function restoreDeveloperBlacklistEntry(snapshot, restoreVideo) {
 async function deleteDeveloperD1EntriesByMid(snapshot) {
   const mid = String(snapshot.fields?.mid || "").trim();
   if (!mid) {
-    throw new Error("缺少 MID，无法按 MID 删除。");
+    throw new Error("缺少 MID，无法拉黑现有稿件。");
   }
   const result = await apiPost("/api/admin-video/delete-mid", {
     mid,
@@ -6124,7 +6143,7 @@ async function deleteDeveloperD1EntriesByMid(snapshot) {
     }
   }
   const deleted = Number(result?.deleted_count ?? result?.changed ?? 0);
-  setAppMessage(`已按 MID ${mid} 删除 ${deleted} 条 D1 条目。`);
+  setAppMessage(`已将 D1 中 MID ${mid} 的 ${deleted} 条现有稿件加入黑名单并删除。`);
 }
 
 async function resetDeveloperTagFields(snapshot) {
@@ -6254,7 +6273,7 @@ async function confirmDeveloperDeleteMid() {
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
   } catch (error) {
-    setAppMessage(error?.message || "按 MID 删除失败。", true);
+    setAppMessage(error?.message || "按 MID 拉黑现有稿件失败。", true);
   } finally {
     state.developerTagResetSaving = false;
     if (elements.developerTagResetConfirm) {
@@ -6331,7 +6350,7 @@ function createDeveloperDeleteButton(item) {
   button.dataset.devAction = "delete-entry";
   button.dataset.item = JSON.stringify(snapshot);
   button.textContent = "删除";
-  button.title = "删除 D1 条目";
+  button.title = "拉黑并删除 D1 条目";
   return button;
 }
 
@@ -9101,6 +9120,8 @@ function scheduleTopControlPopoverPositionSync() {
   );
 }
 
+document.addEventListener("bilikara:top-control-popover", scheduleTopControlPopoverPositionSync);
+
 function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   if (!info) {
     return false;
@@ -9159,6 +9180,84 @@ function cacheAdvancedInfoSupportsHover(event) {
 }
 
 
+function renderProvidedRemoteQr(source, { image, placeholder }, { cacheKey = "", emptyMessage = "" } = {}) {
+  if (!image || !placeholder) {
+    return;
+  }
+  const normalizedSource = String(source || "").trim();
+  const sourceKey = normalizedSource ? `provided:${cacheKey || normalizedSource.length}` : `provided-empty:${emptyMessage}`;
+  if (image.dataset.qrUrl === sourceKey) {
+    return;
+  }
+  image.dataset.qrUrl = sourceKey;
+  image.classList.add("hidden");
+  if (!normalizedSource) {
+    image.removeAttribute("src");
+    placeholder.textContent = emptyMessage || t("remote.noAddress");
+    placeholder.classList.remove("hidden");
+    return;
+  }
+  placeholder.textContent = t("remote.qrLoading");
+  placeholder.classList.remove("hidden");
+  image.onload = () => {
+    if (image.dataset.qrUrl !== sourceKey) return;
+    placeholder.classList.add("hidden");
+    image.classList.remove("hidden");
+  };
+  image.onerror = () => {
+    if (image.dataset.qrUrl !== sourceKey) return;
+    image.classList.add("hidden");
+    placeholder.textContent = t("remote.qrImageFailed");
+    placeholder.classList.remove("hidden");
+  };
+  image.src = normalizedSource;
+}
+
+function renderPlayerFullscreenRemoteAccess({
+  internetMode,
+  url,
+  hint,
+  password,
+  qrImage,
+}) {
+  const normalizedUrl = String(url || "").trim();
+  const normalizedHint = String(hint || "").trim();
+  const normalizedPassword = String(password || "").trim();
+  if (elements.playerFullscreenRemoteUrlLink) {
+    elements.playerFullscreenRemoteUrlLink.classList.toggle("hidden", !normalizedUrl);
+    if (normalizedUrl) {
+      elements.playerFullscreenRemoteUrlLink.href = normalizedUrl;
+      setTextContent(elements.playerFullscreenRemoteUrlLink, normalizedUrl);
+    } else {
+      elements.playerFullscreenRemoteUrlLink.removeAttribute("href");
+      setTextContent(elements.playerFullscreenRemoteUrlLink, "");
+    }
+  }
+  setTextContent(elements.playerFullscreenRemoteUrlHint, normalizedHint);
+  elements.playerFullscreenInternetPassword?.classList.toggle(
+    "hidden",
+    !internetMode || !normalizedPassword,
+  );
+  setTextContent(elements.playerFullscreenInternetPasswordValue, normalizedPassword);
+
+  if (internetMode) {
+    renderProvidedRemoteQr(
+      qrImage,
+      {
+        image: elements.playerFullscreenRemoteQrImage,
+        placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+      },
+      { cacheKey: normalizedUrl, emptyMessage: normalizedHint },
+    );
+  } else {
+    renderRemoteQr(normalizedUrl, [{
+      image: elements.playerFullscreenRemoteQrImage,
+      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+      size: 220,
+    }]);
+  }
+}
+
 function renderRemoteAccess(remoteAccess) {
   const preferredUrl = String(remoteAccess?.preferred_url || "");
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
@@ -9169,7 +9268,23 @@ function renderRemoteAccess(remoteAccess) {
     : lanUrls.length === 1
       ? t("remote.defaultHint")
       : t("remote.noLanHint");
-  const signature = JSON.stringify({ displayUrl, displayHint });
+  const internetDisplay = state.internetRemoteDisplay;
+  const internetMode = internetDisplay?.mode === "internet";
+  const fullscreenUrl = internetMode ? String(internetDisplay?.url || "") : displayUrl;
+  const fullscreenHint = internetMode
+    ? String(internetDisplay?.hint || t("internetRemote.notCreated"))
+    : displayHint;
+  const fullscreenPassword = internetMode ? String(internetDisplay?.password || "") : "";
+  const fullscreenQrImage = internetMode ? String(internetDisplay?.qr_image || "") : "";
+  const signature = JSON.stringify({
+    displayUrl,
+    displayHint,
+    internetMode,
+    fullscreenUrl,
+    fullscreenHint,
+    fullscreenPassword,
+    fullscreenQrImage,
+  });
   if (signature === state.remoteAccessRenderSignature) {
     return;
   }
@@ -9178,7 +9293,6 @@ function renderRemoteAccess(remoteAccess) {
   [
     elements.remoteUrlLink,
     elements.remotePopoverUrlLink,
-    elements.playerFullscreenRemoteUrlLink,
   ].forEach((link) => {
     if (!link) {
       return;
@@ -9192,7 +9306,6 @@ function renderRemoteAccess(remoteAccess) {
   [
     elements.remoteUrlHint,
     elements.remotePopoverUrlHint,
-    elements.playerFullscreenRemoteUrlHint,
   ].forEach((hint) => {
     setTextContent(hint, displayHint);
   });
@@ -9201,12 +9314,14 @@ function renderRemoteAccess(remoteAccess) {
     { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
     { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
     { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
-    {
-      image: elements.playerFullscreenRemoteQrImage,
-      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
-      size: 220,
-    },
   ]);
+  renderPlayerFullscreenRemoteAccess({
+    internetMode,
+    url: fullscreenUrl,
+    hint: fullscreenHint,
+    password: fullscreenPassword,
+    qrImage: fullscreenQrImage,
+  });
 }
 
 function renderRemoteQr(url, targets = []) {
@@ -9248,6 +9363,20 @@ function renderRemoteQr(url, targets = []) {
     image.src = qrUrl;
   });
 }
+
+document.addEventListener("bilikara:internet-remote-display", (event) => {
+  const detail = event.detail && typeof event.detail === "object" ? event.detail : {};
+  state.internetRemoteDisplay = {
+    mode: detail.mode === "internet" ? "internet" : "local",
+    active: Boolean(detail.active),
+    url: String(detail.url || "").slice(0, 4096),
+    qr_image: String(detail.qr_image || "").slice(0, 1_000_000),
+    password: String(detail.password || "").slice(0, 32),
+    hint: String(detail.hint || "").slice(0, 512),
+  };
+  state.remoteAccessRenderSignature = "";
+  renderRemoteAccess(state.data?.remote_access || null);
+});
 
 async function copyRemoteUrl() {
   const url = elements.remoteUrlLink.href;
@@ -12809,6 +12938,13 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
 
+  // waiting/stalled can be queued by a seek that has already been superseded.
+  // Reconcile the sticky event flag with the live media state so a missed
+  // canplay event cannot leave an otherwise-ready audio track paused forever.
+  if (!audio.seeking && audio.readyState >= 3) {
+    state.localAudioPlaybackBlocked = false;
+  }
+
   const videoTime = Number(video.currentTime || 0);
   if (video.ended) {
     if (audio.readyState >= 2 && !state.localAudioPlaybackBlocked) {
@@ -14475,21 +14611,38 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
         ) {
           setSplitPlaybackStartState("established", video, audio);
         }
-        if (action === "toggle-play") {
+        if (action === "toggle-play" || action === "play" || action === "pause") {
+          const shouldPlay = action === "play"
+            ? true
+            : action === "pause"
+              ? false
+              : !state.localShouldBePlaying;
           if (audio) {
             if (hasEstablishedTauriWebKitSession) {
-              setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
+              setSplitPlaybackIntent(video, audio, shouldPlay, {
                 source: "remote-toggle-intent",
               });
-            } else if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
-              setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
+            } else if (action === "toggle-play") {
+              // Preserve the existing pending-start contract: a legacy toggle
+              // arriving while startup is unresolved confirms playback instead
+              // of inverting the optimistic local intent back to pause.
+              if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
+                setSplitPlaybackIntent(video, audio, shouldPlay, {
+                  source: "remote-toggle-intent",
+                });
+              }
+            } else if (
+              !shouldPlay
+              || !requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })
+            ) {
+              setSplitPlaybackIntent(video, audio, shouldPlay, {
                 source: "remote-toggle-intent",
               });
             }
-          } else if (video.paused) {
+          } else if (shouldPlay && video.paused) {
             state.localShouldBePlaying = true;
             video.play().catch(() => {});
-          } else {
+          } else if (!shouldPlay && !video.paused) {
             state.localShouldBePlaying = false;
             video.pause();
           }
@@ -16804,6 +16957,13 @@ function diagnosticBrowserInfo() {
   };
 }
 
+function internetRemoteDiagnosticsSnapshot() {
+  const diagnostics = window.BilikaraInternetRemoteDiagnostics;
+  return diagnostics && typeof diagnostics.getSnapshot === "function"
+    ? diagnostics.getSnapshot()
+    : [];
+}
+
 function setDiagnosticsBusy(busy) {
   state.diagnosticsBusy = Boolean(busy);
   if (elements.diagnosticCopyButton) {
@@ -16825,6 +16985,7 @@ async function diagnosticResponse(path) {
     body: JSON.stringify({
       browser: diagnosticBrowserInfo(),
       export_diagnostics: exportDiagnostics,
+      internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
     }),
   });
   if (!response.ok) {
@@ -16910,6 +17071,7 @@ async function downloadDiagnosticsPackage() {
       JSON.stringify({
         browser: diagnosticBrowserInfo(),
         export_diagnostics: exportDiagnostics,
+        internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
       }),
       t("service.diagnosticsFailed"),
       { format: "zip", source: "diagnostics", surface: "host" },

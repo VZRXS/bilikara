@@ -1067,9 +1067,36 @@ class BilikaraHandlerLocalClientTest(unittest.TestCase):
 
 
 class AddressArchitectureTest(unittest.TestCase):
+    def test_loopback_companion_is_defined_before_global_context_initialization(self):
+        source = Path(server_module.__file__).read_text(encoding="utf-8")
+        helper = source.index("def _loopback_companion_host(")
+        context = source.index("CONTEXT = AppContext()")
+        self.assertLess(helper, context)
+
     def test_wildcard_bind_uses_loopback_for_local_ui(self):
         self.assertEqual(server_module._local_ui_host("0.0.0.0"), "127.0.0.1")
         self.assertEqual(server_module._local_ui_url("0.0.0.0", 8080), "http://127.0.0.1:8080")
+
+    def test_windows_bundle_keeps_lan_bind_and_adds_loopback_host_ui(self):
+        with (
+            patch.object(server_module.sys, "frozen", True, create=True),
+            patch.object(server_module.os, "name", "nt"),
+        ):
+            self.assertEqual(
+                server_module._port_probe_hosts("192.168.1.20"),
+                ("192.168.1.20", "127.0.0.1"),
+            )
+            self.assertEqual(
+                server_module._local_ui_url("192.168.1.20", 8080),
+                "http://127.0.0.1:8080",
+            )
+
+    def test_source_explicit_lan_bind_does_not_add_companion_listener(self):
+        with patch.object(server_module.sys, "frozen", False, create=True):
+            self.assertEqual(
+                server_module._port_probe_hosts("192.168.1.20"),
+                ("192.168.1.20",),
+            )
 
     def test_windows_remote_url_uses_ranked_system_addresses(self):
         with (
@@ -2903,15 +2930,20 @@ class DiagnosticRouteTest(unittest.TestCase):
                     "user_agent": "Browser/1.0",
                     "platform": "Windows",
                     "brands": [{"brand": "Browser", "version": "1"}],
-                }
+                },
+                "internet_remote_diagnostics": [
+                    {"stage": "room.create", "status": "failed"}
+                ],
             },
         )
         writes = []
         browser_infos = []
+        diagnostic_options = []
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
-            build_diagnostics=lambda browser_info: (
+            build_diagnostics=lambda browser_info, **kwargs: (
                 browser_infos.append(browser_info)
+                or diagnostic_options.append(kwargs)
                 or DiagnosticArtifact(markdown="# report", files={})
             ),
         )
@@ -2923,6 +2955,10 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertEqual(writes, [{"ok": True, "data": {"markdown": "# report"}}])
         self.assertEqual(browser_infos[0]["user_agent"], "Browser/1.0")
         self.assertEqual(browser_infos[0]["brands"], [{"brand": "Browser", "version": "1"}])
+        self.assertEqual(
+            diagnostic_options[0]["internet_remote_diagnostics"],
+            [{"stage": "room.create", "status": "failed"}],
+        )
 
     def test_player_diagnostic_route_retains_only_sanitized_bounded_fields(self):
         media_url = "https://media.example/video/track.m4a?token=secret"

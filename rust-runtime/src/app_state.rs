@@ -1,8 +1,12 @@
+use crate::internet_remote::{
+    InternetRemoteError, InternetRemotePeers, InternetRemoteValidation,
+    PlaylistAddBindingSelection, project_remote_state,
+};
 use bilikara_rust::{
     AvDelayAction, AvDelayState, DuplicateActiveItem, DuplicateHistoryEntry,
     PlaylistDuplicateRequest, PlaylistIdentity, PlaylistOrderItem, PlaylistOrderOperation,
-    PlaylistOrderRequest, PlaylistSlotType, decide_av_delay, decide_playlist_duplicate,
-    plan_playlist_order,
+    PlaylistOrderRequest, PlaylistSlotType, RemoteLane, RemotePlaylistPositionV1, RemoteProfile,
+    RemoteRequestV1, decide_av_delay, decide_playlist_duplicate, plan_playlist_order,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -596,6 +600,42 @@ pub enum AppStateRequest {
         event: CacheEvent,
         now: f64,
     },
+    OpenInternetRemotePeer {
+        schema_version: u32,
+        peer_id: String,
+        epoch: String,
+        profile: RemoteProfile,
+    },
+    CloseInternetRemotePeer {
+        schema_version: u32,
+        peer_id: String,
+    },
+    InternetRemoteState {
+        schema_version: u32,
+    },
+    DispatchInternetRemoteMessage {
+        schema_version: u32,
+        peer_id: String,
+        lane: RemoteLane,
+        message: String,
+        #[serde(default)]
+        reset_av_delay: bool,
+        now: f64,
+    },
+    CompleteInternetRemotePlaylistAdd {
+        schema_version: u32,
+        peer_id: String,
+        request_id: String,
+        item: PlaylistItem,
+        #[serde(default)]
+        reset_av_delay: bool,
+        now: f64,
+    },
+    CancelInternetRemotePlaylistAdd {
+        schema_version: u32,
+        peer_id: String,
+        request_id: String,
+    },
     Shutdown {
         schema_version: u32,
     },
@@ -648,6 +688,12 @@ impl AppStateRequest {
             | Self::BeginCacheAttempt { schema_version, .. }
             | Self::AuthorizeCachePublication { schema_version, .. }
             | Self::ApplyCacheEvent { schema_version, .. }
+            | Self::OpenInternetRemotePeer { schema_version, .. }
+            | Self::CloseInternetRemotePeer { schema_version, .. }
+            | Self::InternetRemoteState { schema_version }
+            | Self::DispatchInternetRemoteMessage { schema_version, .. }
+            | Self::CompleteInternetRemotePlaylistAdd { schema_version, .. }
+            | Self::CancelInternetRemotePlaylistAdd { schema_version, .. }
             | Self::Shutdown { schema_version } => *schema_version,
         }
     }
@@ -692,12 +738,18 @@ impl AppStateRequest {
             | Self::AppendSessionPlayed { now, .. }
             | Self::UpdateOwnerInfo { now, .. }
             | Self::ApplyCacheEvent { now, .. } => Some(*now),
+            Self::DispatchInternetRemoteMessage { now, .. }
+            | Self::CompleteInternetRemotePlaylistAdd { now, .. } => Some(*now),
             Self::Initialize { .. }
             | Self::Snapshot { .. }
             | Self::RestartPlaybackProgram { .. }
             | Self::QueryDuplicate { .. }
             | Self::BeginCacheAttempt { .. }
             | Self::AuthorizeCachePublication { .. }
+            | Self::OpenInternetRemotePeer { .. }
+            | Self::CloseInternetRemotePeer { .. }
+            | Self::InternetRemoteState { .. }
+            | Self::CancelInternetRemotePlaylistAdd { .. }
             | Self::Shutdown { .. } => None,
         }
     }
@@ -705,23 +757,23 @@ impl AppStateRequest {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AvDelaySnapshot {
-    schema_version: u32,
-    global_delay_ms: i32,
-    local_delay_ms: i32,
-    effective_delay_ms: i32,
-    locked: bool,
-    has_local_adjustment: bool,
-    lock_button_enabled: bool,
+    pub(crate) schema_version: u32,
+    pub(crate) global_delay_ms: i32,
+    pub(crate) local_delay_ms: i32,
+    pub(crate) effective_delay_ms: i32,
+    pub(crate) locked: bool,
+    pub(crate) has_local_adjustment: bool,
+    pub(crate) lock_button_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PlayerSettingsSnapshot {
-    av_offset_ms: i32,
-    av_delay: AvDelaySnapshot,
-    volume_percent: i32,
-    is_muted: bool,
-    song_advance_delay_seconds: i32,
-    key_shift: i32,
+    pub(crate) av_offset_ms: i32,
+    pub(crate) av_delay: AvDelaySnapshot,
+    pub(crate) volume_percent: i32,
+    pub(crate) is_muted: bool,
+    pub(crate) song_advance_delay_seconds: i32,
+    pub(crate) key_shift: i32,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -801,7 +853,7 @@ pub struct AppStateSuccess {
     status: &'static str,
     committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    snapshot: Option<AppSnapshot>,
+    pub(crate) snapshot: Option<AppSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     persistence: Option<PersistenceSnapshot>,
     effects: PersistenceEffects,
@@ -859,6 +911,7 @@ pub struct AppState {
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
+    internet_remote_peers: InternetRemotePeers,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -900,6 +953,7 @@ impl Default for AppState {
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
             identity_namespace,
+            internet_remote_peers: InternetRemotePeers::default(),
         }
     }
 }
@@ -3472,6 +3526,12 @@ fn apply_mutation(
         | AppStateRequest::Snapshot { .. }
         | AppStateRequest::BeginCacheAttempt { .. }
         | AppStateRequest::AuthorizeCachePublication { .. }
+        | AppStateRequest::OpenInternetRemotePeer { .. }
+        | AppStateRequest::CloseInternetRemotePeer { .. }
+        | AppStateRequest::InternetRemoteState { .. }
+        | AppStateRequest::DispatchInternetRemoteMessage { .. }
+        | AppStateRequest::CompleteInternetRemotePlaylistAdd { .. }
+        | AppStateRequest::CancelInternetRemotePlaylistAdd { .. }
         | AppStateRequest::Shutdown { .. } => Err(ExecuteError::Internal(
             "lifecycle request reached mutation dispatcher".to_owned(),
         )),
@@ -3479,6 +3539,606 @@ fn apply_mutation(
 }
 
 impl AppState {
+    fn execute_internet_remote_message(
+        &mut self,
+        peer_id: String,
+        lane: RemoteLane,
+        message: String,
+        reset_av_delay: bool,
+        now: f64,
+    ) -> AppStateResponse {
+        let Some(data) = self.data.as_ref() else {
+            return uninitialized_response();
+        };
+        let snapshot = match data.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return execute_error_response(error),
+        };
+        let validation = match self
+            .internet_remote_peers
+            .validate(&peer_id, lane, &message, &snapshot)
+        {
+            Ok(validation) => validation,
+            Err(error) => return internet_remote_error_response(error),
+        };
+        if !validation.accepted {
+            return internet_remote_reply(
+                data,
+                &validation,
+                json!(project_remote_state(&snapshot)),
+                None,
+                true,
+            );
+        }
+
+        let request = validation.request.clone();
+        let (mutation, host_effect, identity_reply) = match request {
+            RemoteRequestV1::ConnectionHealth => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!({
+                        "healthy": true,
+                        "state": project_remote_state(&snapshot),
+                    }),
+                    None,
+                    false,
+                );
+            }
+            RemoteRequestV1::StateGet { .. } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    None,
+                    false,
+                );
+            }
+            RemoteRequestV1::CatalogSearch { query, limit } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "catalog_search", "query": query, "limit": limit})),
+                    false,
+                );
+            }
+            RemoteRequestV1::CatalogBrowse {
+                kind,
+                letter,
+                query,
+                tag,
+                locale,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "catalog_browse",
+                        "browse_kind": kind,
+                        "letter": letter,
+                        "query": query,
+                        "tag": tag,
+                        "locale": locale,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::CatalogCategoryBrowse {
+                tags,
+                tag45s,
+                query,
+                offset,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "catalog_category_browse",
+                        "tags": tags,
+                        "tag45s": tag45s,
+                        "query": query,
+                        "offset": offset,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::SongDetail { catalog_item_id } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "catalog_song_detail",
+                        "catalog_item_id": catalog_item_id,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaSearch { query, limit } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_search", "query": query, "limit": limit})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaBrowse {
+                uid,
+                query,
+                offset,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_browse",
+                        "uid": uid,
+                        "query": query,
+                        "offset": offset,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistBrowse {
+                folder_id,
+                query,
+                offset,
+                limit,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_favlist_browse",
+                        "folder_id": folder_id,
+                        "query": query,
+                        "offset": offset,
+                        "limit": limit,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaPoolConfigGet => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_pool_config_get"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaCandidate => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_candidate"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaPoolConfigSet {
+                uid_weight,
+                favlist_weight,
+                excluded_uids,
+                excluded_favlist_folders,
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_pool_config_set",
+                        "uid_weight": uid_weight,
+                        "favlist_weight": favlist_weight,
+                        "excluded_uids": excluded_uids,
+                        "excluded_favlist_folders": excluded_favlist_folders,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaUidPreview { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_uid_preview", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaUidAdd { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_uid_add", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaRefresh => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_refresh"})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistPreview { uid } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind": "gatcha_favlist_preview", "uid": uid})),
+                    false,
+                );
+            }
+            RemoteRequestV1::GatchaFavlistRefresh { uid, folder_ids } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "gatcha_favlist_refresh",
+                        "uid": uid,
+                        "folder_ids": folder_ids,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::PlaylistAdd {
+                catalog_item_id,
+                position,
+                allow_repeat,
+                selected_video_page,
+                selected_audio_pages,
+                expected_revision: _,
+            } => {
+                if let Err(error) = self.internet_remote_peers.begin_playlist_add(
+                    &validation,
+                    &catalog_item_id,
+                    position,
+                    allow_repeat,
+                    selected_video_page.map(|video_page| PlaylistAddBindingSelection {
+                        video_page,
+                        audio_pages: &selected_audio_pages,
+                    }),
+                ) {
+                    return internet_remote_error_response(error);
+                }
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({
+                        "kind": "fetch_playlist_item",
+                        "catalog_item_id": catalog_item_id,
+                        "selected_video_page": selected_video_page,
+                        "selected_audio_pages": selected_audio_pages,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::PlaylistRemove { item_id, .. } => (
+                AppStateRequest::RemoveItem {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    now,
+                },
+                Some(json!({"kind": "sync_cache"})),
+                None,
+            ),
+            RemoteRequestV1::PlaylistMove {
+                item_id,
+                target_index,
+                ..
+            } => (
+                AppStateRequest::MoveItemToIndex {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    target_index: i64::from(target_index),
+                    now,
+                },
+                Some(json!({"kind": "sync_cache"})),
+                None,
+            ),
+            RemoteRequestV1::PlaylistResort { .. } => (
+                AppStateRequest::ResortPlaylistByCycle {
+                    schema_version: SCHEMA_VERSION,
+                    now,
+                },
+                Some(json!({"kind": "sync_cache"})),
+                None,
+            ),
+            RemoteRequestV1::PlaylistMoveNext { item_id, .. } => (
+                AppStateRequest::MoveToNext {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    now,
+                },
+                Some(json!({"kind": "sync_cache"})),
+                None,
+            ),
+            RemoteRequestV1::PlaylistPlayNow { item_id, .. } => (
+                AppStateRequest::MoveToFront {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    reset_av_delay,
+                    now,
+                },
+                Some(json!({"kind": "sync_cache"})),
+                None,
+            ),
+            RemoteRequestV1::PlaybackPlay { .. }
+            | RemoteRequestV1::PlaybackPause { .. }
+            | RemoteRequestV1::PlaybackToggle { .. }
+            | RemoteRequestV1::PlaybackSeekRelative { .. }
+            | RemoteRequestV1::PlaybackNext { .. } => {
+                let (action, item_id, playback_generation, delta_seconds) = match request {
+                    RemoteRequestV1::PlaybackPlay {
+                        item_id,
+                        playback_generation,
+                    } => ("play", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackPause {
+                        item_id,
+                        playback_generation,
+                    } => ("pause", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackToggle {
+                        item_id,
+                        playback_generation,
+                    } => ("toggle-play", item_id, playback_generation, 0),
+                    RemoteRequestV1::PlaybackSeekRelative {
+                        item_id,
+                        playback_generation,
+                        delta_seconds,
+                    } => ("seek-relative", item_id, playback_generation, delta_seconds),
+                    RemoteRequestV1::PlaybackNext {
+                        playback_generation,
+                    } => (
+                        "next-track",
+                        snapshot
+                            .current_item
+                            .as_ref()
+                            .map(|item| item.id.clone())
+                            .unwrap_or_default(),
+                        playback_generation,
+                        0,
+                    ),
+                    _ => unreachable!("playback request group changed"),
+                };
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    Some(json!({
+                        "kind": "player_control",
+                        "action": action,
+                        "playback_generation": playback_generation,
+                        "item_id": item_id,
+                        "delta_seconds": delta_seconds,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::PlayerSetVolume { volume_percent } => (
+                AppStateRequest::SetVolume {
+                    schema_version: SCHEMA_VERSION,
+                    volume_percent: i32::from(volume_percent),
+                    now,
+                },
+                None,
+                None,
+            ),
+            RemoteRequestV1::PlayerSetMuted { is_muted } => (
+                AppStateRequest::SetMuted {
+                    schema_version: SCHEMA_VERSION,
+                    is_muted,
+                    now,
+                },
+                None,
+                None,
+            ),
+            RemoteRequestV1::PlayerSetKeyShift { key_shift } => (
+                AppStateRequest::SetKeyShift {
+                    schema_version: SCHEMA_VERSION,
+                    key_shift: i32::from(key_shift),
+                    now,
+                },
+                None,
+                None,
+            ),
+            RemoteRequestV1::PlayerSetAudioVariant {
+                item_id,
+                variant_id,
+                expected_item_incarnation_id,
+                ..
+            } => (
+                AppStateRequest::SetAudioVariant {
+                    schema_version: SCHEMA_VERSION,
+                    item_id,
+                    expected_item_incarnation_id,
+                    variant_id,
+                    now,
+                },
+                None,
+                None,
+            ),
+            RemoteRequestV1::PlayerSetAvDelay { effective_delay_ms } => (
+                AppStateRequest::ApplyAvDelay {
+                    schema_version: SCHEMA_VERSION,
+                    action: AvDelayCommand::SetEffective { effective_delay_ms },
+                    now,
+                },
+                None,
+                None,
+            ),
+            RemoteRequestV1::SessionSetIdentity { name } => {
+                let normalized = normalize_session_user_name(&name);
+                if data.session_users.contains(&normalized) {
+                    if let Err(error) = self
+                        .internet_remote_peers
+                        .commit_identity(&validation.peer_id, normalized.clone())
+                    {
+                        return internet_remote_error_response(error);
+                    }
+                    return internet_remote_reply(
+                        data,
+                        &validation,
+                        json!({
+                            "name": normalized,
+                            "state": project_remote_state(&snapshot),
+                        }),
+                        None,
+                        false,
+                    );
+                }
+                (
+                    AppStateRequest::AddSessionUser {
+                        schema_version: SCHEMA_VERSION,
+                        name: normalized.clone(),
+                        now,
+                    },
+                    None,
+                    Some(normalized),
+                )
+            }
+            RemoteRequestV1::RatingSubmit { play_id, score } => {
+                let Some(current) = snapshot.current_item.as_ref() else {
+                    return execute_error_response(rejected(
+                        "internet_remote_no_current_song",
+                        "No song is playing",
+                    ));
+                };
+                let session_name = match validation.session_name.as_deref() {
+                    Some(name) if !name.trim().is_empty() => name,
+                    _ => {
+                        return internet_remote_error_response(
+                            InternetRemoteError::IdentityRequired,
+                        );
+                    }
+                };
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    Some(json!({
+                        "kind": "submit_rating",
+                        "session_name": session_name,
+                        "play_id": play_id,
+                        "bvid": current.bvid,
+                        "score": score,
+                    })),
+                    false,
+                );
+            }
+            RemoteRequestV1::CacheRetry {
+                item_id,
+                expected_item_incarnation_id,
+                ..
+            } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    Some(json!({
+                        "kind": "retry_cache",
+                        "item_id": item_id,
+                        "item_incarnation_id": expected_item_incarnation_id,
+                    })),
+                    false,
+                );
+            }
+        };
+
+        let mutation_response = self.execute(mutation);
+        if let Some(name) = identity_reply.as_ref()
+            && matches!(mutation_response, AppStateResponse::Success(_))
+            && let Err(error) = self
+                .internet_remote_peers
+                .commit_identity(&validation.peer_id, name.clone())
+        {
+            return internet_remote_error_response(error);
+        }
+        wrap_internet_remote_mutation(mutation_response, &validation, host_effect, identity_reply)
+    }
+
+    fn complete_internet_remote_playlist_add(
+        &mut self,
+        peer_id: String,
+        request_id: String,
+        item: PlaylistItem,
+        reset_av_delay: bool,
+        now: f64,
+    ) -> AppStateResponse {
+        let pending = match self
+            .internet_remote_peers
+            .take_playlist_add(&peer_id, &request_id)
+        {
+            Ok(pending) => pending,
+            Err(error) => return internet_remote_error_response(error),
+        };
+        let Some(data) = self.data.as_ref() else {
+            return uninitialized_response();
+        };
+        if !data.session_users.contains(&pending.session_name) {
+            return execute_error_response(rejected(
+                "internet_remote_identity_missing",
+                "Internet Remote identity is no longer active",
+            ));
+        }
+        let expected_bvid = pending
+            .catalog_item_id
+            .split_once("_p")
+            .map_or(pending.catalog_item_id.as_str(), |(bvid, _)| bvid);
+        let selected_page_mismatch = pending
+            .selected_video_page
+            .is_some_and(|page| item.page != i64::from(page));
+        let expected_audio_pages = pending
+            .selected_audio_pages
+            .iter()
+            .map(|page| i64::from(*page))
+            .collect::<Vec<_>>();
+        let manual_selection_mismatch = item.manual_selection
+            != pending.selected_video_page.is_some()
+            || (!expected_audio_pages.is_empty() && item.selected_pages != expected_audio_pages);
+        if item.bvid != expected_bvid || selected_page_mismatch || manual_selection_mismatch {
+            return execute_error_response(rejected(
+                "internet_remote_catalog_item_mismatch",
+                "Fetched playlist item does not match the admitted catalog item",
+            ));
+        }
+        let response = self.execute(AppStateRequest::AddItem {
+            schema_version: SCHEMA_VERSION,
+            item,
+            position: match pending.position {
+                RemotePlaylistPositionV1::Tail => "tail",
+                RemotePlaylistPositionV1::Next => "next",
+            }
+            .to_owned(),
+            requester_name: pending.session_name,
+            reset_av_delay,
+            allow_repeat: pending.allow_repeat,
+            now,
+        });
+        wrap_internet_remote_completion(
+            response,
+            &pending.request_id,
+            pending.sequence,
+            Some(json!({"kind": "sync_cache"})),
+        )
+    }
+
     pub fn execute(&mut self, request: AppStateRequest) -> AppStateResponse {
         if request.schema_version() != SCHEMA_VERSION {
             return invalid_request_response(
@@ -3507,6 +4167,7 @@ impl AppState {
                         let persistence = data.persistence_snapshot();
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
+                        self.internet_remote_peers.clear();
                         AppStateResponse::Success(Box::new(AppStateSuccess {
                             schema_version: SCHEMA_VERSION,
                             status: "completed",
@@ -3540,6 +4201,125 @@ impl AppState {
                     persistence: Some(data.persistence_snapshot()),
                     effects: PersistenceEffects::default(),
                     result: json!({"snapshot": true}),
+                }))
+            }
+            AppStateRequest::OpenInternetRemotePeer {
+                peer_id,
+                epoch,
+                profile,
+                ..
+            } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                if let Err(error) = self.internet_remote_peers.open(&peer_id, &epoch, profile) {
+                    return internet_remote_error_response(error);
+                }
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"opened": true, "peer_id": peer_id}),
+                }))
+            }
+            AppStateRequest::CloseInternetRemotePeer { peer_id, .. } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let closed = self.internet_remote_peers.close(&peer_id);
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"closed": closed, "peer_id": peer_id}),
+                }))
+            }
+            AppStateRequest::InternetRemoteState { .. } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                let remote_state = project_remote_state(&snapshot);
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"remote_state": remote_state}),
+                }))
+            }
+            AppStateRequest::DispatchInternetRemoteMessage {
+                peer_id,
+                lane,
+                message,
+                reset_av_delay,
+                now,
+                ..
+            } => self.execute_internet_remote_message(peer_id, lane, message, reset_av_delay, now),
+            AppStateRequest::CompleteInternetRemotePlaylistAdd {
+                peer_id,
+                request_id,
+                item,
+                reset_av_delay,
+                now,
+                ..
+            } => self.complete_internet_remote_playlist_add(
+                peer_id,
+                request_id,
+                item,
+                reset_av_delay,
+                now,
+            ),
+            AppStateRequest::CancelInternetRemotePlaylistAdd {
+                peer_id,
+                request_id,
+                ..
+            } => {
+                let Some(data) = &self.data else {
+                    return uninitialized_response();
+                };
+                let cancelled = match self
+                    .internet_remote_peers
+                    .cancel_playlist_add(&peer_id, &request_id)
+                {
+                    Ok(cancelled) => cancelled,
+                    Err(error) => return internet_remote_error_response(error),
+                };
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(snapshot),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({
+                        "cancelled": cancelled,
+                        "peer_id": peer_id,
+                        "request_id": request_id,
+                    }),
                 }))
             }
             AppStateRequest::BeginCacheAttempt {
@@ -3687,6 +4467,7 @@ impl AppState {
             }
             AppStateRequest::Shutdown { .. } => {
                 let was_initialized = self.data.take().is_some();
+                self.internet_remote_peers.clear();
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
@@ -3807,6 +4588,143 @@ impl AppState {
     }
 }
 
+fn internet_remote_payload(
+    request_id: &str,
+    sequence: u64,
+    accepted: bool,
+    stale: bool,
+    revision: u64,
+    data: Value,
+    host_effect: Option<Value>,
+) -> Value {
+    let mut payload = json!({
+        "request_id": request_id,
+        "sequence": sequence,
+        "accepted": accepted,
+        "stale": stale,
+        "revision": revision,
+        "data": data,
+    });
+    if let Some(effect) = host_effect {
+        payload
+            .as_object_mut()
+            .expect("Internet Remote reply must be an object")
+            .insert("_host_effect".to_owned(), effect);
+    }
+    payload
+}
+
+fn internet_remote_reply(
+    data: &AppStateData,
+    validation: &InternetRemoteValidation,
+    payload: Value,
+    host_effect: Option<Value>,
+    stale: bool,
+) -> AppStateResponse {
+    internet_remote_completion_reply(
+        data,
+        &validation.request_id,
+        validation.sequence,
+        payload,
+        host_effect,
+        stale,
+    )
+}
+
+fn internet_remote_completion_reply(
+    data: &AppStateData,
+    request_id: &str,
+    sequence: u64,
+    payload: Value,
+    host_effect: Option<Value>,
+    stale: bool,
+) -> AppStateResponse {
+    let snapshot = match data.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return execute_error_response(error),
+    };
+    let persistence = data.persistence_snapshot();
+    AppStateResponse::Success(Box::new(AppStateSuccess {
+        schema_version: SCHEMA_VERSION,
+        status: "completed",
+        committed: false,
+        result: internet_remote_payload(
+            request_id,
+            sequence,
+            !stale,
+            stale,
+            snapshot.revision,
+            payload,
+            host_effect,
+        ),
+        snapshot: Some(snapshot),
+        persistence: Some(persistence),
+        effects: PersistenceEffects::default(),
+    }))
+}
+
+fn wrap_internet_remote_mutation(
+    response: AppStateResponse,
+    validation: &InternetRemoteValidation,
+    host_effect: Option<Value>,
+    identity_reply: Option<String>,
+) -> AppStateResponse {
+    match response {
+        AppStateResponse::Success(mut success) => {
+            let Some(snapshot) = success.snapshot.as_ref() else {
+                return internal_error_response(
+                    "Internet Remote mutation omitted AppState snapshot",
+                );
+            };
+            let remote_state = project_remote_state(snapshot);
+            let payload = if let Some(name) = identity_reply {
+                json!({"name": name, "state": remote_state})
+            } else {
+                json!(remote_state)
+            };
+            success.result = internet_remote_payload(
+                &validation.request_id,
+                validation.sequence,
+                true,
+                false,
+                snapshot.revision,
+                payload,
+                host_effect,
+            );
+            AppStateResponse::Success(success)
+        }
+        failure => failure,
+    }
+}
+
+fn wrap_internet_remote_completion(
+    response: AppStateResponse,
+    request_id: &str,
+    sequence: u64,
+    host_effect: Option<Value>,
+) -> AppStateResponse {
+    match response {
+        AppStateResponse::Success(mut success) => {
+            let Some(snapshot) = success.snapshot.as_ref() else {
+                return internal_error_response(
+                    "Internet Remote completion omitted AppState snapshot",
+                );
+            };
+            success.result = internet_remote_payload(
+                request_id,
+                sequence,
+                true,
+                false,
+                snapshot.revision,
+                json!(project_remote_state(snapshot)),
+                host_effect,
+            );
+            AppStateResponse::Success(success)
+        }
+        failure => failure,
+    }
+}
+
 fn invalid_request_response(kind: &str, message: &str) -> AppStateResponse {
     AppStateResponse::Failure(AppStateFailure {
         schema_version: SCHEMA_VERSION,
@@ -3814,6 +4732,18 @@ fn invalid_request_response(kind: &str, message: &str) -> AppStateResponse {
         error: AppStateError {
             kind: kind.to_owned(),
             message: message.to_owned(),
+            details: None,
+        },
+    })
+}
+
+fn internet_remote_error_response(error: InternetRemoteError) -> AppStateResponse {
+    AppStateResponse::Failure(AppStateFailure {
+        schema_version: SCHEMA_VERSION,
+        status: "rejected",
+        error: AppStateError {
+            kind: error.kind().to_owned(),
+            message: error.message().to_owned(),
             details: None,
         },
     })
@@ -4058,6 +4988,685 @@ mod tests {
             AppStateResponse::Failure(failure) => failure,
             AppStateResponse::Success(success) => panic!("unexpected success: {success:?}"),
         }
+    }
+
+    #[test]
+    fn internet_remote_sessions_live_inside_app_state_and_reset_with_it() {
+        let mut state = AppState::default();
+        let snapshot = initialize(&mut state, seed());
+        let peer_id = "peer-one".to_owned();
+        let epoch = "abcdefghijklmnopqrstuv".to_owned();
+        let opened = success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.clone(),
+            epoch: epoch.clone(),
+            profile: RemoteProfile::Controller,
+        }));
+        assert!(!opened.committed);
+        assert_eq!(opened.result["opened"], json!(true));
+
+        let message = json!({
+            "v": 1,
+            "lane": "control",
+            "epoch": epoch,
+            "seq": 1,
+            "id": "123e4567-e89b-42d3-a456-426614174000",
+            "kind": "state.get",
+            "body": {"since_revision": snapshot.revision},
+        })
+        .to_string();
+        let validation = success(
+            state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: peer_id.clone(),
+                lane: RemoteLane::Control,
+                message: message.clone(),
+                reset_av_delay: true,
+                now: 10.0,
+            }),
+        );
+        assert_eq!(validation.result["accepted"], json!(true));
+        assert_eq!(
+            validation.result["data"]["revision"],
+            json!(snapshot.revision)
+        );
+
+        let replay = failure(
+            state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: peer_id.clone(),
+                lane: RemoteLane::Control,
+                message,
+                reset_av_delay: true,
+                now: 10.0,
+            }),
+        );
+        assert_eq!(replay.error.kind, "replayed_internet_remote_sequence");
+
+        initialize(&mut state, seed());
+        let cleared = failure(
+            state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+                schema_version: 1,
+                peer_id,
+                lane: RemoteLane::Control,
+                message: json!({
+                    "v": 1,
+                    "lane": "control",
+                    "epoch": "abcdefghijklmnopqrstuv",
+                    "seq": 2,
+                    "id": "123e4567-e89b-42d3-a456-426614174001",
+                    "kind": "connection.health",
+                    "body": {},
+                })
+                .to_string(),
+                reset_av_delay: true,
+                now: 10.0,
+            }),
+        );
+        assert_eq!(cleared.error.kind, "unknown_internet_remote_peer");
+    }
+
+    fn remote_message(
+        state: &mut AppState,
+        peer_id: &str,
+        epoch: &str,
+        seq: u64,
+        kind: &str,
+        body: Value,
+        now: f64,
+    ) -> AppStateSuccess {
+        success(
+            state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: peer_id.to_owned(),
+                lane: RemoteLane::Control,
+                message: json!({
+                    "v": 1,
+                    "lane": "control",
+                    "epoch": epoch,
+                    "seq": seq,
+                    "id": format!("123e4567-e89b-42d3-a456-{seq:012}"),
+                    "kind": kind,
+                    "body": body,
+                })
+                .to_string(),
+                reset_av_delay: true,
+                now,
+            }),
+        )
+    }
+
+    #[test]
+    fn internet_remote_dispatch_owns_mutations_and_emits_typed_host_effects() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+        assert!(identity.committed);
+        assert_eq!(identity.result["data"]["name"], json!("Carol"));
+        assert_eq!(
+            identity.result["data"]["state"]["session_users"],
+            json!(["Alice", "Bob", "Carol"])
+        );
+
+        let revision = identity.result["revision"].as_u64().expect("revision");
+        let pending = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playlist.add",
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "position": "next",
+                "allow_repeat": true,
+                "expected_revision": revision,
+            }),
+            11.0,
+        );
+        assert!(!pending.committed);
+        assert_eq!(
+            pending.result["_host_effect"]["kind"],
+            json!("fetch_playlist_item")
+        );
+        assert_eq!(
+            pending.result["_host_effect"]["selected_video_page"],
+            Value::Null
+        );
+        assert_eq!(
+            pending.result["_host_effect"]["selected_audio_pages"],
+            json!([])
+        );
+
+        let mut fetched = item("remote", "BV1ab411c7mD", "");
+        fetched.page = 2;
+        fetched.video_page = 2;
+        let completion = success(
+            state.execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
+                schema_version: 1,
+                peer_id: peer_id.to_owned(),
+                request_id: pending.result["request_id"]
+                    .as_str()
+                    .expect("request id")
+                    .to_owned(),
+                item: fetched,
+                reset_av_delay: true,
+                now: 12.0,
+            }),
+        );
+        assert!(completion.committed);
+        assert_eq!(
+            completion.result["_host_effect"]["kind"],
+            json!("sync_cache")
+        );
+        assert_eq!(
+            completion.result["data"]["current_item"]["requester_name"],
+            json!("Carol")
+        );
+
+        let playback = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
+            "playback.seek_relative",
+            json!({
+                "item_id": completion.result["data"]["current_item"]["id"],
+                "playback_generation": completion.result["data"]["playback_generation"],
+                "delta_seconds": 10,
+            }),
+            13.0,
+        );
+        assert!(!playback.committed);
+        assert_eq!(
+            playback.result["_host_effect"]["kind"],
+            json!("player_control")
+        );
+        assert_eq!(playback.result["_host_effect"]["delta_seconds"], json!(10));
+    }
+
+    #[test]
+    fn internet_remote_rejects_stale_playback_and_item_incarnation_targets() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob")];
+        let program_a = initialize(&mut state, initial);
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+
+        let program_b = success(state.execute(AppStateRequest::MoveToFront {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            reset_av_delay: false,
+            now: 11.0,
+        }))
+        .snapshot
+        .expect("program B snapshot");
+        let before_stale_playback = state.data.clone();
+        let stale_playback = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "playback.seek_relative",
+            json!({
+                "item_id": "a",
+                "playback_generation": program_a.playback_generation,
+                "delta_seconds": 15,
+            }),
+            12.0,
+        );
+        assert_eq!(stale_playback.result["accepted"], json!(false));
+        assert_eq!(stale_playback.result["stale"], json!(true));
+        assert!(stale_playback.result.get("_host_effect").is_none());
+        assert_eq!(state.data, before_stale_playback);
+        assert_eq!(
+            stale_playback.result["data"]["current_item"]["id"],
+            json!("b"),
+        );
+
+        let stale_incarnation = program_b
+            .current_item
+            .as_ref()
+            .expect("program B item")
+            .item_incarnation_id
+            .clone();
+        success(state.execute(AppStateRequest::RemoveItem {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            now: 13.0,
+        }));
+        success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("b", "BV-b-new", ""),
+            position: "tail".to_owned(),
+            requester_name: "Bob".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 14.0,
+        }));
+        let live = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .expect("live snapshot");
+        let live_incarnation = live
+            .playlist
+            .iter()
+            .find(|entry| entry.id == "b")
+            .or_else(|| live.current_item.as_ref().filter(|entry| entry.id == "b"))
+            .expect("replacement item")
+            .item_incarnation_id
+            .clone();
+        assert_ne!(live_incarnation, stale_incarnation);
+
+        for (seq, kind, body) in [
+            (
+                2,
+                "player.set_audio_variant",
+                json!({
+                    "item_id": "b",
+                    "variant_id": "p1_off_vocal",
+                    "expected_item_incarnation_id": stale_incarnation,
+                    "expected_revision": live.revision,
+                }),
+            ),
+            (
+                3,
+                "cache.retry",
+                json!({
+                    "item_id": "b",
+                    "expected_item_incarnation_id": stale_incarnation,
+                    "expected_revision": live.revision,
+                }),
+            ),
+        ] {
+            let data_before = state.data.clone();
+            let rejected = remote_message(
+                &mut state,
+                peer_id,
+                epoch,
+                seq,
+                kind,
+                body,
+                15.0 + seq as f64,
+            );
+            assert_eq!(rejected.result["accepted"], json!(false), "{kind}");
+            assert_eq!(rejected.result["stale"], json!(true), "{kind}");
+            assert!(rejected.result.get("_host_effect").is_none(), "{kind}");
+            assert_eq!(state.data, data_before, "{kind}");
+        }
+    }
+
+    #[test]
+    fn internet_remote_playlist_add_completion_rebases_after_unrelated_revision_change() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+        let pending = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playlist.add",
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "position": "tail",
+                "allow_repeat": false,
+                "expected_revision": identity.result["revision"],
+            }),
+            11.0,
+        );
+        success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 50,
+            now: 12.0,
+        }));
+
+        let completion = success(
+            state.execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
+                schema_version: 1,
+                peer_id: peer_id.to_owned(),
+                request_id: pending.result["request_id"]
+                    .as_str()
+                    .expect("request id")
+                    .to_owned(),
+                item: item("remote", "BV1ab411c7mD", ""),
+                reset_av_delay: true,
+                now: 13.0,
+            }),
+        );
+        assert!(completion.committed);
+        assert_eq!(completion.result["accepted"], json!(true));
+        assert_eq!(completion.result["stale"], json!(false));
+        assert_eq!(
+            state
+                .data
+                .as_ref()
+                .expect("state")
+                .current_item
+                .as_ref()
+                .map(|item| item.bvid.as_str()),
+            Some("BV1ab411c7mD")
+        );
+    }
+
+    #[test]
+    fn internet_remote_playlist_add_admission_rebases_a_stale_visible_revision() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+        success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 50,
+            now: 11.0,
+        }));
+
+        let pending = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playlist.add",
+            json!({
+                "catalog_item_id": "BV1ab411c7mD",
+                "position": "tail",
+                "allow_repeat": false,
+                "expected_revision": identity.result["revision"],
+            }),
+            12.0,
+        );
+
+        assert_eq!(pending.result["accepted"], json!(true));
+        assert_eq!(pending.result["stale"], json!(false));
+        assert_eq!(
+            pending.result["_host_effect"]["kind"],
+            json!("fetch_playlist_item")
+        );
+    }
+
+    #[test]
+    fn internet_remote_playlist_add_completion_validates_manual_binding_selection() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+        let pending = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playlist.add",
+            json!({
+                "catalog_item_id": "BV1ab411c7mD_p2",
+                "selected_video_page": 2,
+                "selected_audio_pages": [1, 3],
+                "expected_revision": identity.result["revision"],
+            }),
+            11.0,
+        );
+        assert_eq!(
+            pending.result["_host_effect"]["selected_video_page"],
+            json!(2)
+        );
+        assert_eq!(
+            pending.result["_host_effect"]["selected_audio_pages"],
+            json!([1, 3])
+        );
+        let mut fetched = item("remote", "BV1ab411c7mD", "");
+        fetched.page = 2;
+        fetched.video_page = 2;
+        fetched.manual_selection = true;
+
+        let rejected = failure(
+            state.execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
+                schema_version: 1,
+                peer_id: peer_id.to_owned(),
+                request_id: pending.result["request_id"]
+                    .as_str()
+                    .expect("request id")
+                    .to_owned(),
+                item: fetched,
+                reset_av_delay: true,
+                now: 12.0,
+            }),
+        );
+
+        assert_eq!(rejected.error.kind, "internet_remote_catalog_item_mismatch");
+        assert!(state.data.as_ref().expect("state").current_item.is_none());
+    }
+
+    #[test]
+    fn internet_remote_cancelled_playlist_adds_release_the_pending_capacity() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+        let revision = identity.result["revision"].as_u64().expect("revision");
+
+        for sequence in 2..=18 {
+            let pending = remote_message(
+                &mut state,
+                peer_id,
+                epoch,
+                sequence,
+                "playlist.add",
+                json!({
+                    "catalog_item_id": "BV1ab411c7mD",
+                    "expected_revision": revision,
+                }),
+                10.0 + sequence as f64,
+            );
+            let request_id = pending.result["request_id"]
+                .as_str()
+                .expect("request id")
+                .to_owned();
+            let cancelled = success(state.execute(
+                AppStateRequest::CancelInternetRemotePlaylistAdd {
+                    schema_version: 1,
+                    peer_id: peer_id.to_owned(),
+                    request_id,
+                },
+            ));
+            assert_eq!(cancelled.result["cancelled"], json!(true));
+        }
+    }
+
+    #[test]
+    fn internet_remote_reconnect_can_claim_an_existing_session_identity() {
+        let mut state = AppState::default();
+        let initial = initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+
+        let identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Alice"}),
+            10.0,
+        );
+
+        assert!(!identity.committed);
+        assert_eq!(identity.result["revision"], json!(initial.revision));
+        assert_eq!(identity.result["data"]["name"], json!("Alice"));
+        let repeated_identity = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "session.set_identity",
+            json!({"name": "Alice"}),
+            10.5,
+        );
+        assert!(!repeated_identity.committed);
+        assert_eq!(repeated_identity.result["data"]["name"], json!("Alice"));
+        let search = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
+            "catalog.search",
+            json!({"query": "song", "limit": 10}),
+            11.0,
+        );
+        assert_eq!(
+            search.result["_host_effect"]["kind"],
+            json!("catalog_search")
+        );
+    }
+
+    #[test]
+    fn internet_remote_shared_browse_and_gatcha_emit_only_typed_host_effects() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name": "Carol"}),
+            10.0,
+        );
+
+        let browse = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "catalog.browse",
+            json!({
+                "kind": "artist",
+                "letter": "A",
+                "query": "",
+                "tag": "",
+                "locale": "ja",
+                "limit": 100,
+            }),
+            11.0,
+        );
+        assert_eq!(
+            browse.result["_host_effect"]["kind"],
+            json!("catalog_browse")
+        );
+        assert_eq!(
+            browse.result["_host_effect"]["browse_kind"],
+            json!("artist")
+        );
+
+        let gatcha = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
+            "gatcha.uid_add",
+            json!({"uid": "123456"}),
+            12.0,
+        );
+        assert_eq!(
+            gatcha.result["_host_effect"],
+            json!({"kind": "gatcha_uid_add", "uid": "123456"})
+        );
     }
 
     fn begin_cache_attempt(state: &mut AppState, item_id: &str) -> (u64, AppStateSuccess) {

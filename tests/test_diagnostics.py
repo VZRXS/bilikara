@@ -182,6 +182,20 @@ class DiagnosticArtifactTest(unittest.TestCase):
             }
             for _ in range(75)
         ]
+        raw_internet_remote_records = [
+            {
+                "timestamp": "2026-09-03T00:00:00Z",
+                "stage": "room.create",
+                "status": "failed",
+                "httpStatus": 403,
+                "elapsedMs": 213,
+                "peerCount": 0,
+                "originClass": "loopback",
+                "errorCode": "network_error",
+                "errorMessage": "token=secret request rejected",
+                "roomId": "must-not-survive",
+            }
+        ]
 
         with (
             patch.object(diagnostics, "APP_HOME", Path("/tmp")),
@@ -199,6 +213,7 @@ class DiagnosticArtifactTest(unittest.TestCase):
                 cache_policy={},
                 runtime_state={},
                 export_diagnostics=raw_export_records,
+                internet_remote_diagnostics=raw_internet_remote_records,
                 connectivity_probe=lambda: {},
             )
 
@@ -207,6 +222,9 @@ class DiagnosticArtifactTest(unittest.TestCase):
             self.assertIn("export-diagnostics.json", names)
             export_bytes = archive.read("export-diagnostics.json")
             export_data = json.loads(export_bytes.decode("utf-8"))
+            remote_data = json.loads(
+                archive.read("internet-remote-diagnostics.json").decode("utf-8")
+            )
 
         self.assertEqual(len(export_data), 64)
         for record in export_data:
@@ -217,8 +235,13 @@ class DiagnosticArtifactTest(unittest.TestCase):
             self.assertEqual(record["status"], "saved")
 
         self.assertIn("## Recent Export Pipeline Diagnostics", artifact.markdown)
+        self.assertIn("## Recent Internet Remote Diagnostics", artifact.markdown)
         self.assertNotIn("AliceSecret", artifact.markdown)
         self.assertNotIn("SongSecret", artifact.markdown)
+        self.assertEqual(remote_data[0]["stage"], "room.create")
+        self.assertEqual(remote_data[0]["originClass"], "loopback")
+        self.assertNotIn("roomId", remote_data[0])
+        self.assertNotIn("secret", json.dumps(remote_data))
 
     def test_stage_timings_capped_at_16_in_python_sanitizer(self):
         many_timings = [{"stage": f"stage_{i}", "elapsedMs": i * 10} for i in range(25)]
