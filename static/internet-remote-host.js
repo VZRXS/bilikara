@@ -20,6 +20,8 @@
     expiresAt: 0,
     expired: false,
     password: "",
+    remoteUrl: "",
+    qrImage: "",
     socket: null,
     reconnectTimer: null,
     expiryTimer: null,
@@ -98,6 +100,38 @@
     elements.dot.classList.toggle("is-error", tone === "bad");
   }
 
+  function publishInternetRemoteDisplay() {
+    const online = state.mode === "internet";
+    const active = Boolean(
+      online
+      && state.roomId
+      && state.remoteUrl
+      && state.qrImage
+      && !state.expired,
+    );
+    const hint = !online
+      ? tr("internetRemote.localHint", "同一局域网内直接扫码")
+      : state.busy
+        ? tr("internetRemote.creating", "创建中…")
+        : state.expired
+          ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
+          : active
+            ? tr("internetRemote.expiry", "房间有效至 {time}", {
+                time: new Date(state.expiresAt).toLocaleString(),
+              })
+            : tr("internetRemote.notCreated", "尚未创建房间");
+    document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
+      detail: {
+        mode: online ? "internet" : "local",
+        active,
+        url: active ? state.remoteUrl : "",
+        qr_image: active ? state.qrImage : "",
+        password: active ? state.password : "",
+        hint,
+      },
+    }));
+  }
+
   function render() {
     const online = state.mode === "internet";
     elements.local.classList.toggle("is-active", !online);
@@ -128,6 +162,7 @@
         ? tr("internetRemote.rebuild", "重建公网房间")
         : tr("internetRemote.create", "创建公网房间");
     elements.room.classList.toggle("hidden", !online || !state.roomId);
+    publishInternetRemoteDisplay();
   }
 
   async function localPost(path, body, timeoutMs = 15_000) {
@@ -651,6 +686,8 @@
       elements.url.href = remoteUrl;
       elements.url.textContent = remoteUrl;
       const qr = await localPost("/api/internet-remote/qr", { url: remoteUrl });
+      state.remoteUrl = remoteUrl;
+      state.qrImage = String(qr.image || "");
       elements.qr.src = qr.image;
       elements.expiry.textContent = tr("internetRemote.expiry", "房间有效至 {time}", {
         time: new Date(state.expiresAt).toLocaleString(),
@@ -707,6 +744,8 @@
     state.expiresAt = 0;
     state.expired = false;
     state.password = "";
+    state.remoteUrl = "";
+    state.qrImage = "";
     if (resetMode) state.mode = "local";
     setStatus(state.mode === "local"
       ? tr("internetRemote.localStatus", "本地 Remote 保持可用")

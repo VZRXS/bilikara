@@ -108,6 +108,7 @@ const state = {
   requesterSelectRenderSignature: "",
   sessionUsersRenderSignature: "",
   remoteAccessRenderSignature: "",
+  internetRemoteDisplay: null,
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
   gatchaUidFaceRenderSignature: "",
@@ -564,6 +565,8 @@ const elements = {
   playerFullscreenRemoteQrPlaceholder: document.getElementById("player-fullscreen-remote-qr-placeholder"),
   playerFullscreenRemoteUrlLink: document.getElementById("player-fullscreen-remote-url-link"),
   playerFullscreenRemoteUrlHint: document.getElementById("player-fullscreen-remote-url-hint"),
+  playerFullscreenInternetPassword: document.getElementById("player-fullscreen-internet-password"),
+  playerFullscreenInternetPasswordValue: document.getElementById("player-fullscreen-internet-password-value"),
   stageControlsToggle: document.getElementById("stage-controls-toggle"),
   stageControlsClose: document.getElementById("stage-controls-close"),
   stageControlBackdrop: document.getElementById("stage-control-backdrop"),
@@ -9177,6 +9180,84 @@ function cacheAdvancedInfoSupportsHover(event) {
 }
 
 
+function renderProvidedRemoteQr(source, { image, placeholder }, { cacheKey = "", emptyMessage = "" } = {}) {
+  if (!image || !placeholder) {
+    return;
+  }
+  const normalizedSource = String(source || "").trim();
+  const sourceKey = normalizedSource ? `provided:${cacheKey || normalizedSource.length}` : `provided-empty:${emptyMessage}`;
+  if (image.dataset.qrUrl === sourceKey) {
+    return;
+  }
+  image.dataset.qrUrl = sourceKey;
+  image.classList.add("hidden");
+  if (!normalizedSource) {
+    image.removeAttribute("src");
+    placeholder.textContent = emptyMessage || t("remote.noAddress");
+    placeholder.classList.remove("hidden");
+    return;
+  }
+  placeholder.textContent = t("remote.qrLoading");
+  placeholder.classList.remove("hidden");
+  image.onload = () => {
+    if (image.dataset.qrUrl !== sourceKey) return;
+    placeholder.classList.add("hidden");
+    image.classList.remove("hidden");
+  };
+  image.onerror = () => {
+    if (image.dataset.qrUrl !== sourceKey) return;
+    image.classList.add("hidden");
+    placeholder.textContent = t("remote.qrImageFailed");
+    placeholder.classList.remove("hidden");
+  };
+  image.src = normalizedSource;
+}
+
+function renderPlayerFullscreenRemoteAccess({
+  internetMode,
+  url,
+  hint,
+  password,
+  qrImage,
+}) {
+  const normalizedUrl = String(url || "").trim();
+  const normalizedHint = String(hint || "").trim();
+  const normalizedPassword = String(password || "").trim();
+  if (elements.playerFullscreenRemoteUrlLink) {
+    elements.playerFullscreenRemoteUrlLink.classList.toggle("hidden", !normalizedUrl);
+    if (normalizedUrl) {
+      elements.playerFullscreenRemoteUrlLink.href = normalizedUrl;
+      setTextContent(elements.playerFullscreenRemoteUrlLink, normalizedUrl);
+    } else {
+      elements.playerFullscreenRemoteUrlLink.removeAttribute("href");
+      setTextContent(elements.playerFullscreenRemoteUrlLink, "");
+    }
+  }
+  setTextContent(elements.playerFullscreenRemoteUrlHint, normalizedHint);
+  elements.playerFullscreenInternetPassword?.classList.toggle(
+    "hidden",
+    !internetMode || !normalizedPassword,
+  );
+  setTextContent(elements.playerFullscreenInternetPasswordValue, normalizedPassword);
+
+  if (internetMode) {
+    renderProvidedRemoteQr(
+      qrImage,
+      {
+        image: elements.playerFullscreenRemoteQrImage,
+        placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+      },
+      { cacheKey: normalizedUrl, emptyMessage: normalizedHint },
+    );
+  } else {
+    renderRemoteQr(normalizedUrl, [{
+      image: elements.playerFullscreenRemoteQrImage,
+      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+      size: 220,
+    }]);
+  }
+}
+
 function renderRemoteAccess(remoteAccess) {
   const preferredUrl = String(remoteAccess?.preferred_url || "");
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
@@ -9187,7 +9268,23 @@ function renderRemoteAccess(remoteAccess) {
     : lanUrls.length === 1
       ? t("remote.defaultHint")
       : t("remote.noLanHint");
-  const signature = JSON.stringify({ displayUrl, displayHint });
+  const internetDisplay = state.internetRemoteDisplay;
+  const internetMode = internetDisplay?.mode === "internet";
+  const fullscreenUrl = internetMode ? String(internetDisplay?.url || "") : displayUrl;
+  const fullscreenHint = internetMode
+    ? String(internetDisplay?.hint || t("internetRemote.notCreated"))
+    : displayHint;
+  const fullscreenPassword = internetMode ? String(internetDisplay?.password || "") : "";
+  const fullscreenQrImage = internetMode ? String(internetDisplay?.qr_image || "") : "";
+  const signature = JSON.stringify({
+    displayUrl,
+    displayHint,
+    internetMode,
+    fullscreenUrl,
+    fullscreenHint,
+    fullscreenPassword,
+    fullscreenQrImage,
+  });
   if (signature === state.remoteAccessRenderSignature) {
     return;
   }
@@ -9196,7 +9293,6 @@ function renderRemoteAccess(remoteAccess) {
   [
     elements.remoteUrlLink,
     elements.remotePopoverUrlLink,
-    elements.playerFullscreenRemoteUrlLink,
   ].forEach((link) => {
     if (!link) {
       return;
@@ -9210,7 +9306,6 @@ function renderRemoteAccess(remoteAccess) {
   [
     elements.remoteUrlHint,
     elements.remotePopoverUrlHint,
-    elements.playerFullscreenRemoteUrlHint,
   ].forEach((hint) => {
     setTextContent(hint, displayHint);
   });
@@ -9219,12 +9314,14 @@ function renderRemoteAccess(remoteAccess) {
     { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
     { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
     { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
-    {
-      image: elements.playerFullscreenRemoteQrImage,
-      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
-      size: 220,
-    },
   ]);
+  renderPlayerFullscreenRemoteAccess({
+    internetMode,
+    url: fullscreenUrl,
+    hint: fullscreenHint,
+    password: fullscreenPassword,
+    qrImage: fullscreenQrImage,
+  });
 }
 
 function renderRemoteQr(url, targets = []) {
@@ -9266,6 +9363,20 @@ function renderRemoteQr(url, targets = []) {
     image.src = qrUrl;
   });
 }
+
+document.addEventListener("bilikara:internet-remote-display", (event) => {
+  const detail = event.detail && typeof event.detail === "object" ? event.detail : {};
+  state.internetRemoteDisplay = {
+    mode: detail.mode === "internet" ? "internet" : "local",
+    active: Boolean(detail.active),
+    url: String(detail.url || "").slice(0, 4096),
+    qr_image: String(detail.qr_image || "").slice(0, 1_000_000),
+    password: String(detail.password || "").slice(0, 32),
+    hint: String(detail.hint || "").slice(0, 512),
+  };
+  state.remoteAccessRenderSignature = "";
+  renderRemoteAccess(state.data?.remote_access || null);
+});
 
 async function copyRemoteUrl() {
   const url = elements.remoteUrlLink.href;

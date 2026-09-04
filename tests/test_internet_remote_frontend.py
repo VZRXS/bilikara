@@ -17,6 +17,7 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         cls.host_js = (ROOT / "static" / "internet-remote-host.js").read_text(
             encoding="utf-8"
         )
+        cls.host_app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         cls.remote_html = (ROOT / "static" / "remote.html").read_text(
             encoding="utf-8"
         )
@@ -46,6 +47,28 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertLess(popover, internet_mode)
         self.assertIn('id="internet-remote-local-content"', self.host_html)
         self.assertIn('id="internet-remote-internet-content"', self.host_html)
+
+    def test_fullscreen_remote_card_tracks_the_active_public_room(self):
+        self.assertIn('id="player-fullscreen-internet-password"', self.host_html)
+        self.assertIn('id="player-fullscreen-internet-password-value"', self.host_html)
+        self.assertIn(
+            'new CustomEvent("bilikara:internet-remote-display"', self.host_js
+        )
+        self.assertIn("remoteUrl", self.host_js)
+        self.assertIn("qrImage", self.host_js)
+        self.assertIn("internetRemoteDisplay: null", self.host_app_js)
+        self.assertIn(
+            'document.addEventListener("bilikara:internet-remote-display"',
+            self.host_app_js,
+        )
+        render_start = self.host_app_js.index("function renderProvidedRemoteQr")
+        render_end = self.host_app_js.index(
+            "async function copyRemoteUrl", render_start
+        )
+        render_source = self.host_app_js[render_start:render_end]
+        self.assertIn("renderPlayerFullscreenRemoteAccess", render_source)
+        self.assertIn("renderProvidedRemoteQr", render_source)
+        self.assertIn("playerFullscreenInternetPasswordValue", render_source)
 
     def test_internet_remote_scripts_load_before_the_host_application(self):
         transport = self.host_html.index('src="/internet-remote-transport.js"')
