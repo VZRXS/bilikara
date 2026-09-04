@@ -101,7 +101,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("transform: scale(1.04)", self.styles)
         self.assertIn("transform: scale(0.96)", self.styles)
 
-        self.assertIn("--remote-peer-action-height: 42px", self.remote_styles)
+        self.assertIn("--remote-peer-action-height: 44px", self.remote_styles)
         self.assertIn("--remote-close-control-size: 32px", self.remote_styles)
         self.assertIn(
             ".remote-qr-popover-close,\n"
