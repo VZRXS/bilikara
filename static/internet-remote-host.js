@@ -15,6 +15,7 @@
   const peers = new Map();
   const state = {
     mode: "local",
+    internetExpanded: false,
     available: typeof RTCPeerConnection !== "undefined",
     busy: false,
     roomId: "",
@@ -24,8 +25,13 @@
     expiresAt: 0,
     expired: false,
     password: "",
+    lifetimeHours: 0,
     remoteUrl: "",
     qrImage: "",
+    qrLoading: false,
+    qrError: false,
+    roomFailure: false,
+    language: "zh",
     socket: null,
     reconnectTimer: null,
     expiryTimer: null,
@@ -100,17 +106,34 @@
 
   function setStatus(message, tone = "") {
     elements.status.textContent = message;
-    elements.dot.classList.toggle("is-active", tone === "good");
-    elements.dot.classList.toggle("is-error", tone === "bad");
+    elements.status.classList.toggle("is-good", tone === "good");
+    elements.status.classList.toggle("is-error", tone === "bad");
+  }
+
+  function notifyAction(message, isError = false) {
+    document.dispatchEvent(new CustomEvent("bilikara:internet-remote-feedback", {
+      detail: { message, error: Boolean(isError) },
+    }));
+  }
+
+  function compactExpiry(expiresAt) {
+    const locale = state.language === "ja" ? "ja-JP" : state.language === "en" ? "en-US" : "zh-CN";
+    const time = new Intl.DateTimeFormat(locale, {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(expiresAt));
+    return tr("internetRemote.expiryCompact", "{time} 到期", { time });
   }
 
   function publishInternetRemoteDisplay() {
-    const online = state.mode === "internet";
+    const online = state.mode === "internet" && Boolean(state.roomId && !state.expired);
     const active = Boolean(
       online
       && state.roomId
       && state.remoteUrl
-      && state.qrImage
       && !state.expired,
     );
     const hint = !online
@@ -120,10 +143,8 @@
         : state.expired
           ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
           : active
-            ? tr("internetRemote.expiry", "房间有效至 {time}", {
-                time: new Date(state.expiresAt).toLocaleString(),
-              })
-            : tr("internetRemote.notCreated", "尚未创建房间");
+            ? compactExpiry(state.expiresAt)
+            : tr("internetRemote.notCreated", "未创建");
     document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
       detail: {
         mode: online ? "internet" : "local",
@@ -138,35 +159,72 @@
 
   function render() {
     const online = state.mode === "internet";
-    elements.local.classList.toggle("is-active", !online);
-    elements.internet.classList.toggle("is-active", online);
-    elements.local.setAttribute("aria-pressed", String(!online));
-    elements.internet.setAttribute("aria-pressed", String(online));
-    elements.settings.classList.toggle("is-internet-mode", online);
-    elements.localContent.classList.toggle("hidden", online);
-    elements.internetContent.classList.toggle("hidden", !online);
-    elements.summary.textContent = online
-      ? tr("internetRemote.internet", "公网模式")
-      : tr("internetRemote.local", "本地模式");
-    elements.meta.textContent = online
-      ? state.roomId
-        ? tr("internetRemote.remoteCount", "{count} 台 Remote", { count: peers.size })
-        : tr("internetRemote.notCreated", "尚未创建房间")
-      : tr("internetRemote.localHint", "同一局域网内直接扫码");
-    elements.restart.disabled = state.busy || !online || !state.available;
-    elements.local.disabled = state.busy;
-    elements.internet.disabled = state.busy || !state.available;
-    elements.internet.toggleAttribute("aria-busy", state.busy);
-    elements.password.disabled = state.busy || !online;
-    elements.duration.disabled = state.busy || !online;
-    elements.regenerate.disabled = state.busy || !online;
-    elements.restart.toggleAttribute("aria-busy", state.busy);
+    const roomActive = Boolean(state.roomId && !state.expired);
+    const connectedCount = [...peers.values()].filter((peer) => peer.authorized).length;
+    const roomResultAvailable = Boolean(roomActive && state.remoteUrl);
+    const passwordDraftChanged = roomActive
+      && elements.password.value.trim() !== state.password;
+    const lifetimeDraftChanged = roomActive
+      && Number(elements.duration.value.trim()) !== state.lifetimeHours;
+    const draftChanged = passwordDraftChanged || lifetimeDraftChanged;
+    elements.settings.classList.toggle("is-internet-mode", online && roomActive);
+    elements.disclosure.setAttribute("aria-expanded", String(state.internetExpanded));
+    elements.internetContent.classList.toggle("hidden", !state.internetExpanded);
+    elements.summary.textContent = tr("internetRemote.localEntry", "本地入口");
+    elements.publicMeta.textContent = !state.available
+      ? tr("internetRemote.unavailableShort", "WebRTC 不可用")
+      : state.busy
+      ? tr("internetRemote.creating", "创建中…")
+      : state.expired
+        ? tr("internetRemote.expiredShort", "已过期")
+        : roomActive
+          ? tr("internetRemote.createdStatus", "已创建 · 连接 {count}", { count: connectedCount })
+          : state.roomFailure
+            ? tr("internetRemote.createFailedShort", "创建失败")
+            : tr("internetRemote.notCreated", "未创建");
+    elements.publicMeta.classList.toggle("is-active", roomActive && !state.busy);
+    elements.publicMeta.classList.toggle(
+      "is-error",
+      !state.busy && (!state.available || state.expired || state.roomFailure),
+    );
+    elements.restart.disabled = state.busy || !state.available;
+    elements.stop.disabled = state.busy || !roomActive;
+    elements.password.disabled = state.busy;
+    elements.duration.disabled = state.busy;
+    elements.regenerate.disabled = state.busy;
+    if (state.busy) elements.restart.setAttribute("aria-busy", "true");
+    else elements.restart.removeAttribute("aria-busy");
+    if (state.busy && state.roomId) elements.stop.setAttribute("aria-busy", "true");
+    else elements.stop.removeAttribute("aria-busy");
     elements.restart.textContent = state.busy
       ? tr("internetRemote.creating", "创建中…")
-      : state.roomId
-        ? tr("internetRemote.rebuild", "重建公网房间")
-        : tr("internetRemote.create", "创建公网房间");
-    elements.room.classList.toggle("hidden", !online || !state.roomId);
+      : roomActive && draftChanged
+        ? tr("internetRemote.rebuildApply", "重建并应用")
+        : state.roomId
+          ? tr("internetRemote.rebuild", "重建房间")
+        : tr("internetRemote.create", "创建房间");
+    elements.stop.classList.toggle("hidden", !roomActive);
+    elements.room.classList.toggle("hidden", !roomResultAvailable);
+    elements.copy.disabled = !roomResultAvailable;
+    elements.url.href = roomResultAvailable ? state.remoteUrl : "";
+    elements.url.textContent = "";
+    elements.expiry.textContent = roomResultAvailable ? compactExpiry(state.expiresAt) : "";
+    elements.currentPassword.classList.toggle("hidden", !roomResultAvailable || !passwordDraftChanged);
+    elements.currentPasswordValue.textContent = roomResultAvailable && passwordDraftChanged
+      ? state.password
+      : "";
+    if (state.qrImage && roomResultAvailable) {
+      if (elements.qr.getAttribute("src") !== state.qrImage) elements.qr.src = state.qrImage;
+      elements.qr.classList.remove("hidden");
+      elements.qrPlaceholder.classList.add("hidden");
+    } else {
+      elements.qr.classList.add("hidden");
+      elements.qr.removeAttribute("src");
+      elements.qrPlaceholder.textContent = state.qrError
+        ? tr("remote.qrFailed", "二维码生成失败，请稍后重试")
+        : tr("remote.qrLoading", "正在生成二维码...");
+      elements.qrPlaceholder.classList.toggle("hidden", !roomResultAvailable);
+    }
     publishInternetRemoteDisplay();
   }
 
@@ -469,6 +527,7 @@
       await sendPeer(peer, "control", { type: "auth.ok" });
       await publishState(peer);
       setStatus(tr("internetRemote.running", "公网房间运行中"), "good");
+      render();
       return;
     }
     if (!peer.authorized || message.type !== "request" || message.lane !== lane) {
@@ -639,9 +698,13 @@
 
   async function startRoom() {
     if (state.busy || !state.available) return;
+    state.internetExpanded = true;
+    const wasRebuild = Boolean(state.roomId);
     const password = elements.password.value.trim();
     if (password.length < 4 || password.length > 32) {
-      setStatus(tr("internetRemote.passwordInvalid", "房间密码需为 4–32 个字符"), "bad");
+      const message = tr("internetRemote.passwordInvalid", "房间密码需为 4–32 个字符");
+      setStatus(message, "bad");
+      notifyAction(message, true);
       return;
     }
     const durationValue = elements.duration.value.trim();
@@ -652,10 +715,13 @@
       || lifetimeHours < MIN_ROOM_LIFETIME_HOURS
       || lifetimeHours > MAX_ROOM_LIFETIME_HOURS
     ) {
-      setStatus(tr("internetRemote.durationInvalid", "房间有效期需为 1–24 个整数小时"), "bad");
+      const message = tr("internetRemote.durationInvalid", "房间有效期需为 1–24 个整数小时");
+      setStatus(message, "bad");
+      notifyAction(message, true);
       return;
     }
     state.busy = true;
+    state.roomFailure = false;
     render();
     await stopRoom(false);
     state.mode = "internet";
@@ -699,32 +765,51 @@
       state.expiresAt = expiresAt;
       state.expired = false;
       state.stopped = false;
+      state.password = password;
+      state.lifetimeHours = lifetimeHours;
       const remoteUrl = `${SIGNAL_ORIGIN}/remote.html#room=${encodeURIComponent(state.roomId)}&join=${encodeURIComponent(state.joinToken)}&expires=${encodeURIComponent(state.expiresAt)}`;
-      elements.url.href = remoteUrl;
-      elements.url.textContent = remoteUrl;
-      const qr = await localPost("/api/internet-remote/qr", { url: remoteUrl });
       state.remoteUrl = remoteUrl;
-      state.qrImage = String(qr.image || "");
-      elements.qr.src = qr.image;
-      elements.expiry.textContent = tr("internetRemote.expiry", "房间有效至 {time}", {
-        time: new Date(state.expiresAt).toLocaleString(),
-      });
+      state.qrImage = "";
+      state.qrError = false;
+      state.qrLoading = true;
       state.expiryTimer = setTimeout(expireRoom, workerLifetime + 1_000);
       recordDiagnostic("room.create", "created", {
         httpStatus: response.status,
         elapsedMs: performance.now() - startedAt,
       });
       connectSignaling();
+      render();
+      try {
+        const qr = await localPost("/api/internet-remote/qr", { url: remoteUrl });
+        const qrImage = String(qr.image || "");
+        if (!qrImage) throw new Error("empty QR response");
+        state.qrImage = qrImage;
+        notifyAction(wasRebuild
+          ? tr("internetRemote.rebuilt", "公网房间已重建")
+          : tr("internetRemote.created", "公网房间已创建"));
+      } catch (error) {
+        const failure = diagnosticError(error);
+        state.qrError = true;
+        recordDiagnostic("room.qr", "failed", failure);
+        notifyAction(tr("internetRemote.qrFailed", "房间已创建，但二维码生成失败：{error}", {
+          error: failure.errorMessage,
+        }), true);
+      } finally {
+        state.qrLoading = false;
+      }
     } catch (error) {
       const failure = diagnosticError(error);
       recordDiagnostic("room.create", "failed", {
         ...failure,
         elapsedMs: performance.now() - startedAt,
       });
-      void stopRoom(false);
-      setStatus(tr("internetRemote.createFailed", "创建失败：{error}", {
+      await stopRoom(false);
+      state.roomFailure = true;
+      const message = tr("internetRemote.createFailed", "创建失败：{error}", {
         error: failure.errorMessage,
-      }), "bad");
+      });
+      setStatus(message, "bad");
+      notifyAction(message, true);
     } finally {
       state.busy = false;
       render();
@@ -735,6 +820,7 @@
     if (!state.roomId || state.expired) return;
     state.expired = true;
     state.stopped = true;
+    state.roomFailure = false;
     clearTimeout(state.reconnectTimer);
     state.socket?.close(1000, "room expired");
     state.socket = null;
@@ -761,14 +847,29 @@
     state.expiresAt = 0;
     state.expired = false;
     state.password = "";
+    state.lifetimeHours = 0;
     state.remoteUrl = "";
     state.qrImage = "";
+    state.qrLoading = false;
+    state.qrError = false;
+    state.roomFailure = false;
     if (resetMode) state.mode = "local";
-    setStatus(state.mode === "local"
-      ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
-      : tr("internetRemote.notCreated", "尚未创建公网房间"));
+    setStatus("");
     render();
     return releaseRoom(roomId, hostToken);
+  }
+
+  async function stopInternetRoom() {
+    if (state.busy || !state.roomId) return;
+    state.busy = true;
+    render();
+    try {
+      await stopRoom(true);
+      notifyAction(tr("internetRemote.closed", "公网房间已关闭"));
+    } finally {
+      state.busy = false;
+      render();
+    }
   }
 
   function initialize() {
@@ -776,43 +877,50 @@
       settings: document.getElementById("remote-mini-control"),
       toggle: document.getElementById("remote-mini-trigger"),
       panel: document.getElementById("remote-mini-popover"),
-      local: document.getElementById("internet-remote-local-mode"),
-      internet: document.getElementById("internet-remote-internet-mode"),
-      localContent: document.getElementById("internet-remote-local-content"),
+      disclosureRow: document.getElementById("internet-remote-public-row"),
+      disclosure: document.getElementById("internet-remote-disclosure"),
       internetContent: document.getElementById("internet-remote-internet-content"),
       summary: document.getElementById("internet-remote-summary"),
-      meta: document.getElementById("internet-remote-meta"),
-      dot: document.getElementById("internet-remote-state-dot"),
+      publicMeta: document.getElementById("internet-remote-public-meta"),
+      modeDescription: document.getElementById("internet-remote-mode-description"),
       password: document.getElementById("internet-remote-password"),
       duration: document.getElementById("internet-remote-duration"),
       regenerate: document.getElementById("internet-remote-regenerate"),
       restart: document.getElementById("internet-remote-restart"),
+      stop: document.getElementById("internet-remote-stop"),
       room: document.getElementById("internet-remote-room"),
       qr: document.getElementById("internet-remote-qr"),
+      qrPlaceholder: document.getElementById("internet-remote-qr-placeholder"),
       url: document.getElementById("internet-remote-url"),
       expiry: document.getElementById("internet-remote-expiry"),
+      currentPassword: document.getElementById("internet-remote-current-password"),
+      currentPasswordValue: document.getElementById("internet-remote-current-password-value"),
+      copy: document.getElementById("internet-remote-copy-link"),
       status: document.getElementById("internet-remote-status"),
     };
     if (Object.values(elements).some((element) => !element)) return;
     elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
     elements.duration.value = String(DEFAULT_ROOM_LIFETIME_HOURS);
-    elements.local.addEventListener("click", () => void stopRoom(true));
-    elements.internet.addEventListener("click", () => {
-      state.mode = "internet";
+    elements.disclosureRow.addEventListener("click", (event) => {
+      if (event.target.closest(".cache-advanced-info")) return;
+      state.internetExpanded = !state.internetExpanded;
       render();
-      if (!state.roomId) void startRoom();
     });
     elements.restart.addEventListener("click", () => void startRoom());
+    elements.stop.addEventListener("click", () => void stopInternetRoom());
     elements.regenerate.addEventListener("click", () => {
       elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
+      render();
     });
+    elements.password.addEventListener("input", render);
+    elements.duration.addEventListener("input", render);
     const events = new EventSource("/api/events");
     events.addEventListener("state", () => {
       if (state.mode === "internet") void publishState();
     });
     window.addEventListener("beforeunload", () => void stopRoom(false));
     setStatus(state.available
-      ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
+      ? ""
       : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
     render();
   }
@@ -820,15 +928,16 @@
   document.addEventListener("bilikara:i18n", (event) => {
     if (event.detail?.messages && typeof event.detail.messages === "object") {
       state.messages = event.detail.messages;
+      state.language = ["zh", "en", "ja"].includes(event.detail?.language)
+        ? event.detail.language
+        : "zh";
       if (elements) {
         setStatus(state.available
-          ? state.mode === "local"
-            ? tr("internetRemote.localStatus", "本地 Remote 保持可用")
-            : state.expired
+          ? state.expired
               ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
-              : state.roomId
-              ? tr("internetRemote.running", "公网房间运行中")
-              : tr("internetRemote.notCreated", "尚未创建公网房间")
+              : state.roomFailure
+                ? tr("internetRemote.createFailedShort", "创建失败")
+                : ""
           : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
         render();
       }

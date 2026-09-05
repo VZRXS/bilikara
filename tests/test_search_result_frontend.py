@@ -1022,7 +1022,11 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
             "@media (prefers-reduced-motion: reduce)", 1
         )[0]
         close_rule = mobile_css.split(".request-panel .song-detail-close {", 1)[1].split("}", 1)[0]
+        generic_close_rule = mobile_css.split(".song-detail-close {", 1)[1].split(
+            "}", 1
+        )[0]
 
+        self.assertNotIn("font-size", generic_close_rule)
         self.assertIn("padding-bottom: 3px;", close_rule)
         self.assertNotIn("padding-left", close_rule)
         self.assertNotIn("padding-right", close_rule)

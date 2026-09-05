@@ -59,7 +59,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         )[-1]
         self.assertIn("position: fixed", region_rule)
         self.assertIn("height: 0", region_rule)
-        self.assertIn("z-index: 1400", region_rule)
+        self.assertIn("z-index: var(--host-layer-critical)", region_rule)
         self.assertIn("pointer-events: none", region_rule)
         shell_rule = next(
             rule
@@ -84,6 +84,62 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn('banner.setAttribute("aria-hidden", "false")', self.script)
         self.assertIn('banner.setAttribute("aria-hidden", "true")', self.script)
 
+    def test_host_global_viewport_layers_are_semantic_and_ordered(self):
+        layer_names = (
+            "header",
+            "modal",
+            "modal-content",
+            "tooltip",
+            "confirm",
+            "toast",
+            "fullscreen",
+            "fullscreen-controls",
+            "critical",
+        )
+        layers = {
+            name: int(
+                re.search(rf"--host-layer-{name}:\s*(\d+)", self.styles).group(1)
+            )
+            for name in layer_names
+        }
+        self.assertEqual(
+            [layers[name] for name in layer_names],
+            sorted(layers.values()),
+        )
+
+        selector_layers = {
+            ".topbar": "header",
+            ".selection-modal": "modal",
+            ".rating-modal": "modal",
+            ".audio-variant-backdrop": "modal",
+            ".stage-control-backdrop": "modal",
+            ".audio-variant-bar.is-expanded": "modal-content",
+            ".stage-control-tray": "modal-content",
+            ".cache-advanced-info .cache-advanced-tooltip": "tooltip",
+            ".confirm-popover": "confirm",
+            ".app-toast": "toast",
+            ".player-panel.is-tauri-fullscreen": "fullscreen",
+            "body.is-presentation-stage-only .player-panel": "fullscreen",
+            "body.is-presentation-stage-only .player-panel > .panel-head": (
+                "fullscreen-controls"
+            ),
+            ".critical-banner-region": "critical",
+        }
+        for selector, layer in selector_layers.items():
+            rules = re.findall(
+                rf"{re.escape(selector)}\s*\{{([^}}]*)\}}", self.styles
+            )
+            self.assertTrue(rules, selector)
+            self.assertTrue(
+                any(f"z-index: var(--host-layer-{layer})" in rule for rule in rules),
+                selector,
+            )
+
+        self.assertNotIn("z-index: 9999", self.styles)
+        self.assertNotIn("z-index: 10001", self.styles)
+        self.assertNotIn("z-index: 1305", self.styles)
+        self.assertNotIn("z-index: 1400", self.styles)
+
     def test_peer_buttons_and_close_controls_share_geometry_and_motion(self):
         self.assertIn("width: 32px;\n  height: 32px;", self.styles)
         self.assertIn("font: 400 20px/0 sans-serif", self.styles)
@@ -101,6 +157,58 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("transform: scale(1.04)", self.styles)
         self.assertIn("transform: scale(0.96)", self.styles)
 
+        secret_input_rule = re.search(
+            r"\.bilikara-secret-form \.input-group input\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        for declaration in (
+            "height: var(--host-control-height)",
+            "min-height: var(--host-control-height)",
+            "border: 1px solid var(--line)",
+            "border-radius: var(--host-control-radius)",
+            "background: var(--input-bg)",
+            "color: var(--ink)",
+            "font-size: var(--host-control-font-size)",
+        ):
+            self.assertIn(declaration, secret_input_rule)
+
+        conventional_actions = self.styles.split(
+            "/* Conventional workspace actions", 1
+        )[1].split(".tag-letter-button", 1)[0]
+        self.assertIn("font-weight: 400", conventional_actions)
+        source_action_rule = re.search(
+            r"\.source-action-row input,\s*"
+            r"\.source-action-row button\s*\{([^}]*)\}", self.styles
+        ).group(1)
+        for declaration in (
+            "height: var(--source-action-control-height)",
+            "border-radius: var(--host-control-radius)",
+            "font-family: var(--font-sans)",
+            "font-size: var(--host-control-font-size)",
+            "font-weight: 400",
+            "line-height: 1",
+        ):
+            self.assertIn(declaration, source_action_rule)
+        self.assertIn(".source-action-row input:focus", self.styles)
+
+        self.assertIn(".bilikara-secret-form .search-message:empty", self.styles)
+        self.assertIn(
+            ':root:is([data-theme="dark"], [data-theme="blue"]) '
+            ".bilikara-secret-form .selection-modal-actions",
+            self.styles,
+        )
+        secret_actions_rule = re.search(
+            r"\.bilikara-secret-form \.selection-modal-actions\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        for declaration in (
+            "margin-top: 0",
+            "padding: 0",
+            "border-top: 0",
+            "background: transparent",
+        ):
+            self.assertIn(declaration, secret_actions_rule)
+
         self.assertIn("--remote-peer-action-height: 44px", self.remote_styles)
         self.assertIn("--remote-close-control-size: 32px", self.remote_styles)
         self.assertIn(
@@ -115,6 +223,19 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         ).group(1)
         self.assertIn("height: var(--remote-peer-action-height)", pool_head_rule)
         self.assertIn("font-size: var(--remote-peer-action-font-size)", pool_head_rule)
+
+        form_action_rule = re.search(
+            r"\.remote-identity-actions :is\(\.primary-button, \.ghost-button\),\s*"
+            r"\.internet-remote-join-card > \.primary-button\s*\{([^}]*)\}",
+            self.remote_styles,
+        ).group(1)
+        self.assertIn("height: var(--remote-form-control-height)", form_action_rule)
+        self.assertIn(
+            "min-height: var(--remote-form-control-height)", form_action_rule
+        )
+        self.assertIn(
+            "border-radius: var(--remote-form-control-radius)", form_action_rule
+        )
 
     def test_remote_sheets_are_centered_dismissible_dialogs_with_shared_blur(self):
         for dialog_id in (
@@ -518,6 +639,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn('id="open-favorites-button"', self.markup)
         self.assertNotIn('data-sources-mode="followed"', self.markup)
         self.assertIn('data-i18n="sources.ownerList">UP 主列表', self.markup)
+        self.assertIn('data-i18n="gatcha.refresh">手动更新', self.markup)
+        self.assertNotIn('data-i18n="sources.refreshVideos">刷新视频', self.markup)
         self.assertIn("setRangeFillPercent(elements.poolConfigWeightSlider", self.script)
         self.assertIn("--source-card-min-inline-size: 104px", self.styles)
         self.assertIn(
@@ -602,6 +725,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             'id="player-fullscreen-control"',
             'id="player-fullscreen-remote-popover"',
             'id="player-fullscreen-remote-qr-image"',
+            'id="player-fullscreen-public-entry"',
+            'id="player-fullscreen-public-qr-image"',
             'class="fullscreen-enter-icon"',
             'class="fullscreen-phone-icon"',
             'class="fullscreen-exit-icon"',
@@ -610,14 +735,35 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         for marker in (
             "function setPlayerFullscreenRemotePinned",
             "function playerFullscreenActivationUsesTouch",
+            "function syncPlayerFullscreenExpandedWidth",
             "setPlayerFullscreenRemotePinned(true)",
-            "openRemoteAccessLink",
-            "elements.playerFullscreenRemoteUrlLink",
+            "playerFullscreenPublicEntry",
         ):
             self.assertIn(marker, self.script)
+        fullscreen_popover = re.search(
+            r'<div class="fullscreen-remote-popover".*?\n\s*</div>\n\s*</div>\n\s*</div>',
+            self.markup,
+            re.DOTALL,
+        ).group(0)
+        self.assertNotIn("<button", fullscreen_popover)
+        self.assertNotIn("<input", fullscreen_popover)
+        self.assertNotIn("<a ", fullscreen_popover)
         self.assertIn("M14 10l6-6M15 4h5v5M10 14l-6 6M4 15v5h5", self.markup)
         self.assertIn("M20 4l-6 6M14 5v5h5M4 20l6-6M5 14h5v5", self.markup)
         self.assertIn(".fullscreen-action-control.is-qr-pinned .fullscreen-remote-popover", self.styles)
+        for declaration in (
+            "--fullscreen-action-collapsed-width: 84px;",
+            "--fullscreen-action-expanded-width: 112px;",
+            "--fullscreen-action-label-width: 110px;",
+            "--fullscreen-action-label-gap: 8px;",
+            "width: var(--fullscreen-action-collapsed-width);",
+            "width: var(--fullscreen-action-expanded-width);",
+            "width 170ms cubic-bezier(0.16, 1, 0.3, 1)",
+        ):
+            self.assertIn(declaration, self.styles)
+        self.assertNotIn("html:lang(en) .fullscreen-action-control", self.styles)
+        self.assertNotIn("html:lang(ja) .fullscreen-action-control", self.styles)
+        self.assertNotIn("max-width: 180px;", self.styles)
 
     def test_stage_density_prefers_full_frame_and_checks_group_overflow(self):
         self.assertIn('data-stage-control-density="compact"', self.styles)

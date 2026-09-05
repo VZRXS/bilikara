@@ -33,22 +33,35 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_host_exposes_local_and_internet_modes_without_replacing_local_remote(self):
-        self.assertIn('id="internet-remote-local-mode"', self.host_html)
-        self.assertIn('id="internet-remote-internet-mode"', self.host_html)
+        self.assertIn('id="internet-remote-local-content"', self.host_html)
+        self.assertIn('id="internet-remote-disclosure"', self.host_html)
         self.assertIn('href="/remote"', self.host_html)
         self.assertIn('state.mode = "local"', self.host_js)
 
-    def test_host_uses_one_mobile_remote_entry_with_local_and_public_tabs(self):
+    def test_host_uses_one_mobile_remote_entry_with_a_collapsed_public_menu(self):
         self.assertNotIn('class="status-chip internet-remote-status-chip"', self.host_html)
         popover = self.host_html.index('id="remote-mini-popover"')
-        local_mode = self.host_html.index('id="internet-remote-local-mode"')
-        internet_mode = self.host_html.index('id="internet-remote-internet-mode"')
-        self.assertLess(popover, local_mode)
-        self.assertLess(popover, internet_mode)
-        self.assertIn('id="internet-remote-local-content"', self.host_html)
-        self.assertIn('id="internet-remote-internet-content"', self.host_html)
+        local_content = self.host_html.index('id="internet-remote-local-content"')
+        disclosure = self.host_html.index('id="internet-remote-disclosure"')
+        internet_content = self.host_html.index('id="internet-remote-internet-content"')
+        self.assertLess(popover, local_content)
+        self.assertLess(local_content, disclosure)
+        self.assertLess(disclosure, internet_content)
+        self.assertIn(
+            'id="internet-remote-internet-content" class="internet-remote-internet-content hidden"',
+            self.host_html,
+        )
+        disclosure_handler = self.host_js[
+            self.host_js.index('elements.disclosureRow.addEventListener("click"') :
+            self.host_js.index('elements.restart.addEventListener("click"')
+        ]
+        self.assertNotIn("startRoom", disclosure_handler)
+        self.assertIn('event.target.closest(".cache-advanced-info")', disclosure_handler)
 
     def test_fullscreen_remote_card_tracks_the_active_public_room(self):
+        self.assertIn('id="player-fullscreen-local-entry"', self.host_html)
+        self.assertIn('id="player-fullscreen-public-entry"', self.host_html)
+        self.assertIn('id="player-fullscreen-public-qr-image"', self.host_html)
         self.assertIn('id="player-fullscreen-internet-password"', self.host_html)
         self.assertIn('id="player-fullscreen-internet-password-value"', self.host_html)
         self.assertIn(
@@ -68,6 +81,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         render_source = self.host_app_js[render_start:render_end]
         self.assertIn("renderPlayerFullscreenRemoteAccess", render_source)
         self.assertIn("renderProvidedRemoteQr", render_source)
+        self.assertIn("playerFullscreenPublicEntry", render_source)
+        self.assertIn("internetActive", render_source)
         self.assertIn("playerFullscreenInternetPasswordValue", render_source)
 
     def test_internet_remote_scripts_load_before_the_host_application(self):
@@ -90,22 +105,73 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         required = {
             "internetRemote.title",
             "internetRemote.local",
+            "internetRemote.localEntry",
             "internetRemote.localHint",
+            "internetRemote.localScanTitle",
+            "internetRemote.localSameNetwork",
+            "internetRemote.localNoLanAddress",
+            "internetRemote.openOnThisDevice",
             "internetRemote.localDescription",
+            "internetRemote.localEntryDescription",
             "internetRemote.modeLabel",
             "internetRemote.internet",
+            "internetRemote.internetEntry",
             "internetRemote.description",
             "internetRemote.password",
             "internetRemote.duration",
+            "internetRemote.durationUnit",
             "internetRemote.durationHint",
             "internetRemote.durationInvalid",
             "internetRemote.regenerate",
             "internetRemote.create",
+            "internetRemote.stop",
+            "internetRemote.createdStatus",
+            "internetRemote.publicScanTitle",
+            "internetRemote.expiryCompact",
+            "internetRemote.currentPassword",
+            "internetRemote.rebuildApply",
             "internetRemote.capacityReached",
         }
         for language, messages in languages.items():
             with self.subTest(language=language):
                 self.assertTrue(required.issubset(messages))
+
+    def test_host_remote_explanations_use_contextual_info_bubbles(self):
+        self.assertIn('id="internet-remote-mode-description" role="tooltip"', self.host_html)
+        self.assertIn('id="internet-remote-public-description" role="tooltip"', self.host_html)
+        self.assertIn('id="internet-remote-duration-hint" class="cache-advanced-tooltip"', self.host_html)
+        self.assertNotIn("internet-remote-mode-copy", self.host_html)
+        self.assertNotIn('id="internet-remote-meta"', self.host_html)
+        self.assertIn('data-i18n="internetRemote.localEntryDescription"', self.host_html)
+        self.assertIn('id="internet-remote-local-address-detail"', self.host_html)
+        self.assertIn("本地 Remote 仍可同时使用", self.host_html)
+        self.assertIn('setStatus(state.available\n      ? ""', self.host_js)
+        self.assertIn(
+            't("internetRemote.localAddressDetail", { url: shareableUrl })',
+            self.host_app_js,
+        )
+        self.assertIn("function resetContextualTooltipPosition", self.host_app_js)
+        self.assertIn("resetContextualTooltipPosition(info);", self.host_app_js)
+
+    def test_host_remote_entry_controls_use_shared_control_geometry(self):
+        self.assertIn('class="internet-remote-config-row"', self.host_html)
+        self.assertIn('class="internet-remote-duration-unit"', self.host_html)
+        self.assertIn('id="internet-remote-stop"', self.host_html)
+        self.assertNotIn('class="internet-remote-mode-row"', self.host_html)
+        styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("min-height: var(--host-control-height, 40px)", styles)
+        self.assertIn("border-radius: var(--host-control-radius, 14px)", styles)
+        self.assertIn("font-size: 12px; font-weight: 700; text-align: right", styles)
+        self.assertIn(".internet-remote-disclosure-meta.is-active { color: var(--green)", styles)
+        self.assertIn("padding-right: 40px; text-align: right", styles)
+
+    def test_host_remote_entry_statuses_do_not_use_indicator_dots(self):
+        popover_start = self.host_html.index('id="remote-mini-popover"')
+        popover_end = self.host_html.index('id="presentation-settings"', popover_start)
+        popover = self.host_html[popover_start:popover_end]
+        self.assertNotIn("presentation-state-dot", popover)
+        self.assertIn('class="internet-remote-entry-title"', popover)
+        self.assertIn('elements.publicMeta.classList.toggle("is-active", roomActive && !state.busy)', self.host_js)
 
     def test_host_requests_a_bounded_configurable_room_lifetime(self):
         self.assertIn('id="internet-remote-duration"', self.host_html)
@@ -124,8 +190,62 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         source = self.host_js[start:end]
         catch = source.index("} catch (error) {")
         cleanup = source.index("stopRoom(false);", catch)
-        failure_status = source.index('setStatus(tr("internetRemote.createFailed"', catch)
+        failure_status = source.index('setStatus(message, "bad")', catch)
         self.assertLess(cleanup, failure_status)
+        self.assertIn("state.roomFailure = true", source[catch:])
+
+    def test_host_remote_results_show_only_the_local_url_and_share_one_layout(self):
+        self.assertIn(
+            'class="internet-remote-room internet-remote-share-layout hidden"',
+            self.host_html,
+        )
+        self.assertIn('id="remote-popover-copy-link"', self.host_html)
+        self.assertIn('id="internet-remote-copy-link"', self.host_html)
+        self.assertNotIn('id="remote-popover-open-link"', self.host_html)
+        self.assertNotIn('id="internet-remote-open-link"', self.host_html)
+        self.assertIn('class="internet-remote-local-link"', self.host_html)
+        self.assertIn('class="internet-remote-link-target"', self.host_html)
+        self.assertIn('class="internet-remote-live-region"', self.host_html)
+        self.assertNotIn('class="remote-url-link" href="#"', self.host_html)
+        styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".internet-remote-local-link { display: block;", styles)
+        self.assertIn(".internet-remote-link-target { display: none; }", styles)
+        self.assertIn("background: var(--settings-panel-bg);", styles)
+        self.assertIn("grid-template-columns: 160px minmax(0, 1fr)", styles)
+        self.assertIn(".internet-remote-divider", styles)
+
+    def test_host_remote_lifecycle_uses_accepted_room_state(self):
+        render_start = self.host_js.index("function render()")
+        render_end = self.host_js.index("async function localPost", render_start)
+        render = self.host_js[render_start:render_end]
+        self.assertIn("const roomResultAvailable = Boolean(roomActive && state.remoteUrl)", render)
+        self.assertIn('elements.room.classList.toggle("hidden", !roomResultAvailable)', render)
+        self.assertIn('elements.stop.classList.toggle("hidden", !roomActive)', render)
+        self.assertIn("passwordDraftChanged", render)
+        self.assertIn("lifetimeDraftChanged", render)
+        self.assertIn('tr("internetRemote.rebuildApply"', render)
+        self.assertIn("state.password", render)
+        self.assertIn("state.expiresAt", render)
+        self.assertEqual(self.host_js.count('localPost("/api/internet-remote/qr"'), 1)
+        self.assertNotIn("setInterval(", self.host_js)
+
+    def test_loopback_local_entry_is_not_presented_as_phone_shareable(self):
+        self.assertIn("function remoteUrlUsesLoopback", self.host_app_js)
+        self.assertIn('hostname.startsWith("127.")', self.host_app_js)
+        self.assertIn('hostname === "::1"', self.host_app_js)
+        self.assertIn("!remoteUrlUsesLoopback(url)", self.host_app_js)
+        self.assertIn("renderRemoteQr(shareableUrl", self.host_app_js)
+        self.assertIn('t("internetRemote.openOnThisDevice")', self.host_app_js)
+
+    def test_public_qr_failure_keeps_the_valid_room_result(self):
+        start = self.host_js.index("async function startRoom")
+        end = self.host_js.index("function expireRoom", start)
+        source = self.host_js[start:end]
+        qr_try = source.index('localPost("/api/internet-remote/qr"')
+        qr_catch = source.index("} catch (error) {", qr_try)
+        outer_catch = source.index("} catch (error) {", qr_catch + 1)
+        self.assertIn("state.qrError = true", source[qr_catch:outer_catch])
+        self.assertNotIn("stopRoom", source[qr_catch:outer_catch])
 
     def test_internet_remote_exposes_only_sanitized_bounded_diagnostics(self):
         self.assertIn("window.BilikaraInternetRemoteDiagnostics", self.host_js)
@@ -354,6 +474,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('method: "DELETE"', self.host_js)
         self.assertIn("Authorization: `Bearer ${hostToken}`", self.host_js)
         self.assertIn("keepalive: true", self.host_js)
+        self.assertIn("async function stopInternetRoom", self.host_js)
+        self.assertIn('elements.stop.addEventListener("click"', self.host_js)
 
     def test_search_covers_are_requested_without_a_referrer(self):
         start = self.remote_js.index("function createSearchResultCover")

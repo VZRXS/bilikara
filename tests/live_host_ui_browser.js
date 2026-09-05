@@ -2,6 +2,7 @@
 
 const { chromium } = require("playwright");
 const { runRemoteRequestWorkspaceGate } = require("./live_remote_request_workspace_browser");
+const { runInternetRemoteHostGate } = require("./live_internet_remote_host_ui_browser");
 
 const [baseUrl, executablePath, screenshotPath, runMode] = process.argv.slice(2);
 
@@ -19,20 +20,28 @@ function suffixedPath(path, suffix) {
 
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
-  let remoteRequestWorkspace;
+  let remoteRequestWorkspace = null;
+  let internetRemoteHost;
   try {
-    remoteRequestWorkspace = await runRemoteRequestWorkspaceGate(
-      browser,
-      baseUrl,
-      screenshotPath,
-    );
+    if (runMode !== "internet-remote-host") {
+      remoteRequestWorkspace = await runRemoteRequestWorkspaceGate(
+        browser,
+        baseUrl,
+        screenshotPath,
+      );
+    }
+    internetRemoteHost = await runInternetRemoteHostGate(browser, baseUrl, screenshotPath);
   } catch (error) {
     await browser.close();
     throw error;
   }
   if (runMode === "remote-request-workspace") {
     await browser.close();
-    return { passed: true, remoteRequestWorkspace };
+    return { passed: true, remoteRequestWorkspace, internetRemoteHost };
+  }
+  if (runMode === "internet-remote-host") {
+    await browser.close();
+    return { passed: true, internetRemoteHost };
   }
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
   await page.addInitScript(() => {
@@ -89,6 +98,10 @@ async function run() {
   const playerFullscreenRemoteScreenshotPath = suffixedPath(
     screenshotPath,
     "-player-fullscreen-remote",
+  );
+  const internetRemoteActiveScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-internet-remote-active",
   );
   const presentationRoutingScreenshotPath = suffixedPath(screenshotPath, "-presentation-routing");
   const consoleErrors = [];
@@ -2313,6 +2326,75 @@ async function run() {
       "wide Request subviews did not preserve the stable dock width, bounded controls, local scrolling, and Stage identity",
       wideRequestSubviews,
     );
+    await shellPage.locator('[data-request-view="sources"]').click();
+    await shellPage.locator('[data-sources-mode="uids"]').click();
+    const sourceControlGeometry = await shellPage.evaluate(() => {
+      const controls = [
+        document.querySelector("#modal-follow-uid-input"),
+        document.querySelector("#modal-add-follow-uid-button"),
+        document.querySelector("#refresh-gatcha-cache-button"),
+      ];
+      return controls.map((control) => {
+        const rect = control.getBoundingClientRect();
+        const style = getComputedStyle(control);
+        return {
+          id: control.id,
+          height: rect.height,
+          radius: style.borderRadius,
+          family: style.fontFamily,
+          size: style.fontSize,
+          weight: style.fontWeight,
+          lineHeight: style.lineHeight,
+        };
+      });
+    });
+    assert(
+      sourceControlGeometry.every((entry) => (
+        entry.height === sourceControlGeometry[0].height
+          && entry.radius === sourceControlGeometry[0].radius
+          && entry.family === sourceControlGeometry[0].family
+          && entry.size === sourceControlGeometry[0].size
+          && entry.weight === sourceControlGeometry[0].weight
+          && entry.lineHeight === sourceControlGeometry[0].lineHeight
+      )),
+      "Host Sources operation fields and peer actions do not share one geometry and type contract",
+      sourceControlGeometry,
+    );
+    const secretDialogGeometry = await shellPage.evaluate(async () => {
+      const modal = elements.bilikaraSecretModal;
+      const message = elements.bilikaraSecretMessage;
+      modal.classList.remove("hidden");
+      message.textContent = "";
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const input = elements.bilikaraSecretInput.getBoundingClientRect();
+      const actionsElement = modal.querySelector(".selection-modal-actions");
+      const actions = actionsElement.getBoundingClientRect();
+      const emptyDisplay = getComputedStyle(message).display;
+      const actionsStyle = getComputedStyle(actionsElement);
+      message.textContent = "Validation failed";
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const populatedHeight = message.getBoundingClientRect().height;
+      message.textContent = "";
+      modal.classList.add("hidden");
+      return {
+        gap: actions.top - input.bottom,
+        emptyDisplay,
+        populatedHeight,
+        actionHeight: actions.height,
+        actionBackground: actionsStyle.backgroundColor,
+        actionBorderTopWidth: actionsStyle.borderTopWidth,
+      };
+    });
+    assert(
+      secretDialogGeometry.emptyDisplay === "none"
+        && secretDialogGeometry.populatedHeight > 0
+        && Math.abs(secretDialogGeometry.gap - 12) <= 1
+        && secretDialogGeometry.actionHeight === 40
+        && secretDialogGeometry.actionBackground === "rgba(0, 0, 0, 0)"
+        && secretDialogGeometry.actionBorderTopWidth === "0px",
+      "Host validation dialog retained an empty message row or a mismatched footer surface",
+      secretDialogGeometry,
+    );
     await shellPage.locator('[data-request-view="search"]').click();
 
     const draftAndScroll = await shellPage.evaluate(() => {
@@ -2382,6 +2464,14 @@ async function run() {
       return {
         collapsed,
         shellTopBefore,
+        criticalLayer: Number(
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--host-layer-critical"),
+        ),
+        tooltipLayer: Number(
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--host-layer-tooltip"),
+        ),
         shown,
         collapsedAgain: region.getBoundingClientRect().height,
         shellTopAfter: shellBody.getBoundingClientRect().top,
@@ -2398,7 +2488,8 @@ async function run() {
         && bannerEvidence.shown.opacity === 1
         && bannerEvidence.shown.position === "absolute"
         && bannerEvidence.shown.pointerEvents === "auto"
-        && bannerEvidence.shown.zIndex > 1305
+        && bannerEvidence.shown.zIndex === bannerEvidence.criticalLayer
+        && bannerEvidence.criticalLayer > bannerEvidence.tooltipLayer
         && bannerEvidence.hiddenAfterExit
         && bannerEvidence.sameFrame,
       "critical banner did not float above the shell without moving or recreating the Stage",
@@ -4505,8 +4596,90 @@ async function run() {
     }
     const fullscreenAction = shellPage.locator("#player-fullscreen-button");
     const fullscreenRemotePopover = shellPage.locator("#player-fullscreen-remote-popover");
+    await shellPage.mouse.move(600, 400);
+    await shellPage.waitForTimeout(220);
+    const fullscreenLanguageWidths = {};
+    for (const language of ["zh", "en", "ja"]) {
+      await shellPage.evaluate((nextLanguage) => setLanguage(nextLanguage), language);
+      await fullscreenAction.hover();
+      await shellPage.waitForTimeout(220);
+      fullscreenLanguageWidths[language] = await shellPage.evaluate(() => {
+        const button = elements.playerFullscreenButton;
+        const label = button.querySelector(".fullscreen-exit-hover-label");
+        const buttonRect = button.getBoundingClientRect();
+        const labelRect = label.getBoundingClientRect();
+        return {
+          width: buttonRect.width,
+          target: Number.parseFloat(
+            getComputedStyle(elements.playerFullscreenControl)
+              .getPropertyValue("--fullscreen-action-expanded-width"),
+          ),
+          labelTarget: Number.parseFloat(
+            getComputedStyle(elements.playerFullscreenControl)
+              .getPropertyValue("--fullscreen-action-label-width"),
+          ),
+          labelWidth: label.scrollWidth,
+          labelRightInset: buttonRect.right - labelRect.right,
+          text: label.textContent.trim(),
+        };
+      });
+      await shellPage.mouse.move(600, 400);
+      await shellPage.waitForTimeout(220);
+    }
+    await shellPage.evaluate(() => setLanguage("zh"));
+    assert(
+      Object.values(fullscreenLanguageWidths).every((entry) => (
+        entry.text.length > 0
+          && entry.labelRightInset >= 0
+          && Math.abs(entry.width - entry.target) <= 1
+          && Math.abs(entry.labelWidth - entry.labelTarget) <= 1
+      ))
+        && fullscreenLanguageWidths.en.target > fullscreenLanguageWidths.zh.target
+        && fullscreenLanguageWidths.ja.target > fullscreenLanguageWidths.zh.target,
+      "fullscreen exit action did not derive its expanded width from the translated label",
+      fullscreenLanguageWidths,
+    );
+    await shellPage.evaluate(() => {
+      const button = elements.playerFullscreenButton;
+      const startedAt = performance.now();
+      window.__fullscreenHoverWidthTrace = {
+        startedAt,
+        samples: [{ elapsed: 0, width: button.getBoundingClientRect().width }],
+        done: false,
+      };
+      const sample = (now) => {
+        window.__fullscreenHoverWidthTrace.samples.push({
+          elapsed: now - startedAt,
+          width: button.getBoundingClientRect().width,
+        });
+        if (now - startedAt < 260) {
+          requestAnimationFrame(sample);
+          return;
+        }
+        window.__fullscreenHoverWidthTrace.done = true;
+      };
+      requestAnimationFrame(sample);
+    });
     await fullscreenAction.hover();
-    await shellPage.waitForTimeout(180);
+    await shellPage.waitForFunction(() => window.__fullscreenHoverWidthTrace?.done === true);
+    const fullscreenHoverWidthTrace = await shellPage.evaluate(() => {
+      const samples = window.__fullscreenHoverWidthTrace.samples;
+      const widths = samples.map((sample) => sample.width);
+      return {
+        samples,
+        initial: widths[0],
+        final: widths.at(-1),
+        maximum: Math.max(...widths),
+        monotonic: widths.every((width, index) => index === 0 || width + 0.75 >= widths[index - 1]),
+      };
+    });
+    assert(
+      fullscreenHoverWidthTrace.final > fullscreenHoverWidthTrace.initial + 8
+        && fullscreenHoverWidthTrace.maximum <= fullscreenHoverWidthTrace.final + 0.75
+        && fullscreenHoverWidthTrace.monotonic,
+      "fullscreen exit action flashed wider before settling",
+      fullscreenHoverWidthTrace,
+    );
     const playerFullscreenRemoteEvidence = await shellPage.evaluate(() => {
       const button = elements.playerFullscreenButton.getBoundingClientRect();
       const popup = elements.playerFullscreenRemotePopover.getBoundingClientRect();
@@ -4524,6 +4697,12 @@ async function run() {
           elements.playerFullscreenButton.querySelector(".fullscreen-exit-hover-label"),
         ).opacity,
         label: elements.playerFullscreenButton.getAttribute("aria-label"),
+        publicHidden: elements.playerFullscreenPublicEntry.classList.contains("hidden"),
+        localUrl: elements.playerFullscreenRemoteUrl.textContent.trim(),
+        menuLocalUrl: elements.remotePopoverUrlLink.textContent.trim(),
+        interactiveCount: elements.playerFullscreenRemotePopover.querySelectorAll(
+          "button, input, select, textarea, a",
+        ).length,
       };
     });
     assert(
@@ -4536,13 +4715,72 @@ async function run() {
         && playerFullscreenRemoteEvidence.popup.top >= playerFullscreenRemoteEvidence.button.bottom
         && playerFullscreenRemoteEvidence.popup.right <= playerFullscreenRemoteEvidence.button.right + 1
         && playerFullscreenRemoteEvidence.popup.left < playerFullscreenRemoteEvidence.button.left
-        && playerFullscreenRemoteEvidence.label.length > 0,
+        && playerFullscreenRemoteEvidence.label.length > 0
+        && playerFullscreenRemoteEvidence.publicHidden
+        && playerFullscreenRemoteEvidence.localUrl === playerFullscreenRemoteEvidence.menuLocalUrl
+        && playerFullscreenRemoteEvidence.localUrl.endsWith("/remote")
+        && playerFullscreenRemoteEvidence.interactiveCount === 0,
       "single-screen fullscreen did not expose the icon-pair QR popup toward the lower left",
       playerFullscreenRemoteEvidence,
+    );
+    const playerFullscreenPublicEvidence = await shellPage.evaluate(async () => {
+      const publicUrl = "https://remote.example.test/remote.html#room=review-room&join=fixture-token-long-enough-for-a-realistic-display-check&expires=1790000000";
+      const qrImage = elements.playerFullscreenRemoteQrImage.src;
+      document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
+        detail: {
+          mode: "internet",
+          active: true,
+          url: publicUrl,
+          qr_image: qrImage,
+          password: "765432",
+          hint: "09/06 12:00 到期",
+        },
+      }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const localQr = elements.playerFullscreenRemoteQrImage.closest(".remote-qr-wrap")
+        .getBoundingClientRect();
+      const publicQr = elements.playerFullscreenPublicQrImage.closest(".remote-qr-wrap")
+        .getBoundingClientRect();
+      return {
+        publicHidden: elements.playerFullscreenPublicEntry.classList.contains("hidden"),
+        dividerHidden: elements.playerFullscreenPublicDivider.classList.contains("hidden"),
+        localQr: { left: localQr.left, width: localQr.width, height: localQr.height },
+        publicQr: { left: publicQr.left, width: publicQr.width, height: publicQr.height },
+        password: elements.playerFullscreenInternetPasswordValue.textContent.trim(),
+        expiry: elements.playerFullscreenPublicExpiry.textContent.trim(),
+        publicUrlVisible: elements.playerFullscreenRemotePopover.textContent.includes(publicUrl),
+        interactiveCount: elements.playerFullscreenRemotePopover.querySelectorAll(
+          "button, input, select, textarea, a",
+        ).length,
+      };
+    });
+    assert(
+      !playerFullscreenPublicEvidence.publicHidden
+        && !playerFullscreenPublicEvidence.dividerHidden
+        && Math.abs(playerFullscreenPublicEvidence.localQr.left
+          - playerFullscreenPublicEvidence.publicQr.left) <= 1
+        && playerFullscreenPublicEvidence.localQr.width === playerFullscreenPublicEvidence.publicQr.width
+        && playerFullscreenPublicEvidence.localQr.height === playerFullscreenPublicEvidence.publicQr.height
+        && playerFullscreenPublicEvidence.password === "765432"
+        && playerFullscreenPublicEvidence.expiry === "09/06 12:00 到期"
+        && !playerFullscreenPublicEvidence.publicUrlVisible
+        && playerFullscreenPublicEvidence.interactiveCount === 0,
+      "fullscreen Remote popover did not add the active public room as a read-only aligned result",
+      playerFullscreenPublicEvidence,
     );
     if (playerFullscreenRemoteScreenshotPath) {
       await shellPage.screenshot({ path: playerFullscreenRemoteScreenshotPath, fullPage: false });
     }
+    const fullscreenPublicRemoved = await shellPage.evaluate(async () => {
+      document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
+        detail: { mode: "local", active: false },
+      }));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return elements.playerFullscreenPublicEntry.classList.contains("hidden")
+        && elements.playerFullscreenPublicDivider.classList.contains("hidden");
+    });
+    assert(fullscreenPublicRemoved,
+      "fullscreen Remote popover kept a public result after the room became inactive");
     await shellPage.mouse.move(600, 400);
     await fullscreenAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
     await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
@@ -4681,7 +4919,11 @@ async function run() {
       const controls = elements.presentationHostControls.getBoundingClientRect();
       const transport = elements.presentationHostControls
         .querySelector(".presentation-host-transport-row").getBoundingClientRect();
+      const primaryControls = elements.presentationHostControls
+        .querySelector(".presentation-host-primary-controls").getBoundingClientRect();
+      const back = elements.presentationHostBack.getBoundingClientRect();
       const play = elements.presentationHostPlay.getBoundingClientRect();
+      const forward = elements.presentationHostForward.getBoundingClientRect();
       const progress = elements.presentationHostProgress.getBoundingClientRect();
       const progressWrap = elements.presentationHostProgress.closest(
         ".presentation-host-progress-wrap",
@@ -4729,7 +4971,20 @@ async function run() {
           width: controls.width,
         },
         transport: { top: transport.top, bottom: transport.bottom },
+        primaryControls: {
+          left: primaryControls.left,
+          top: primaryControls.top,
+          right: primaryControls.right,
+          bottom: primaryControls.bottom,
+        },
+        back: { left: back.left, top: back.top, right: back.right, bottom: back.bottom },
         play: { left: play.left, top: play.top, right: play.right, bottom: play.bottom },
+        forward: {
+          left: forward.left,
+          top: forward.top,
+          right: forward.right,
+          bottom: forward.bottom,
+        },
         progress: {
           left: progress.left,
           top: progress.top,
@@ -4821,13 +5076,15 @@ async function run() {
         && presentationHostEvidence.frame.width / presentationHostEvidence.frame.height > 1.85
         && Math.abs(presentationHostEvidence.controls.left - presentationHostEvidence.frame.left) <= 1
         && Math.abs(presentationHostEvidence.controls.right - presentationHostEvidence.frame.right) <= 1
-        && Math.abs(presentationHostEvidence.play.top - presentationHostEvidence.next.top) <= 1
-        && Math.abs(presentationHostEvidence.play.bottom - presentationHostEvidence.next.bottom) <= 1
-        && Math.abs(presentationHostEvidence.play.left - presentationHostEvidence.frame.left) <= 1
+        && presentationHostEvidence.back.left >= presentationHostEvidence.frame.left
+        && presentationHostEvidence.back.right < presentationHostEvidence.play.left
+        && presentationHostEvidence.play.right < presentationHostEvidence.forward.left
+        && presentationHostEvidence.forward.right < presentationHostEvidence.progress.left
+        && presentationHostEvidence.primaryControls.left === presentationHostEvidence.back.left
+        && presentationHostEvidence.primaryControls.right === presentationHostEvidence.forward.right
         && Math.abs(presentationHostEvidence.next.right - presentationHostEvidence.frame.right) <= 1
         && presentationHostEvidence.progressWrap.top >= presentationHostEvidence.transport.top
         && presentationHostEvidence.progressWrap.bottom <= presentationHostEvidence.transport.bottom
-        && presentationHostEvidence.play.right < presentationHostEvidence.progress.left
         && presentationHostEvidence.progress.right < presentationHostEvidence.next.left
         && presentationHostEvidence.currentTime === "1:01"
         && presentationHostEvidence.duration === "4:05"
@@ -4840,11 +5097,12 @@ async function run() {
         && presentationHostEvidence.tray.visible
         && presentationHostEvidence.tray.top >= presentationHostEvidence.transport.bottom
         && presentationHostEvidence.tray.bottom <= presentationHostEvidence.panel.bottom + 1
+        && presentationHostEvidence.rangeStyle.progressHeight === "44px"
         && presentationHostEvidence.rangeStyle.progressHeight
-          === presentationHostEvidence.rangeStyle.volumeHeight
+          !== presentationHostEvidence.rangeStyle.volumeHeight
         && presentationHostEvidence.rangeStyle.progressAppearance
           === presentationHostEvidence.rangeStyle.volumeAppearance
-        && presentationHostEvidence.rangeStyle.sharedRuleCount >= 5
+        && presentationHostEvidence.rangeStyle.sharedRuleCount === 0
         && presentationHostEvidence.stageControlsLayout === "inline"
         && presentationHostEvidence.fullscreenDisabled
         && presentationHostEvidence.stageToggleDisplay === "none"
@@ -4996,11 +5254,16 @@ async function run() {
       },
       wideWidths,
       wideRequestSubviews,
+      sourceControlGeometry,
+      secretDialogGeometry,
       responsiveFrames,
       sourceResponsiveEvidence,
       fullscreen: {
         native: nativeFullscreenEvidence,
+        hoverWidthTrace: fullscreenHoverWidthTrace,
+        languageWidths: fullscreenLanguageWidths,
         remoteAction: playerFullscreenRemoteEvidence,
+        publicRemote: playerFullscreenPublicEvidence,
         webKitFallback: webKitFullscreenEvidence,
         identity: fullscreenIdentityAfter,
         dualScreenHost: presentationHostEvidence,
@@ -6859,6 +7122,65 @@ async function run() {
       "toolbar popovers remained translucent or depended on a large backdrop blur",
       floatingSurfaceEvidence,
     );
+    const internetRemoteActiveEvidence = await page.evaluate(() => {
+      const disclosure = document.querySelector("#internet-remote-disclosure");
+      const content = document.querySelector("#internet-remote-internet-content");
+      const meta = document.querySelector("#internet-remote-public-meta");
+      const stop = document.querySelector("#internet-remote-stop");
+      const room = document.querySelector("#internet-remote-room");
+      const url = document.querySelector("#internet-remote-url");
+      const status = document.querySelector("#internet-remote-status");
+      disclosure.click();
+      const styleRecord = (element) => {
+        const style = getComputedStyle(element);
+        return {
+          fontFamily: style.fontFamily,
+          fontSize: style.fontSize,
+          fontWeight: style.fontWeight,
+          lineHeight: style.lineHeight,
+          letterSpacing: style.letterSpacing,
+          color: style.color,
+        };
+      };
+      const peerTitles = Array.from(document.querySelectorAll(
+        "#remote-mini-popover .internet-remote-entry-title",
+      ))
+        .map((element) => styleRecord(element));
+      return {
+        publicMeta: meta.textContent,
+        publicMetaWeight: getComputedStyle(meta).fontWeight,
+        publicMetaColor: getComputedStyle(meta).color,
+        peerTitles,
+        localCopyLabel: styleRecord(document.querySelector(".internet-remote-share-title")),
+        fieldLabel: styleRecord(document.querySelector(".internet-remote-field-label")),
+        panelLabel: styleRecord(document.querySelector(".cache-panel-label")),
+        contentVisible: !content.classList.contains("hidden"),
+        resultHidden: room.classList.contains("hidden"),
+        stopHidden: stop.classList.contains("hidden"),
+        rawLinkHidden: getComputedStyle(url).display === "none" && url.textContent === "",
+        liveRegionHeight: status.getBoundingClientRect().height,
+      };
+    });
+    assert(
+      internetRemoteActiveEvidence.publicMeta === "未创建"
+        && Number(internetRemoteActiveEvidence.publicMetaWeight) >= 700
+        && internetRemoteActiveEvidence.contentVisible
+        && internetRemoteActiveEvidence.resultHidden
+        && internetRemoteActiveEvidence.stopHidden
+        && internetRemoteActiveEvidence.rawLinkHidden
+        && internetRemoteActiveEvidence.liveRegionHeight <= 1
+        && internetRemoteActiveEvidence.peerTitles.length === 2
+        && internetRemoteActiveEvidence.peerTitles.every((style) => (
+          style.fontFamily === internetRemoteActiveEvidence.peerTitles[0].fontFamily
+          && style.fontSize === internetRemoteActiveEvidence.peerTitles[0].fontSize
+          && style.fontWeight === internetRemoteActiveEvidence.peerTitles[0].fontWeight
+          && style.lineHeight === internetRemoteActiveEvidence.peerTitles[0].lineHeight
+          && style.letterSpacing === internetRemoteActiveEvidence.peerTitles[0].letterSpacing
+        )),
+      "local and public entry headings or the active public status lost their shared hierarchy",
+      internetRemoteActiveEvidence,
+    );
+    await page.locator("#internet-remote-disclosure").click();
     await remotePopover.locator(".remote-mini-popover-card").click({ position: { x: 12, y: 12 } });
     assert(await remotePopover.isVisible(), "clicking inside the QR popup closed it");
     assert(await settingsPanel.isVisible(), "QR popup interaction closed the Settings workspace");
@@ -6877,7 +7199,7 @@ async function run() {
     assert(
       openUrlRequests.length === 1
         && openUrlRequests[0]?.url === new URL(remoteLinkHref, baseUrl).href,
-      "mobile request card link did not delegate to the system-browser endpoint",
+      "mobile request card Local URL did not delegate to the system-browser endpoint",
       { openUrlRequests, remoteLinkHref },
     );
     await page.evaluate(() => { delete window.__TAURI__; });
@@ -9630,6 +9952,7 @@ async function run() {
     return {
       passed: true,
       remoteRequestWorkspace,
+      internetRemoteHost,
       identity,
       startupReadinessEvidence,
       wheelScrollTop,
@@ -9666,6 +9989,8 @@ async function run() {
         automaticOff: automaticOffRendered,
         previewRecheck: updateCheckRequests.at(-1),
         updateScreenshotPath,
+        internetRemoteActive: internetRemoteActiveEvidence,
+        internetRemoteActiveScreenshotPath: internetRemoteHost.screenshots.active,
       },
       sessionUsers: {
         emptyHeight,

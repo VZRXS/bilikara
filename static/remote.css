@@ -3639,6 +3639,14 @@ body.remote-identity-modal-open {
   margin-top: 4px;
 }
 
+.remote-identity-actions :is(.primary-button, .ghost-button),
+.internet-remote-join-card > .primary-button {
+  height: var(--remote-form-control-height);
+  min-height: var(--remote-form-control-height);
+  padding-block: 0;
+  border-radius: var(--remote-form-control-radius);
+}
+
 .remote-identity-actions .primary-button:only-child,
 .remote-identity-actions .hidden+.primary-button {
   grid-column: 1 / -1;

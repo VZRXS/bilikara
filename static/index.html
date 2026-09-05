@@ -46,21 +46,22 @@
             <div class="remote-card remote-mini-popover-card">
               <button type="button" class="banner-close remote-mini-popover-close" id="remote-mini-popover-close"
                 data-i18n-aria-label="common.close" aria-label="关闭">×</button>
-              <div class="internet-remote-mode-row" role="group" data-i18n-aria-label="internetRemote.modeLabel">
-                <button type="button" class="internet-remote-mode is-active" id="internet-remote-local-mode"
-                  aria-pressed="true" data-i18n="internetRemote.local">本地模式</button>
-                <button type="button" class="internet-remote-mode" id="internet-remote-internet-mode"
-                  aria-pressed="false" data-i18n="internetRemote.internet">公网模式</button>
+              <div class="internet-remote-status-summary cache-contextual-info-region">
+                <strong class="internet-remote-entry-title" id="internet-remote-summary"
+                  data-i18n="internetRemote.localEntry">本地入口</strong>
+                <span class="cache-advanced-info internet-remote-summary-info">
+                  <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                    aria-describedby="internet-remote-mode-description" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多信息">
+                    <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                  </button>
+                  <span class="cache-advanced-tooltip" id="internet-remote-mode-description" role="tooltip">
+                    <span data-i18n="internetRemote.localEntryDescription">手机与 Host 在同一局域网时可直接使用本地入口。公网房间运行期间，本地 Remote 仍可同时使用。</span>
+                    <span id="internet-remote-local-address-detail"></span>
+                  </span>
+                </span>
               </div>
-              <div class="internet-remote-status-summary">
-                <span class="presentation-state-dot" id="internet-remote-state-dot" aria-hidden="true"></span>
-                <strong id="internet-remote-summary" data-i18n="internetRemote.local">本地模式</strong>
-                <span id="internet-remote-meta" data-i18n="internetRemote.localHint">同一局域网内直接扫码</span>
-              </div>
-              <div id="internet-remote-local-content" class="internet-remote-local-content">
-                <p class="cache-panel-hint internet-remote-mode-copy" data-i18n="internetRemote.localDescription">
-                  手机和运行 bilikara 的电脑需连接同一个局域网。部分卡拉 OK 店会限制设备互访，连接不上时请切换到公网模式。
-                </p>
+              <div id="internet-remote-local-content" class="internet-remote-share-layout internet-remote-local-content">
                 <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
                   <img id="remote-popover-qr-image" class="remote-qr-image hidden" alt="手机访问二维码"
                     data-i18n-alt="remote.qrAlt" />
@@ -68,47 +69,115 @@
                     正在生成二维码...
                   </div>
                 </div>
-                <div class="remote-copy">
-                  <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
-                  <a id="remote-popover-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
-                    /remote
-                  </a>
-                  <p id="remote-popover-url-hint" class="remote-url-hint">
-                    请确保手机和服务端在同一个局域网内。
-                  </p>
+                <div class="internet-remote-share-details">
+                  <p class="internet-remote-share-title" data-i18n="internetRemote.localScanTitle">扫码连接</p>
+                  <p id="remote-popover-url-hint" class="internet-remote-share-meta"
+                    data-i18n="internetRemote.localSameNetwork">手机与电脑需在同一网络</p>
+                  <a id="remote-popover-url-link" class="internet-remote-local-link" href="/remote"></a>
+                  <div class="internet-remote-share-actions">
+                    <button type="button" class="toolbar-button ghost" id="remote-popover-copy-link"
+                      data-i18n="internetRemote.copyLink">复制链接</button>
+                  </div>
                 </div>
               </div>
-              <div id="internet-remote-internet-content" class="internet-remote-internet-content hidden">
-                <p class="cache-panel-hint internet-remote-mode-copy" data-i18n="internetRemote.description">
-                  手机和电脑不在同一个 Wi-Fi 也能使用。创建房间后，让手机扫码并输入房间密码即可连接。
-                </p>
-                <label class="internet-remote-field" for="internet-remote-password">
-                  <span data-i18n="internetRemote.password">房间密码</span>
-                  <span class="internet-remote-password-row">
-                    <input id="internet-remote-password" type="text" inputmode="numeric" minlength="4" maxlength="32"
-                      autocomplete="off" spellcheck="false">
-                    <button type="button" class="icon-button" id="internet-remote-regenerate"
-                      data-i18n-title="internetRemote.regenerate" title="重新生成">↻</button>
+              <div class="internet-remote-divider" aria-hidden="true"></div>
+              <div class="internet-remote-public-row cache-contextual-info-region"
+                id="internet-remote-public-row">
+                <button type="button" class="internet-remote-disclosure" id="internet-remote-disclosure"
+                  aria-expanded="false" aria-controls="internet-remote-internet-content">
+                  <span class="internet-remote-entry-title" data-i18n="internetRemote.internetEntry">公网入口</span>
+                </button>
+                <span class="cache-advanced-info internet-remote-public-info">
+                  <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                    aria-describedby="internet-remote-public-description" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多信息">
+                    <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                  </button>
+                  <span class="cache-advanced-tooltip" id="internet-remote-public-description" role="tooltip"
+                    data-i18n="internetRemote.description">
+                    不在同一网络也能使用。创建房间后，扫码并输入房间密码即可连接。
                   </span>
-                </label>
-                <label class="internet-remote-field" for="internet-remote-duration">
-                  <span data-i18n="internetRemote.duration">房间有效期（小时）</span>
-                  <input id="internet-remote-duration" class="internet-remote-duration-input" type="number"
-                    inputmode="numeric" min="1" max="24" step="1" value="12"
-                    aria-describedby="internet-remote-duration-hint">
-                  <span id="internet-remote-duration-hint" class="cache-panel-hint"
-                    data-i18n="internetRemote.durationHint">可设置 1–24 小时；修改后重建房间生效。</span>
-                </label>
+                </span>
+                <span class="internet-remote-disclosure-meta" id="internet-remote-public-meta"
+                  data-i18n="internetRemote.notCreated">尚未创建房间</span>
+                <svg class="internet-remote-disclosure-chevron" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m7 10 5 5 5-5"></path>
+                </svg>
+              </div>
+              <div id="internet-remote-internet-content" class="internet-remote-internet-content hidden">
+                <div class="internet-remote-config-row">
+                  <label class="internet-remote-field" for="internet-remote-password">
+                    <span class="internet-remote-field-label" data-i18n="internetRemote.password">房间密码</span>
+                    <span class="internet-remote-password-row">
+                      <input id="internet-remote-password" type="text" inputmode="numeric" minlength="4" maxlength="32"
+                        autocomplete="off" spellcheck="false">
+                      <button type="button" class="icon-button" id="internet-remote-regenerate"
+                        data-i18n-title="internetRemote.regenerate" data-i18n-aria-label="internetRemote.regenerate"
+                        title="随机生成新密码" aria-label="随机生成新密码">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M20 11a8 8 0 1 0-2.34 5.66"></path>
+                          <path d="M20 4v7h-7"></path>
+                        </svg>
+                      </button>
+                    </span>
+                  </label>
+                  <div class="internet-remote-field internet-remote-duration-field">
+                    <div class="internet-remote-field-heading cache-contextual-info-region">
+                      <label class="internet-remote-field-label" for="internet-remote-duration"
+                        data-i18n="internetRemote.duration">房间有效期</label>
+                      <span class="cache-advanced-info">
+                        <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                          aria-describedby="internet-remote-duration-hint" data-i18n-aria-label="common.moreInfo"
+                          aria-label="更多信息">
+                          <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                        </button>
+                        <span id="internet-remote-duration-hint" class="cache-advanced-tooltip" role="tooltip"
+                          data-i18n="internetRemote.durationHint">可设置 1–24 小时；修改后重建房间生效。</span>
+                      </span>
+                    </div>
+                    <div class="internet-remote-duration-control">
+                      <input id="internet-remote-duration" class="internet-remote-duration-input" type="number"
+                        inputmode="numeric" min="1" max="24" step="1" value="12"
+                        aria-describedby="internet-remote-duration-hint">
+                      <span class="internet-remote-duration-unit" data-i18n="internetRemote.durationUnit">小时</span>
+                    </div>
+                  </div>
+                </div>
                 <div class="internet-remote-actions">
+                  <button type="button" class="toolbar-button hidden" id="internet-remote-stop"
+                    data-i18n="internetRemote.stop">关闭公网房间</button>
                   <button type="button" class="next-button" id="internet-remote-restart"
-                    data-i18n="internetRemote.create">创建公网房间</button>
+                    data-i18n="internetRemote.create">创建房间</button>
                 </div>
-                <div class="internet-remote-room hidden" id="internet-remote-room">
-                  <img id="internet-remote-qr" class="remote-qr-image" alt="公网 Remote 二维码">
-                  <a id="internet-remote-url" class="remote-url-link" href="#" target="_blank" rel="noreferrer"></a>
-                  <p class="cache-panel-hint" id="internet-remote-expiry"></p>
+                <div class="internet-remote-room internet-remote-share-layout hidden" id="internet-remote-room">
+                  <div class="remote-qr-wrap internet-remote-public-qr-wrap">
+                    <img id="internet-remote-qr" class="remote-qr-image hidden" alt="公网 Remote 二维码"
+                      data-i18n-alt="internetRemote.publicQrAlt">
+                    <div id="internet-remote-qr-placeholder" class="remote-qr-placeholder"
+                      data-i18n="remote.qrLoading">正在生成二维码...</div>
+                  </div>
+                  <div class="internet-remote-share-details">
+                    <p class="internet-remote-share-title" data-i18n="internetRemote.publicScanTitle">
+                      扫码后输入房间密码
+                    </p>
+                    <p class="internet-remote-share-meta" id="internet-remote-expiry"></p>
+                    <p class="internet-remote-current-password hidden" id="internet-remote-current-password">
+                      <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                      <strong id="internet-remote-current-password-value"></strong>
+                    </p>
+                    <div class="internet-remote-share-actions">
+                      <button type="button" class="toolbar-button ghost" id="internet-remote-copy-link"
+                        data-i18n="internetRemote.copyLink">复制链接</button>
+                    </div>
+                    <a id="internet-remote-url" class="internet-remote-link-target" href="#"
+                      tabindex="-1" aria-hidden="true"></a>
+                  </div>
                 </div>
-                <p class="cache-panel-hint" id="internet-remote-status" role="status" aria-live="polite"></p>
+                <p class="internet-remote-live-region" id="internet-remote-status" role="status"
+                  aria-live="polite"></p>
               </div>
             </div>
           </div>
@@ -119,7 +188,10 @@
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="2.5" y="4" width="13" height="10" rx="1.5"></rect><path d="M7 18h4M9 14v4"></path><rect x="14.5" y="8" width="7" height="9" rx="1.4"></rect>
+                <rect x="1.8" y="4.5" width="12.5" height="9.5" rx="1.5"></rect>
+                <path d="M5.5 17h4.8M7.9 14v3"></path>
+                <rect x="10" y="8" width="12.2" height="9" rx="1.5"></rect>
+                <path d="M14 20h4.5M16.2 17v3"></path>
               </svg>
               <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
               <span class="presentation-state-dot" id="presentation-state-dot" aria-hidden="true"></span>
@@ -134,15 +206,28 @@
                 <span class="presentation-device-icon presentation-output-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                     stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2.5" y="4" width="13" height="10" rx="1.5"></rect>
-                    <path d="M7 18h4M9 14v4"></path>
-                    <rect x="14.5" y="8" width="7" height="9" rx="1.4"></rect>
+                    <rect x="2.5" y="3.5" width="19" height="14" rx="2"></rect>
+                    <path d="M8 21h8M12 17.5V21"></path>
+                    <path d="m10 7.5 5 3-5 3z" fill="currentColor" stroke="none"></path>
                   </svg>
                 </span>
                 <div>
-                  <p class="cache-panel-label" data-i18n="display.outputPanelTitle">显示输出</p>
+                  <div class="presentation-panel-label-row cache-contextual-info-region">
+                    <p class="cache-panel-label" data-i18n="display.outputPanelTitle">观众屏</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="presentation-output-description" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多信息">
+                        <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                      </button>
+                      <span class="cache-advanced-tooltip" id="presentation-output-description" role="tooltip"
+                        data-i18n="display.outputPanelDescription">
+                        开启后，视频会在所选屏幕全屏播放；Host 窗口继续用于点歌和播放控制。
+                      </span>
+                    </span>
+                  </div>
                   <p class="cache-panel-hint" id="presentation-output-status" role="status" aria-live="polite"
-                    data-i18n="display.presentationSelectDisplay">请选择外接显示器</p>
+                    data-i18n="display.presentationSelectDisplay">请选择观众屏</p>
                 </div>
               </div>
               <button type="button" class="presentation-output-switch" id="presentation-output-button" role="switch"
@@ -153,7 +238,7 @@
             <div class="presentation-target-section">
               <div class="presentation-target-heading">
                 <div>
-                  <p class="cache-panel-label" data-i18n="display.targetTitle">输出目标</p>
+                  <p class="cache-panel-label" data-i18n="display.targetTitle">选择观众屏</p>
                 </div>
                 <button type="button" class="icon-button presentation-refresh-button" id="presentation-refresh-button"
                   data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
@@ -163,10 +248,19 @@
             </div>
             <div class="presentation-host-target-section hidden" id="presentation-host-target-section">
               <div class="presentation-target-heading">
-                <div>
-                  <p class="cache-panel-label" data-i18n="display.hostTargetTitle">Host 窗口位置</p>
-                  <p class="cache-panel-hint" id="presentation-host-target-hint"
-                    data-i18n="display.hostTargetConfirmHint">播放窗将占用当前屏幕，请确认 Host 要移动到哪块屏幕。</p>
+                <div class="presentation-panel-label-row cache-contextual-info-region">
+                  <p class="cache-panel-label" data-i18n="display.hostTargetTitle">主控屏</p>
+                  <span class="cache-advanced-info">
+                    <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                      aria-describedby="presentation-host-target-description" data-i18n-aria-label="common.moreInfo"
+                      aria-label="更多信息">
+                      <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                    </button>
+                    <span class="cache-advanced-tooltip" id="presentation-host-target-description" role="tooltip"
+                      data-i18n="display.hostTargetDescription">
+                      当前 Host 所在屏幕将用于观众播放，因此需要选择另一块屏幕放置 Host 主控窗口。
+                    </span>
+                  </span>
                 </div>
               </div>
               <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>
@@ -373,31 +467,57 @@
                     <span class="fullscreen-exit-hover-label" data-i18n="player.fullscreenExit">退出全屏</span>
                   </span>
                 </button>
-                <div class="fullscreen-remote-popover" id="player-fullscreen-remote-popover" role="dialog"
+                <div class="fullscreen-remote-popover" id="player-fullscreen-remote-popover" role="region"
                   aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
                   <div class="remote-card remote-mini-popover-card fullscreen-remote-popover-card">
-                    <button type="button" class="banner-close remote-mini-popover-close"
-                      id="player-fullscreen-remote-close" aria-label="关闭"
-                      data-i18n-aria-label="common.close">×</button>
-                    <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
-                      <img id="player-fullscreen-remote-qr-image" class="remote-qr-image hidden"
-                        alt="手机访问二维码" data-i18n-alt="remote.qrAlt" />
-                      <div id="player-fullscreen-remote-qr-placeholder" class="remote-qr-placeholder"
-                        data-i18n="remote.qrLoading">正在生成二维码...</div>
-                    </div>
-                    <div class="remote-copy">
-                      <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
-                      <a id="player-fullscreen-remote-url-link" class="remote-url-link" href="/remote"
-                        target="_blank" rel="noreferrer">/remote</a>
-                      <p id="player-fullscreen-remote-url-hint" class="remote-url-hint">
-                        请确保手机和服务端在同一个局域网内。
-                      </p>
-                      <p id="player-fullscreen-internet-password"
-                        class="fullscreen-internet-password hidden">
-                        <span data-i18n="internetRemote.password">房间密码</span>
-                        <strong id="player-fullscreen-internet-password-value"></strong>
-                      </p>
-                    </div>
+                    <section class="fullscreen-remote-entry" id="player-fullscreen-local-entry">
+                      <div class="internet-remote-status-summary">
+                        <strong class="internet-remote-entry-title"
+                          data-i18n="internetRemote.localEntry">本地入口</strong>
+                      </div>
+                      <div class="internet-remote-share-layout">
+                        <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
+                          <img id="player-fullscreen-remote-qr-image" class="remote-qr-image hidden"
+                            alt="手机访问二维码" data-i18n-alt="remote.qrAlt" />
+                          <div id="player-fullscreen-remote-qr-placeholder" class="remote-qr-placeholder"
+                            data-i18n="remote.qrLoading">正在生成二维码...</div>
+                        </div>
+                        <div class="internet-remote-share-details">
+                          <p class="internet-remote-share-title"
+                            data-i18n="internetRemote.localScanTitle">扫码连接</p>
+                          <p id="player-fullscreen-remote-url-hint" class="internet-remote-share-meta">
+                            手机与电脑需在同一网络
+                          </p>
+                          <p id="player-fullscreen-remote-url" class="internet-remote-local-link"></p>
+                        </div>
+                      </div>
+                    </section>
+                    <div class="internet-remote-divider hidden" id="player-fullscreen-public-divider"
+                      aria-hidden="true"></div>
+                    <section class="fullscreen-remote-entry hidden" id="player-fullscreen-public-entry">
+                      <div class="internet-remote-status-summary">
+                        <strong class="internet-remote-entry-title"
+                          data-i18n="internetRemote.internetEntry">公网入口</strong>
+                      </div>
+                      <div class="internet-remote-share-layout">
+                        <div class="remote-qr-wrap internet-remote-public-qr-wrap">
+                          <img id="player-fullscreen-public-qr-image" class="remote-qr-image hidden"
+                            alt="公网 Remote 二维码" data-i18n-alt="internetRemote.publicQrAlt" />
+                          <div id="player-fullscreen-public-qr-placeholder" class="remote-qr-placeholder"
+                            data-i18n="remote.qrLoading">正在生成二维码...</div>
+                        </div>
+                        <div class="internet-remote-share-details">
+                          <p class="internet-remote-share-title"
+                            data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
+                          <p id="player-fullscreen-public-expiry" class="internet-remote-share-meta"></p>
+                          <p id="player-fullscreen-internet-password"
+                            class="internet-remote-current-password hidden">
+                            <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                            <strong id="player-fullscreen-internet-password-value"></strong>
+                          </p>
+                        </div>
+                      </div>
+                    </section>
                   </div>
                 </div>
               </div>
@@ -424,10 +544,41 @@
           <section class="presentation-host-controls" id="presentation-host-controls" hidden
             aria-label="双屏播放控制" data-i18n-aria-label="controller.controls">
             <div class="presentation-host-transport-row">
-              <button type="button" class="presentation-host-play" id="presentation-host-play"
-                data-presentation-host-action="toggle">
-                <span data-presentation-host-play-label data-i18n="controller.pause">暂停</span>
-              </button>
+              <div class="presentation-host-primary-controls">
+                <button type="button" class="presentation-host-seek-button" id="presentation-host-back"
+                  data-presentation-host-action="seek-relative" data-delta="-15"
+                  aria-label="后退 15 秒" title="后退 15 秒"
+                  data-i18n-aria-label="controller.backFifteen" data-i18n-title="controller.backFifteen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7.25 7.25h-3.5v-3.5M4.05 7.1A8.25 8.25 0 1 1 3.75 12"
+                      transform="translate(0 2)" fill="none" stroke="currentColor" stroke-linecap="round"
+                      stroke-linejoin="round" stroke-width="1.8" />
+                    <text x="12" y="12" dominant-baseline="central" text-anchor="middle">15</text>
+                  </svg>
+                </button>
+                <button type="button" class="presentation-host-play is-playing" id="presentation-host-play"
+                  data-presentation-host-action="toggle" aria-label="暂停" title="暂停" aria-pressed="true">
+                  <svg class="hidden" viewBox="0 0 24 24" aria-hidden="true" data-presentation-host-icon="play">
+                    <path d="M8.5 6.8v10.4L17.5 12z" fill="currentColor" />
+                  </svg>
+                  <svg viewBox="0 0 24 24" aria-hidden="true" data-presentation-host-icon="pause">
+                    <rect x="7.5" y="6.5" width="3.5" height="11" rx="1" fill="currentColor" />
+                    <rect x="13" y="6.5" width="3.5" height="11" rx="1" fill="currentColor" />
+                  </svg>
+                  <span hidden data-presentation-host-play-label data-i18n="controller.pause">暂停</span>
+                </button>
+                <button type="button" class="presentation-host-seek-button" id="presentation-host-forward"
+                  data-presentation-host-action="seek-relative" data-delta="15"
+                  aria-label="前进 15 秒" title="前进 15 秒"
+                  data-i18n-aria-label="controller.forwardFifteen" data-i18n-title="controller.forwardFifteen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M16.75 7.25h3.5v-3.5M19.95 7.1A8.25 8.25 0 1 0 20.25 12"
+                      transform="translate(0 2)" fill="none" stroke="currentColor" stroke-linecap="round"
+                      stroke-linejoin="round" stroke-width="1.8" />
+                    <text x="12" y="12" dominant-baseline="central" text-anchor="middle">15</text>
+                  </svg>
+                </button>
+              </div>
               <div class="presentation-host-progress-wrap">
                 <input type="range" id="presentation-host-progress" class="presentation-host-progress"
                   min="0" max="1" step="0.01" value="0" aria-label="播放进度"
@@ -438,8 +589,13 @@
                 </div>
               </div>
               <button type="button" class="presentation-host-next" id="presentation-host-next"
-                data-presentation-host-action="next">
-                <span data-i18n="player.nextSong">切歌</span>
+                data-presentation-host-action="next" aria-label="切歌" title="切歌"
+                data-i18n-aria-label="player.nextSong" data-i18n-title="player.nextSong">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6.5 6.8v10.4l8.4-5.2z" fill="currentColor" />
+                  <path d="M17.5 6.8v10.4" fill="none" stroke="currentColor" stroke-linecap="round"
+                    stroke-width="2" />
+                </svg>
               </button>
             </div>
           </section>
@@ -876,7 +1032,7 @@
                       data-i18n="sources.addUid">添加 UID</button>
                   </form>
                   <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button"
-                    data-i18n="sources.refreshVideos">刷新视频</button>
+                    data-i18n="gatcha.refresh">手动更新</button>
                 </div>
                 <p class="gatcha-message source-action-message" id="gatcha-uid-message" role="status"></p>
                 <div class="source-browse-scroll request-scroll-region" id="request-sources-followed-scroll"

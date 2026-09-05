@@ -171,6 +171,8 @@ const state = {
   playerFullscreenRemotePinned: false,
   playerFullscreenLastPointerType: "",
   presentationSettingsOpen: false,
+  presentationDisplayRefreshTimer: null,
+  presentationDisplayRefreshPending: false,
   cacheLimitSaving: false,
   cacheLimitDraftValue: null,
   cacheLimitQueuedValue: null,
@@ -551,7 +553,9 @@ const elements = {
   playerFrame: document.getElementById("player-frame"),
   presentationHostAnnouncement: document.getElementById("presentation-host-announcement"),
   presentationHostControls: document.getElementById("presentation-host-controls"),
+  presentationHostBack: document.getElementById("presentation-host-back"),
   presentationHostPlay: document.getElementById("presentation-host-play"),
+  presentationHostForward: document.getElementById("presentation-host-forward"),
   presentationHostProgress: document.getElementById("presentation-host-progress"),
   presentationHostCurrentTime: document.getElementById("presentation-host-current-time"),
   presentationHostDuration: document.getElementById("presentation-host-duration"),
@@ -560,11 +564,15 @@ const elements = {
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
   playerFullscreenLabel: document.getElementById("player-fullscreen-label"),
   playerFullscreenRemotePopover: document.getElementById("player-fullscreen-remote-popover"),
-  playerFullscreenRemoteClose: document.getElementById("player-fullscreen-remote-close"),
   playerFullscreenRemoteQrImage: document.getElementById("player-fullscreen-remote-qr-image"),
   playerFullscreenRemoteQrPlaceholder: document.getElementById("player-fullscreen-remote-qr-placeholder"),
-  playerFullscreenRemoteUrlLink: document.getElementById("player-fullscreen-remote-url-link"),
+  playerFullscreenRemoteUrl: document.getElementById("player-fullscreen-remote-url"),
   playerFullscreenRemoteUrlHint: document.getElementById("player-fullscreen-remote-url-hint"),
+  playerFullscreenPublicDivider: document.getElementById("player-fullscreen-public-divider"),
+  playerFullscreenPublicEntry: document.getElementById("player-fullscreen-public-entry"),
+  playerFullscreenPublicQrImage: document.getElementById("player-fullscreen-public-qr-image"),
+  playerFullscreenPublicQrPlaceholder: document.getElementById("player-fullscreen-public-qr-placeholder"),
+  playerFullscreenPublicExpiry: document.getElementById("player-fullscreen-public-expiry"),
   playerFullscreenInternetPassword: document.getElementById("player-fullscreen-internet-password"),
   playerFullscreenInternetPasswordValue: document.getElementById("player-fullscreen-internet-password-value"),
   stageControlsToggle: document.getElementById("stage-controls-toggle"),
@@ -633,7 +641,6 @@ const elements = {
   presentationStateDot: document.getElementById("presentation-state-dot"),
   presentationDisplayList: document.getElementById("presentation-display-list"),
   presentationHostTargetSection: document.getElementById("presentation-host-target-section"),
-  presentationHostTargetHint: document.getElementById("presentation-host-target-hint"),
   presentationHostDisplayList: document.getElementById("presentation-host-display-list"),
   presentationRefreshButton: document.getElementById("presentation-refresh-button"),
   languageSwitch: document.getElementById("language-switch"),
@@ -695,6 +702,10 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  remotePopoverCopyLink: document.getElementById("remote-popover-copy-link"),
+  remotePopoverLocalAddressDetail: document.getElementById("internet-remote-local-address-detail"),
+  internetRemoteUrlLink: document.getElementById("internet-remote-url"),
+  internetRemoteCopyLink: document.getElementById("internet-remote-copy-link"),
   windowDragRegion: document.getElementById("window-drag-region"),
   windowControls: document.getElementById("window-controls"),
   windowMinimize: document.getElementById("window-minimize"),
@@ -1932,6 +1943,10 @@ function applyPresentationDisplayInfo(candidate) {
 
 async function refreshPresentationDisplays({ announceError = false } = {}) {
   const invoke = tauriInvoke();
+  if (state.presentationDisplayRefreshTimer !== null) {
+    window.clearTimeout(state.presentationDisplayRefreshTimer);
+    state.presentationDisplayRefreshTimer = null;
+  }
   if (typeof invoke !== "function" || state.presentationDisplayBusy) {
     return null;
   }
@@ -1950,7 +1965,39 @@ async function refreshPresentationDisplays({ announceError = false } = {}) {
   } finally {
     state.presentationDisplayBusy = false;
     renderPresentationOutputControl();
+    if (state.presentationDisplayRefreshPending) {
+      state.presentationDisplayRefreshPending = false;
+      schedulePresentationDisplayRefreshFromWindowEvent();
+    }
   }
+}
+
+const presentationDisplayRefreshDebounceMs = 280;
+
+function schedulePresentationDisplayRefreshFromWindowEvent() {
+  if (
+    !state.presentationSettingsOpen
+    || state.presentationSession.phase !== "inactive"
+  ) {
+    return;
+  }
+  if (state.presentationDisplayRefreshTimer !== null) {
+    window.clearTimeout(state.presentationDisplayRefreshTimer);
+  }
+  state.presentationDisplayRefreshTimer = window.setTimeout(() => {
+    state.presentationDisplayRefreshTimer = null;
+    if (
+      !state.presentationSettingsOpen
+      || state.presentationSession.phase !== "inactive"
+    ) {
+      return;
+    }
+    if (state.presentationDisplayBusy) {
+      state.presentationDisplayRefreshPending = true;
+      return;
+    }
+    refreshPresentationDisplays().catch(() => {});
+  }, presentationDisplayRefreshDebounceMs);
 }
 
 function presentationDisplayById(displayId) {
@@ -1987,13 +2034,16 @@ function resolvedPresentationHostDisplayId(target = presentationDisplayById(
 }
 
 const presentationDeviceIconShapes = Object.freeze({
-  controller: [
-    ["rect", { x: "5", y: "2.5", width: "14", height: "19", rx: "2" }],
-    ["path", { d: "M9 18.5h6" }],
+  host: [
+    ["rect", { x: "2.5", y: "3.5", width: "19", height: "14", rx: "2" }],
+    ["path", { d: "M8 21h8M12 17.5V21M6.5 8h11M6.5 12.5h11" }],
+    ["circle", { cx: "10", cy: "8", r: "1.15", fill: "currentColor", stroke: "none" }],
+    ["circle", { cx: "15", cy: "12.5", r: "1.15", fill: "currentColor", stroke: "none" }],
   ],
-  monitor: [
+  output: [
     ["rect", { x: "2.5", y: "3.5", width: "19", height: "14", rx: "2" }],
     ["path", { d: "M8 21h8M12 17.5V21" }],
+    ["path", { d: "m10 7.5 5 3-5 3z", fill: "currentColor", stroke: "none" }],
   ],
 });
 
@@ -2008,7 +2058,7 @@ function createPresentationDeviceIcon(iconType) {
   svg.setAttribute("stroke-width", "1.8");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
-  const shapes = presentationDeviceIconShapes[iconType] || presentationDeviceIconShapes.monitor;
+  const shapes = presentationDeviceIconShapes[iconType] || presentationDeviceIconShapes.output;
   for (const [tagName, attributes] of shapes) {
     const shape = document.createElementNS("http://www.w3.org/2000/svg", tagName);
     for (const [name, value] of Object.entries(attributes)) {
@@ -2020,7 +2070,10 @@ function createPresentationDeviceIcon(iconType) {
   return iconElement;
 }
 
-function createPresentationDisplayOption(display) {
+function createPresentationDisplayOption(
+  display,
+  iconType = display.controller ? "host" : "output",
+) {
   const selected = display.id === state.presentationSelectedDisplayId;
   const sessionActive = state.presentationSession.phase !== "inactive";
   const active = display.id === state.presentationSession.selectedOutputDisplayId
@@ -2062,7 +2115,7 @@ function createPresentationDisplayOption(display) {
         ? t("display.controllerDisplay")
         : "";
   button.append(
-    createPresentationDeviceIcon(display.controller ? "controller" : "monitor"),
+    createPresentationDeviceIcon(iconType),
     copy,
     status,
   );
@@ -2075,7 +2128,7 @@ function createPresentationHostDisplayOption(display) {
     ...display,
     controller: false,
     selectable: true,
-  });
+  }, "host");
   button.classList.toggle("is-selected", selected);
   button.dataset.presentationDisplayId = "";
   button.dataset.presentationHostDisplayId = display.id;
@@ -2176,7 +2229,7 @@ function renderPresentationOutputControl() {
             ? t("display.presentationNoExternalDisplay")
             : state.presentationSelectedDisplayId
               ? requiresHostConfirmation
-                ? t("display.hostTargetConfirmHint")
+                ? t("display.presentationSelectHostDisplay")
                 : t("display.presentationTargetSelected", { monitor: monitorName })
               : t("display.presentationSelectDisplay");
   const summaryText = state.presentationControlBusy
@@ -2751,6 +2804,19 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
     elements.presentationHostPlay?.querySelector("[data-presentation-host-play-label]"),
     playLabel,
   );
+  if (elements.presentationHostPlay) {
+    elements.presentationHostPlay.setAttribute("aria-label", playLabel);
+    elements.presentationHostPlay.setAttribute("title", playLabel);
+    elements.presentationHostPlay.setAttribute("aria-pressed", String(!playback.paused));
+    elements.presentationHostPlay.classList.toggle("is-playing", !playback.paused);
+    elements.presentationHostPlay.classList.toggle("is-paused", playback.paused);
+    elements.presentationHostPlay
+      .querySelector('[data-presentation-host-icon="play"]')
+      ?.classList.toggle("hidden", !playback.paused);
+    elements.presentationHostPlay
+      .querySelector('[data-presentation-host-icon="pause"]')
+      ?.classList.toggle("hidden", playback.paused);
+  }
   const hasPlayableMedia = Boolean(
     active
     && currentItem
@@ -2762,6 +2828,13 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
       || state.presentationHostControlBusy;
   }
   const durationAvailable = Number(playback.durationSeconds || 0) > 0;
+  for (const button of [elements.presentationHostBack, elements.presentationHostForward]) {
+    if (button) {
+      button.disabled = !hasPlayableMedia
+        || !durationAvailable
+        || state.presentationHostControlBusy;
+    }
+  }
   if (elements.presentationHostProgress) {
     elements.presentationHostProgress.disabled = !hasPlayableMedia
       || !durationAvailable
@@ -2937,6 +3010,38 @@ async function initializeLocalPresentation() {
   }
 }
 
+function syncPlayerFullscreenExpandedWidth() {
+  const control = elements.playerFullscreenControl;
+  const button = elements.playerFullscreenButton;
+  const label = button?.querySelector(".fullscreen-exit-hover-label");
+  const exitIcon = button?.querySelector(".fullscreen-exit-icon");
+  if (!control || !button || !label || !exitIcon) {
+    return;
+  }
+  const buttonStyle = getComputedStyle(button);
+  const iconStyle = getComputedStyle(exitIcon);
+  const controlStyle = getComputedStyle(control);
+  const number = (value) => Number.parseFloat(value) || 0;
+  const labelWidth = Math.max(label.scrollWidth, label.getBoundingClientRect().width);
+  const expandedWidth = Math.ceil(
+    number(buttonStyle.paddingLeft)
+      + number(buttonStyle.paddingRight)
+      + number(buttonStyle.borderLeftWidth)
+      + number(buttonStyle.borderRightWidth)
+      + number(iconStyle.width)
+      + number(controlStyle.getPropertyValue("--fullscreen-action-label-gap"))
+      + labelWidth,
+  );
+  control.style.setProperty(
+    "--fullscreen-action-expanded-width",
+    `${Math.max(112, expandedWidth)}px`,
+  );
+  control.style.setProperty(
+    "--fullscreen-action-label-width",
+    `${Math.ceil(labelWidth)}px`,
+  );
+}
+
 function renderPlayerFullscreenButton() {
   const button = elements.playerFullscreenButton;
   if (!button) {
@@ -2964,6 +3069,7 @@ function renderPlayerFullscreenButton() {
   setElementAttribute(button, "aria-pressed", String(active));
   setElementAttribute(button, "aria-label", active ? t("player.fullscreenRemoteExit") : title);
   setElementTitle(button, title);
+  syncPlayerFullscreenExpandedWidth();
   if (!active) {
     setPlayerFullscreenRemotePinned(false);
   }
@@ -3204,12 +3310,15 @@ async function handlePresentationHostControl(action, button) {
   try {
     if (action === "toggle") {
       toggleMountedLocalPlayback();
-    } else if (action === "seek") {
+    } else if (action === "seek" || action === "seek-relative") {
       if (!video) return;
       const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+      const requestedTime = action === "seek-relative"
+        ? Number(video.currentTime || 0) + Number(button.dataset.delta || 0)
+        : Number(elements.presentationHostProgress?.value || 0);
       const targetTime = Math.max(
         0,
-        Math.min(Number(elements.presentationHostProgress?.value || 0), duration),
+        Math.min(requestedTime, duration),
       );
       if (audio) {
         beginSplitPlayerSeek(video, audio, {
@@ -4784,14 +4893,23 @@ function initializeWindowChrome() {
   const toggleWindowMaximize = () => appWindow.toggleMaximize()
     .then(syncWindowFrameState)
     .catch(() => {});
+  const handleWindowGeometryChange = () => {
+    syncWindowFrameState();
+    schedulePresentationDisplayRefreshFromWindowEvent();
+  };
+  const resizeListener = appWindow.onResized?.(handleWindowGeometryChange);
+  resizeListener?.catch?.(() => {});
+  const moveListener = appWindow.onMoved?.(schedulePresentationDisplayRefreshFromWindowEvent);
+  moveListener?.catch?.(() => {});
+  const scaleListener = appWindow.onScaleChanged?.(schedulePresentationDisplayRefreshFromWindowEvent);
+  scaleListener?.catch?.(() => {});
+  window.addEventListener("focus", schedulePresentationDisplayRefreshFromWindowEvent);
   if (platform === "windows") {
     elements.windowControls.hidden = false;
     elements.windowMinimize?.addEventListener("click", () => appWindow.minimize().catch(() => {}));
     elements.windowMaximize?.addEventListener("click", toggleWindowMaximize);
     elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
     syncWindowFrameState();
-    const resizeListener = appWindow.onResized?.(syncWindowFrameState);
-    resizeListener?.catch?.(() => {});
   }
   elements.topbar?.addEventListener("dblclick", (event) => {
     const target = event.target instanceof Element ? event.target : null;
@@ -9122,6 +9240,17 @@ function scheduleTopControlPopoverPositionSync() {
 
 document.addEventListener("bilikara:top-control-popover", scheduleTopControlPopoverPositionSync);
 
+function resetContextualTooltipPosition(info) {
+  const tooltip = info?.querySelector?.(".cache-advanced-tooltip");
+  if (!tooltip) {
+    return;
+  }
+  for (const property of ["left", "right", "top", "bottom", "width", "--contextual-tooltip-arrow-left"]) {
+    tooltip.style.removeProperty(property);
+  }
+  delete tooltip.dataset.tooltipDirection;
+}
+
 function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   if (!info) {
     return false;
@@ -9132,6 +9261,7 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
     }
     candidate.classList.remove("is-visible", "is-pinned");
     candidate.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+    resetContextualTooltipPosition(candidate);
   });
   info.classList.add("is-visible");
   info.classList.toggle("is-pinned", pinned);
@@ -9157,6 +9287,7 @@ function closeCacheAdvancedInfo({ includePinned = true } = {}) {
     closed = true;
     info.classList.remove("is-visible", "is-pinned");
     info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+    resetContextualTooltipPosition(info);
   });
   return closed;
 }
@@ -9214,48 +9345,75 @@ function renderProvidedRemoteQr(source, { image, placeholder }, { cacheKey = "",
 }
 
 function renderPlayerFullscreenRemoteAccess({
-  internetMode,
-  url,
-  hint,
-  password,
-  qrImage,
+  localQrUrl,
+  localDisplayUrl,
+  localHint,
+  internetActive,
+  internetUrl,
+  internetHint,
+  internetPassword,
+  internetQrImage,
 }) {
-  const normalizedUrl = String(url || "").trim();
-  const normalizedHint = String(hint || "").trim();
-  const normalizedPassword = String(password || "").trim();
-  if (elements.playerFullscreenRemoteUrlLink) {
-    elements.playerFullscreenRemoteUrlLink.classList.toggle("hidden", !normalizedUrl);
-    if (normalizedUrl) {
-      elements.playerFullscreenRemoteUrlLink.href = normalizedUrl;
-      setTextContent(elements.playerFullscreenRemoteUrlLink, normalizedUrl);
-    } else {
-      elements.playerFullscreenRemoteUrlLink.removeAttribute("href");
-      setTextContent(elements.playerFullscreenRemoteUrlLink, "");
-    }
-  }
-  setTextContent(elements.playerFullscreenRemoteUrlHint, normalizedHint);
+  const normalizedLocalQrUrl = String(localQrUrl || "").trim();
+  const normalizedLocalDisplayUrl = String(localDisplayUrl || "").trim();
+  const normalizedInternetUrl = String(internetUrl || "").trim();
+  const normalizedInternetPassword = String(internetPassword || "").trim();
+  setTextContent(elements.playerFullscreenRemoteUrl, normalizedLocalDisplayUrl);
+  elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
+  setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
+  elements.playerFullscreenPublicDivider?.classList.toggle("hidden", !internetActive);
+  elements.playerFullscreenPublicEntry?.classList.toggle("hidden", !internetActive);
+  setTextContent(elements.playerFullscreenPublicExpiry, String(internetHint || "").trim());
   elements.playerFullscreenInternetPassword?.classList.toggle(
     "hidden",
-    !internetMode || !normalizedPassword,
+    !internetActive || !normalizedInternetPassword,
   );
-  setTextContent(elements.playerFullscreenInternetPasswordValue, normalizedPassword);
+  setTextContent(elements.playerFullscreenInternetPasswordValue, normalizedInternetPassword);
 
-  if (internetMode) {
-    renderProvidedRemoteQr(
-      qrImage,
-      {
-        image: elements.playerFullscreenRemoteQrImage,
-        placeholder: elements.playerFullscreenRemoteQrPlaceholder,
-      },
-      { cacheKey: normalizedUrl, emptyMessage: normalizedHint },
-    );
-  } else {
-    renderRemoteQr(normalizedUrl, [{
-      image: elements.playerFullscreenRemoteQrImage,
-      placeholder: elements.playerFullscreenRemoteQrPlaceholder,
-      size: 220,
-    }]);
+  renderRemoteQr(normalizedLocalQrUrl, [{
+    image: elements.playerFullscreenRemoteQrImage,
+    placeholder: elements.playerFullscreenRemoteQrPlaceholder,
+    size: 220,
+    emptyMessage: t("internetRemote.notReady"),
+  }]);
+  renderProvidedRemoteQr(
+    internetActive ? internetQrImage : "",
+    {
+      image: elements.playerFullscreenPublicQrImage,
+      placeholder: elements.playerFullscreenPublicQrPlaceholder,
+    },
+    {
+      cacheKey: internetActive ? normalizedInternetUrl : "",
+      emptyMessage: internetActive
+        ? t("remote.qrLoading")
+        : t("internetRemote.notCreated"),
+    },
+  );
+}
+
+function normalizedRemoteHttpUrl(value) {
+  const candidate = String(value || "").trim();
+  try {
+    const parsed = new URL(candidate, window.location.href);
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
+  } catch {
+    return "";
   }
+}
+
+function remoteUrlUsesLoopback(value) {
+  const normalizedUrl = normalizedRemoteHttpUrl(value);
+  if (!normalizedUrl) return false;
+  const hostname = new URL(normalizedUrl).hostname
+    .replace(/^\[|\]$/gu, "")
+    .replace(/\.$/u, "")
+    .toLowerCase();
+  return hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "::1"
+    || hostname === "0:0:0:0:0:0:0:1"
+    || hostname.startsWith("127.")
+    || hostname.startsWith("::ffff:127.");
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -9263,37 +9421,45 @@ function renderRemoteAccess(remoteAccess) {
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
   const localUrl = String(remoteAccess?.local_url || "");
   const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
+  const shareableUrl = [preferredUrl, ...lanUrls, localUrl]
+    .map(normalizedRemoteHttpUrl)
+    .find((url) => url && !remoteUrlUsesLoopback(url)) || "";
+  const localOpenUrl = normalizedRemoteHttpUrl(localUrl)
+    || normalizedRemoteHttpUrl(`${window.location.origin}/remote`);
+  const popoverTargetUrl = shareableUrl || localOpenUrl;
   const displayHint = lanUrls.length > 1
     ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
     : lanUrls.length === 1
       ? t("remote.defaultHint")
       : t("remote.noLanHint");
   const internetDisplay = state.internetRemoteDisplay;
-  const internetMode = internetDisplay?.mode === "internet";
-  const fullscreenUrl = internetMode ? String(internetDisplay?.url || "") : displayUrl;
-  const fullscreenHint = internetMode
-    ? String(internetDisplay?.hint || t("internetRemote.notCreated"))
-    : displayHint;
-  const fullscreenPassword = internetMode ? String(internetDisplay?.password || "") : "";
-  const fullscreenQrImage = internetMode ? String(internetDisplay?.qr_image || "") : "";
+  const internetActive = Boolean(
+    internetDisplay?.mode === "internet"
+      && internetDisplay?.active
+      && internetDisplay?.url,
+  );
+  const internetUrl = internetActive ? String(internetDisplay?.url || "") : "";
+  const internetHint = internetActive ? String(internetDisplay?.hint || "") : "";
+  const internetPassword = internetActive ? String(internetDisplay?.password || "") : "";
+  const internetQrImage = internetActive ? String(internetDisplay?.qr_image || "") : "";
   const signature = JSON.stringify({
+    language: state.language,
     displayUrl,
     displayHint,
-    internetMode,
-    fullscreenUrl,
-    fullscreenHint,
-    fullscreenPassword,
-    fullscreenQrImage,
+    shareableUrl,
+    localOpenUrl,
+    internetActive,
+    internetUrl,
+    internetHint,
+    internetPassword,
+    internetQrImage,
   });
   if (signature === state.remoteAccessRenderSignature) {
     return;
   }
   state.remoteAccessRenderSignature = signature;
 
-  [
-    elements.remoteUrlLink,
-    elements.remotePopoverUrlLink,
-  ].forEach((link) => {
+  [elements.remoteUrlLink].forEach((link) => {
     if (!link) {
       return;
     }
@@ -9302,35 +9468,74 @@ function renderRemoteAccess(remoteAccess) {
     }
     setTextContent(link, displayUrl);
   });
+  if (elements.remotePopoverUrlLink) {
+    elements.remotePopoverUrlLink.href = popoverTargetUrl || "";
+    elements.remotePopoverUrlLink.dataset.shareable = String(Boolean(shareableUrl));
+    elements.remotePopoverUrlLink.classList.toggle("hidden", !popoverTargetUrl);
+    elements.remotePopoverUrlLink.textContent = popoverTargetUrl;
+    elements.remotePopoverUrlLink.title = shareableUrl
+      ? popoverTargetUrl
+      : t("internetRemote.openOnThisDevice");
+  }
 
-  [
-    elements.remoteUrlHint,
+  setTextContent(elements.remoteUrlHint, displayHint);
+  setTextContent(
     elements.remotePopoverUrlHint,
-  ].forEach((hint) => {
-    setTextContent(hint, displayHint);
-  });
+    shareableUrl
+      ? t("internetRemote.localSameNetwork")
+      : t("internetRemote.localNoLanAddress"),
+  );
+  setTextContent(
+    elements.remotePopoverLocalAddressDetail,
+    shareableUrl
+      ? t("internetRemote.localAddressDetail", { url: shareableUrl })
+      : t("internetRemote.localNoLanDetail"),
+  );
+  elements.remotePopoverCopyLink?.classList.toggle("hidden", !shareableUrl);
+  if (elements.remotePopoverCopyLink) elements.remotePopoverCopyLink.disabled = !shareableUrl;
 
   renderRemoteQr(displayUrl, [
     { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
-    { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
-    { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
+  ]);
+  renderRemoteQr(shareableUrl, [
+    {
+      image: elements.remotePopoverQrImage,
+      placeholder: elements.remotePopoverQrPlaceholder,
+      size: 220,
+      emptyMessage: t("internetRemote.notReady"),
+    },
+    {
+      image: elements.remoteMiniQrImage,
+      placeholder: elements.remoteMiniQrPlaceholder,
+      size: 132,
+      emptyMessage: t("internetRemote.notReady"),
+    },
   ]);
   renderPlayerFullscreenRemoteAccess({
-    internetMode,
-    url: fullscreenUrl,
-    hint: fullscreenHint,
-    password: fullscreenPassword,
-    qrImage: fullscreenQrImage,
+    localQrUrl: shareableUrl,
+    localDisplayUrl: popoverTargetUrl,
+    localHint: shareableUrl
+      ? t("internetRemote.localSameNetwork")
+      : t("internetRemote.localNoLanAddress"),
+    internetActive,
+    internetUrl,
+    internetHint,
+    internetPassword,
+    internetQrImage,
   });
 }
 
 function renderRemoteQr(url, targets = []) {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) {
-    targets.forEach(({ image, placeholder }) => {
-      image?.classList.add("hidden");
+    targets.forEach(({ image, placeholder, emptyMessage = t("remote.noAddress") }) => {
+      if (image) {
+        image.classList.add("hidden");
+        image.removeAttribute("src");
+        delete image.dataset.qrUrl;
+      }
       if (placeholder) {
-        placeholder.textContent = t("remote.noAddress");
+        placeholder.textContent = emptyMessage;
         placeholder.classList.remove("hidden");
       }
     });
@@ -9378,8 +9583,8 @@ document.addEventListener("bilikara:internet-remote-display", (event) => {
   renderRemoteAccess(state.data?.remote_access || null);
 });
 
-async function copyRemoteUrl() {
-  const url = elements.remoteUrlLink.href;
+async function copyRemoteUrlFromLink(link) {
+  const url = normalizedRemoteHttpUrl(link?.getAttribute("href") || "");
   if (!url) {
     setAppMessage(t("remote.copyUnavailable"), true);
     return;
@@ -9400,6 +9605,10 @@ async function copyRemoteUrl() {
   } catch {
     setAppMessage(t("remote.copyFailed"), true);
   }
+}
+
+async function copyRemoteUrl() {
+  await copyRemoteUrlFromLink(elements.remoteUrlLink);
 }
 
 function renderListHeader(playlist, history) {
@@ -18489,6 +18698,32 @@ elements.copyRemoteUrlButton.addEventListener("click", async () => {
   await copyRemoteUrl();
 });
 
+async function copyRemoteAction(button, link) {
+  if (!button || button.disabled || button.getAttribute("aria-busy") === "true") return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  try {
+    await copyRemoteUrlFromLink(link);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+elements.remotePopoverCopyLink?.addEventListener("click", () => {
+  void copyRemoteAction(elements.remotePopoverCopyLink, elements.remotePopoverUrlLink);
+});
+
+elements.internetRemoteCopyLink?.addEventListener("click", () => {
+  void copyRemoteAction(elements.internetRemoteCopyLink, elements.internetRemoteUrlLink);
+});
+
+document.addEventListener("bilikara:internet-remote-feedback", (event) => {
+  const detail = event.detail && typeof event.detail === "object" ? event.detail : {};
+  const message = String(detail.message || "").trim();
+  if (message) setAppMessage(message, Boolean(detail.error));
+});
+
 elements.backupActionButton.addEventListener("click", async () => {
   if (elements.backupActionButton.disabled) {
     return;
@@ -19007,15 +19242,9 @@ elements.playerFullscreenButton?.addEventListener("click", async (event) => {
   renderPlayerFullscreenButton();
 });
 
-elements.playerFullscreenRemoteClose?.addEventListener("click", () => {
-  setPlayerFullscreenRemotePinned(false);
-  elements.playerFullscreenButton?.focus({ preventScroll: true });
-});
-
 [
   elements.remoteUrlLink,
   elements.remotePopoverUrlLink,
-  elements.playerFullscreenRemoteUrlLink,
 ].forEach((link) => link?.addEventListener("click", openRemoteAccessLink));
 
 elements.presentationOutputButton?.addEventListener("click", toggleLocalPresentation);

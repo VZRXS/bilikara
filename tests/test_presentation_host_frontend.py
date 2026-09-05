@@ -18,6 +18,8 @@ class PresentationHostFrontendTest(unittest.TestCase):
             raise unittest.SkipTest("node is unavailable")
         cls.path = ROOT / "static" / "app.js"
         cls.source = cls.path.read_text(encoding="utf-8")
+        cls.index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        cls.styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
     @classmethod
     def source_slice(cls, start: str, end: str) -> str:
@@ -35,6 +37,34 @@ class PresentationHostFrontendTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
+
+    def test_dual_screen_host_transport_matches_remote_control_order(self):
+        controls = self.index[
+            self.index.index('id="presentation-host-controls"') :
+            self.index.index('id="stage-controls-toggle"')
+        ]
+        ordered_ids = (
+            'id="presentation-host-back"',
+            'id="presentation-host-play"',
+            'id="presentation-host-forward"',
+            'id="presentation-host-progress"',
+            'id="presentation-host-next"',
+        )
+        positions = [controls.index(identifier) for identifier in ordered_ids]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('data-presentation-host-action="seek-relative" data-delta="-15"', controls)
+        self.assertIn('data-presentation-host-action="seek-relative" data-delta="15"', controls)
+        self.assertIn('type="range" id="presentation-host-progress"', controls)
+        handler = self.source_slice(
+            "async function handlePresentationHostControl",
+            "function queuePlayerFrameSingleClick",
+        )
+        self.assertIn('action === "seek" || action === "seek-relative"', handler)
+        self.assertIn('Number(button.dataset.delta || 0)', handler)
+        self.assertIn("beginSplitPlayerSeek(video, audio", handler)
+        self.assertIn("setMediaCurrentTime(video, targetTime)", handler)
+        self.assertIn(".presentation-host-primary-controls", self.styles)
+        self.assertIn("grid-template-columns: 44px 48px 44px", self.styles)
 
     def test_composition_preserves_media_and_turns_host_player_into_control_surface(self):
         functions = self.source_slice(
@@ -1194,6 +1224,94 @@ async function handlePresentationSession(session) {{
         self.assertIn('aria-controls="presentation-settings-panel"', index)
         self.assertIn('id="presentation-output-status" role="status"', index)
         self.assertIn('id="presentation-display-list" aria-live="polite"', index)
+
+    def test_display_discovery_refreshes_once_after_window_geometry_settles(self):
+        scheduler = self.source_slice(
+            "const presentationDisplayRefreshDebounceMs",
+            "function presentationDisplayById",
+        )
+        chrome = self.source_slice(
+            "function initializeWindowChrome",
+            "function initializeHostShell",
+        )
+        self.assertIn("appWindow.onMoved", chrome)
+        self.assertIn("appWindow.onScaleChanged", chrome)
+        self.assertIn("appWindow.onResized", chrome)
+        self.assertIn(
+            'window.addEventListener("focus", schedulePresentationDisplayRefreshFromWindowEvent)',
+            chrome,
+        )
+        self.assertNotIn("setInterval", scheduler)
+        script = f"""
+let nextTimer = 0;
+let activeTimer = null;
+let cleared = 0;
+let refreshes = 0;
+const state = {{
+  presentationSettingsOpen: true,
+  presentationSession: {{ phase: "inactive" }},
+  presentationDisplayRefreshTimer: null,
+  presentationDisplayRefreshPending: false,
+  presentationDisplayBusy: false,
+}};
+global.window = {{
+  setTimeout(callback, delay) {{
+    activeTimer = {{ id: ++nextTimer, callback, delay }};
+    return activeTimer.id;
+  }},
+  clearTimeout(id) {{
+    if (activeTimer?.id === id) activeTimer = null;
+    cleared += 1;
+  }},
+}};
+function refreshPresentationDisplays() {{
+  refreshes += 1;
+  return Promise.resolve();
+}}
+{scheduler}
+schedulePresentationDisplayRefreshFromWindowEvent();
+schedulePresentationDisplayRefreshFromWindowEvent();
+const scheduled = {{ count: nextTimer, cleared, delay: activeTimer?.delay }};
+activeTimer.callback();
+state.presentationSettingsOpen = false;
+schedulePresentationDisplayRefreshFromWindowEvent();
+state.presentationSettingsOpen = true;
+state.presentationSession.phase = "active";
+schedulePresentationDisplayRefreshFromWindowEvent();
+Promise.resolve().then(() => process.stdout.write(JSON.stringify({{
+  scheduled,
+  refreshes,
+  finalTimerCount: nextTimer,
+}})));
+"""
+        result = self.run_node(script)
+        self.assertEqual(
+            result,
+            {
+                "scheduled": {"count": 2, "cleared": 1, "delay": 280},
+                "refreshes": 1,
+                "finalTimerCount": 2,
+            },
+        )
+
+    def test_dual_display_roles_have_explanations_and_role_specific_icons(self):
+        index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        icons = self.source_slice(
+            "const presentationDeviceIconShapes",
+            "function createPresentationDisplayOption",
+        )
+        self.assertIn('id="presentation-output-description" role="tooltip"', index)
+        self.assertIn(
+            'id="presentation-host-target-description" role="tooltip"', index
+        )
+        self.assertNotIn('id="presentation-host-target-hint"', index)
+        self.assertIn('data-i18n="display.outputPanelTitle">观众屏', index)
+        self.assertIn('data-i18n="display.hostTargetTitle">主控屏', index)
+        self.assertNotIn('<rect x="14.5" y="8" width="7" height="9"', index)
+        self.assertIn("host:", icons)
+        self.assertIn("output:", icons)
+        self.assertIn('fill: "currentColor"', icons)
+        self.assertNotIn("controller:", icons)
 
     def test_unavailable_output_is_not_presented_as_busy(self):
         render = self.source_slice(
