@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -46,6 +47,11 @@ class InternetRemoteDeploymentTest(unittest.TestCase):
         cls.resources.feed((ROOT / "static" / "remote.html").read_text(encoding="utf-8"))
         cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
+    def event_paths(self, event: str) -> set[str]:
+        block = self.workflow.split(f"\n  {event}:\n", 1)[1]
+        block = re.split(r"\n  [a-z_]+:", block, maxsplit=1)[0]
+        return set(re.findall(r"^      - ([^\n]+)$", block, re.MULTILINE))
+
     def test_sync_copies_current_remote_html_dependencies(self):
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
@@ -78,6 +84,44 @@ class InternetRemoteDeploymentTest(unittest.TestCase):
     def test_production_syntax_checks_cover_every_remote_script(self):
         checked = set(re.findall(r"node --check static/([^\s]+)", self.workflow))
         self.assertEqual(self.resources.scripts - checked, set())
+
+    def test_push_filter_matches_the_actual_sync_allowlist(self):
+        sync = (ROOT / "scripts" / "sync_internet_remote_assets.ps1").read_text(
+            encoding="utf-8"
+        )
+        allowlist = re.search(r"\$files = @\((.*?)\)", sync, re.DOTALL)
+        self.assertIsNotNone(allowlist)
+        assets = set(re.findall(r'"([^"]+)"', allowlist.group(1)))
+        self.assertTrue(self.resources.scripts <= assets)
+        expected = {f"static/{asset}" for asset in assets} | {
+            "static/pic/*", "scripts/sync_internet_remote_assets.ps1"
+        }
+        self.assertEqual(self.event_paths("push"), expected)
+
+    def test_test_workflow_and_host_only_pushes_do_not_deploy(self):
+        push_paths = self.event_paths("push")
+        for path in (
+            "tests/test_internet_remote_frontend.py",
+            "tests/test_internet_remote_deployment.py",
+            ".github/workflows/internet-remote-sync.yml",
+            "static/app.js",
+            "static/index.html",
+            "static/internet-remote-host.js",
+            "static/styles.css",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(any(fnmatchcase(path, pattern) for pattern in push_paths))
+
+    def test_pr_validation_and_explicit_redeployment_remain_available(self):
+        pr_paths = self.event_paths("pull_request")
+        self.assertTrue({
+            ".github/workflows/internet-remote-sync.yml",
+            "tests/test_internet_remote_frontend.py",
+            "tests/test_internet_remote_deployment.py",
+            "static/**",
+        } <= pr_paths)
+        self.assertIn("\n  workflow_dispatch:", self.workflow)
+        self.assertIn("github.event_name != 'pull_request'", self.workflow)
 
 
 if __name__ == "__main__":

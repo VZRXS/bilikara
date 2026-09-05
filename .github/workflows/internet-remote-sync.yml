@@ -3,12 +3,23 @@ name: Sync Internet Remote Production
 on:
   push:
     branches: [dev, work/v0.8.0]
+    # Keep in sync with the asset-copy allowlist. Tests and workflow edits are
+    # validated on PRs; workflow_dispatch is the explicit redeployment path.
     paths:
-      - .github/workflows/internet-remote-sync.yml
       - scripts/sync_internet_remote_assets.ps1
-      - static/**
-      - tests/test_internet_remote_frontend.py
-      - tests/test_internet_remote_deployment.py
+      - static/export-download.js
+      - static/export-guard.js
+      - static/i18n.json
+      - static/internet-remote-transport.js
+      - static/remote-queue.css
+      - static/remote-queue.js
+      - static/remote-transport-client.js
+      - static/remote.css
+      - static/remote.html
+      - static/remote.js
+      - static/song-detail.css
+      - static/song-detail.js
+      - static/pic/*
   pull_request:
     branches: [dev, work/v0.8.0]
     paths:
