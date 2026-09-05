@@ -163,6 +163,17 @@ function setTextContent(target, key) {{ target.textContent = key; }}
         self.assertNotIn('class="hero-card"', self.markup)
         self.assertNotIn("remote.heroTag", header)
         self.assertNotIn("remote.heroCopy", header)
+        self.assertIn('class="remote-brand"', header)
+        self.assertIn('data-i18n-aria-label="remote.heroTitle"', header)
+        self.assertIn('<span class="remote-brand-wordmark">bilikara</span>', header)
+        self.assertEqual(header.count('class="remote-brand-phone-icon"'), 1)
+        self.assertIn('<rect x="7" y="2.5" width="10" height="19" rx="2"></rect>', header)
+        self.assertIn('<path d="M10 5h4M11 18.5h2"></path>', header)
+        self.assertIn('aria-hidden="true"', header)
+        self.assertIn('focusable="false"', header)
+        self.assertNotIn('data-i18n="remote.heroTitle"', header)
+        self.assertNotIn("点歌台", header)
+        self.assertNotIn(">Remote<", header)
         self.assertEqual(header.count('class="remote-menu-toggle"'), 1)
         self.assertEqual(header.count('class="remote-menu-icon"'), 1)
         self.assertEqual(header.count('class="tool-status-indicator is-loading"'), 2)
@@ -510,6 +521,14 @@ console.log(JSON.stringify({
         header_rule = re.search(r"\.remote-header\s*\{([^}]*)\}", self.styles).group(1)
         for obsolete_property in ("background", "border", "border-radius", "box-shadow", "backdrop-filter"):
             self.assertNotIn(f"{obsolete_property}:", header_rule)
+        brand_rule = re.search(r"\.remote-brand\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("display: inline-flex", brand_rule)
+        self.assertIn("align-items: center", brand_rule)
+        self.assertIn("gap: 7px", brand_rule)
+        icon_rule = re.search(r"\.remote-brand-phone-icon\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("width: 22px", icon_rule)
+        self.assertIn("height: 22px", icon_rule)
+        self.assertIn("color: var(--muted)", icon_rule)
         trigger_rule = re.search(
             r"\.remote-menu-toggle\s*\{([^}]*)\}", self.styles
         ).group(1)
@@ -713,3 +732,14 @@ console.log(JSON.stringify({
         for language, translations in self.translations["languages"].items():
             for key in required:
                 self.assertTrue(translations.get(key), f"missing {language}:{key}")
+
+    def test_remote_brand_accessible_name_and_document_title_are_localized(self):
+        expected_labels = {
+            "zh": "bilikara 远程控制",
+            "en": "bilikara remote control",
+            "ja": "bilikara リモコン",
+        }
+        for language, expected_label in expected_labels.items():
+            translations = self.translations["languages"][language]
+            self.assertEqual(translations["document.remoteTitle"], "bilikara remote")
+            self.assertEqual(translations["remote.heroTitle"], expected_label)

@@ -286,6 +286,16 @@ const elements = {{
   currentOwner: {{ textContent: "", classList: new FakeClassList() }},
   openRatingButton: {{ classList: new FakeClassList() }},
   currentMeta: {{ textContent: "" }},
+  playbackDock: {{
+    classList: new FakeClassList(),
+    setAttribute() {{}},
+    removeAttribute() {{}},
+  }},
+  playbackDockTitle: {{ textContent: "" }},
+  playbackDockRequester: {{ textContent: "", classList: new FakeClassList() }},
+  playbackDockCoverImage: {{}},
+  playbackSheetCoverImage: {{}},
+  remoteShell: {{ classList: new FakeClassList() }},
 }};
 function clientHeaders() {{ return {{}}; }}
 function localizedApiMessage(value) {{ return String(value || ""); }}
@@ -301,6 +311,14 @@ function setAppMessage(message, isError) {{
 }}
 function requesterBadgeText() {{ return ""; }}
 function ownerLineText() {{ return ""; }}
+function normalizedPlaybackCoverUrl() {{ return ""; }}
+function syncPlaybackCoverImage() {{}}
+function setPlaybackDockMarqueeText(container, _textNode, value) {{ container.textContent = value; }}
+function schedulePlaybackDockMarquee() {{}}
+function resetPlaybackDockMarquees() {{}}
+function closePlaybackSheet() {{}}
+function closePlaybackMetadataPopover() {{}}
+function syncPlaybackMetadataFieldVisibility() {{}}
 function renderOwnerBadgeLabel() {{}}
 function maybeUpdateRemoteRatingPrompt() {{}}
 function syncCurrentCacheState(current) {{
@@ -1092,6 +1110,7 @@ async function apiPostExactStateCommand(path, payload) {{
 {self.player_control_source}
 (async () => {{
   await sendPlayerControl("seek-relative", 15);
+  await sendPlayerControl("seek-absolute", 42);
   state.data = {{ ...state.data, state_revision: 99 }};
   await sendPlayerNext();
   await sendPlayerControl("next-track");
@@ -1119,6 +1138,16 @@ async function apiPostExactStateCommand(path, payload) {{
                         "item_id": "song-a",
                         "delta_seconds": 15,
                         "playback_generation": 41,
+                    },
+                },
+                {
+                    "path": "/api/player/control",
+                    "payload": {
+                        "action": "seek-absolute",
+                        "item_id": "song-a",
+                        "delta_seconds": 0,
+                        "playback_generation": 41,
+                        "target_seconds": 42,
                     },
                 },
                 {
@@ -1271,8 +1300,9 @@ class FakeElement {{
   removeAttribute(name) {{ delete this.attributes[name]; }}
 }}
 const audioVariantBar = new FakeElement();
+const audioVariantPopover = new FakeElement();
 const currentCacheState = new FakeElement();
-const elements = {{ audioVariantBar, currentCacheState }};
+const elements = {{ audioVariantBar, audioVariantPopover, currentCacheState }};
 const window = {{ confirm: () => true }};
 const audioVariantSwitchDebounceMs = 350;
 const state = {{
@@ -1300,6 +1330,7 @@ function scheduleRender() {{}}
 function renderCacheStatusOnly() {{}}
 function frontendPlaybackMode() {{ return "local"; }}
 function renderAudioVariantBar() {{}}
+function setAudioVariantPopoverOpen() {{}}
 function audioVariantSwitchLocked() {{
   return state.audioVariantSwitchInFlight || Date.now() < state.audioVariantSwitchUnlockAt;
 }}
@@ -1369,7 +1400,7 @@ function retryEventButton(currentItem) {{
 (async () => {{
   applyStateSnapshot(snapshot(1, item("i-1")));
   responses.push({{ snapshot: snapshot(2, item("i-2")), applied: false }});
-  await audioVariantBar.listeners.click({{ target: audioEventButton(state.data.current_item) }});
+  await audioVariantPopover.listeners.click({{ target: audioEventButton(state.data.current_item) }});
   const staleAudio = {{
     messages: messages.splice(0),
     inFlight: state.audioVariantSwitchInFlight,
@@ -1388,7 +1419,7 @@ function retryEventButton(currentItem) {{
   }};
 
   responses.push({{ snapshot: snapshot(4, item("i-3", "vocal")), applied: true }});
-  await audioVariantBar.listeners.click({{ target: audioEventButton(state.data.current_item) }});
+  await audioVariantPopover.listeners.click({{ target: audioEventButton(state.data.current_item) }});
   const validAudio = {{ messages: messages.splice(0) }};
 
   responses.push({{ snapshot: snapshot(5, item("i-3", "vocal", "downloading")), applied: true }});

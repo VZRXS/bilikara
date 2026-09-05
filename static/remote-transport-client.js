@@ -711,12 +711,14 @@
           pause: "playback.pause",
           "toggle-play": "playback.toggle",
           "seek-relative": "playback.seek_relative",
+          "seek-absolute": "playback.seek_absolute",
         };
         const payload = {
           item_id: String(body.item_id || ""),
           playback_generation: Number(body.playback_generation),
         };
         if (action === "seek-relative") payload.delta_seconds = Number(body.delta_seconds || 0);
+        if (action === "seek-absolute") payload.target_seconds = Math.max(0, Math.round(Number(body.target_seconds || 0)));
         response = await request(kinds[action] || "playback.toggle", payload);
       } else if (method === "POST" && url.pathname === "/api/player/next") {
         response = await request("playback.next", {

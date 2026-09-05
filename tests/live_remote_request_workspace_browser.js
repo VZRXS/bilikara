@@ -38,11 +38,10 @@ async function waitForThemeControlsSettled(page) {
       activePanel?.querySelector('[role="tab"][aria-selected="true"]'),
     ].filter(Boolean);
     const peerActions = [
-      document.querySelector("#refresh-button"),
       document.querySelector("#resort-playlist-button"),
       document.querySelector("#gatcha-pool-config-toggle"),
     ].filter(Boolean);
-    if (activeTabs.length !== 2 || peerActions.length !== 3) return false;
+    if (activeTabs.length !== 2 || peerActions.length !== 2) return false;
     const resolveThemePair = (backgroundVariable, colorVariable) => {
       const probe = document.createElement("span");
       probe.style.cssText = `position:fixed;pointer-events:none;transition:none;background:${backgroundVariable};color:${colorVariable}`;
@@ -349,6 +348,9 @@ async function requestWorkspaceMetrics(page) {
     };
     const visibleDescendant = (selector) => Array.from(activePanel?.querySelectorAll(selector) || [])
       .find((element) => element.getClientRects().length > 0);
+    const quickActionRow = activePanel?.querySelector(".request-action-row");
+    const quickPrimaryAction = quickActionRow?.querySelector(".primary-button");
+    const quickNextAction = quickActionRow?.querySelector("#add-next-button");
     const verticalOwners = Array.from(requestCard?.querySelectorAll("div, section, form, article") || [])
       .filter((element) => {
         const style = getComputedStyle(element);
@@ -406,8 +408,15 @@ async function requestWorkspaceMetrics(page) {
         field: visualStyle(visibleDescendant("input, textarea, select")),
         primaryButton: visualStyle(visibleDescendant("form .primary-button")),
       },
+      quickActions: quickActionRow ? {
+        row: rect(quickActionRow),
+        primary: rect(quickPrimaryAction),
+        next: rect(quickNextAction),
+        gap: rect(quickNextAction).left - rect(quickPrimaryAction).right,
+        gridTemplateColumns: getComputedStyle(quickActionRow).gridTemplateColumns,
+        horizontalOverflow: quickActionRow.scrollWidth > quickActionRow.clientWidth + 1,
+      } : null,
       peerHeaderActions: [
-        document.querySelector("#refresh-button"),
         document.querySelector("#resort-playlist-button"),
         document.querySelector("#gatcha-pool-config-toggle"),
       ].map((element) => ({ id: element?.id || "", ...visualStyle(element) })),
@@ -484,6 +493,21 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
       metrics.tabs.every((tab) => tab.bounds.left >= viewport.left - 1 && tab.bounds.right <= viewport.right + 1),
       `${label}: one or more top tabs are not simultaneously visible`,
       metrics.tabs,
+    );
+  }
+  if (metrics.quickActions) {
+    const actions = metrics.quickActions;
+    assert(
+      Math.abs(actions.primary.top - actions.next.top) <= 1
+        && Math.abs(actions.primary.bottom - actions.next.bottom) <= 1
+        && Math.abs(actions.primary.left - actions.row.left) <= 1
+        && Math.abs(actions.next.right - actions.row.right) <= 1
+        && actions.primary.width > actions.next.width
+        && actions.gap >= 9 && actions.gap <= 11
+        && actions.gridTemplateColumns.split(/\s+/).filter(Boolean).length === 2
+        && !actions.horizontalOverflow,
+      `${label}: Quick request actions are not one Host-style flexible-primary/minimum-secondary row`,
+      actions,
     );
   }
 }

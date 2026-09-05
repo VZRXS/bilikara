@@ -91,6 +91,7 @@ pub enum RemoteOperation {
     PlaybackPause,
     PlaybackToggle,
     PlaybackSeekRelative,
+    PlaybackSeekAbsolute,
     PlaybackNext,
     PlayerSetVolume,
     PlayerSetMuted,
@@ -126,6 +127,7 @@ impl RemoteOperation {
             | Self::PlaybackPause
             | Self::PlaybackToggle
             | Self::PlaybackSeekRelative
+            | Self::PlaybackSeekAbsolute
             | Self::PlaybackNext => RemoteCapability::PlaybackControl,
             Self::PlayerSetVolume
             | Self::PlayerSetMuted
@@ -297,6 +299,12 @@ pub enum RemoteRequestV1 {
         playback_generation: u64,
         delta_seconds: i32,
     },
+    #[serde(rename = "playback.seek_absolute")]
+    PlaybackSeekAbsolute {
+        item_id: String,
+        playback_generation: u64,
+        target_seconds: u32,
+    },
     #[serde(rename = "playback.next")]
     PlaybackNext { playback_generation: u64 },
     #[serde(rename = "player.set_volume")]
@@ -356,6 +364,7 @@ impl RemoteRequestV1 {
             Self::PlaybackPause { .. } => RemoteOperation::PlaybackPause,
             Self::PlaybackToggle { .. } => RemoteOperation::PlaybackToggle,
             Self::PlaybackSeekRelative { .. } => RemoteOperation::PlaybackSeekRelative,
+            Self::PlaybackSeekAbsolute { .. } => RemoteOperation::PlaybackSeekAbsolute,
             Self::PlaybackNext { .. } => RemoteOperation::PlaybackNext,
             Self::PlayerSetVolume { .. } => RemoteOperation::PlayerSetVolume,
             Self::PlayerSetMuted { .. } => RemoteOperation::PlayerSetMuted,
@@ -558,6 +567,14 @@ struct SeekRelativeBody {
     item_id: String,
     playback_generation: u64,
     delta_seconds: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeekAbsoluteBody {
+    item_id: String,
+    playback_generation: u64,
+    target_seconds: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -847,6 +864,11 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 && *delta_seconds != 0
                 && (-MAX_SEEK_DELTA_SECONDS..=MAX_SEEK_DELTA_SECONDS).contains(delta_seconds)
         }
+        RemoteRequestV1::PlaybackSeekAbsolute {
+            item_id,
+            playback_generation,
+            ..
+        } => valid_item(item_id) && valid_playback_generation(*playback_generation),
         RemoteRequestV1::PlaybackNext {
             playback_generation,
         } => valid_playback_generation(*playback_generation),
@@ -1105,6 +1127,14 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 item_id: body.item_id,
                 playback_generation: body.playback_generation,
                 delta_seconds: body.delta_seconds,
+            }
+        }
+        "playback.seek_absolute" => {
+            let body: SeekAbsoluteBody = body(value)?;
+            RemoteRequestV1::PlaybackSeekAbsolute {
+                item_id: body.item_id,
+                playback_generation: body.playback_generation,
+                target_seconds: body.target_seconds,
             }
         }
         "playback.next" => {
@@ -1644,6 +1674,27 @@ mod tests {
             } if item_id == "item-1"
         ));
 
+        let absolute_seek = decode_remote_request_v1(
+            &request(
+                "playback.seek_absolute",
+                json!({
+                    "item_id": "item-1",
+                    "playback_generation": 7,
+                    "target_seconds": 42,
+                }),
+            ),
+            context(RemoteProfile::Controller),
+        )
+        .unwrap();
+        assert!(matches!(
+            absolute_seek.request,
+            RemoteRequestV1::PlaybackSeekAbsolute {
+                ref item_id,
+                playback_generation: 7,
+                target_seconds: 42,
+            } if item_id == "item-1"
+        ));
+
         let next = decode_remote_request_v1(
             &request("playback.next", json!({"playback_generation": 7})),
             context(RemoteProfile::Controller),
@@ -1659,6 +1710,7 @@ mod tests {
         for missing_target in [
             request("playback.toggle", json!({})),
             request("playback.seek_relative", json!({"delta_seconds": 15})),
+            request("playback.seek_absolute", json!({"target_seconds": 42})),
             request("playback.next", json!({})),
         ] {
             assert_eq!(
@@ -1781,6 +1833,14 @@ mod tests {
             request("catalog.search", json!({"query": " ", "limit": 80})),
             request("catalog.search", json!({"query": "ok", "limit": 81})),
             request("playback.seek_relative", json!({"delta_seconds": 301})),
+            request(
+                "playback.seek_absolute",
+                json!({
+                    "item_id": "item-1",
+                    "playback_generation": 7,
+                    "target_seconds": -1,
+                }),
+            ),
             request("player.set_volume", json!({"volume_percent": 101})),
             request("player.set_key_shift", json!({"key_shift": 7})),
             request("rating.submit", json!({"play_id": "p", "score": 0})),

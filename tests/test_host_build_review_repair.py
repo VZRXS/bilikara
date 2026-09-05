@@ -106,8 +106,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn(
             ".remote-qr-popover-close,\n"
             ".binding-sheet-close,\n"
-            ".rating-close,\n"
-            ".floating-control-close",
+            ".rating-close",
             self.remote_styles,
         )
         pool_head_rule = re.search(
@@ -358,7 +357,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2z"
             "M7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
         )
-        self.assertIn(remote_control_path, self.remote_markup)
+        self.assertNotIn(remote_control_path, self.remote_markup)
         self.assertIn(remote_control_path, self.markup)
         service = re.search(
             r'id="cache-settings-toggle".*?</button>', self.markup, re.DOTALL

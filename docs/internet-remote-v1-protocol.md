@@ -94,6 +94,10 @@ the item's opaque incarnation ID. Rust compares those click-time identities to
 the same authoritative snapshot used for dispatch and rejects a mismatch before
 emitting any Host effect, so an ordered but delayed command cannot be rebound to
 a newer song or to a re-created item that happens to reuse the same public ID.
+Relative seeks carry a bounded non-zero delta. Absolute seeks carry a bounded
+non-negative integral target in seconds and share the same click-time playback
+target checks; the Host remains responsible for clamping that target to the
+active media duration.
 
 An initial `playlist.add` leaves `selected_video_page` absent and
 `selected_audio_pages` empty so the Host can apply the normal automatic binding

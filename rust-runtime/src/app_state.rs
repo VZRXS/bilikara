@@ -3884,39 +3884,59 @@ impl AppState {
             | RemoteRequestV1::PlaybackPause { .. }
             | RemoteRequestV1::PlaybackToggle { .. }
             | RemoteRequestV1::PlaybackSeekRelative { .. }
+            | RemoteRequestV1::PlaybackSeekAbsolute { .. }
             | RemoteRequestV1::PlaybackNext { .. } => {
-                let (action, item_id, playback_generation, delta_seconds) = match request {
-                    RemoteRequestV1::PlaybackPlay {
-                        item_id,
-                        playback_generation,
-                    } => ("play", item_id, playback_generation, 0),
-                    RemoteRequestV1::PlaybackPause {
-                        item_id,
-                        playback_generation,
-                    } => ("pause", item_id, playback_generation, 0),
-                    RemoteRequestV1::PlaybackToggle {
-                        item_id,
-                        playback_generation,
-                    } => ("toggle-play", item_id, playback_generation, 0),
-                    RemoteRequestV1::PlaybackSeekRelative {
-                        item_id,
-                        playback_generation,
-                        delta_seconds,
-                    } => ("seek-relative", item_id, playback_generation, delta_seconds),
-                    RemoteRequestV1::PlaybackNext {
-                        playback_generation,
-                    } => (
-                        "next-track",
-                        snapshot
-                            .current_item
-                            .as_ref()
-                            .map(|item| item.id.clone())
-                            .unwrap_or_default(),
-                        playback_generation,
-                        0,
-                    ),
-                    _ => unreachable!("playback request group changed"),
-                };
+                let (action, item_id, playback_generation, delta_seconds, target_seconds) =
+                    match request {
+                        RemoteRequestV1::PlaybackPlay {
+                            item_id,
+                            playback_generation,
+                        } => ("play", item_id, playback_generation, 0, None),
+                        RemoteRequestV1::PlaybackPause {
+                            item_id,
+                            playback_generation,
+                        } => ("pause", item_id, playback_generation, 0, None),
+                        RemoteRequestV1::PlaybackToggle {
+                            item_id,
+                            playback_generation,
+                        } => ("toggle-play", item_id, playback_generation, 0, None),
+                        RemoteRequestV1::PlaybackSeekRelative {
+                            item_id,
+                            playback_generation,
+                            delta_seconds,
+                        } => (
+                            "seek-relative",
+                            item_id,
+                            playback_generation,
+                            delta_seconds,
+                            None,
+                        ),
+                        RemoteRequestV1::PlaybackSeekAbsolute {
+                            item_id,
+                            playback_generation,
+                            target_seconds,
+                        } => (
+                            "seek-absolute",
+                            item_id,
+                            playback_generation,
+                            0,
+                            Some(target_seconds),
+                        ),
+                        RemoteRequestV1::PlaybackNext {
+                            playback_generation,
+                        } => (
+                            "next-track",
+                            snapshot
+                                .current_item
+                                .as_ref()
+                                .map(|item| item.id.clone())
+                                .unwrap_or_default(),
+                            playback_generation,
+                            0,
+                            None,
+                        ),
+                        _ => unreachable!("playback request group changed"),
+                    };
                 return internet_remote_reply(
                     data,
                     &validation,
@@ -3927,6 +3947,7 @@ impl AppState {
                         "playback_generation": playback_generation,
                         "item_id": item_id,
                         "delta_seconds": delta_seconds,
+                        "target_seconds": target_seconds,
                     })),
                     false,
                 );
@@ -5199,6 +5220,29 @@ mod tests {
             json!("player_control")
         );
         assert_eq!(playback.result["_host_effect"]["delta_seconds"], json!(10));
+
+        let absolute_seek = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            4,
+            "playback.seek_absolute",
+            json!({
+                "item_id": completion.result["data"]["current_item"]["id"],
+                "playback_generation": completion.result["data"]["playback_generation"],
+                "target_seconds": 42,
+            }),
+            14.0,
+        );
+        assert!(!absolute_seek.committed);
+        assert_eq!(
+            absolute_seek.result["_host_effect"]["action"],
+            json!("seek-absolute")
+        );
+        assert_eq!(
+            absolute_seek.result["_host_effect"]["target_seconds"],
+            json!(42)
+        );
     }
 
     #[test]
@@ -5248,6 +5292,24 @@ mod tests {
             json!("b"),
         );
 
+        let stale_absolute_seek = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playback.seek_absolute",
+            json!({
+                "item_id": "a",
+                "playback_generation": program_a.playback_generation,
+                "target_seconds": 42,
+            }),
+            12.5,
+        );
+        assert_eq!(stale_absolute_seek.result["accepted"], json!(false));
+        assert_eq!(stale_absolute_seek.result["stale"], json!(true));
+        assert!(stale_absolute_seek.result.get("_host_effect").is_none());
+        assert_eq!(state.data, before_stale_playback);
+
         let stale_incarnation = program_b
             .current_item
             .as_ref()
@@ -5283,7 +5345,7 @@ mod tests {
 
         for (seq, kind, body) in [
             (
-                2,
+                3,
                 "player.set_audio_variant",
                 json!({
                     "item_id": "b",
@@ -5293,7 +5355,7 @@ mod tests {
                 }),
             ),
             (
-                3,
+                4,
                 "cache.retry",
                 json!({
                     "item_id": "b",

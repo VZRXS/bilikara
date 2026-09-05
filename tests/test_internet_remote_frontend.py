@@ -176,6 +176,19 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn(
             "playback_generation: Number(body.playback_generation)", control
         )
+        self.assertIn('"seek-absolute": "playback.seek_absolute"', control)
+        self.assertIn(
+            'if (action === "seek-absolute") payload.target_seconds =', control
+        )
+        self.assertIn("Math.round(Number(body.target_seconds || 0))", control)
+        player_control_end = self.remote_transport.index(
+            'url.pathname === "/api/player/next"', control_start
+        )
+        player_control_route = self.remote_transport[
+            control_start:player_control_end
+        ]
+        self.assertEqual(player_control_route.count("response = await request("), 1)
+        self.assertNotIn("nativeFetch(", player_control_route)
 
         cache_start = self.remote_transport.index(
             'url.pathname === "/api/cache/retry"'

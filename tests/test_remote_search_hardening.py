@@ -27,9 +27,6 @@ class RemoteSearchHardeningTest(unittest.TestCase):
         cls.sync_source = cls._slice(
             "function syncBilikaraSearchView", "async function executeCanonicalBilikaraSearch"
         )
-        cls.drag_source = cls._slice(
-            "function makeElementDraggable", "function showFloatingControlOverlay"
-        )
 
     @classmethod
     def _slice(cls, start: str, end: str) -> str:
@@ -271,100 +268,21 @@ console.log(JSON.stringify({{
             },
         )
 
-    def test_lost_floating_control_drag_removes_document_touch_blocker(self):
-        result = self.run_node(
-            f"""
-function eventTarget() {{
-  const listeners = new Map();
-  return {{
-    listeners,
-    addEventListener(name, callback) {{
-      const callbacks = listeners.get(name) || new Set();
-      callbacks.add(callback);
-      listeners.set(name, callbacks);
-    }},
-    removeEventListener(name, callback) {{ listeners.get(name)?.delete(callback); }},
-    dispatch(name, event) {{ [...(listeners.get(name) || [])].forEach((callback) => callback(event)); }},
-  }};
-}}
-const document = eventTarget();
-document.hidden = false;
-const window = eventTarget();
-window.innerWidth = 390;
-window.innerHeight = 844;
-const elementEvents = eventTarget();
-const element = {{
-  ...elementEvents,
-  offsetWidth: 56,
-  offsetHeight: 56,
-  style: {{}},
-  classList: {{ add() {{}}, remove() {{}} }},
-  getBoundingClientRect() {{ return {{ left: 300, top: 700 }}; }},
-}};
-{self.drag_source}
-makeElementDraggable(element, () => {{}});
-
-element.dispatch("touchstart", {{
-  type: "touchstart",
-  touches: [{{ identifier: 1, clientX: 320, clientY: 730 }}],
-  changedTouches: [{{ identifier: 1, clientX: 320, clientY: 730 }}],
-}});
-const listenersDuringDrag = document.listeners.get("touchmove")?.size || 0;
-let preventedReplacementMove = 0;
-document.dispatch("touchmove", {{
-  type: "touchmove",
-  touches: [{{ identifier: 2, clientX: 100, clientY: 100 }}],
-  cancelable: true,
-  preventDefault() {{ preventedReplacementMove += 1; }},
-}});
-const listenersAfterReplacementMove = document.listeners.get("touchmove")?.size || 0;
-
-element.dispatch("touchstart", {{
-  type: "touchstart",
-  touches: [{{ identifier: 3, clientX: 320, clientY: 730 }}],
-  changedTouches: [{{ identifier: 3, clientX: 320, clientY: 730 }}],
-}});
-window.dispatch("blur", {{ type: "blur" }});
-const listenersAfterBlur = document.listeners.get("touchmove")?.size || 0;
-let preventedAfterBlur = 0;
-document.dispatch("touchmove", {{
-  type: "touchmove",
-  touches: [{{ clientX: 100, clientY: 100 }}],
-  cancelable: true,
-  preventDefault() {{ preventedAfterBlur += 1; }},
-}});
-
-element.dispatch("touchstart", {{
-  type: "touchstart",
-  touches: [{{ identifier: 4, clientX: 320, clientY: 730 }}],
-  changedTouches: [{{ identifier: 4, clientX: 320, clientY: 730 }}],
-}});
-document.hidden = true;
-document.dispatch("visibilitychange", {{ type: "visibilitychange" }});
-const listenersAfterHidden = document.listeners.get("touchmove")?.size || 0;
-
-console.log(JSON.stringify({{
-  listenersDuringDrag,
-  preventedReplacementMove,
-  listenersAfterReplacementMove,
-  listenersAfterBlur,
-  preventedAfterBlur,
-  listenersAfterHidden,
-}}));
-"""
-        )
-        self.assertEqual(
-            result,
-            {
-                "listenersDuringDrag": 1,
-                "preventedReplacementMove": 0,
-                "listenersAfterReplacementMove": 0,
-                "listenersAfterBlur": 0,
-                "preventedAfterBlur": 0,
-                "listenersAfterHidden": 0,
-            },
-        )
-
+    def test_playback_sheet_has_no_drag_or_swipe_handlers(self):
+        sheet_source = self._slice("function openPlaybackSheet", "async function startRemoteSession")
+        for forbidden in (
+            "makeElementDraggable",
+            "touchstart",
+            "touchmove",
+            "touchend",
+            "pointermove",
+            "mousedown",
+            "mousemove",
+        ):
+            self.assertNotIn(forbidden, sheet_source)
+        self.assertIn("elements.playbackDock?.addEventListener(\"click\", openPlaybackSheet)", sheet_source)
+        self.assertIn("elements.playbackSheetCollapse?.addEventListener(\"click\"", sheet_source)
+        self.assertIn("elements.playbackSheetBackdrop?.addEventListener(\"click\"", sheet_source)
 
 if __name__ == "__main__":
     unittest.main()

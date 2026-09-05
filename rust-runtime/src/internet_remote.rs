@@ -337,6 +337,11 @@ fn stale_request_target(request: &RemoteRequestV1, snapshot: &AppSnapshot) -> bo
             item_id,
             playback_generation,
             ..
+        }
+        | RemoteRequestV1::PlaybackSeekAbsolute {
+            item_id,
+            playback_generation,
+            ..
         } => !current_matches(item_id, *playback_generation),
         RemoteRequestV1::PlaybackNext {
             playback_generation,

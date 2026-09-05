@@ -112,7 +112,8 @@ console.log(JSON.stringify({{
         self.assertEqual(host_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 2)
         self.assertEqual(remote_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 2)
         self.assertIn("renderOwnerBadgeLabel(elements.currentOwner, ownerText);", remote_js)
-        self.assertIn('class="current-owner-line owner-badge-label hidden"', remote_html)
+        self.assertIn('id="current-owner" class="current-owner-line owner-badge-label playback-metadata-text hidden"', remote_html)
+        self.assertIn('data-playback-metadata-field="owner"', remote_html)
         for css_path in ("static/styles.css", "static/remote.css"):
             css = (ROOT / css_path).read_text(encoding="utf-8")
             for selector in (".owner-badge-label", ".owner-badge", ".owner-badge-name"):
@@ -1005,15 +1006,15 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         for css in (host_css, remote_css):
             self.assertIn("--rating-close-bg: rgba(109, 98, 88, 0.16);", css)
             self.assertIn("--rating-close-hover-bg: rgba(109, 98, 88, 0.28);", css)
-        for selector in (".remote-qr-popover-close", ".floating-control-close", ".rating-close"):
+        for selector in (".remote-qr-popover-close", ".binding-sheet-close", ".rating-close"):
             self.assertIn(selector, remote_css)
         shared_remote_close_rule = re.search(
-            r"\.remote-qr-popover-close,\s*\.binding-sheet-close,\s*\.rating-close,\s*"
-            r"\.floating-control-close\s*\{([^}]*)\}",
+            r"\.remote-qr-popover-close,\s*\.binding-sheet-close,\s*"
+            r"\.rating-close\s*\{([^}]*)\}",
             remote_css,
         ).group(1)
         self.assertIn("background: var(--rating-close-bg);", shared_remote_close_rule)
-        self.assertGreaterEqual(remote_css.count("background: var(--rating-close-hover-bg);"), 3)
+        self.assertGreaterEqual(remote_css.count("background: var(--rating-close-hover-bg);"), 2)
 
     def test_mobile_remote_song_detail_close_has_only_minimal_optical_correction(self):
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")

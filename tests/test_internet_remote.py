@@ -226,6 +226,36 @@ class InternetRemoteAdapterTest(unittest.TestCase):
             ],
         )
 
+    def test_absolute_seek_effect_forwards_the_exact_target_to_the_host_adapter(self):
+        context = FakeContext(
+            response(
+                effect={
+                    "kind": "player_control",
+                    "action": "seek-absolute",
+                    "playback_generation": 8,
+                    "item_id": "item-2",
+                    "delta_seconds": 0,
+                    "target_seconds": 42,
+                }
+            )
+        )
+
+        result = internet_remote.dispatch(context, "peer-one", "control", "wire")
+
+        self.assertNotIn("_host_effect", result)
+        self.assertEqual(
+            context.player_controls,
+            [
+                {
+                    "action": "seek-absolute",
+                    "playback_generation": 8,
+                    "item_id": "item-2",
+                    "delta_seconds": 0,
+                    "target_seconds": 42.0,
+                }
+            ],
+        )
+
     def test_follow_browse_effect_forwards_bounded_page_to_repository(self):
         context = FakeContext(
             response(

@@ -184,11 +184,16 @@ def _run_host_effect(
         context.cache_manager.sync_with_playlist()
         return public_response
     if kind == "player_control":
+        player_control = {
+            "action": str(effect["action"]),
+            "playback_generation": int(effect["playback_generation"]),
+            "item_id": str(effect.get("item_id") or ""),
+            "delta_seconds": int(effect.get("delta_seconds") or 0),
+        }
+        if effect.get("target_seconds") is not None:
+            player_control["target_seconds"] = float(effect["target_seconds"])
         context.issue_player_control(
-            action=str(effect["action"]),
-            playback_generation=int(effect["playback_generation"]),
-            item_id=str(effect.get("item_id") or ""),
-            delta_seconds=int(effect.get("delta_seconds") or 0),
+            **player_control,
         )
         return public_response
     if kind == "retry_cache":

@@ -104,6 +104,35 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIn("display: block", heading_rule.group(1))
         self.assertNotIn("grid-template-columns", heading_rule.group(1))
 
+    def test_quick_request_actions_match_host_primary_secondary_layout(self):
+        action_row = re.search(
+            r'<div class="action-row request-action-row">\s*'
+            r'<button type="submit" class="primary-button".*?</button>\s*'
+            r'<button type="button" id="add-next-button" class="secondary-button".*?</button>\s*'
+            r'</div>',
+            self.markup,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(action_row)
+        rule = re.search(
+            r"\.action-row\.request-action-row\s*\{([^}]*)\}",
+            self.styles,
+        )
+        self.assertIsNotNone(rule)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) max-content", rule.group(1))
+        primary = re.search(
+            r"\.request-action-row > \.primary-button\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        self.assertIn("width: 100%", primary)
+        self.assertIn("min-width: 0", primary)
+        next_button = re.search(
+            r"\.request-action-row > #add-next-button\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        self.assertIn("width: auto", next_button)
+        self.assertIn("white-space: nowrap", next_button)
+
     def test_each_secondary_tablist_has_stable_direct_ownership(self):
         expected = (
             ("remote-search-mode", "remote-search-panel", ["shared", "local"]),
@@ -180,7 +209,9 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         for form_id in ("request-form", "lark-search-form", "search-form"):
             self.assertEqual(self.markup.count(f'id="{form_id}"'), 1)
         self.assertNotIn('id="form-message"', self.markup)
-        self.assertEqual(self.markup.count('class="panel now-playing-panel"'), 1)
+        self.assertNotIn('class="panel now-playing-panel"', self.markup)
+        self.assertEqual(self.markup.count('id="playback-dock"'), 1)
+        self.assertEqual(self.markup.count('id="playback-sheet"'), 1)
         self.assertEqual(self.markup.count('class="panel queue-panel"'), 1)
         self.assertEqual(self.markup.count('class="panel gatcha-panel"'), 1)
         for stable_id in (
@@ -281,7 +312,10 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(result_rule)
         self.assertIn("max-height: none", result_rule.group(1))
         self.assertIn("overflow: visible", result_rule.group(1))
-        self.assertNotIn("height: 100dvh", self.styles)
+        document_layout_styles = self.styles[
+            : self.styles.index("/* Remote playback dock and responsive bottom sheet */")
+        ]
+        self.assertNotIn("height: 100dvh", document_layout_styles)
         self.assertNotIn("--remote-search-stage-height", self.styles)
         self.assertNotIn("remote-search-stage", self.styles + self.script)
 

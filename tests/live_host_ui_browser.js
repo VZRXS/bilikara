@@ -7479,6 +7479,8 @@ async function run() {
     const remotePageErrors = [];
     const remoteRequestUrls = [];
     let remotePlayerControlRequests = 0;
+    let remoteNextRequests = 0;
+    const remotePlayerControlPayloads = [];
     remotePage.on("console", (message) => {
       if (message.type() === "error") {
         remoteConsoleErrors.push(message.text());
@@ -7488,10 +7490,19 @@ async function run() {
     remotePage.on("request", (request) => remoteRequestUrls.push(request.url()));
     await remotePage.route("**/api/player/control", (route) => {
       remotePlayerControlRequests += 1;
+      remotePlayerControlPayloads.push(route.request().postDataJSON());
       return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ ok: false, error: "browser control proof" }),
+      });
+    });
+    await remotePage.route("**/api/player/next", (route) => {
+      remoteNextRequests += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "browser next proof" }),
       });
     });
     await remotePage.goto(`${baseUrl}/remote`, { waitUntil: "domcontentloaded" });
@@ -7525,11 +7536,35 @@ async function run() {
         elements.remoteShell.inert = false;
       }
       renderRemoteIdentity();
+      const remoteParts = Array.from(
+        { length: 12 },
+        (_, index) => "P" + (index + 1) + " responsive part title for popup scrolling",
+      );
+      const remotePages = remoteParts.map((_, index) => index + 1);
       const currentItem = {
         id: "browser-remote-item",
         item_incarnation_id: "browser-remote-incarnation",
+        display_title: "Browser Remote Playback Contract With A Deliberately Long Song Title",
+        requester_name: "Browser QA Requester With A Long Display Name",
+        owner_name: "Browser QA Uploader",
+        bvid: "BVBROWSERREMOTE",
+        cover_url: "/pic/icon.png",
+        cache_status: "ready",
+        page: 1,
+        available_pages: remotePages,
+        available_parts: remoteParts,
+        available_durations: remoteParts.map(() => 243),
+        selected_pages: remotePages,
+        selected_parts: remoteParts,
+        selected_durations: remoteParts.map(() => 243),
         video_media_url: "/browser-video.mp4",
-        audio_variants: [{ id: "browser-audio", audio_url: "/browser-audio.m4a" }],
+        audio_variants: remoteParts.map((label, index) => ({
+          id: "browser-audio-" + (index + 1),
+          page: index + 1,
+          label,
+          audio_url: "/browser-audio-" + (index + 1) + ".m4a",
+        })),
+        selected_audio_variant_id: "browser-audio-1",
       };
       state.data = {
         ...(state.data || {}),
@@ -7538,13 +7573,53 @@ async function run() {
         playback_generation: 1,
         player_status: {
           playback_generation: 1,
-          is_paused: true,
+          item_id: "browser-remote-item",
+          is_paused: false,
+          current_time: 102,
+          duration: 243,
           updated_at: 1,
         },
+        playlist: [],
+        history: [],
       };
-      renderPlayerControls(currentItem, "local");
-      renderFloatingControlTrigger(currentItem, "local");
+      state.remoteConnectionPhase = "connected";
+      render();
     });
+
+    const remoteBrandEvidence = await remotePage.evaluate(() => {
+      const brand = document.querySelector(".remote-brand");
+      const icon = brand?.querySelector(".remote-brand-phone-icon");
+      const menu = document.querySelector("#remote-menu-toggle");
+      const brandRect = brand?.getBoundingClientRect();
+      const iconRect = icon?.getBoundingClientRect();
+      const menuRect = menu?.getBoundingClientRect();
+      window.__remoteBrandIconIdentity = icon;
+      return {
+        title: document.title,
+        wordmark: brand?.querySelector(".remote-brand-wordmark")?.textContent || "",
+        label: brand?.getAttribute("aria-label") || "",
+        iconCount: brand?.querySelectorAll(".remote-brand-phone-icon").length || 0,
+        iconAriaHidden: icon?.getAttribute("aria-hidden") || "",
+        iconFocusable: icon?.getAttribute("focusable") || "",
+        iconSize: iconRect ? { width: iconRect.width, height: iconRect.height } : null,
+        overlap: brandRect && menuRect ? Math.max(0, brandRect.right - menuRect.left) : null,
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      remoteBrandEvidence.title === "bilikara remote"
+        && remoteBrandEvidence.wordmark === "bilikara"
+        && remoteBrandEvidence.label === "bilikara 远程控制"
+        && remoteBrandEvidence.iconCount === 1
+        && remoteBrandEvidence.iconAriaHidden === "true"
+        && remoteBrandEvidence.iconFocusable === "false"
+        && Math.abs(remoteBrandEvidence.iconSize.width - 22) <= 0.5
+        && Math.abs(remoteBrandEvidence.iconSize.height - 22) <= 0.5
+        && remoteBrandEvidence.overlap === 0
+        && !remoteBrandEvidence.horizontalOverflow,
+      "Remote header brand did not preserve its wordmark, phone icon, or available width",
+      remoteBrandEvidence,
+    );
 
     const remoteMenuToggle = remotePage.locator("#remote-menu-toggle");
     const remoteMenuPanel = remotePage.locator("#remote-menu-panel");
@@ -7784,6 +7859,22 @@ async function run() {
     await remotePage.evaluate(() => closeRemoteContextualInfo());
     await remotePage.locator('#language-switch button[data-language="en"]').click();
     assert(await remoteMenuPanel.isVisible(), "Remote language interaction closed the menu");
+    const remoteBrandAfterLanguage = await remotePage.evaluate(() => ({
+      title: document.title,
+      label: document.querySelector(".remote-brand")?.getAttribute("aria-label") || "",
+      wordmark: document.querySelector(".remote-brand-wordmark")?.textContent || "",
+      sameIcon: document.querySelector(".remote-brand-phone-icon") === window.__remoteBrandIconIdentity,
+      iconCount: document.querySelectorAll(".remote-brand-phone-icon").length,
+    }));
+    assert(
+      remoteBrandAfterLanguage.title === "bilikara remote"
+        && remoteBrandAfterLanguage.label === "bilikara remote control"
+        && remoteBrandAfterLanguage.wordmark === "bilikara"
+        && remoteBrandAfterLanguage.sameIcon
+        && remoteBrandAfterLanguage.iconCount === 1,
+      "Remote language switching replaced or removed the phone brand icon",
+      remoteBrandAfterLanguage,
+    );
     await remotePage.evaluate(() => {
       closeRemoteContextualInfo();
       setLanguage("zh");
@@ -7809,39 +7900,553 @@ async function run() {
     );
     await remoteMenuToggle.click();
 
-    const floatingTrigger = remotePage.locator("#floating-control-trigger");
-    const floatingOverlay = remotePage.locator("#floating-control-overlay");
-    await floatingTrigger.click();
-    assert(await floatingOverlay.isVisible(), "Remote floating playback console did not open");
-    await remotePage.waitForTimeout(500);
-    const floatingToggle = remotePage.locator('#floating-player-control-panel [data-control-action="toggle-play"]');
-    assert(await floatingToggle.isVisible() && !await floatingToggle.isDisabled(), "floating playback operation was unavailable");
-    await floatingToggle.click();
+    const playbackDock = remotePage.locator("#playback-dock");
+    const playbackSheet = remotePage.locator("#playback-sheet");
+    assert(await playbackDock.isVisible(), "Remote playback dock did not appear for the current item");
+    const dockEvidence = await playbackDock.evaluate((dock) => {
+      const progressStyle = getComputedStyle(dock.querySelector("#playback-dock-progress"));
+      const coverStyle = getComputedStyle(dock.querySelector(".playback-dock-cover"));
+      const bounds = (selector) => {
+        const rect = dock.querySelector(selector)?.getBoundingClientRect();
+        return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+      };
+      const dockRect = dock.getBoundingClientRect();
+      const coverRect = dock.querySelector(".playback-dock-cover").getBoundingClientRect();
+      const copyRect = dock.querySelector(".playback-dock-copy").getBoundingClientRect();
+      const title = dock.querySelector("#playback-dock-title");
+      const requester = dock.querySelector("#playback-dock-requester");
+      return {
+        bounds: { x: dockRect.x, y: dockRect.y, width: dockRect.width, height: dockRect.height },
+        cover: bounds(".playback-dock-cover"),
+        title: bounds("#playback-dock-title"),
+        requester: bounds("#playback-dock-requester"),
+        clock: bounds("#playback-dock-clock"),
+        titleText: dock.querySelector("#playback-dock-title")?.textContent || "",
+        requesterText: dock.querySelector("#playback-dock-requester")?.textContent || "",
+        clockText: dock.querySelector("#playback-dock-clock")?.textContent || "",
+        progressTransform: progressStyle.transform,
+        progressBorderRadius: progressStyle.borderRadius,
+        progressZIndex: progressStyle.zIndex,
+        coverZIndex: coverStyle.zIndex,
+        coverInsets: {
+          top: coverRect.top - dockRect.top,
+          right: copyRect.left - coverRect.right,
+          bottom: dockRect.bottom - coverRect.bottom,
+          left: coverRect.left - dockRect.left,
+        },
+        marquee: {
+          titleOverflow: title.dataset.textOverflow,
+          requesterOverflow: requester.dataset.textOverflow,
+          titleAnimation: getComputedStyle(title.querySelector(".playback-dock-marquee-text")).animationName,
+          requesterAnimation: getComputedStyle(requester.querySelector(".playback-dock-marquee-text")).animationName,
+        },
+        ariaExpanded: dock.getAttribute("aria-expanded"),
+      };
+    });
+    assert(
+      dockEvidence.bounds.height >= 64 && dockEvidence.bounds.height <= 70
+        && dockEvidence.cover.width >= 81 && dockEvidence.cover.width <= 83
+        && dockEvidence.cover.height >= 45 && dockEvidence.cover.height <= 47
+        && Math.abs((dockEvidence.cover.width / dockEvidence.cover.height) - (16 / 9)) < 0.02
+        && dockEvidence.titleText.includes("Browser Remote Playback")
+        && dockEvidence.requesterText.includes("Browser QA Requester")
+        && dockEvidence.clockText.includes("/")
+        && dockEvidence.progressTransform !== "none",
+      "Remote playback dock did not render its compact summary contract",
+      dockEvidence,
+    );
+    assert(
+      Math.max(...Object.values(dockEvidence.coverInsets))
+          - Math.min(...Object.values(dockEvidence.coverInsets)) <= 0.5,
+      "Remote playback Dock cover did not retain equal top/right/bottom/left spacing",
+      dockEvidence,
+    );
+    assert(
+      dockEvidence.marquee.titleOverflow === "false"
+        && dockEvidence.marquee.requesterOverflow === "false"
+        && dockEvidence.marquee.titleAnimation === "none"
+        && dockEvidence.marquee.requesterAnimation === "none",
+      "Remote playback Dock animated copy that already fit",
+      dockEvidence,
+    );
+    assert(
+      dockEvidence.progressBorderRadius === "0px"
+        && Number(dockEvidence.coverZIndex) > Number(dockEvidence.progressZIndex),
+      "Remote playback Dock progress rounded its leading edge or painted above the cover",
+      dockEvidence,
+    );
+
+    const requestsBeforeDockOpen = remoteRequestUrls.length;
+    const controlsBeforeDockOpen = remotePlayerControlRequests;
+    await playbackDock.click();
+    await playbackSheet.waitFor({ state: "visible" });
+    await remotePage.waitForTimeout(300);
+    assert(
+      remoteRequestUrls.length === requestsBeforeDockOpen
+        && remotePlayerControlRequests === controlsBeforeDockOpen,
+      "Opening the playback sheet dispatched a network or playback request",
+      { requestsBeforeDockOpen, requestsAfter: remoteRequestUrls.length, remotePlayerControlRequests },
+    );
+    const toastLayerEvidence = await remotePage.evaluate(() => {
+      setAppMessage("Playback toast layer evidence", true);
+      const toast = elements.appToast.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        toast.left + (toast.width / 2),
+        toast.top + (toast.height / 2),
+      );
+      const zIndex = (element) => Number(getComputedStyle(element).zIndex);
+      const evidence = {
+        topLayerHit: hit === elements.appToast || elements.appToast.contains(hit),
+        toast: zIndex(elements.appToast),
+        dock: zIndex(elements.playbackDock),
+        sheet: zIndex(elements.playbackSheet),
+        identity: zIndex(elements.remoteIdentityModal),
+      };
+      setAppMessage("");
+      return evidence;
+    });
+    assert(
+      toastLayerEvidence.topLayerHit
+        && toastLayerEvidence.toast > toastLayerEvidence.dock
+        && toastLayerEvidence.toast > toastLayerEvidence.sheet
+        && toastLayerEvidence.toast > toastLayerEvidence.identity,
+      "Remote toast was not the topmost feedback layer",
+      toastLayerEvidence,
+    );
+    const sheetEvidence = await remotePage.evaluate(() => {
+      const sheet = elements.playbackSheetPanel.getBoundingClientRect();
+      const collapse = elements.playbackSheetCollapse.getBoundingClientRect();
+      const rating = elements.openRatingButton.getBoundingClientRect();
+      const refresh = elements.refreshButton.getBoundingClientRect();
+      const summary = document.querySelector(".playback-sheet-summary").getBoundingClientRect();
+      const cover = document.querySelector(".playback-sheet-cover").getBoundingClientRect();
+      const variants = elements.audioVariantBar.getBoundingClientRect();
+      const controls = elements.playerControlPanel.getBoundingClientRect();
+      const transportRow = elements.playerControlPanel.querySelector(".player-control-row");
+      const transportRect = transportRow.getBoundingClientRect();
+      const transportActions = [...transportRow.querySelectorAll("[data-control-action]")];
+      const transportBounds = transportActions.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.dataset.controlAction,
+          delta: element.dataset.delta || "",
+          tag: element.tagName,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        };
+      });
+      const transportIconMetrics = [...transportRow.querySelectorAll("button[data-control-action]")].map((button) => {
+        const svg = [...button.querySelectorAll("svg")].find((icon) => !icon.classList.contains("hidden"));
+        const buttonRect = button.getBoundingClientRect();
+        const svgRect = svg.getBoundingClientRect();
+        const path = svg.querySelector("path");
+        const pathRect = path?.getBoundingClientRect?.();
+        const text = svg.querySelector("text");
+        const textBox = text?.getBBox?.();
+        const textRect = text?.getBoundingClientRect?.();
+        return {
+          action: button.dataset.controlAction,
+          delta: button.dataset.delta || "",
+          width: svgRect.width,
+          height: svgRect.height,
+          midpointDeltaX: Math.abs(
+            (svgRect.left + svgRect.width / 2) - (buttonRect.left + buttonRect.width / 2)
+          ),
+          midpointDeltaY: Math.abs(
+            (svgRect.top + svgRect.height / 2) - (buttonRect.top + buttonRect.height / 2)
+          ),
+          paintedMidpointDeltaY: pathRect ? Math.abs(
+            (pathRect.top + pathRect.height / 2) - (buttonRect.top + buttonRect.height / 2)
+          ) : null,
+          textMidpointDeltaX: textBox ? Math.abs((textBox.x + textBox.width / 2) - 12) : null,
+          textMidpointDeltaY: textRect ? Math.abs(
+            (textRect.top + textRect.height / 2) - (buttonRect.top + buttonRect.height / 2)
+          ) : null,
+          textUsesCentralBaseline: text?.getAttribute("dominant-baseline") === "central",
+        };
+      });
+      const secondary = document.querySelector(".playback-sheet-secondary").getBoundingClientRect();
+      const primary = document.querySelector(".playback-sheet-primary").getBoundingClientRect();
+      const sheetBody = elements.playbackSheetBody.getBoundingClientRect();
+      const sheetBodyStyle = getComputedStyle(elements.playbackSheetBody);
+      const settingsCard = document.querySelector(".playback-sheet-settings-card").getBoundingClientRect();
+      const playbackGroup = document.querySelector(".playback-sheet-playback-group").getBoundingClientRect();
+      const settingButtonSurface = (element) => {
+        const style = getComputedStyle(element);
+        return {
+          backgroundColor: style.backgroundColor,
+          borderColor: style.borderColor,
+          borderRadius: style.borderRadius,
+          borderStyle: style.borderStyle,
+          borderWidth: style.borderWidth,
+          opacity: style.opacity,
+        };
+      };
+      const settingPanels = [...document.querySelectorAll(".playback-sheet-settings-card > .remote-setting-panel")]
+        .map((panel) => {
+          const rect = panel.getBoundingClientRect();
+          const header = panel.querySelector(".remote-setting-header").getBoundingClientRect();
+          return { id: panel.id, top: rect.top, bottom: rect.bottom, headerHeight: header.height };
+        });
+      return {
+        sheet: { x: sheet.x, y: sheet.y, width: sheet.width, height: sheet.height },
+        collapseMidpointDelta: Math.abs((collapse.x + collapse.width / 2) - (sheet.x + sheet.width / 2)),
+        collapseSize: { width: collapse.width, height: collapse.height },
+        headerActionOrder: [rating.left, rating.right, refresh.left, refresh.right],
+        refreshRightDelta: Math.abs(sheet.right - refresh.right - 12),
+        cover: { width: cover.width, height: cover.height },
+        activeElement: document.activeElement?.id || "",
+        bodyOverflowY: getComputedStyle(elements.playbackSheetBody).overflowY,
+        bodyScrollHeight: elements.playbackSheetBody.scrollHeight,
+        bodyClientHeight: elements.playbackSheetBody.clientHeight,
+        bodyScrollWidth: elements.playbackSheetBody.scrollWidth,
+        bodyClientWidth: elements.playbackSheetBody.clientWidth,
+        bodyScrollLeft: elements.playbackSheetBody.scrollLeft,
+        order: [summary.top, variants.top, controls.top],
+        secondaryTop: secondary.top,
+        progressTimes: {
+          current: elements.playbackSheetCurrentTime.textContent?.trim() || "",
+          duration: elements.playbackSheetDuration.textContent?.trim() || "",
+        },
+        progressRangeCount: elements.playerControlPanel.querySelectorAll('input[type="range"]').length,
+        transportLayout: elements.playbackSheetPanel.dataset.transportLayout || "compact",
+        adaptiveLayout: state.playbackMetadataLayoutEvidence,
+        playbackGroupBottom: playbackGroup.bottom,
+        transportRow: {
+          width: transportRect.width,
+          height: transportRect.height,
+          clientWidth: transportRow.clientWidth,
+          scrollWidth: transportRow.scrollWidth,
+          actions: transportBounds,
+          gaps: transportBounds.slice(1).map((entry, index) => entry.left - transportBounds[index].right),
+          svgButtonCount: transportRow.querySelectorAll("button > svg").length,
+          iconMetrics: transportIconMetrics,
+        },
+        readyCacheHidden: elements.currentCacheState.classList.contains("hidden"),
+        settingsCard: { top: settingsCard.top, bottom: settingsCard.bottom },
+        columnOuterInsets: {
+          left: primary.left - sheetBody.left,
+          right: sheetBody.right - secondary.right,
+          gutter: sheetBodyStyle.scrollbarGutter,
+        },
+        settingIcons: {
+          lockCount: elements.remoteAvDelayLockButton.querySelectorAll("[data-av-lock-icon]").length,
+          lockVisible: [...elements.remoteAvDelayLockButton.querySelectorAll("[data-av-lock-icon]")]
+            .filter((icon) => !icon.classList.contains("hidden")).length,
+          muteCount: elements.remoteVolumeMuteButton.querySelectorAll("[data-volume-icon]").length,
+          muteVisible: [...elements.remoteVolumeMuteButton.querySelectorAll("[data-volume-icon]")]
+            .filter((icon) => !icon.classList.contains("hidden")).length,
+          emojiText: elements.remoteAvDelayLockButton.textContent.trim()
+            + elements.remoteVolumeMuteButton.textContent.trim(),
+        },
+        avPeerSurfaces: {
+          reset: settingButtonSurface(elements.remoteAvOffsetResetButton),
+          lock: settingButtonSurface(elements.remoteAvDelayLockButton),
+        },
+        settingPanels,
+        transport: transportBounds.map(({ action, delta, tag }) => ({ action, delta, tag })),
+      };
+    });
+    assert(
+      sheetEvidence.collapseMidpointDelta <= 1
+        && sheetEvidence.collapseSize.width >= 44
+        && sheetEvidence.collapseSize.height >= 44
+        && sheetEvidence.headerActionOrder[1] <= sheetEvidence.headerActionOrder[2]
+        && sheetEvidence.refreshRightDelta <= 1
+        && Math.abs((sheetEvidence.cover.width / sheetEvidence.cover.height) - (16 / 9)) < 0.02
+        && sheetEvidence.activeElement === "playback-sheet-collapse"
+        && sheetEvidence.bodyOverflowY === "auto"
+        && sheetEvidence.bodyScrollWidth <= sheetEvidence.bodyClientWidth
+        && sheetEvidence.bodyScrollLeft === 0
+        && sheetEvidence.order.every((value, index, values) => index === 0 || value >= values[index - 1])
+        && /^\d+(?::\d{2})+$/.test(sheetEvidence.progressTimes.current)
+        && sheetEvidence.progressTimes.duration === "4:03"
+        && sheetEvidence.progressRangeCount === 1
+        && sheetEvidence.transportRow.scrollWidth <= sheetEvidence.transportRow.clientWidth
+        && sheetEvidence.transportRow.height >= 48
+        && sheetEvidence.transportRow.actions.every(({ width, height, tag }) => (
+          tag === "INPUT" ? width >= 88 && height >= 44 : width >= 44 && height >= 44
+        ))
+        && (
+          (sheetEvidence.transportLayout === "compact"
+            && sheetEvidence.transportRow.height <= 49
+            && sheetEvidence.transportRow.gaps.every((gap) => gap >= 4 && gap <= 7))
+          || (sheetEvidence.transportLayout === "spacious"
+            && sheetEvidence.transportRow.height >= 103
+            && sheetEvidence.transportRow.actions[3].top < sheetEvidence.transportRow.actions[0].top
+            && sheetEvidence.transportRow.actions[3].width > sheetEvidence.adaptiveLayout.compactProgressWidth + 95
+            && Math.abs(sheetEvidence.transportRow.actions[4].right
+              - (sheetEvidence.transportRow.width + sheetEvidence.transportRow.actions[0].left)) <= 1
+            && sheetEvidence.adaptiveLayout.spareHeight
+              >= sheetEvidence.adaptiveLayout.spaciousExtraHeight + 10 - 0.5
+            && Math.abs(sheetEvidence.playbackGroupBottom - sheetEvidence.settingsCard.bottom) <= 1)
+        )
+        && sheetEvidence.transportRow.svgButtonCount === 5
+        && sheetEvidence.transportRow.iconMetrics.every((icon) => (
+          icon.midpointDeltaX <= 0.5 && icon.midpointDeltaY <= 0.5
+        ))
+        && sheetEvidence.transportRow.iconMetrics
+          .filter((icon) => icon.action === "seek-relative")
+          .every((icon) => (
+            icon.width >= 26
+            && icon.paintedMidpointDeltaY <= 0.5
+            && icon.textMidpointDeltaX <= 0.1
+            && icon.textMidpointDeltaY <= 0.5
+            && icon.textUsesCentralBaseline
+          ))
+        && sheetEvidence.transportRow.iconMetrics
+          .find((icon) => icon.action === "toggle-play").width >= 30
+        && sheetEvidence.transportRow.iconMetrics
+          .find((icon) => icon.action === "next-track").width >= 28
+        && sheetEvidence.readyCacheHidden
+        && Math.abs(sheetEvidence.columnOuterInsets.left - sheetEvidence.columnOuterInsets.right) <= 1
+        && sheetEvidence.columnOuterInsets.gutter.includes("both-edges")
+        && sheetEvidence.settingIcons.lockCount === 2
+        && sheetEvidence.settingIcons.lockVisible === 1
+        && sheetEvidence.settingIcons.muteCount === 2
+        && sheetEvidence.settingIcons.muteVisible === 1
+        && sheetEvidence.settingIcons.emojiText === ""
+        && sheetEvidence.avPeerSurfaces.reset.borderRadius
+          === sheetEvidence.avPeerSurfaces.lock.borderRadius
+        && sheetEvidence.avPeerSurfaces.reset.borderStyle
+          === sheetEvidence.avPeerSurfaces.lock.borderStyle
+        && sheetEvidence.avPeerSurfaces.reset.borderWidth
+          === sheetEvidence.avPeerSurfaces.lock.borderWidth
+        && sheetEvidence.avPeerSurfaces.lock.borderStyle !== "none"
+        && sheetEvidence.settingPanels.length === 3
+        && sheetEvidence.settingPanels.every((panel, index, panels) => (
+          panel.headerHeight <= 24
+          && panel.top >= sheetEvidence.settingsCard.top
+          && panel.bottom <= sheetEvidence.settingsCard.bottom + 0.5
+          && (index === 0 || panel.top >= panels[index - 1].bottom)
+        ))
+        && JSON.stringify(sheetEvidence.transport) === JSON.stringify([
+          { action: "seek-relative", delta: "-15", tag: "BUTTON" },
+          { action: "toggle-play", delta: "", tag: "BUTTON" },
+          { action: "seek-relative", delta: "15", tag: "BUTTON" },
+          { action: "seek-absolute", delta: "", tag: "INPUT" },
+          { action: "next-track", delta: "", tag: "BUTTON" },
+        ]),
+      "Remote playback sheet lost its centered header, ordering, or control ownership",
+      sheetEvidence,
+    );
+
+    const remoteVariantCollapsedEvidence = await remotePage.evaluate(() => {
+      const bar = elements.audioVariantBar.getBoundingClientRect();
+      const summary = elements.audioVariantBar.querySelector(".audio-variant-summary");
+      const summaryLabel = summary.querySelector(".audio-variant-summary-label");
+      const summaryRect = summary.getBoundingClientRect();
+      const toggle = elements.audioVariantBar.querySelector(".audio-variant-toggle");
+      const toggleRect = toggle.getBoundingClientRect();
+      const popover = elements.audioVariantPopover;
+      const controls = elements.playerControlPanel.getBoundingClientRect();
+      const primary = document.querySelector(".playback-sheet-primary").getBoundingClientRect();
+      return {
+        barHeight: bar.height,
+        summaryTag: summary.tagName,
+        summaryHeight: summaryRect.height,
+        summaryText: summary.textContent.trim(),
+        summaryWhiteSpace: getComputedStyle(summaryLabel).whiteSpace,
+        summaryOverflowStyle: getComputedStyle(summaryLabel).overflow,
+        summaryTextOverflow: getComputedStyle(summaryLabel).textOverflow,
+        summaryOverflow: summaryLabel.scrollWidth > summaryLabel.clientWidth,
+        toggleSize: { width: toggleRect.width, height: toggleRect.height },
+        toggleExpanded: toggle.getAttribute("aria-expanded"),
+        toggleControls: toggle.getAttribute("aria-controls"),
+        popoverHidden: popover.hidden,
+        variantButtonCount: popover.querySelectorAll(".audio-variant-button").length,
+        allButtonsOwnedByPopover: elements.audioVariantBar.querySelectorAll(".audio-variant-button").length === 0
+          && popover.querySelectorAll(".audio-variant-button").length === 12,
+        popoverParent: popover.parentElement?.id || "",
+        controlsTop: controls.top,
+        primaryHeight: primary.height,
+      };
+    });
+    assert(
+      remoteVariantCollapsedEvidence.barHeight >= 44 && remoteVariantCollapsedEvidence.barHeight <= 45
+        && remoteVariantCollapsedEvidence.summaryTag === "SPAN"
+        && remoteVariantCollapsedEvidence.summaryHeight === 44
+        && remoteVariantCollapsedEvidence.summaryText.startsWith("P1 ")
+        && remoteVariantCollapsedEvidence.summaryWhiteSpace === "nowrap"
+        && remoteVariantCollapsedEvidence.summaryOverflowStyle === "hidden"
+        && remoteVariantCollapsedEvidence.summaryTextOverflow === "ellipsis"
+        && remoteVariantCollapsedEvidence.toggleSize.width >= 44
+        && remoteVariantCollapsedEvidence.toggleSize.height >= 44
+        && remoteVariantCollapsedEvidence.toggleExpanded === "false"
+        && remoteVariantCollapsedEvidence.toggleControls === "audio-variant-popover"
+        && remoteVariantCollapsedEvidence.popoverHidden
+        && remoteVariantCollapsedEvidence.variantButtonCount === 12
+        && remoteVariantCollapsedEvidence.allButtonsOwnedByPopover
+        && remoteVariantCollapsedEvidence.popoverParent === "playback-sheet-panel",
+      "Remote multi-part selector was not one stable summary row with one hidden button owner",
+      remoteVariantCollapsedEvidence,
+    );
+
+    const commandsBeforeVariantPopup = remotePlayerControlRequests + remoteNextRequests;
+    const remoteVariantToggle = remotePage.locator("#audio-variant-bar .audio-variant-toggle");
+    await remoteVariantToggle.click();
+    await remotePage.waitForTimeout(100);
+    const remoteVariantPopup = remotePage.locator("#audio-variant-popover");
+    assert(await remoteVariantPopup.isVisible(), "Remote multi-part toggle did not open its popup");
+    const remoteVariantPopupEvidence = await remotePage.evaluate(() => {
+      const rect = (element) => {
+        const value = element.getBoundingClientRect();
+        return {
+          left: value.left,
+          top: value.top,
+          right: value.right,
+          bottom: value.bottom,
+          width: value.width,
+          height: value.height,
+        };
+      };
+      const bar = elements.audioVariantBar;
+      const popover = elements.audioVariantPopover;
+      const body = elements.playbackSheetBody;
+      const controls = elements.playerControlPanel;
+      const primary = document.querySelector(".playback-sheet-primary");
+      const popoverRect = rect(popover);
+      const bodyRect = rect(body);
+      const style = getComputedStyle(popover);
+      const firstLabel = popover.querySelector(".audio-variant-button-label");
+      const firstLabelStyle = getComputedStyle(firstLabel);
+      return {
+        expanded: state.audioVariantBarExpanded && bar.classList.contains("is-expanded"),
+        direction: popover.dataset.popoverDirection,
+        popover: popoverRect,
+        body: bodyRect,
+        overflowY: style.overflowY,
+        position: style.position,
+        parentId: popover.parentElement?.id || "",
+        backgroundAlpha: (() => {
+          const match = style.backgroundColor.match(/[\d.]+/g) || [];
+          return match.length > 3 ? Number(match[3]) : 1;
+        })(),
+        clientHeight: popover.clientHeight,
+        scrollHeight: popover.scrollHeight,
+        firstLabelEllipsis: {
+          overflow: firstLabel.scrollWidth > firstLabel.clientWidth,
+          overflowStyle: firstLabelStyle.overflow,
+          textOverflow: firstLabelStyle.textOverflow,
+          whiteSpace: firstLabelStyle.whiteSpace,
+        },
+        controlsTop: controls.getBoundingClientRect().top,
+        primaryHeight: primary.getBoundingClientRect().height,
+        barHeight: bar.getBoundingClientRect().height,
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      remoteVariantPopupEvidence.expanded
+        && remoteVariantPopupEvidence.direction === "up"
+        && remoteVariantPopupEvidence.position === "absolute"
+        && remoteVariantPopupEvidence.parentId === "playback-sheet-panel"
+        && remoteVariantPopupEvidence.popover.left >= remoteVariantPopupEvidence.body.left - 1
+        && remoteVariantPopupEvidence.popover.right <= remoteVariantPopupEvidence.body.right + 1
+        && remoteVariantPopupEvidence.popover.top >= remoteVariantPopupEvidence.body.top - 1
+        && remoteVariantPopupEvidence.popover.bottom <= remoteVariantPopupEvidence.body.bottom + 1
+        && remoteVariantPopupEvidence.overflowY === "auto"
+        && remoteVariantPopupEvidence.backgroundAlpha >= 0.97
+        && remoteVariantPopupEvidence.scrollHeight > remoteVariantPopupEvidence.clientHeight
+        && remoteVariantPopupEvidence.firstLabelEllipsis.overflow
+        && remoteVariantPopupEvidence.firstLabelEllipsis.overflowStyle === "hidden"
+        && remoteVariantPopupEvidence.firstLabelEllipsis.textOverflow === "ellipsis"
+        && remoteVariantPopupEvidence.firstLabelEllipsis.whiteSpace === "nowrap"
+        && Math.abs(remoteVariantPopupEvidence.controlsTop - remoteVariantCollapsedEvidence.controlsTop) <= 0.5
+        && Math.abs(remoteVariantPopupEvidence.primaryHeight - remoteVariantCollapsedEvidence.primaryHeight) <= 0.5
+        && remoteVariantPopupEvidence.barHeight >= 44
+        && remoteVariantPopupEvidence.barHeight <= 45
+        && !remoteVariantPopupEvidence.horizontalOverflow,
+      "Remote multi-part popup was not bounded, opaque, scrollable, or layout-neutral",
+      remoteVariantPopupEvidence,
+    );
+    await remoteVariantPopup.hover();
+    await remotePage.mouse.wheel(0, 180);
+    await remotePage.waitForTimeout(80);
+    assert(
+      await remoteVariantPopup.evaluate((popover) => popover.scrollTop > 0),
+      "Remote multi-part popup did not scroll through the full list",
+    );
+    await remotePage.keyboard.press("Escape");
+    assert(
+      await playbackSheet.isVisible()
+        && !await remoteVariantPopup.isVisible()
+        && await remoteVariantToggle.getAttribute("aria-expanded") === "false"
+        && await remotePage.evaluate(() => document.activeElement?.classList.contains("audio-variant-toggle")),
+      "Escape did not retire only the multi-part popup and restore its toggle focus",
+    );
+    assert(
+      remotePlayerControlRequests + remoteNextRequests === commandsBeforeVariantPopup,
+      "Opening or scrolling the multi-part popup dispatched a playback command",
+      { remotePlayerControlRequests, remoteNextRequests },
+    );
+
+    const retainedToggle = remotePage.locator('#player-control-panel [data-control-action="toggle-play"]');
+    assert(await retainedToggle.isVisible() && !await retainedToggle.isDisabled(), "retained playback operation was unavailable");
+    await retainedToggle.click();
     await remotePage.waitForTimeout(100);
     assert(
       remotePlayerControlRequests === 1,
-      "floating playback operation did not dispatch its existing request",
-      {
-        remoteRequestUrls,
-        state: await remotePage.evaluate(() => ({
-          currentItem: state.data?.current_item,
-          playbackMode: state.data?.playback_mode,
-          playbackGeneration: state.data?.playback_generation,
-          buttonDisabled: elements.floatingPlayerControlPanel
-            ?.querySelector('[data-control-action="toggle-play"]')?.disabled,
-        })),
-      },
+      "retained playback operation did not dispatch exactly one existing request",
+      { remoteRequestUrls, remotePlayerControlRequests },
     );
-    assert(await floatingOverlay.isVisible(), "floating playback operation closed its console");
+    assert(await playbackSheet.isVisible(), "playback operation closed its sheet");
+
+    const absoluteSeek = remotePage.locator("#playback-sheet-seek");
+    await absoluteSeek.evaluate((seek) => {
+      seek.value = "42";
+      seek.dispatchEvent(new Event("input", { bubbles: true }));
+      seek.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await remotePage.waitForTimeout(100);
+    assert(
+      remotePlayerControlRequests === 2
+        && remotePlayerControlPayloads.at(-1)?.action === "seek-absolute"
+        && remotePlayerControlPayloads.at(-1)?.target_seconds === 42,
+      "absolute range seek did not dispatch exactly one exact-target request",
+      { remotePlayerControlRequests, remotePlayerControlPayloads },
+    );
+
+    const keyboardSeekBefore = remotePlayerControlRequests;
+    await absoluteSeek.focus();
+    const keyboardSeekStart = Number(await absoluteSeek.inputValue());
+    await absoluteSeek.press("ArrowRight");
+    await remotePage.waitForTimeout(100);
+    assert(
+      remotePlayerControlRequests === keyboardSeekBefore + 1
+        && remotePlayerControlPayloads.at(-1)?.action === "seek-absolute"
+        && remotePlayerControlPayloads.at(-1)?.target_seconds === keyboardSeekStart + 1,
+      "keyboard absolute seek did not dispatch exactly one exact-target request",
+      { keyboardSeekStart, remotePlayerControlRequests, remotePlayerControlPayloads },
+    );
+
+    for (const delta of ["-15", "15"]) {
+      const before = remotePlayerControlRequests;
+      await remotePage.locator(`[data-control-action="seek-relative"][data-delta="${delta}"]`).click();
+      await remotePage.waitForTimeout(50);
+      assert(
+        remotePlayerControlRequests === before + 1
+          && remotePlayerControlPayloads.at(-1)?.delta_seconds === Number(delta),
+        "relative seek did not dispatch exactly one request",
+        { delta, remotePlayerControlRequests, remotePlayerControlPayloads },
+      );
+    }
+    await remotePage.locator('[data-control-action="next-track"]').click();
+    await remotePage.waitForTimeout(50);
+    assert(remoteNextRequests === 1, "Next did not dispatch exactly one request", { remoteNextRequests });
 
     const remoteInfoRegions = remotePage.locator(
-      "#floating-control-overlay .remote-contextual-info-region",
+      "#playback-sheet .remote-contextual-info-region",
     );
     const remoteInfoButtons = remoteInfoRegions.locator(".remote-info-button");
     const allRemoteInfoButtons = remotePage.locator(
-      "#binding-sheet .remote-info-button, #floating-control-overlay .remote-info-button",
+      "#binding-sheet .remote-info-button, #playback-sheet .remote-info-button",
     );
-    assert(await allRemoteInfoButtons.count() === 4, "Remote lost a contextual information trigger");
+    assert(await allRemoteInfoButtons.count() === 3, "Remote contextual information trigger count changed unexpectedly");
     assert(
       await allRemoteInfoButtons.locator(".contextual-info-glyph").allTextContents()
         .then((glyphs) => glyphs.every((glyph) => glyph.trim() === "i")),
@@ -7867,10 +8472,84 @@ async function run() {
       "Remote tooltip escaped the viewport",
       { remoteTooltipBox, remoteViewport },
     );
+    const remoteTooltipLayerEvidence = await firstRemoteTooltip.evaluate((tooltip) => {
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const tooltipStyle = getComputedStyle(tooltip);
+      const textRange = document.createRange();
+      textRange.selectNodeContents(tooltip);
+      const contentWidth = textRange.getBoundingClientRect().width;
+      const horizontalChrome = Number.parseFloat(tooltipStyle.paddingLeft)
+        + Number.parseFloat(tooltipStyle.paddingRight)
+        + Number.parseFloat(tooltipStyle.borderLeftWidth)
+        + Number.parseFloat(tooltipStyle.borderRightWidth);
+      const bodyRect = document.getElementById("playback-sheet-body").getBoundingClientRect();
+      const headerRect = document.querySelector(".playback-sheet-status-header").getBoundingClientRect();
+      const panelRect = document.getElementById("playback-sheet-panel").getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        tooltipRect.left + (tooltipRect.width / 2),
+        tooltipRect.top + Math.min(10, tooltipRect.height / 2),
+      );
+      return {
+        direction: tooltip.dataset.tooltipDirection,
+        portaled: tooltip.classList.contains("is-portaled")
+          && tooltip.parentElement?.id === "playback-sheet-panel",
+        withinPanel: tooltipRect.top >= panelRect.top
+          && tooltipRect.right <= panelRect.right
+          && tooltipRect.bottom <= panelRect.bottom
+          && tooltipRect.left >= panelRect.left,
+        topLayerHit: hit === tooltip || tooltip.contains(hit),
+        singleLine: tooltipRect.height
+          <= Number.parseFloat(tooltipStyle.lineHeight)
+            + Number.parseFloat(tooltipStyle.paddingTop)
+            + Number.parseFloat(tooltipStyle.paddingBottom)
+            + Number.parseFloat(tooltipStyle.borderTopWidth)
+            + Number.parseFloat(tooltipStyle.borderBottomWidth)
+            + 1,
+        maxWidth: Number.parseFloat(tooltipStyle.maxWidth),
+        contentWidth,
+        contentSlack: tooltipRect.width - horizontalChrome - contentWidth,
+        tooltip: {
+          top: tooltipRect.top,
+          right: tooltipRect.right,
+          bottom: tooltipRect.bottom,
+          left: tooltipRect.left,
+        },
+        body: {
+          top: bodyRect.top,
+          right: bodyRect.right,
+          bottom: bodyRect.bottom,
+          left: bodyRect.left,
+        },
+        panel: {
+          top: panelRect.top,
+          right: panelRect.right,
+          bottom: panelRect.bottom,
+          left: panelRect.left,
+        },
+        headerBottom: headerRect.bottom,
+      };
+    });
+    assert(
+      remoteTooltipLayerEvidence.direction === "up"
+        && remoteTooltipLayerEvidence.portaled
+        && remoteTooltipLayerEvidence.withinPanel
+        && remoteTooltipLayerEvidence.topLayerHit,
+      "Remote playback tooltip did not prefer the unclipped top sheet layer",
+      remoteTooltipLayerEvidence,
+    );
+    assert(
+      remoteTooltipLayerEvidence.singleLine
+        && remoteTooltipLayerEvidence.tooltip.right - remoteTooltipLayerEvidence.tooltip.left
+          < remoteTooltipLayerEvidence.maxWidth
+        && remoteTooltipLayerEvidence.contentSlack >= -1
+        && remoteTooltipLayerEvidence.contentSlack <= 2,
+      "Remote playback tooltip did not shrink to its one-line copy below the width threshold",
+      remoteTooltipLayerEvidence,
+    );
     await firstRemoteTooltip.hover();
     await remotePage.waitForTimeout(140);
     assert(await firstRemoteTooltip.isVisible(), "moving into the Remote bubble dismissed it");
-    await remotePage.locator("#floating-control-title").hover();
+    await remotePage.locator("#playback-sheet-title").hover();
     await remotePage.waitForTimeout(330);
     assert(!await firstRemoteTooltip.isVisible(), "Remote pointer leave did not dismiss transient information");
 
@@ -7881,7 +8560,7 @@ async function run() {
     );
     await firstRemoteInfo.click();
     assert(await firstRemoteInfo.getAttribute("aria-expanded") === "true", "Remote click did not pin information");
-    await remotePage.locator("#floating-control-title").hover();
+    await remotePage.locator("#playback-sheet-title").hover();
     assert(await firstRemoteTooltip.isVisible(), "Remote pointer leave cleared tap-pinned information");
     await remoteInfoRegions.nth(1).locator(".panel-tag").hover();
     await remotePage.waitForTimeout(220);
@@ -7889,6 +8568,17 @@ async function run() {
       await firstRemoteTooltip.isVisible()
         && await remotePage.locator(".info-trigger-wrap.is-visible").count() === 1,
       "Remote hybrid hover displaced a tap-pinned explanation",
+    );
+    const sheetPostTooltipOverflow = await remotePage.evaluate(() => ({
+      scrollLeft: elements.playbackSheetBody.scrollLeft,
+      scrollWidth: elements.playbackSheetBody.scrollWidth,
+      clientWidth: elements.playbackSheetBody.clientWidth,
+    }));
+    assert(
+      sheetPostTooltipOverflow.scrollLeft === 0
+        && sheetPostTooltipOverflow.scrollWidth <= sheetPostTooltipOverflow.clientWidth,
+      "Remote playback tooltips introduced horizontal sheet scrolling",
+      sheetPostTooltipOverflow,
     );
     const remoteScreenshotPath = screenshotPath
       ? screenshotPath.replace(/(\.[^./]+)$/, "-remote$1")
@@ -7902,9 +8592,9 @@ async function run() {
         && await firstRemoteInfo.getAttribute("aria-expanded") === "false",
       "Remote did not transfer one-visible ownership to the clicked trigger",
     );
-    await remotePage.locator("#floating-control-title").click();
+    await remotePage.locator("#playback-sheet-title").click();
     assert(await remotePage.locator(".info-trigger-wrap.is-visible").count() === 0, "Remote outside click did not close information");
-    assert(await floatingOverlay.isVisible(), "Remote information outside click closed the floating console");
+    assert(await playbackSheet.isVisible(), "Remote information outside click closed the playback sheet");
     await remoteInfoButtons.nth(1).click();
     await remotePage.keyboard.press("Escape");
     assert(await remotePage.locator(".info-trigger-wrap.is-visible").count() === 0, "Remote Escape did not close information");
@@ -7912,16 +8602,39 @@ async function run() {
       await remoteInfoButtons.nth(1).evaluate((element) => document.activeElement === element),
       "Remote Escape moved focus away from the information trigger",
     );
-    assert(await floatingOverlay.isVisible(), "Remote information Escape closed the floating console");
+    assert(await playbackSheet.isVisible(), "Remote information Escape closed the playback sheet");
     assert(
       await remotePage.locator(
-        "#binding-sheet .remote-tooltip-bubble, #floating-control-overlay .remote-tooltip-bubble",
-      ).count() === 4,
-      "Remote duplicated tooltip nodes",
+        "#binding-sheet .remote-tooltip-bubble, #playback-sheet .remote-tooltip-bubble",
+      ).count() === 4
+        && await remotePage.locator("#playback-metadata-popover").count() === 1,
+      "Remote duplicated or omitted tooltip nodes",
     );
-    await remotePage.locator("#floating-control-close").click();
-    await floatingOverlay.waitFor({ state: "hidden" });
-    assert(!await floatingOverlay.isVisible(), "Remote floating playback console did not close normally");
+
+    await remotePage.locator("#playback-sheet-collapse").click();
+    await playbackSheet.waitFor({ state: "hidden" });
+    assert(await remotePage.evaluate(() => document.activeElement?.id) === "playback-dock", "collapse did not restore Dock focus");
+    await playbackDock.click();
+    await playbackSheet.waitFor({ state: "visible" });
+    await remotePage.locator("#playback-sheet-backdrop").click({ position: { x: 4, y: 4 } });
+    await playbackSheet.waitFor({ state: "hidden" });
+    await playbackDock.click();
+    await playbackSheet.waitFor({ state: "visible" });
+    await remotePage.keyboard.press("Escape");
+    await playbackSheet.waitFor({ state: "hidden" });
+    assert(await remotePage.evaluate(() => document.activeElement?.id) === "playback-dock", "Escape did not restore Dock focus");
+
+    await playbackDock.click();
+    await playbackSheet.waitFor({ state: "visible" });
+    await remotePage.locator("#open-rating-button").click();
+    await playbackSheet.waitFor({ state: "hidden" });
+    assert(
+      await remotePage.locator(".rating-modal").isVisible()
+        && await remotePage.locator('[role="dialog"][aria-modal="true"]:visible').count() === 1,
+      "rating transfer left two interactive modal surfaces",
+    );
+    await remotePage.evaluate(() => closeRatingPrompt({ submit: false }));
+    assert(await remotePage.evaluate(() => document.activeElement?.id) === "playback-dock", "rating dismissal did not restore Dock focus");
 
     const coarseContext = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -8152,15 +8865,64 @@ async function run() {
     await coarsePage.goto(`${baseUrl}/remote`, { waitUntil: "domcontentloaded" });
     await coarsePage.waitForTimeout(700);
     await coarsePage.evaluate(() => {
+      closeEventStream();
+      clearStateFallbackTimer();
+      state.remoteIdentity = {
+        registered: true,
+        name: "Coarse Remote QA",
+        sessionId: "coarse-remote-session",
+      };
+      state.remoteIdentityChecking = false;
+      state.remoteIdentitySaving = false;
       elements.remoteIdentityModal?.classList.add("hidden");
       document.body.classList.remove("remote-identity-modal-open");
       if (elements.remoteShell) {
         elements.remoteShell.inert = false;
       }
-      elements.floatingControlOverlay?.classList.remove("hidden");
+      state.data = {
+        ...(state.data || {}),
+        current_item: {
+          id: "coarse-remote-item",
+          item_incarnation_id: "coarse-remote-incarnation",
+          display_title: "Coarse Remote Playback",
+          requester_name: "Coarse Remote QA",
+          owner_name: "Coarse Uploader",
+          bvid: "BVCOARSEREMOTE",
+          cover_url: "/pic/icon.png",
+          cache_status: "ready",
+          page: 1,
+          available_pages: [1, 2],
+          available_parts: ["伴奏", "原唱"],
+          available_durations: [180, 180],
+          selected_pages: [1, 2],
+          selected_parts: ["伴奏", "原唱"],
+          selected_durations: [180, 180],
+          audio_variants: [
+            { id: "coarse-audio", page: 1, label: "伴奏", audio_url: "/coarse-audio.m4a" },
+            { id: "coarse-vocal", page: 2, label: "原唱", audio_url: "/coarse-vocal.m4a" },
+          ],
+          selected_audio_variant_id: "coarse-audio",
+        },
+        playback_mode: "local",
+        playback_generation: 1,
+        player_status: {
+          playback_generation: 1,
+          item_id: "coarse-remote-item",
+          is_paused: false,
+          current_time: 60,
+          duration: 180,
+          updated_at: 1,
+        },
+        playlist: [],
+        history: [],
+      };
+      state.remoteConnectionPhase = "connected";
+      renderRemoteIdentity();
+      render();
+      openPlaybackSheet();
     });
     const coarseRemoteInfo = coarsePage.locator(
-      "#floating-control-overlay .remote-info-button",
+      "#playback-sheet .remote-info-button",
     ).first();
     await coarseRemoteInfo.scrollIntoViewIfNeeded();
     const coarseRemoteMetrics = await coarseRemoteInfo.evaluate((button) => {
@@ -8940,7 +9702,7 @@ async function run() {
           manual: presentationRoutingEvidence,
           builtIn: builtInRoutingEvidence,
         },
-        audioVariants: variantPopupEvidence,
+        audioVariants: remoteVariantPopupEvidence,
         audioVariantsScreenshotPath,
         songDetail: songDetailEvidence,
         songDetailScreenshotPath,
@@ -8975,6 +9737,9 @@ async function run() {
         identity: remoteIdentity,
         infoCount: await remoteInfoButtons.count(),
         playerControlRequests: remotePlayerControlRequests,
+        dock: dockEvidence,
+        sheet: sheetEvidence,
+        tooltipLayer: remoteTooltipLayerEvidence,
         consoleErrors: remoteConsoleErrors,
         pageErrors: remotePageErrors,
         screenshotPath: remoteScreenshotPath,

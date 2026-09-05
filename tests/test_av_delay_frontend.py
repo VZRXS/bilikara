@@ -71,15 +71,24 @@ class AvDelayFrontendTest(unittest.TestCase):
         self.assertIn('data-i18n="service.diagnosticsHint"', advanced)
         self.assertNotIn('class="cache-panel-hint cache-data-cleanup-scope"', advanced)
 
-        floating_controls = self.remote_html[
-            self.remote_html.index('id="floating-control-overlay"') :
+        playback_sheet = self.remote_html[
+            self.remote_html.index('id="playback-sheet"') :
             self.remote_html.index('id="remote-identity-modal"')
         ]
-        self.assertEqual(floating_controls.count('class="remote-info-button"'), 3)
-        self.assertEqual(floating_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 3)
-        self.assertEqual(floating_controls.count('data-i18n-aria-label="common.moreInfo"'), 3)
-        self.assertEqual(floating_controls.count('aria-describedby="remote-'), 3)
-        self.assertEqual(floating_controls.count('role="tooltip"'), 3)
+        self.assertEqual(playback_sheet.count('class="remote-info-button"'), 2)
+        self.assertEqual(playback_sheet.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
+        self.assertEqual(playback_sheet.count('data-i18n-aria-label="common.moreInfo"'), 2)
+        self.assertEqual(playback_sheet.count('aria-describedby="remote-'), 2)
+        self.assertEqual(playback_sheet.count('role="tooltip"'), 3)
+        self.assertEqual(playback_sheet.count('id="playback-metadata-popover"'), 1)
+        metadata_popover = playback_sheet[playback_sheet.index('id="playback-metadata-popover"') :]
+        self.assertNotIn('aria-modal="true"', metadata_popover)
+        volume_panel = playback_sheet[
+            playback_sheet.index('id="remote-volume-panel"') :
+            playback_sheet.index('id="remote-key-shift-panel"')
+        ]
+        self.assertNotIn("remote-info-button", volume_panel)
+        self.assertNotIn("remote-volume-info", volume_panel)
 
         playback_controls = self.host_html[
             self.host_html.index('id="av-sync-panel"') :
@@ -143,7 +152,7 @@ class AvDelayFrontendTest(unittest.TestCase):
             ),
             (
                 self.remote_js,
-                "function renderRemoteAvSyncControls",
+                "function setRemoteIconVisibility",
                 "function renderRemoteVolumeControls",
                 "remoteAvDelayLockButton",
                 "remoteAvOffsetResetButton",
@@ -188,7 +197,10 @@ console.log(JSON.stringify({{ disabled: elements.{lock_key}.disabled,
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 result = json.loads(completed.stdout)
                 self.assertEqual(result["disabled"], not enabled)
-                self.assertEqual(result["iconCodePoints"], [0x1F512 if locked else 0x1F513])
+                if source is self.remote_js:
+                    self.assertEqual(result["iconCodePoints"], [])
+                else:
+                    self.assertEqual(result["iconCodePoints"], [0x1F512 if locked else 0x1F513])
                 self.assertEqual(result["pressed"], str(locked).lower())
                 self.assertEqual(result["hasLocal"], str(has_local).lower())
 
@@ -276,6 +288,24 @@ apiPost("/api/player/av-delay-action", {{}}, {{ timeoutMs: 10 }})
             )[1].split("}", 1)[0]
             for state_rule in (local_rule, locked_rule, locked_local_rule):
                 self.assertNotIn("background:", state_rule)
+
+    def test_remote_lock_and_reset_share_the_idle_button_surface(self):
+        root_vars = self.remote_css[: self.remote_css.index("body {")]
+        self.assertIn(
+            "--av-lock-unlocked-border: 1px solid rgba(67, 53, 41, 0.08);",
+            root_vars,
+        )
+        self.assertIn(
+            "--av-lock-disabled-bg: var(--remote-secondary-button-disabled-bg);",
+            root_vars,
+        )
+        peer_rule = self.remote_css[
+            self.remote_css.index(".remote-step-button,") :
+            self.remote_css.index(".remote-step-button {")
+        ]
+        self.assertIn(".remote-reset-button", peer_rule)
+        self.assertIn(".remote-lock-button", peer_rule)
+        self.assertIn("border-radius: 14px", peer_rule)
 
 
 if __name__ == "__main__":

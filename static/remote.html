@@ -16,7 +16,23 @@
   <body>
     <main class="remote-shell" id="remote-shell">
       <header class="remote-header" id="remote-header">
-        <h1 data-i18n="remote.heroTitle">bilikara 点歌台</h1>
+        <h1 class="remote-brand" aria-label="bilikara 远程控制" data-i18n-aria-label="remote.heroTitle">
+          <span class="remote-brand-wordmark">bilikara</span>
+          <svg
+            class="remote-brand-phone-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <rect x="7" y="2.5" width="10" height="19" rx="2"></rect>
+            <path d="M10 5h4M11 18.5h2"></path>
+          </svg>
+        </h1>
         <div class="remote-header-menu" id="remote-header-menu">
           <button
             type="button"
@@ -152,39 +168,6 @@
         </div>
       </header>
 
-      <section class="panel now-playing-panel">
-        <div class="panel-head">
-          <p class="panel-tag" data-i18n="player.tag">Now Playing</p>
-          <button type="button" id="refresh-button" class="ghost-button" data-i18n="remote.refresh">刷新</button>
-        </div>
-        <h2 id="current-title" data-i18n="remote.loadingState">正在读取状态...</h2>
-        <div class="current-meta-row">
-          <div class="current-meta-text">
-            <p id="current-requester" class="requester-line hidden"></p>
-            <p id="current-owner" class="current-owner-line owner-badge-label hidden"></p>
-          </div>
-          <button type="button" id="open-rating-button" class="ghost-button hidden" data-i18n="remote.rate">评分</button>
-        </div>
-        <div id="current-cache-state" class="queue-state current-cache-state hidden">
-          <span class="cache-state-text"></span>
-          <button type="button" id="current-cache-retry" class="current-cache-retry hidden" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
-            <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
-              <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
-            </svg>
-          </button>
-        </div>
-        <p id="current-meta" class="muted"></p>
-        <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
-        <div id="player-control-panel" class="player-control-panel hidden">
-          <div class="player-control-row">
-            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15" data-i18n="remote.seekBack15">后退 15 秒</button>
-            <button type="button" class="primary-button" data-control-action="toggle-play" data-i18n="remote.playPause">播放 / 暂停</button>
-            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15" data-i18n="remote.seekForward15">快进 15 秒</button>
-            <button type="button" class="secondary-button" data-control-action="next-track" data-i18n="player.nextSong">切歌</button>
-          </div>
-        </div>
-      </section>
-
       <section class="panel request-panel">
         <div class="panel-head remote-request-head">
           <div>
@@ -228,7 +211,7 @@
               data-i18n-placeholder="request.urlPlaceholder"
               autocomplete="off"
             ></textarea>
-            <div class="action-row">
+            <div class="action-row request-action-row">
               <button type="submit" class="primary-button" data-i18n="request.submit">点歌</button>
               <button type="button" id="add-next-button" class="secondary-button" data-i18n="request.next">顶歌到下一首</button>
             </div>
@@ -650,6 +633,37 @@
           </div>
         </div>
       </div>
+
+      <button
+        type="button"
+        id="playback-dock"
+        class="playback-dock hidden"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-controls="playback-sheet"
+        aria-hidden="true"
+      >
+        <span id="playback-dock-progress" class="playback-dock-progress" aria-hidden="true"></span>
+        <span class="playback-dock-content">
+          <span class="playback-cover playback-dock-cover" aria-hidden="true">
+            <img class="playback-cover-fallback" src="/pic/icon.png" alt="" decoding="async" />
+            <img
+              id="playback-dock-cover-image"
+              class="playback-cover-image hidden"
+              alt=""
+              decoding="async"
+              referrerpolicy="no-referrer"
+            />
+          </span>
+          <span class="playback-dock-copy">
+            <span id="playback-dock-title" class="playback-dock-title"><span class="playback-dock-marquee-text"></span></span>
+            <span class="playback-dock-meta">
+              <span id="playback-dock-requester" class="playback-dock-requester"><span class="playback-dock-marquee-text"></span></span>
+              <span id="playback-dock-clock" class="playback-dock-clock hidden"></span>
+            </span>
+          </span>
+        </span>
+      </button>
     </main>
 
     <template id="queue-item-template">
@@ -733,108 +747,273 @@
       </article>
     </template>
 
-    <!-- Floating control trigger button -->
-    <button type="button" id="floating-control-trigger" class="floating-control-trigger hidden" aria-label="控制面板" data-i18n-aria-label="remote.floatingConsoleTitle">
-      <svg viewBox="0 0 24 24" aria-hidden="true" width="24" height="24">
-        <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" fill="currentColor"/>
-      </svg>
-    </button>
-
-    <!-- Floating control overlay/modal -->
-    <div id="floating-control-overlay" class="floating-control-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="floating-control-title">
-      <div class="floating-control-backdrop" id="floating-control-backdrop"></div>
-      <div class="floating-control-card" id="floating-control-card">
-        <div class="floating-control-header">
-          <h2 id="floating-control-title" data-i18n="remote.floatingConsoleTitle">控制面板</h2>
-          <button type="button" id="floating-control-close" class="ghost-button floating-control-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
-        </div>
-        <div class="floating-control-body">
-          <div id="floating-player-control-panel" class="player-control-panel hidden">
-            <div class="player-control-row">
-              <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15" data-i18n="remote.seekBack15">后退 15 秒</button>
-              <button type="button" class="primary-button" data-control-action="toggle-play" data-i18n="remote.playPause">播放 / 暂停</button>
-              <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15" data-i18n="remote.seekForward15">快进 15 秒</button>
-              <button type="button" class="secondary-button" data-control-action="next-track" data-i18n="player.nextSong">切歌</button>
-            </div>
+    <div
+      id="playback-sheet"
+      class="playback-sheet hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="playback-sheet-title"
+      aria-hidden="true"
+      inert
+    >
+      <div class="playback-sheet-backdrop" id="playback-sheet-backdrop"></div>
+      <section class="playback-sheet-panel" id="playback-sheet-panel">
+        <header class="playback-sheet-status-header">
+          <h2 id="playback-sheet-title" class="playback-sheet-status-label" data-i18n="player.tag">正在播放</h2>
+          <button
+            type="button"
+            id="playback-sheet-collapse"
+            class="playback-sheet-collapse"
+            aria-label="收起播放控制"
+            data-i18n-aria-label="remote.collapsePlaybackControls"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="24" height="24">
+              <path d="m5 9 7 7 7-7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+            </svg>
+          </button>
+          <div class="playback-sheet-status-actions">
+            <button type="button" id="open-rating-button" class="ghost-button hidden" data-i18n="remote.rate">评分</button>
+            <button type="button" id="refresh-button" class="ghost-button" data-i18n="remote.refresh">刷新</button>
           </div>
-          <section id="remote-av-sync-panel" class="remote-setting-panel">
-            <div class="remote-setting-copy">
-              <div class="remote-setting-header remote-contextual-info-region">
-                <p class="panel-tag" data-i18n="player.avSyncTag">音画延迟</p>
-                <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-expanded="false"
-                    aria-describedby="remote-av-sync-info" data-i18n-aria-label="common.moreInfo"
-                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                  <div class="remote-tooltip-bubble" id="remote-av-sync-info" role="tooltip"
-                    data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
+        </header>
+
+        <div class="playback-sheet-body" id="playback-sheet-body">
+          <section class="playback-sheet-primary" aria-label="播放控制" data-i18n-aria-label="remote.playbackControlsTitle">
+            <div class="playback-sheet-summary">
+              <div class="playback-cover playback-sheet-cover" aria-hidden="true">
+                <img class="playback-cover-fallback" src="/pic/icon.png" alt="" decoding="async" />
+                <img
+                  id="playback-sheet-cover-image"
+                  class="playback-cover-image hidden"
+                  alt=""
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                />
+              </div>
+              <div class="playback-sheet-summary-copy">
+                <div class="playback-metadata-field playback-metadata-title-field" data-playback-metadata-field="title">
+                  <h3 id="current-title" class="playback-metadata-text" data-i18n="remote.loadingState">正在读取状态...</h3>
                 </div>
+                <div class="playback-metadata-field hidden" data-playback-metadata-field="requester">
+                  <p id="current-requester" class="requester-line playback-metadata-text hidden"></p>
+                </div>
+                <div class="playback-metadata-field hidden" data-playback-metadata-field="owner">
+                  <p id="current-owner" class="current-owner-line owner-badge-label playback-metadata-text hidden"></p>
+                </div>
+                <div id="current-cache-state" class="queue-state current-cache-state hidden">
+                  <span class="cache-state-text"></span>
+                  <button type="button" id="current-cache-retry" class="current-cache-retry hidden" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
+                      <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+                    </svg>
+                  </button>
+                </div>
+                <p id="current-meta" class="muted"></p>
               </div>
             </div>
-            <div class="remote-setting-controls">
-              <button type="button" class="ghost-button remote-step-button" data-av-step="-200"><span class="step-symbol">«</span><span>-200</span></button>
-              <button type="button" class="ghost-button remote-step-button" data-av-step="-50"><span class="step-symbol">‹</span><span>-50</span></button>
-              <button type="button" class="ghost-button remote-step-button" data-av-step="50"><span>+50</span><span class="step-symbol">›</span></button>
-              <button type="button" class="ghost-button remote-step-button" data-av-step="200"><span>+200</span><span class="step-symbol">»</span></button>
-              <button type="button" id="remote-av-offset-reset-button" class="ghost-button remote-reset-button" data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
-              <label class="remote-input-wrap" for="remote-av-offset-input">
-                <input id="remote-av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
-                <span data-i18n="player.ms">ms</span>
-              </label>
-              <button type="button" id="remote-av-delay-lock-button" class="ghost-button remote-lock-button" data-av-delay-lock disabled aria-label="Lock AV delay">🔓</button>
+
+            <div class="playback-sheet-playback-group" aria-label="播放与音轨" data-i18n-aria-label="remote.playbackGroupLabel">
+              <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
+
+              <div id="player-control-panel" class="player-control-panel hidden">
+                <div class="player-control-row" role="group" aria-label="播放控制" data-i18n-aria-label="remote.transportControlsLabel">
+                <button
+                  type="button"
+                  class="ghost-button player-transport-button player-seek-button"
+                  data-control-action="seek-relative"
+                  data-delta="-15"
+                  aria-label="后退 15 秒"
+                  title="后退 15 秒"
+                  data-i18n-aria-label="remote.seekBack15"
+                  data-i18n-title="remote.seekBack15"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7.25 7.25h-3.5v-3.5M4.05 7.1A8.25 8.25 0 1 1 3.75 12" transform="translate(0 2)" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                    <text x="12" y="12" dominant-baseline="central" text-anchor="middle">15</text>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="primary-button player-transport-button player-play-toggle is-paused"
+                  data-control-action="toggle-play"
+                  aria-label="播放"
+                  title="播放"
+                  aria-pressed="false"
+                  data-i18n-aria-label="remote.play"
+                  data-i18n-title="remote.play"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" data-player-icon="play">
+                    <path d="M8.5 6.8v10.4L17.5 12z" fill="currentColor" />
+                  </svg>
+                  <svg class="hidden" viewBox="0 0 24 24" aria-hidden="true" data-player-icon="pause">
+                    <rect x="7.5" y="6.5" width="3.5" height="11" rx="1" fill="currentColor" />
+                    <rect x="13" y="6.5" width="3.5" height="11" rx="1" fill="currentColor" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="ghost-button player-transport-button player-seek-button"
+                  data-control-action="seek-relative"
+                  data-delta="15"
+                  aria-label="快进 15 秒"
+                  title="快进 15 秒"
+                  data-i18n-aria-label="remote.seekForward15"
+                  data-i18n-title="remote.seekForward15"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M16.75 7.25h3.5v-3.5M19.95 7.1A8.25 8.25 0 1 0 20.25 12" transform="translate(0 2)" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                    <text x="12" y="12" dominant-baseline="central" text-anchor="middle">15</text>
+                  </svg>
+                </button>
+                <div class="player-progress-unit is-unknown-duration">
+                  <input
+                    type="range"
+                    id="playback-sheet-seek"
+                    class="player-progress-range"
+                    min="0"
+                    max="1"
+                    step="1"
+                    value="0"
+                    disabled
+                    aria-label="播放进度"
+                    data-i18n-aria-label="controller.seek"
+                    data-control-action="seek-absolute"
+                  />
+                  <div id="playback-sheet-clock" class="player-progress-times" aria-hidden="true">
+                    <span id="playback-sheet-current-time"></span>
+                    <span id="playback-sheet-duration"></span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-button player-transport-button player-next-button"
+                  data-control-action="next-track"
+                  aria-label="切歌"
+                  title="切歌"
+                  data-i18n-aria-label="player.nextSong"
+                  data-i18n-title="player.nextSong"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6.5 6.8v10.4l8.4-5.2z" fill="currentColor" />
+                    <path d="M17.5 6.8v10.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2" />
+                  </svg>
+                </button>
+                </div>
+              </div>
             </div>
           </section>
-          <section id="remote-volume-panel" class="remote-setting-panel">
-            <div class="remote-setting-copy">
-              <div class="remote-setting-header remote-contextual-info-region">
-                <p class="panel-tag" data-i18n="player.volumeTag">播放音量</p>
-                <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-expanded="false"
-                    aria-describedby="remote-volume-info" data-i18n-aria-label="common.moreInfo"
-                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                  <div class="remote-tooltip-bubble" id="remote-volume-info" role="tooltip"
-                    data-i18n="player.volumeHint">直接遥控服务端当前本地播放的音量。</div>
+
+          <section class="playback-sheet-secondary" aria-label="设置" data-i18n-aria-label="settings.title">
+            <div class="playback-sheet-settings-card">
+              <section id="remote-av-sync-panel" class="remote-setting-panel">
+                <div class="remote-setting-copy">
+                  <div class="remote-setting-header remote-contextual-info-region">
+                    <p class="panel-tag" data-i18n="player.avSyncTag">音画延迟</p>
+                    <div class="info-trigger-wrap">
+                      <button type="button" class="remote-info-button" aria-expanded="false"
+                        aria-describedby="remote-av-sync-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <div class="remote-tooltip-bubble" id="remote-av-sync-info" role="tooltip"
+                        data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-            <div class="remote-setting-controls">
-              <button type="button" id="remote-volume-mute-button" class="ghost-button remote-mute-button" aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">🔊</button>
-              <input
-                id="remote-volume-slider"
-                class="remote-volume-slider"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                value="100"
-              />
-              <strong id="remote-volume-value" class="remote-volume-value">100%</strong>
-            </div>
-          </section>
-          <section id="remote-key-shift-panel" class="remote-setting-panel">
-            <div class="remote-setting-copy">
-              <div class="remote-setting-header remote-contextual-info-region">
-                <p class="panel-tag" data-i18n="player.keyShiftTag">音调调整</p>
-                <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-expanded="false"
-                    aria-describedby="remote-key-shift-info" data-i18n-aria-label="common.moreInfo"
-                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
-                  <div class="remote-tooltip-bubble" id="remote-key-shift-info" role="tooltip"
-                    data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</div>
+                <div class="remote-setting-controls">
+                  <button type="button" class="ghost-button remote-step-button" data-av-step="-200"><span class="step-symbol">«</span><span>-200</span></button>
+                  <button type="button" class="ghost-button remote-step-button" data-av-step="-50"><span class="step-symbol">‹</span><span>-50</span></button>
+                  <button type="button" class="ghost-button remote-step-button" data-av-step="50"><span>+50</span><span class="step-symbol">›</span></button>
+                  <button type="button" class="ghost-button remote-step-button" data-av-step="200"><span>+200</span><span class="step-symbol">»</span></button>
+                  <button type="button" id="remote-av-offset-reset-button" class="ghost-button remote-reset-button" data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
+                  <label class="remote-input-wrap" for="remote-av-offset-input">
+                    <input id="remote-av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
+                    <span data-i18n="player.ms">ms</span>
+                  </label>
+                  <button type="button" id="remote-av-delay-lock-button" class="ghost-button remote-lock-button" data-av-delay-lock disabled aria-label="Lock AV delay">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="unlocked">
+                      <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
+                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 6.7-1.4"></path>
+                    </svg>
+                    <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="locked">
+                      <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
+                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"></path>
+                    </svg>
+                  </button>
                 </div>
-              </div>
-            </div>
-            <div class="remote-setting-controls">
-              <button type="button" id="remote-key-shift-reset-button" class="ghost-button remote-reset-button" data-i18n="common.resetShort" disabled>复位</button>
-              <button type="button" id="remote-key-shift-dec-button" class="ghost-button remote-step-button">-1</button>
-              <label class="remote-input-wrap" for="remote-key-shift-input">
-                <input id="remote-key-shift-input" type="number" min="-6" max="6" step="1" value="0" />
-                <span data-i18n="player.keyUnit">key</span>
-              </label>
-              <button type="button" id="remote-key-shift-inc-button" class="ghost-button remote-step-button">+1</button>
+              </section>
+              <section id="remote-volume-panel" class="remote-setting-panel">
+                <div class="remote-setting-copy">
+                  <div class="remote-setting-header">
+                    <p class="panel-tag" data-i18n="player.volumeTag">播放音量</p>
+                  </div>
+                </div>
+                <div class="remote-setting-controls">
+                  <button type="button" id="remote-volume-mute-button" class="ghost-button remote-mute-button" aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-volume-icon="unmuted">
+                      <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"></path>
+                      <path d="M15 9a4 4 0 0 1 0 6M17.5 6.5a7.5 7.5 0 0 1 0 11"></path>
+                    </svg>
+                    <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-volume-icon="muted">
+                      <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"></path>
+                      <path d="m16 9 5 6m0-6-5 6"></path>
+                    </svg>
+                  </button>
+                  <input
+                    id="remote-volume-slider"
+                    class="remote-volume-slider"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <strong id="remote-volume-value" class="remote-volume-value">100%</strong>
+                </div>
+              </section>
+              <section id="remote-key-shift-panel" class="remote-setting-panel">
+                <div class="remote-setting-copy">
+                  <div class="remote-setting-header remote-contextual-info-region">
+                    <p class="panel-tag" data-i18n="player.keyShiftTag">音调调整</p>
+                    <div class="info-trigger-wrap">
+                      <button type="button" class="remote-info-button" aria-expanded="false"
+                        aria-describedby="remote-key-shift-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <div class="remote-tooltip-bubble" id="remote-key-shift-info" role="tooltip"
+                        data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="remote-setting-controls">
+                  <button type="button" id="remote-key-shift-reset-button" class="ghost-button remote-reset-button" data-i18n="common.resetShort" disabled>复位</button>
+                  <button type="button" id="remote-key-shift-dec-button" class="ghost-button remote-step-button">-1</button>
+                  <label class="remote-input-wrap" for="remote-key-shift-input">
+                    <input id="remote-key-shift-input" type="number" min="-6" max="6" step="1" value="0" />
+                    <span data-i18n="player.keyUnit">key</span>
+                  </label>
+                  <button type="button" id="remote-key-shift-inc-button" class="ghost-button remote-step-button">+1</button>
+                </div>
+              </section>
             </div>
           </section>
         </div>
-      </div>
+        <div
+          id="audio-variant-popover"
+          class="audio-variant-popover"
+          role="group"
+          aria-label="音频轨道"
+          data-i18n-aria-label="binding.audio"
+          aria-hidden="true"
+          hidden
+        ></div>
+        <div
+          id="playback-metadata-popover"
+          class="remote-tooltip-bubble playback-metadata-popover is-portaled"
+          role="tooltip"
+          aria-label="完整文本"
+          data-i18n-aria-label="remote.fullMetadataText"
+          aria-hidden="true"
+          hidden
+        ><p id="playback-metadata-popover-text"></p></div>
+      </section>
     </div>
 
     <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
