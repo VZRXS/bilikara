@@ -1,0 +1,103 @@
+name: Sync Internet Remote Production
+
+on:
+  push:
+    branches: [dev, work/v0.8.0]
+    paths:
+      - .github/workflows/internet-remote-sync.yml
+      - scripts/sync_internet_remote_assets.ps1
+      - static/**
+      - tests/test_internet_remote_frontend.py
+  pull_request:
+    branches: [dev, work/v0.8.0]
+    paths:
+      - .github/workflows/internet-remote-sync.yml
+      - scripts/sync_internet_remote_assets.ps1
+      - static/**
+      - tests/test_internet_remote_frontend.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: internet-remote-production-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Validate shared Remote contract
+        run: python -m unittest tests.test_internet_remote_frontend -v
+
+      - name: Check browser scripts
+        run: |
+          node --check static/internet-remote-host.js
+          node --check static/internet-remote-transport.js
+          node --check static/remote-transport-client.js
+          node --check static/remote.js
+          node --check static/remote-queue.js
+          node --check static/song-detail.js
+
+      - name: Note optional deployment configuration
+        if: vars.INTERNET_REMOTE_WORKER_REPOSITORY == ''
+        run: echo "::notice::Remote validation passed. Configure INTERNET_REMOTE_WORKER_REPOSITORY and INTERNET_REMOTE_WORKER_TOKEN to enable production sync."
+
+  dispatch:
+    needs: validate
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/work/v0.8.0') &&
+      vars.INTERNET_REMOTE_WORKER_REPOSITORY != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require cross-repository credential
+        env:
+          WORKER_REPO_TOKEN: ${{ secrets.INTERNET_REMOTE_WORKER_TOKEN }}
+        run: |
+          if [ -z "$WORKER_REPO_TOKEN" ]; then
+            echo "::error::INTERNET_REMOTE_WORKER_REPOSITORY is configured, but INTERNET_REMOTE_WORKER_TOKEN is missing."
+            exit 1
+          fi
+
+      - name: Dispatch production Remote sync
+        uses: actions/github-script@v8
+        env:
+          WORKER_REPOSITORY: ${{ vars.INTERNET_REMOTE_WORKER_REPOSITORY }}
+        with:
+          github-token: ${{ secrets.INTERNET_REMOTE_WORKER_TOKEN }}
+          script: |
+            const target = process.env.WORKER_REPOSITORY.trim();
+            if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(target)) {
+              throw new Error("INTERNET_REMOTE_WORKER_REPOSITORY must be owner/repository.");
+            }
+            const [owner, repo] = target.split("/");
+            await github.rest.repos.createDispatchEvent({
+              owner,
+              repo,
+              event_type: "sync-bilikara-production",
+              client_payload: {
+                source_repository: context.repo.owner + "/" + context.repo.repo,
+                source_ref: context.ref.replace(/^refs\/heads\//u, ""),
+                source_sha: context.sha,
+              },
+            });
+            core.notice("Production Remote sync requested for " + context.sha);
