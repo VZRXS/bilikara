@@ -8,6 +8,7 @@ on:
       - scripts/sync_internet_remote_assets.ps1
       - static/**
       - tests/test_internet_remote_frontend.py
+      - tests/test_internet_remote_deployment.py
   pull_request:
     branches: [dev, work/v0.8.0]
     paths:
@@ -15,6 +16,7 @@ on:
       - scripts/sync_internet_remote_assets.ps1
       - static/**
       - tests/test_internet_remote_frontend.py
+      - tests/test_internet_remote_deployment.py
   workflow_dispatch:
 
 permissions:
@@ -45,10 +47,12 @@ jobs:
           node-version: 24
 
       - name: Validate shared Remote contract
-        run: python -m unittest tests.test_internet_remote_frontend -v
+        run: python -m unittest tests.test_internet_remote_frontend tests.test_internet_remote_deployment -v
 
       - name: Check browser scripts
         run: |
+          node --check static/export-guard.js
+          node --check static/export-download.js
           node --check static/internet-remote-host.js
           node --check static/internet-remote-transport.js
           node --check static/remote-transport-client.js

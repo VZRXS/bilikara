@@ -530,6 +530,8 @@ console.log(JSON.stringify({{ sent, reconnects }}));
 
     def test_worker_asset_sync_uses_the_product_remote_dependencies(self):
         for asset in (
+            "export-download.js",
+            "export-guard.js",
             "remote.html",
             "remote.css",
             "remote.js",
