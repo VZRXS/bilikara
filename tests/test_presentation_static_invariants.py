@@ -109,6 +109,13 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
             "display.presentationSelectHostDisplay",
             "display.builtInDisplay",
             "display.hostDestination",
+            "display.hostWillMoveTo",
+            "display.defaultSuffix",
+            "display.identifyDisplays",
+            "display.identificationFailed",
+            "display.identifierCurrentHost",
+            "display.identifierAudience",
+            "display.identifierUnavailable",
             "controller.title",
             "controller.statusActive",
             "controller.play",
@@ -165,6 +172,9 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
             "presentation-scene.js",
             "presentation-renderer.js",
             "presentation-sync.js",
+            "display-identifier.html",
+            "display-identifier.js",
+            "display-identifier.css",
         )
         for asset in assets:
             self.assertTrue((self.static / asset).is_file(), asset)

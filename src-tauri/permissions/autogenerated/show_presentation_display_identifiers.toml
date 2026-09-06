@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-presentation-display-identifiers"
+description = "Enables the show_presentation_display_identifiers command without any pre-configured scope."
+commands.allow = ["show_presentation_display_identifiers"]
+
+[[permission]]
+identifier = "deny-show-presentation-display-identifiers"
+description = "Denies the show_presentation_display_identifiers command without any pre-configured scope."
+commands.deny = ["show_presentation_display_identifiers"]

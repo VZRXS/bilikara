@@ -1224,6 +1224,67 @@ async function handlePresentationSession(session) {{
         self.assertIn('aria-controls="presentation-settings-panel"', index)
         self.assertIn('id="presentation-output-status" role="status"', index)
         self.assertIn('id="presentation-display-list" aria-live="polite"', index)
+        self.assertIn('id="presentation-identify-button"', index)
+        self.assertIn('invoke("show_presentation_display_identifiers"', presentation)
+        self.assertIn('invoke("dismiss_presentation_display_identifiers")', presentation)
+
+    def test_display_numbers_keep_menu_order_when_host_moves(self):
+        functions = self.source_slice(
+            "function normalizePresentationDisplayInfo",
+            "async function refreshPresentationDisplays",
+        )
+        script = f"""
+const renders = [];
+const state = {{
+  presentationDisplayInfo: null,
+  presentationDisplayError: "",
+  presentationSession: {{ phase: "inactive" }},
+  presentationSelectionInitialized: false,
+  presentationSelectedDisplayId: "",
+  presentationSelectedHostDisplayId: "",
+}};
+function renderPresentationOutputControl() {{
+  renders.push(state.presentationDisplayInfo?.displays?.map((display) => display.id) || []);
+}}
+{functions}
+const display = (id, controller, builtIn = false) => ({{
+  id,
+  name: id,
+  positionX: 0,
+  positionY: 0,
+  width: 1920,
+  height: 1080,
+  scaleFactor: 1,
+  builtIn,
+  controller,
+  primary: builtIn,
+  selectable: true,
+  mirrored: false,
+  identityStable: true,
+  identityQuality: "stable",
+}});
+applyPresentationDisplayInfo({{
+  monitorCount: 3,
+  displays: [display("builtin", true, true), display("desk", false), display("projector", false)],
+  controllerDisplayId: "builtin",
+  recommendedDisplayId: "desk",
+}});
+applyPresentationDisplayInfo({{
+  monitorCount: 3,
+  displays: [display("projector", false), display("desk", true), display("builtin", false, true)],
+  controllerDisplayId: "desk",
+  recommendedDisplayId: "projector",
+}});
+process.stdout.write(JSON.stringify({{
+  ids: state.presentationDisplayInfo.displays.map((entry) => entry.id),
+  controllers: state.presentationDisplayInfo.displays.map((entry) => entry.controller),
+  selected: state.presentationSelectedDisplayId,
+}}));
+"""
+        result = self.run_node(script)
+        self.assertEqual(result["ids"], ["builtin", "desk", "projector"])
+        self.assertEqual(result["controllers"], [False, True, False])
+        self.assertEqual(result["selected"], "desk")
 
     def test_display_discovery_refreshes_once_after_window_geometry_settles(self):
         scheduler = self.source_slice(
@@ -1296,9 +1357,13 @@ Promise.resolve().then(() => process.stdout.write(JSON.stringify({{
 
     def test_dual_display_roles_have_explanations_and_role_specific_icons(self):
         index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        icons = self.source_slice(
+        icon_shapes = self.source_slice(
             "const presentationDeviceIconShapes",
-            "function createPresentationDisplayOption",
+            "function createPresentationDeviceIcon",
+        )
+        icons = self.source_slice(
+            "function createPresentationDeviceIcon",
+            "function renderPresentationDisplayList",
         )
         self.assertIn('id="presentation-output-description" role="tooltip"', index)
         self.assertIn(
@@ -1306,12 +1371,15 @@ Promise.resolve().then(() => process.stdout.write(JSON.stringify({{
         )
         self.assertNotIn('id="presentation-host-target-hint"', index)
         self.assertIn('data-i18n="display.outputPanelTitle">观众屏', index)
-        self.assertIn('data-i18n="display.hostTargetTitle">主控屏', index)
+        self.assertIn('data-i18n="display.hostTargetTitle">Host 目标位置', index)
+        self.assertIn('id="presentation-host-target-summary"', index)
         self.assertNotIn('<rect x="14.5" y="8" width="7" height="9"', index)
-        self.assertIn("host:", icons)
-        self.assertIn("output:", icons)
-        self.assertIn('fill: "currentColor"', icons)
-        self.assertNotIn("controller:", icons)
+        self.assertIn("host:", icon_shapes)
+        self.assertIn("output:", icon_shapes)
+        self.assertIn("presentationDisplayNumber(display.id)", icons)
+        self.assertIn('number.className = "presentation-display-index"', icons)
+        self.assertIn('fill: "currentColor"', icon_shapes)
+        self.assertNotIn("controller:", icon_shapes)
 
     def test_unavailable_output_is_not_presented_as_busy(self):
         render = self.source_slice(

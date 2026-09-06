@@ -64,7 +64,7 @@ def main(args: argparse.Namespace) -> int:
                 capture_output=True,
                 text=True,
                 check=False,
-            timeout=120,
+                timeout=150,
             )
         finally:
             httpd.shutdown()

@@ -173,6 +173,7 @@ const state = {
   presentationSettingsOpen: false,
   presentationDisplayRefreshTimer: null,
   presentationDisplayRefreshPending: false,
+  presentationIdentifiersBusy: false,
   cacheLimitSaving: false,
   cacheLimitDraftValue: null,
   cacheLimitQueuedValue: null,
@@ -641,7 +642,9 @@ const elements = {
   presentationStateDot: document.getElementById("presentation-state-dot"),
   presentationDisplayList: document.getElementById("presentation-display-list"),
   presentationHostTargetSection: document.getElementById("presentation-host-target-section"),
+  presentationHostTargetSummary: document.getElementById("presentation-host-target-summary"),
   presentationHostDisplayList: document.getElementById("presentation-host-display-list"),
+  presentationIdentifyButton: document.getElementById("presentation-identify-button"),
   presentationRefreshButton: document.getElementById("presentation-refresh-button"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
@@ -1895,11 +1898,35 @@ function normalizePresentationDisplayInfo(candidate) {
   };
 }
 
+function preservePresentationDisplayOrder(previousDisplays, nextDisplays) {
+  const nextById = new Map(nextDisplays.map((display) => [display.id, display]));
+  const ordered = [];
+  const retainedIds = new Set();
+  for (const previous of previousDisplays || []) {
+    const current = nextById.get(previous.id);
+    if (!current) {
+      continue;
+    }
+    ordered.push(current);
+    retainedIds.add(current.id);
+  }
+  for (const display of nextDisplays) {
+    if (!retainedIds.has(display.id)) {
+      ordered.push(display);
+    }
+  }
+  return ordered;
+}
+
 function applyPresentationDisplayInfo(candidate) {
   const info = normalizePresentationDisplayInfo(candidate);
   if (!info) {
     return null;
   }
+  info.displays = preservePresentationDisplayOrder(
+    state.presentationDisplayInfo?.displays || [],
+    info.displays,
+  );
   state.presentationDisplayInfo = info;
   state.presentationDisplayError = "";
   if (state.presentationSession.phase === "inactive" && !state.presentationSelectionInitialized) {
@@ -1928,13 +1955,13 @@ function applyPresentationDisplayInfo(candidate) {
     const alternatives = info.displays.filter((display) => (
       display.id !== selected.id && display.identityStable && !display.mirrored
     ));
-    const builtIn = alternatives.find((display) => display.builtIn);
-    if (builtIn) {
-      state.presentationSelectedHostDisplayId = builtIn.id;
-    } else if (!alternatives.some(
+    const selectedHostIsAvailable = alternatives.some(
       (display) => display.id === state.presentationSelectedHostDisplayId,
-    )) {
-      state.presentationSelectedHostDisplayId = "";
+    );
+    if (!selectedHostIsAvailable) {
+      state.presentationSelectedHostDisplayId = alternatives.find(
+        (display) => display.builtIn,
+      )?.id || "";
     }
   }
   renderPresentationOutputControl();
@@ -1972,6 +1999,51 @@ async function refreshPresentationDisplays({ announceError = false } = {}) {
   }
 }
 
+async function showPresentationDisplayIdentifiers({ announceError = false } = {}) {
+  const invoke = tauriInvoke();
+  const displayIds = (state.presentationDisplayInfo?.displays || [])
+    .map((display) => display.id)
+    .filter(Boolean);
+  if (
+    typeof invoke !== "function"
+    || state.presentationIdentifiersBusy
+    || state.presentationDisplayBusy
+    || state.presentationControlBusy
+    || state.presentationSession.phase !== "inactive"
+    || !displayIds.length
+  ) {
+    return false;
+  }
+  state.presentationIdentifiersBusy = true;
+  renderPresentationOutputControl();
+  try {
+    await invoke("show_presentation_display_identifiers", {
+      displayIds,
+      theme: normalizeTheme(state.theme),
+      language: normalizeLanguage(state.language),
+    });
+    return true;
+  } catch (error) {
+    if (announceError) {
+      setAppMessage(t("display.identificationFailed", {
+        message: error?.message || String(error),
+      }), true);
+    }
+    return false;
+  } finally {
+    state.presentationIdentifiersBusy = false;
+    renderPresentationOutputControl();
+  }
+}
+
+function dismissPresentationDisplayIdentifiers() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return;
+  }
+  invoke("dismiss_presentation_display_identifiers").catch(() => {});
+}
+
 const presentationDisplayRefreshDebounceMs = 280;
 
 function schedulePresentationDisplayRefreshFromWindowEvent() {
@@ -2006,6 +2078,13 @@ function presentationDisplayById(displayId) {
   ) || null;
 }
 
+function presentationDisplayNumber(displayId) {
+  const index = (state.presentationDisplayInfo?.displays || []).findIndex(
+    (display) => display.id === displayId,
+  );
+  return index >= 0 ? index + 1 : 0;
+}
+
 function presentationHostAlternatives(target = presentationDisplayById(
   state.presentationSelectedDisplayId,
 )) {
@@ -2024,13 +2103,16 @@ function resolvedPresentationHostDisplayId(target = presentationDisplayById(
     return "";
   }
   const alternatives = presentationHostAlternatives(target);
+  if (alternatives.some(
+    (display) => display.id === state.presentationSelectedHostDisplayId,
+  )) {
+    return state.presentationSelectedHostDisplayId;
+  }
   const builtIn = alternatives.find((display) => display.builtIn);
   if (builtIn) {
     return builtIn.id;
   }
-  return alternatives.some(
-    (display) => display.id === state.presentationSelectedHostDisplayId,
-  ) ? state.presentationSelectedHostDisplayId : "";
+  return "";
 }
 
 const presentationDeviceIconShapes = Object.freeze({
@@ -2088,6 +2170,12 @@ function createPresentationDisplayOption(
     || !display.selectable;
   button.setAttribute("aria-pressed", String(selected));
 
+  const number = document.createElement("span");
+  number.className = "presentation-display-index";
+  const displayNumber = presentationDisplayNumber(display.id);
+  number.textContent = displayNumber > 0 ? String(displayNumber) : "";
+  number.setAttribute("aria-hidden", "true");
+
   const copy = document.createElement("span");
   copy.className = "presentation-display-copy";
   const name = document.createElement("span");
@@ -2115,6 +2203,7 @@ function createPresentationDisplayOption(
         ? t("display.controllerDisplay")
         : "";
   button.append(
+    number,
     createPresentationDeviceIcon(iconType),
     copy,
     status,
@@ -2167,12 +2256,24 @@ function renderPresentationDisplayList() {
 
   const target = presentationDisplayById(state.presentationSelectedDisplayId);
   const alternatives = presentationHostAlternatives(target);
-  const automaticBuiltIn = alternatives.find((display) => display.builtIn);
-  const needsConfirmation = Boolean(target?.controller && alternatives.length && !automaticBuiltIn);
-  elements.presentationHostTargetSection?.classList.toggle("hidden", !needsConfirmation);
+  const hostDisplayId = resolvedPresentationHostDisplayId(target);
+  const hostDestination = alternatives.find((display) => display.id === hostDisplayId);
+  const showHostTarget = Boolean(target?.controller && alternatives.length);
+  elements.presentationHostTargetSection?.classList.toggle("hidden", !showHostTarget);
+  if (elements.presentationHostTargetSummary) {
+    elements.presentationHostTargetSummary.textContent = hostDestination
+      ? t("display.hostWillMoveTo", {
+        number: presentationDisplayNumber(hostDestination.id),
+        monitor: hostDestination.name || t("display.unnamedDisplay", {
+          number: presentationDisplayNumber(hostDestination.id),
+        }),
+        default: hostDestination.builtIn ? t("display.defaultSuffix") : "",
+      })
+      : t("display.presentationSelectHostDisplay");
+  }
   if (elements.presentationHostDisplayList) {
     const hostFragment = document.createDocumentFragment();
-    if (needsConfirmation) {
+    if (showHostTarget) {
       alternatives.forEach((display) => {
         hostFragment.append(createPresentationHostDisplayOption(display));
       });
@@ -2197,6 +2298,10 @@ function renderPresentationOutputControl() {
     setTextContent(status, t("display.presentationUnavailable"));
     setTextContent(elements.presentationOutputSummary, t("display.outputOff"));
     setTextContent(elements.presentationOutputMeta, t("display.presentationUnavailable"));
+    if (elements.presentationIdentifyButton) {
+      elements.presentationIdentifyButton.disabled = true;
+      elements.presentationIdentifyButton.removeAttribute("aria-busy");
+    }
     return;
   }
   const session = state.presentationSession;
@@ -2261,6 +2366,7 @@ function renderPresentationOutputControl() {
     displayError: state.presentationDisplayError,
     displayBusy: state.presentationDisplayBusy,
     controlBusy: state.presentationControlBusy,
+    identifiersBusy: state.presentationIdentifiersBusy,
     language: state.language,
   });
   if (signature === state.presentationOutputRenderSignature) {
@@ -2298,6 +2404,18 @@ function renderPresentationOutputControl() {
       elements.presentationRefreshButton.setAttribute("aria-busy", "true");
     } else {
       elements.presentationRefreshButton.removeAttribute("aria-busy");
+    }
+  }
+  if (elements.presentationIdentifyButton) {
+    elements.presentationIdentifyButton.disabled = state.presentationIdentifiersBusy
+      || state.presentationDisplayBusy
+      || state.presentationControlBusy
+      || session.phase !== "inactive"
+      || !(state.presentationDisplayInfo?.displays?.length);
+    if (state.presentationIdentifiersBusy) {
+      elements.presentationIdentifyButton.setAttribute("aria-busy", "true");
+    } else {
+      elements.presentationIdentifyButton.removeAttribute("aria-busy");
     }
   }
   renderPresentationDisplayList();
@@ -10518,6 +10636,8 @@ function syncPresentationPanelVisibility() {
   );
   if (state.presentationSettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
     scheduleTopControlPopoverPositionSync();
+  } else if (!state.presentationSettingsOpen) {
+    dismissPresentationDisplayIdentifiers();
   }
 }
 
@@ -18940,14 +19060,19 @@ elements.remoteMiniPopoverClose?.addEventListener("click", () => {
   setRemoteQrPinned(false, { dismissTransient: true });
 });
 
-elements.presentationSettingsToggle?.addEventListener("click", () => {
+elements.presentationSettingsToggle?.addEventListener("click", async () => {
   state.presentationSettingsOpen = !state.presentationSettingsOpen;
   if (state.presentationSettingsOpen) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
-    refreshPresentationDisplays().catch(() => {});
   }
   syncPresentationPanelVisibility();
+  if (state.presentationSettingsOpen) {
+    const displayInfo = await refreshPresentationDisplays();
+    if (displayInfo && state.presentationSettingsOpen) {
+      showPresentationDisplayIdentifiers().catch(() => {});
+    }
+  }
 });
 
 elements.presentationDisplayList?.addEventListener("click", (event) => {
@@ -18988,6 +19113,10 @@ elements.presentationHostProgress?.addEventListener("change", () => {
 
 elements.presentationRefreshButton?.addEventListener("click", () => {
   refreshPresentationDisplays({ announceError: true }).catch(() => {});
+});
+
+elements.presentationIdentifyButton?.addEventListener("click", () => {
+  showPresentationDisplayIdentifiers({ announceError: true }).catch(() => {});
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {

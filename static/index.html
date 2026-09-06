@@ -240,27 +240,38 @@
                 <div>
                   <p class="cache-panel-label" data-i18n="display.targetTitle">选择观众屏</p>
                 </div>
-                <button type="button" class="icon-button presentation-refresh-button" id="presentation-refresh-button"
-                  data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
-                  title="刷新显示器" aria-label="刷新显示器">↻</button>
+                <div class="presentation-target-actions">
+                  <button type="button" class="toolbar-button ghost presentation-identify-button"
+                    id="presentation-identify-button" data-i18n-title="display.identifyDisplays"
+                    data-i18n-aria-label="display.identifyDisplays" title="识别屏幕" aria-label="识别屏幕" disabled>
+                    <span class="presentation-identify-glyph" aria-hidden="true"><span>1</span><span>2</span></span>
+                    <span data-i18n="display.identifyDisplays">识别屏幕</span>
+                  </button>
+                  <button type="button" class="icon-button presentation-refresh-button" id="presentation-refresh-button"
+                    data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
+                    title="刷新显示器" aria-label="刷新显示器">↻</button>
+                </div>
               </div>
               <div class="presentation-display-list" id="presentation-display-list" aria-live="polite"></div>
             </div>
             <div class="presentation-host-target-section hidden" id="presentation-host-target-section">
               <div class="presentation-target-heading">
-                <div class="presentation-panel-label-row cache-contextual-info-region">
-                  <p class="cache-panel-label" data-i18n="display.hostTargetTitle">主控屏</p>
-                  <span class="cache-advanced-info">
-                    <button type="button" class="cache-advanced-info-button" aria-expanded="false"
-                      aria-describedby="presentation-host-target-description" data-i18n-aria-label="common.moreInfo"
-                      aria-label="更多信息">
-                      <span class="contextual-info-glyph" aria-hidden="true">i</span>
-                    </button>
-                    <span class="cache-advanced-tooltip" id="presentation-host-target-description" role="tooltip"
-                      data-i18n="display.hostTargetDescription">
-                      当前 Host 所在屏幕将用于观众播放，因此需要选择另一块屏幕放置 Host 主控窗口。
+                <div>
+                  <div class="presentation-panel-label-row cache-contextual-info-region">
+                    <p class="cache-panel-label" data-i18n="display.hostTargetTitle">Host 目标位置</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="presentation-host-target-description" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多信息">
+                        <span class="contextual-info-glyph" aria-hidden="true">i</span>
+                      </button>
+                      <span class="cache-advanced-tooltip" id="presentation-host-target-description" role="tooltip"
+                        data-i18n="display.hostTargetDescription">
+                        当前 Host 所在屏幕将用于观众播放，因此需要选择另一块屏幕放置 Host 主控窗口。
+                      </span>
                     </span>
-                  </span>
+                  </div>
+                  <p class="presentation-host-target-summary" id="presentation-host-target-summary"></p>
                 </div>
               </div>
               <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>

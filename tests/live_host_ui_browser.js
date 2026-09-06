@@ -104,6 +104,34 @@ async function run() {
     "-internet-remote-active",
   );
   const presentationRoutingScreenshotPath = suffixedPath(screenshotPath, "-presentation-routing");
+  const presentationRoutingDarkScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-presentation-routing-dark",
+  );
+  const presentationRoutingBlueScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-presentation-routing-blue",
+  );
+  const displayIdentifierLightScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-display-identifier-light",
+  );
+  const displayIdentifierDarkScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-display-identifier-dark",
+  );
+  const displayIdentifierBlueScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-display-identifier-blue",
+  );
+  const displayIdentifierFullscreenScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-display-identifier-fullscreen",
+  );
+  const displayIdentifierNarrowMenuScreenshotPath = suffixedPath(
+    screenshotPath,
+    "-display-identifier-narrow-menu",
+  );
   const consoleErrors = [];
   const pageErrors = [];
   const hostPlayerRequests = [];
@@ -9466,6 +9494,14 @@ async function run() {
       "compact top menus ignored their own trigger anchors or escaped the viewport",
       compactTopMenuEvidence,
     );
+    const minimumWindowPresentationMenu = compactTopMenuEvidence
+      .find((entry) => entry.name === "presentation");
+    const minimumWindowIdentifierMenuGap = minimumWindowPresentationMenu.popupLeft - (24 + 128);
+    assert(
+      minimumWindowIdentifierMenuGap >= 24,
+      "the square display identifier did not leave a safe gap beside the 700px Windows dual-screen menu",
+      { minimumWindowIdentifierMenuGap, minimumWindowPresentationMenu },
+    );
 
     await titlebarPage.locator("#work-rail-settings").click();
     const ultraDisplayEvidence = await titlebarPage.evaluate(() => {
@@ -9869,16 +9905,26 @@ async function run() {
     await outputPage.close();
 
     const presentationRoutingEvidence = await page.evaluate(() => {
+      window.__presentationRoutingPreviousLanguage = state.language;
+      window.__presentationRoutingPreviousTheme = state.theme;
+      setLanguage("zh");
+      applyTheme("light");
       const displays = [
         {
-          id: "display:host-current", name: "Current Host display", positionX: 0, positionY: 0,
+          id: "display:host-current", name: "Host 当前屏幕", positionX: 0, positionY: 0,
           width: 1920, height: 1080, scaleFactor: 1, builtIn: false, controller: true,
           primary: true, selectable: true, mirrored: false, identityStable: true,
           identityQuality: "stable",
         },
         {
-          id: "display:other", name: "Studio display", positionX: 1920, positionY: 0,
-          width: 1920, height: 1080, scaleFactor: 1, builtIn: false, controller: false,
+          id: "display:other", name: "内置屏", positionX: 1920, positionY: 0,
+          width: 2560, height: 1600, scaleFactor: 2, builtIn: false, controller: false,
+          primary: false, selectable: true, mirrored: false, identityStable: true,
+          identityQuality: "stable",
+        },
+        {
+          id: "display:projector", name: "舞台投影", positionX: 4480, positionY: 0,
+          width: 3840, height: 2160, scaleFactor: 1, builtIn: false, controller: false,
           primary: false, selectable: true, mirrored: false, identityStable: true,
           identityQuality: "stable",
         },
@@ -9887,7 +9933,7 @@ async function run() {
       state.presentationSelectedDisplayId = "display:host-current";
       state.presentationSelectedHostDisplayId = "";
       applyPresentationDisplayInfo({
-        monitorCount: 2,
+        monitorCount: 3,
         displays,
         controllerDisplayId: "display:host-current",
         recommendedDisplayId: "display:other",
@@ -9902,10 +9948,14 @@ async function run() {
         targetOptions: elements.presentationHostDisplayList
           .querySelectorAll("[data-presentation-host-display-id]").length,
         selectedHostDisplayId: state.presentationSelectedHostDisplayId,
+        outputNumbers: Array.from(
+          elements.presentationDisplayList.querySelectorAll(".presentation-display-index"),
+          (number) => number.textContent.trim(),
+        ),
       };
       window.__applyBuiltInRoutingProof = () => {
         applyPresentationDisplayInfo({
-          monitorCount: 2,
+          monitorCount: 3,
           displays: displays.map((display) => (
             display.id === "display:other" ? { ...display, builtIn: true } : display
           )),
@@ -9914,33 +9964,267 @@ async function run() {
         });
         renderPresentationDisplayList();
         return {
-          targetSectionHidden: elements.presentationHostTargetSection.classList.contains("hidden"),
+          targetSectionVisible: !elements.presentationHostTargetSection.classList.contains("hidden"),
           selectedHostDisplayId: state.presentationSelectedHostDisplayId,
+          summary: elements.presentationHostTargetSummary.textContent.trim(),
+          outputNumbers: Array.from(
+            elements.presentationDisplayList.querySelectorAll(".presentation-display-index"),
+            (number) => number.textContent.trim(),
+          ),
+          hostNumbers: Array.from(
+            elements.presentationHostDisplayList.querySelectorAll(".presentation-display-index"),
+            (number) => number.textContent.trim(),
+          ),
         };
       };
       return manual;
     });
     assert(
       presentationRoutingEvidence.targetSectionVisible
-        && presentationRoutingEvidence.targetOptions === 1
-        && presentationRoutingEvidence.selectedHostDisplayId === "",
-      "same-display output did not require an explicit Host destination when no built-in display exists",
+        && presentationRoutingEvidence.targetOptions === 2
+        && presentationRoutingEvidence.selectedHostDisplayId === ""
+        && presentationRoutingEvidence.outputNumbers.join(",") === "1,2,3",
+      "same-display output did not require an explicit numbered Host destination without a built-in display",
       presentationRoutingEvidence,
+    );
+    const builtInRoutingEvidence = await page.evaluate(() => window.__applyBuiltInRoutingProof());
+    assert(
+      builtInRoutingEvidence.targetSectionVisible
+        && builtInRoutingEvidence.selectedHostDisplayId === "display:other"
+        && builtInRoutingEvidence.summary === "Host 将移至：2 · 内置屏（默认）"
+        && builtInRoutingEvidence.outputNumbers.join(",") === "1,2,3"
+        && builtInRoutingEvidence.hostNumbers.join(",") === "2,3",
+      "same-display output did not visibly select the numbered built-in Host destination",
+      builtInRoutingEvidence,
     );
     if (presentationRoutingScreenshotPath) {
       await page.screenshot({ path: presentationRoutingScreenshotPath, fullPage: false });
     }
-    const builtInRoutingEvidence = await page.evaluate(() => window.__applyBuiltInRoutingProof());
+    const presentationRoutingThemes = [];
+    for (const [theme, path] of [
+      ["dark", presentationRoutingDarkScreenshotPath],
+      ["blue", presentationRoutingBlueScreenshotPath],
+    ]) {
+      await page.evaluate((nextTheme) => applyTheme(nextTheme), theme);
+      await page.waitForTimeout(60);
+      presentationRoutingThemes.push(await page.evaluate(() => {
+        const panel = elements.presentationSettingsPanel;
+        const index = panel.querySelector(".presentation-display-index");
+        const panelStyle = getComputedStyle(panel);
+        const indexStyle = getComputedStyle(index);
+        return {
+          theme: document.documentElement.dataset.theme,
+          panelBackground: panelStyle.backgroundColor,
+          panelColor: panelStyle.color,
+          indexBackground: indexStyle.backgroundColor,
+          indexColor: indexStyle.color,
+          topbarZIndex: getComputedStyle(document.querySelector(".topbar")).zIndex,
+        };
+      }));
+      if (path) await page.screenshot({ path, fullPage: false });
+    }
     assert(
-      builtInRoutingEvidence.targetSectionHidden
-        && builtInRoutingEvidence.selectedHostDisplayId === "display:other",
-      "same-display output did not automatically select the available built-in display for Host",
-      builtInRoutingEvidence,
+      presentationRoutingThemes.map((entry) => entry.theme).join(",") === "dark,blue"
+        && presentationRoutingThemes.every((entry) => (
+          entry.panelBackground !== "rgba(0, 0, 0, 0)"
+          && entry.indexBackground === "rgba(0, 0, 0, 0)"
+          && entry.indexColor !== entry.panelBackground
+          && Number(entry.topbarZIndex) === 300
+        )),
+      "numbered display menu did not retain opaque themed surfaces and the Host layer contract",
+      presentationRoutingThemes,
     );
     await page.evaluate(() => {
+      setLanguage(window.__presentationRoutingPreviousLanguage);
+      applyTheme(window.__presentationRoutingPreviousTheme);
       state.presentationSettingsOpen = false;
       syncPresentationPanelVisibility();
     });
+
+    const identifierEvidence = [];
+    const identifierPage = await browser.newPage({ viewport: { width: 128, height: 128 } });
+    for (const fixture of [
+      { number: 1, theme: "light", language: "zh", role: "host", path: displayIdentifierLightScreenshotPath },
+      { number: 2, theme: "dark", language: "en", role: "audience", path: displayIdentifierDarkScreenshotPath },
+      { number: 3, theme: "blue", language: "ja", role: "audience", path: displayIdentifierBlueScreenshotPath },
+    ]) {
+      await identifierPage.goto(
+        `${baseUrl}/display-identifier.html?number=${fixture.number}&theme=${fixture.theme}`
+          + `&language=${fixture.language}&role=${fixture.role}`,
+        { waitUntil: "networkidle" },
+      );
+      await identifierPage.waitForTimeout(240);
+      identifierEvidence.push(await identifierPage.evaluate(() => {
+        const card = document.querySelector(".display-identifier-card");
+        const cardRect = card.getBoundingClientRect();
+        const number = document.querySelector("#display-identifier-number");
+        return {
+          number: number.textContent.trim(),
+          role: document.querySelector("#display-identifier-role").textContent.trim(),
+          theme: document.documentElement.dataset.theme,
+          language: document.documentElement.lang,
+          width: cardRect.width,
+          height: cardRect.height,
+          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          cardBackground: getComputedStyle(card).backgroundColor,
+          cardBorderRadius: getComputedStyle(card).borderTopLeftRadius,
+          numberColor: getComputedStyle(number).color,
+          roleLines: Math.round(
+            document.querySelector("#display-identifier-role").getBoundingClientRect().height
+              / parseFloat(getComputedStyle(document.querySelector("#display-identifier-role")).lineHeight),
+          ),
+        };
+      }));
+      if (fixture.path) await identifierPage.screenshot({ path: fixture.path, fullPage: false });
+    }
+    assert(
+      identifierEvidence.map((entry) => entry.number).join(",") === "1,2,3"
+        && identifierEvidence.map((entry) => entry.theme).join(",") === "light,dark,blue"
+        && identifierEvidence.every((entry) => (
+          entry.width === 128
+          && entry.height === 128
+          && entry.bodyBackground === "rgba(0, 0, 0, 0)"
+          && entry.cardBackground !== "rgba(0, 0, 0, 0)"
+          && entry.cardBorderRadius === "14px"
+          && entry.numberColor !== entry.cardBackground
+          && entry.roleLines <= 2
+        )),
+      "square display identifier overlays did not retain transparent corners across themes and languages",
+      identifierEvidence,
+    );
+    await identifierPage.close();
+
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.evaluate((identifierUrl) => {
+      const frame = document.createElement("iframe");
+      frame.id = "display-identifier-screenshot-fixture";
+      frame.src = identifierUrl;
+      Object.assign(frame.style, {
+        position: "fixed",
+        top: "24px",
+        left: "24px",
+        width: "128px",
+        height: "128px",
+        border: "0",
+        pointerEvents: "none",
+        zIndex: "1000",
+      });
+      document.body.append(frame);
+    }, `${baseUrl}/display-identifier.html?number=1&theme=light&language=zh&role=host`);
+    const identifierFrame = page.locator("#display-identifier-screenshot-fixture");
+    await identifierFrame.waitFor({ state: "visible" });
+    await page.waitForTimeout(240);
+    const fullscreenIdentifierBounds = await identifierFrame.boundingBox();
+    assert(
+      fullscreenIdentifierBounds
+        && fullscreenIdentifierBounds.x === 24
+        && fullscreenIdentifierBounds.y === 24
+        && fullscreenIdentifierBounds.width === 128
+        && fullscreenIdentifierBounds.height === 128,
+      "display identifier preview did not preserve the native top-left placement contract",
+      fullscreenIdentifierBounds,
+    );
+    if (displayIdentifierFullscreenScreenshotPath) {
+      await page.screenshot({ path: displayIdentifierFullscreenScreenshotPath, fullPage: false });
+    }
+
+    await page.setViewportSize({ width: 700, height: 800 });
+    await page.evaluate((identifierUrl) => {
+      window.__displayIdentifierNarrowPreviousLanguage = state.language;
+      window.__displayIdentifierNarrowPreviousTheme = state.theme;
+      setLanguage("ja");
+      applyTheme("light");
+      state.cacheSettingsOpen = false;
+      state.presentationSettingsOpen = true;
+      syncCachePanelVisibility();
+      syncPresentationPanelVisibility();
+      document.querySelector("#display-identifier-screenshot-fixture").src = identifierUrl;
+    }, `${baseUrl}/display-identifier.html?number=1&theme=light&language=ja&role=host`);
+    await page.frameLocator("#display-identifier-screenshot-fixture")
+      .locator("#display-identifier-role")
+      .waitFor({ state: "visible" });
+    await page.waitForTimeout(240);
+    const narrowIdentifierLanguages = [];
+    for (const language of ["zh", "en", "ja"]) {
+      await page.evaluate((nextLanguage) => {
+        setLanguage(nextLanguage);
+        state.presentationSettingsOpen = true;
+        syncPresentationPanelVisibility();
+      }, language);
+      await page.waitForTimeout(40);
+      narrowIdentifierLanguages.push(await page.evaluate((nextLanguage) => {
+        const frame = document.querySelector("#display-identifier-screenshot-fixture");
+        const panel = elements.presentationSettingsPanel;
+        const frameRect = frame.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const rect = (element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            left: bounds.left,
+            top: bounds.top,
+            right: bounds.right,
+            bottom: bounds.bottom,
+          };
+        };
+        const overlaps = (left, right) => (
+          left.left < right.right
+          && left.right > right.left
+          && left.top < right.bottom
+          && left.bottom > right.top
+        );
+        const interactive = [
+          ...document.querySelectorAll(".top-controls button, #presentation-settings-panel button, #presentation-settings-panel input, #presentation-settings-panel select"),
+        ].filter((element) => {
+          const style = getComputedStyle(element);
+          const bounds = element.getBoundingClientRect();
+          return style.display !== "none"
+            && style.visibility !== "hidden"
+            && bounds.width > 0
+            && bounds.height > 0;
+        });
+        const frameBounds = rect(frame);
+        return {
+          language: nextLanguage,
+          frame: frameBounds,
+          panel: rect(panel),
+          menuGap: panelRect.left - frameRect.right,
+          pointerEvents: getComputedStyle(frame).pointerEvents,
+          interactiveOverlaps: interactive
+            .filter((element) => overlaps(frameBounds, rect(element)))
+            .map((element) => element.id || element.textContent.trim()),
+          panelOverlap: overlaps(frameBounds, rect(panel)),
+          horizontalPageScroll: document.documentElement.scrollWidth
+            > document.documentElement.clientWidth + 1,
+        };
+      }, language));
+    }
+    assert(
+      narrowIdentifierLanguages.map((entry) => entry.language).join(",") === "zh,en,ja"
+        && narrowIdentifierLanguages.every((entry) => (
+          entry.frame.left === 24
+          && entry.frame.top === 24
+          && entry.frame.right === 152
+          && entry.frame.bottom === 152
+          && entry.menuGap >= 24
+          && entry.pointerEvents === "none"
+          && entry.interactiveOverlaps.length === 0
+          && !entry.panelOverlap
+          && !entry.horizontalPageScroll
+        )),
+      "display identifier interfered with the open dual-screen menu at the 700px Host minimum",
+      narrowIdentifierLanguages,
+    );
+    if (displayIdentifierNarrowMenuScreenshotPath) {
+      await page.screenshot({ path: displayIdentifierNarrowMenuScreenshotPath, fullPage: false });
+    }
+    await page.evaluate(() => document.querySelector("#display-identifier-screenshot-fixture")?.remove());
+    await page.evaluate(() => {
+      setLanguage(window.__displayIdentifierNarrowPreviousLanguage);
+      applyTheme(window.__displayIdentifierNarrowPreviousTheme);
+      state.presentationSettingsOpen = false;
+      syncPresentationPanelVisibility();
+    });
+    await page.setViewportSize({ width: 1920, height: 1080 });
 
     assert(pageErrors.length === 0, "unexpected page errors", pageErrors);
     assert(consoleErrors.length === 0, "unexpected console errors", consoleErrors);
@@ -10014,6 +10298,13 @@ async function run() {
           dualScreenHostNarrow: presentationHostNarrowScreenshotPath,
           presentationOutput: presentationOutputScreenshotPath,
           presentationRouting: presentationRoutingScreenshotPath,
+          presentationRoutingDark: presentationRoutingDarkScreenshotPath,
+          presentationRoutingBlue: presentationRoutingBlueScreenshotPath,
+          displayIdentifierLight: displayIdentifierLightScreenshotPath,
+          displayIdentifierDark: displayIdentifierDarkScreenshotPath,
+          displayIdentifierBlue: displayIdentifierBlueScreenshotPath,
+          displayIdentifierFullscreen: displayIdentifierFullscreenScreenshotPath,
+          displayIdentifierNarrowMenu: displayIdentifierNarrowMenuScreenshotPath,
         },
         presentationOutput: {
           ...outputLayoutEvidence,
@@ -10026,6 +10317,10 @@ async function run() {
         presentationRouting: {
           manual: presentationRoutingEvidence,
           builtIn: builtInRoutingEvidence,
+          themes: presentationRoutingThemes,
+          identifiers: identifierEvidence,
+          fullscreenIdentifierBounds,
+          narrowIdentifierLanguages,
         },
         audioVariants: remoteVariantPopupEvidence,
         audioVariantsScreenshotPath,
@@ -10041,6 +10336,7 @@ async function run() {
           maximizedFrameEvidence,
           ultraDisplayEvidence,
           compactTopMenuEvidence,
+          minimumWindowIdentifierMenuGap,
           ultraRemoteEvidence,
           ultraServiceEvidence,
           screenshots: {

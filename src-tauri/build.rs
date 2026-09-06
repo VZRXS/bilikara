@@ -4,6 +4,8 @@ fn main() {
         "restart_application",
         "get_presentation_displays",
         "get_presentation_session",
+        "show_presentation_display_identifiers",
+        "dismiss_presentation_display_identifiers",
         "activate_local_presentation",
         "mark_presentation_host_ready",
         "mark_presentation_controller_ready",

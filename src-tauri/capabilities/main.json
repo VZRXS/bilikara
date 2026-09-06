@@ -24,6 +24,8 @@
     "allow-restart-application",
     "allow-get-presentation-displays",
     "allow-get-presentation-session",
+    "allow-show-presentation-display-identifiers",
+    "allow-dismiss-presentation-display-identifiers",
     "allow-activate-local-presentation",
     "allow-mark-presentation-host-ready",
     "allow-acknowledge-presentation-command",

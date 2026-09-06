@@ -44,6 +44,8 @@ fn main() {
             backend_download::save_backend_download,
             presentation::get_presentation_displays,
             presentation::get_presentation_session,
+            presentation::show_presentation_display_identifiers,
+            presentation::dismiss_presentation_display_identifiers,
             presentation::activate_local_presentation,
             presentation::mark_presentation_host_ready,
             presentation::mark_presentation_controller_ready,

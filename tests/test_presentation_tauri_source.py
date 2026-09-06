@@ -95,6 +95,8 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "set_window_fullscreen",
             "get_presentation_displays",
             "get_presentation_session",
+            "show_presentation_display_identifiers",
+            "dismiss_presentation_display_identifiers",
             "activate_local_presentation",
             "mark_presentation_host_ready",
             "mark_presentation_controller_ready",
@@ -113,6 +115,35 @@ class PresentationTauriSourceTest(unittest.TestCase):
             self.assertTrue(permission.is_file(), command)
             text = permission.read_text(encoding="utf-8")
             self.assertIn(f'commands.allow = ["{command}"]', text)
+
+    def test_display_identifiers_are_ordered_native_overlays_with_bounded_lifetime(self):
+        identifiers = self.presentation[
+            self.presentation.index("fn validate_display_identifier_order") :
+            self.presentation.index("fn capture_host_placement")
+        ]
+        self.assertIn("requested_ids.len() != available_ids.len()", identifiers)
+        self.assertIn("seen.insert(requested_id.as_str())", identifiers)
+        self.assertIn("order_index + 1", identifiers)
+        self.assertIn("record.display.controller", identifiers)
+        self.assertIn("record.display.selectable", identifiers)
+        self.assertIn(".always_on_top(true)", identifiers)
+        self.assertIn(".focusable(false)", identifiers)
+        self.assertIn(".skip_taskbar(true)", identifiers)
+        self.assertIn("const DISPLAY_IDENTIFIER_WIDTH: f64 = 128.0", self.presentation)
+        self.assertIn("const DISPLAY_IDENTIFIER_HEIGHT: f64 = 128.0", self.presentation)
+        self.assertIn(".transparent(true)", identifiers)
+        self.assertIn(".shadow(false)", identifiers)
+        self.assertIn("tauri::window::Color(0, 0, 0, 0)", identifiers)
+        self.assertIn("window.set_ignore_cursor_events(true)", identifiers)
+        self.assertIn("display_identifier_margin_offset", identifiers)
+        self.assertNotIn("saturating_sub(width) / 2", identifiers)
+        self.assertIn("DISPLAY_IDENTIFIER_LIFETIME", identifiers)
+        self.assertIn("close_display_identifier_labels(&expiry_app", identifiers)
+        main_permissions = set(self.main_capability["permissions"])
+        self.assertIn("allow-show-presentation-display-identifiers", main_permissions)
+        self.assertIn("allow-dismiss-presentation-display-identifiers", main_permissions)
+        self.assertNotIn("allow-show-presentation-display-identifiers", self.controller_capability["permissions"])
+        self.assertTrue(self.configuration["app"]["macOSPrivateApi"])
 
     def test_only_main_is_static_and_audience_output_is_dynamic(self):
         self.assertEqual([window["label"] for window in self.configuration["app"]["windows"]], ["main"])
@@ -274,6 +305,10 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertIn("host_display_id: Option<String>", activation)
         self.assertIn("if let Some(host_monitor) = host_target_monitor.as_ref()", activation)
         self.assertIn("host_target.is_some()", activation)
+        self.assertLess(
+            activation.index("close_display_identifier_windows(&app)"),
+            activation.index("state.begin_activation("),
+        )
         recovery = self.presentation[
             self.presentation.index("fn restore_recovery_window") :
             self.presentation.index("fn finalize_recovery")

@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, webview::PageLoadEvent};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Devices::Display::{
@@ -27,6 +30,13 @@ const CONTROLLER_WIDTH: f64 = 1200.0;
 const CONTROLLER_HEIGHT: f64 = 800.0;
 const ACTIVATION_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RECOVERY_FINALIZATION_TIMEOUT: Duration = Duration::from_secs(5);
+const DISPLAY_IDENTIFIER_WINDOW_PREFIX: &str = "display-identifier-";
+const DISPLAY_IDENTIFIER_WIDTH: f64 = 128.0;
+const DISPLAY_IDENTIFIER_HEIGHT: f64 = 128.0;
+const DISPLAY_IDENTIFIER_MARGIN: f64 = 24.0;
+const DISPLAY_IDENTIFIER_LIFETIME: Duration = Duration::from_secs(3);
+const MAX_DISPLAY_IDENTIFIER_WINDOWS: usize = 16;
+static DISPLAY_IDENTIFIER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct MonitorGeometry {
@@ -1566,6 +1576,255 @@ fn display_info(records: &[PresentationDisplayRecord]) -> PresentationDisplayInf
     }
 }
 
+fn normalized_display_identifier_theme(value: &str) -> &'static str {
+    match value {
+        "dark" => "dark",
+        "blue" => "blue",
+        _ => "light",
+    }
+}
+
+fn normalized_display_identifier_language(value: &str) -> &'static str {
+    match value {
+        "en" => "en",
+        "ja" => "ja",
+        _ => "zh",
+    }
+}
+
+fn validate_display_identifier_order(
+    available_ids: &[String],
+    requested_ids: &[String],
+) -> Result<Vec<usize>, String> {
+    if requested_ids.is_empty() || requested_ids.len() > MAX_DISPLAY_IDENTIFIER_WINDOWS {
+        return Err("the display identifier request has an invalid size".to_string());
+    }
+    if requested_ids.len() != available_ids.len() {
+        return Err("the display topology changed; refresh the display list".to_string());
+    }
+    let mut seen = HashSet::new();
+    requested_ids
+        .iter()
+        .map(|requested_id| {
+            if !seen.insert(requested_id.as_str()) {
+                return Err("the display identifier request contains a duplicate".to_string());
+            }
+            available_ids
+                .iter()
+                .position(|available_id| available_id == requested_id)
+                .ok_or_else(|| "the display topology changed; refresh the display list".to_string())
+        })
+        .collect()
+}
+
+fn display_identifier_url(
+    host: &tauri::WebviewWindow,
+    number: usize,
+    theme: &str,
+    language: &str,
+    role: &str,
+) -> Result<tauri::Url, String> {
+    let mut url = host.url().map_err(|error| error.to_string())?;
+    if crate::backend_process::parsed_http_origin(url.as_str()).is_none() {
+        return Err("the Host is not using the local Bilikara origin".to_string());
+    }
+    url.set_path("/display-identifier.html");
+    url.set_query(None);
+    url.set_fragment(None);
+    url.query_pairs_mut()
+        .append_pair("number", &number.to_string())
+        .append_pair("theme", theme)
+        .append_pair("language", language)
+        .append_pair("role", role);
+    Ok(url)
+}
+
+fn display_identifier_margin_offset(
+    work_area_extent: u32,
+    window_extent: u32,
+    scale_factor: f64,
+) -> i32 {
+    let available = work_area_extent.saturating_sub(window_extent);
+    let requested = (DISPLAY_IDENTIFIER_MARGIN * scale_factor).round().max(0.0) as u32;
+    requested.min(available) as i32
+}
+
+fn close_display_identifier_labels(app: &tauri::AppHandle, labels: &[String]) {
+    for label in labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
+fn close_display_identifier_windows(app: &tauri::AppHandle) {
+    let labels = app
+        .webview_windows()
+        .keys()
+        .filter(|label| label.starts_with(DISPLAY_IDENTIFIER_WINDOW_PREFIX))
+        .cloned()
+        .collect::<Vec<_>>();
+    close_display_identifier_labels(app, &labels);
+}
+
+fn create_display_identifier_window(
+    app: &tauri::AppHandle,
+    host: &tauri::WebviewWindow,
+    record: &PresentationDisplayRecord,
+    number: usize,
+    generation: u64,
+    theme: &str,
+    language: &str,
+) -> Result<String, String> {
+    let role = if record.display.controller {
+        "host"
+    } else if record.display.selectable {
+        "audience"
+    } else {
+        "unavailable"
+    };
+    let url = display_identifier_url(host, number, theme, language, role)?;
+    let allowed_origin = url.clone();
+    let work_area = record.monitor.work_area();
+    let scale_factor = record.monitor.scale_factor().clamp(0.5, 8.0);
+    let width =
+        ((DISPLAY_IDENTIFIER_WIDTH * scale_factor).round() as u32).min(work_area.size.width.max(1));
+    let height = ((DISPLAY_IDENTIFIER_HEIGHT * scale_factor).round() as u32)
+        .min(work_area.size.height.max(1));
+    let position = tauri::PhysicalPosition::new(
+        work_area
+            .position
+            .x
+            .saturating_add(display_identifier_margin_offset(
+                work_area.size.width,
+                width,
+                scale_factor,
+            )),
+        work_area
+            .position
+            .y
+            .saturating_add(display_identifier_margin_offset(
+                work_area.size.height,
+                height,
+                scale_factor,
+            )),
+    );
+    let size = tauri::PhysicalSize::new(width, height);
+    let label = format!("{DISPLAY_IDENTIFIER_WINDOW_PREFIX}{generation}-{number}");
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+        .on_navigation(move |candidate| {
+            crate::backend_process::window_origin_authorized(
+                candidate.as_str(),
+                allowed_origin.as_str(),
+            )
+        })
+        .on_page_load(move |window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = window.set_size(size);
+                let _ = window.set_position(position);
+                let _ = window.set_ignore_cursor_events(true);
+                let _ = window.show();
+            }
+        })
+        .title(format!("Bilikara Display {number}"))
+        .visible(false)
+        .decorations(false)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .focused(false)
+        .focusable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .transparent(true)
+        .shadow(false)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .inner_size(DISPLAY_IDENTIFIER_WIDTH, DISPLAY_IDENTIFIER_HEIGHT)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let _ = window.set_size(size);
+    let _ = window.set_position(position);
+    let _ = window.set_ignore_cursor_events(true);
+    Ok(label)
+}
+
+#[tauri::command(async)]
+pub(crate) fn show_presentation_display_identifiers(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+    state: tauri::State<'_, PresentationState>,
+    display_ids: Vec<String>,
+    theme: String,
+    language: String,
+) -> Result<(), String> {
+    authorize_window(&window, &backend, &["main"])?;
+    if state.snapshot()?.phase != PresentationPhase::Inactive {
+        return Err("display identifiers are unavailable during presentation".to_string());
+    }
+    let records = discover_display_records(&window)?;
+    let available_ids = records
+        .iter()
+        .map(|record| record.display.id.clone())
+        .collect::<Vec<_>>();
+    let order = validate_display_identifier_order(&available_ids, &display_ids)?;
+    let theme = normalized_display_identifier_theme(&theme);
+    let language = normalized_display_identifier_language(&language);
+    close_display_identifier_windows(&app);
+    let generation = DISPLAY_IDENTIFIER_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    let mut labels = Vec::with_capacity(order.len());
+    let mut seen_origins = HashSet::new();
+    for (order_index, record_index) in order.into_iter().enumerate() {
+        let record = &records[record_index];
+        let origin = (record.display.position_x, record.display.position_y);
+        if !seen_origins.insert(origin) {
+            continue;
+        }
+        match create_display_identifier_window(
+            &app,
+            &window,
+            record,
+            order_index + 1,
+            generation,
+            theme,
+            language,
+        ) {
+            Ok(label) => labels.push(label),
+            Err(error) => {
+                close_display_identifier_labels(&app, &labels);
+                return Err(error);
+            }
+        }
+    }
+    let expiry_app = app.clone();
+    let expiry_labels = labels.clone();
+    std::thread::Builder::new()
+        .name("bilikara-display-identifiers".to_string())
+        .spawn(move || {
+            std::thread::sleep(DISPLAY_IDENTIFIER_LIFETIME);
+            close_display_identifier_labels(&expiry_app, &expiry_labels);
+        })
+        .map_err(|error| {
+            close_display_identifier_labels(&app, &labels);
+            format!("failed to schedule display identifier cleanup: {error}")
+        })?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn dismiss_presentation_display_identifiers(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+) -> Result<(), String> {
+    authorize_window(&window, &backend, &["main"])?;
+    close_display_identifier_windows(&app);
+    Ok(())
+}
+
 fn capture_host_placement(window: &tauri::WebviewWindow) -> Result<HostWindowPlacement, String> {
     Ok(HostWindowPlacement {
         position: window.outer_position().map_err(|error| error.to_string())?,
@@ -2359,6 +2618,7 @@ pub(crate) fn activate_local_presentation(
     } else {
         None
     };
+    close_display_identifier_windows(&app);
     let placement = capture_host_placement(&window)?;
     let activating = state.begin_activation(
         target.display.id.clone(),
@@ -2822,6 +3082,7 @@ pub(crate) fn prepare_app_shutdown(app: &tauri::AppHandle) {
     let generation = state.snapshot().ok().map(|session| session.generation);
     trace_presentation(app, generation, "app_shutdown_begin", "");
     state.mark_shutting_down();
+    close_display_identifier_windows(app);
     let close_result = close_controller(app);
     trace_presentation(
         app,
@@ -2952,9 +3213,10 @@ mod tests {
         ControllerPlaybackState, HostWindowPlacement, MAX_PENDING_COMMANDS, MAX_SAFE_JS_INTEGER,
         MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
         PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
-        WindowRole, deliver_main_thread_operation_result, display_source_is_mirrored,
-        next_sequence, readable_display_name, run_activation_readiness_step,
-        validate_controller_command, validate_playback_state, visible_restore_placement,
+        WindowRole, deliver_main_thread_operation_result, display_identifier_margin_offset,
+        display_source_is_mirrored, next_sequence, readable_display_name,
+        run_activation_readiness_step, validate_controller_command,
+        validate_display_identifier_order, validate_playback_state, visible_restore_placement,
     };
     use crate::desktop_diagnostics::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
     use std::cell::RefCell;
@@ -2975,6 +3237,56 @@ mod tests {
         assert_eq!(readable_display_name(r"\\.\DISPLAY1"), "Display 1");
         assert_eq!(readable_display_name(r"\\.\DISPLAY2"), "Display 2");
         assert_eq!(readable_display_name("ASUS MB16AC"), "ASUS MB16AC");
+    }
+
+    #[test]
+    fn display_identifier_order_accepts_only_the_current_unique_topology() {
+        let available = vec![
+            "builtin".to_string(),
+            "desk".to_string(),
+            "projector".to_string(),
+        ];
+        let requested = vec![
+            "projector".to_string(),
+            "builtin".to_string(),
+            "desk".to_string(),
+        ];
+        assert_eq!(
+            validate_display_identifier_order(&available, &requested)
+                .expect("the current topology can be reordered by stable id"),
+            vec![2, 0, 1]
+        );
+        assert!(
+            validate_display_identifier_order(
+                &available,
+                &[
+                    "builtin".to_string(),
+                    "builtin".to_string(),
+                    "projector".to_string()
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_display_identifier_order(
+                &available,
+                &[
+                    "builtin".to_string(),
+                    "missing".to_string(),
+                    "projector".to_string()
+                ],
+            )
+            .is_err()
+        );
+        assert!(validate_display_identifier_order(&available, &[]).is_err());
+    }
+
+    #[test]
+    fn display_identifier_uses_a_bounded_top_left_margin() {
+        assert_eq!(display_identifier_margin_offset(1920, 128, 1.0), 24);
+        assert_eq!(display_identifier_margin_offset(3840, 256, 2.0), 48);
+        assert_eq!(display_identifier_margin_offset(140, 128, 1.0), 12);
+        assert_eq!(display_identifier_margin_offset(128, 128, 1.0), 0);
     }
 
     fn begin_state() -> (PresentationState, u64) {
