@@ -158,9 +158,6 @@ pub fn normalize_media(
     })();
     let _ = fs::remove_file(&raw_path);
     let _ = fs::remove_file(&fast_path);
-    if result.is_err() {
-        let _ = fs::remove_file(&request.destination);
-    }
     result
 }
 
@@ -1277,9 +1274,6 @@ fn normalize_flac_mp4(
         })
     })();
     let _ = fs::remove_file(&raw_path);
-    if result.is_err() {
-        let _ = fs::remove_file(destination);
-    }
     result
 }
 
@@ -1493,7 +1487,57 @@ fn copy_range(
     Ok(())
 }
 
+// Test-only publication seam. When armed, it writes the given bytes to the
+// destination in the only window where a competing operation can win it: after
+// this operation validated an absent destination and wrote its own temporary
+// output, but before the real publication link below.
+#[cfg(test)]
+thread_local! {
+    static COMPETING_PUBLISHER: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn arm_competing_publisher(bytes: &[u8]) {
+    COMPETING_PUBLISHER.with(|armed| *armed.borrow_mut() = Some(bytes.to_vec()));
+}
+
+#[cfg(test)]
+fn run_competing_publisher(destination: &Path) {
+    let armed = COMPETING_PUBLISHER.with(|armed| armed.borrow_mut().take());
+    if let Some(bytes) = armed {
+        fs::write(destination, bytes).expect("competing publisher writes the destination");
+    }
+}
+
+/// Temporary outputs this operation owns for `destination`, by the naming
+/// convention of [`temporary_path`].
+#[cfg(test)]
+fn owned_temporary_files(destination: &Path) -> Vec<PathBuf> {
+    let directory = destination.parent().expect("destination parent");
+    let prefix = format!(
+        ".{}.",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("destination file name")
+    );
+    let mut owned = fs::read_dir(directory)
+        .expect("read destination directory")
+        .map(|entry| entry.expect("destination directory entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+        })
+        .collect::<Vec<_>>();
+    owned.sort();
+    owned
+}
+
 fn publish_no_replace(source: &Path, destination: &Path) -> Result<(), MediaError> {
+    #[cfg(test)]
+    run_competing_publisher(destination);
     fs::hard_link(source, destination).map_err(|_| {
         if destination.exists() {
             MediaError::new(
@@ -1530,6 +1574,8 @@ mod tests {
 
     const REAL_FLAC_FIXTURE_BASE64: &str =
         "ZkxhQ4AAACISABIAAAANAAANC7gA8AAAA8A9oVgtoi71SQek9M1tXRpg//h6CAADv8wAAAADsg==";
+    const COMPETING_SENTINEL: &[u8] = b"another operation already published this artifact";
+    const UNRELATED_SENTINEL: &[u8] = b"an unrelated artifact in the destination directory";
 
     fn test_dir(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1926,5 +1972,144 @@ mod tests {
         })
         .expect_err("kind mismatch should fail");
         assert_eq!(error.kind, MediaErrorKind::InvalidMedia);
+    }
+
+    #[test]
+    fn preserves_a_competing_mp4_destination_that_appears_during_normalization() {
+        let root = test_dir("collision-mp4");
+        let source = root.join("source.m4a");
+        let destination = root.join("output.m4a");
+        let unrelated = root.join("unrelated.bin");
+        write_aac_fixture(&source);
+        fs::write(&unrelated, UNRELATED_SENTINEL).expect("write unrelated artifact");
+        let source_bytes = fs::read(&source).expect("read source fixture");
+        assert!(!destination.exists());
+
+        arm_competing_publisher(COMPETING_SENTINEL);
+        let error = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: source.clone(),
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("a destination published by another operation must not be replaced");
+
+        // This message can only come from publish_no_replace, so the run really
+        // passed initial destination validation and wrote its own temporary
+        // output before failing.
+        assert_eq!(error.kind, MediaErrorKind::DestinationExists);
+        assert_eq!(
+            error.message,
+            "media destination appeared during normalization"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("competing destination survives"),
+            COMPETING_SENTINEL
+        );
+        assert_eq!(fs::read(&source).expect("read source"), source_bytes);
+        assert_eq!(
+            fs::read(&unrelated).expect("unrelated artifact survives"),
+            UNRELATED_SENTINEL
+        );
+        assert_eq!(owned_temporary_files(&destination), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn preserves_a_competing_flac_destination_that_appears_during_normalization() {
+        let root = test_dir("collision-flac");
+        let source = root.join("source.m4a");
+        let destination = root.join("output.flac");
+        let unrelated = root.join("unrelated.bin");
+        write_flac_mp4_fixture(&source);
+        fs::write(&unrelated, UNRELATED_SENTINEL).expect("write unrelated artifact");
+        let source_bytes = fs::read(&source).expect("read source fixture");
+        assert!(!destination.exists());
+
+        arm_competing_publisher(COMPETING_SENTINEL);
+        let error = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: source.clone(),
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("a destination published by another operation must not be replaced");
+
+        assert_eq!(error.kind, MediaErrorKind::DestinationExists);
+        assert_eq!(
+            error.message,
+            "media destination appeared during normalization"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("competing destination survives"),
+            COMPETING_SENTINEL
+        );
+        assert_eq!(fs::read(&source).expect("read source"), source_bytes);
+        assert_eq!(
+            fs::read(&unrelated).expect("unrelated artifact survives"),
+            UNRELATED_SENTINEL
+        );
+        assert_eq!(owned_temporary_files(&destination), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn rejects_an_already_existing_destination_without_touching_it() {
+        let root = test_dir("destination-exists");
+        let source = root.join("source.m4a");
+        let destination = root.join("output.m4a");
+        write_aac_fixture(&source);
+        fs::write(&destination, COMPETING_SENTINEL).expect("write existing destination");
+        let source_bytes = fs::read(&source).expect("read source fixture");
+
+        let error = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: source.clone(),
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("an existing destination must not be normalized over");
+
+        assert_eq!(error.kind, MediaErrorKind::DestinationExists);
+        assert_eq!(error.message, "media destination already exists");
+        assert_eq!(
+            fs::read(&destination).expect("existing destination survives"),
+            COMPETING_SENTINEL
+        );
+        assert_eq!(fs::read(&source).expect("read source"), source_bytes);
+        assert_eq!(owned_temporary_files(&destination), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn removes_owned_temporary_output_when_normalization_fails() {
+        let root = test_dir("normalize-failure");
+        let valid = root.join("valid.m4a");
+        write_aac_fixture(&valid);
+        let source = root.join("source.m4a");
+        let valid_bytes = fs::read(&valid).expect("read valid fixture");
+        fs::write(&source, &valid_bytes[..valid_bytes.len() / 2]).expect("write truncated source");
+        let destination = root.join("output.m4a");
+        let unrelated = root.join("unrelated.bin");
+        fs::write(&unrelated, UNRELATED_SENTINEL).expect("write unrelated artifact");
+        let source_bytes = fs::read(&source).expect("read truncated source");
+
+        let error = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: source.clone(),
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("a truncated source must not normalize");
+
+        assert_eq!(error.kind, MediaErrorKind::InvalidMedia);
+        assert!(!destination.exists());
+        assert_eq!(owned_temporary_files(&destination), Vec::<PathBuf>::new());
+        assert_eq!(fs::read(&source).expect("read source"), source_bytes);
+        assert_eq!(
+            fs::read(&unrelated).expect("unrelated artifact survives"),
+            UNRELATED_SENTINEL
+        );
+        assert_eq!(
+            fs::read(&valid).expect("valid fixture survives"),
+            valid_bytes
+        );
     }
 }
