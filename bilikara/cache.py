@@ -380,6 +380,8 @@ class CacheManager:
         self.python_worker_download_sources: dict[str, str] = {}
         self.python_cache_attempt_tokens: dict[str, int] = {}
         self.retry_requested_ids: set[str] = set()
+        self.settling_cache_attempt_tokens: set[int] = set()
+        self.worker_attempt_scope = threading.local()
         self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR
         self.bbdown_login_cancel_event: threading.Event | None = None
@@ -2106,6 +2108,7 @@ class CacheManager:
             self.python_worker_download_sources.clear()
             self.python_cache_attempt_tokens.clear()
             self.retry_requested_ids.clear()
+            self.settling_cache_attempt_tokens.clear()
             self.cache_interrupted_messages.clear()
             self.pending_ids.clear()
             self.requeued_active_ids.clear()
@@ -2174,6 +2177,7 @@ class CacheManager:
             self.python_worker_download_sources.clear()
             self.python_cache_attempt_tokens.clear()
             self.retry_requested_ids.clear()
+            self.settling_cache_attempt_tokens.clear()
             self.cache_interrupted_messages.clear()
             self.urgent_cache_ids.clear()
             self.urgent_workers.clear()
@@ -2222,6 +2226,7 @@ class CacheManager:
             self.desired_ids.clear()
             self.ordered_desired_ids.clear()
             self.retry_requested_ids.clear()
+            self.settling_cache_attempt_tokens.clear()
             self.cache_interrupted_messages.clear()
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
@@ -2753,6 +2758,7 @@ class CacheManager:
     def _urgent_cache_worker(self, item_id: str, cache_attempt_token: int) -> None:
         should_resync = False
         try:
+            self._begin_worker_attempt_scope(cache_attempt_token)
             should_resync = self._cache_item(item_id, cache_attempt_token)
         except Exception as exc:  # noqa: BLE001
             _debug_print(f"[bilikara-cache] Unexpected urgent-cache error for item {item_id}: {exc}")
@@ -2772,16 +2778,15 @@ class CacheManager:
             except Exception:
                 pass
         finally:
+            owned_attempt_tokens = self._end_worker_attempt_scope()
             with self.lock:
                 self.urgent_cache_ids.discard(item_id)
                 self.urgent_workers.pop(item_id, None)
-                self.pending_ids.discard(item_id)
-                self.python_worker_download_sources.pop(item_id, None)
-                if (
-                    self.python_cache_attempt_tokens.get(item_id)
-                    == cache_attempt_token
-                ):
-                    self.python_cache_attempt_tokens.pop(item_id, None)
+                self._release_worker_attempt_bookkeeping_locked(
+                    item_id,
+                    owned_attempt_tokens,
+                    release_ownership=True,
+                )
         if should_resync and not self.stop_event.is_set():
             self.sync_with_playlist()
 
@@ -2942,6 +2947,7 @@ class CacheManager:
                         )
                     if cache_attempt_token is None:
                         raise RuntimeError("queued cache item has no reserved attempt token")
+                    self._begin_worker_attempt_scope(cache_attempt_token)
                     should_resync = self._cache_item(
                         item_id,
                         cache_attempt_token,
@@ -2967,6 +2973,7 @@ class CacheManager:
                     except Exception:
                         pass
             finally:
+                owned_attempt_tokens = self._end_worker_attempt_scope()
                 with self.lock:
                     if self.active_item_id == item_id:
                         self.active_item_id = None
@@ -2979,16 +2986,14 @@ class CacheManager:
                         self.active_processes.discard(process)
                         self.active_process_item_ids.pop(process, None)
                     self.active_process = next(iter(self.active_processes), None)
-                    if item_id in self.requeued_active_ids:
+                    requeued = item_id in self.requeued_active_ids
+                    if requeued:
                         self.requeued_active_ids.discard(item_id)
-                    else:
-                        self.pending_ids.discard(item_id)
-                        self.python_worker_download_sources.pop(item_id, None)
-                        if (
-                            self.python_cache_attempt_tokens.get(item_id)
-                            == cache_attempt_token
-                        ):
-                            self.python_cache_attempt_tokens.pop(item_id, None)
+                    self._release_worker_attempt_bookkeeping_locked(
+                        item_id,
+                        owned_attempt_tokens,
+                        release_ownership=not requeued,
+                    )
                 self.tasks.task_done()
             if should_resync and not self.stop_event.is_set():
                 self.sync_with_playlist()
@@ -3013,14 +3018,9 @@ class CacheManager:
             return False
         self._cache_attempt_reservation_for_item(item, cache_attempt_token)
         if self._take_retry_request(item_id):
-            with self.lock:
-                replacement_token = self.python_cache_attempt_tokens.get(item_id)
-            if replacement_token is None or replacement_token == cache_attempt_token:
-                replacement_token = self._begin_cache_attempt_for_item(item)
-                with self.lock:
-                    self.python_cache_attempt_tokens[item_id] = replacement_token
-            cache_attempt_token = replacement_token
-            self._cache_attempt_reservation_for_item(item, cache_attempt_token)
+            cache_attempt_token = self._replacement_cache_attempt_token(
+                item, cache_attempt_token
+            )
         # Current cache flow keeps video and audio tracks separate so the host
         # can switch audio variants without remuxing a single output file.
         return self._cache_item_multi(
@@ -3042,8 +3042,39 @@ class CacheManager:
             replacement_token = self._begin_cache_attempt_for_item(item)
             with self.lock:
                 self.python_cache_attempt_tokens[item_id] = replacement_token
+        self._record_worker_attempt(replacement_token)
         self._cache_attempt_reservation_for_item(item, replacement_token)
         return replacement_token
+
+    def _restart_cache_after_retry_request(
+        self,
+        item_id: str,
+        previous_token: int,
+        *,
+        allow_refresh_retry: bool,
+        item_dir: Path | None = None,
+        log_path: Path | None = None,
+    ) -> bool:
+        """Restart an attempt after its already-consumed replacement request."""
+        fresh_item = self.store.get_item(item_id)
+        if not fresh_item or not self._should_cache(item_id):
+            return False
+        retry_token = self._replacement_cache_attempt_token(
+            fresh_item, previous_token
+        )
+        if log_path is not None:
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] restarting cache by manual request",
+            )
+        if item_dir is not None:
+            self._safe_rmtree(item_dir)
+        return self._cache_item_multi(
+            item_id,
+            fresh_item,
+            cache_attempt_token=retry_token,
+            allow_refresh_retry=allow_refresh_retry,
+        )
 
     def _cache_item_multi(
         self,
@@ -3068,6 +3099,13 @@ class CacheManager:
                 if cache_attempt_token is None
                 else self._require_cache_attempt_token(cache_attempt_token)
             )
+            self._record_worker_attempt(token)
+            if self._close_python_retry_window(item_id, token):
+                return self._restart_cache_after_retry_request(
+                    item_id,
+                    token,
+                    allow_refresh_retry=allow_refresh_retry,
+                )
             self._clear_item_download_progress(
                 item_id,
                 cache_attempt_token=token,
@@ -3086,6 +3124,7 @@ class CacheManager:
             if cache_attempt_token is None
             else self._require_cache_attempt_token(cache_attempt_token)
         )
+        self._record_worker_attempt(token)
         self._cache_attempt_reservation_for_item(item, token)
 
         self._clear_item_download_progress(
@@ -3115,6 +3154,14 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] Rust runtime unavailable: {message}",
                 )
+                if self._close_python_retry_window(item_id, token):
+                    return self._restart_cache_after_retry_request(
+                        item_id,
+                        token,
+                        allow_refresh_retry=allow_refresh_retry,
+                        item_dir=item_dir,
+                        log_path=log_path,
+                    )
                 self._project_cache_event(
                     item_id,
                     "failed",
@@ -3129,6 +3176,14 @@ class CacheManager:
                 binary_path = self._ensure_downloader(download_source)
             except Exception as exc:  # noqa: BLE001
                 label = self._download_source_label(download_source)
+                if self._close_python_retry_window(item_id, token):
+                    return self._restart_cache_after_retry_request(
+                        item_id,
+                        token,
+                        allow_refresh_retry=allow_refresh_retry,
+                        item_dir=item_dir,
+                        log_path=log_path,
+                    )
                 self._project_cache_event(
                     item_id,
                     "failed",
@@ -3144,6 +3199,14 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}",
                 )
+                if self._close_python_retry_window(item_id, token):
+                    return self._restart_cache_after_retry_request(
+                        item_id,
+                        token,
+                        allow_refresh_retry=allow_refresh_retry,
+                        item_dir=item_dir,
+                        log_path=log_path,
+                    )
                 self._project_cache_event(
                     item_id,
                     "failed",
@@ -3193,7 +3256,10 @@ class CacheManager:
                     log_path,
                     cache_attempt_token=token,
                 )
-            self._raise_if_retry_requested(item_id)
+            # Last point at which this attempt can still accept a replacement
+            # request; after it the worker publishes and settles.
+            if self._close_python_retry_window(item_id, token):
+                raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
             self._raise_if_priority_shift(item_id)
             self._publish_validated_cache_result(
                 item_id,
@@ -3206,20 +3272,13 @@ class CacheManager:
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._take_retry_request(item_id)
-                fresh_item = self.store.get_item(item_id)
-                if fresh_item and self._should_cache(item_id):
-                    retry_token = self._replacement_cache_attempt_token(
-                        fresh_item, token
-                    )
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    self._safe_rmtree(item_dir)
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        cache_attempt_token=retry_token,
-                        allow_refresh_retry=allow_refresh_retry,
-                    )
-                return False
+                return self._restart_cache_after_retry_request(
+                    item_id,
+                    token,
+                    allow_refresh_retry=allow_refresh_retry,
+                    item_dir=item_dir,
+                    log_path=log_path,
+                )
             self._take_cache_interrupt_message(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
             self._safe_rmtree(item_dir)
@@ -3238,19 +3297,12 @@ class CacheManager:
         except DownloadCommandError as exc:
             self._safe_rmtree(item_dir)
             if self._take_retry_request(item_id):
-                fresh_item = self.store.get_item(item_id)
-                if fresh_item and self._should_cache(item_id):
-                    retry_token = self._replacement_cache_attempt_token(
-                        fresh_item, token
-                    )
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        cache_attempt_token=retry_token,
-                        allow_refresh_retry=allow_refresh_retry,
-                    )
-                return False
+                return self._restart_cache_after_retry_request(
+                    item_id,
+                    token,
+                    allow_refresh_retry=allow_refresh_retry,
+                    log_path=log_path,
+                )
             last_message = str(exc)
             if (
                 download_source == DOWNLOAD_SOURCE_BBDOWN
@@ -3266,10 +3318,10 @@ class CacheManager:
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
                 )
                 try:
+                    self._ensure_bbdown(force_refresh=True)
                     retry_token = self._replacement_cache_attempt_token(
                         item, token
                     )
-                    self._ensure_bbdown(force_refresh=True)
                     self._clear_item_download_progress(
                         item_id,
                         cache_attempt_token=retry_token,
@@ -3285,6 +3337,13 @@ class CacheManager:
                         log_path,
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
+            if self._close_python_retry_window(item_id, token):
+                return self._restart_cache_after_retry_request(
+                    item_id,
+                    token,
+                    allow_refresh_retry=allow_refresh_retry,
+                    log_path=log_path,
+                )
             self._clear_item_download_progress(
                 item_id,
                 cache_attempt_token=token,
@@ -3301,20 +3360,13 @@ class CacheManager:
             return False
         except Exception as exc:  # noqa: BLE001
             self._safe_rmtree(item_dir)
-            if self._take_retry_request(item_id):
-                fresh_item = self.store.get_item(item_id)
-                if fresh_item and self._should_cache(item_id):
-                    retry_token = self._replacement_cache_attempt_token(
-                        fresh_item, token
-                    )
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        cache_attempt_token=retry_token,
-                        allow_refresh_retry=allow_refresh_retry,
-                    )
-                return False
+            if self._close_python_retry_window(item_id, token):
+                return self._restart_cache_after_retry_request(
+                    item_id,
+                    token,
+                    allow_refresh_retry=allow_refresh_retry,
+                    log_path=log_path,
+                )
             last_message = str(exc)
             self._clear_item_download_progress(
                 item_id,
@@ -5612,6 +5664,32 @@ class CacheManager:
             for item in self.store.list_items()
             if item.id in item_ids
         }
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
+            # Give every desired item exactly one replacement executor.  The
+            # choice is made under self.lock against the same bookkeeping an
+            # external-tool worker closes its retry window with, so a request
+            # either lands while that worker can still consume it or is routed
+            # to the Rust runtime; neither side can miss the other and no
+            # unconsumable Python retry is left behind.  Accepted items keep the
+            # source that actually started them and mint their replacement
+            # attempt inside the worker's own retry lifecycle, so nothing is
+            # written to the Python ownership maps here.
+            with self.lock:
+                handed_to_worker = {
+                    item_id
+                    for item_id in observed_items
+                    if self._python_retry_window_open_locked(item_id)
+                }
+                self.retry_requested_ids.update(handed_to_worker)
+            self._request_native_desired_recaching(
+                {
+                    item_id: item
+                    for item_id, item in observed_items.items()
+                    if item_id not in handed_to_worker
+                }
+            )
+            self._terminate_processes(active_processes)
+            return
         refresh_tokens = {
             item_id: self._begin_cache_attempt_for_item(item)
             for item_id, item in observed_items.items()
@@ -5637,6 +5715,75 @@ class CacheManager:
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
+
+    def _request_native_desired_recaching(
+        self,
+        observed_items: dict[str, PlaylistItem],
+    ) -> None:
+        """Re-request the Rust-owned Native cache work for the desired items.
+
+        Native jobs belong to the Rust CacheRuntime: it reserves the cache
+        attempt, generation and artifact set itself, and
+        ``_sync_native_with_playlist`` deliberately keeps every item listed in
+        ``python_worker_download_sources`` out of the Native ``jobs``
+        inventory.  Registering Native items there therefore made every later
+        sync report an empty desired set, which Rust answers by cancelling the
+        whole Native queue.  Ask the runtime to replace the affected jobs
+        instead, the same way ``retry_item`` already re-requests Native work,
+        and leave the Python ownership maps untouched.  The recaching reason is
+        not projected from here because Rust publishes its own ``queued`` event
+        for the replacement attempt.
+
+        ``observed_items`` must already exclude items a Python external-tool
+        worker owns; the caller performs that split so ownership is decided in
+        one place.
+        """
+        with self.lock:
+            planned_order = list(self.ordered_desired_ids)
+        ordered_ids: list[str] = []
+        seen: set[str] = set()
+        for item_id in planned_order + sorted(observed_items):
+            if item_id in seen or item_id not in observed_items:
+                continue
+            seen.add(item_id)
+            ordered_ids.append(item_id)
+        if not ordered_ids:
+            return
+        # A replaced Rust job is re-queued at the front of the normal queue, so
+        # walking the planned order backwards leaves it in the planned order.
+        for item_id in reversed(ordered_ids):
+            item = observed_items[item_id]
+            try:
+                self._ensure_native_cache_runtime()
+                result = self._native_cache_request(
+                    "retry",
+                    job=self._native_cache_job(item),
+                    urgent=False,
+                )
+                generation = int(result.get("generation") or 0)
+                cache_attempt_token = self._require_cache_attempt_token(
+                    result.get("cache_attempt_token")
+                )
+                if generation > 0:
+                    self._accept_native_cache_attempt_identity(
+                        item_id,
+                        generation,
+                        cache_attempt_token,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if not self._cache_incarnation_mismatch(exc):
+                    self._mark_native_cache_failed(
+                        item_id,
+                        str(exc),
+                        expected_item_incarnation_id=item.item_incarnation_id,
+                    )
+        try:
+            self._drain_native_cache_events()
+        except Exception as exc:  # noqa: BLE001
+            # The background Rust cache event worker keeps draining, so record
+            # the failure the same way it does instead of failing the caller.
+            with self.lock:
+                self.native_cache_error = str(exc)
 
     @staticmethod
     def _py_video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
@@ -9356,6 +9503,98 @@ class CacheManager:
                 return False
             self.retry_requested_ids.discard(item_id)
             return True
+
+    def _begin_worker_attempt_scope(self, cache_attempt_token: int) -> None:
+        """Start recording the attempt identities this worker actually owns.
+
+        The token a worker is handed when it dequeues an item is not necessarily
+        the one it settles: a retry handoff, a download failure or a refresh
+        replaces the attempt mid-flight through
+        ``_replacement_cache_attempt_token``.  The record is thread-local because
+        the normal lane and every urgent lane run one whole attempt chain on
+        their own thread, and it is written as the identity changes rather than
+        returned, so settlement still sees it when the attempt raises or is
+        cancelled.
+        """
+        self.worker_attempt_scope.owned = {cache_attempt_token}
+
+    def _record_worker_attempt(self, cache_attempt_token: int) -> None:
+        owned = getattr(self.worker_attempt_scope, "owned", None)
+        if owned is not None:
+            owned.add(cache_attempt_token)
+
+    def _end_worker_attempt_scope(self) -> set[int]:
+        owned = getattr(self.worker_attempt_scope, "owned", None)
+        self.worker_attempt_scope.owned = None
+        return set(owned) if owned else set()
+
+    def _release_worker_attempt_bookkeeping_locked(
+        self,
+        item_id: str,
+        owned_attempt_tokens: set[int],
+        *,
+        release_ownership: bool,
+    ) -> None:
+        """Release the bookkeeping a finished worker owns.
+
+        Call with ``self.lock`` held.  Only records matching one of this
+        worker's own attempt identities are removed, so an attempt a genuinely
+        newer and independent executor reserved afterwards - or one belonging to
+        a different item incarnation - keeps its own state.  The retry-window
+        markers are always released because those tokens are this worker's and
+        are dead once it exits; the ownership records are kept when the item was
+        handed to another executor.
+        """
+        self.settling_cache_attempt_tokens.difference_update(owned_attempt_tokens)
+        if not release_ownership:
+            return
+        current_attempt_token = self.python_cache_attempt_tokens.get(item_id)
+        if (
+            current_attempt_token is not None
+            and current_attempt_token not in owned_attempt_tokens
+        ):
+            return
+        self.pending_ids.discard(item_id)
+        self.retry_requested_ids.discard(item_id)
+        self.python_worker_download_sources.pop(item_id, None)
+        if current_attempt_token is not None:
+            self.python_cache_attempt_tokens.pop(item_id, None)
+
+    def _python_retry_window_open_locked(self, item_id: str) -> bool:
+        """Whether an external-tool worker can still consume a replacement request.
+
+        Call with ``self.lock`` held.  The window is open while the item is owned
+        by a Python external-tool worker whose current attempt has not yet passed
+        its last retry check (see ``_close_python_retry_window``).  Ownership
+        alone is not enough: a worker that already started publishing keeps its
+        owner entry until settlement but will never look at
+        ``retry_requested_ids`` again.
+        """
+        if item_id not in self.python_worker_download_sources:
+            return False
+        cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
+        return (
+            cache_attempt_token is not None
+            and cache_attempt_token not in self.settling_cache_attempt_tokens
+        )
+
+    def _close_python_retry_window(self, item_id: str, cache_attempt_token: int) -> bool:
+        """Stop accepting replacement requests for this attempt.
+
+        Returns ``True`` when a request was already handed over, so the caller
+        must restart rather than publish or settle terminally.  The attempt is
+        marked closed in either case.  This is the counterpart of
+        ``_python_retry_window_open_locked``: both run under ``self.lock``, so a
+        capability recache either reserves the handoff while this worker can
+        still take it, or observes the window closed and routes the replacement
+        through the Rust runtime.  Neither side can miss the other, so the item
+        always ends up with exactly one replacement executor.
+        """
+        with self.lock:
+            retry_requested = item_id in self.retry_requested_ids
+            self.retry_requested_ids.discard(item_id)
+            self.settling_cache_attempt_tokens.add(cache_attempt_token)
+            return retry_requested
 
     def _peek_cache_interrupt_message(self, item_id: str) -> str:
         with self.lock:

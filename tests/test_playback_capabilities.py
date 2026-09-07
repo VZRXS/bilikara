@@ -345,6 +345,11 @@ class PlaybackCapabilityWorkerTest(unittest.TestCase):
             "good": "bbdown",
         }
         manager.python_cache_attempt_tokens = {"bad": 1, "good": 2}
+        # _worker_loop settles by the attempt identities the worker actually
+        # owned, releasing its retry request and retry-window records too.
+        manager.retry_requested_ids = set()
+        manager.settling_cache_attempt_tokens = set()
+        manager.worker_attempt_scope = threading.local()
         manager.store = SimpleNamespace()
         manager.sync_with_playlist = lambda: None
         manager._current_download_source = lambda: "bbdown"

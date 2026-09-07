@@ -14,6 +14,7 @@ import unittest
 import urllib.error
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -384,6 +385,63 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "artifact_set_id": reservation["artifact_set_id"],
             "artifact_relative_directory": relative_directory,
         }
+
+    def native_cache_runtime_stub(self, calls):
+        """Answer Rust CacheRuntime requests with real AppState attempt identities.
+
+        Only the FFI transfer boundary is replaced: every returned generation is
+        monotonic and every cache attempt token is minted by the real
+        ``PlaylistStore``/AppState reservation path, exactly like the Rust
+        runtime does before it starts a job.  No Rust worker is executed.
+        """
+        state = {"generation": 0}
+
+        def issue(item_id: str) -> tuple[int, int]:
+            observed = self.store.get_item(item_id)
+            if observed is None:
+                raise AssertionError(f"missing native cache fixture: {item_id}")
+            state["generation"] += 1
+            token = self.store.begin_cache_attempt(
+                item_id, observed.item_incarnation_id
+            )
+            return state["generation"], token
+
+        def runtime_request(command, **fields):
+            calls.append((command, dict(fields)))
+            if command in {"submit", "retry"}:
+                generation, cache_attempt_token = issue(fields["job"]["item_id"])
+                return {
+                    "generation": generation,
+                    "cache_attempt_token": cache_attempt_token,
+                }
+            if command == "sync":
+                generations: dict[str, int] = {}
+                cache_attempt_tokens: dict[str, int] = {}
+                for job in fields.get("jobs", []):
+                    generation, cache_attempt_token = issue(job["item_id"])
+                    generations[job["item_id"]] = generation
+                    cache_attempt_tokens[job["item_id"]] = cache_attempt_token
+                return {
+                    "generations": generations,
+                    "cache_attempt_tokens": cache_attempt_tokens,
+                    "snapshot": {
+                        "primary_active_item_id": None,
+                        "active_item_ids": [],
+                        "urgent_item_ids": [],
+                        "pending_ids": sorted(generations),
+                    },
+                }
+            return {"events": [], "snapshot": {}}
+
+        return runtime_request
+
+    def add_native_cache_item(self, item_id: str):
+        item = self.make_item(item_id)
+        item.selected_pages = [1]
+        item.selected_cids = [456]
+        item.selected_durations = [120]
+        self.store.add_item(item, requester_name="cache-test-user")
+        return item
 
     def project_cache_started(
         self, item_id: str, *, message: str, progress: float | None = None
@@ -2229,6 +2287,1423 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
+
+    def test_native_hevc_unsupported_keeps_desired_items_in_rust_sync_jobs(self):
+        """S1 / M-1: a capability report must not hand Native items to Python."""
+        calls: list[tuple[str, dict]] = []
+        for item_id in ("song-native-a", "song-native-b"):
+            self.add_native_cache_item(item_id)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=self.native_cache_runtime_stub(calls),
+                ):
+                    manager.sync_with_playlist()
+                    before_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                    calls.clear()
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                    recache_calls = list(calls)
+                    calls.clear()
+                    manager.sync_with_playlist()
+                    after_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                owner_map = dict(manager.python_worker_download_sources)
+                python_tokens = dict(manager.python_cache_attempt_tokens)
+                retry_requested = set(manager.retry_requested_ids)
+                queued_python_tasks = manager.tasks.qsize()
+                native_generations = dict(manager.native_cache_generations)
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        # The capability facts changed, and the next ordinary sync still carries
+        # the whole Native inventory instead of an empty desired set.
+        self.assertEqual(
+            sorted(job["item_id"] for job in before_sync["jobs"]),
+            ["song-native-a", "song-native-b"],
+        )
+        self.assertEqual(
+            sorted({job["avc_quality_cap"] for job in before_sync["jobs"]}),
+            [""],
+        )
+        self.assertEqual(
+            sorted(job["item_id"] for job in after_sync["jobs"]),
+            ["song-native-a", "song-native-b"],
+        )
+        self.assertEqual(
+            sorted({job["avc_quality_cap"] for job in after_sync["jobs"]}),
+            [VIDEO_QUALITY_CHOICES[2]],
+        )
+
+        # Native work stays Rust-owned: no Python external-tool bookkeeping.
+        self.assertEqual(owner_map, {})
+        self.assertEqual(python_tokens, {})
+        self.assertEqual(retry_requested, set())
+        self.assertEqual(queued_python_tasks, 0)
+
+        # Recaching is still requested, through the Rust-owned replace path.
+        # Replacements are issued backwards because Rust re-queues a replaced
+        # job at the front, which leaves the queue in the planned order.
+        self.assertEqual(
+            [
+                fields["job"]["item_id"]
+                for command, fields in recache_calls
+                if command == "retry"
+            ],
+            ["song-native-b", "song-native-a"],
+        )
+        self.assertNotIn("submit", [command for command, _ in recache_calls])
+        for command, fields in recache_calls:
+            if command != "retry":
+                continue
+            job = fields["job"]
+            self.assertFalse(fields["urgent"])
+            self.assertEqual(job["avc_quality_cap"], VIDEO_QUALITY_CHOICES[2])
+            self.assertEqual(
+                job["item_incarnation_id"],
+                self.store.get_item(job["item_id"]).item_incarnation_id,
+            )
+            self.assertTrue(native_generations[job["item_id"]] > 0)
+
+    def test_native_hevc_recaching_survives_later_syncs_and_window_changes(self):
+        """S1: the repaired ownership must hold across ordinary later syncs."""
+        calls: list[tuple[str, dict]] = []
+        for item_id in ("song-native-keep", "song-native-drop"):
+            self.add_native_cache_item(item_id)
+        wide_plan = CachePlan(
+            desired_ids=("song-native-keep", "song-native-drop"),
+            pending_order=("song-native-keep", "song-native-drop"),
+            retained_ids=("song-native-keep", "song-native-drop"),
+            preempt_ids=(),
+        )
+        narrow_plan = CachePlan(
+            desired_ids=("song-native-keep",),
+            pending_order=("song-native-keep",),
+            retained_ids=("song-native-keep",),
+            preempt_ids=(),
+        )
+        empty_plan = CachePlan(
+            desired_ids=(),
+            pending_order=(),
+            retained_ids=(),
+            preempt_ids=(),
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            plan_state = {"plan": wide_plan}
+
+            def planned(items):
+                return (plan_state["plan"], manager._cache_priority_state())
+
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(
+                    manager, "_stable_cache_plan_snapshot", side_effect=planned
+                ), patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=self.native_cache_runtime_stub(calls),
+                ):
+                    manager.sync_with_playlist()
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                    calls.clear()
+
+                    # Two ordinary syncs after the capability transition.
+                    manager.sync_with_playlist()
+                    manager.sync_with_playlist()
+                    repeated_syncs = [
+                        fields for command, fields in calls if command == "sync"
+                    ]
+
+                    # An identical capability report must not churn attempts.
+                    calls.clear()
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                    repeat_report_calls = list(calls)
+
+                    # A controlled cache-window update still evicts and cancels.
+                    calls.clear()
+                    plan_state["plan"] = narrow_plan
+                    manager.sync_with_playlist()
+                    narrow_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+
+                    # A genuinely empty desired set stays a legal empty sync.
+                    calls.clear()
+                    plan_state["plan"] = empty_plan
+                    manager.sync_with_playlist()
+                    empty_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                owner_map = dict(manager.python_worker_download_sources)
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        self.assertEqual(len(repeated_syncs), 2)
+        for sync_fields in repeated_syncs:
+            self.assertEqual(
+                sorted(job["item_id"] for job in sync_fields["jobs"]),
+                ["song-native-drop", "song-native-keep"],
+            )
+        self.assertEqual(repeat_report_calls, [])
+
+        self.assertEqual(
+            [job["item_id"] for job in narrow_sync["jobs"]],
+            ["song-native-keep"],
+        )
+        self.assertEqual(narrow_sync["retained_ids"], ["song-native-keep"])
+        self.assertEqual(
+            sorted(narrow_sync["current_ids"]),
+            ["song-native-drop", "song-native-keep"],
+        )
+
+        self.assertEqual(empty_sync["jobs"], [])
+        self.assertEqual(empty_sync["retained_ids"], [])
+
+        self.assertEqual(owner_map, {})
+
+    def test_native_hevc_unsupported_recaches_ready_item_and_keeps_published_media(self):
+        """S1: a published Native artifact stays available while AVC is prepared."""
+        calls: list[tuple[str, dict]] = []
+        self.add_native_cache_item("song-native-ready")
+        self.mark_item_ready_with_files("song-native-ready")
+        before = self.store.get_item("song-native-ready")
+        published_dir = self.cache_dir / before.artifact_relative_directory
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with manager.lock:
+                    manager.desired_ids = {"song-native-ready"}
+                    manager.ordered_desired_ids = ["song-native-ready"]
+                with patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=self.native_cache_runtime_stub(calls),
+                ):
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                owner_map = dict(manager.python_worker_download_sources)
+                native_generation = manager.native_cache_generations.get(
+                    "song-native-ready"
+                )
+                native_token = manager.native_cache_attempt_tokens.get(
+                    "song-native-ready"
+                )
+                # Observed before shutdown, which clears the cache root.
+                refreshed = self.store.get_item("song-native-ready")
+                published_dir_exists = published_dir.exists()
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        retries = [fields for command, fields in calls if command == "retry"]
+        self.assertEqual(len(retries), 1)
+        job = retries[0]["job"]
+        self.assertEqual(job["item_id"], "song-native-ready")
+        self.assertEqual(job["avc_quality_cap"], VIDEO_QUALITY_CHOICES[2])
+        self.assertTrue(job["reported_ready"])
+        self.assertEqual(
+            job["existing_video_relative_path"], before.video_relative_path
+        )
+        self.assertEqual(
+            [variant["id"] for variant in job["existing_audio_variants"]], ["p1"]
+        )
+        self.assertEqual(job["item_incarnation_id"], before.item_incarnation_id)
+        self.assertEqual(native_generation, 1)
+        self.assertIsInstance(native_token, int)
+        self.assertGreater(native_token, 0)
+        self.assertEqual(owner_map, {})
+
+        self.assertEqual(refreshed.cache_status, "ready")
+        self.assertEqual(refreshed.video_media_url, before.video_media_url)
+        self.assertEqual(refreshed.audio_variants, before.audio_variants)
+        self.assertEqual(
+            refreshed.artifact_relative_directory,
+            before.artifact_relative_directory,
+        )
+        self.assertTrue(published_dir_exists)
+
+    def test_native_hevc_unsupported_leaves_python_owned_item_to_its_worker(self):
+        """S1: the Python-owned exclusion must not be bypassed by recaching."""
+        calls: list[tuple[str, dict]] = []
+        external = self.add_native_cache_item("song-external-active")
+        native = self.add_native_cache_item("song-native-future")
+        external_token = self.project_cache_started(
+            external.id, message="BBDown 下载中", progress=42.0
+        )
+        plan = CachePlan(
+            desired_ids=(external.id, native.id),
+            pending_order=(external.id, native.id),
+            retained_ids=(external.id, native.id),
+            preempt_ids=(),
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.active_item_id = external.id
+                manager.pending_ids.add(external.id)
+                manager.python_worker_download_sources[external.id] = (
+                    DOWNLOAD_SOURCE_BBDOWN
+                )
+                # enqueue()/_start_urgent_cache() always register the owner and
+                # its attempt token together; a live worker is only modelled
+                # faithfully when both are present.
+                manager.python_cache_attempt_tokens[external.id] = external_token
+                manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_NATIVE)
+                with patch.object(
+                    manager,
+                    "_stable_cache_plan_snapshot",
+                    return_value=(plan, manager._cache_priority_state()),
+                ), patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=self.native_cache_runtime_stub(calls),
+                ):
+                    manager.sync_with_playlist()
+                    calls.clear()
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                    recache_calls = list(calls)
+                    calls.clear()
+                    manager.sync_with_playlist()
+                    after_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                owner_map = dict(manager.python_worker_download_sources)
+                handed_to_worker = set(manager.retry_requested_ids)
+                download_source = manager.download_source
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        # The live external-tool job keeps its owner and stays out of Native.
+        self.assertEqual(
+            [job["item_id"] for job in after_sync["jobs"]], [native.id]
+        )
+        self.assertEqual(
+            [
+                fields["job"]["item_id"]
+                for command, fields in recache_calls
+                if command in {"retry", "submit"}
+            ],
+            [native.id],
+        )
+        self.assertEqual(owner_map, {external.id: DOWNLOAD_SOURCE_BBDOWN})
+        # The replacement was handed to that worker's own retry lifecycle.
+        self.assertEqual(handed_to_worker, {external.id})
+        self.assertEqual(download_source, DOWNLOAD_SOURCE_NATIVE)
+
+    def test_native_capability_recache_restarts_live_external_worker_with_new_avc(self):
+        """S1-R1: a live external-tool job survives the Native capability recache.
+
+        Drives the real ``_worker_loop`` and the real ``_run_item_command`` over a
+        locally spawned child process.  Only the downloader/media boundary and the
+        Rust CacheRuntime FFI transfer are replaced; no network, cookies or media.
+        """
+        external = self.add_native_cache_item("song-external-live")
+        native = self.add_native_cache_item("song-native-companion")
+        plan = CachePlan(
+            desired_ids=(external.id, native.id),
+            pending_order=(external.id, native.id),
+            retained_ids=(external.id, native.id),
+            preempt_ids=(),
+        )
+        calls: list[tuple[str, dict]] = []
+        child_started = threading.Event()
+        settled = threading.Event()
+        worker_resynced = threading.Event()
+        attempts: list[dict[str, object]] = []
+        settled_tokens: list[set] = []
+        worker_loop = CacheManager._worker_loop
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            worker = None
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with manager.lock:
+                    manager.desired_ids = {external.id, native.id}
+                    manager.ordered_desired_ids = [external.id, native.id]
+
+                original_register = manager._register_active_process
+                original_release = manager._release_worker_attempt_bookkeeping_locked
+                original_sync = manager.sync_with_playlist
+
+                def observed_sync():
+                    try:
+                        return original_sync()
+                    finally:
+                        if threading.current_thread().name == "s1-external-worker":
+                            worker_resynced.set()
+
+                def register(item_id, process):
+                    original_register(item_id, process)
+                    child_started.set()
+
+                def settled_release(settled_item_id, owned_tokens, **kwargs):
+                    # This is the worker's settlement boundary for one item; the
+                    # fixture holds a second item, so a plain task_done() barrier
+                    # would fire for the wrong worker turn.
+                    try:
+                        return original_release(
+                            settled_item_id, owned_tokens, **kwargs
+                        )
+                    finally:
+                        if settled_item_id == external.id:
+                            settled_tokens.append(set(owned_tokens))
+                            settled.set()
+
+                def external_download(
+                    observed_item,
+                    _binary_path,
+                    ffmpeg_path,
+                    item_dir,
+                    log_path,
+                    *,
+                    cache_attempt_token,
+                    download_source,
+                ):
+                    if observed_item.id != external.id:
+                        # The fixture's second item is served normally; only the
+                        # external item's attempt chain is under test here.
+                        return self.staged_cache_result(item_dir)
+                    with manager.lock:
+                        owner = manager.python_worker_download_sources.get(
+                            observed_item.id
+                        )
+                    # Captured here because a terminal event releases the
+                    # reservation; it is the proof that this attempt runs under
+                    # a valid, freshly reserved AppState identity.
+                    reservation = self.store.cache_attempt_reservation(
+                        cache_attempt_token
+                    )
+                    attempts.append(
+                        {
+                            "cache_attempt_token": cache_attempt_token,
+                            "download_source": download_source,
+                            "owner": owner,
+                            "reservation": reservation,
+                            "video_args": manager._bbdown_stream_preference_args(
+                                "video"
+                            ),
+                        }
+                    )
+                    if len(attempts) == 1:
+                        # First attempt blocks in a real child process so the
+                        # capability report has something to terminate.
+                        manager._run_item_command(
+                            observed_item.id,
+                            [
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(30)",
+                            ],
+                            ffmpeg_path,
+                            log_path,
+                            stage_label="synthetic external download",
+                            stream_kind="video",
+                            target_dir=item_dir,
+                            track_key="video-p1",
+                            cache_attempt_token=cache_attempt_token,
+                            tool_dir=Path(self.temp_dir.name),
+                        )
+                        raise AssertionError("terminated child unexpectedly succeeded")
+                    return self.staged_cache_result(item_dir)
+
+                def runtime_request(command, **fields):
+                    calls.append((command, dict(fields)))
+                    if command == "sync":
+                        return {
+                            "generations": {},
+                            "cache_attempt_tokens": {},
+                            "snapshot": {
+                                "primary_active_item_id": None,
+                                "active_item_ids": [],
+                                "urgent_item_ids": [],
+                                "pending_ids": [],
+                            },
+                        }
+                    if command in {"submit", "retry"}:
+                        return {"generation": 1, "cache_attempt_token": 1}
+                    return {"events": [], "snapshot": {}}
+
+                with patch.object(
+                    manager, "_register_active_process", side_effect=register
+                ), patch.object(
+                    manager,
+                    "_release_worker_attempt_bookkeeping_locked",
+                    side_effect=settled_release,
+                ), patch.object(
+                    manager, "sync_with_playlist", side_effect=observed_sync
+                ), patch.object(
+                    manager, "_ensure_downloader", return_value=Path(sys.executable)
+                ), patch.object(
+                    manager, "_ensure_ffmpeg", return_value=Path(sys.executable)
+                ), patch.object(
+                    manager, "_download_selected_streams", side_effect=external_download
+                ), patch.object(
+                    # ffprobe/media inspection is external I/O, mocked the same
+                    # way the other external-source publish regressions do.
+                    manager, "_validate_cache_result"
+                ), patch(
+                    "bilikara.cache.rust_runtime.http_download_available",
+                    return_value=True,
+                ), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available",
+                    return_value=True,
+                ), patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch.object(
+                    manager, "_native_cache_request", side_effect=runtime_request
+                ), patch.object(
+                    manager,
+                    "_stable_cache_plan_snapshot",
+                    return_value=(plan, manager._cache_priority_state()),
+                ):
+                    manager.enqueue(external.id)
+                    worker = threading.Thread(
+                        target=worker_loop,
+                        args=(manager,),
+                        name="s1-external-worker",
+                        daemon=True,
+                    )
+                    worker.start()
+                    self.assertTrue(child_started.wait(10.0), "child never started")
+
+                    manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_NATIVE)
+                    calls.clear()
+                    manager.set_client_media_capabilities(
+                        {
+                            "hevc_supported": False,
+                            "avc_supported": True,
+                            "max_avc_quality_index": 2,
+                        }
+                    )
+                    recache_calls = list(calls)
+                    self.assertTrue(settled.wait(20.0), "worker never settled")
+                    # S1-R3: the completed worker must have released the records
+                    # of every attempt identity it actually owned, not only the
+                    # token it was handed when it dequeued the item.
+                    settlement_state = self.manager_bookkeeping(manager)
+                    owner_map = settlement_state["python_owners"]
+
+                    self.assertTrue(
+                        worker_resynced.wait(20.0), "completion resync never ran"
+                    )
+                    calls.clear()
+                    manager.sync_with_playlist()
+                    after_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                    observed = self.store.get_item(external.id)
+                    download_source = manager.download_source
+
+                    # Switch back to the external source through the normal
+                    # policy path, drop only this fixture's published media, and
+                    # let the ordinary reconcile recover it.
+                    manager.set_cache_policy(
+                        download_source=DOWNLOAD_SOURCE_BBDOWN
+                    )
+                    (self.cache_dir / observed.video_relative_path).unlink()
+                    settled.clear()
+                    calls.clear()
+                    manager.reconcile_cache_state()
+                    self.assertTrue(
+                        settled.wait(20.0), "third attempt never settled"
+                    )
+                    reconcile_calls = list(calls)
+                    recovered = self.store.get_item(external.id)
+                    recovered_state = self.manager_bookkeeping(manager)
+            finally:
+                manager.stop_event.set()
+                if worker is not None:
+                    worker.join(timeout=20.0)
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        # A. T1 -> T2 ran under the original external source, and only the
+        # replacement carries the new AVC constraints.
+        self.assertEqual(len(attempts), 3)
+        first, second, third = attempts
+        self.assertEqual(
+            [attempt["download_source"] for attempt in attempts],
+            [DOWNLOAD_SOURCE_BBDOWN] * 3,
+        )
+        self.assertEqual(
+            [attempt["owner"] for attempt in attempts],
+            [DOWNLOAD_SOURCE_BBDOWN] * 3,
+        )
+        self.assertNotIn("-e", first["video_args"])
+        self.assertEqual(
+            second["video_args"],
+            ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
+        )
+        self.assertNotEqual(first["cache_attempt_token"], second["cache_attempt_token"])
+        self.assertEqual(observed.cache_status, "ready")
+
+        # B. After the worker's own settlement boundary every record it owned is
+        # released - including the replacement token it settled under and its
+        # retry-window marker, not just the token it dequeued.  The contract is
+        # per-worker cleanup: this fixture also holds an unrelated second item.
+        self.assertEqual(
+            settled_tokens[0],
+            {first["cache_attempt_token"], second["cache_attempt_token"]},
+        )
+        self.assertNotIn(external.id, settlement_state["python_owners"])
+        self.assertNotIn(external.id, settlement_state["pending_ids"])
+        self.assertNotIn(external.id, settlement_state["retry_requested_ids"])
+        self.assertNotIn(external.id, settlement_state["python_attempt_tokens"])
+        self.assertFalse(
+            {first["cache_attempt_token"], second["cache_attempt_token"]}
+            & set(settlement_state["settling_cache_attempt_tokens"])
+        )
+
+        # D. The follow-up reconcile produced a genuinely new third attempt with
+        # a freshly reserved identity, and the item is ready again.  Recovery
+        # came from reconcile_cache_state() alone; no extra sync was issued and
+        # the external item was never handed to the Rust runtime here.
+        self.assertNotIn(
+            third["cache_attempt_token"],
+            {first["cache_attempt_token"], second["cache_attempt_token"]},
+        )
+        self.assertGreater(
+            third["cache_attempt_token"], second["cache_attempt_token"]
+        )
+        self.assertEqual(third["reservation"]["item_id"], external.id)
+        self.assertEqual(
+            third["reservation"]["item_incarnation_id"],
+            recovered.item_incarnation_id,
+        )
+        self.assertNotEqual(
+            third["reservation"]["artifact_set_id"],
+            second["reservation"]["artifact_set_id"],
+        )
+        self.assertEqual(
+            third["video_args"],
+            ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
+        )
+        self.assertEqual(recovered.cache_status, "ready")
+        self.assertTrue(
+            (self.cache_dir / recovered.video_relative_path).is_file()
+        )
+        self.assertEqual(
+            [
+                fields["job"]["item_id"]
+                for command, fields in reconcile_calls
+                if command in {"retry", "submit"}
+            ],
+            [],
+        )
+
+        # E. The third attempt settled without leaving its own stale records.
+        self.assertIn(third["cache_attempt_token"], settled_tokens[1])
+        self.assertNotIn(external.id, recovered_state["python_owners"])
+        self.assertNotIn(external.id, recovered_state["pending_ids"])
+        self.assertNotIn(external.id, recovered_state["retry_requested_ids"])
+        self.assertNotIn(external.id, recovered_state["python_attempt_tokens"])
+        self.assertFalse(
+            {attempt["cache_attempt_token"] for attempt in attempts}
+            & set(recovered_state["settling_cache_attempt_tokens"])
+        )
+
+        # While it was still running, only the Rust-owned companion was sent to
+        # the Rust runtime; the external job was never submitted as Native.
+        self.assertEqual(
+            [
+                fields["job"]["item_id"]
+                for command, fields in recache_calls
+                if command in {"retry", "submit"}
+            ],
+            [native.id],
+        )
+        # Once the external job settled it released its owner entry, so the next
+        # sync hands it back to Rust as an already-published item rather than
+        # dropping it from the Native inventory.
+        self.assertNotIn(external.id, owner_map)
+        self.assertEqual(
+            sorted(job["item_id"] for job in after_sync["jobs"]),
+            sorted([external.id, native.id]),
+        )
+        external_job = next(
+            job for job in after_sync["jobs"] if job["item_id"] == external.id
+        )
+        self.assertTrue(external_job["reported_ready"])
+        self.assertEqual(external_job["avc_quality_cap"], VIDEO_QUALITY_CHOICES[2])
+        self.assertEqual(download_source, DOWNLOAD_SOURCE_NATIVE)
+
+    def run_external_settlement_recache(self, *, capability_at: str) -> dict:
+        """Race a live external-tool attempt against the Native capability recache.
+
+        Drives the real ``_worker_loop``, the real attempt/publication path and
+        the real capability/sync entry points.  Only the downloader, the media
+        inspection boundary and the Rust CacheRuntime FFI transfer are replaced.
+
+        ``capability_at`` selects which completion ordering is exercised:
+
+        ``"settled"``
+            The capability path is parked inside its playlist read while the
+            external attempt publishes and releases its owner, so any decision
+            taken from a pre-read ownership snapshot acts on stale state.
+        ``"publishing"``
+            Capabilities are reported while the worker sits between its final
+            retry check and its settlement, i.e. the interval in which the owner
+            entry still exists but the attempt can no longer consume a request.
+        ``"download_error"`` / ``"generic_error"`` / ``"downloader_error"``
+            The corresponding terminal error path has atomically closed its
+            retry window but has not yet published failure or settled.
+        ``"download_error_handoff"``
+            Capabilities arrive after the DownloadCommandError path's
+            intermediate retry check; its final close must consume the handoff.
+        """
+        item = self.add_native_cache_item("song-external-settlement")
+        # Start from an already published artifact so "old media stays available
+        # until a valid replacement succeeds" is observable in both orderings.
+        self.mark_item_ready_with_files(item.id)
+        published_before = self.store.get_item(item.id).video_relative_path
+        plan = CachePlan(
+            desired_ids=(item.id,),
+            pending_order=(item.id,),
+            retained_ids=(item.id,),
+            preempt_ids=(),
+        )
+        calls: list[tuple[str, dict]] = []
+        attempts: list[dict[str, object]] = []
+        preparation_entered = threading.Event()
+        allow_preparation_failure = threading.Event()
+        download_entered = threading.Event()
+        allow_download_finish = threading.Event()
+        capability_parked = threading.Event()
+        allow_capability_resume = threading.Event()
+        publish_entered = threading.Event()
+        allow_publish = threading.Event()
+        terminal_close_entered = threading.Event()
+        allow_terminal_close = threading.Event()
+        terminal_retry_check_entered = threading.Event()
+        allow_terminal_retry_check = threading.Event()
+        settled = threading.Event()
+        capability_errors: list[str] = []
+        worker_loop = CacheManager._worker_loop
+        deadline = 15.0
+
+        def wait(event: threading.Event, what: str) -> None:
+            if not event.wait(deadline):
+                raise AssertionError(f"timed out waiting for {what}")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            worker = None
+            capability_thread = None
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+
+                original_list_items = self.store.list_items
+                original_publish = manager._publish_validated_cache_result
+                original_close_retry_window = manager._close_python_retry_window
+                original_take_retry_request = manager._take_retry_request
+                original_task_done = manager.tasks.task_done
+                retry_check_count = 0
+
+                def parked_list_items():
+                    observed = original_list_items()
+                    if threading.current_thread().name == "s1-capability":
+                        capability_parked.set()
+                        wait(allow_capability_resume, "capability release")
+                    return observed
+
+                def parked_publish(*args, **kwargs):
+                    publish_entered.set()
+                    wait(allow_publish, "publication release")
+                    return original_publish(*args, **kwargs)
+
+                def parked_close_retry_window(item_id, cache_attempt_token):
+                    retry_requested = original_close_retry_window(
+                        item_id, cache_attempt_token
+                    )
+                    if (
+                        capability_at
+                        in {"download_error", "generic_error", "downloader_error"}
+                        and threading.current_thread() is worker
+                        and not retry_requested
+                    ):
+                        terminal_close_entered.set()
+                        wait(allow_terminal_close, "terminal close release")
+                    return retry_requested
+
+                def parked_take_retry_request(item_id):
+                    nonlocal retry_check_count
+                    retry_requested = original_take_retry_request(item_id)
+                    if (
+                        capability_at == "download_error_handoff"
+                        and threading.current_thread() is worker
+                    ):
+                        retry_check_count += 1
+                        if retry_check_count == 2:
+                            terminal_retry_check_entered.set()
+                            wait(
+                                allow_terminal_retry_check,
+                                "terminal retry-check release",
+                            )
+                    return retry_requested
+
+                def settled_task_done():
+                    # _worker_loop calls task_done() only after the critical
+                    # section that releases ownership, so this is the exact
+                    # settlement boundary the recache path races against.
+                    try:
+                        return original_task_done()
+                    finally:
+                        settled.set()
+
+                def ensure_downloader(_download_source):
+                    if capability_at != "downloader_error":
+                        return Path(sys.executable)
+                    with manager.lock:
+                        cache_attempt_token = manager.python_cache_attempt_tokens[
+                            item.id
+                        ]
+                        owner = manager.python_worker_download_sources.get(item.id)
+                    attempts.append(
+                        {
+                            "cache_attempt_token": cache_attempt_token,
+                            "download_source": DOWNLOAD_SOURCE_BBDOWN,
+                            "owner": owner,
+                            "video_args": manager._bbdown_stream_preference_args(
+                                "video"
+                            ),
+                        }
+                    )
+                    preparation_entered.set()
+                    wait(allow_preparation_failure, "downloader preparation release")
+                    raise RuntimeError("synthetic downloader preparation failure")
+
+                def external_download(
+                    observed_item,
+                    _binary_path,
+                    _ffmpeg_path,
+                    item_dir,
+                    _log_path,
+                    *,
+                    cache_attempt_token,
+                    download_source,
+                ):
+                    with manager.lock:
+                        owner = manager.python_worker_download_sources.get(
+                            observed_item.id
+                        )
+                    attempts.append(
+                        {
+                            "cache_attempt_token": cache_attempt_token,
+                            "download_source": download_source,
+                            "owner": owner,
+                            "video_args": manager._bbdown_stream_preference_args(
+                                "video"
+                            ),
+                        }
+                    )
+                    download_entered.set()
+                    wait(allow_download_finish, "external download release")
+                    if capability_at == "download_error" or (
+                        capability_at == "download_error_handoff"
+                        and len(attempts) == 1
+                    ):
+                        raise DownloadCommandError("synthetic terminal download failure")
+                    if capability_at == "generic_error":
+                        raise RuntimeError("synthetic terminal generic failure")
+                    return self.staged_cache_result(item_dir)
+
+                def runtime_request(command, **fields):
+                    calls.append((command, dict(fields)))
+                    if command == "sync":
+                        return {
+                            "generations": {},
+                            "cache_attempt_tokens": {},
+                            "snapshot": {
+                                "primary_active_item_id": None,
+                                "active_item_ids": [],
+                                "urgent_item_ids": [],
+                                "pending_ids": [],
+                            },
+                        }
+                    if command in {"retry", "submit"}:
+                        # The Rust runtime reserves its attempt through the same
+                        # AppState path, which supersedes the external attempt.
+                        current = self.store.get_item(fields["job"]["item_id"])
+                        return {
+                            "generation": 1,
+                            "cache_attempt_token": self.store.begin_cache_attempt(
+                                current.id, current.item_incarnation_id
+                            ),
+                        }
+                    return {"events": [], "snapshot": {}}
+
+                def report_capabilities():
+                    try:
+                        manager.set_client_media_capabilities(
+                            {
+                                "hevc_supported": False,
+                                "avc_supported": True,
+                                "max_avc_quality_index": 2,
+                            }
+                        )
+                    except BaseException as exc:  # noqa: BLE001
+                        capability_errors.append(repr(exc))
+
+                patches = [
+                    patch.object(self.store, "list_items", side_effect=parked_list_items),
+                    patch.object(
+                        manager.tasks, "task_done", side_effect=settled_task_done
+                    ),
+                    patch.object(
+                        manager, "_ensure_downloader", side_effect=ensure_downloader
+                    ),
+                    patch.object(
+                        manager, "_ensure_ffmpeg", return_value=Path(sys.executable)
+                    ),
+                    patch.object(
+                        manager,
+                        "_download_selected_streams",
+                        side_effect=external_download,
+                    ),
+                    patch.object(manager, "_validate_cache_result"),
+                    patch(
+                        "bilikara.cache.rust_runtime.http_download_available",
+                        return_value=True,
+                    ),
+                    patch(
+                        "bilikara.cache.rust_runtime.media_backend_available",
+                        return_value=True,
+                    ),
+                    patch.object(manager, "_ensure_native_cache_runtime"),
+                    patch.object(
+                        manager, "_native_cache_request", side_effect=runtime_request
+                    ),
+                    patch.object(
+                        manager,
+                        "_stable_cache_plan_snapshot",
+                        return_value=(plan, manager._cache_priority_state()),
+                    ),
+                ]
+                if capability_at == "publishing":
+                    patches.append(
+                        patch.object(
+                            manager,
+                            "_publish_validated_cache_result",
+                            side_effect=parked_publish,
+                        )
+                    )
+                elif capability_at in {
+                    "download_error",
+                    "generic_error",
+                    "downloader_error",
+                }:
+                    patches.append(
+                        patch.object(
+                            manager,
+                            "_close_python_retry_window",
+                            side_effect=parked_close_retry_window,
+                        )
+                    )
+                    allow_publish.set()
+                elif capability_at == "download_error_handoff":
+                    patches.append(
+                        patch.object(
+                            manager,
+                            "_take_retry_request",
+                            side_effect=parked_take_retry_request,
+                        )
+                    )
+                    allow_publish.set()
+                else:
+                    allow_publish.set()
+
+                with ExitStack() as stack:
+                    for entry in patches:
+                        stack.enter_context(entry)
+                    manager.enqueue(item.id)
+                    worker = threading.Thread(
+                        target=worker_loop, args=(manager,), daemon=True
+                    )
+                    worker.start()
+                    if capability_at == "downloader_error":
+                        wait(preparation_entered, "downloader preparation start")
+                    else:
+                        wait(download_entered, "external attempt start")
+
+                    manager.set_cache_policy(
+                        download_source=DOWNLOAD_SOURCE_NATIVE
+                    )
+                    calls.clear()
+
+                    if capability_at == "settled":
+                        capability_thread = threading.Thread(
+                            target=report_capabilities,
+                            name="s1-capability",
+                            daemon=True,
+                        )
+                        capability_thread.start()
+                        wait(capability_parked, "capability playlist read")
+                        allow_download_finish.set()
+                        wait(settled, "external worker settlement")
+                        state_at_decision = self.manager_bookkeeping(manager)
+                        allow_capability_resume.set()
+                        capability_thread.join(timeout=deadline)
+                        self.assertFalse(capability_thread.is_alive())
+                    elif capability_at == "publishing":
+                        allow_download_finish.set()
+                        wait(publish_entered, "external publication boundary")
+                        state_at_decision = self.manager_bookkeeping(manager)
+                        report_capabilities()
+                        allow_publish.set()
+                        wait(settled, "external worker settlement")
+                    elif capability_at in {"download_error", "generic_error"}:
+                        allow_download_finish.set()
+                        wait(terminal_close_entered, "terminal retry-window close")
+                        state_at_decision = self.manager_bookkeeping(manager)
+                        report_capabilities()
+                        allow_terminal_close.set()
+                        wait(settled, "external worker settlement")
+                    elif capability_at == "downloader_error":
+                        allow_preparation_failure.set()
+                        wait(terminal_close_entered, "preparation retry-window close")
+                        state_at_decision = self.manager_bookkeeping(manager)
+                        report_capabilities()
+                        allow_terminal_close.set()
+                        wait(settled, "external worker settlement")
+                    elif capability_at == "download_error_handoff":
+                        allow_download_finish.set()
+                        wait(
+                            terminal_retry_check_entered,
+                            "terminal DownloadCommandError retry check",
+                        )
+                        state_at_decision = self.manager_bookkeeping(manager)
+                        published_before_at_decision = (
+                            self.cache_dir / published_before
+                        ).is_file()
+                        report_capabilities()
+                        allow_terminal_retry_check.set()
+                        wait(settled, "external worker settlement")
+                    else:
+                        self.fail(f"unknown capability timing: {capability_at}")
+
+                    if capability_at != "download_error_handoff":
+                        published_before_at_decision = (
+                            self.cache_dir / published_before
+                        ).is_file()
+
+                    # Quiesce the worker (including its completion resync) so
+                    # the sync observed below is the one this test issues.
+                    manager.stop_event.set()
+                    worker.join(timeout=deadline)
+                    self.assertFalse(worker.is_alive(), "worker thread did not stop")
+                    recache_calls = list(calls)
+                    calls.clear()
+                    manager.sync_with_playlist()
+                    after_sync = next(
+                        fields for command, fields in calls if command == "sync"
+                    )
+                    observed = self.store.get_item(item.id)
+                    final_state = self.manager_bookkeeping(manager)
+                    published_video = (
+                        self.cache_dir / observed.video_relative_path
+                    ).is_file()
+            finally:
+                allow_preparation_failure.set()
+                allow_download_finish.set()
+                allow_capability_resume.set()
+                allow_publish.set()
+                allow_terminal_close.set()
+                allow_terminal_retry_check.set()
+                manager.stop_event.set()
+                if capability_thread is not None:
+                    capability_thread.join(timeout=deadline)
+                if worker is not None:
+                    worker.join(timeout=deadline)
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        return {
+            "item_id": item.id,
+            "attempts": attempts,
+            "capability_errors": capability_errors,
+            "state_at_decision": state_at_decision,
+            "final_state": final_state,
+            "cache_status": observed.cache_status,
+            "published_video": published_video,
+            "published_before_at_decision": published_before_at_decision,
+            "published_before": published_before,
+            "published_after": observed.video_relative_path,
+            "native_replacement_ids": [
+                fields["job"]["item_id"]
+                for command, fields in recache_calls
+                if command in {"retry", "submit"}
+            ],
+            "native_replacement_jobs": [
+                fields["job"]
+                for command, fields in recache_calls
+                if command in {"retry", "submit"}
+            ],
+            "next_sync_job_ids": [job["item_id"] for job in after_sync["jobs"]],
+        }
+
+    def manager_bookkeeping(self, manager) -> dict:
+        with manager.lock:
+            return {
+                "python_owners": dict(manager.python_worker_download_sources),
+                "python_attempt_tokens": dict(manager.python_cache_attempt_tokens),
+                "retry_requested_ids": sorted(manager.retry_requested_ids),
+                "pending_ids": sorted(manager.pending_ids),
+                "settling_cache_attempt_tokens": sorted(
+                    manager.settling_cache_attempt_tokens
+                ),
+            }
+
+    def assert_native_replacement_scheduled(self, observed: dict) -> None:
+        item_id = observed["item_id"]
+        self.assertEqual(observed["capability_errors"], [])
+        # The external attempt ran once, under the old constraints, and was not
+        # restarted by an unconsumable request.
+        self.assertEqual(len(observed["attempts"]), 1)
+        self.assertEqual(observed["attempts"][0]["owner"], DOWNLOAD_SOURCE_BBDOWN)
+        self.assertNotIn("-e", observed["attempts"][0]["video_args"])
+        # The replacement went to the Rust runtime through an explicit retry that
+        # carries the new capability facts and the current AppState identity.
+        self.assertEqual(observed["native_replacement_ids"], [item_id])
+        job = observed["native_replacement_jobs"][0]
+        self.assertEqual(job["avc_quality_cap"], VIDEO_QUALITY_CHOICES[2])
+        self.assertEqual(
+            job["item_incarnation_id"],
+            self.store.get_item(item_id).item_incarnation_id,
+        )
+        # No orphan Python retry or attempt token is left behind for a worker
+        # that can no longer consume it.
+        self.assertEqual(observed["final_state"]["retry_requested_ids"], [])
+        self.assertEqual(observed["final_state"]["python_owners"], {})
+        self.assertEqual(observed["final_state"]["python_attempt_tokens"], {})
+        # The published media stays available until the replacement succeeds,
+        # and the item is not dropped from the Native inventory.
+        self.assertEqual(observed["cache_status"], "ready")
+        self.assertTrue(observed["published_video"])
+        self.assertEqual(observed["next_sync_job_ids"], [item_id])
+
+    def test_native_capability_recache_uses_rust_when_external_owner_settled(self):
+        """S1-R2: completion wins while the capability path is mid-flight."""
+        observed = self.run_external_settlement_recache(capability_at="settled")
+        # The owner was already released when the routing decision was taken.
+        self.assertEqual(observed["state_at_decision"]["python_owners"], {})
+        self.assert_native_replacement_scheduled(observed)
+
+    def test_native_capability_recache_uses_rust_after_final_retry_check(self):
+        """S1-R2: the interval between the last retry check and settlement."""
+        observed = self.run_external_settlement_recache(capability_at="publishing")
+        # The owner entry still exists here; only the closed retry window
+        # distinguishes this attempt from one that can still be restarted.
+        self.assertEqual(
+            observed["state_at_decision"]["python_owners"],
+            {observed["item_id"]: DOWNLOAD_SOURCE_BBDOWN},
+        )
+        self.assert_native_replacement_scheduled(observed)
+
+    def test_native_capability_recache_uses_rust_after_download_error_final_close(self):
+        """S1-R4: DownloadCommandError closes routing before terminal settlement."""
+        observed = self.run_external_settlement_recache(
+            capability_at="download_error"
+        )
+        self.assertEqual(
+            observed["state_at_decision"]["python_owners"],
+            {observed["item_id"]: DOWNLOAD_SOURCE_BBDOWN},
+        )
+        self.assertIn(
+            observed["attempts"][0]["cache_attempt_token"],
+            observed["state_at_decision"]["settling_cache_attempt_tokens"],
+        )
+        self.assert_native_replacement_scheduled(observed)
+
+    def test_native_capability_recache_consumes_late_download_error_handoff(self):
+        """S1-R4: a request handed to the failing worker still executes once."""
+        observed = self.run_external_settlement_recache(
+            capability_at="download_error_handoff"
+        )
+        self.assertEqual(observed["capability_errors"], [])
+        self.assertEqual(len(observed["attempts"]), 2)
+        first, replacement = observed["attempts"]
+        self.assertNotIn("-e", first["video_args"])
+        self.assertEqual(
+            replacement["video_args"],
+            ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
+        )
+        self.assertNotEqual(
+            first["cache_attempt_token"], replacement["cache_attempt_token"]
+        )
+        self.assertEqual(
+            [first["owner"], replacement["owner"]],
+            [DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_BBDOWN],
+        )
+        self.assertEqual(observed["native_replacement_ids"], [])
+        self.assertTrue(observed["published_before_at_decision"])
+        self.assertEqual(observed["cache_status"], "ready")
+        self.assertTrue(observed["published_video"])
+        self.assertEqual(observed["final_state"]["python_owners"], {})
+        self.assertEqual(observed["final_state"]["python_attempt_tokens"], {})
+        self.assertEqual(observed["final_state"]["retry_requested_ids"], [])
+
+    def test_native_capability_recache_uses_rust_after_generic_error_final_close(self):
+        """S1-R4: generic terminal errors use the same closed routing boundary."""
+        observed = self.run_external_settlement_recache(
+            capability_at="generic_error"
+        )
+        self.assertEqual(
+            observed["state_at_decision"]["python_owners"],
+            {observed["item_id"]: DOWNLOAD_SOURCE_BBDOWN},
+        )
+        self.assertIn(
+            observed["attempts"][0]["cache_attempt_token"],
+            observed["state_at_decision"]["settling_cache_attempt_tokens"],
+        )
+        self.assert_native_replacement_scheduled(observed)
+
+    def test_native_capability_recache_uses_rust_after_preparation_error_final_close(self):
+        """S1-R4: pre-download terminal failures also close capability routing."""
+        observed = self.run_external_settlement_recache(
+            capability_at="downloader_error"
+        )
+        self.assertEqual(
+            observed["state_at_decision"]["python_owners"],
+            {observed["item_id"]: DOWNLOAD_SOURCE_BBDOWN},
+        )
+        self.assertIn(
+            observed["attempts"][0]["cache_attempt_token"],
+            observed["state_at_decision"]["settling_cache_attempt_tokens"],
+        )
+        self.assert_native_replacement_scheduled(observed)
+
+    def run_urgent_settlement(self, item_id: str, *, fail: bool) -> dict:
+        """Run one urgent attempt whose identity is replaced before it starts.
+
+        A replacement request handed over before the urgent lane runs makes
+        ``_cache_item`` swap the attempt identity, so the token the caller passed
+        in no longer describes what the worker settles.  ``fail`` selects whether
+        that replaced attempt publishes or raises, because settlement must know
+        the final identity on both exits.
+        """
+        item = self.add_native_cache_item(item_id)
+        attempts: list[int] = []
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                entry_token = begin_cache_attempt(self.store, item.id)
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                    manager.pending_ids.add(item.id)
+                    manager.python_worker_download_sources[item.id] = (
+                        DOWNLOAD_SOURCE_BBDOWN
+                    )
+                    manager.python_cache_attempt_tokens[item.id] = entry_token
+                    # A replacement request handed over before the urgent lane
+                    # runs makes _cache_item swap the attempt identity, which is
+                    # exactly the case the entry token no longer describes.
+                    manager.retry_requested_ids.add(item.id)
+
+                def external_download(
+                    _item,
+                    _binary_path,
+                    _ffmpeg_path,
+                    item_dir,
+                    _log_path,
+                    *,
+                    cache_attempt_token,
+                    download_source,
+                ):
+                    attempts.append(cache_attempt_token)
+                    if fail:
+                        raise DownloadCommandError("synthetic external failure")
+                    return self.staged_cache_result(item_dir)
+
+                with patch.object(
+                    manager, "_ensure_downloader", return_value=Path(sys.executable)
+                ), patch.object(
+                    manager, "_ensure_ffmpeg", return_value=Path(sys.executable)
+                ), patch.object(
+                    manager, "_download_selected_streams", side_effect=external_download
+                ), patch.object(
+                    manager, "_validate_cache_result"
+                ), patch(
+                    "bilikara.cache.rust_runtime.http_download_available",
+                    return_value=True,
+                ), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available",
+                    return_value=True,
+                ), patch.object(manager, "sync_with_playlist"):
+                    manager._urgent_cache_worker(item.id, entry_token)
+
+                state = self.manager_bookkeeping(manager)
+                observed = self.store.get_item(item.id)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(len(attempts), 1)
+        return {
+            "item_id": item.id,
+            "entry_token": entry_token,
+            "final_token": attempts[0],
+            "state": state,
+            "cache_status": observed.cache_status,
+        }
+
+    def assert_urgent_settlement_released(self, observed: dict) -> None:
+        item_id = observed["item_id"]
+        state = observed["state"]
+        # The identity really was replaced, so settling by the entry token alone
+        # would leave the record the worker actually ran under.
+        self.assertNotEqual(observed["final_token"], observed["entry_token"])
+        self.assertNotIn(item_id, state["python_owners"])
+        self.assertNotIn(item_id, state["pending_ids"])
+        self.assertNotIn(item_id, state["retry_requested_ids"])
+        self.assertNotIn(item_id, state["python_attempt_tokens"])
+        self.assertFalse(
+            {observed["entry_token"], observed["final_token"]}
+            & set(state["settling_cache_attempt_tokens"])
+        )
+
+    def test_urgent_worker_settles_by_its_final_attempt_identity(self):
+        """S1-R3: the urgent lane settles the identity it actually ran."""
+        observed = self.run_urgent_settlement("song-urgent-settlement", fail=False)
+        self.assertEqual(observed["cache_status"], "ready")
+        self.assert_urgent_settlement_released(observed)
+
+    def test_urgent_worker_settles_final_identity_after_a_failed_attempt(self):
+        """S1-R3: the final identity is still known when the attempt raises."""
+        observed = self.run_urgent_settlement("song-urgent-failure", fail=True)
+        self.assertEqual(observed["cache_status"], "failed")
+        self.assert_urgent_settlement_released(observed)
+
+    def test_worker_settlement_preserves_a_newer_independent_attempt(self):
+        """S1-R3: settlement releases only what the exiting worker owned."""
+        item = self.add_native_cache_item("song-settlement-scope")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                exiting_tokens = {
+                    begin_cache_attempt(self.store, item.id),
+                    begin_cache_attempt(self.store, item.id),
+                }
+                newer_token = begin_cache_attempt(self.store, item.id)
+                self.assertNotIn(newer_token, exiting_tokens)
+                with manager.lock:
+                    manager.pending_ids.add(item.id)
+                    manager.retry_requested_ids.add(item.id)
+                    manager.python_worker_download_sources[item.id] = (
+                        DOWNLOAD_SOURCE_BBDOWN
+                    )
+                    # A genuinely newer independent executor already owns the
+                    # item's attempt when the previous worker exits.
+                    manager.python_cache_attempt_tokens[item.id] = newer_token
+                    manager.settling_cache_attempt_tokens.update(exiting_tokens)
+                    manager.settling_cache_attempt_tokens.add(newer_token)
+                    manager._release_worker_attempt_bookkeeping_locked(
+                        item.id,
+                        exiting_tokens,
+                        release_ownership=True,
+                    )
+                    preserved = self.manager_bookkeeping(manager)
+
+                    # The same helper releases the record once the exiting
+                    # worker is the identity actually recorded for the item.
+                    manager._release_worker_attempt_bookkeeping_locked(
+                        item.id,
+                        {newer_token},
+                        release_ownership=True,
+                    )
+                    released = self.manager_bookkeeping(manager)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(
+            preserved["python_attempt_tokens"], {item.id: newer_token}
+        )
+        self.assertEqual(
+            preserved["python_owners"], {item.id: DOWNLOAD_SOURCE_BBDOWN}
+        )
+        self.assertEqual(preserved["pending_ids"], [item.id])
+        self.assertEqual(preserved["retry_requested_ids"], [item.id])
+        self.assertFalse(
+            exiting_tokens & set(preserved["settling_cache_attempt_tokens"])
+        )
+        self.assertIn(
+            newer_token, preserved["settling_cache_attempt_tokens"]
+        )
+        self.assertEqual(released["python_attempt_tokens"], {})
+        self.assertEqual(released["python_owners"], {})
+        self.assertEqual(released["pending_ids"], [])
+        self.assertEqual(released["retry_requested_ids"], [])
+        self.assertNotIn(
+            newer_token, released["settling_cache_attempt_tokens"]
+        )
 
     def test_hidden_process_kwargs_hides_windows_console(self):
         with patch("bilikara.cache.os.name", "nt"):
