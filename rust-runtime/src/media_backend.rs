@@ -45,15 +45,55 @@ pub struct MediaNormalizeRequest {
     pub expected_kind: ExpectedMediaKind,
 }
 
+/// Why a media operation failed, in the terms its callers actually decide on.
+///
+/// Callers need three independent answers, and each kind fixes all three:
+/// whether downloading the input again could change the outcome, whether the
+/// current track attempt must stop, and whether a *different* media backend is
+/// allowed to attempt the same operation on the same input.
+///
+/// The two `Unsupported*` kinds are the only ones that describe a limit of this
+/// backend rather than a property the operation must reject, so they are the
+/// only ones a future backend may be given a second attempt at. In particular
+/// `MediaContractViolation` is deliberately not one of them: the single-track
+/// contract is a property of the operation, not of the native decoder, so no
+/// other backend may be allowed to accept input that violates it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaErrorKind {
+    /// The request itself is malformed (schema, non-absolute paths).
     InvalidRequest,
+    /// The requested source path does not exist.
     SourceMissing,
+    /// The destination is already occupied and must never be replaced.
     DestinationExists,
+    /// The codec carried by the input is not implemented by this backend.
     UnsupportedCodec,
+    /// The input is valid and satisfies the operation contract, but this
+    /// backend cannot produce the required normalized container from this
+    /// packaging. Only reached from structure a successful probe already read,
+    /// never from a read failure, so it can never absorb a corrupt input.
+    UnsupportedContainerLayout,
+    /// The input does not satisfy the media contract the operation requires,
+    /// such as the single-track elementary stream a DASH track must be.
+    MediaContractViolation,
+    /// The media is malformed, truncated, or otherwise unusable.
     InvalidMedia,
+    /// The operation failed on I/O rather than on the media itself.
     Io,
+}
+
+impl MediaErrorKind {
+    /// Whether a different media backend may be offered the same operation on
+    /// the same input. This is deliberately narrower than "not retryable":
+    /// terminal kinds such as [`MediaErrorKind::MediaContractViolation`] must
+    /// still fail closed rather than be handed to a more permissive backend.
+    pub fn allows_backend_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::UnsupportedCodec | Self::UnsupportedContainerLayout
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -74,8 +114,28 @@ impl MediaError {
         Self::new(MediaErrorKind::InvalidMedia, message)
     }
 
+    fn contract_violation(message: impl Into<String>) -> Self {
+        Self::new(MediaErrorKind::MediaContractViolation, message)
+    }
+
+    fn unsupported_container_layout(message: impl Into<String>) -> Self {
+        Self::new(MediaErrorKind::UnsupportedContainerLayout, message)
+    }
+
     fn io(message: impl Into<String>) -> Self {
         Self::new(MediaErrorKind::Io, message)
+    }
+
+    /// Classifies a failure while reading media bytes the caller already
+    /// proved to be in range. A short read means the file is truncated; any
+    /// other failure is I/O and must stay recoverable instead of being
+    /// recorded as a permanent media-format defect.
+    fn read_failure(message: &'static str, error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            Self::invalid_media(message)
+        } else {
+            Self::io(message)
+        }
     }
 }
 
@@ -133,7 +193,7 @@ pub fn normalize_media(
             preserve_mp4_container(&request.source, &fast_path, &source_probe)?;
         } else {
             remux_single_track(&request.source, &raw_path, request.expected_kind)?;
-            relocate_moov_to_front(&raw_path, &fast_path)?;
+            relocate_moov_to_front(&raw_path, &fast_path, LayoutOrigin::BackendOutput)?;
         }
         let output_probe = probe_path(&fast_path, request.expected_kind)?;
         if !output_probe.fast_start {
@@ -231,8 +291,13 @@ fn selected_track_id(
             matching.push(*track_id);
         }
     }
+    // A DASH track must arrive as a single-track elementary stream. A muxed or
+    // wrong-kind file is legible media that simply is not what this operation
+    // accepts, so it is a contract violation rather than corruption: retrying
+    // the download cannot change it, and no other backend may be allowed to
+    // accept it instead.
     if matching.len() != 1 || reader.tracks().len() != 1 {
-        return Err(MediaError::invalid_media(
+        return Err(MediaError::contract_violation(
             "media source must contain exactly one track of the expected kind",
         ));
     }
@@ -723,7 +788,9 @@ fn source_samples(
         let mut bytes = vec![0_u8; sample.size as usize];
         file.seek(SeekFrom::Start(sample.offset))
             .and_then(|_| file.read_exact(&mut bytes))
-            .map_err(|_| MediaError::invalid_media("failed to read fragmented MP4 sample"))?;
+            .map_err(|error| {
+                MediaError::read_failure("failed to read fragmented MP4 sample", error)
+            })?;
         samples.push(Mp4Sample {
             start_time: sample.start_time,
             duration: sample.duration,
@@ -1284,6 +1351,27 @@ fn has_leading_moov(path: &Path) -> Result<bool, MediaError> {
     Ok(matches!((moov, mdat), (Some(moov), Some(mdat)) if moov < mdat))
 }
 
+/// Whose container layout is being judged.
+///
+/// The same relocation runs over two very different inputs, and an unusable
+/// layout means the opposite thing in each. Over bytes this backend just wrote,
+/// it is a backend defect; over the downloaded source, it is a limit of this
+/// backend applied to media that is otherwise valid and contract-satisfying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutOrigin {
+    Source,
+    BackendOutput,
+}
+
+impl LayoutOrigin {
+    fn layout_error(self, message: &'static str) -> MediaError {
+        match self {
+            Self::Source => MediaError::unsupported_container_layout(message),
+            Self::BackendOutput => MediaError::invalid_media(message),
+        }
+    }
+}
+
 fn preserve_mp4_container(
     source: &Path,
     destination: &Path,
@@ -1292,12 +1380,18 @@ fn preserve_mp4_container(
     if source_probe.fast_start {
         return copy_file_no_replace(source, destination);
     }
+    // The source probe already read every sample and validated the extended
+    // AAC configuration, so reaching here means the media is intact and only
+    // its packaging defeats this backend: remuxing would truncate the SBR/PS
+    // configuration and the relocator below cannot move a fragmented moov.
+    // That is a capability limit a different backend may satisfy, not a reason
+    // to download the same bytes again.
     if source_probe.fragmented {
-        return Err(MediaError::invalid_media(
+        return Err(MediaError::unsupported_container_layout(
             "fragmented AAC with an extended decoder configuration is not fast-start",
         ));
     }
-    relocate_moov_to_front(source, destination)
+    relocate_moov_to_front(source, destination, LayoutOrigin::Source)
 }
 
 fn copy_file_no_replace(source: &Path, destination: &Path) -> Result<(), MediaError> {
@@ -1317,13 +1411,27 @@ fn copy_file_no_replace(source: &Path, destination: &Path) -> Result<(), MediaEr
         .map_err(|_| MediaError::io("failed to flush preserved MP4"))
 }
 
-fn relocate_moov_to_front(source: &Path, destination: &Path) -> Result<(), MediaError> {
+fn relocate_moov_to_front(
+    source: &Path,
+    destination: &Path,
+    origin: LayoutOrigin,
+) -> Result<(), MediaError> {
     let boxes = top_level_boxes(source)?;
+    // Unlike moov and mdat below, a leading ftyp is this relocator's own
+    // precondition rather than media data the operation needs, so a valid file
+    // without one stays a capability limit.
     let ftyp = boxes
         .iter()
         .find(|entry| entry.kind == *b"ftyp")
         .copied()
-        .ok_or_else(|| MediaError::invalid_media("MP4 ftyp box is missing"))?;
+        .ok_or_else(|| origin.layout_error("MP4 ftyp box is missing"))?;
+    // Structure this operation requires is not a layout preference, so its
+    // absence is not something a different backend could be more capable at.
+    // This path only runs for a source whose probe already reported samples,
+    // and in a progressive MP4 those sample bytes are addressed inside the
+    // top-level mdat. A file that declares samples yet has no media-data box
+    // to hold them is malformed, whichever side produced the bytes, so the
+    // origin must not soften it into a capability limit.
     let moov = boxes
         .iter()
         .find(|entry| entry.kind == *b"moov")
@@ -1335,9 +1443,9 @@ fn relocate_moov_to_front(source: &Path, destination: &Path) -> Result<(), Media
         .copied()
         .ok_or_else(|| MediaError::invalid_media("MP4 mdat box is missing"))?;
     if ftyp.start != 0 || !(ftyp.start < mdat.start && mdat.start < moov.start) {
-        return Err(MediaError::invalid_media(
-            "normalized MP4 has an unsupported top-level box order",
-        ));
+        return Err(
+            origin.layout_error("MP4 has a top-level box order this backend cannot relocate")
+        );
     }
 
     let mut input = File::open(source).map_err(|_| MediaError::io("failed to open MP4"))?;
@@ -1685,6 +1793,76 @@ mod tests {
         bytes[decoder_specific + 2..decoder_specific + 2 + size].to_vec()
     }
 
+    /// A perfectly legible two-track MP4. Nothing about it is corrupt; it just
+    /// is not the single-track elementary stream a DASH track download must be.
+    fn write_muxed_fixture(path: &Path) {
+        let file = File::create(path).expect("create fixture");
+        let config = Mp4Config {
+            major_brand: "isom".parse().unwrap(),
+            minor_version: 512,
+            compatible_brands: vec!["isom".parse().unwrap(), "avc1".parse().unwrap()],
+            timescale: 1000,
+        };
+        let mut writer = Mp4Writer::write_start(file, &config).expect("start fixture");
+        writer
+            .add_track(&TrackConfig {
+                track_type: TrackType::Video,
+                timescale: 25_000,
+                language: "und".to_string(),
+                media_conf: MediaConfig::AvcConfig(AvcConfig {
+                    width: 64,
+                    height: 64,
+                    seq_param_set: vec![
+                        0x67, 0x42, 0xc0, 0x1e, 0xda, 0x02, 0x80, 0xb7, 0xfe, 0x5c, 0x05, 0x05,
+                        0x05, 0x02,
+                    ],
+                    pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
+                }),
+            })
+            .expect("add video track");
+        writer
+            .add_track(&TrackConfig {
+                track_type: TrackType::Audio,
+                timescale: 48_000,
+                language: "und".to_string(),
+                media_conf: MediaConfig::AacConfig(AacConfig {
+                    bitrate: 128_000,
+                    profile: AudioObjectType::AacLowComplexity,
+                    freq_index: SampleFreqIndex::Freq48000,
+                    chan_conf: ChannelConfig::Stereo,
+                }),
+            })
+            .expect("add audio track");
+        for index in 0..4_u64 {
+            writer
+                .write_sample(
+                    1,
+                    &Mp4Sample {
+                        start_time: index * 1000,
+                        duration: 1000,
+                        rendering_offset: 0,
+                        is_sync: index == 0,
+                        bytes: vec![0, 0, 0, 2, 0x65, index as u8].into(),
+                    },
+                )
+                .expect("write video sample");
+            writer
+                .write_sample(
+                    2,
+                    &Mp4Sample {
+                        start_time: index * 1024,
+                        duration: 1024,
+                        rendering_offset: 0,
+                        is_sync: true,
+                        bytes: vec![index as u8 + 1; 16].into(),
+                    },
+                )
+                .expect("write audio sample");
+        }
+        writer.write_end().expect("end fixture");
+        writer.into_writer().sync_all().expect("flush fixture");
+    }
+
     fn write_h264_fixture(path: &Path) {
         let file = File::create(path).expect("create fixture");
         let config = Mp4Config {
@@ -1960,18 +2138,249 @@ mod tests {
         assert!(samples.iter().all(|sample| *sample == 0));
     }
 
+    /// The single-track contract is a property of the operation, not of the
+    /// native decoder. Media that breaks it is legible and would be accepted by
+    /// a more permissive backend, which is exactly why it must fail closed:
+    /// terminal for the attempt, and never eligible for backend fallback.
     #[test]
-    fn rejects_a_track_kind_mismatch() {
+    fn rejects_contract_violations_without_making_them_fallback_candidates() {
         let root = test_dir("kind");
-        let source = root.join("source.m4a");
-        write_aac_fixture(&source);
-        let error = probe_media(&MediaPathRequest {
+        let audio = root.join("source.m4a");
+        let muxed = root.join("muxed.mp4");
+        write_aac_fixture(&audio);
+        write_muxed_fixture(&muxed);
+
+        let cases = [
+            (audio.clone(), ExpectedMediaKind::Video),
+            (muxed.clone(), ExpectedMediaKind::Video),
+            (muxed.clone(), ExpectedMediaKind::Audio),
+        ];
+        for (source, expected_kind) in cases {
+            let error = probe_media(&MediaPathRequest {
+                schema_version: 1,
+                source: source.clone(),
+                expected_kind,
+            })
+            .expect_err("a contract violation must not probe");
+            assert_eq!(error.kind, MediaErrorKind::MediaContractViolation);
+            assert!(!error.kind.allows_backend_fallback());
+
+            let error = normalize_media(&MediaNormalizeRequest {
+                schema_version: 1,
+                source,
+                destination: root.join(format!("out-{expected_kind:?}.mp4")),
+                expected_kind,
+            })
+            .expect_err("a contract violation must not normalize");
+            assert_eq!(error.kind, MediaErrorKind::MediaContractViolation);
+        }
+
+        // The same muxed file is entirely readable, so nothing here is a claim
+        // about corruption: only the operation's contract rejects it.
+        let probe = probe_media(&MediaPathRequest {
             schema_version: 1,
-            source,
+            source: root.join("single.mp4"),
+            expected_kind: ExpectedMediaKind::Video,
+        });
+        assert!(probe.is_err());
+        write_h264_fixture(&root.join("single.mp4"));
+        let probe = probe_media(&MediaPathRequest {
+            schema_version: 1,
+            source: root.join("single.mp4"),
             expected_kind: ExpectedMediaKind::Video,
         })
-        .expect_err("kind mismatch should fail");
+        .expect("a single-track file still satisfies the contract");
+        assert_eq!(probe.codec, "h264");
+    }
+
+    /// Packaging this backend cannot normalize is a limit of this backend, not
+    /// a defect of the media. The probe below reads every sample first, so the
+    /// input reaching the layout branch is provably intact and contract-clean,
+    /// which is what makes it safe to mark eligible for another backend.
+    #[test]
+    fn treats_unnormalizable_packaging_as_a_capability_limit_not_corruption() {
+        let root = test_dir("layout");
+        let source = root.join("source.m4a");
+        write_he_aac_fixture(&source);
+        let probe = probe_media(&MediaPathRequest {
+            schema_version: 1,
+            source: source.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("the HE-AAC source is intact and satisfies the contract");
+
+        // The audit's case: fragmented packaging whose moov cannot be moved
+        // without remuxing away the extended AAC configuration.
+        let fragmented = MediaProbe {
+            fragmented: true,
+            fast_start: false,
+            ..probe.clone()
+        };
+        let error = preserve_mp4_container(&source, &root.join("frag.m4a"), &fragmented)
+            .expect_err("fragmented non-fast-start packaging cannot be preserved");
+        assert_eq!(error.kind, MediaErrorKind::UnsupportedContainerLayout);
+        assert!(error.kind.allows_backend_fallback());
+
+        // Identical bytes, reachable packaging: still normalized natively.
+        preserve_mp4_container(
+            &source,
+            &root.join("reachable.m4a"),
+            &MediaProbe {
+                fragmented: false,
+                fast_start: false,
+                ..probe
+            },
+        )
+        .expect("a relocatable moov is still handled natively");
+    }
+
+    /// A layout the relocator cannot process means opposite things depending on
+    /// who produced the bytes, so the same failure must not carry one kind.
+    #[test]
+    fn classifies_layout_failures_by_whose_bytes_they_describe() {
+        let root = test_dir("layout-origin");
+        let source = root.join("source.m4a");
+        let fast_start = root.join("fast-start.m4a");
+        write_aac_fixture(&source);
+        normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source,
+            destination: fast_start.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("normalize media");
+
+        // A leading moov is valid media that this relocator has no move to make
+        // on, which is exactly the shape the origin has to disambiguate.
+        let cases = [
+            (
+                LayoutOrigin::Source,
+                MediaErrorKind::UnsupportedContainerLayout,
+            ),
+            (LayoutOrigin::BackendOutput, MediaErrorKind::InvalidMedia),
+        ];
+        for (origin, expected) in cases {
+            let error =
+                relocate_moov_to_front(&fast_start, &root.join(format!("{origin:?}.m4a")), origin)
+                    .expect_err("an unrelocatable layout must fail");
+            assert_eq!(error.kind, expected);
+            assert_eq!(
+                error.kind.allows_backend_fallback(),
+                origin == LayoutOrigin::Source
+            );
+        }
+    }
+
+    /// Media data the operation needs is a property of the bytes, not of how
+    /// far this backend reaches, so `LayoutOrigin` must not soften its absence
+    /// into something another backend could be more capable at.
+    #[test]
+    fn missing_required_media_structure_stays_invalid_media_for_either_origin() {
+        let root = test_dir("missing-mdat");
+        let source = root.join("source.m4a");
+        write_he_aac_fixture(&source);
+
+        // Retype the media-data box in place: same size, same payload, same
+        // sample offsets. The header is located rather than matched by bytes,
+        // because a fixture may already carry an unrelated free box.
+        let mdat = top_level_boxes(&source)
+            .expect("read top-level boxes")
+            .into_iter()
+            .find(|entry| entry.kind == *b"mdat")
+            .expect("fixture media-data box");
+        let mut bytes = fs::read(&source).expect("read HE-AAC fixture");
+        let kind_offset = usize::try_from(mdat.start).expect("box offset") + 4;
+        bytes[kind_offset..kind_offset + 4].copy_from_slice(b"free");
+        let damaged = root.join("damaged.m4a");
+        fs::write(&damaged, &bytes).expect("write damaged fixture");
+        assert_eq!(bytes.len(), fs::read(&source).expect("read source").len());
+
+        // The probe still reports the samples, so the failure is reached in the
+        // relocation path rather than at an earlier structural check. That is
+        // what makes this a classification question at all.
+        let probe = probe_media(&MediaPathRequest {
+            schema_version: 1,
+            source: damaged.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("the damaged fixture still probes");
+        assert!(probe.sample_count > 0);
+        assert!(!probe.fragmented);
+        assert!(!probe.fast_start);
+
+        let destination = root.join("output.m4a");
+        let error = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: damaged.clone(),
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect_err("media data declared as free space must not normalize");
         assert_eq!(error.kind, MediaErrorKind::InvalidMedia);
+        assert!(!error.kind.allows_backend_fallback());
+        assert!(!destination.exists());
+        assert_eq!(owned_temporary_files(&destination), Vec::<PathBuf>::new());
+        assert_eq!(fs::read(&damaged).expect("read damaged source"), bytes);
+
+        for origin in [LayoutOrigin::Source, LayoutOrigin::BackendOutput] {
+            let error = relocate_moov_to_front(
+                &damaged,
+                &root.join(format!("relocated-{origin:?}.m4a")),
+                origin,
+            )
+            .expect_err("missing media data must fail for either origin");
+            assert_eq!(error.kind, MediaErrorKind::InvalidMedia, "{origin:?}");
+        }
+    }
+
+    /// Reading media bytes can fail for two unrelated reasons, and only one of
+    /// them says anything about the media. Collapsing them would let a storage
+    /// hiccup be recorded as a media-format defect.
+    #[test]
+    fn separates_a_truncated_read_from_a_transient_one() {
+        let truncated = MediaError::read_failure(
+            "failed to read fragmented MP4 sample",
+            std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+        );
+        assert_eq!(truncated.kind, MediaErrorKind::InvalidMedia);
+
+        for kind in [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let transient = MediaError::read_failure(
+                "failed to read fragmented MP4 sample",
+                std::io::Error::from(kind),
+            );
+            assert_eq!(transient.kind, MediaErrorKind::Io, "{kind:?}");
+            assert!(!transient.kind.allows_backend_fallback(), "{kind:?}");
+        }
+    }
+
+    /// Fallback eligibility is narrower than "not retryable": every kind that
+    /// stops the attempt is listed here, and only the two capability limits may
+    /// hand the same input to a different backend.
+    #[test]
+    fn backend_fallback_is_limited_to_capability_limits() {
+        let eligible = [
+            MediaErrorKind::UnsupportedCodec,
+            MediaErrorKind::UnsupportedContainerLayout,
+        ];
+        let refused = [
+            MediaErrorKind::InvalidRequest,
+            MediaErrorKind::SourceMissing,
+            MediaErrorKind::DestinationExists,
+            MediaErrorKind::MediaContractViolation,
+            MediaErrorKind::InvalidMedia,
+            MediaErrorKind::Io,
+        ];
+        for kind in eligible {
+            assert!(kind.allows_backend_fallback(), "{kind:?}");
+        }
+        for kind in refused {
+            assert!(!kind.allows_backend_fallback(), "{kind:?}");
+        }
     }
 
     #[test]

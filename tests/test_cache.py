@@ -24,6 +24,7 @@ from bilikara import rust_backend, rust_runtime
 from bilikara.cache import (
     CachePlan,
     CacheManager,
+    RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS,
     DOWNLOAD_SOURCE_BBDOWN,
     DOWNLOAD_SOURCE_DOWNKYI,
     DOWNLOAD_SOURCE_NATIVE,
@@ -6691,7 +6692,15 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                for error_kind in ("invalid_media", "invalid_response", "io"):
+                # A contract violation joins these: the native backend refused
+                # legible media on purpose, so handing it to ffprobe would let a
+                # more permissive check accept what the operation must reject.
+                for error_kind in (
+                    "invalid_media",
+                    "invalid_response",
+                    "io",
+                    "media_contract_violation",
+                ):
                     with self.subTest(error_kind=error_kind), patch(
                         "bilikara.cache.rust_runtime.probe_media",
                         side_effect=rust_runtime.RustMediaError(
@@ -6715,6 +6724,270 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                         subprocess_run.assert_not_called()
             finally:
                 manager.shutdown()
+
+    def _native_media_fixtures(self) -> dict[str, Path]:
+        """Real ffmpeg artifacts for the native retry regression.
+
+        The progressive AAC original is the one that must travel the extended
+        AAC preservation path, so its damaged twin exercises the relocation
+        branch this correction is about rather than an earlier check.
+        """
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg or not rust_runtime.media_backend_available():
+            self.skipTest("ffmpeg/Rust MediaBackend unavailable")
+        fixture_dir = self.cache_dir / "native-retry-fixtures"
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+
+        def generate(name: str, arguments: list[str]) -> Path:
+            path = fixture_dir / name
+            produced = subprocess.run(
+                [ffmpeg, "-v", "error", "-y", *arguments, str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if produced.returncode != 0:
+                self.skipTest(f"fixture generation unavailable: {produced.stderr[:120]}")
+            return path
+
+        video = generate(
+            "video.mp4",
+            [
+                "-f", "lavfi", "-i", "color=c=black:s=64x64:r=25:d=2",
+                "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            ],
+        )
+        audio = generate(
+            "audio.m4a",
+            [
+                "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100:duration=2",
+                "-vn", "-c:a", "aac",
+            ],
+        )
+        probe = rust_runtime.probe_media(source=audio, expected_kind="audio")
+        self.assertFalse(probe["fast_start"])
+        self.assertFalse(probe["fragmented"])
+
+        # Only the media-data box type changes; size, payload and sample
+        # offsets stay identical, and the header is located rather than matched
+        # by bytes because the file already carries an unrelated free box.
+        damaged_bytes = bytearray(audio.read_bytes())
+        media_boxes = [
+            start
+            for kind, start, _ in self._mp4_top_level_boxes(bytes(damaged_bytes))
+            if kind == b"mdat"
+        ]
+        self.assertEqual(len(media_boxes), 1)
+        damaged_bytes[media_boxes[0] + 4 : media_boxes[0] + 8] = b"free"
+        damaged = fixture_dir / "audio-media-data-as-free.m4a"
+        damaged.write_bytes(bytes(damaged_bytes))
+
+        # The paired control: a genuinely valid layout this backend cannot
+        # normalize, built by moving the moov behind an mdat.
+        fragmented = generate(
+            "audio-fragmented.m4a",
+            [
+                "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100:duration=2",
+                "-vn", "-c:a", "aac",
+                "-movflags", "empty_moov+frag_keyframe+default_base_moof",
+            ],
+        )
+        fragmented_bytes = fragmented.read_bytes()
+        kind, start, size = self._mp4_top_level_boxes(fragmented_bytes)[0]
+        self.assertEqual(kind, b"ftyp")
+        layout_limit = fixture_dir / "audio-fragmented-late-moov.m4a"
+        layout_limit.write_bytes(
+            fragmented_bytes[: start + size]
+            + (8).to_bytes(4, "big")
+            + b"mdat"
+            + fragmented_bytes[start + size :]
+        )
+        return {
+            "video": video,
+            "audio": audio,
+            "damaged": damaged,
+            "layout_limit": layout_limit,
+        }
+
+    def _run_native_track_loop(
+        self, manager: CacheManager, item_id: str, artifacts: dict[str, list[Path]]
+    ) -> tuple[dict[str, Path] | None, list[str], BaseException | None]:
+        """Drive the production native retry loop over prepared artifacts.
+
+        Only the byte transfer is controlled: `_download_stream_with_rust` is
+        replaced by a hand that copies a prepared file. The retry decision,
+        `rust_runtime.normalize_media` across the real media FFI, and the
+        publication of the accepted artifact are all production code.
+        """
+        item = self.store.get_item(item_id)
+        manager.desired_ids.add(item_id)
+        token = begin_cache_attempt(self.store, item_id)
+        item_dir = self.cache_dir / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
+        video_track = {
+            "key": "video-p1", "page": 1, "stream_kind": "video",
+            "label": "视频轨P1", "order": 0,
+        }
+        audio_tracks = [{
+            "key": "audio-p1", "page": 1, "stream_kind": "audio",
+            "label": "音轨P1", "order": 1,
+        }]
+        manager._begin_download_progress(
+            item_id, [video_track, *audio_tracks], cache_attempt_token=token
+        )
+        remaining = {kind: list(paths) for kind, paths in artifacts.items()}
+        transfers: list[str] = []
+
+        def deliver(_item_id, target_dir, _log_path, *, out_name, stream_kind, **kwargs):
+            transfers.append(stream_kind)
+            queued = remaining[stream_kind]
+            source = queued.pop(0) if len(queued) > 1 else queued[0]
+            attempt_dir = target_dir / f".attempt-{len(transfers)}"
+            attempt_dir.mkdir(parents=True)
+            delivered = attempt_dir / out_name
+            delivered.write_bytes(source.read_bytes())
+            return delivered
+
+        stream = {"codec_name": "avc", "url": "https://example.test/v.m4s", "backup_urls": []}
+        audio_stream = {"url": "https://example.test/a.m4s", "backup_urls": []}
+        with patch.object(manager, "_download_stream_with_rust", side_effect=deliver), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch.object(
+            manager, "_resolve_dash_streams", return_value={"audio": [audio_stream]}
+        ), patch("bilikara.cache.DOWNKYI_TRACK_RETRY_WAIT_SECONDS", 0.01):
+            try:
+                paths = manager._download_dash_streams_native(
+                    item,
+                    item_dir,
+                    self.log_path,
+                    dash_streams={"video": [stream], "audio": [audio_stream]},
+                    video_track=video_track,
+                    audio_tracks=audio_tracks,
+                    cache_attempt_token=token,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                return None, transfers, exc
+        return paths, transfers, None
+
+    def test_native_retry_recovers_from_damaged_media_but_not_a_layout_limit(self):
+        """The retry consequence of the classification, through the real loop.
+
+        A damaged artifact must cost a second download and then succeed on the
+        replacement; a genuinely unsupported layout must still stop after one,
+        even though valid bytes are queued behind it.
+        """
+        fixtures = self._native_media_fixtures()
+        item_id = "song-native-retry"
+        self._add_item(item_id)
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                paths, transfers, failure = self._run_native_track_loop(
+                    manager,
+                    item_id,
+                    {
+                        "video": [fixtures["video"]],
+                        "audio": [fixtures["damaged"], fixtures["audio"]],
+                    },
+                )
+                self.assertIsNone(failure)
+                self.assertEqual(transfers.count("audio"), 2)
+                self.assertEqual(transfers.count("video"), 1)
+                published = paths["audio-p1"]
+                self.assertTrue(published.is_file())
+                recovered = rust_runtime.probe_media(
+                    source=published, expected_kind="audio"
+                )
+                self.assertTrue(recovered["fast_start"])
+                self.assertEqual(
+                    recovered["sample_count"],
+                    rust_runtime.probe_media(
+                        source=fixtures["audio"], expected_kind="audio"
+                    )["sample_count"],
+                )
+            finally:
+                manager.shutdown()
+
+    def test_native_retry_stops_after_one_download_for_a_valid_layout_limit(self):
+        """The paired control for the regression above.
+
+        Valid replacement bytes are queued behind the unsupported layout, so a
+        second download would be observable. It must not happen: this failure
+        is a capability limit, not a damaged artifact.
+        """
+        fixtures = self._native_media_fixtures()
+        item_id = "song-native-layout"
+        self._add_item(item_id)
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                paths, transfers, failure = self._run_native_track_loop(
+                    manager,
+                    item_id,
+                    {
+                        "video": [fixtures["video"]],
+                        "audio": [fixtures["layout_limit"], fixtures["audio"]],
+                    },
+                )
+                self.assertIsNone(paths)
+                self.assertIsInstance(failure, rust_runtime.RustMediaError)
+                self.assertEqual(failure.kind, "unsupported_container_layout")
+                self.assertTrue(CacheManager._is_terminal_track_failure(failure))
+                # The valid replacement stayed queued: a capability limit must
+                # not spend a second download.
+                self.assertEqual(transfers.count("audio"), 1)
+            finally:
+                manager.shutdown()
+
+    def test_rust_container_layout_limit_uses_normalized_ffprobe_compatibility(self):
+        """A capability limit is the one shape another backend may answer.
+
+        The kind is terminal for the download — repeating it cannot change the
+        packaging — yet it stays eligible for the compatibility backend, which
+        is the whole point of keeping the two decisions separate.
+        """
+        media = self.cache_dir / "song" / "audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"fragmented")
+        process = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(self._probe_payload("audio", "120.0")),
+            stderr="",
+        )
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_container_layout",
+                        "fragmented AAC with an extended decoder configuration "
+                        "is not fast-start",
+                        response={},
+                    ),
+                ), patch("bilikara.cache.subprocess.run", return_value=process):
+                    result = manager._validate_media_file(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="音轨 P1",
+                        required_streams={"audio"},
+                        log_path=self.log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(result["backend"], "ffprobe")
+        self.assertEqual(result["fallback_reason"], "unsupported_container_layout")
+        self.assertTrue(
+            CacheManager._is_terminal_track_failure(
+                rust_runtime.RustMediaError(
+                    "unsupported_container_layout", "packaging", response={}
+                )
+            )
+        )
 
     def test_rust_runtime_failure_is_fail_closed_without_ffprobe(self):
         media = self.cache_dir / "song" / "audio.m4a"
@@ -7274,9 +7547,187 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 )
                 self.assertNotEqual(external.returncode, 0)
 
+        # Asking a single-track video file for audio is not a claim that the
+        # file is broken: it is legible media that does not satisfy what this
+        # operation requires, so it must not share a kind with corruption.
         with self.assertRaises(rust_runtime.RustMediaError) as wrong_kind:
             rust_runtime.probe_media(source=valid_video, expected_kind="audio")
-        self.assertEqual(wrong_kind.exception.kind, "invalid_media")
+        self.assertEqual(wrong_kind.exception.kind, "media_contract_violation")
+        self.assertNotIn(
+            wrong_kind.exception.kind, RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS
+        )
+
+    @staticmethod
+    def _mp4_top_level_boxes(data: bytes) -> list[tuple[bytes, int, int]]:
+        boxes: list[tuple[bytes, int, int]] = []
+        cursor = 0
+        while cursor + 8 <= len(data):
+            size = int.from_bytes(data[cursor : cursor + 4], "big")
+            kind = data[cursor + 4 : cursor + 8]
+            if size == 1:
+                size = int.from_bytes(data[cursor + 8 : cursor + 16], "big")
+            elif size == 0:
+                size = len(data) - cursor
+            boxes.append((kind, cursor, size))
+            cursor += size
+        return boxes
+
+    def test_real_native_media_taxonomy_separates_capability_limits_from_defects(self):
+        """The three failures a caller must never confuse, on real media.
+
+        Each case below crosses the actual Rust media FFI boundary and is then
+        run through the decisions the boundary exists to drive: whether the
+        track attempt stops, and whether a different backend may be offered the
+        same bytes. Those two answers are deliberately independent.
+        """
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg or not rust_runtime.media_backend_available():
+            self.skipTest("ffmpeg/Rust MediaBackend unavailable")
+
+        fixture_dir = self.cache_dir / "taxonomy-fixtures"
+        fixture_dir.mkdir(parents=True)
+
+        def generate(name: str, arguments: list[str]) -> Path:
+            path = fixture_dir / name
+            produced = subprocess.run(
+                [ffmpeg, "-v", "error", "-y", *arguments, str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if produced.returncode != 0:
+                self.skipTest(f"fixture generation unavailable: {produced.stderr[:120]}")
+            return path
+
+        fragmented = generate(
+            "audio-fragmented.m4a",
+            [
+                "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100:duration=2",
+                "-vn", "-c:a", "aac",
+                "-movflags", "empty_moov+frag_keyframe+default_base_moof",
+            ],
+        )
+        muxed = generate(
+            "muxed.mp4",
+            [
+                "-f", "lavfi", "-i", "color=c=black:s=64x64:r=25:d=2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", "-movflags", "+faststart",
+            ],
+        )
+
+        # Supported, ordinary media stays accepted end to end.
+        baseline = rust_runtime.probe_media(source=fragmented, expected_kind="audio")
+        self.assertEqual(baseline["codec"], "aac")
+        self.assertTrue(baseline["fragmented"])
+        self.assertTrue(baseline["fast_start"])
+        rust_runtime.normalize_media(
+            source=fragmented,
+            destination=fixture_dir / "audio-fragmented-normalized.m4a",
+            expected_kind="audio",
+        )
+
+        # The audit's packaging: identical media whose moov trails an mdat, so
+        # the native backend can neither copy it nor relocate its moov without
+        # remuxing away the extended AAC configuration.
+        data = fragmented.read_bytes()
+        kind, start, size = self._mp4_top_level_boxes(data)[0]
+        self.assertEqual(kind, b"ftyp")
+        boundary = start + size
+        late_moov = fixture_dir / "audio-fragmented-late-moov.m4a"
+        late_moov.write_bytes(
+            data[:boundary] + (8).to_bytes(4, "big") + b"mdat" + data[boundary:]
+        )
+
+        # It probes cleanly, which is the evidence that it is intact media and
+        # not a corrupt download wearing a permissive kind.
+        packaging = rust_runtime.probe_media(source=late_moov, expected_kind="audio")
+        self.assertTrue(packaging["fragmented"])
+        self.assertFalse(packaging["fast_start"])
+        self.assertEqual(packaging["codec"], baseline["codec"])
+        self.assertEqual(packaging["sample_count"], baseline["sample_count"])
+        self.assertEqual(packaging["sample_bytes"], baseline["sample_bytes"])
+
+        truncated = fixture_dir / "audio-truncated.m4a"
+        truncated.write_bytes(data[: len(data) // 2])
+
+        # Media data declared as discardable free space. The box header is
+        # located rather than matched by bytes, because a progressive MP4
+        # already carries an unrelated free box, and only the four type bytes
+        # change: size, payload and sample offsets are untouched.
+        progressive = generate(
+            "audio-progressive.m4a",
+            [
+                "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100:duration=2",
+                "-vn", "-c:a", "aac",
+            ],
+        )
+        progressive_bytes = bytearray(progressive.read_bytes())
+        media_boxes = [
+            start
+            for kind, start, _ in self._mp4_top_level_boxes(bytes(progressive_bytes))
+            if kind == b"mdat"
+        ]
+        self.assertEqual(len(media_boxes), 1)
+        progressive_bytes[media_boxes[0] + 4 : media_boxes[0] + 8] = b"free"
+        no_media_data = fixture_dir / "audio-media-data-as-free.m4a"
+        no_media_data.write_bytes(bytes(progressive_bytes))
+        self.assertEqual(no_media_data.stat().st_size, progressive.stat().st_size)
+
+        # The valid original must really travel the AAC preservation path this
+        # regression is about, otherwise the damaged twin would prove nothing.
+        original = rust_runtime.probe_media(source=progressive, expected_kind="audio")
+        self.assertFalse(original["fast_start"])
+        self.assertFalse(original["fragmented"])
+        rust_runtime.normalize_media(
+            source=progressive,
+            destination=fixture_dir / "audio-progressive-normalized.m4a",
+            expected_kind="audio",
+        )
+        # It still probes, so the failure below is reached in relocation rather
+        # than at an earlier structural check.
+        damaged_probe = rust_runtime.probe_media(
+            source=no_media_data, expected_kind="audio"
+        )
+        self.assertEqual(damaged_probe["sample_count"], original["sample_count"])
+
+        cases = [
+            # fixture, expected kind, terminal, backend-fallback eligible
+            (late_moov, "unsupported_container_layout", True, True),
+            (muxed, "media_contract_violation", True, False),
+            (truncated, "invalid_media", False, False),
+            (no_media_data, "invalid_media", False, False),
+        ]
+        source_bytes = {source: source.read_bytes() for source, *_ in cases}
+        for source, expected_kind, terminal, eligible in cases:
+            with self.subTest(source=source.name):
+                with self.assertRaises(rust_runtime.RustMediaError) as raised:
+                    rust_runtime.normalize_media(
+                        source=source,
+                        destination=fixture_dir / f"out-{source.stem}.m4a",
+                        expected_kind="audio",
+                    )
+                self.assertEqual(raised.exception.kind, expected_kind)
+                self.assertEqual(
+                    CacheManager._is_terminal_track_failure(raised.exception), terminal
+                )
+                self.assertEqual(
+                    expected_kind in RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS, eligible
+                )
+                self.assertFalse((fixture_dir / f"out-{source.stem}.m4a").exists())
+                self.assertEqual(source.read_bytes(), source_bytes[source])
+
+        # A validation failure reaches the retry decision wrapped in the host's
+        # own error, so the kind has to survive the exception chain too.
+        with self.assertRaises(rust_runtime.RustMediaError) as contract:
+            rust_runtime.probe_media(source=muxed, expected_kind="video")
+        self.assertEqual(contract.exception.kind, "media_contract_violation")
+        wrapped = DownloadCommandError("缓存校验失败: 视频轨 P1")
+        wrapped.__cause__ = contract.exception
+        self.assertTrue(CacheManager._is_terminal_track_failure(wrapped))
 
     def test_downkyi_remux_failure_keeps_raw_file_and_rejects_cache(self):
         media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.m4a"

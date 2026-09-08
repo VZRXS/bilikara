@@ -122,7 +122,15 @@ ARIA2_MACOS_SOURCE_SHA256 = (
 )
 SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 RUST_MEDIA_PROBE_CONTAINER_SUFFIXES = frozenset({".m4a", ".mp4"})
-RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS = frozenset({"unsupported_codec"})
+# Native media failures a different backend may be offered instead. These are
+# the kinds that describe a limit of the Rust MediaBackend, never a property of
+# the media the operation has to reject, and they mirror
+# MediaErrorKind::allows_backend_fallback on the Rust side. Contract violations
+# and genuinely invalid media are deliberately absent: a more permissive
+# backend must not be allowed to accept what the native one correctly refused.
+RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS = frozenset(
+    {"unsupported_codec", "unsupported_container_layout"}
+)
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
         1,
@@ -3874,12 +3882,14 @@ class CacheManager:
             "codec_policy",
             "forbidden",
             "invalid_request",
+            "media_contract_violation",
             "no_matching_stream",
             "risk_control",
             "selection",
             "unavailable",
             "unsupported",
             "unsupported_codec",
+            "unsupported_container_layout",
             "unsupported_content",
         }
         current: BaseException | None = exc

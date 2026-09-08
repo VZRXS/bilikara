@@ -1360,16 +1360,10 @@ fn run_track(
                 }
             }
             Err(error) => {
-                let kind = match error.kind {
-                    MediaErrorKind::InvalidRequest => "invalid_request",
-                    MediaErrorKind::SourceMissing => "source_missing",
-                    MediaErrorKind::DestinationExists => "destination_exists",
-                    MediaErrorKind::UnsupportedCodec => "unsupported_codec",
-                    MediaErrorKind::InvalidMedia => "invalid_media",
-                    MediaErrorKind::Io => "io",
-                };
-                last_error =
-                    CacheRuntimeError::new(kind, format!("{}: {}", track.label, error.message));
+                last_error = CacheRuntimeError::new(
+                    media_error_kind(error.kind),
+                    format!("{}: {}", track.label, error.message),
+                );
                 let _ = fs::remove_dir_all(&attempt_dir);
             }
         }
@@ -1440,12 +1434,30 @@ fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntime
     }
 }
 
+/// Projects a [`MediaErrorKind`] onto the flat track-error namespace shared
+/// with download failures. The names must match the kind's own wire encoding,
+/// because Python reads that encoding directly off the media FFI boundary and
+/// applies the same retry and fallback decisions to it.
+fn media_error_kind(kind: MediaErrorKind) -> &'static str {
+    match kind {
+        MediaErrorKind::InvalidRequest => "invalid_request",
+        MediaErrorKind::SourceMissing => "source_missing",
+        MediaErrorKind::DestinationExists => "destination_exists",
+        MediaErrorKind::UnsupportedCodec => "unsupported_codec",
+        MediaErrorKind::UnsupportedContainerLayout => "unsupported_container_layout",
+        MediaErrorKind::MediaContractViolation => "media_contract_violation",
+        MediaErrorKind::InvalidMedia => "invalid_media",
+        MediaErrorKind::Io => "io",
+    }
+}
+
 fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
     if matches!(
         error.kind.as_str(),
         "authentication"
             | "forbidden"
             | "invalid_request"
+            | "media_contract_violation"
             | "risk_control"
             | "selection"
             | "source_missing"
@@ -1453,6 +1465,7 @@ fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
             | "unavailable"
             | "unsupported"
             | "unsupported_codec"
+            | "unsupported_container_layout"
     ) {
         return true;
     }
@@ -3032,6 +3045,104 @@ mod tests {
         assert!(!is_terminal_track_error(&unknown_api));
         assert!(!is_terminal_track_error(&transient));
         assert!(!is_terminal_track_error(&incomplete));
+        // Cancellation is settled before the media taxonomy is ever consulted,
+        // so it must keep its own kind and stay out of the retry decision.
+        let cancelled = cache_download_error(
+            &track,
+            DownloadError {
+                kind: DownloadErrorKind::Cancelled,
+                message: "cache cancelled".to_owned(),
+                candidate_index: None,
+                http_status: None,
+            },
+        );
+        assert_eq!(cancelled.kind, "cancelled");
+        assert!(
+            !MEDIA_ERROR_KINDS
+                .iter()
+                .any(|(_, wire, _, _)| *wire == cancelled.kind)
+        );
+    }
+
+    /// Every media error kind, with the wire name it crosses the FFI boundary
+    /// as, whether it stops the track attempt, and whether a different backend
+    /// may be offered the same input. The last two are independent: a contract
+    /// violation stops the attempt exactly as an unsupported codec does, yet
+    /// only the codec may be handed on.
+    const MEDIA_ERROR_KINDS: [(MediaErrorKind, &str, bool, bool); 8] = [
+        (
+            MediaErrorKind::InvalidRequest,
+            "invalid_request",
+            true,
+            false,
+        ),
+        (MediaErrorKind::SourceMissing, "source_missing", true, false),
+        (
+            MediaErrorKind::DestinationExists,
+            "destination_exists",
+            true,
+            false,
+        ),
+        (
+            MediaErrorKind::UnsupportedCodec,
+            "unsupported_codec",
+            true,
+            true,
+        ),
+        (
+            MediaErrorKind::UnsupportedContainerLayout,
+            "unsupported_container_layout",
+            true,
+            true,
+        ),
+        (
+            MediaErrorKind::MediaContractViolation,
+            "media_contract_violation",
+            true,
+            false,
+        ),
+        (MediaErrorKind::InvalidMedia, "invalid_media", false, false),
+        (MediaErrorKind::Io, "io", false, false),
+    ];
+
+    #[test]
+    fn every_media_error_kind_fixes_its_retry_and_fallback_decision() {
+        for (kind, wire, terminal, fallback) in MEDIA_ERROR_KINDS {
+            // The name the runtime routes on must be the name Python reads off
+            // the media FFI response, or the two consumers would diverge.
+            assert_eq!(media_error_kind(kind), wire, "{kind:?}");
+            assert_eq!(
+                serde_json::to_value(kind).expect("serialize media error kind"),
+                json!(wire),
+                "{kind:?}"
+            );
+
+            let error = CacheRuntimeError::new(media_error_kind(kind), "media failure");
+            assert_eq!(is_terminal_track_error(&error), terminal, "{kind:?}");
+            assert_eq!(kind.allows_backend_fallback(), fallback, "{kind:?}");
+
+            // Downloading again and handing the same bytes to another backend
+            // are mutually exclusive answers, never both.
+            assert!(!fallback || terminal, "{kind:?}");
+        }
+
+        // Only genuinely recoverable failures may spend another download, and
+        // only capability limits may spend another backend.
+        let retryable: Vec<&str> = MEDIA_ERROR_KINDS
+            .iter()
+            .filter(|(_, _, terminal, _)| !terminal)
+            .map(|(_, wire, _, _)| *wire)
+            .collect();
+        assert_eq!(retryable, vec!["invalid_media", "io"]);
+        let eligible: Vec<&str> = MEDIA_ERROR_KINDS
+            .iter()
+            .filter(|(kind, _, _, _)| kind.allows_backend_fallback())
+            .map(|(_, wire, _, _)| *wire)
+            .collect();
+        assert_eq!(
+            eligible,
+            vec!["unsupported_codec", "unsupported_container_layout"]
+        );
     }
 
     #[test]
