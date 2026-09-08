@@ -8,6 +8,9 @@
 #[cfg(target_os = "linux")]
 mod wire;
 
+/// Pure developer comparison semantics; never consulted by normal media work.
+pub mod comparison;
+
 use crate::MediaError;
 #[cfg(target_os = "linux")]
 use crate::MediaErrorKind;

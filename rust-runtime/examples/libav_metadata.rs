@@ -1,10 +1,24 @@
-//! Developer driver for the real runtime entry; never invokes ffprobe/ffmpeg.
+//! Developer driver for M1; only the explicit `compare` subcommand invokes ffprobe.
+#[cfg(target_os = "linux")]
+#[path = "libav_metadata/compare.rs"]
+mod comparison_driver;
 use bilikara_runtime::experimental_libav::LibavMetadataProbe;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "compare") {
+        #[cfg(target_os = "linux")]
+        std::process::exit(comparison_driver::run(&args[1..]));
+        #[cfg(not(target_os = "linux"))]
+        {
+            println!(
+                "{{\"outcome\":\"unavailable\",\"reason\":\"comparison requires Linux preview\"}}"
+            );
+            std::process::exit(1);
+        }
+    }
     if args.len() != 2 {
         eprintln!("usage: libav_metadata /trusted/companion.so /absolute/media");
         std::process::exit(2);

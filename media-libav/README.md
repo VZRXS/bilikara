@@ -5,7 +5,12 @@ Rust entry. The only opt-in is explicitly calling `unsafe load(absolute_path)`
 on a trusted companion, then `probe_metadata(absolute_input_path, &AtomicBool)`.
 The example exercises this exact entry. No normal application request calls it.
 No Python ABI, cache route, retry policy, publication rule or player changes.
-There is no fallback and no ffprobe subprocess in the implementation.
+There is no fallback and no ffprobe subprocess in the M1 probe implementation.
+
+M2 extends this same example with an explicitly invoked developer `compare`
+subcommand. See [COMPARISON.md](COMPARISON.md) for the paired runner, semantic
+field contract, privacy rules and live acceptance command. The two-argument M1
+invocation below keeps its original behavior.
 
 ## Build and reproduce
 
