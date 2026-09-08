@@ -3,6 +3,7 @@ mod bilibili_service;
 mod cache_runtime;
 mod cloudflare_service;
 mod diagnostics;
+pub mod experimental_libav;
 mod ffi;
 mod gatcha_repository;
 mod http_downloader;
