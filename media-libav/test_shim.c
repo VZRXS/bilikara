@@ -5,6 +5,7 @@
  * lifecycle/error handling evidence, not proof of real-media rejection. */
 static unsigned reads, inject_after;
 static int inject_error, inject_corrupt, stop_after;
+static unsigned remux_fault;
 static int *stop_flag;
 static int test_read_frame(AVFormatContext *s, AVPacket *p) {
     if (inject_after && reads == inject_after && inject_error) return inject_error;
@@ -12,17 +13,53 @@ static int test_read_frame(AVFormatContext *s, AVPacket *p) {
     if (ret >= 0) {
         reads++;
         if (inject_after && reads == inject_after && inject_corrupt) p->flags |= AV_PKT_FLAG_CORRUPT;
+        if (remux_fault == 5 && reads == 3) p->dts = AV_NOPTS_VALUE;
+        if (remux_fault == 6 && reads == 3) {
+            AVCodecParameters *par = s->streams[p->stream_index]->codecpar;
+            uint8_t *side = av_packet_new_side_data(p, AV_PKT_DATA_NEW_EXTRADATA, par->extradata_size);
+            if (!side) return AVERROR(ENOMEM);
+            par->extradata[par->extradata_size - 1] ^= 1;
+            memcpy(side, par->extradata, par->extradata_size);
+        }
         if (stop_after && reads == (unsigned)stop_after) *stop_flag = 1;
     }
     return ret;
 }
+static unsigned remux_writes;
+static void (*remux_checkpoint)(void *);
+static void *remux_opaque;
+static int test_write_frame(AVFormatContext *s, AVPacket *p) {
+    int packet = p != NULL;
+    int ret = av_interleaved_write_frame(s, p);
+    if (ret >= 0 && packet && ++remux_writes == 3 && remux_fault == 1)
+        remux_checkpoint(remux_opaque);
+    return ret;
+}
+static int test_write_trailer(AVFormatContext *s) {
+    int ret = av_write_trailer(s);
+    return ret >= 0 && remux_fault == 2 ? AVERROR(EIO) : ret;
+}
 #define av_read_frame test_read_frame
+#define av_interleaved_write_frame test_write_frame
+#define av_write_trailer test_write_trailer
 #include "probe.c"
 #undef av_read_frame
+#undef av_interleaved_write_frame
+#undef av_write_trailer
 #include <assert.h>
 #include <stdio.h>
 
 static int cancelled(void *opaque) { return *(int *)opaque; }
+
+/* Only the private test companion exports this setter. No test flags/env
+ * handling are linked into the real companion or its negotiated schema. */
+BM_EXPORT void bm_test_remux_fault(uint32_t mode, void (*checkpoint)(void *), void *opaque) {
+    remux_fault = mode; remux_writes = 0;
+    remux_checkpoint = checkpoint; remux_opaque = opaque;
+    reads = 0; inject_after = mode == 3 || mode == 4 ? 3 : 0;
+    inject_error = mode == 3 ? AVERROR(EIO) : 0;
+    inject_corrupt = mode == 4; stop_after = 0;
+}
 
 static void scan_tests(void) {
     BmScanInfo info;
@@ -89,6 +126,16 @@ static void scan_tests(void) {
 
 int main(void) {
     scan_tests();
+    BmRemuxInfo remux_info;
+    assert(bm_remux_info_v1(sizeof(remux_info), &remux_info) == BM_OK);
+    assert(bm_remux_info_v1(sizeof(remux_info) - 1, &remux_info) == BM_UNAVAILABLE);
+    assert(remux_info.schema == 1 && remux_info.result_size == sizeof(BmRemuxResult));
+    AVPacket *timestamp = av_packet_alloc();
+    assert(timestamp);
+    timestamp->pts = -1024; timestamp->dts = AV_NOPTS_VALUE; timestamp->duration = 512;
+    av_packet_rescale_ts(timestamp, (AVRational){1, 48000}, (AVRational){1, 96000});
+    assert(timestamp->pts == -2048 && timestamp->dts == AV_NOPTS_VALUE && timestamp->duration == 1024);
+    av_packet_free(&timestamp);
     assert(error_status(AVERROR_INVALIDDATA) == BM_INVALID_MEDIA);
     assert(error_status(AVERROR_EOF) == BM_INVALID_MEDIA);
     assert(error_status(AVERROR_DECODER_NOT_FOUND) == BM_UNSUPPORTED_CODEC);
@@ -118,6 +165,13 @@ int main(void) {
     context->opaque = &call;
     assert(deny_open(context, NULL, "/another/local/file", AVIO_FLAG_READ, NULL) == AVERROR(EACCES));
     assert(call.denied_open);
+    RemuxOutput output = { .input = &call, .path = "/owned/private/output.mp4" };
+    context->opaque = &output;
+    assert(reopen_staging(context, NULL, "/another/local/file", AVIO_FLAG_READ, NULL) == AVERROR(EACCES));
+    assert(output.denied_open);
+    output.denied_open = 0;
+    assert(reopen_staging(context, NULL, output.path, AVIO_FLAG_WRITE, NULL) == AVERROR(EACCES));
+    assert(output.denied_open);
     avformat_free_context(context);
     puts("shim: 4 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial)");
     return 0;

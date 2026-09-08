@@ -111,9 +111,13 @@ static uint32_t media_type(enum AVMediaType t) {
 }
 
 static void scan_packets(AVFormatContext *s, Call *call, const BmScanRequest *q, BmScanResult *r);
+static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *q, BmRemuxResult *r);
+static int same_decoder_config(const AVCodecParameters *a, const AVCodecParameters *b);
 
 static uint32_t inspect(const BmRequest *q, BmResult **out,
-                        const BmScanRequest *scan_request, BmScanResult *scan_result) {
+                        const BmScanRequest *scan_request, BmScanResult *scan_result,
+                        const BmRemuxRequest *remux_request, BmRemuxResult *remux_result,
+                        const AVCodecParameters *expected_config) {
     if (!out) return BM_INVALID_REQUEST;
     *out = NULL;
     if (!q || !q->cancelled) return BM_INVALID_REQUEST;
@@ -216,7 +220,12 @@ static uint32_t inspect(const BmRequest *q, BmResult **out,
         if (p->bit_rate > 0) { v->present |= BM_BIT_RATE; v->bit_rate_bps = p->bit_rate; }
         if (p->bits_per_raw_sample > 0) { v->present |= BM_RAW_BITS; v->raw_bit_depth = p->bits_per_raw_sample; }
     }
+    if (expected_config && (s->nb_streams != 1 ||
+        !same_decoder_config(expected_config, s->streams[0]->codecpar))) {
+        fail(r, BM_INVALID_MEDIA, "finalized decoder configuration differs"); goto done;
+    }
     if (scan_request) scan_packets(s, &call, scan_request, scan_result);
+    if (remux_request) remux_packets(s, &call, remux_request, remux_result);
     goto done;
 av_error:
     if (interrupted(&call)) fail(r, BM_CANCELLED, "cancelled during discovery");
@@ -228,6 +237,7 @@ av_error:
     }
 done:
     if (scan_result && r->status != BM_OK) scan_result->status = r->status;
+    if (remux_result && r->status != BM_OK) remux_result->status = r->status;
     av_dict_free(&options);
     avformat_close_input(&s);
     avio_closep(&pb); /* fd protocol owns its dup, never the caller's fd. */
@@ -235,7 +245,7 @@ done:
 }
 
 uint32_t bm_probe_metadata(const BmRequest *q, BmResult **out) {
-    return inspect(q, out, NULL, NULL);
+    return inspect(q, out, NULL, NULL, NULL, NULL, NULL);
 }
 
 void bm_release(BmResult *result) { free(result); }
@@ -339,10 +349,13 @@ uint32_t bm_scan_packets_v1(const BmScanRequest *q, BmScanResult **out) {
     *out = r;
     r->inspection_level = 2;
     BmResult *metadata = NULL;
-    uint32_t status = inspect(&q->input, &metadata, q, r);
+    uint32_t status = inspect(&q->input, &metadata, q, r, NULL, NULL, NULL);
     bm_release(metadata);
     if (status != BM_OK) r->status = status;
     return BM_OK;
 }
 
 void bm_scan_release_v1(BmScanResult *result) { free(result); }
+
+/* Uses the same discovery context, buffered packets, accounting and cleanup. */
+#include "remux.c"

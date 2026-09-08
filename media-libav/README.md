@@ -16,6 +16,10 @@ M3 adds explicit selected-stream packet enumeration and both same-build referenc
 roles to that driver. See [PACKET_SCAN.md](PACKET_SCAN.md) for its contract and
 executable live suite. M1 metadata ABI and behavior remain available.
 
+M5's first transform profile adds only explicit single-stream MP4 copy-remux.
+See [COPY_REMUX.md](COPY_REMUX.md) for staging ownership, timestamp policy,
+bounded encoded-content comparison and the runnable regression command.
+
 ## Build and reproduce
 
 Run from the repository root. At the user's request this M1 now pins **9.0.1**,

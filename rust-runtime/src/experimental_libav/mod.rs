@@ -12,6 +12,8 @@ mod wire;
 pub mod comparison;
 mod scan;
 pub use scan::{PacketScan, PacketSummary, ScanSelection, ScanTerminal, TimestampBounds};
+mod remux;
+pub use remux::{CopyRemuxRequest, CopyRemuxResult};
 
 use crate::MediaError;
 #[cfg(target_os = "linux")]
@@ -115,6 +117,8 @@ pub struct LibavMetadataProbe {
     _library: wire::linux::Library,
     #[cfg(target_os = "linux")]
     scan: Option<scan::Capability>,
+    #[cfg(target_os = "linux")]
+    remux: Option<remux::Capability>,
 }
 
 impl LibavMetadataProbe {
@@ -164,7 +168,9 @@ impl LibavMetadataProbe {
                 )
             };
             let scan = scan::Capability::load(&library).ok();
+            let remux = remux::Capability::load(&library).ok();
             Ok(Self {
+                remux,
                 scan,
                 info,
                 probe,
@@ -413,6 +419,7 @@ fn status_error(status: u32, message: String) -> ProbeError {
         7 => media_error(MediaErrorKind::InvalidMedia, &message),
         8 => media_error(MediaErrorKind::Io, &message),
         9 => ProbeError::Cancelled,
+        11 => media_error(MediaErrorKind::UnsupportedContainerLayout, &message),
         _ => ProbeError::BackendFailure(message),
     }
 }

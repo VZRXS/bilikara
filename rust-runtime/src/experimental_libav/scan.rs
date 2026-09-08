@@ -198,7 +198,7 @@ impl Drop for OwnedScan<'_> {
     }
 }
 #[cfg(target_os = "linux")]
-fn convert(
+pub(super) fn convert(
     r: &super::wire::ScanResult,
     requested: ScanSelection,
 ) -> Result<PacketScan, ProbeError> {

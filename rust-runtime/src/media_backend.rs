@@ -1116,14 +1116,14 @@ fn following_mdat_payload(boxes: &[TopLevelBox], after: u64) -> Result<u64, Medi
 }
 
 #[derive(Debug, Clone, Copy)]
-struct TopLevelBox {
-    start: u64,
-    size: u64,
+pub(crate) struct TopLevelBox {
+    pub(crate) start: u64,
+    pub(crate) size: u64,
     header_size: u64,
-    kind: [u8; 4],
+    pub(crate) kind: [u8; 4],
 }
 
-fn read_box_header(reader: &mut File, limit: u64) -> Result<TopLevelBox, MediaError> {
+pub(crate) fn read_box_header(reader: &mut File, limit: u64) -> Result<TopLevelBox, MediaError> {
     let start = reader
         .stream_position()
         .map_err(|_| MediaError::io("failed to inspect MP4 box"))?;
@@ -2040,6 +2040,20 @@ mod tests {
         assert_eq!(result.source.sample_bytes, result.output.sample_bytes);
         assert!(result.output.fast_start);
         assert!(!cached_audio_requires_refresh(&destination));
+    }
+
+    #[test]
+    #[ignore = "exports the accepted extended AAC fixture for explicit M5 integration"]
+    fn export_extended_aac_fixture_for_m5() {
+        let path = PathBuf::from(
+            std::env::var_os("BILIKARA_M5_EXTENDED_FIXTURE").expect("explicit fixture path"),
+        );
+        assert!(path.is_absolute() && !path.exists());
+        write_he_aac_fixture(&path);
+        assert_eq!(
+            decoder_specific_config_for_test(&path),
+            [0x2b, 0x11, 0x88, 0x00]
+        );
     }
 
     #[test]

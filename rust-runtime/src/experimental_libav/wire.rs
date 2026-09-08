@@ -187,3 +187,29 @@ pub(super) struct ScanResult {
 pub(super) type GetScanInfo = unsafe extern "C" fn(u32, *mut ScanInfo) -> u32;
 pub(super) type Scan = unsafe extern "C" fn(*const ScanRequest, *mut *mut ScanResult) -> u32;
 pub(super) type ScanRelease = unsafe extern "C" fn(*mut ScanResult);
+
+// M5 negotiates its own sizes. M1 and M3 layouts above remain unchanged.
+#[repr(C)]
+pub(super) struct RemuxInfo {
+    pub schema: u32,
+    pub request_size: u32,
+    pub result_size: u32,
+    pub scan_size: u32,
+}
+#[repr(C)]
+pub(super) struct RemuxRequest {
+    pub input: Request,
+    pub media_type: u32,
+    pub staging_path: *const std::ffi::c_char,
+}
+#[repr(C)]
+pub(super) struct RemuxResult {
+    pub status: u32,
+    pub stage: u32,
+    pub finalized: u32,
+    pub configuration_preserved: u32,
+    pub input_scan: ScanResult,
+}
+pub(super) type GetRemuxInfo = unsafe extern "C" fn(u32, *mut RemuxInfo) -> u32;
+pub(super) type Remux = unsafe extern "C" fn(*const RemuxRequest, *mut *mut RemuxResult) -> u32;
+pub(super) type RemuxRelease = unsafe extern "C" fn(*mut RemuxResult);

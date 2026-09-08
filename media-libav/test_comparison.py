@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import tempfile
 import unittest
 
 OPTIONS = None
@@ -371,6 +372,129 @@ class LivePacketScan(LiveComparison):
         self.assertEqual(code, 0)
 
 
+class LiveCopyRemux(LivePacketScan):
+    """M5 adds one explicit transform profile; inherited M1–M3 checks remain."""
+
+    def remux_pair(self, label, source, kind="audio", extra=(), companion=None, keep=None):
+        temporary = OPTIONS.out / "remux-temporary"
+        temporary.mkdir(exist_ok=True)
+        command = [str(OPTIONS.driver), "compare", str(companion or OPTIONS.companion),
+                   str(OPTIONS.prefix), str(source), label, "--copy-remux", kind, *extra]
+        if keep is not None:
+            command += ["--keep-outputs", str(keep)]
+        result = subprocess.run(command, env=dict(os.environ, TMPDIR=str(temporary)),
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+        self.assertLess(len(result.stdout), 128 * 1024)
+        row = json.loads(result.stdout)
+        self.assertEqual(list(temporary.iterdir()), [], "default experiments must release owned outputs")
+        for secret in (str(OPTIONS.out), str(OPTIONS.prefix), str(source), "SECRET_TITLE", "SIGNED_SECRET", "AUTH_SECRET", "COOKIE_SECRET", "ROOM_SECRET"):
+            self.assertNotIn(secret, result.stdout.decode())
+        self.assertEqual(row["operation"], "copy_remux")
+        self.assertEqual(row["inspection"]["media_acceptance"], "not_requested")
+        (OPTIONS.out / (label + ".json")).write_bytes(result.stdout)
+        return result.returncode, row
+
+    def test_remux_real_success_and_extended_configuration(self):
+        summary = []
+        with tempfile.TemporaryDirectory(prefix="m5-fixtures-", dir=OPTIONS.out) as directory:
+            directory = Path(directory)
+            extended = directory / "extended-aac.m4a"
+            self.rust_test("media_backend::tests::export_extended_aac_fixture_for_m5", {
+                "BILIKARA_M5_EXTENDED_FIXTURE": str(extended)}, ignored=True)
+            positive = directory / "positive-start.m4a"
+            reference = subprocess.run([str(OPTIONS.prefix / "bin/ffmpeg"), "-v", "error", "-nostdin",
+                "-copyts", "-itsoffset", "1.234567", "-i", str(OPTIONS.fixtures / "aac.m4a"),
+                "-map", "0:0", "-c", "copy", "-avoid_negative_ts", "disabled", "-use_editlist", "1", "-n", str(positive)],
+                env=dict(os.environ, LD_LIBRARY_PATH=str(OPTIONS.prefix / "lib")),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+            self.assertEqual(reference.returncode, 0)
+            cases = [("h264", OPTIONS.fixtures / "video.mp4", "video", 60, 39),
+                     ("aac", OPTIONS.fixtures / "aac.m4a", "audio", 48, 5),
+                     ("extended-aac", extended, "audio", 4, 4),
+                     ("fragmented", OPTIONS.fragmented_fixture, "audio", 88, 5),
+                     ("positive-start", positive, "audio", 48, 5)]
+            for label, source, kind, count, config_size in cases:
+                with self.subTest(fixture=label):
+                    original = source.read_bytes()
+                    code, row = self.remux_pair("remux-" + label, source, kind)
+                    self.assertEqual(code, 0, row.get("outcome"))
+                    self.assertEqual(row["outcome"], "success")
+                    self.assertTrue(row["same_build"])
+                    native = row["companion"]["result"]
+                    self.assertTrue(native["finalized_and_published"] and native["leading_moov"])
+                    self.assertEqual(row["reference"]["layout"], {"leading_moov": True, "fragmented": False})
+                    self.assertEqual(native["input"]["selected"]["packet_count"], count)
+                    for check in row["content_comparison"].values():
+                        self.assertTrue(check["matches"])
+                        self.assertEqual(check["mismatches"], [])
+                        self.assertEqual(check["configuration_bytes_left"], config_size)
+                        self.assertEqual(check["configuration_bytes_right"], config_size)
+                        self.assertEqual(check["packets_left"], count)
+                        self.assertEqual(check["packets_right"], count)
+                        self.assertEqual(check["max_rounding_us"], 0)
+                    self.assertEqual(source.read_bytes(), original)
+                    if label == "aac":
+                        self.assertEqual(native["input"]["selected"]["dts_ticks"]["min"], -1024)
+                    if label == "positive-start":
+                        self.assertGreater(native["input"]["selected"]["dts_ticks"]["min"], 0)
+                    if label == "extended-aac":
+                        # Accepted fixture uses synthetic packets, not a full
+                        # decoder sample. Retain observed decoder diagnostics.
+                        self.assertTrue(row["reference"]["diagnostics_present"])
+                        self.assertFalse(row["clean_reference_execution"])
+                    else:
+                        self.assertTrue(row["clean_reference_execution"])
+                    summary.append({"fixture_label":row["fixture_label"],"outcome":row["outcome"],
+                        "profile":row["profile"],"content_comparison":row["content_comparison"],
+                        "clean_reference_execution":row["clean_reference_execution"],
+                        "output_bytes":row["output_bytes"],"elapsed_us":row["elapsed_us"]})
+        (OPTIONS.out / "copy-remux-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+    def test_remux_rejections_and_old_capability(self):
+        for label, filename, kind, expected in [
+            ("wrong-kind", "aac.m4a", "video", "media_contract_violation"),
+            ("multi-stream", "av.mp4", "video", "media_contract_violation"),
+            ("missing-mdat", "missing-mdat.m4a", "audio", "invalid_media"),
+            ("truncated", "truncated.mp4", "audio", "invalid_media"),
+            ("unsupported-codec", "flac.mp4", "audio", "unsupported_codec"),
+            ("unsupported-format", "audio.flac", "audio", "unsupported_format")]:
+            with self.subTest(fixture=label):
+                code, row = self.remux_pair("remux-" + label, OPTIONS.fixtures / filename, kind)
+                self.assertEqual(code, 1)
+                self.assertEqual(row["outcome"], expected)
+                self.assertFalse(row.get("companion", {}).get("published", False))
+                self.assertNotIn("reference", row, "no CLI track selection after native contract failure")
+        for label, companion, extra, expected in [
+            ("old", OPTIONS.remux_old_companion, (), "unavailable"),
+            ("missing", OPTIONS.out / "missing-remux.so", (), "unavailable"),
+            ("cancelled", OPTIONS.companion, ("--cancelled",), "cancelled")]:
+            code, row = self.remux_pair("remux-" + label, OPTIONS.fixtures / "aac.m4a", companion=companion, extra=extra)
+            self.assertEqual(code, 1)
+            self.assertEqual(row["outcome"], expected)
+
+    def test_remux_real_publisher_and_fault_lifecycle(self):
+        env = {"BILIKARA_LIBAV_COMPANION":str(OPTIONS.companion),
+               "BILIKARA_LIBAV_FIXTURES":str(OPTIONS.fixtures),
+               "BILIKARA_M5_FAULT_COMPANION":str(OPTIONS.fault_companion),
+               "BILIKARA_M5_OLD_COMPANION":str(OPTIONS.remux_old_companion)}
+        for name in ("live_publication_cancellation_and_late_errors", "live_old_companion_does_not_remux"):
+            self.rust_test("experimental_libav::remux::tests::" + name, env, ignored=True)
+
+    def test_remux_explicit_keep_and_privacy(self):
+        with tempfile.TemporaryDirectory(prefix="m5-keep-", dir=OPTIONS.out) as directory:
+            keep = Path(directory) / "outputs"
+            code, row = self.remux_pair("remux-kept", OPTIONS.fixtures / "aac.m4a", keep=keep)
+            self.assertEqual(code, 0)
+            self.assertTrue(row["outputs_retained"])
+            self.assertEqual(sorted(p.name for p in keep.iterdir()), ["companion.mp4", "reference.mp4"])
+            self.assertNotEqual((keep / "companion.mp4").stat().st_ino, (keep / "reference.mp4").stat().st_ino)
+
+    def test_report_privacy_and_original_m1_invocation(self):
+        super().test_report_privacy_and_original_m1_invocation()
+        code, _ = self.remux_pair("remux-privacy", OPTIONS.out / "FAKE_PRIVATE_PATH_SECRET_TITLE.m4a")
+        self.assertEqual(code, 0)
+
+
 def main():
     global OPTIONS
     parser = argparse.ArgumentParser(description=__doc__)
@@ -379,7 +503,17 @@ def main():
     parser.add_argument("--packet-scan", action="store_true", help="M3 live suite including inherited M2 tests")
     parser.add_argument("--old-companion", type=Path)
     parser.add_argument("--shim-test", type=Path)
+    parser.add_argument("--copy-remux", action="store_true", help="M5 suite including inherited M1–M3 tests")
+    parser.add_argument("--remux-old-companion", type=Path)
+    parser.add_argument("--fault-companion", type=Path)
+    parser.add_argument("--fragmented-fixture", type=Path)
     OPTIONS = parser.parse_args()
+    if OPTIONS.copy_remux:
+        OPTIONS.packet_scan = True
+        for name in ("remux_old_companion", "fault_companion", "fragmented_fixture"):
+            path = getattr(OPTIONS, name)
+            if path is None or not path.is_absolute() or not path.is_file():
+                parser.error(name + " required for M5; no skipped live acceptance")
     if OPTIONS.packet_scan:
         for name in ("old_companion", "shim_test"):
             path = getattr(OPTIONS, name)
@@ -395,7 +529,7 @@ def main():
     if OPTIONS.out.resolve().is_relative_to(repo):
         parser.error("--out must be outside the repository")
     OPTIONS.out.mkdir(parents=True, exist_ok=True)
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LivePacketScan if OPTIONS.packet_scan else LiveComparison)
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LiveCopyRemux if OPTIONS.copy_remux else LivePacketScan if OPTIONS.packet_scan else LiveComparison)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     (OPTIONS.out / "live-results.json").write_text(json.dumps({"tests_run": result.testsRun,
         "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped),

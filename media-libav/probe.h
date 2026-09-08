@@ -109,4 +109,27 @@ typedef struct {
 BM_EXPORT uint32_t bm_scan_info_v1(uint32_t size, BmScanInfo *info);
 BM_EXPORT uint32_t bm_scan_packets_v1(const BmScanRequest *request, BmScanResult **result);
 BM_EXPORT void bm_scan_release_v1(BmScanResult *result);
+
+/* M5: independent optional schema, never an extension of an M1/M3 struct.
+ * Rust owns a private, empty regular staging file in an exclusive directory.
+ * Only this path may be written/reopened; the public destination is NOT passed.
+ * No AV types, paths or codec bytes are returned. No publication occurs here. */
+#define BM_UNSUPPORTED_LAYOUT 11u
+typedef struct {
+    uint32_t schema, request_size, result_size, scan_size;
+} BmRemuxInfo;
+typedef struct {
+    BmRequest input;
+    uint32_t media_type;
+    const char *staging_path; /* borrowed NUL-terminated absolute local path */
+} BmRemuxRequest;
+typedef struct {
+    uint32_t status, stage, finalized, configuration_preserved;
+    /* stages: 0 discovery, 1 contract, 2 header, 3 packets, 4 trailer,
+     * 5 close, 6 configuration check, 7 complete (still unpublished). */
+    BmScanResult input_scan;
+} BmRemuxResult;
+BM_EXPORT uint32_t bm_remux_info_v1(uint32_t size, BmRemuxInfo *info);
+BM_EXPORT uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *request, BmRemuxResult **result);
+BM_EXPORT void bm_remux_release_v1(BmRemuxResult *result);
 #endif

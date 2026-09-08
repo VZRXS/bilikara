@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 #[path = "packet_scan.rs"]
 mod packet_scan;
+#[path = "remux.rs"]
+mod remux;
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 extern "C" fn cancel(_: libc::c_int) {
@@ -71,6 +73,15 @@ fn capture_with_diagnostics(
     timeout: Duration,
     diagnostics: bool,
 ) -> Result<Output, Outcome> {
+    capture_limited(command, cancelled, timeout, diagnostics, MAX_OUTPUT)
+}
+fn capture_limited(
+    command: &mut Command,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    diagnostics: bool,
+    limit: usize,
+) -> Result<Output, Outcome> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(Outcome::Cancelled);
     }
@@ -122,7 +133,7 @@ fn capture_with_diagnostics(
                 Ok(0) => errors_done = true,
                 Ok(n) => {
                     diagnostic_bytes += n;
-                    if diagnostic_bytes > MAX_OUTPUT {
+                    if diagnostic_bytes > limit {
                         return Err(Outcome::InvalidOutput);
                     }
                 }
@@ -145,7 +156,7 @@ fn capture_with_diagnostics(
                 }
             }
             Ok(n) => {
-                if bytes.len() + n > MAX_OUTPUT {
+                if bytes.len() + n > limit {
                     return Err(Outcome::InvalidOutput);
                 }
                 bytes.extend_from_slice(&buffer[..n]);
@@ -208,6 +219,8 @@ struct Args {
     repeat: u32,
     timeout: Duration,
     scan: Option<bilikara_runtime::experimental_libav::ScanSelection>,
+    remux: Option<ExpectedMediaKind>,
+    keep_outputs: Option<PathBuf>,
 }
 fn args(args: &[OsString]) -> Option<Args> {
     if args.len() < 4 {
@@ -232,6 +245,8 @@ fn args(args: &[OsString]) -> Option<Args> {
         repeat: 1,
         timeout: Duration::from_secs(5),
         scan: None,
+        remux: None,
+        keep_outputs: None,
     };
     if !result.companion.is_absolute()
         || !result.prefix.is_absolute()
@@ -244,6 +259,26 @@ fn args(args: &[OsString]) -> Option<Args> {
     let mut args = args[4..].iter();
     while let Some(arg) = args.next() {
         match arg.to_str()? {
+            "--copy-remux" => {
+                if result.remux.is_some() {
+                    return None;
+                }
+                result.remux = Some(match args.next()?.to_str()? {
+                    "audio" => ExpectedMediaKind::Audio,
+                    "video" => ExpectedMediaKind::Video,
+                    _ => return None,
+                });
+            }
+            "--keep-outputs" => {
+                if result.keep_outputs.is_some() {
+                    return None;
+                }
+                let path = PathBuf::from(args.next()?);
+                if !path.is_absolute() {
+                    return None;
+                }
+                result.keep_outputs = Some(path);
+            }
             "--scan-stream" => {
                 if scan_index.is_some() {
                     return None;
@@ -294,13 +329,18 @@ fn args(args: &[OsString]) -> Option<Args> {
         (None, None) => {}
         _ => return None,
     }
+    if (result.remux.is_some() && (result.scan.is_some() || result.pure.is_some()))
+        || (result.keep_outputs.is_some() && (result.remux.is_none() || result.repeat != 1))
+    {
+        return None;
+    }
     Some(result)
 }
 
 pub fn run(arguments: &[OsString]) -> i32 {
     let Some(args) = args(arguments) else {
         eprintln!(
-            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled] [--scan-stream INDEX --scan-kind audio|video]"
+            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video | --scan-stream INDEX --scan-kind audio|video | --copy-remux audio|video [--keep-outputs /absolute/NEW-directory]] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled]"
         );
         return 2;
     };
@@ -336,6 +376,15 @@ pub fn run(arguments: &[OsString]) -> i32 {
         }
     });
     let reference_identity_us = setup.elapsed().as_micros();
+    if args.remux.is_some() {
+        return remux::run(
+            &args,
+            &probe,
+            &reference_build,
+            load_us,
+            reference_identity_us,
+        );
+    }
     if args.scan.is_some() {
         return packet_scan::run(
             &args,

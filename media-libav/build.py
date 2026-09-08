@@ -52,6 +52,12 @@ def main():
         test_command[test_command.index(str(out / "libbilikara_media_libav.so"))] = str(out / "test_shim")
         subprocess.run(test_command, check=True)
         subprocess.run([str(out / "test_shim")], check=True)
+        # Private fault-injection companion for testing the real Rust staging /
+        # publisher around native late failures. Never loaded by normal calls.
+        private_command = list(command)
+        private_command[private_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
+        private_command[private_command.index(str(out / "libbilikara_media_libav.so"))] = str(out / "libbilikara_media_libav_test.so")
+        subprocess.run(private_command, check=True)
     (out / "build-info.json").write_text(json.dumps(facts, indent=2) + "\n")
     print(out / "libbilikara_media_libav.so")
 
