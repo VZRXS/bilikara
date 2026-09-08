@@ -143,3 +143,47 @@ pub(super) mod linux {
         }
     }
 }
+
+// Independent additive scan schema; never enlarge/read the M1 Info or result.
+#[repr(C)]
+pub(super) struct ScanInfo {
+    pub schema: u32,
+    pub request_size: u32,
+    pub result_size: u32,
+    pub summary_size: u32,
+}
+#[repr(C)]
+pub(super) struct ScanRequest {
+    pub input: Request,
+    pub stream_index: u32,
+    pub media_type: u32,
+}
+#[repr(C)]
+pub(super) struct PacketSummary {
+    pub index: u32,
+    pub media_type: u32,
+    pub present: u32,
+    pub codec: Text<128>,
+    pub time_base_num: i32,
+    pub time_base_den: i32,
+    pub packet_count: u64,
+    pub payload_bytes: u64,
+    pub corrupt_packets: u64,
+    pub pts_min: i64,
+    pub pts_max: i64,
+    pub dts_min: i64,
+    pub dts_max: i64,
+}
+#[repr(C)]
+pub(super) struct ScanResult {
+    pub status: u32,
+    pub inspection_level: u32,
+    pub terminal: u32,
+    pub selected_count: u32,
+    pub demuxed_packets: u64,
+    pub incidental_corrupt_packets: u64,
+    pub selected: PacketSummary,
+}
+pub(super) type GetScanInfo = unsafe extern "C" fn(u32, *mut ScanInfo) -> u32;
+pub(super) type Scan = unsafe extern "C" fn(*const ScanRequest, *mut *mut ScanResult) -> u32;
+pub(super) type ScanRelease = unsafe extern "C" fn(*mut ScanResult);

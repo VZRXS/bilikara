@@ -12,6 +12,10 @@ subcommand. See [COMPARISON.md](COMPARISON.md) for the paired runner, semantic
 field contract, privacy rules and live acceptance command. The two-argument M1
 invocation below keeps its original behavior.
 
+M3 adds explicit selected-stream packet enumeration and both same-build reference
+roles to that driver. See [PACKET_SCAN.md](PACKET_SCAN.md) for its contract and
+executable live suite. M1 metadata ABI and behavior remain available.
+
 ## Build and reproduce
 
 Run from the repository root. At the user's request this M1 now pins **9.0.1**,

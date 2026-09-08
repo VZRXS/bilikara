@@ -83,6 +83,7 @@ impl Observation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    MatchingComparablePacketScan,
     MatchingComparableMetadata,
     SemanticMismatch,
     DepthOrContractDifference,
@@ -600,6 +601,58 @@ impl ReferenceBuild {
         result.identity()?;
         Ok(result)
     }
+    /// Pinned ffmpeg -version structure only; never interpret media diagnostics.
+    pub fn parse_ffmpeg(bytes: &[u8]) -> Result<Self, Outcome> {
+        let text = std::str::from_utf8(bytes).map_err(|_| Outcome::InvalidOutput)?;
+        let version = text
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("ffmpeg version "))
+            .and_then(|l| l.split_whitespace().next())
+            .ok_or(Outcome::InvalidOutput)?
+            .to_owned();
+        let configuration = text
+            .lines()
+            .find_map(|l| l.strip_prefix("configuration: "))
+            .filter(|l| l.len() <= 2048)
+            .ok_or(Outcome::InvalidOutput)?
+            .to_owned();
+        let mut libraries = [0; 3];
+        for (i, name) in ["libavformat", "libavcodec", "libavutil"]
+            .iter()
+            .enumerate()
+        {
+            let line = text
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .ok_or(Outcome::InvalidOutput)?;
+            let (build, runtime) = line.split_once('/').ok_or(Outcome::InvalidOutput)?;
+            let parse = |s: &str| -> Result<u32, Outcome> {
+                let v: Vec<u32> = s
+                    .split('.')
+                    .map(|n| n.trim().parse().map_err(|_| Outcome::InvalidOutput))
+                    .collect::<Result<_, _>>()?;
+                if v.len() != 3 || v.iter().any(|n| *n > 255) {
+                    return Err(Outcome::InvalidOutput);
+                }
+                Ok(v[0] << 16 | v[1] << 8 | v[2])
+            };
+            libraries[i] = parse(build)?;
+            if libraries[i] != parse(runtime)? {
+                return Err(Outcome::Unavailable);
+            }
+        }
+        let result = Self {
+            version,
+            libraries,
+            configuration,
+        };
+        result.ffmpeg_identity()?;
+        Ok(result)
+    }
+    pub fn ffmpeg_identity(&self) -> Result<Identity, Outcome> {
+        identity("ffmpeg", &self.version, self.libraries, &self.configuration)
+    }
     pub fn matches(&self, info: &BackendInfo) -> bool {
         let checks = self.checks(info);
         checks.source_version
@@ -629,6 +682,8 @@ impl ReferenceBuild {
         )
     }
 }
+
+pub mod packet_scan;
 
 // Narrow reference adapter. It never serializes the parsed JSON tree.
 fn integer(value: &Value) -> Result<Option<i64>, Outcome> {

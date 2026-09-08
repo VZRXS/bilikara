@@ -110,7 +110,10 @@ static uint32_t media_type(enum AVMediaType t) {
     }
 }
 
-uint32_t bm_probe_metadata(const BmRequest *q, BmResult **out) {
+static void scan_packets(AVFormatContext *s, Call *call, const BmScanRequest *q, BmScanResult *r);
+
+static uint32_t inspect(const BmRequest *q, BmResult **out,
+                        const BmScanRequest *scan_request, BmScanResult *scan_result) {
     if (!out) return BM_INVALID_REQUEST;
     *out = NULL;
     if (!q || !q->cancelled) return BM_INVALID_REQUEST;
@@ -213,6 +216,7 @@ uint32_t bm_probe_metadata(const BmRequest *q, BmResult **out) {
         if (p->bit_rate > 0) { v->present |= BM_BIT_RATE; v->bit_rate_bps = p->bit_rate; }
         if (p->bits_per_raw_sample > 0) { v->present |= BM_RAW_BITS; v->raw_bit_depth = p->bits_per_raw_sample; }
     }
+    if (scan_request) scan_packets(s, &call, scan_request, scan_result);
     goto done;
 av_error:
     if (interrupted(&call)) fail(r, BM_CANCELLED, "cancelled during discovery");
@@ -223,10 +227,122 @@ av_error:
         fail(r, error_status(ret), message);
     }
 done:
+    if (scan_result && r->status != BM_OK) scan_result->status = r->status;
     av_dict_free(&options);
     avformat_close_input(&s);
     avio_closep(&pb); /* fd protocol owns its dup, never the caller's fd. */
     return BM_OK;
 }
 
+uint32_t bm_probe_metadata(const BmRequest *q, BmResult **out) {
+    return inspect(q, out, NULL, NULL);
+}
+
 void bm_release(BmResult *result) { free(result); }
+
+uint32_t bm_scan_info_v1(uint32_t size, BmScanInfo *info) {
+    if (!info || size != sizeof(*info) || !compatible()) return BM_UNAVAILABLE;
+    *info = (BmScanInfo){BM_SCAN_SCHEMA, sizeof(BmScanRequest), sizeof(BmScanResult), sizeof(BmPacketSummary)};
+    return BM_OK;
+}
+
+static void bound_timestamp(uint32_t *present, uint32_t bit, int64_t value,
+                            int64_t *min, int64_t *max) {
+    if (value == AV_NOPTS_VALUE) return;
+    if (!(*present & bit)) { *min = *max = value; *present |= bit; }
+    else { if (value < *min) *min = value; if (value > *max) *max = value; }
+}
+
+/* Transactional checked accumulation: never wrap, never retain packet storage.
+ * Key/discard flags and presentation reordering are not corruption evidence. */
+static uint32_t accumulate(BmScanResult *r, const AVPacket *packet) {
+    BmPacketSummary *v = &r->selected;
+    int selected = packet->stream_index >= 0 && (uint32_t)packet->stream_index == v->index;
+    int corrupt = !!(packet->flags & AV_PKT_FLAG_CORRUPT);
+    if (packet->size < 0 || r->demuxed_packets == UINT64_MAX ||
+        (!selected && corrupt && r->incidental_corrupt_packets == UINT64_MAX) ||
+        (selected && (v->packet_count == UINT64_MAX ||
+                      v->payload_bytes > UINT64_MAX - (uint64_t)packet->size ||
+                      (corrupt && v->corrupt_packets == UINT64_MAX)))) return BM_BACKEND_FAILURE;
+    r->demuxed_packets++;
+    if (!selected) { r->incidental_corrupt_packets += corrupt; return BM_OK; }
+    v->packet_count++;
+    v->payload_bytes += (uint64_t)packet->size;
+    v->corrupt_packets += corrupt;
+    if (v->present & BM_SCAN_BASE) {
+        bound_timestamp(&v->present, BM_SCAN_PTS, packet->pts, &v->pts_min, &v->pts_max);
+        bound_timestamp(&v->present, BM_SCAN_DTS, packet->dts, &v->dts_min, &v->dts_max);
+    }
+    return BM_OK;
+}
+
+static void scan_packets(AVFormatContext *s, Call *call, const BmScanRequest *q, BmScanResult *r) {
+    AVStream *stream = NULL;
+    for (unsigned i = 0; i < s->nb_streams; i++) {
+        if (s->streams[i]->index >= 0 && (uint32_t)s->streams[i]->index == q->stream_index)
+            stream = s->streams[i];
+    }
+    if (!stream || media_type(stream->codecpar->codec_type) != q->media_type) {
+        r->status = BM_INVALID_REQUEST; return;
+    }
+    BmPacketSummary *v = &r->selected;
+    v->index = q->stream_index;
+    v->media_type = q->media_type;
+    r->selected_count = 1;
+    if (stream->codecpar->codec_id != AV_CODEC_ID_NONE &&
+        !COPY(v->codec, avcodec_get_name(stream->codecpar->codec_id))) {
+        r->status = BM_BACKEND_FAILURE; return;
+    }
+    if (stream->time_base.num > 0 && stream->time_base.den > 0) {
+        v->present = BM_SCAN_BASE;
+        v->time_base_num = stream->time_base.num;
+        v->time_base_den = stream->time_base.den;
+    }
+    AVPacket *packet = av_packet_alloc();
+    if (!packet) { r->status = BM_BACKEND_FAILURE; return; }
+    /* find_stream_info keeps its discovery packets buffered (no NOBUFFER flag).
+     * Continue on this fresh per-call context without seeking/flushing/reopening:
+     * av_read_frame first drains that prefix exactly once, then reads to EOF. */
+    for (;;) {
+        if (interrupted(call)) { r->status = BM_CANCELLED; break; }
+        int ret = av_read_frame(s, packet);
+        if (interrupted(call)) { r->status = BM_CANCELLED; break; }
+        if (call->denied_open) { r->status = BM_CONTRACT; break; }
+        if (ret < 0) {
+            /* A demuxer may return EOF while AVIO retains an I/O error. */
+            if (ret == AVERROR_EOF && s->pb && s->pb->error < 0 && s->pb->error != AVERROR_EOF)
+                ret = s->pb->error;
+            if (ret == AVERROR_EOF) {
+                r->terminal = BM_SCAN_EOF;
+                r->status = (!v->packet_count || v->corrupt_packets || r->incidental_corrupt_packets)
+                    ? BM_INVALID_MEDIA : BM_OK;
+            } else r->status = error_status(ret);
+            break;
+        }
+        if (packet->stream_index < 0 || (unsigned)packet->stream_index >= s->nb_streams) {
+            r->status = BM_BACKEND_FAILURE; break;
+        }
+        r->status = accumulate(r, packet);
+        av_packet_unref(packet);
+        if (r->status != BM_OK) break;
+    }
+    av_packet_free(&packet); /* also unrefs packets on every interrupted/error exit */
+}
+
+uint32_t bm_scan_packets_v1(const BmScanRequest *q, BmScanResult **out) {
+    if (!out) return BM_INVALID_REQUEST;
+    *out = NULL;
+    if (!q || !q->input.cancelled || (q->media_type != 1 && q->media_type != 2)) return BM_INVALID_REQUEST;
+    if (!compatible()) return BM_UNAVAILABLE;
+    BmScanResult *r = calloc(1, sizeof(*r));
+    if (!r) return BM_BACKEND_FAILURE;
+    *out = r;
+    r->inspection_level = 2;
+    BmResult *metadata = NULL;
+    uint32_t status = inspect(&q->input, &metadata, q, r);
+    bm_release(metadata);
+    if (status != BM_OK) r->status = status;
+    return BM_OK;
+}
+
+void bm_scan_release_v1(BmScanResult *result) { free(result); }

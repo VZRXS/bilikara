@@ -77,4 +77,36 @@ BM_EXPORT uint32_t bm_get_info(uint32_t size, BmInfo *info);
  * Otherwise inspect result->status and release even error/cancelled results. */
 BM_EXPORT uint32_t bm_probe_metadata(const BmRequest *request, BmResult **result);
 BM_EXPORT void bm_release(BmResult *result);
+
+/* Additive, independently sized scan schema. M1 structs/exports stay unchanged;
+ * absence of these symbols means scanning is unavailable, not a CLI fallback.
+ * One exact audio/video stream per call, including in a muxed input. */
+#define BM_SCAN_SCHEMA 1u
+#define BM_SCAN_INCOMPLETE 0u
+#define BM_SCAN_EOF 1u
+#define BM_SCAN_PTS 1u
+#define BM_SCAN_DTS 2u
+#define BM_SCAN_BASE 4u
+typedef struct {
+    uint32_t schema, request_size, result_size, summary_size;
+} BmScanInfo;
+typedef struct {
+    BmRequest input;
+    uint32_t stream_index, media_type; /* exactly 1 video or 2 audio */
+} BmScanRequest;
+typedef struct {
+    uint32_t index, media_type, present;
+    BmText codec;
+    int32_t time_base_num, time_base_den;
+    uint64_t packet_count, payload_bytes, corrupt_packets;
+    int64_t pts_min, pts_max, dts_min, dts_max; /* ticks, not decode end */
+} BmPacketSummary;
+typedef struct {
+    uint32_t status, inspection_level, terminal, selected_count; /* depth 2 */
+    uint64_t demuxed_packets, incidental_corrupt_packets;
+    BmPacketSummary selected; /* valid only when selected_count == 1 */
+} BmScanResult;
+BM_EXPORT uint32_t bm_scan_info_v1(uint32_t size, BmScanInfo *info);
+BM_EXPORT uint32_t bm_scan_packets_v1(const BmScanRequest *request, BmScanResult **result);
+BM_EXPORT void bm_scan_release_v1(BmScanResult *result);
 #endif

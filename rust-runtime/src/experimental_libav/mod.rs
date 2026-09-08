@@ -10,6 +10,8 @@ mod wire;
 
 /// Pure developer comparison semantics; never consulted by normal media work.
 pub mod comparison;
+mod scan;
+pub use scan::{PacketScan, PacketSummary, ScanSelection, ScanTerminal, TimestampBounds};
 
 use crate::MediaError;
 #[cfg(target_os = "linux")]
@@ -54,6 +56,7 @@ pub struct BackendInfo {
 #[serde(rename_all = "snake_case")]
 pub enum InspectionLevel {
     StreamMetadata,
+    PacketScan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -110,6 +113,8 @@ pub struct LibavMetadataProbe {
     release: wire::Release,
     #[cfg(target_os = "linux")]
     _library: wire::linux::Library,
+    #[cfg(target_os = "linux")]
+    scan: Option<scan::Capability>,
 }
 
 impl LibavMetadataProbe {
@@ -158,7 +163,9 @@ impl LibavMetadataProbe {
                     library.symbol(c"bm_release")?,
                 )
             };
+            let scan = scan::Capability::load(&library).ok();
             Ok(Self {
+                scan,
                 info,
                 probe,
                 release,
@@ -206,32 +213,12 @@ impl LibavMetadataProbe {
         source: &Path,
         callback: &Callback<'_>,
     ) -> Result<Metadata, ProbeError> {
-        use std::fs::OpenOptions;
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
         use std::sync::atomic::Ordering;
         if callback.flag.load(Ordering::Relaxed) {
             return Err(ProbeError::Cancelled);
         }
-        if !source.is_absolute() {
-            return Err(media_error(
-                MediaErrorKind::InvalidRequest,
-                "source must be an absolute local path",
-            ));
-        }
-        // O_NONBLOCK ensures a racing FIFO substitution cannot block open. The
-        // opened descriptor, not a later pathname lookup, must be a regular file.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(source)
-            .map_err(input_error)?;
-        if !file.metadata().map_err(input_error)?.is_file() {
-            return Err(media_error(
-                MediaErrorKind::InvalidRequest,
-                "source must be a regular file",
-            ));
-        }
+        let file = open_input(source)?;
         let request = wire::Request {
             fd: file.as_raw_fd(),
             cancelled: cancellation_callback,
@@ -257,6 +244,31 @@ impl LibavMetadataProbe {
         // SAFETY: negotiated v1 aggregate, exclusively owned until guard drops.
         convert_metadata(unsafe { &*owned.pointer }, &self.info.backend)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !source.is_absolute() {
+        return Err(media_error(
+            MediaErrorKind::InvalidRequest,
+            "source must be an absolute local path",
+        ));
+    }
+    // Preserve M1's descriptor-based check, including racing FIFO substitutions.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(source)
+        .map_err(input_error)?;
+    if !file.metadata().map_err(input_error)?.is_file() {
+        return Err(media_error(
+            MediaErrorKind::InvalidRequest,
+            "source must be a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 #[cfg(target_os = "linux")]

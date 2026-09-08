@@ -12,6 +12,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "packet_scan.rs"]
+mod packet_scan;
+
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 extern "C" fn cancel(_: libc::c_int) {
     CANCELLED.store(true, Ordering::Relaxed);
@@ -53,11 +56,20 @@ impl Drop for OwnedChild {
 struct Output {
     bytes: Vec<u8>,
     success: bool,
+    diagnostic_bytes: usize,
 }
 fn capture(
     command: &mut Command,
     cancelled: &AtomicBool,
     timeout: Duration,
+) -> Result<Output, Outcome> {
+    capture_with_diagnostics(command, cancelled, timeout, false)
+}
+fn capture_with_diagnostics(
+    command: &mut Command,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    diagnostics: bool,
 ) -> Result<Output, Outcome> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(Outcome::Cancelled);
@@ -65,7 +77,11 @@ fn capture(
     let start = Instant::now();
     let child = command
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(if diagnostics {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .spawn()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -76,15 +92,20 @@ fn capture(
         })?;
     let mut child = OwnedChild(child);
     let mut pipe = child.0.stdout.take().ok_or(Outcome::ExecutionError)?;
+    let mut errors = child.0.stderr.take();
     // Linux-only example: nonblocking drain keeps output bounded and permits
     // cancellation/deadline checks without an extra reader thread.
     unsafe {
-        let flags = libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL);
-        if flags < 0 || libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return Err(Outcome::ExecutionError);
+        for fd in std::iter::once(pipe.as_raw_fd()).chain(errors.as_ref().map(AsRawFd::as_raw_fd)) {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return Err(Outcome::ExecutionError);
+            }
         }
     }
     let mut bytes = Vec::new();
+    let mut diagnostic_bytes = 0;
+    let mut errors_done = errors.is_none();
     let mut status = None;
     loop {
         if cancelled.load(Ordering::Relaxed) {
@@ -94,12 +115,32 @@ fn capture(
             return Err(Outcome::Timeout);
         }
         let mut buffer = [0; 4096];
+        // Drain a bounded chunk from both pipes each iteration. Retain only a
+        // diagnostic byte count, never stderr text or a localized classifier.
+        if let Some(errors) = errors.as_mut() {
+            match errors.read(&mut buffer) {
+                Ok(0) => errors_done = true,
+                Ok(n) => {
+                    diagnostic_bytes += n;
+                    if diagnostic_bytes > MAX_OUTPUT {
+                        return Err(Outcome::InvalidOutput);
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => return Err(Outcome::ExecutionError),
+            }
+        }
         match pipe.read(&mut buffer) {
             Ok(0) => {
-                if let Some(status) = status {
+                if let Some(status) = status.filter(|_| errors_done) {
                     return Ok(Output {
                         bytes,
                         success: status,
+                        diagnostic_bytes,
                     });
                 }
             }
@@ -143,15 +184,19 @@ fn file(path: &Path) -> Result<File, Outcome> {
     }
     Ok(file)
 }
-fn command(prefix: &Path) -> Command {
-    let mut command = Command::new(prefix.join("bin/ffprobe"));
+fn tool_command(prefix: &Path, tool: &str) -> Command {
+    let mut command = Command::new(prefix.join("bin").join(tool));
     command
         .env("LD_LIBRARY_PATH", prefix.join("lib"))
         .env_remove("FFREPORT")
         .env_remove("LD_PRELOAD")
         .env_remove("LD_AUDIT")
-        .stdin(Stdio::null())
-        .args(["-v", "error", "-of", "json"]);
+        .stdin(Stdio::null());
+    command
+}
+fn command(prefix: &Path) -> Command {
+    let mut command = tool_command(prefix, "ffprobe");
+    command.args(["-v", "error", "-of", "json"]);
     command
 }
 struct Args {
@@ -162,6 +207,7 @@ struct Args {
     pure: Option<ExpectedMediaKind>,
     repeat: u32,
     timeout: Duration,
+    scan: Option<bilikara_runtime::experimental_libav::ScanSelection>,
 }
 fn args(args: &[OsString]) -> Option<Args> {
     if args.len() < 4 {
@@ -185,6 +231,7 @@ fn args(args: &[OsString]) -> Option<Args> {
         pure: None,
         repeat: 1,
         timeout: Duration::from_secs(5),
+        scan: None,
     };
     if !result.companion.is_absolute()
         || !result.prefix.is_absolute()
@@ -192,9 +239,27 @@ fn args(args: &[OsString]) -> Option<Args> {
     {
         return None;
     }
+    let mut scan_index = None;
+    let mut scan_kind = None;
     let mut args = args[4..].iter();
     while let Some(arg) = args.next() {
         match arg.to_str()? {
+            "--scan-stream" => {
+                if scan_index.is_some() {
+                    return None;
+                }
+                scan_index = Some(args.next()?.to_str()?.parse::<u32>().ok()?);
+            }
+            "--scan-kind" => {
+                if scan_kind.is_some() {
+                    return None;
+                }
+                scan_kind = Some(match args.next()?.to_str()? {
+                    "audio" => ExpectedMediaKind::Audio,
+                    "video" => ExpectedMediaKind::Video,
+                    _ => return None,
+                });
+            }
             "--pure-rust" => {
                 result.pure = Some(match args.next()?.to_str()? {
                     "audio" => ExpectedMediaKind::Audio,
@@ -219,13 +284,23 @@ fn args(args: &[OsString]) -> Option<Args> {
             _ => return None,
         }
     }
+    match (scan_index, scan_kind) {
+        (Some(stream_index), Some(expected_kind)) if result.pure.is_none() => {
+            result.scan = Some(bilikara_runtime::experimental_libav::ScanSelection {
+                stream_index,
+                expected_kind,
+            });
+        }
+        (None, None) => {}
+        _ => return None,
+    }
     Some(result)
 }
 
 pub fn run(arguments: &[OsString]) -> i32 {
     let Some(args) = args(arguments) else {
         eprintln!(
-            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled]"
+            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled] [--scan-stream INDEX --scan-kind audio|video]"
         );
         return 2;
     };
@@ -261,6 +336,15 @@ pub fn run(arguments: &[OsString]) -> i32 {
         }
     });
     let reference_identity_us = setup.elapsed().as_micros();
+    if args.scan.is_some() {
+        return packet_scan::run(
+            &args,
+            &probe,
+            &reference_build,
+            load_us,
+            reference_identity_us,
+        );
+    }
     let same_build = probe
         .as_ref()
         .ok()
@@ -365,6 +449,23 @@ pub fn run(arguments: &[OsString]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scan_reference_diagnostics_are_bounded_and_never_retained() {
+        let flag = AtomicBool::new(false);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "printf summary; printf SECRET_TITLE >&2"]);
+        let output =
+            capture_with_diagnostics(&mut cmd, &flag, Duration::from_secs(2), true).unwrap();
+        assert!(output.success);
+        assert_eq!(output.bytes, b"summary");
+        assert_eq!(output.diagnostic_bytes, 12);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exec /usr/bin/head -c 100000 /dev/zero >&2"]);
+        assert_eq!(
+            capture_with_diagnostics(&mut cmd, &flag, Duration::from_secs(2), true).err(),
+            Some(Outcome::InvalidOutput)
+        );
+    }
     #[test]
     fn reference_deadline_cancellation_output_bound_and_reaping() {
         let dir = std::env::temp_dir().join(format!("bilikara-m2-child-{}", std::process::id()));
