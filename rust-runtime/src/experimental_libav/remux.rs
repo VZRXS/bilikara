@@ -260,7 +260,9 @@ impl Scratch {
                 ".bilikara-remux-{:032x}",
                 u128::from_ne_bytes(nonce)
             ));
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
+            #[cfg(target_os = "linux")]
+            let mut builder = builder;
             #[cfg(target_os = "linux")]
             builder.mode(0o700);
             match builder.create(&directory) {

@@ -22,14 +22,31 @@ $redist = @(Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC*.CR
 if ($redist.Count -ne 1) { throw 'Expected one selected MSVC x64 redistributable directory' }
 & (Join-Path $env:pythonLocation 'python.exe') scripts/windows_libav_preview.py collect $prefix $redist[0].FullName (Join-Path $env:SystemRoot 'System32')
 if ($LASTEXITCODE -ne 0) { throw 'PE dependency collection failed' }
-# Preserve the installed toolset's redistribution terms and list, without
-# assuming an IDE edition or redistributable major version.
-$licenses = @(Get-ChildItem (Join-Path $env:VSINSTALLDIR 'Licenses/1033/*/license.txt') -File)
-if ($licenses.Count -eq 0) { throw 'Installed MSVC license record unavailable' }
-foreach ($license in $licenses) {
-    Copy-Item $license.FullName (Join-Path $prefix ("licenses/MSVC-" + $license.Directory.Name + '-License.txt'))
+# Resolve the product terms from this installation's catalog: recent VS
+# installers link the EULA rather than installing Licenses/*/license.txt.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+$instances = @(& $vswhere -all -products '*' -format json | ConvertFrom-Json | Where-Object {
+    $_.installationPath.TrimEnd([char[]]'\/') -eq $env:VSINSTALLDIR.TrimEnd([char[]]'\/')
+})
+if ($LASTEXITCODE -ne 0 -or $instances.Count -ne 1) { throw 'Expected the selected Visual Studio instance' }
+$instance = $instances[0]
+$catalogPath = Join-Path $env:ProgramData "Microsoft/VisualStudio/Packages/_Instances/$($instance.instanceId)/catalog.json"
+$catalog = Get-Content -LiteralPath $catalogPath -Raw -Encoding utf8 | ConvertFrom-Json
+$licenseUrls = @($catalog.packages | Where-Object { $_.id -eq $instance.productId } |
+    ForEach-Object { $_.localizedResources } | Where-Object { $_.language -eq 'en-us' } |
+    ForEach-Object { $_.license } | Sort-Object -Unique)
+if ($licenseUrls.Count -ne 1 -or $licenseUrls[0] -notmatch '^https://(go\.microsoft\.com|visualstudio\.microsoft\.com)/') {
+    throw 'Installed Visual Studio product license URL unavailable'
 }
-$redistList = Join-Path $env:VSINSTALLDIR 'redist.txt'
+$licenseFile = Join-Path $prefix 'licenses/MSVC-Product-License.html'
+Invoke-WebRequest -Uri $licenseUrls[0] -OutFile $licenseFile
+if ((Get-Item -LiteralPath $licenseFile).Length -eq 0) { throw 'Empty Visual Studio product license' }
+@{
+    product_id = $instance.productId
+    installation_version = $instance.installationVersion
+    license_url = $licenseUrls[0]
+} | ConvertTo-Json | Set-Content (Join-Path $prefix 'records/msvc-license-source.json') -Encoding utf8
+$redistList = Join-Path $env:VSINSTALLDIR 'Licenses/1033/Redist.txt'
 if (-not (Test-Path $redistList)) { throw 'Installed MSVC redistribution list unavailable' }
 Copy-Item $redistList (Join-Path $prefix 'licenses/MSVC-Redist.txt')
 @(

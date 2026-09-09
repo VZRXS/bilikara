@@ -369,7 +369,9 @@ pub(super) fn run(
 }
 
 fn private_directory(path: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(target_os = "linux")]
+    let mut builder = builder;
     #[cfg(target_os = "linux")]
     builder.mode(0o700);
     builder.create(path)

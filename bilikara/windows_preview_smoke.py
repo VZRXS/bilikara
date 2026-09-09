@@ -24,6 +24,10 @@ import urllib.request
 import wave
 
 
+class ModuleSnapshotPending(RuntimeError):
+    """The new process has not published its first module yet."""
+
+
 def module_paths(pid: int) -> list[Path]:
     class Entry(ctypes.Structure):
         _fields_ = [(n, wintypes.DWORD) for n in ("dwSize", "th32ModuleID", "th32ProcessID", "GlblcntUsage", "ProccntUsage")] + [
@@ -35,6 +39,10 @@ def module_paths(pid: int) -> list[Path]:
     kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel.Module32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
     kernel.Module32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.K32GetModuleFileNameExW.argtypes = [wintypes.HANDLE, wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    kernel.K32GetModuleFileNameExW.restype = wintypes.DWORD
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     # ERROR_BAD_LENGTH is documented while the child's loader changes its
     # module list. Retry that specific race, never reinterpret it as success.
@@ -45,18 +53,32 @@ def module_paths(pid: int) -> list[Path]:
         time.sleep(0.05)
     if handle == ctypes.c_void_p(-1).value:
         raise RuntimeError("module snapshot failed")
+    process = None
     try:
+        process = kernel.OpenProcess(0x0400 | 0x0010, False, pid)  # QUERY_INFORMATION | VM_READ
+        if not process:
+            raise RuntimeError("module process query failed")
         entry = Entry()
         entry.dwSize = ctypes.sizeof(entry)
         more = kernel.Module32FirstW(handle, ctypes.byref(entry))
         if not more:
+            if ctypes.get_last_error() == 18:  # ERROR_NO_MORE_FILES during loader startup
+                raise ModuleSnapshotPending("module enumeration not ready")
             raise RuntimeError("module enumeration failed")
         paths = []
         while more:
-            paths.append(Path(entry.szExePath).resolve())
+            # Query the Unicode path by module handle, independently of the
+            # snapshot's fixed-size filename field, before checking identity.
+            filename = ctypes.create_unicode_buffer(32768)
+            count = kernel.K32GetModuleFileNameExW(process, entry.hModule, filename, len(filename))
+            if not count or count >= len(filename):
+                raise RuntimeError("module filename query failed or overflowed")
+            paths.append(Path(filename.value).resolve())
             more = kernel.Module32NextW(handle, ctypes.byref(entry))
         return paths
     finally:
+        if process:
+            kernel.CloseHandle(process)
         kernel.CloseHandle(handle)
 
 
@@ -64,8 +86,9 @@ def clean_environment(work: Path) -> dict[str, str]:
     system = Path(os.environ["SystemRoot"])
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith((
         "BILIKARA_", "FF", "PYTHON", "LD_")) and k.upper() not in {
-            "PATH", "FFMPEG_PATH", "BB_DOWN_PATH", "YT_DLP_PATH", "ARIA2C_PATH"}}
-    env.update(PATH=os.pathsep.join(str(system / p) for p in ("System32", "", "System32/Wbem")),
+            "PATH", "SYSTEMROOT", "FFMPEG_PATH", "BB_DOWN_PATH", "YT_DLP_PATH", "ARIA2C_PATH"}}
+    env.update(SystemRoot=str(system),
+               PATH=os.pathsep.join(str(system / p) for p in ("System32", "", "System32/Wbem")),
                BILIKARA_HOME=str(work / "home"), BILIKARA_REQUIRE_RUST_LIB="1",
                BILIKARA_MAX_CACHE_ITEMS="0", TEMP=str(work), TMP=str(work),
                DEBUG_LOG_FILE=str(work / "startup.log"), BILIKARA_LAUNCH_MODE="tauri")
@@ -82,7 +105,7 @@ def invoke(command: list, env: dict, cwd: Path, *, success: bool | None = True, 
     return result
 
 
-def backend(package: Path, work: Path, env: dict) -> dict:
+def backend(package: Path, work: Path, env: dict, diagnostics: dict | None = None) -> dict:
     token = secrets.token_urlsafe(32)
     child_env = dict(env, BILIKARA_SHUTDOWN_TOKEN=token)
     child = subprocess.Popen([str(package / "bilikara.exe"), "--no-browser", "--headless",
@@ -111,7 +134,26 @@ def backend(package: Path, work: Path, env: dict) -> dict:
             if json.load(response) != {"ok": True, "status": "ready"}:
                 raise RuntimeError("backend health failed")
         paths = module_paths(child.pid)
-        if not any(p.name.lower() == "bilikara_runtime.dll" and p.is_relative_to(package) for p in paths):
+        expected_runtime = package / "_internal/rust/bilikara_runtime.dll"
+        matches_runtime = []
+        path_errors = []
+        for path in paths:
+            try:
+                matches_runtime.append(path.samefile(expected_runtime))
+            except OSError as error:
+                matches_runtime.append(False)
+                path_errors.append({"name": path.name, "errno": error.errno,
+                                    "winerror": getattr(error, "winerror", None),
+                                    "question_mark_in_parts": any("?" in part for part in path.parts[1:])})
+        if diagnostics is not None:
+            diagnostics["module_count"] = len(paths)
+            diagnostics["module_path_errors"] = path_errors
+            diagnostics["bilikara_modules"] = [
+                {"name": p.name, "in_package": p.is_relative_to(package),
+                 "matches_runtime": matches}
+                for p, matches in zip(paths, matches_runtime) if p.name.lower().startswith("bili")
+            ]
+        if not any(matches_runtime):
             raise RuntimeError("packaged mandatory Runtime missing")
         if any(is_ffmpeg(p.name) or p.name.lower().startswith("bilikara_media_libav") for p in paths):
             raise RuntimeError("default startup loaded optional libav")
@@ -134,6 +176,27 @@ def backend(package: Path, work: Path, env: dict) -> dict:
 
 def is_ffmpeg(name: str) -> bool:
     return name.lower().startswith(("avformat-", "avcodec-", "avutil-", "avfilter-", "avdevice-", "swresample-", "swscale-")) and name.lower().endswith(".dll")
+
+
+def comparison_has_same_build(record: dict, *, packet_scan: bool) -> bool:
+    value = record.get("same_build")
+    if packet_scan:
+        return (isinstance(value, dict) and set(value) == {"inventory", "operational"}
+                and value["inventory"] is True and value["operational"] is True)
+    return value is True
+
+
+def remove_package_dependency(package: Path, name: str) -> list[str]:
+    # PyInstaller may collect a second copy beside the embedding runtime.
+    # Remove every exact-name copy in this disposable fault-injection package.
+    paths = list(package.rglob(name))
+    if not paths:
+        raise RuntimeError("fault-injection dependency is absent")
+    removed = []
+    for path in paths:
+        removed.append(path.relative_to(package).as_posix())
+        path.unlink()
+    return sorted(removed)
 
 
 def require_x64(path: Path) -> None:
@@ -161,12 +224,21 @@ def run() -> str:
                                     "has_non_ascii": not str(package).isascii()}
     def stage(name):
         report["stage"] = name
+    previous_error_mode = None
     try:
         if runtime_files(vendor) is None:
             raise RuntimeError("required preview manifest missing")
         # Record the embedding bootloader's setting without changing it. Media
         # calls below run in child Rust drivers, not in this Python process.
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetErrorMode.argtypes = []
+        kernel.GetErrorMode.restype = wintypes.UINT
+        kernel.SetErrorMode.argtypes = [wintypes.UINT]
+        kernel.SetErrorMode.restype = wintypes.UINT
+        previous_error_mode = kernel.GetErrorMode()
+        # Missing-DLL fault cases must return an error rather than waiting for
+        # a Windows dialog. Only this diagnostic process and its children inherit it.
+        kernel.SetErrorMode(previous_error_mode | 0x0001)  # SEM_FAILCRITICALERRORS
         kernel.GetDllDirectoryW.argtypes = [wintypes.DWORD, wintypes.LPWSTR]
         directory = ctypes.create_unicode_buffer(32768)
         count = kernel.GetDllDirectoryW(len(directory), directory)
@@ -175,17 +247,18 @@ def run() -> str:
         dll_dir = Path(directory.value).resolve() if count else None
         if dll_dir is not None and not dll_dir.is_relative_to(package):
             raise RuntimeError("unexpected PyInstaller DLL directory")
-        checks["orchestrator"] = {"process": "PyInstaller bilikara.exe",
+        checks["orchestrator"] = {"process": f"PyInstaller {Path(sys.executable).name}",
             "dll_directory": dll_dir.relative_to(package).as_posix() if dll_dir else "default",
             "media_process": "PyInstaller bilikara.exe -> Runtime cdylib -> trusted companion; developer comparisons retained"}
         with tempfile.TemporaryDirectory(prefix="Bilikara smoke 空 ") as temporary:
             work = Path(temporary).resolve()
             env = clean_environment(work)
             stage("default_backend")
-            checks["default_backend"] = backend(package, work, env)
-            stage("restore_cli_bbdown")
+            checks["default_backend"] = backend(package, work, env, checks.setdefault("default_backend", {}))
             for tool in ("ffmpeg", "bbdown", "native"):
+                stage("restore_" + tool)
                 invoke([package / "bilikara.exe", "--tool-smoke", tool], env, work)
+            stage("restored_cli_files")
             cli = work / "home/tools/bbdown"
             for path in runtime_files(vendor):
                 if not (cli / path.name).is_file():
@@ -205,21 +278,25 @@ def run() -> str:
             ff("-i", pcm, "-ar", "48000", "-c:a", "aac", fixtures / "aac.m4a")
             ff("-i", pcm, "-c:a", "flac", fixtures / "audio.flac")
             ff("-i", fixtures / "audio.flac", "-c", "copy", "-strict", "-2", fixtures / "flac.mp4")
-            ff("-stream_loop", "3", "-framerate", "12", "-i", package / "THIRD_PARTY_SOURCES/media-libav/fixtures/synthetic.h264",
+            # Raw H.264 has no seekable timestamps for -stream_loop. Repeat
+            # the existing six-frame fixture bytes to retain all 24 frames.
+            video_source = fixtures / "synthetic.h264"
+            video_source.write_bytes((package / "THIRD_PARTY_SOURCES/media-libav/fixtures/synthetic.h264").read_bytes() * 4)
+            ff("-framerate", "12", "-i", video_source,
                "-c", "copy", fixtures / "video.mp4")
-            stage("application_default_and_legacy")
             for mode, expected in (("default", "libav"), ("legacy", "pure_rust")):
+                stage("application_" + mode)
                 application_env = dict(env, BILIKARA_LIBAV_FIXTURES=str(fixtures))
                 if mode == "legacy":
                     application_env["BILIKARA_MEDIA_BACKEND"] = "legacy"
                 output = invoke([package / "bilikara.exe", "--tool-smoke", "media-routing"], application_env, work, timeout=120)
                 report_row = json.loads(output.stdout)
+                checks["application_" + mode] = report_row
                 rows = report_row["operations"]
                 if len(rows) != 6 or any(r["backend"] != ("ffmpeg" if mode == "legacy" and r["operation"] == "packet_scan" else expected) for r in rows):
                     raise RuntimeError("packaged normal application used an unexpected media backend")
                 if mode == "default" and any(r["cli_calls"] != 0 for r in rows):
                     raise RuntimeError("packaged application duplicated a successful libav operation")
-                checks["application_" + mode] = report_row
             driver = package / "preview/libav_metadata.exe"
             companion = vendor / "bilikara_media_libav.dll"
             stage("runtime_companion_references")
@@ -233,7 +310,9 @@ def run() -> str:
                                  "--timeout-ms", "30000"], env, work, success=None, timeout=120)
                 records = [json.loads(line) for line in output.stdout.splitlines() if line.strip()]
                 checks[label] = records  # Preserve the accepted sanitized report even on failure.
-                if output.returncode != 0 or not records or any(r.get("same_build") is not True for r in records):
+                if output.returncode != 0 or not records or any(
+                    not comparison_has_same_build(r, packet_scan=label == "scan") for r in records
+                ):
                     raise RuntimeError("same-build comparison did not execute")
             stage("actual_dependency_paths")
             checks["driver_dependencies"] = json.loads(invoke([driver, "package-info", companion, package], env, work).stdout)
@@ -257,7 +336,11 @@ def run() -> str:
             try:
                 deadline = time.monotonic() + 10
                 while True:
-                    paths = [p for p in module_paths(child.pid)
+                    try:
+                        loaded_paths = module_paths(child.pid)
+                    except ModuleSnapshotPending:
+                        loaded_paths = []
+                    paths = [p for p in loaded_paths
                              if is_ffmpeg(p.name) or p.name.lower() in manifest["runtime_files"]]
                     if all(any(p.name.lower().startswith(n) for p in paths) for n in ("avformat-", "avcodec-", "avutil-")):
                         break
@@ -311,7 +394,8 @@ def run() -> str:
                 if mode == "without_companion":
                     target.unlink()
                 elif mode == "missing_dependency":
-                    (copied_vendor / next(n for n in manifest["runtime_files"] if n.startswith("avutil-"))).unlink()
+                    name = next(n for n in manifest["runtime_files"] if n.startswith("avutil-"))
+                    checks["missing_dependency_removed"] = remove_package_dependency(copy, name)
                 else:
                     target.unlink()
                     shutil.copy2(copy / "_internal/rust/bilikara_runtime.dll", target)
@@ -343,5 +427,7 @@ def run() -> str:
             report["reason"] = str(exc)[:256]  # these helpers use fixed diagnostics, never child output
         raise RuntimeError("Windows package smoke failed; see sanitized result stage") from None
     finally:
+        if previous_error_mode is not None:
+            kernel.SetErrorMode(previous_error_mode)
         result_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return json.dumps({"event": "bilikara.windows_libav_preview", "outcome": "success"})

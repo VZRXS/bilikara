@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import unittest
@@ -13,6 +14,38 @@ from bilikara.tool_smoke import packaged_tool_smoke_json
 
 
 class PackagedToolSmokeTest(unittest.TestCase):
+    def test_launcher_smoke_writes_unicode_json_as_utf8_on_an_ansi_stream(self):
+        payload = {"event": "bilikara.tool_smoke", "tool": "ffmpeg", "path": "C:/Bilikara preview \u7a7a/ffmpeg.exe"}
+        output = io.BytesIO()
+        stream = io.TextIOWrapper(output, encoding="cp1252")
+        with patch.object(sys, "argv", ["bilikara", "--tool-smoke", "ffmpeg"]), patch.object(
+            sys, "stdout", stream
+        ), patch("bilikara.launcher._ensure_std_streams"), patch(
+            "bilikara.launcher._install_debug_log_streams"
+        ), patch("bilikara.launcher._install_startup_exception_hooks"), patch(
+            "bilikara.launcher.startup_logging_enabled", return_value=False
+        ), patch("bilikara.https_trust.initialize_https_trust"), patch(
+            "bilikara.tool_smoke.packaged_tool_smoke_json", return_value=json.dumps(payload, ensure_ascii=False)
+        ):
+            launcher.run_with_startup_logging()
+        self.assertEqual(stream.encoding, "utf-8")
+        self.assertEqual(json.loads(output.getvalue().decode("utf-8")), payload)
+
+    def test_launcher_smoke_failure_exits_without_an_unhandled_gui_exception(self):
+        with patch.object(sys, "argv", ["bilikara", "--tool-smoke", "windows-libav-preview"]), patch(
+            "bilikara.launcher._ensure_std_streams"
+        ), patch("bilikara.launcher._install_debug_log_streams"), patch(
+            "bilikara.launcher._install_startup_exception_hooks"
+        ), patch("bilikara.launcher.startup_logging_enabled", return_value=False), patch(
+            "bilikara.https_trust.initialize_https_trust"
+        ), patch("bilikara.tool_smoke.packaged_tool_smoke_json", side_effect=RuntimeError("smoke failed")), patch(
+            "bilikara.launcher.append_startup_log"
+        ) as log:
+            with self.assertRaises(SystemExit) as result:
+                launcher.run_with_startup_logging()
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("RuntimeError: smoke failed", log.call_args.args[0])
+
     def test_launcher_accepts_aria2c_smoke_target(self):
         marker = '{"event":"bilikara.tool_smoke","tool":"aria2c"}'
         trust_status = SimpleNamespace(

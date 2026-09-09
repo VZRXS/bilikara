@@ -124,7 +124,62 @@ static void scan_tests(void) {
     puts("scan shim: real reads + injected non-EOF errors/corrupt flag/cancellation passed (lifecycle evidence)");
 }
 
+#ifdef _WIN32
+static void windows_long_path_tests(void) {
+    wchar_t temporary[1024], root[1024], path[1024];
+    DWORD length = GetTempPathW(1024, temporary);
+    assert(length && length < 1024);
+    assert(GetTempFileNameW(temporary, L"bmk", 0, root));
+    assert(DeleteFileW(root) && CreateDirectoryW(root, NULL));
+    /* Construct independently of bm_wide so this catches its MAX_PATH bug. */
+    wcscpy(path, L"\\\\?\\");
+    wcscat(path, root);
+    size_t root_length = wcslen(path);
+    for (int i = 0; i < 6; i++) {
+        wcscat(path, L"\\synthetic-012345678901234567890123456789-\x7a7a");
+        assert(CreateDirectoryW(path, NULL));
+    }
+    size_t directory_length = wcslen(path);
+    wcscat(path, L"\\output.mp4");
+    assert(wcslen(path + 4) > MAX_PATH);
+    HANDLE output = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, CREATE_NEW, 0, NULL);
+    assert(output != INVALID_HANDLE_VALUE);
+    char utf8[4096];
+    assert(WideCharToMultiByte(CP_UTF8, 0, path + 4, -1, utf8, sizeof(utf8), NULL, NULL));
+    int fd = bm_open_read(utf8);
+    assert(fd >= 0);
+    assert(bm_empty_distinct_output(fd, utf8) == BM_INVALID_REQUEST);
+    close(fd);
+    /* Use a separate regular input and retain the empty/distinct guard. */
+    wcscat(root, L"\\input.bin");
+    HANDLE input = CreateFileW(root, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+                              NULL, CREATE_NEW, 0, NULL);
+    assert(input != INVALID_HANDLE_VALUE);
+    fd = bm_fd_from_handle_v1(input);
+    assert(fd >= 0 && bm_empty_distinct_output(fd, utf8) == BM_OK);
+    DWORD written;
+    assert(WriteFile(output, "x", 1, &written, NULL) && written == 1);
+    assert(bm_empty_distinct_output(fd, utf8) == BM_INVALID_REQUEST);
+    close(fd);
+    CloseHandle(input);
+    CloseHandle(output);
+    assert(DeleteFileW(root) && DeleteFileW(path));
+    path[directory_length] = 0;
+    while (wcslen(path) > root_length) {
+        assert(RemoveDirectoryW(path));
+        *wcsrchr(path, L'\\') = 0;
+    }
+    assert(RemoveDirectoryW(path));
+    assert(!bm_wide("\\\\server\\share\\file") && !bm_wide("C:relative"));
+    puts("Windows long-path I/O: Unicode, empty/distinct and nonempty guards passed");
+}
+#endif
+
 int main(void) {
+#ifdef _WIN32
+    windows_long_path_tests();
+#endif
     scan_tests();
     BmRemuxInfo remux_info;
     assert(bm_remux_info_v1(sizeof(remux_info), &remux_info) == BM_OK);

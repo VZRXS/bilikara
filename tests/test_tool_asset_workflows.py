@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -20,6 +25,36 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         cls.build_script = (
             ROOT / "scripts" / "build_portable_macos_aria2.sh"
         ).read_text(encoding="utf-8")
+
+    def test_rust_gate_stops_before_later_commands_can_hide_a_failure(self):
+        block = self.bundle_workflow.split("      - name: Rust Checks and Build\n", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        self.assertIn("shell: bash", block)
+        script = textwrap.dedent(block.split("run: |\n", 1)[1])
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git_bash = Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe"
+            if git_bash.is_file():
+                bash = str(git_bash)
+        if not bash:
+            self.skipTest("Bash is required to execute the workflow gate")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for directory in ("rust", "rust-runtime", "src-tauri"):
+                (root / directory).mkdir()
+            stub = '''cargo() {
+  printf '%s\\n' "${PWD##*/}:$*" >> ../calls.log
+  if [ "$1" = clippy ]; then return 42; fi
+  return 0
+}
+'''
+            result = subprocess.run([bash, "--noprofile", "--norc", "-c", stub + script],
+                                    cwd=root, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+            self.assertEqual((root / "calls.log").read_text().splitlines(), [
+                "rust:fmt --check", "rust:clippy --all-targets --locked -- -D warnings",
+            ])
 
     def test_normal_bundle_workflow_does_not_build_or_publish_aria2_or_ffmpeg(self):
         self.assertNotIn("macos-aria2-tools", self.bundle_workflow)

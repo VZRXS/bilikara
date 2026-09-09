@@ -15,8 +15,8 @@ use windows_sys::Win32::{
             TH32CS_SNAPMODULE,
         },
         LibraryLoader::{
-            GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
-            LoadLibraryExW,
+            GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+            LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
         },
         Threading::GetCurrentProcessId,
     },
@@ -128,6 +128,20 @@ impl Drop for Library {
     }
 }
 
+fn loaded_module_path(handle: HMODULE) -> Result<PathBuf, ProbeError> {
+    // Query the loaded module directly. The snapshot's filename field can lose
+    // non-ASCII path characters and cannot represent full-length Win32 paths.
+    let mut filename = vec![0_u16; 32768];
+    let length =
+        unsafe { GetModuleFileNameW(handle, filename.as_mut_ptr(), filename.len() as u32) };
+    if length == 0 || length as usize >= filename.len() {
+        return Err(unavailable());
+    }
+    Ok(PathBuf::from(OsString::from_wide(
+        &filename[..length as usize],
+    )))
+}
+
 fn verify_modules(directory: &Path) -> Result<(), ProbeError> {
     // A per-load snapshot, not a registry. FFmpeg and companion modules must
     // originate in the selected vendor directory. The shared Microsoft CRT can
@@ -165,12 +179,7 @@ fn verify_modules(directory: &Path) -> Result<(), ProbeError> {
             .any(|p| name.starts_with(p))
                 && name.ends_with(".dll");
             if ffmpeg || name.starts_with("bilikara_media_libav") {
-                let end = entry
-                    .szExePath
-                    .iter()
-                    .position(|v| *v == 0)
-                    .ok_or_else(unavailable)?;
-                let path = PathBuf::from(OsString::from_wide(&entry.szExePath[..end]));
+                let path = loaded_module_path(entry.hModule)?;
                 let actual = path.canonicalize().map_err(|_| unavailable())?;
                 if actual.parent() != Some(directory) {
                     return Err(unavailable());
@@ -182,4 +191,55 @@ fn verify_modules(directory: &Path) -> Result<(), ProbeError> {
     })();
     unsafe { CloseHandle(snapshot) };
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unicode_module_path_preserves_vendor_boundary() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("Bilikara module 空 {} {nonce}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let _cleanup = Cleanup(directory.clone());
+        let source =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/version.dll");
+        let copied = directory.join("avcodec-module-fixture.dll");
+        std::fs::copy(source, &copied).unwrap();
+        let wide: Vec<u16> = copied.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe {
+            LoadLibraryExW(
+                wide.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        assert!(!handle.is_null());
+        let library = Library { handle };
+        assert_eq!(
+            loaded_module_path(library.handle)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            copied.canonicalize().unwrap()
+        );
+        verify_modules(&directory.canonicalize().unwrap()).unwrap();
+        let foreign = directory.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        assert!(matches!(
+            verify_modules(&foreign.canonicalize().unwrap()),
+            Err(ProbeError::Unavailable(_))
+        ));
+    }
 }

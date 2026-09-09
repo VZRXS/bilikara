@@ -24,13 +24,13 @@ class MediaRoutingShapeTests(unittest.TestCase):
         service.assert_not_called()
 
     def test_malformed_success_never_becomes_compatibility(self):
-        source = Path(tempfile.gettempdir()) / "synthetic.m4a"
-        good = {"action": "completed", "metadata": {"backend": "libav", "path": str(source), "size": 10,
+        source = Path(tempfile.gettempdir()) / "shape-input" / ".." / "synthetic.m4a"
+        good = {"action": "completed", "metadata": {"backend": "libav", "path": str(source.resolve()), "size": 10,
             "container": "mp4", "duration_seconds": None, "inspection_level": "packet_scan", "stream_count": 1,
             "streams": [{"kind": "audio", "codec": "aac", "duration_seconds": None}]},
             "diagnostic": {"operation": "validate", "backend": "libav", "outcome": "success", "compatibility_reason": None}}
         rust_runtime._validate_inspection(good, source=source, expected_kind="audio", operation="validate")
-        for field, value in [("size", True), ("size", 0), ("streams", []), ("duration_seconds", float("nan")),
+        for field, value in [("path", str(source)), ("size", True), ("size", 0), ("streams", []), ("duration_seconds", float("nan")),
                              ("inspection_level", "stream_metadata"), ("backend", "planned_libav"), ("stream_count", 2)]:
             bad = copy.deepcopy(good)
             bad["metadata"][field] = value

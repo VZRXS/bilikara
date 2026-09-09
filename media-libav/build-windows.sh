@@ -23,7 +23,8 @@ gpg --homedir "$work/keyring" --batch --status-fd 1 --verify \
   "$prefix/source/ffmpeg-${version}.tar.xz.asc" "$prefix/source/ffmpeg-${version}.tar.xz" \
   > "$prefix/records/signature.log" 2>&1
 grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$prefix/records/signature.log"
-tar -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
+# GNU tar must treat the Windows drive-letter archive path as a local file.
+tar --force-local -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
 cd "$work/ffmpeg-${version}"
 # Preserve the accepted codec/demuxer corpus; no --disable-everything pruning.
 # /MD is required: fd protocol and companion must share the UCRT fd table.

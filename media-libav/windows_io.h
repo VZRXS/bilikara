@@ -36,6 +36,20 @@ static wchar_t *bm_wide(const char *p) {
     if (!n) return NULL;
     wchar_t *w = malloc((size_t)n * sizeof(*w));
     if (w && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, p, -1, w, n)) { free(w); return NULL; }
+    if (w && n >= MAX_PATH) {
+        /* Deep Native cache staging must not depend on the caller executable's
+         * longPathAware manifest. Normalize before adding the internal prefix;
+         * the public input still accepts only absolute local drive paths. */
+        DWORD size = GetFullPathNameW(w, 0, NULL, NULL);
+        if (!size || size > 32763) { free(w); return NULL; }
+        wchar_t *extended = malloc(((size_t)size + 4) * sizeof(*extended));
+        if (!extended) { free(w); return NULL; }
+        DWORD length = GetFullPathNameW(w, size, extended + 4, NULL);
+        free(w);
+        if (!length || length >= size) { free(extended); return NULL; }
+        memcpy(extended, L"\\\\?\\", 4 * sizeof(*extended));
+        w = extended;
+    }
     return w;
 }
 static int bm_open_read(const char *p) {

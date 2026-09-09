@@ -137,6 +137,8 @@ static uint32_t inspect(const BmRequest *q, BmResult **out,
     int ret = 0;
     if (interrupted(&call)) { fail(r, BM_CANCELLED, "cancelled before discovery"); goto done; }
 #ifdef _WIN32
+    /* The UCRT treats negative descriptors as fatal invalid parameters. */
+    if (q->fd < 0) { fail(r, BM_IO, "cannot inspect input descriptor"); goto done; }
     if (!bm_regular_fd(q->fd)) {
         fail(r, BM_INVALID_REQUEST, "input must be a read-only regular file"); goto done;
     }

@@ -75,7 +75,9 @@ jobs:
           shared-key: ci-bundle
 
       - name: Rust Checks and Build
+        shell: bash
         run: |
+          set -euo pipefail
           cd rust
           cargo fmt --check
           cargo clippy --all-targets --locked -- -D warnings

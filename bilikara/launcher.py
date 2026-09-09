@@ -155,6 +155,10 @@ def run_with_startup_logging() -> None:
     args = parser.parse_args()
 
     _ensure_std_streams()
+    if args.tool_smoke and hasattr(sys.stdout, "reconfigure"):
+        # Machine-readable smoke JSON must survive non-ASCII package paths
+        # even when a Windows redirected stream defaults to an ANSI code page.
+        sys.stdout.reconfigure(encoding="utf-8")
     _install_debug_log_streams()
     _install_startup_exception_hooks()
     if startup_logging_enabled():
@@ -188,6 +192,9 @@ def run_with_startup_logging() -> None:
         append_startup_log(
             "Import or HTTPS initialization failure:\n" + traceback.format_exc().rstrip()
         )
+        if args.tool_smoke:
+            # Automated smoke failures must exit, not open a frozen GUI error dialog.
+            raise SystemExit(1) from None
         raise
 
     if startup_logging_enabled():
