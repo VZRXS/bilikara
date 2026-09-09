@@ -130,6 +130,8 @@ int main(void) {
     assert(bm_remux_info_v1(sizeof(remux_info), &remux_info) == BM_OK);
     assert(bm_remux_info_v1(sizeof(remux_info) - 1, &remux_info) == BM_UNAVAILABLE);
     assert(remux_info.schema == 1 && remux_info.result_size == sizeof(BmRemuxResult));
+    assert(bm_flac_info_v1(sizeof(remux_info), &remux_info) == BM_OK);
+    assert(bm_flac_info_v1(sizeof(remux_info) - 1, &remux_info) == BM_UNAVAILABLE);
     AVPacket *timestamp = av_packet_alloc();
     assert(timestamp);
     timestamp->pts = -1024; timestamp->dts = AV_NOPTS_VALUE; timestamp->duration = 512;

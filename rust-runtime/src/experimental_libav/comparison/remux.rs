@@ -13,6 +13,7 @@ pub const MAX_PACKETS: usize = 256;
 pub struct EncodedSample {
     base: TimeBase,
     aac: bool,
+    flac: bool,
     config: Vec<u8>,
     packets: Vec<Packet>,
 }
@@ -146,6 +147,7 @@ pub fn parse(bytes: &[u8]) -> Result<EncodedSample, Outcome> {
     Ok(EncodedSample {
         base,
         aac: streams[0]["codec_name"].as_str() == Some("aac"),
+        flac: streams[0]["codec_name"].as_str() == Some("flac"),
         config,
         packets,
     })
@@ -185,6 +187,24 @@ pub fn compare(a: &EncodedSample, b: &EncodedSample) -> ContentComparison {
     };
     if a.config != b.config {
         mismatch("decoder_configuration");
+    }
+    if a.flac && b.flac {
+        // Raw FLAC and MOV can group the same encoded frames differently.
+        // Ignore container PTS and compare the ordered byte sequence directly.
+        if !a
+            .packets
+            .iter()
+            .flat_map(|p| &p.payload)
+            .eq(b.packets.iter().flat_map(|p| &p.payload))
+        {
+            mismatch("ordered_encoded_frames");
+        }
+        result
+            .representations
+            .push("FLAC_sample_sequence_not_container_timeline_or_packet_count");
+        result.checking_depth = "bounded ordered encoded bytes + complete STREAMINFO; PCM and independent decode are separate diagnostic oracles";
+        result.matches = result.mismatches.is_empty();
+        return result;
     }
     if a.packets.len() != b.packets.len() {
         mismatch("packet_count");
@@ -291,6 +311,7 @@ mod tests {
                 denominator: 48000,
             },
             aac: true,
+            flac: false,
             config: vec![0x2b, 0x11, 0x88, 0],
             packets: vec![
                 Packet {
@@ -309,6 +330,23 @@ mod tests {
                 },
             ],
         }
+    }
+    #[test]
+    fn flac_packet_grouping_and_container_pts_are_not_audio_equivalence_rules() {
+        let mut a = sample();
+        a.aac = false;
+        a.flac = true;
+        let mut b = a.clone();
+        let tail = b.packets.pop().unwrap();
+        b.packets[0].payload.extend(tail.payload);
+        b.packets[0].pts = Some(123);
+        assert!(compare(&a, &b).matches);
+        b.packets[0].payload[4] ^= 1;
+        assert!(
+            compare(&a, &b)
+                .mismatches
+                .contains(&"ordered_encoded_frames")
+        );
     }
     #[test]
     fn negative_controls_cannot_pass_on_counts_and_metadata_alone() {

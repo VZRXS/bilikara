@@ -13,6 +13,7 @@ import subprocess
 import time
 import tempfile
 import unittest
+import wave
 
 OPTIONS = None
 
@@ -375,11 +376,11 @@ class LivePacketScan(LiveComparison):
 class LiveCopyRemux(LivePacketScan):
     """M5 adds one explicit transform profile; inherited M1–M3 checks remain."""
 
-    def remux_pair(self, label, source, kind="audio", extra=(), companion=None, keep=None):
+    def remux_pair(self, label, source, kind="audio", extra=(), companion=None, keep=None, profile="--copy-remux"):
         temporary = OPTIONS.out / "remux-temporary"
         temporary.mkdir(exist_ok=True)
         command = [str(OPTIONS.driver), "compare", str(companion or OPTIONS.companion),
-                   str(OPTIONS.prefix), str(source), label, "--copy-remux", kind, *extra]
+                   str(OPTIONS.prefix), str(source), label, profile, kind, *extra]
         if keep is not None:
             command += ["--keep-outputs", str(keep)]
         result = subprocess.run(command, env=dict(os.environ, TMPDIR=str(temporary)),
@@ -495,6 +496,151 @@ class LiveCopyRemux(LivePacketScan):
         self.assertEqual(code, 0)
 
 
+class LiveFlacNormalization(LiveCopyRemux):
+    """Additional explicit M5 profile, reusing every accepted lifecycle helper."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.scratch = tempfile.TemporaryDirectory(prefix="flac-fixtures-", dir=OPTIONS.out)
+        cls.addClassCleanup(cls.scratch.cleanup)
+        cls.root = Path(cls.scratch.name)
+        cls.source = OPTIONS.fixtures / "flac.mp4"
+        cls.lower = cls.root / "lower.mp4"
+        cls.wav = cls.root / "lower.wav"
+        # One 48 kHz / 16-bit stereo control, with distinct channels, signs and
+        # full-scale endpoints. No resampling of the accepted 96 kHz fixture.
+        with wave.open(str(cls.wav), "wb") as f:
+            f.setparams((2, 2, 48000, 48000, "NONE", "not compressed"))
+            f.writeframes(b"".join(
+                value.to_bytes(2, "little", signed=True)
+                for n in range(48000)
+                for value in ((n * 257) % 65536 - 32768, 32767 - (n * 509) % 65536)))
+        cls.ffmpeg("-i", cls.wav, "-map", "0:0", "-c:a", "flac", cls.root / "lower.flac")
+        cls.ffmpeg("-i", cls.root / "lower.flac", "-map", "0:0", "-c", "copy", "-strict", "-2", cls.lower)
+        cls.ffmpeg("-copyts", "-itsoffset", "0.25", "-i", cls.source, "-map", "0:0", "-c", "copy",
+                   "-strict", "-2", "-use_editlist", "1", cls.root / "offset.mp4")
+        cls.ffmpeg("-ss", "0.1", "-i", cls.source, "-map", "0:0", "-c", "copy",
+                   "-strict", "-2", "-use_editlist", "1", cls.root / "trim.mp4")
+        cls.ffmpeg("-i", cls.source, "-map", "0:0", "-map", "0:0", "-c", "copy",
+                   "-strict", "-2", cls.root / "two-audio.mp4")
+        raw = bytearray(cls.source.read_bytes())
+        start = raw.index(b"dfLa") + 12  # fixture-specific STREAMINFO location
+        if raw[start-4:start] != b"\x80\x00\x00\x22":
+            raise AssertionError("known fixture must supply complete STREAMINFO")
+        unknown = bytearray(raw)
+        unknown[start+4:start+10] = bytes(6)  # unknown min/max frame size
+        packed = int.from_bytes(unknown[start+10:start+18], "big") & ~((1 << 36) - 1)
+        unknown[start+10:start+18] = packed.to_bytes(8, "big")
+        unknown[start+18:start+34] = bytes(16)  # unknown MD5
+        (cls.root / "unknown.mp4").write_bytes(unknown)
+        invalid = bytearray(raw)
+        invalid[start-1] = 33  # deterministic mandatory STREAMINFO length error
+        (cls.root / "invalid-streaminfo.mp4").write_bytes(invalid)
+        offset = 0
+        while offset + 8 <= len(raw):
+            size = int.from_bytes(raw[offset:offset+4], "big")
+            if raw[offset+4:offset+8] == b"mdat":
+                raw[offset+4:offset+8] = b"free"
+                break
+            if size < 8:
+                raise AssertionError("unexpected fixture layout")
+            offset += size
+        else:
+            raise AssertionError("known fixture must contain mdat")
+        (cls.root / "missing-mdat.mp4").write_bytes(raw)
+
+    @staticmethod
+    def ffmpeg(*args, pcm=False):
+        result = subprocess.run([str(OPTIONS.prefix / "bin/ffmpeg"), "-v", "error", "-xerror", "-nostdin", "-n",
+                                 *map(str, args)], env=dict(os.environ, LD_LIBRARY_PATH=str(OPTIONS.prefix / "lib")),
+                                stdout=subprocess.PIPE if pcm else subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=20)
+        if result.returncode:
+            raise AssertionError("same-build fixture/PCM command failed; no stderr retained")
+        return result.stdout
+
+    def test_flac_real_complete_pcm_and_independent_decoder(self):
+        for label, source, wav, rate, bits, unknown in [
+            ("hires", self.source, OPTIONS.fixtures / "synthetic.wav", 96000, 24, False),
+            ("lower", self.lower, self.wav, 48000, 16, False),
+            ("unknown", self.root / "unknown.mp4", OPTIONS.fixtures / "synthetic.wav", 96000, 24, True)]:
+            with self.subTest(fixture=label):
+                original = source.read_bytes()
+                keep = self.root / (label + "-outputs")
+                code, row = self.remux_pair("flac-" + label, source, keep=keep, profile="--flac")
+                self.assertEqual(code, 0, row.get("outcome"))
+                self.assertEqual(row["profile"], "mp4_single_flac_to_native_flac_v1")
+                self.assertTrue(row["same_build"] and row["companion"]["result"]["finalized_and_published"])
+                self.assertTrue(row["clean_reference_execution"])
+                self.assertEqual(row["pure_rust"]["outcome"], "success")
+                self.assertEqual(sorted(p.name for p in keep.iterdir()), ["companion.flac", "pure-rust.flac", "reference.flac"])
+                self.assertEqual(len({p.stat().st_ino for p in keep.iterdir()}), 3)
+                pcm = row["pcm_comparison"]
+                self.assertEqual((pcm["sample_rate_hz"], pcm["channels"], pcm["bits_per_sample"], pcm["source_samples_per_channel"]),
+                                 (rate, 2, bits, rate))
+                for name in ("companion", "reference", "pure_rust"):
+                    self.assertTrue(pcm[name]["complete_pcm_equal"])
+                    self.assertEqual(pcm[name]["claxon"], {"complete_pcm_equal":True, "samples_per_channel":rate})
+                    info = pcm[name]["streaminfo"]
+                    self.assertEqual(info["md5_present"], not unknown)
+                    self.assertEqual(info["total_samples"], None if unknown else rate)
+                    self.assertEqual((keep / (name.replace("_", "-") + ".flac")).read_bytes()[:4], b"fLaC")
+                for check in row["content_comparison"].values():
+                    self.assertTrue(check["matches"])
+                # MP4 source decode itself must match the complete known PCM
+                # fixture, so three shared-libav decodes cannot mask lost input.
+                with wave.open(str(wav), "rb") as f:
+                    self.assertEqual((f.getframerate(), f.getnchannels(), f.getsampwidth()), (rate, 2, bits // 8))
+                    raw_pcm = f.readframes(f.getnframes())
+                width = bits // 8
+                expected = b"".join((int.from_bytes(raw_pcm[i:i+width], "little", signed=True) << (32-bits)).to_bytes(4, "little", signed=True)
+                                    for i in range(0, len(raw_pcm), width))
+                actual = self.ffmpeg("-i", source, "-map", "0:0", "-c:a", "pcm_s32le", "-f", "s32le", "pipe:1", pcm=True)
+                self.assertTrue(actual == expected, "full source PCM must equal the known WAV samples")
+                self.assertTrue(source.read_bytes() == original, "source is read-only")
+                row["known_fixture_pcm"] = {"complete_source_pcm_equal":True,"samples_per_channel":rate}
+                (OPTIONS.out / ("flac-" + label + ".json")).write_text(json.dumps(row) + "\n")
+
+    def test_flac_explicit_rejections_and_missing_capability(self):
+        for label, source, kind, expected in [
+            ("wrong-codec", OPTIONS.fixtures / "aac.m4a", "audio", "unsupported_codec"),
+            ("wrong-kind", self.source, "video", "media_contract_violation"),
+            ("video-audio", OPTIONS.fixtures / "av.mp4", "audio", "media_contract_violation"),
+            ("two-audio", self.root / "two-audio.mp4", "audio", "media_contract_violation"),
+            ("raw-input", OPTIONS.fixtures / "audio.flac", "audio", "unsupported_format"),
+            ("missing-mdat", self.root / "missing-mdat.mp4", "audio", "invalid_media"),
+            ("invalid-streaminfo", self.root / "invalid-streaminfo.mp4", "audio", "invalid_media"),
+            ("offset", self.root / "offset.mp4", "audio", "unsupported_container_layout"),
+            ("trim", self.root / "trim.mp4", "audio", "unsupported_container_layout")]:
+            with self.subTest(fixture=label):
+                original = source.read_bytes()
+                keep = self.root / (label + "-reject")
+                code, row = self.remux_pair("flac-" + label, source, kind, keep=keep, profile="--flac")
+                self.assertEqual((code, row["outcome"]), (1, expected))
+                self.assertEqual(list(keep.iterdir()), [], "failed profile must remove owned scratch and publish nothing")
+                self.assertNotIn("reference", row, "no transform fallback")
+                self.assertNotIn("pure_rust", row)
+                self.assertTrue(source.read_bytes() == original)
+                if label == "missing-mdat":
+                    self.assertEqual(row["input"]["metadata"]["outcome"], "success", "probe success cannot override S3 contract")
+        for label, companion, extra, expected in [
+            ("old-mp4", OPTIONS.flac_old_companion, (), "unavailable"),
+            ("missing", OPTIONS.out / "absent-flac.so", (), "unavailable"),
+            ("cancelled", OPTIONS.companion, ("--cancelled",), "cancelled")]:
+            code, row = self.remux_pair("flac-" + label, self.source, companion=companion, extra=extra, profile="--flac")
+            self.assertEqual((code, row["outcome"]), (1, expected))
+            self.assertNotIn("reference", row)
+        # Same accepted older library remains usable for its MP4 capability.
+        code, _ = self.remux_pair("old-mp4-still-works", OPTIONS.fixtures / "aac.m4a", companion=OPTIONS.flac_old_companion)
+        self.assertEqual(code, 0)
+
+    def test_flac_shared_actual_publisher_cancel_and_finalization_failure(self):
+        self.rust_test("experimental_libav::remux::tests::live_flac_publication_cancellation_and_late_errors", {
+            "BILIKARA_LIBAV_COMPANION":str(OPTIONS.companion),
+            "BILIKARA_LIBAV_FIXTURES":str(OPTIONS.fixtures),
+            "BILIKARA_M5_FAULT_COMPANION":str(OPTIONS.fault_companion)}, ignored=True)
+
+
 def main():
     global OPTIONS
     parser = argparse.ArgumentParser(description=__doc__)
@@ -507,7 +653,14 @@ def main():
     parser.add_argument("--remux-old-companion", type=Path)
     parser.add_argument("--fault-companion", type=Path)
     parser.add_argument("--fragmented-fixture", type=Path)
+    parser.add_argument("--flac", action="store_true", help="FLAC profile plus inherited M5/M1–M3 suite")
+    parser.add_argument("--flac-old-companion", type=Path)
     OPTIONS = parser.parse_args()
+    if OPTIONS.flac:
+        OPTIONS.copy_remux = True
+        path = OPTIONS.flac_old_companion
+        if path is None or not path.is_absolute() or not path.is_file():
+            parser.error("flac-old-companion required; no skipped live acceptance")
     if OPTIONS.copy_remux:
         OPTIONS.packet_scan = True
         for name in ("remux_old_companion", "fault_companion", "fragmented_fixture"):
@@ -529,7 +682,7 @@ def main():
     if OPTIONS.out.resolve().is_relative_to(repo):
         parser.error("--out must be outside the repository")
     OPTIONS.out.mkdir(parents=True, exist_ok=True)
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LiveCopyRemux if OPTIONS.copy_remux else LivePacketScan if OPTIONS.packet_scan else LiveComparison)
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LiveFlacNormalization if OPTIONS.flac else LiveCopyRemux if OPTIONS.copy_remux else LivePacketScan if OPTIONS.packet_scan else LiveComparison)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     (OPTIONS.out / "live-results.json").write_text(json.dumps({"tests_run": result.testsRun,
         "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped),

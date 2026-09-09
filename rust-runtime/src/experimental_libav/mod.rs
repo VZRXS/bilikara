@@ -13,7 +13,7 @@ pub mod comparison;
 mod scan;
 pub use scan::{PacketScan, PacketSummary, ScanSelection, ScanTerminal, TimestampBounds};
 mod remux;
-pub use remux::{CopyRemuxRequest, CopyRemuxResult};
+pub use remux::{CopyProfile, CopyRemuxRequest, CopyRemuxResult, FlacStreamInfo};
 
 use crate::MediaError;
 #[cfg(target_os = "linux")]

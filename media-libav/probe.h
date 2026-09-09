@@ -131,5 +131,9 @@ typedef struct {
 } BmRemuxResult;
 BM_EXPORT uint32_t bm_remux_info_v1(uint32_t size, BmRemuxInfo *info);
 BM_EXPORT uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *request, BmRemuxResult **result);
+/* Additive profile capability: same negotiated layout/ownership, distinct
+ * exports so an accepted MP4-only companion cannot select a different muxer. */
+BM_EXPORT uint32_t bm_flac_info_v1(uint32_t size, BmRemuxInfo *info);
+BM_EXPORT uint32_t bm_copy_flac_v1(const BmRemuxRequest *request, BmRemuxResult **result);
 BM_EXPORT void bm_remux_release_v1(BmRemuxResult *result);
 #endif

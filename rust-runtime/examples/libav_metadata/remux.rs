@@ -1,10 +1,13 @@
 //! Explicit paired transform experiment; no application graph uses this driver.
 use super::*;
 use bilikara_runtime::experimental_libav::{
-    CopyRemuxRequest, ScanSelection,
+    CopyProfile, CopyRemuxRequest, ScanSelection,
     comparison::{packet_scan::ScanObservation, remux as content},
 };
 use std::os::unix::fs::DirBuilderExt;
+
+#[path = "flac.rs"]
+mod flac;
 
 const COPY_OUTPUT: &[&str] = &[
     "-map",
@@ -29,6 +32,27 @@ const COPY_OUTPUT: &[&str] = &[
     "1",
     "-f",
     "mp4",
+    "-n",
+];
+const FLAC_OUTPUT: &[&str] = &[
+    "-map",
+    "0:0",
+    "-c",
+    "copy",
+    "-map_metadata",
+    "-1",
+    "-map_metadata:s",
+    "-1",
+    "-map_chapters",
+    "-1",
+    "-fflags",
+    "-autobsf",
+    "-avoid_negative_ts",
+    "disabled",
+    "-write_header",
+    "1",
+    "-f",
+    "flac",
     "-n",
 ];
 const CONTENT_ENTRIES: &str = "stream=index,codec_name,time_base,extradata:packet=stream_index,pts,dts,duration,size,data:packet_side_data=side_data_type,skip_samples,discard_padding,skip_reason,discard_reason";
@@ -139,6 +163,8 @@ pub(super) fn run(
             .is_some_and(|(p, r)| r.matches(p.backend_info()))
     };
     let same_build = matches(reference) && matches(&ffmpeg);
+    let flac = args.profile == CopyProfile::Flac;
+    let output_options = if flac { FLAC_OUTPUT } else { COPY_OUTPUT };
     let mut failed = false;
     for iteration in 1..=args.repeat {
         let started = Instant::now();
@@ -146,13 +172,13 @@ pub(super) fn run(
             &["-nostdin", "-v", "error", "-xerror", "-copyts"][..],
             DISCOVERY,
             &["-fd", "0", "-i", "fd:"],
-            COPY_OUTPUT,
+            output_options,
             &["OWNED_REFERENCE_OUTPUT"],
         ]
         .concat();
-        let mut report = json!({"schema_version":1, "operation":"copy_remux", "profile":"mp4_single_h264_or_aac_faststart_v1",
+        let mut report = json!({"schema_version":1, "operation":"copy_remux", "profile":args.profile.name(),
             "fixture_label":args.label, "iteration":iteration, "expected_kind":args.remux,
-            "same_build":same_build, "capability_schema":probe.as_ref().ok().filter(|p| p.copy_remux_available()).map(|_| 1),
+            "same_build":same_build, "capability_schema":probe.as_ref().ok().filter(|p| p.copy_profile_available(args.profile)).map(|_| 1),
             "identity":{"libav":probe.as_ref().ok().and_then(|p| libav_identity(p.backend_info()).ok()),
                 "ffprobe":reference.as_ref().ok().and_then(|r| r.identity().ok()), "ffmpeg":ffmpeg.as_ref().ok().and_then(|r| r.ffmpeg_identity().ok())},
             "same_build_checks":{"ffprobe":probe.as_ref().ok().zip(reference.as_ref().ok()).map(|(p,r)| r.checks(p.backend_info())),
@@ -166,9 +192,20 @@ pub(super) fn run(
             "outputs_retained":args.keep_outputs.is_some(),
             "elapsed_us":{"companion_load_once":load_us, "ffprobe_identity_once":inventory_us,"ffmpeg_identity_once":ffmpeg_identity_us}
         });
+        if flac {
+            report["inspection"]["timing"] = json!(
+                "complete encoded samples in order, original rate/channels/precision; zero-start continuous untrimmed profile; reject demux-visible offsets/gaps/skip/discard/configuration changes; raw FLAC has no MP4 presentation timeline"
+            );
+            report["inspection"]["evidence"] = json!(
+                "shared libav metadata/scan/streamcopy; full bounded PCM + independent Claxon diagnostic oracle; no playback certificate"
+            );
+            report["inspection"]["metadata_policy"] = json!(
+                "preserve full STREAMINFO including unknown values; no input tags/chapters/artwork; muxer vendor comment and default padding allowed; no byte-identity requirement"
+            );
+        }
         let result = (|| -> Result<(), Outcome> {
             let p = probe.as_ref().map_err(|e| *e)?;
-            if !p.copy_remux_available() || !same_build {
+            if !p.copy_profile_available(args.profile) || !same_build {
                 return Err(Outcome::Unavailable);
             }
             if CANCELLED.load(Ordering::Relaxed) {
@@ -185,17 +222,22 @@ pub(super) fn run(
                 return Err(Outcome::InvalidRequest);
             }
             let experiment = Experiment::new(args.keep_outputs.as_deref())?;
-            let native_path = experiment.path.join("companion.mp4");
-            let cli_path = experiment.path.join("reference.mp4");
+            let native_path = experiment
+                .path
+                .join(format!("companion.{}", args.profile.extension()));
+            let cli_path = experiment
+                .path
+                .join(format!("reference.{}", args.profile.extension()));
             let kind = args.remux.unwrap();
             report["input"] = observations(p, &args.source, kind);
             let start = Instant::now();
-            let native = p.copy_remux_mp4(
+            let native = p.copy_profile(
                 &CopyRemuxRequest {
                     source: &args.source,
                     destination: &native_path,
                     expected_kind: kind,
                 },
+                args.profile,
                 &CANCELLED,
             );
             report["elapsed_us"]["native_transform"] = json!(start.elapsed().as_micros());
@@ -211,7 +253,7 @@ pub(super) fn run(
                     .args(["-nostdin", "-v", "error", "-xerror", "-copyts"])
                     .args(DISCOVERY)
                     .args(["-fd", "0", "-i", "fd:"])
-                    .args(COPY_OUTPUT)
+                    .args(output_options)
                     .arg(&cli_path)
                     .stdin(Stdio::from(file(&args.source)?)),
                 &CANCELLED,
@@ -226,16 +268,18 @@ pub(super) fn run(
             report["reference"]["observations"] = observations(p, &cli_path, kind);
             // Existing read-only S3 probe supplies layout facts for the CLI
             // artifact too; it does not normalize or publish anything.
-            let layout = probe_media(&MediaPathRequest {
-                schema_version: 1,
-                source: cli_path.clone(),
-                expected_kind: kind,
-            })
-            .map_err(|e| Outcome::from(e.kind))?;
-            report["reference"]["layout"] =
-                json!({"leading_moov":layout.fast_start,"fragmented":layout.fragmented});
-            if !layout.fast_start || layout.fragmented {
-                return Err(Outcome::InvalidOutput);
+            if !flac {
+                let layout = probe_media(&MediaPathRequest {
+                    schema_version: 1,
+                    source: cli_path.clone(),
+                    expected_kind: kind,
+                })
+                .map_err(|e| Outcome::from(e.kind))?;
+                report["reference"]["layout"] =
+                    json!({"leading_moov":layout.fast_start,"fragmented":layout.fragmented});
+                if !layout.fast_start || layout.fragmented {
+                    return Err(Outcome::InvalidOutput);
+                }
             }
             let artifact_pair = compare(
                 &Observation::libav(p.probe_metadata(&native_path, &CANCELLED)),
@@ -293,6 +337,16 @@ pub(super) fn run(
             report["output_bytes"] = json!({"companion":native.output_bytes, "reference":std::fs::metadata(&cli_path).map_err(|_| Outcome::Io)?.len()});
             if !ok {
                 return Err(Outcome::InvalidOutput);
+            }
+            if flac {
+                flac::verify(
+                    args,
+                    p,
+                    &experiment.path,
+                    &native_path,
+                    &cli_path,
+                    &mut report,
+                )?;
             }
             Ok(())
         })();

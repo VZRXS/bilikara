@@ -11,6 +11,63 @@ pub struct CopyRemuxRequest<'a> {
     pub expected_kind: ExpectedMediaKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyProfile {
+    Mp4,
+    Flac,
+}
+impl CopyProfile {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4_single_h264_or_aac_faststart_v1",
+            Self::Flac => "mp4_single_flac_to_native_flac_v1",
+        }
+    }
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Flac => "flac",
+        }
+    }
+}
+
+/// Narrow normal-header/STREAMINFO check, not a frame/CRC/MD5 validator.
+/// Only public numerical facts leave this helper; no tags or MD5 bytes.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct FlacStreamInfo {
+    pub sample_rate_hz: u32,
+    pub channel_count: u32,
+    pub bits_per_sample: u32,
+    pub total_samples: Option<u64>,
+    pub md5_present: bool,
+}
+impl FlacStreamInfo {
+    pub fn read(reader: &mut impl std::io::Read) -> std::io::Result<Self> {
+        let mut header = [0; 42];
+        reader.read_exact(&mut header)?;
+        let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+        if &header[..4] != b"fLaC" || header[4] & 0x7f != 0 || header[5..8] != [0, 0, 34] {
+            return Err(invalid());
+        }
+        let v = &header[8..];
+        let packed = u64::from_be_bytes(v[10..18].try_into().unwrap());
+        let total = packed & ((1 << 36) - 1);
+        let info = Self {
+            sample_rate_hz: (packed >> 44) as u32,
+            channel_count: ((packed >> 41) & 7) as u32 + 1,
+            bits_per_sample: ((packed >> 36) & 31) as u32 + 1,
+            total_samples: (total != 0).then_some(total),
+            md5_present: v[18..34].iter().any(|b| *b != 0),
+        };
+        let min = u16::from_be_bytes(v[..2].try_into().unwrap());
+        let max = u16::from_be_bytes(v[2..4].try_into().unwrap());
+        if min < 16 || max < min || info.sample_rate_hz == 0 || info.bits_per_sample < 4 {
+            return Err(invalid());
+        }
+        Ok(info)
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct CopyRemuxResult {
     pub operation: &'static str,
@@ -21,6 +78,8 @@ pub struct CopyRemuxResult {
     pub output_scan: PacketScan,
     pub decoder_configuration_preserved: bool,
     pub leading_moov: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flac_streaminfo: Option<FlacStreamInfo>,
     pub finalized_and_published: bool,
     pub output_bytes: u64,
     pub cleanup_warning: Option<&'static str>,
@@ -28,12 +87,20 @@ pub struct CopyRemuxResult {
 
 impl LibavMetadataProbe {
     pub fn copy_remux_available(&self) -> bool {
+        self.copy_profile_available(CopyProfile::Mp4)
+    }
+
+    pub fn copy_profile_available(&self, profile: CopyProfile) -> bool {
         #[cfg(target_os = "linux")]
         {
-            self.remux.is_some() && self.packet_scan_available()
+            self.remux
+                .as_ref()
+                .is_some_and(|c| c.function(profile).is_some())
+                && self.packet_scan_available()
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = profile;
             false
         }
     }
@@ -47,10 +114,23 @@ impl LibavMetadataProbe {
         request: &CopyRemuxRequest<'_>,
         cancelled: &AtomicBool,
     ) -> Result<CopyRemuxResult, ProbeError> {
+        self.copy_profile(request, CopyProfile::Mp4, cancelled)
+    }
+
+    /// Explicit experimental profile. FLAC retains the complete encoded sample
+    /// sequence at its original precision/rate/channels. Visible MP4 offsets,
+    /// gaps, trims and configuration changes are unsupported; no sample repair.
+    pub fn copy_profile(
+        &self,
+        request: &CopyRemuxRequest<'_>,
+        profile: CopyProfile,
+        cancelled: &AtomicBool,
+    ) -> Result<CopyRemuxResult, ProbeError> {
         #[cfg(target_os = "linux")]
         {
             self.remux_impl(
                 request,
+                profile,
                 &super::Callback::new(cancelled),
                 &mut || {},
                 &mut || {},
@@ -58,7 +138,7 @@ impl LibavMetadataProbe {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (request, cancelled);
+            let _ = (request, profile, cancelled);
             Err(ProbeError::Unavailable(
                 "copy-remux requires the optional Linux companion".into(),
             ))
@@ -81,10 +161,17 @@ use std::{
 #[cfg(target_os = "linux")]
 pub(super) struct Capability {
     remux: wire::Remux,
+    flac: Option<wire::Remux>,
     release: wire::RemuxRelease,
 }
 #[cfg(target_os = "linux")]
 impl Capability {
+    fn function(&self, profile: CopyProfile) -> Option<wire::Remux> {
+        match profile {
+            CopyProfile::Mp4 => Some(self.remux),
+            CopyProfile::Flac => self.flac,
+        }
+    }
     pub(super) fn load(library: &wire::linux::Library) -> Result<Self, ProbeError> {
         use std::mem::{MaybeUninit, size_of, transmute};
         // SAFETY: M1 has negotiated the trusted build. This reads only the
@@ -104,6 +191,27 @@ impl Capability {
                 return Err(backend_error("incompatible remux schema/layout"));
             }
             Ok(Self {
+                // Same M5 layout, independently advertised optional profile.
+                // An older companion keeps MP4/probe/scan without FLAC.
+                flac: (|| -> Result<wire::Remux, ProbeError> {
+                    let info: wire::GetRemuxInfo = transmute(library.symbol(c"bm_flac_info_v1")?);
+                    let mut flac = MaybeUninit::<wire::RemuxInfo>::zeroed();
+                    if info(size_of::<wire::RemuxInfo>() as u32, flac.as_mut_ptr()) != 0 {
+                        return Err(backend_error("FLAC capability unavailable"));
+                    }
+                    let flac = flac.assume_init();
+                    if flac.schema != raw.schema
+                        || flac.request_size != raw.request_size
+                        || flac.result_size != raw.result_size
+                        || flac.scan_size != raw.scan_size
+                    {
+                        return Err(backend_error("incompatible FLAC schema/layout"));
+                    }
+                    Ok(transmute::<*mut std::ffi::c_void, wire::Remux>(
+                        library.symbol(c"bm_copy_flac_v1")?,
+                    ))
+                })()
+                .ok(),
                 remux: transmute::<*mut std::ffi::c_void, wire::Remux>(
                     library.symbol(c"bm_copy_remux_mp4_v1")?,
                 ),
@@ -247,18 +355,33 @@ fn layout(file: &mut fs::File, output: bool, flag: &AtomicBool) -> Result<bool, 
 }
 
 #[cfg(target_os = "linux")]
-fn contract(metadata: &Metadata, kind: ExpectedMediaKind) -> Result<(), ProbeError> {
+fn contract(
+    metadata: &Metadata,
+    kind: ExpectedMediaKind,
+    profile: CopyProfile,
+    output: bool,
+) -> Result<(), ProbeError> {
     use super::StreamType;
-    if metadata.container != "mov,mp4,m4a,3gp,3g2,mj2" {
+    let flac = profile == CopyProfile::Flac;
+    if metadata.container
+        != if flac && output {
+            "flac"
+        } else {
+            "mov,mp4,m4a,3gp,3g2,mj2"
+        }
+    {
         return Err(ProbeError::UnsupportedFormat(
             "copy-remux requires MP4-family input".into(),
         ));
     }
     let (ty, codec) = match kind {
-        ExpectedMediaKind::Audio => (StreamType::Audio, "aac"),
+        ExpectedMediaKind::Audio => (StreamType::Audio, if flac { "flac" } else { "aac" }),
         ExpectedMediaKind::Video => (StreamType::Video, "h264"),
     };
-    if metadata.streams.len() != 1 || metadata.streams[0].media_type != ty {
+    if metadata.streams.len() != 1
+        || metadata.streams[0].media_type != ty
+        || (flac && kind != ExpectedMediaKind::Audio)
+    {
         return Err(media_error(
             MediaErrorKind::MediaContractViolation,
             "copy-remux requires exactly one stream of the expected kind",
@@ -267,7 +390,7 @@ fn contract(metadata: &Metadata, kind: ExpectedMediaKind) -> Result<(), ProbeErr
     if metadata.streams[0].codec_name.as_deref() != Some(codec) {
         return Err(media_error(
             MediaErrorKind::UnsupportedCodec,
-            "copy-remux profile supports H.264 video or AAC audio",
+            "codec is outside the requested copy profile",
         ));
     }
     Ok(())
@@ -295,6 +418,7 @@ impl LibavMetadataProbe {
     fn remux_impl(
         &self,
         q: &CopyRemuxRequest<'_>,
+        profile: CopyProfile,
         callback: &super::Callback<'_>,
         before_publish: &mut dyn FnMut(),
         after_publish: &mut dyn FnMut(),
@@ -310,6 +434,9 @@ impl LibavMetadataProbe {
             .ok_or_else(|| {
                 ProbeError::Unavailable("companion copy-remux schema v1 unavailable".into())
             })?;
+        let transform = capability.function(profile).ok_or_else(|| {
+            ProbeError::Unavailable("companion requested copy profile unavailable".into())
+        })?;
         let check_cancel = || {
             if callback.flag.load(Ordering::Relaxed) {
                 Err(ProbeError::Cancelled)
@@ -337,7 +464,7 @@ impl LibavMetadataProbe {
         }
         let mut input_file = super::open_input(q.source)?;
         let metadata = self.probe_with_callback(q.source, callback)?;
-        contract(&metadata, q.expected_kind)?;
+        contract(&metadata, q.expected_kind, profile, false)?;
         layout(&mut input_file, false, callback.flag)?;
         let scratch = Scratch::new(q.destination.parent().unwrap())?;
         let path = CString::new(scratch.file.as_os_str().as_bytes())
@@ -357,7 +484,7 @@ impl LibavMetadataProbe {
         let mut pointer = std::ptr::null_mut();
         // SAFETY: separately negotiated ABI; fd/callback/string/library live
         // through this synchronous call and its allocating-module release.
-        let status = unsafe { (capability.remux)(&request, &mut pointer) };
+        let status = unsafe { transform(&request, &mut pointer) };
         let owned = OwnedResult {
             pointer,
             capability,
@@ -404,10 +531,19 @@ impl LibavMetadataProbe {
         }
         check_cancel()?;
         let mut output_file = super::open_input(&scratch.file)?;
-        let leading_moov = layout(&mut output_file, true, callback.flag)?;
+        let (leading_moov, flac_streaminfo) = match profile {
+            CopyProfile::Mp4 => (layout(&mut output_file, true, callback.flag)?, None),
+            CopyProfile::Flac => (
+                false,
+                Some(
+                    FlacStreamInfo::read(&mut output_file)
+                        .map_err(|_| backend_error("finalized native FLAC header invalid"))?,
+                ),
+            ),
+        };
         let output_bytes = output_file.metadata().map_err(io_error)?.len();
         let output = self.probe_with_callback(&scratch.file, callback)?;
-        contract(&output, q.expected_kind)?;
+        contract(&output, q.expected_kind, profile, true)?;
         let output_scan = self.scan_with_callback(
             &scratch.file,
             super::ScanSelection {
@@ -426,24 +562,39 @@ impl LibavMetadataProbe {
             .as_ref()
             .ok_or_else(|| backend_error("input summary absent"))?;
         let b = output_scan.selected.as_ref().unwrap();
-        if a.packet_count != b.packet_count
-            || a.payload_bytes != b.payload_bytes
+        if a.payload_bytes != b.payload_bytes
             || a.codec_name != b.codec_name
-            || !same_bounds(a, b)
+            || (profile == CopyProfile::Mp4
+                && (a.packet_count != b.packet_count || !same_bounds(a, b)))
         {
             return Err(backend_error(
                 "finalized packet inventory or timing bounds changed",
             ));
         }
+        if let Some(info) = &flac_streaminfo {
+            for stream in [&metadata.streams[0], &output.streams[0]] {
+                if stream.sample_rate_hz != Some(info.sample_rate_hz)
+                    || stream.channel_count != Some(info.channel_count)
+                    || stream.raw_bit_depth != Some(info.bits_per_sample)
+                {
+                    return Err(backend_error("FLAC sample configuration changed"));
+                }
+            }
+        }
         let mut result = CopyRemuxResult {
             operation: "copy_remux",
-            profile: "mp4_single_h264_or_aac_faststart_v1",
-            checking_depth: "streamcopy; exact decoder config, packet traversal, single-stream reopen, moov/mdat envelope; no full decode, playback certificate or cache-ready authority",
+            profile: profile.name(),
+            checking_depth: if profile == CopyProfile::Mp4 {
+                "streamcopy; exact decoder config, packet traversal, single-stream reopen, moov/mdat envelope; no full decode, playback certificate or cache-ready authority"
+            } else {
+                "streamcopy; complete STREAMINFO preserved; demux-visible continuous untrimmed sequence; packet traversal/payload length/reopen/header; no full decode, exhaustive edit-list or codec-corruption validation, playback certificate or cache-ready authority"
+            },
             input,
             output,
             output_scan,
             decoder_configuration_preserved: true,
             leading_moov,
+            flac_streaminfo,
             finalized_and_published: true,
             output_bytes,
             cleanup_warning: None,

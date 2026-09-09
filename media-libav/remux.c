@@ -1,7 +1,8 @@
 /* Private M5 implementation, included only by probe.c (and its test TU).
  * API authority: installed 9.0.1 headers, codec_par.c, packet.c, mux.c,
- * movenc.c, mux_utils.c. No encoder/BSF/metadata-copy/timestamp repair path. */
+ * movenc.c, mux_utils.c, flacenc.c, flacdec.c. No encoder/BSF/tag-copy path. */
 #include <limits.h>
+#include <libavutil/intreadwrite.h>
 
 typedef struct {
     Call *input;
@@ -47,7 +48,22 @@ static int same_decoder_config(const AVCodecParameters *a, const AVCodecParamete
         a->extradata && b->extradata && !memcmp(a->extradata, b->extradata, a->extradata_size) &&
         a->width == b->width && a->height == b->height &&
         a->sample_rate == b->sample_rate &&
+        (a->codec_id != AV_CODEC_ID_FLAC || a->bits_per_raw_sample == b->bits_per_raw_sample) &&
         av_channel_layout_compare(&a->ch_layout, &b->ch_layout) == 0;
+}
+
+/* mov_read_dfla exposes exactly the 34-byte STREAMINFO; flacenc uses it
+ * unchanged. Only decoding parameters/mandatory block bounds are checked.
+ * Frame sizes, total samples and MD5 may be unknown (zero); never invent them. */
+static int flac_configuration(const AVCodecParameters *p) {
+    if (!p->extradata || p->extradata_size != 34) return 0;
+    const uint8_t *v = p->extradata;
+    uint64_t packed = AV_RB64(v + 10);
+    return AV_RB16(v) >= 16 && AV_RB16(v + 2) >= AV_RB16(v) &&
+        p->sample_rate > 0 && (int)(packed >> 44) == p->sample_rate &&
+        (int)((packed >> 41) & 7) + 1 == p->ch_layout.nb_channels &&
+        p->bits_per_raw_sample >= 4 &&
+        (int)((packed >> 36) & 31) + 1 == p->bits_per_raw_sample;
 }
 
 static uint32_t output_error(int code) {
@@ -59,7 +75,7 @@ static uint32_t output_error(int code) {
     return status == BM_INVALID_MEDIA ? BM_BACKEND_FAILURE : status;
 }
 
-static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *q, BmRemuxResult *r) {
+static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *q, BmRemuxResult *r, int flac) {
     AVFormatContext *out = NULL;
     AVPacket *packet = NULL;
     AVCodecParameters *configuration = NULL;
@@ -68,16 +84,23 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     int ret = 0, close_ret = 0;
     r->stage = 1;
     if (s->iformat != av_find_input_format("mov")) { r->status = BM_UNSUPPORTED_FORMAT; goto done; }
-    if (s->nb_streams != 1 || media_type(s->streams[0]->codecpar->codec_type) != q->media_type) {
+    if (s->nb_streams != 1 || media_type(s->streams[0]->codecpar->codec_type) != q->media_type ||
+        (flac && q->media_type != 2)) {
         r->status = BM_CONTRACT; goto done;
     }
     AVStream *in = s->streams[0];
     const AVCodecParameters *par = in->codecpar;
-    if ((q->media_type == 1 && par->codec_id != AV_CODEC_ID_H264) ||
-        (q->media_type == 2 && par->codec_id != AV_CODEC_ID_AAC)) {
+    if (flac ? par->codec_id != AV_CODEC_ID_FLAC :
+        ((q->media_type == 1 && par->codec_id != AV_CODEC_ID_H264) ||
+         (q->media_type == 2 && par->codec_id != AV_CODEC_ID_AAC))) {
         r->status = BM_UNSUPPORTED_CODEC; goto done;
     }
     if (!par->extradata || par->extradata_size <= 0) { r->status = BM_INVALID_MEDIA; goto done; }
+    if (flac && !flac_configuration(par)) { r->status = BM_INVALID_MEDIA; goto done; }
+    if (flac && ((in->start_time != AV_NOPTS_VALUE && in->start_time != 0) ||
+        par->initial_padding || par->trailing_padding || par->seek_preroll)) {
+        r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+    }
     if (in->time_base.num <= 0 || in->time_base.den <= 0) {
         r->status = BM_UNSUPPORTED_LAYOUT; goto done;
     }
@@ -110,7 +133,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
         r->status = BM_BACKEND_FAILURE; goto done;
     }
     r->stage = 2;
-    ret = avformat_alloc_output_context2(&out, NULL, "mp4", q->staging_path);
+    ret = avformat_alloc_output_context2(&out, NULL, flac ? "flac" : "mp4", q->staging_path);
     if (ret < 0 || !out) { r->status = BM_BACKEND_FAILURE; goto done; }
     out->opaque = &io;
     out->interrupt_callback = (AVIOInterruptCB){ output_interrupted, &io };
@@ -132,8 +155,12 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     ret = avio_open2(&out->pb, q->staging_path, AVIO_FLAG_WRITE, &out->interrupt_callback, &options);
     if (ret < 0) goto write_error;
     if (av_dict_count(options)) { r->status = BM_UNAVAILABLE; goto done; }
-    if ((ret = av_dict_set(&options, "movflags", "+faststart", 0)) < 0 ||
-        (ret = av_dict_set(&options, "use_editlist", "1", 0)) < 0) goto write_error;
+    if (flac) {
+        if ((ret = av_dict_set(&options, "write_header", "1", 0)) < 0) goto write_error;
+    } else {
+        if ((ret = av_dict_set(&options, "movflags", "+faststart", 0)) < 0 ||
+            (ret = av_dict_set(&options, "use_editlist", "1", 0)) < 0) goto write_error;
+    }
     ret = avformat_write_header(out, &options);
     if (ret < 0) goto write_error;
     if (av_dict_count(options)) { r->status = BM_UNAVAILABLE; goto done; }
@@ -142,6 +169,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     packet = av_packet_alloc();
     if (!packet) { r->status = BM_BACKEND_FAILURE; goto done; }
     int64_t last_dts = AV_NOPTS_VALUE;
+    int64_t next_sample = 0;
     for (;;) {
         if (interrupted(call)) { r->status = BM_CANCELLED; goto done; }
         ret = av_read_frame(s, packet);
@@ -152,6 +180,17 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
             if (ret != AVERROR_EOF) { r->status = error_status(ret); goto done; }
             scan->terminal = BM_SCAN_EOF;
             if (!scan->selected.packet_count) { r->status = BM_INVALID_MEDIA; goto done; }
+            if (flac) {
+                uint64_t total = AV_RB64(par->extradata + 10) & ((1ULL << 36) - 1);
+                /* Available demux metadata, not a general edit-list parser.
+                 * Reject visible shortened/repeated presentation sequences. */
+                if ((total && total != (uint64_t)next_sample) ||
+                    (in->nb_frames > 0 && (uint64_t)in->nb_frames != scan->selected.packet_count) ||
+                    (in->duration != AV_NOPTS_VALUE &&
+                     av_compare_ts(in->duration, in->time_base, next_sample, (AVRational){1, par->sample_rate}))) {
+                    r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+                }
+            }
             break;
         }
         if (packet->stream_index != in->index) { r->status = BM_CONTRACT; goto done; }
@@ -160,6 +199,10 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
         if (packet->flags & AV_PKT_FLAG_CORRUPT) { r->status = BM_INVALID_MEDIA; goto done; }
         for (int i = 0; i < packet->side_data_elems; i++) {
             const AVPacketSideData *sd = &packet->side_data[i];
+            if (flac && sd->type == AV_PKT_DATA_SKIP_SAMPLES &&
+                (sd->size < 10 || AV_RL32(sd->data) || AV_RL32(sd->data + 4))) {
+                r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+            }
             if (sd->type == AV_PKT_DATA_ENCRYPTION_INFO || sd->type == AV_PKT_DATA_PARAM_CHANGE ||
                 (sd->type == AV_PKT_DATA_NEW_EXTRADATA &&
                  (sd->size != (size_t)par->extradata_size || memcmp(sd->data, par->extradata, sd->size)))) {
@@ -171,6 +214,16 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
          * Reject timing that movenc would otherwise repair or guess. */
         if (packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE || packet->duration <= 0) {
             r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+        }
+        if (flac) {
+            AVRational samples = {1, par->sample_rate};
+            int64_t duration = av_rescale_q(packet->duration, in->time_base, samples);
+            if (packet->pts != packet->dts || duration <= 0 || duration > INT64_MAX - next_sample ||
+                av_compare_ts(packet->pts, in->time_base, next_sample, samples) ||
+                av_compare_ts(packet->duration, in->time_base, duration, samples)) {
+                r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+            }
+            next_sample += duration;
         }
         av_packet_rescale_ts(packet, in->time_base, dst->time_base);
         if (packet->dts == AV_NOPTS_VALUE || packet->pts < packet->dts ||
@@ -209,7 +262,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (fd < 0) { r->status = BM_IO; goto done; }
     BmRequest check = {fd, q->input.cancelled, q->input.opaque};
     BmResult *metadata = NULL;
-    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par);
+    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par, 0);
     if (!r->status) r->status = metadata ? metadata->status : BM_BACKEND_FAILURE;
     bm_release(metadata);
     if (close(fd) < 0 && !r->status) r->status = BM_IO;
@@ -233,7 +286,11 @@ uint32_t bm_remux_info_v1(uint32_t size, BmRemuxInfo *info) {
     *info = (BmRemuxInfo){1, sizeof(BmRemuxRequest), sizeof(BmRemuxResult), sizeof(BmScanResult)};
     return BM_OK;
 }
-uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *q, BmRemuxResult **out) {
+uint32_t bm_flac_info_v1(uint32_t size, BmRemuxInfo *info) {
+    if (!av_guess_format("flac", NULL, NULL)) return BM_UNAVAILABLE;
+    return bm_remux_info_v1(size, info);
+}
+static uint32_t copy_profile(const BmRemuxRequest *q, BmRemuxResult **out, int flac) {
     if (!out) return BM_INVALID_REQUEST;
     *out = NULL;
     if (!q || !q->input.cancelled || !q->staging_path || q->staging_path[0] != '/' ||
@@ -243,9 +300,16 @@ uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *q, BmRemuxResult **out) {
     if (!r) return BM_BACKEND_FAILURE;
     *out = r;
     BmResult *metadata = NULL;
-    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL);
+    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL, flac);
     bm_release(metadata);
     if (status) r->status = status;
     return BM_OK;
+}
+uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *q, BmRemuxResult **out) {
+    return copy_profile(q, out, 0);
+}
+uint32_t bm_copy_flac_v1(const BmRemuxRequest *q, BmRemuxResult **out) {
+    if (!av_guess_format("flac", NULL, NULL)) return BM_UNAVAILABLE;
+    return copy_profile(q, out, 1);
 }
 void bm_remux_release_v1(BmRemuxResult *r) { free(r); }

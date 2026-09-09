@@ -18,6 +18,39 @@ fn assert_kind(error: ProbeError, kind: MediaErrorKind) {
 }
 
 #[test]
+fn normal_flac_header_allows_unknown_integrity_and_sample_fields() {
+    let mut header = [0u8; 42];
+    header[..8].copy_from_slice(b"fLaC\x80\0\0\x22");
+    header[8..12].copy_from_slice(&[0x10, 0, 0x10, 0]);
+    header[18..26].copy_from_slice(&((96000u64 << 44) | (1 << 41) | (23 << 36)).to_be_bytes());
+    let info = FlacStreamInfo::read(&mut header.as_slice()).unwrap();
+    assert_eq!(
+        (
+            info.sample_rate_hz,
+            info.channel_count,
+            info.bits_per_sample
+        ),
+        (96000, 2, 24)
+    );
+    assert_eq!(info.total_samples, None);
+    assert!(!info.md5_present);
+    header[25] = 19;
+    header[26] = 1;
+    let info = FlacStreamInfo::read(&mut header.as_slice()).unwrap();
+    assert_eq!(info.total_samples, Some(19));
+    assert!(info.md5_present); // presence is not an integrity check
+    for position in [0, 4, 7, 8] {
+        let mut bad = header;
+        bad[position] = 0;
+        if position == 4 {
+            bad[position] = 1;
+        }
+        assert!(FlacStreamInfo::read(&mut bad.as_slice()).is_err());
+    }
+    assert!(FlacStreamInfo::read(&mut &header[..41]).is_err());
+}
+
+#[test]
 fn owned_scratch_does_not_delete_unowned_files() {
     let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
     let directory = scratch.directory.clone();
@@ -33,9 +66,23 @@ fn owned_scratch_does_not_delete_unowned_files() {
 #[test]
 #[ignore = "requires real M5 companion, private fault companion and accepted fixtures"]
 fn live_publication_cancellation_and_late_errors() {
+    publication_cancellation_and_late_errors(CopyProfile::Mp4);
+}
+
+#[test]
+#[ignore = "requires real FLAC companion and shared M5 fault companion"]
+fn live_flac_publication_cancellation_and_late_errors() {
+    publication_cancellation_and_late_errors(CopyProfile::Flac);
+}
+
+fn publication_cancellation_and_late_errors(profile: CopyProfile) {
     let probe = unsafe { LibavMetadataProbe::load(&env_path("BILIKARA_LIBAV_COMPANION")) }.unwrap();
-    assert!(probe.copy_remux_available());
-    let fixture = env_path("BILIKARA_LIBAV_FIXTURES").join("aac.m4a");
+    assert!(probe.copy_profile_available(profile));
+    let fixture = env_path("BILIKARA_LIBAV_FIXTURES").join(if profile == CopyProfile::Flac {
+        "flac.mp4"
+    } else {
+        "aac.m4a"
+    });
     let root = Scratch::new(&std::env::temp_dir()).unwrap();
     let source = root.directory.join("source.m4a");
     fs::copy(fixture, &source).unwrap();
@@ -64,7 +111,7 @@ fn live_publication_cancellation_and_late_errors() {
             _ => symlink(root.directory.join("missing"), &destination).unwrap(),
         }
         assert_kind(
-            probe.copy_remux_mp4(&q, &flag).unwrap_err(),
+            probe.copy_profile(&q, profile, &flag).unwrap_err(),
             MediaErrorKind::DestinationExists,
         );
         assert!(fs::symlink_metadata(&destination).is_ok());
@@ -79,6 +126,7 @@ fn live_publication_cancellation_and_late_errors() {
     let error = probe
         .remux_impl(
             &q,
+            profile,
             &super::super::Callback::new(&flag),
             &mut || {
                 fs::write(&destination, b"racing publisher").unwrap();
@@ -92,13 +140,14 @@ fn live_publication_cancellation_and_late_errors() {
     assert_eq!(scratch_count(), 0);
     flag.store(true, Ordering::Relaxed);
     assert_eq!(
-        probe.copy_remux_mp4(&q, &flag).unwrap_err(),
+        probe.copy_profile(&q, profile, &flag).unwrap_err(),
         ProbeError::Cancelled
     );
     flag.store(false, Ordering::Relaxed);
     let error = probe
         .remux_impl(
             &q,
+            profile,
             &super::super::Callback::new(&flag),
             &mut || {
                 flag.store(true, Ordering::Relaxed);
@@ -117,6 +166,7 @@ fn live_publication_cancellation_and_late_errors() {
     let result = probe
         .remux_impl(
             &q,
+            profile,
             &super::super::Callback::new(&flag),
             &mut || {},
             &mut || {
@@ -161,7 +211,7 @@ fn live_publication_cancellation_and_late_errors() {
             unsafe {
                 set_fault(mode, cancel, (&flag as *const AtomicBool).cast_mut().cast());
             }
-            let error = faults.copy_remux_mp4(&q, &flag).unwrap_err();
+            let error = faults.copy_profile(&q, profile, &flag).unwrap_err();
             if mode == 1 {
                 assert_eq!(error, ProbeError::Cancelled);
             } else {

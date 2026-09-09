@@ -220,6 +220,7 @@ struct Args {
     timeout: Duration,
     scan: Option<bilikara_runtime::experimental_libav::ScanSelection>,
     remux: Option<ExpectedMediaKind>,
+    profile: bilikara_runtime::experimental_libav::CopyProfile,
     keep_outputs: Option<PathBuf>,
 }
 fn args(args: &[OsString]) -> Option<Args> {
@@ -246,6 +247,7 @@ fn args(args: &[OsString]) -> Option<Args> {
         timeout: Duration::from_secs(5),
         scan: None,
         remux: None,
+        profile: bilikara_runtime::experimental_libav::CopyProfile::Mp4,
         keep_outputs: None,
     };
     if !result.companion.is_absolute()
@@ -259,7 +261,10 @@ fn args(args: &[OsString]) -> Option<Args> {
     let mut args = args[4..].iter();
     while let Some(arg) = args.next() {
         match arg.to_str()? {
-            "--copy-remux" => {
+            "--copy-remux" | "--flac" => {
+                if arg == "--flac" {
+                    result.profile = bilikara_runtime::experimental_libav::CopyProfile::Flac;
+                }
                 if result.remux.is_some() {
                     return None;
                 }
@@ -340,7 +345,7 @@ fn args(args: &[OsString]) -> Option<Args> {
 pub fn run(arguments: &[OsString]) -> i32 {
     let Some(args) = args(arguments) else {
         eprintln!(
-            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video | --scan-stream INDEX --scan-kind audio|video | --copy-remux audio|video [--keep-outputs /absolute/NEW-directory]] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled]"
+            "usage: libav_metadata compare /trusted/companion.so /same-build/prefix /absolute/sample PUBLIC_LABEL [--pure-rust audio|video | --scan-stream INDEX --scan-kind audio|video | (--copy-remux audio|video | --flac audio) [--keep-outputs /absolute/NEW-directory]] [--repeat 1..10] [--timeout-ms 1..60000] [--cancelled]"
         );
         return 2;
     };

@@ -111,13 +111,13 @@ static uint32_t media_type(enum AVMediaType t) {
 }
 
 static void scan_packets(AVFormatContext *s, Call *call, const BmScanRequest *q, BmScanResult *r);
-static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *q, BmRemuxResult *r);
+static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *q, BmRemuxResult *r, int flac);
 static int same_decoder_config(const AVCodecParameters *a, const AVCodecParameters *b);
 
 static uint32_t inspect(const BmRequest *q, BmResult **out,
                         const BmScanRequest *scan_request, BmScanResult *scan_result,
                         const BmRemuxRequest *remux_request, BmRemuxResult *remux_result,
-                        const AVCodecParameters *expected_config) {
+                        const AVCodecParameters *expected_config, int flac) {
     if (!out) return BM_INVALID_REQUEST;
     *out = NULL;
     if (!q || !q->cancelled) return BM_INVALID_REQUEST;
@@ -225,7 +225,7 @@ static uint32_t inspect(const BmRequest *q, BmResult **out,
         fail(r, BM_INVALID_MEDIA, "finalized decoder configuration differs"); goto done;
     }
     if (scan_request) scan_packets(s, &call, scan_request, scan_result);
-    if (remux_request) remux_packets(s, &call, remux_request, remux_result);
+    if (remux_request) remux_packets(s, &call, remux_request, remux_result, flac);
     goto done;
 av_error:
     if (interrupted(&call)) fail(r, BM_CANCELLED, "cancelled during discovery");
@@ -245,7 +245,7 @@ done:
 }
 
 uint32_t bm_probe_metadata(const BmRequest *q, BmResult **out) {
-    return inspect(q, out, NULL, NULL, NULL, NULL, NULL);
+    return inspect(q, out, NULL, NULL, NULL, NULL, NULL, 0);
 }
 
 void bm_release(BmResult *result) { free(result); }
@@ -349,7 +349,7 @@ uint32_t bm_scan_packets_v1(const BmScanRequest *q, BmScanResult **out) {
     *out = r;
     r->inspection_level = 2;
     BmResult *metadata = NULL;
-    uint32_t status = inspect(&q->input, &metadata, q, r, NULL, NULL, NULL);
+    uint32_t status = inspect(&q->input, &metadata, q, r, NULL, NULL, NULL, 0);
     bm_release(metadata);
     if (status != BM_OK) r->status = status;
     return BM_OK;

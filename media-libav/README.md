@@ -20,6 +20,11 @@ M5's first transform profile adds only explicit single-stream MP4 copy-remux.
 See [COPY_REMUX.md](COPY_REMUX.md) for staging ownership, timestamp policy,
 bounded encoded-content comparison and the runnable regression command.
 
+M5 also offers an explicit FLAC-in-MP4 → native FLAC profile through the same
+writer/staging/publisher. See [FLAC_NORMALIZATION.md](FLAC_NORMALIZATION.md) for
+the continuous sample-sequence contract, full PCM/Claxon diagnostic comparison,
+and the extended finite live suite. Neither profile changes production routing.
+
 ## Build and reproduce
 
 Run from the repository root. At the user's request this M1 now pins **9.0.1**,
