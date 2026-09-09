@@ -6,6 +6,12 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows_libav_preview:
+        description: "Windows x64 same-build FFmpeg 9.0.1 / optional libav preview (artifact only)"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: write
@@ -17,10 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+        os: ${{ fromJSON(inputs.windows_libav_preview && '["windows-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
         python-version:
           - "3.11"
 
@@ -106,22 +109,12 @@ jobs:
     needs: test
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
+    env:
+      BILIKARA_WINDOWS_LIBAV_PREVIEW: ${{ inputs.windows_libav_preview && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            label: Windows x64
-            slug: windows
-          - os: windows-11-arm
-            label: Windows ARM64
-            slug: windows
-          - os: macos-latest
-            label: macOS ARM64
-            slug: macos
-          - os: macos-15-intel
-            label: macOS Intel
-            slug: macos
+        include: ${{ fromJSON(inputs.windows_libav_preview && '[{"os":"windows-latest","label":"Windows x64 libav preview","slug":"windows"}]' || '[{"os":"windows-latest","label":"Windows x64","slug":"windows"},{"os":"windows-11-arm","label":"Windows ARM64","slug":"windows"},{"os":"macos-latest","label":"macOS ARM64","slug":"macos"},{"os":"macos-15-intel","label":"macOS Intel","slug":"macos"}]') }}
 
 
     steps:
@@ -133,8 +126,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Select preview build prefix
+        if: inputs.windows_libav_preview
+        shell: pwsh
+        run: '"BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX=$env:RUNNER_TEMP/bilikara-windows-libav-preview" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+
       - name: Install FFmpeg on Windows
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !inputs.windows_libav_preview
         shell: pwsh
         run: |
           choco install ffmpeg -y --no-progress
@@ -247,6 +245,30 @@ jobs:
           cargo build --release --locked
           cd ..
 
+      - name: Setup x64 MSVC preview environment
+        if: inputs.windows_libav_preview
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup preview build shell
+        if: inputs.windows_libav_preview
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make diffutils pkgconf perl nasm curl gnupg
+
+      - name: Build same-source Windows FFmpeg and companion
+        if: inputs.windows_libav_preview
+        shell: msys2 {0}
+        run: bash media-libav/build-windows.sh
+
+      - name: Prepare preview driver and PE dependencies
+        if: inputs.windows_libav_preview
+        shell: pwsh
+        run: ./media-libav/prepare-windows.ps1
+
       - name: Build app bundle
         run: python build_bundle.py
         env:
@@ -355,6 +377,9 @@ jobs:
           runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else (m or 'unknown'))")"
           archive_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}.zip"
           artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}"
+          if [ "$BILIKARA_WINDOWS_LIBAV_PREVIEW" = 1 ]; then
+            archive_name="bilikara-${safe_ref}-windows-x64-libav-preview.zip"
+          fi
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
@@ -422,6 +447,23 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
+      - name: Smoke extracted Windows libav preview
+        if: inputs.windows_libav_preview
+        shell: pwsh
+        run: |
+          $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
+          Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
+          $package = Join-Path $extracted 'bilikara'
+          Push-Location $package
+          try {
+            & './libav-smoke.ps1'
+          } finally {
+            Pop-Location
+            if (Test-Path "$package/libav-smoke-result.json") {
+              Copy-Item "$package/libav-smoke-result.json" dist/libav-smoke-result.json
+            }
+          }
+
       - name: Archive and verify round-trip macOS bundle
         if: runner.os == 'macOS'
         run: |
@@ -472,11 +514,32 @@ jobs:
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
 
       - name: Upload Windows bundle artifact
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !inputs.windows_libav_preview
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
           path: dist/bilikara
+          if-no-files-found: error
+
+      - name: Collect Windows preview diagnostics
+        if: always() && inputs.windows_libav_preview
+        shell: pwsh
+        run: |
+          $records = Join-Path $env:BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX 'records'
+          if (Test-Path $records) {
+            New-Item -ItemType Directory -Force dist | Out-Null
+            Copy-Item $records dist/windows-libav-preview-records -Recurse -Force
+          }
+
+      - name: Upload Windows preview package and diagnostics
+        if: always() && inputs.windows_libav_preview
+        uses: actions/upload-artifact@v6
+        with:
+          name: bilikara-windows-x64-libav-preview-${{ github.run_id }}
+          path: |
+            bilikara-*-windows-x64-libav-preview.zip
+            dist/windows-libav-preview-records
+            dist/libav-smoke-result.json
           if-no-files-found: error
 
       - name: Upload macOS bundle artifact
@@ -488,7 +551,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && !inputs.windows_libav_preview
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
@@ -498,7 +561,7 @@ jobs:
   mirror-release-r2:
     name: Mirror Release To R2
     needs: bundle
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.windows_libav_preview
     runs-on: ubuntu-latest
     env:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

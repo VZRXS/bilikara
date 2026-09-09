@@ -11,6 +11,15 @@
 >
 > v0.7 仍是 Rust 规则核心、Python 运行编排与 Tauri 桌面壳并存的过渡架构，并非纯 Rust 后端。详细边界与后续计划请参阅 [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)。
 
+v0.8 M6 media integration: supported packages use the trusted same-build FFmpeg
+9.0.1 companion by default for metadata, packet traversal, single-track H.264/AAC
+MP4 copy/fast-start, and FLAC-in-MP4 extraction. Set `BILIKARA_MEDIA_BACKEND=legacy`
+**before startup** to restore the previous routes without loading libav. Windows
+x64 extracted-package execution awaits Actions after review/push; manual playback
+acceptance is separate. Unprovisioned builds retain existing behavior. CLI remains
+packaged; this does not certify historical Hi-Res fixes or other platforms.
+See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
+
 <p align="center">
   <img src="images/host.png" alt="Host 界面" width="700"><br>
   <sub>Host 界面</sub>

@@ -74,6 +74,7 @@ pub struct CopyRemuxResult {
     pub profile: &'static str,
     pub checking_depth: &'static str,
     pub input: PacketScan,
+    pub input_metadata: Metadata,
     pub output: Metadata,
     pub output_scan: PacketScan,
     pub decoder_configuration_preserved: bool,
@@ -91,14 +92,14 @@ impl LibavMetadataProbe {
     }
 
     pub fn copy_profile_available(&self, profile: CopyProfile) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             self.remux
                 .as_ref()
-                .is_some_and(|c| c.function(profile).is_some())
+                .is_ok_and(|c| c.function(profile).is_ok())
                 && self.packet_scan_available()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = profile;
             false
@@ -126,7 +127,7 @@ impl LibavMetadataProbe {
         profile: CopyProfile,
         cancelled: &AtomicBool,
     ) -> Result<CopyRemuxResult, ProbeError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             self.remux_impl(
                 request,
@@ -136,21 +137,21 @@ impl LibavMetadataProbe {
                 &mut || {},
             )
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = (request, profile, cancelled);
             Err(ProbeError::Unavailable(
-                "copy-remux requires the optional Linux companion".into(),
+                "copy-remux requires the optional Linux/Windows companion".into(),
             ))
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::{backend_error, media_error, wire};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::MediaErrorKind;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
     fs,
     io::{Seek, SeekFrom},
@@ -158,21 +159,21 @@ use std::{
     sync::atomic::Ordering,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) struct Capability {
     remux: wire::Remux,
-    flac: Option<wire::Remux>,
+    flac: Result<wire::Remux, ProbeError>,
     release: wire::RemuxRelease,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Capability {
-    fn function(&self, profile: CopyProfile) -> Option<wire::Remux> {
+    fn function(&self, profile: CopyProfile) -> Result<wire::Remux, ProbeError> {
         match profile {
-            CopyProfile::Mp4 => Some(self.remux),
-            CopyProfile::Flac => self.flac,
+            CopyProfile::Mp4 => Ok(self.remux),
+            CopyProfile::Flac => self.flac.clone(),
         }
     }
-    pub(super) fn load(library: &wire::linux::Library) -> Result<Self, ProbeError> {
+    pub(super) fn load(library: &wire::Library) -> Result<Self, ProbeError> {
         use std::mem::{MaybeUninit, size_of, transmute};
         // SAFETY: M1 has negotiated the trusted build. This reads only the
         // independent M5 schema; missing/shorter capabilities stay unavailable.
@@ -210,8 +211,7 @@ impl Capability {
                     Ok(transmute::<*mut std::ffi::c_void, wire::Remux>(
                         library.symbol(c"bm_copy_flac_v1")?,
                     ))
-                })()
-                .ok(),
+                })(),
                 remux: transmute::<*mut std::ffi::c_void, wire::Remux>(
                     library.symbol(c"bm_copy_remux_mp4_v1")?,
                 ),
@@ -223,12 +223,12 @@ impl Capability {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct OwnedResult<'a> {
     pointer: *mut wire::RemuxResult,
     capability: &'a Capability,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Drop for OwnedResult<'_> {
     fn drop(&mut self) {
         if !self.pointer.is_null() {
@@ -238,19 +238,20 @@ impl Drop for OwnedResult<'_> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn io_error(_: std::io::Error) -> ProbeError {
     media_error(MediaErrorKind::Io, "experimental output I/O failed")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct Scratch {
     directory: PathBuf,
     file: PathBuf,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Scratch {
     fn new(parent: &Path) -> Result<Self, ProbeError> {
+        #[cfg(target_os = "linux")]
         use std::os::unix::fs::DirBuilderExt;
         for _ in 0..16 {
             let mut nonce = [0; 16];
@@ -259,7 +260,10 @@ impl Scratch {
                 ".bilikara-remux-{:032x}",
                 u128::from_ne_bytes(nonce)
             ));
-            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(target_os = "linux")]
+            builder.mode(0o700);
+            match builder.create(&directory) {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(io_error(e)),
                 Ok(()) => {
@@ -290,7 +294,7 @@ impl Scratch {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = self.cleanup();
@@ -299,8 +303,21 @@ impl Drop for Scratch {
 
 /// Reuse S3's box-header reader without collecting the file or a new MP4
 /// parser. Bounded envelope only: not sample-offset or full decode validation.
-#[cfg(target_os = "linux")]
-fn layout(file: &mut fs::File, output: bool, flag: &AtomicBool) -> Result<bool, ProbeError> {
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn layout(
+    file: &mut fs::File,
+    output: bool,
+    flag: &AtomicBool,
+) -> Result<bool, ProbeError> {
+    layout_facts(file, output, flag).map(|(leading, _)| leading)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn layout_facts(
+    file: &mut fs::File,
+    output: bool,
+    flag: &AtomicBool,
+) -> Result<(bool, bool), ProbeError> {
     let size = file.metadata().map_err(io_error)?.len();
     file.seek(SeekFrom::Start(0)).map_err(io_error)?;
     let (mut ftyp, mut moov, mut mdat, mut fragmented) = (false, None, None, false);
@@ -351,10 +368,10 @@ fn layout(file: &mut fs::File, output: bool, flag: &AtomicBool) -> Result<bool, 
         ));
     }
     file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-    Ok(leading)
+    Ok((leading, fragmented))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn contract(
     metadata: &Metadata,
     kind: ExpectedMediaKind,
@@ -396,7 +413,7 @@ fn contract(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn same_bounds(a: &super::PacketSummary, b: &super::PacketSummary) -> bool {
     let (Some(ab), Some(bb)) = (a.time_base, b.time_base) else {
         return false;
@@ -411,11 +428,11 @@ fn same_bounds(a: &super::PacketSummary, b: &super::PacketSummary) -> bool {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl LibavMetadataProbe {
     // The two local hooks are private deterministic test checkpoints. Public
     // calls always supply no-ops; no scheduler/attempt identities are involved.
-    fn remux_impl(
+    pub(crate) fn remux_impl(
         &self,
         q: &CopyRemuxRequest<'_>,
         profile: CopyProfile,
@@ -423,22 +440,14 @@ impl LibavMetadataProbe {
         before_publish: &mut dyn FnMut(),
         after_publish: &mut dyn FnMut(),
     ) -> Result<CopyRemuxResult, ProbeError> {
-        use std::{
-            ffi::CString,
-            os::{fd::AsRawFd, unix::ffi::OsStrExt},
-        };
-        let capability = self
-            .remux
-            .as_ref()
-            .filter(|_| self.packet_scan_available())
-            .ok_or_else(|| {
-                ProbeError::Unavailable("companion copy-remux schema v1 unavailable".into())
-            })?;
-        let transform = capability.function(profile).ok_or_else(|| {
-            ProbeError::Unavailable("companion requested copy profile unavailable".into())
-        })?;
+        use std::ffi::CString;
+        #[cfg(target_os = "linux")]
+        use std::os::unix::ffi::OsStrExt;
+        let capability = self.remux.as_ref().map_err(Clone::clone)?;
+        self.scan.as_ref().map_err(Clone::clone)?;
+        let transform = capability.function(profile)?;
         let check_cancel = || {
-            if callback.flag.load(Ordering::Relaxed) {
+            if callback.is_cancelled() {
                 Err(ProbeError::Cancelled)
             } else {
                 Ok(())
@@ -451,6 +460,8 @@ impl LibavMetadataProbe {
                 "destination must be an absolute file path",
             ));
         }
+        #[cfg(target_os = "windows")]
+        wire::Library::check_local_path(q.destination)?;
         let reject_exists = || {
             media_error(
                 MediaErrorKind::DestinationExists,
@@ -467,11 +478,21 @@ impl LibavMetadataProbe {
         contract(&metadata, q.expected_kind, profile, false)?;
         layout(&mut input_file, false, callback.flag)?;
         let scratch = Scratch::new(q.destination.parent().unwrap())?;
+        #[cfg(target_os = "linux")]
         let path = CString::new(scratch.file.as_os_str().as_bytes())
             .map_err(|_| media_error(MediaErrorKind::InvalidRequest, "destination contains NUL"))?;
+        #[cfg(target_os = "windows")]
+        let path = CString::new(scratch.file.to_str().ok_or_else(|| {
+            media_error(
+                MediaErrorKind::InvalidRequest,
+                "destination is not valid Unicode",
+            )
+        })?)
+        .map_err(|_| media_error(MediaErrorKind::InvalidRequest, "destination contains NUL"))?;
+        let descriptor = self._library.descriptor(&input_file)?;
         let request = wire::RemuxRequest {
             input: wire::Request {
-                fd: input_file.as_raw_fd(),
+                fd: descriptor.fd,
                 cancelled: super::cancellation_callback,
                 opaque: (callback as *const super::Callback<'_>).cast_mut().cast(),
             },
@@ -590,6 +611,7 @@ impl LibavMetadataProbe {
                 "streamcopy; complete STREAMINFO preserved; demux-visible continuous untrimmed sequence; packet traversal/payload length/reopen/header; no full decode, exhaustive edit-list or codec-corruption validation, playback certificate or cache-ready authority"
             },
             input,
+            input_metadata: metadata,
             output,
             output_scan,
             decoder_configuration_preserved: true,
@@ -599,6 +621,11 @@ impl LibavMetadataProbe {
             output_bytes,
             cleanup_warning: None,
         };
+        drop(owned);
+        #[cfg(target_os = "windows")]
+        drop(descriptor);
+        drop(output_file);
+        drop(input_file);
         before_publish();
         check_cancel()?;
         // S2's same-filesystem no-replace primitive, kept local to avoid its
@@ -622,3 +649,7 @@ impl LibavMetadataProbe {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "remux/windows_tests.rs"]
+mod windows_tests;

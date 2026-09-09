@@ -68,7 +68,10 @@ static int flac_configuration(const AVCodecParameters *p) {
 
 static uint32_t output_error(int code) {
     /* A write/trailer/close error describes the output, never invalid input. */
-    if (code == AVERROR(EIO) || code == AVERROR(ENOSPC) || code == AVERROR(EDQUOT) ||
+    if (code == AVERROR(EIO) || code == AVERROR(ENOSPC) ||
+#ifdef EDQUOT
+        code == AVERROR(EDQUOT) ||
+#endif
         code == AVERROR(EFBIG) || code == AVERROR(EROFS) || code == AVERROR(EPIPE) ||
         code == AVERROR(EBADF) || code == AVERROR(ENOENT)) return BM_IO;
     uint32_t status = error_status(code);
@@ -115,6 +118,10 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_ENCRYPTION_INIT_INFO)) {
         r->status = BM_UNSUPPORTED_LAYOUT; goto done;
     }
+#ifdef _WIN32
+    uint32_t output_status = bm_empty_distinct_output(q->input.fd, q->staging_path);
+    if (output_status) { r->status = output_status; goto done; }
+#else
     struct stat input_stat, output_stat;
     if (fstat(q->input.fd, &input_stat) || stat(q->staging_path, &output_stat)) {
         r->status = BM_IO; goto done;
@@ -123,6 +130,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
         (input_stat.st_dev == output_stat.st_dev && input_stat.st_ino == output_stat.st_ino)) {
         r->status = BM_INVALID_REQUEST; goto done;
     }
+#endif
     BmScanResult *scan = &r->input_scan;
     scan->inspection_level = 2; scan->selected_count = 1;
     scan->selected.index = in->index; scan->selected.media_type = q->media_type;
@@ -258,7 +266,11 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     r->stage = 6;
     /* Reuse M1's fd-only discovery and subordinate-open denial to verify the
      * complete decoder config after muxer finalization, with input still live. */
+#ifdef _WIN32
+    int fd = bm_open_read(q->staging_path);
+#else
     int fd = open(q->staging_path, O_RDONLY | O_NONBLOCK);
+#endif
     if (fd < 0) { r->status = BM_IO; goto done; }
     BmRequest check = {fd, q->input.cancelled, q->input.opaque};
     BmResult *metadata = NULL;
@@ -293,7 +305,12 @@ uint32_t bm_flac_info_v1(uint32_t size, BmRemuxInfo *info) {
 static uint32_t copy_profile(const BmRemuxRequest *q, BmRemuxResult **out, int flac) {
     if (!out) return BM_INVALID_REQUEST;
     *out = NULL;
-    if (!q || !q->input.cancelled || !q->staging_path || q->staging_path[0] != '/' ||
+    if (!q || !q->input.cancelled || !q->staging_path ||
+#ifdef _WIN32
+        !bm_absolute_path(q->staging_path) ||
+#else
+        q->staging_path[0] != '/' ||
+#endif
         (q->media_type != 1 && q->media_type != 2)) return BM_INVALID_REQUEST;
     if (!compatible()) return BM_UNAVAILABLE;
     BmRemuxResult *r = calloc(1, sizeof(*r));

@@ -6254,6 +6254,17 @@ class CacheManager:
     ) -> None:
         if not media_path.exists() or media_path.stat().st_size <= 0:
             raise DownloadCommandError(f"缓存规范化失败: {label} 原始文件不可用")
+        # Duration discovery is metadata-only. Preserve the source media
+        # contract at this explicit legacy transform boundary before it can
+        # turn malformed input into a parseable candidate. Timestamp policy
+        # below remains the existing DownKyi CLI policy.
+        source_check = self._inspect_application_media(
+            media_path, expected_kind=stream_kind, operation="validate", log_path=log_path,
+            container_hint="mp4" if media_path.suffix.lower() != ".flac" else None,
+        )
+        if source_check["action"] == "compatibility" and source_check["backend"] == "ffprobe":
+            self._probe_media_metadata(None, ffmpeg_path, media_path, label=label, log_path=log_path,
+                expected_kind=stream_kind, _routing_decision=source_check)
         normalized_path = media_path.with_name(
             f".{media_path.stem}.normalized-{uuid.uuid4().hex}{media_path.suffix}"
         )
@@ -6567,6 +6578,7 @@ class CacheManager:
         label: str,
         log_path: Path,
     ) -> tuple[int, dict[str, object]]:
+        ffprobe_path = rust_runtime.media_compatibility_tool("ffprobe", ffprobe_path)
         if not media_path.exists():
             raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
         size = media_path.stat().st_size
@@ -6597,7 +6609,7 @@ class CacheManager:
             check=False,
             timeout=20,
             cwd=self._tool_arg_path(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
+            env=rust_runtime.media_compatibility_env(self._tool_process_env(ffmpeg_path)),
             **self._hidden_process_kwargs(),
         )
         if process.returncode != 0:
@@ -6630,6 +6642,7 @@ class CacheManager:
             log_path=log_path,
             expected_kind="audio",
             rust_container_hint=rust_container_hint,
+            metadata_only=True,
         )
         duration = self._normalized_stream_duration(metadata, "audio")
         if duration is None:
@@ -6717,7 +6730,8 @@ class CacheManager:
                     f"原始 {source_audio_duration:.3f} 秒，实际 {stream_duration:.3f} 秒，"
                     f"相差 {difference:.3f} 秒"
                 )
-        if str(context.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN):
+        if (str(context.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN)
+                and metadata.get("inspection_level") != "packet_scan"):
             self._validate_demux_file(
                 ffmpeg_path,
                 media_path,
@@ -6774,7 +6788,44 @@ class CacheManager:
         log_path: Path,
         expected_kind: str,
         rust_container_hint: str | None = None,
+        metadata_only: bool = False,
+        _routing_decision: dict[str, Any] | None = None,
     ) -> dict[str, object]:
+        routed = _routing_decision or self._inspect_application_media(
+            media_path, expected_kind=expected_kind,
+            operation="metadata" if metadata_only else "validate",
+            container_hint=rust_container_hint, log_path=log_path,
+        )
+        if routed["action"] == "completed":
+            metadata = routed["metadata"]
+            metadata["path"] = str(media_path)
+            return metadata
+        if routed["backend"] == "ffprobe":
+            resolved = rust_runtime.media_compatibility_tool("ffprobe", ffprobe_path)
+            if resolved is None:
+                raise DownloadCommandError("Same-build ffprobe compatibility is unavailable")
+            size, payload = self._probe_media_payload(
+                resolved, ffmpeg_path, media_path, label=label, log_path=log_path,
+            )
+            metadata = self._normalized_ffprobe_media_probe(
+                payload, media_path=media_path, size=size, fallback_reason=routed["reason"],
+            )
+            if not metadata_only:
+                self._validate_demux_file(ffmpeg_path, media_path, label=label,
+                    stream_kind=expected_kind, log_path=log_path, compatibility=routed)
+            completed = self._inspect_application_media(
+                media_path, expected_kind=expected_kind, operation="metadata" if metadata_only else "validate",
+                log_path=log_path, compatibility={
+                    "reason": routed["reason"], "size": size, "container": metadata["container"],
+                    "duration_seconds": metadata["duration_seconds"], "streams": metadata["streams"],
+                    "packet_scan_complete": not metadata_only,
+                },
+            )
+            metadata = completed["metadata"]
+            metadata["path"] = str(media_path)
+            return metadata
+        # Rust selected the pre-M6 path for a build without the package or an
+        # explicit startup rollback. Keep that existing compatibility code.
         if not media_path.exists():
             raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
         size = media_path.stat().st_size
@@ -6834,6 +6885,10 @@ class CacheManager:
                     f"[{self._log_timestamp()}] media probe {label}: Rust ok "
                     f"(codec={probe['codec']}, samples={probe['sample_count']})",
                 )
+                self._log_media_route(log_path, {
+                    "operation": "metadata" if metadata_only else "validate", "backend": "pure_rust",
+                    "outcome": "success", "compatibility_reason": routed["reason"],
+                })
                 return metadata
 
         resolved_ffprobe = ffprobe_path or self._ffprobe_path_for_ffmpeg(ffmpeg_path)
@@ -6860,6 +6915,10 @@ class CacheManager:
             f"[{self._log_timestamp()}] media probe {label}: ffprobe compatibility ok "
             f"(reason={fallback_reason})",
         )
+        self._log_media_route(log_path, {
+            "operation": "metadata" if metadata_only else "validate", "backend": "ffprobe",
+            "outcome": "success", "compatibility_reason": routed["reason"],
+        })
         return metadata
 
     @classmethod
@@ -6958,7 +7017,14 @@ class CacheManager:
         label: str,
         stream_kind: str,
         log_path: Path,
+        compatibility: dict[str, Any] | None = None,
     ) -> None:
+        routed = compatibility or self._inspect_application_media(
+            media_path, expected_kind=stream_kind, operation="packet_scan", log_path=log_path,
+        )
+        if routed["action"] == "completed":
+            return
+        ffmpeg_path = rust_runtime.media_compatibility_tool("ffmpeg", ffmpeg_path)
         map_specifier = "0:v:0" if stream_kind == "video" else "0:a:0"
         command = [
             self._tool_arg_path(ffmpeg_path),
@@ -6990,7 +7056,7 @@ class CacheManager:
                 check=False,
                 timeout=120,
                 cwd=self._tool_arg_path(BB_DOWN_DIR),
-                env=self._tool_process_env(ffmpeg_path),
+                env=rust_runtime.media_compatibility_env(self._tool_process_env(ffmpeg_path)),
                 **self._hidden_process_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
@@ -7001,6 +7067,37 @@ class CacheManager:
                 f"缓存校验失败: {label}: FFmpeg 完整包扫描失败: "
                 f"{self._compact_probe_error(message)}"
             )
+        self._log_media_route(log_path, {
+            "operation": "packet_scan", "backend": "ffmpeg", "outcome": "success",
+            "compatibility_reason": routed["reason"],
+        })
+
+    def _log_media_route(self, log_path: Path, diagnostic: dict[str, object]) -> None:
+        self._append_log_line(log_path, "media_diagnostic: " + json.dumps(diagnostic, sort_keys=True))
+
+    def _inspect_application_media(self, media_path: Path, *, expected_kind: str,
+                                   operation: str, log_path: Path,
+                                   container_hint: str | None = None,
+                                   compatibility: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            result = rust_runtime.inspect_media(
+                source=media_path, expected_kind=expected_kind, operation=operation,
+                container_hint=container_hint,
+                compatibility=compatibility,
+                should_cancel=self.stop_event.is_set if hasattr(self, "stop_event") else None,
+            )
+        except rust_runtime.RustMediaError as exc:
+            diagnostic = exc.response.get("error", {}).get("diagnostic")
+            if isinstance(diagnostic, dict):
+                self._log_media_route(log_path, diagnostic)
+            if exc.kind == "cancelled":
+                raise CacheCancelledError("Media operation cancelled") from exc
+            raise DownloadCommandError(f"Media operation failed: {exc.kind}") from exc
+        except rust_runtime.RustRuntimeUnavailableError as exc:
+            raise DownloadCommandError("Rust MediaBackend unavailable") from exc
+        if result["action"] == "completed":
+            self._log_media_route(log_path, result["diagnostic"])
+        return result
 
     @staticmethod
     def _optional_probe_float(value: object) -> float | None:
@@ -7076,6 +7173,11 @@ class CacheManager:
 
     @classmethod
     def _ffprobe_path_for_ffmpeg(cls, ffmpeg_path: Path) -> Path | None:
+        if os.name == "nt":
+            from .ffmpeg_vendor import runtime_files
+            for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+                if runtime_files(vendor) is not None:
+                    return FFPROBE_RUNTIME_PATH if cls._is_usable_ffprobe(FFPROBE_RUNTIME_PATH) else None
         candidates = []
         if FFPROBE_RUNTIME_PATH.exists():
             candidates.append(FFPROBE_RUNTIME_PATH)
@@ -9029,8 +9131,15 @@ class CacheManager:
 
     def _ensure_ffmpeg(self, force_refresh: bool = False) -> Path:
         with self.ffmpeg_prepare_lock:
+            from .ffmpeg_vendor import MANIFEST, runtime_files
+            preview_files = None
+            if os.name == "nt":
+                for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+                    preview_files = runtime_files(vendor)
+                    if preview_files is not None:
+                        break
             override = Path(FFMPEG_PATH_OVERRIDE).expanduser() if FFMPEG_PATH_OVERRIDE else None
-            if override and override.exists():
+            if preview_files is None and override and override.exists():
                 version = self._read_ffmpeg_version(override)
                 if not version:
                     raise RuntimeError(f"外部 FFmpeg 不可执行: {override}")
@@ -9050,6 +9159,23 @@ class CacheManager:
 
             if source_ffmpeg:
                 FFMPEG_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+                if preview_files is not None:
+                    # Shared CLI copies need the exact vendor closure. Refresh
+                    # a changed build together; identical sizes alone do not
+                    # identify a build. A completed group can stay in use by
+                    # another CLI process (Windows locks loaded executables).
+                    source_manifest = source_ffmpeg.parent / MANIFEST
+                    runtime_manifest = FFMPEG_TOOLS_DIR / MANIFEST
+                    same_group = (
+                        runtime_manifest.is_file()
+                        and runtime_manifest.read_bytes() == source_manifest.read_bytes()
+                    )
+                    for source in preview_files:
+                        self._sync_runtime_tool(source, FFMPEG_TOOLS_DIR / source.name,
+                                                force_refresh=force_refresh or not same_group)
+                    # Only a complete copy establishes this restore marker.
+                    if not same_group:
+                        shutil.copy2(source_manifest, runtime_manifest)
                 self._sync_runtime_tool(source_ffmpeg, runtime_ffmpeg, force_refresh=force_refresh)
                 if source_ffprobe:
                     self._sync_runtime_tool(source_ffprobe, runtime_ffprobe, force_refresh=force_refresh)
@@ -9066,6 +9192,11 @@ class CacheManager:
             return runtime_ffmpeg
 
     def _preferred_ffmpeg_sources(self) -> tuple[Path | None, Path | None]:
+        if os.name == "nt":
+            from .ffmpeg_vendor import runtime_files
+            for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+                if runtime_files(vendor) is not None:
+                    return vendor / "ffmpeg.exe", vendor / "ffprobe.exe"
         tool_suffix = ".exe" if os.name == "nt" else ""
         vendor_pairs = (
             (

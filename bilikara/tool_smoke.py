@@ -6,10 +6,16 @@ from pathlib import Path
 
 def packaged_tool_smoke_json(tool: str) -> str:
     normalized = str(tool or "").strip().lower()
-    if normalized not in {"native", "bbdown", "aria2c"}:
+    if normalized == "media-routing":
+        from .media_smoke import run
+        return run()
+    if normalized == "windows-libav-preview":
+        from .windows_preview_smoke import run
+        return run()
+    if normalized not in {"native", "bbdown", "aria2c", "ffmpeg"}:
         raise ValueError(f"unsupported packaged tool smoke target: {tool}")
 
-    if normalized in {"bbdown", "aria2c"}:
+    if normalized in {"bbdown", "aria2c", "ffmpeg"}:
         from .cache import CacheManager
         from .config import BACKUP_FILE, CACHE_DIR, PLAYED_SESSION_DIR, STATE_FILE
         from .store import PlaylistStore
@@ -21,6 +27,9 @@ def packaged_tool_smoke_json(tool: str) -> str:
             if normalized == "bbdown":
                 path = manager._ensure_bbdown()  # noqa: SLF001
                 version = manager._read_bbdown_version(path)  # noqa: SLF001
+            elif normalized == "ffmpeg":
+                path = manager._ensure_ffmpeg()  # noqa: SLF001
+                version = manager._read_ffmpeg_version(path)  # noqa: SLF001
             else:
                 path = manager._local_aria2c_binary_path()  # noqa: SLF001
                 manager._install_aria2c(  # noqa: SLF001

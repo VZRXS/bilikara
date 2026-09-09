@@ -63,6 +63,8 @@ MACOS_SYSTEM_DEPENDENCY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
 def main() -> None:
+    from scripts.windows_libav_preview import preview_prefix, stage
+    preview = preview_prefix()
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
     version_arg = f"{VERSION_FILE}{data_separator}."
@@ -107,6 +109,8 @@ def main() -> None:
         command, shell=False, check=True, cwd=ROOT_DIR
     )
     _write_release_compliance_files()
+    if preview is not None:
+        stage(preview, ROOT_DIR / "dist" / APP_NAME)
     if platform.system() == "Darwin":
         finalize_macos_app_bundle(ROOT_DIR / "dist" / f"{APP_NAME}.app")
     print()
@@ -305,8 +309,12 @@ def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate
         _validate_bbdown_redistribution_metadata(bundled_paths)
 
     bundled = [str(path.resolve()) for path in bundled_paths.values()]
-    for source in bundled:
-        args.extend(["--add-binary", f"{source}{data_separator}vendor"])
+    for binary_name, binary_path in bundled_paths.items():
+        source = str(binary_path.resolve())
+        # Preview DLLs are explicitly collected/staged after PyInstaller. Do
+        # not let its import scanner choose a runner-installed FFmpeg DLL.
+        preview_tool = os.environ.get("BILIKARA_WINDOWS_LIBAV_PREVIEW") == "1" and binary_name in {"ffmpeg", "ffprobe"}
+        args.extend(["--add-data" if preview_tool else "--add-binary", f"{source}{data_separator}vendor"])
 
     if verbose:
         print("Bundling external tools:")
@@ -636,7 +644,7 @@ def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[st
         lines.extend(
             [
                 "",
-                "Pinned portable macOS build provenance:",
+                "Pinned FFmpeg build provenance:",
                 f"- FFmpeg version: {source_metadata['version']}",
                 f"- Official source URL: {source_metadata.get('url') or 'not recorded'}",
                 f"- Source SHA-256: {source_metadata.get('sha256') or 'not recorded'}",
@@ -853,6 +861,11 @@ def _python_certifi_args(data_separator: str, *, verbose: bool = False) -> list[
 
 
 def _resolve_bundle_binary_path(binary_name: str) -> Path | None:
+    if binary_name in {"ffmpeg", "ffprobe"}:
+        from scripts.windows_libav_preview import preview_prefix
+        prefix = preview_prefix()
+        if prefix is not None:
+            return prefix / "bin" / f"{binary_name}.exe"
     direct = shutil.which(binary_name)
     if not direct:
         if binary_name == "ffprobe":

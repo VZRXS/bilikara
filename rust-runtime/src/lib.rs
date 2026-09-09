@@ -10,6 +10,7 @@ mod http_downloader;
 mod internet_remote;
 mod json_http;
 mod media_backend;
+mod media_routing;
 mod networking;
 mod status_service;
 mod update_installer;
@@ -28,8 +29,9 @@ pub use cache_runtime::{CacheRuntimeCommand, CacheRuntimeError, execute_cache_ru
 pub use diagnostics::{DiagnosticError, DiagnosticRequest, DiagnosticResult};
 pub use ffi::{
     bilikara_runtime_abi_version, bilikara_runtime_app_state_request, bilikara_runtime_download,
-    bilikara_runtime_free_string, bilikara_runtime_media_normalize, bilikara_runtime_media_probe,
-    bilikara_runtime_service, bilikara_runtime_status_service,
+    bilikara_runtime_free_string, bilikara_runtime_media_inspect, bilikara_runtime_media_normalize,
+    bilikara_runtime_media_probe, bilikara_runtime_media_startup, bilikara_runtime_service,
+    bilikara_runtime_status_service,
 };
 pub use gatcha_repository::{GatchaRepositoryError, GatchaRepositoryRequest, execute_gatcha};
 pub use http_downloader::{

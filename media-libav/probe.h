@@ -66,7 +66,9 @@ typedef struct {
     BmStream streams[BM_STREAMS];
 } BmResult;
 
-#if defined(__GNUC__)
+#if defined(_WIN32)
+#define BM_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__)
 #define BM_EXPORT __attribute__((visibility("default")))
 #else
 #define BM_EXPORT
@@ -121,7 +123,7 @@ typedef struct {
 typedef struct {
     BmRequest input;
     uint32_t media_type;
-    const char *staging_path; /* borrowed NUL-terminated absolute local path */
+    const char *staging_path; /* borrowed NUL-terminated absolute local path; UTF-8 on Windows */
 } BmRemuxRequest;
 typedef struct {
     uint32_t status, stage, finalized, configuration_preserved;
@@ -136,4 +138,10 @@ BM_EXPORT uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *request, BmRemuxRe
 BM_EXPORT uint32_t bm_flac_info_v1(uint32_t size, BmRemuxInfo *info);
 BM_EXPORT uint32_t bm_copy_flac_v1(const BmRemuxRequest *request, BmRemuxResult **result);
 BM_EXPORT void bm_remux_release_v1(BmRemuxResult *result);
+#if defined(_WIN32)
+/* Additive Windows adapter. Duplicate a borrowed read-only disk HANDLE into
+ * the companion/FFmpeg shared /MD CRT; close only that owned descriptor. */
+BM_EXPORT int32_t bm_fd_from_handle_v1(void *handle);
+BM_EXPORT void bm_fd_close_v1(int32_t fd);
+#endif
 #endif

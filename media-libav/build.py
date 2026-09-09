@@ -1,4 +1,4 @@
-"""Explicit Linux companion build. No pkg-config or system FFmpeg discovery."""
+"""Explicit companion build. No pkg-config or system FFmpeg discovery."""
 import argparse
 import json
 import os
@@ -14,14 +14,14 @@ def main():
     parser.add_argument("--sanitize", action="store_true", help="ASan/UBSan companion for local tests")
     parser.add_argument("--test", action="store_true", help="also run the focused C shim assertions")
     args = parser.parse_args()
-    if sys.platform != "linux" or not args.prefix.is_absolute() or not args.out.is_absolute():
-        parser.error("Linux and absolute prefix/output paths are required")
+    if sys.platform not in {"linux", "win32"} or not args.prefix.is_absolute() or not args.out.is_absolute():
+        parser.error("Linux/Windows and absolute prefix/output paths are required")
     prefix = args.prefix.resolve(strict=True)
     out = args.out.resolve()
     source = Path(__file__).resolve().parent
     env = dict(os.environ, LD_LIBRARY_PATH=str(prefix / "lib"))
     facts = json.loads(subprocess.check_output([
-        str(prefix / "bin/ffprobe"), "-v", "quiet", "-show_program_version",
+        str(prefix / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")), "-v", "quiet", "-show_program_version",
         "-show_library_versions", "-of", "json",
     ], env=env))
     program = facts["program_version"]
@@ -43,6 +43,29 @@ def main():
                "-I" + str(out), str(source / "probe.c"), "-L" + str(prefix / "lib"),
                "-Wl,--disable-new-dtags,-rpath," + str(prefix / "lib"), "-Wl,-z,defs",
                "-lavformat", "-lavcodec", "-lavutil", "-o", str(out / "libbilikara_media_libav.so")]
+    if sys.platform == "win32":
+        if args.sanitize:
+            parser.error("Windows preview does not enable sanitizers")
+        command = ["cl.exe", "/nologo", "/std:c11", "/O2", "/MD", "/W3", "/we4013",
+                   "/D_CRT_SECURE_NO_WARNINGS", "/D_CRT_NONSTDC_NO_WARNINGS", "/LD",
+                   "/I" + str(prefix / "include"), "/I" + str(out), str(source / "probe.c"),
+                   "/Fo" + str(out) + os.sep, "/link", "/MACHINE:X64",
+                   "/LIBPATH:" + str(prefix / "bin"), "/LIBPATH:" + str(prefix / "lib"),
+                   "avformat.lib", "avcodec.lib", "avutil.lib", "kernel32.lib",
+                   "/OUT:" + str(out / "bilikara_media_libav.dll")]
+        subprocess.run(command, check=True)
+        if args.test:
+            test_command = [v for v in command if v != "/LD"]
+            test_command[test_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
+            test_command[-1] = "/OUT:" + str(out / "test_shim.exe")
+            subprocess.run(test_command, check=True)
+            subprocess.run([str(out / "test_shim.exe")], check=True)
+            private_command = list(command)
+            private_command[private_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
+            private_command[-1] = "/OUT:" + str(out / "bilikara_media_libav_test.dll")
+            subprocess.run(private_command, check=True)
+        (out / "build-info.json").write_text(json.dumps(facts, indent=2) + "\n", encoding="utf-8")
+        return
     if args.sanitize:
         command += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
     subprocess.run(command, check=True)

@@ -4,6 +4,7 @@ use bilikara_runtime::experimental_libav::{
     CopyProfile, CopyRemuxRequest, ScanSelection,
     comparison::{packet_scan::ScanObservation, remux as content},
 };
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::DirBuilderExt;
 
 #[path = "flac.rs"]
@@ -72,10 +73,7 @@ impl Experiment {
                     .join(format!("bilikara-m5-{:032x}", u128::from_ne_bytes(nonce)))
             }
         };
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&path)
-            .map_err(|_| Outcome::Io)?;
+        private_directory(&path).map_err(|_| Outcome::Io)?;
         Ok(Self {
             path,
             keep: keep.is_some(),
@@ -187,8 +185,8 @@ pub(super) fn run(
                 "timing":"preserve media timeline; actual post-header time base; no repair/zero shift; edit lists enabled; known PTS/DTS/positive durations required",
                 "content_bound":{"media_bytes":content::MAX_MEDIA_BYTES,"packets":content::MAX_PACKETS,"json_bytes":content::MAX_CONTENT_JSON},
                 "evidence":"shared libav; no independent decoder or playback certificate; not a cache-ready projection"},
-            "reference_command":{"program":"FFMPEG_PREFIX/bin/ffmpeg", "arguments":effective_command,
-                "input":"read-only source descriptor on stdin", "environment":"child-only LD_LIBRARY_PATH=FFMPEG_PREFIX/lib; FFREPORT/LD_PRELOAD/LD_AUDIT removed"},
+            "reference_command":{"program":if cfg!(windows) {"RESTORED_CLI/ffmpeg.exe"} else {"FFMPEG_PREFIX/bin/ffmpeg"}, "arguments":effective_command,
+                "input":"read-only source descriptor on stdin", "environment":if cfg!(windows) {"restored package directory; inherited minimal Windows system PATH"} else {"child-only LD_LIBRARY_PATH=FFMPEG_PREFIX/lib; FFREPORT/LD_PRELOAD/LD_AUDIT removed"}},
             "outputs_retained":args.keep_outputs.is_some(),
             "elapsed_us":{"companion_load_once":load_us, "ffprobe_identity_once":inventory_us,"ffmpeg_identity_once":ffmpeg_identity_us}
         });
@@ -368,4 +366,11 @@ pub(super) fn run(
         }
     }
     i32::from(failed)
+}
+
+fn private_directory(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(target_os = "linux")]
+    builder.mode(0o700);
+    builder.create(path)
 }

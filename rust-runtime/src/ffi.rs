@@ -8,9 +8,7 @@ use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact, probe_con
 use crate::gatcha_repository::{GatchaRepositoryRequest, execute_gatcha};
 use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, download_to_path};
 use crate::json_http::{JsonHttpRequest, execute_json_request};
-use crate::media_backend::{
-    MediaError, MediaNormalizeRequest, MediaPathRequest, normalize_media, probe_media,
-};
+use crate::media_backend::{MediaError, MediaNormalizeRequest, MediaPathRequest, probe_media};
 use crate::networking::{NetworkAddressRequest, detect_lan_ipv4_addresses};
 use crate::status_service::{
     BilibiliLoginFacts, BilibiliLoginStatus, BilibiliLoginUpdate, GachaTaskUpdate,
@@ -42,13 +40,13 @@ struct DownloadWireResponse<T> {
 }
 
 #[derive(Serialize)]
-struct MediaWireResponse<T> {
+struct MediaWireResponse<T, E = MediaError> {
     schema_version: u32,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<MediaError>,
+    error: Option<E>,
 }
 
 #[derive(Deserialize)]
@@ -230,13 +228,54 @@ pub unsafe extern "C" fn bilikara_runtime_media_normalize(
     request_json: *const c_char,
 ) -> *mut c_char {
     media_call(request_json, |request: MediaNormalizeRequest| {
-        normalize_media(&request)
+        crate::media_routing::normalize(
+            &request,
+            &std::sync::atomic::AtomicBool::new(false),
+            &|| false,
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
+/// The JSON and optional callback/context must remain valid for this synchronous
+/// call. The existing callback returns nonzero for cancellation; never unwinds.
+pub unsafe extern "C" fn bilikara_runtime_media_inspect(
+    request_json: *const c_char,
+    callback: Option<DownloadProgressCallback>,
+    context: *mut c_void,
+) -> *mut c_char {
+    media_call(
+        request_json,
+        |request: crate::media_routing::InspectRequest| {
+            crate::media_routing::inspect(
+                &request,
+                &std::sync::atomic::AtomicBool::new(false),
+                &|| callback.is_some_and(|f| f(0, 0, context) != 0),
+            )
+        },
+    )
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
 ///
+/// `request_json` must point to valid null-terminated UTF-8 media startup facts.
+pub unsafe extern "C" fn bilikara_runtime_media_startup(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // One-shot path/mode facts, not a mutable configuration service.
+    media_call(
+        request_json,
+        |facts: crate::media_routing::Configuration| {
+            crate::media_routing::configure(facts)
+                .map(|configured| json!({"configured": configured}))
+        },
+    )
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
 /// `request_json` must point to a valid null-terminated UTF-8 status-service command.
 pub unsafe extern "C" fn bilikara_runtime_status_service(
     request_json: *const c_char,
@@ -415,14 +454,15 @@ fn failed_service_response<E: Serialize>(error: E) -> RuntimeServiceWireResponse
     }
 }
 
-fn media_call<Request, ResultValue, Operation>(
+fn media_call<Request, ResultValue, Operation, E>(
     request_json: *const c_char,
     operation: Operation,
 ) -> *mut c_char
 where
     Request: serde::de::DeserializeOwned,
     ResultValue: Serialize,
-    Operation: FnOnce(Request) -> Result<ResultValue, MediaError>,
+    E: Serialize,
+    Operation: FnOnce(Request) -> Result<ResultValue, E>,
 {
     catch_unwind(AssertUnwindSafe(|| {
         if request_json.is_null() {

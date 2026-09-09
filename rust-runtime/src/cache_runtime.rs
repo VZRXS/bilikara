@@ -8,8 +8,7 @@ use crate::http_downloader::{
     download_to_path,
 };
 use crate::media_backend::{
-    ExpectedMediaKind, MediaErrorKind, MediaNormalizeRequest, MediaProbe,
-    cached_audio_requires_refresh, normalize_media,
+    ExpectedMediaKind, MediaNormalizeRequest, MediaProbe, cached_audio_requires_refresh,
 };
 use bilikara_rust::{
     AudioStreamDescriptor, AudioStreamSelection, AudioStreamSelectionRequest, QualityPolicyRequest,
@@ -1323,15 +1322,30 @@ fn run_track(
             continue;
         }
         emit_track_progress(shared, job, track, "validating", attempt, (0, 0));
-        let normalized = normalize_media(&MediaNormalizeRequest {
-            schema_version: 1,
-            source: raw_path.clone(),
-            destination: normalized_path.clone(),
-            expected_kind: track.kind,
-        });
+        let normalized = crate::media_routing::normalize(
+            &MediaNormalizeRequest {
+                schema_version: 1,
+                source: raw_path.clone(),
+                destination: normalized_path.clone(),
+                expected_kind: track.kind,
+            },
+            cancel,
+            &|| false,
+        );
+        let diagnostic = match &normalized {
+            Ok(result) => Some(&result.diagnostic),
+            Err(error) => error.diagnostic.as_ref(),
+        };
+        if let Some(diagnostic) = diagnostic {
+            append_log(
+                &job.spec.log_file,
+                &format!("media_diagnostic: {}", json!(diagnostic)),
+            );
+        }
         let _ = fs::remove_file(&raw_path);
         match normalized {
             Ok(result) => {
+                let result = result.media;
                 if result.output.duration_seconds < 1.0 {
                     last_error = CacheRuntimeError::new(
                         "invalid_media",
@@ -1361,7 +1375,7 @@ fn run_track(
             }
             Err(error) => {
                 last_error = CacheRuntimeError::new(
-                    media_error_kind(error.kind),
+                    error.kind,
                     format!("{}: {}", track.label, error.message),
                 );
                 let _ = fs::remove_dir_all(&attempt_dir);
@@ -1438,17 +1452,9 @@ fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntime
 /// with download failures. The names must match the kind's own wire encoding,
 /// because Python reads that encoding directly off the media FFI boundary and
 /// applies the same retry and fallback decisions to it.
-fn media_error_kind(kind: MediaErrorKind) -> &'static str {
-    match kind {
-        MediaErrorKind::InvalidRequest => "invalid_request",
-        MediaErrorKind::SourceMissing => "source_missing",
-        MediaErrorKind::DestinationExists => "destination_exists",
-        MediaErrorKind::UnsupportedCodec => "unsupported_codec",
-        MediaErrorKind::UnsupportedContainerLayout => "unsupported_container_layout",
-        MediaErrorKind::MediaContractViolation => "media_contract_violation",
-        MediaErrorKind::InvalidMedia => "invalid_media",
-        MediaErrorKind::Io => "io",
-    }
+#[cfg(test)]
+fn media_error_kind(kind: crate::MediaErrorKind) -> &'static str {
+    kind.as_str()
 }
 
 fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
@@ -1493,6 +1499,10 @@ fn resolve_track_stream(
     job: &CacheJobSpec,
     track: &TrackSpec,
 ) -> Result<BilibiliStream, CacheRuntimeError> {
+    #[cfg(test)]
+    if let Some(stream) = tests::ACQUIRED_STREAM.with(|s| s.borrow().clone()) {
+        return Ok(stream);
+    }
     let dash = fetch_dash_playurl(&BilibiliDashRequest {
         schema_version: 1,
         bvid: job.bvid.clone(),
@@ -2264,6 +2274,151 @@ fn append_log(path: &Path, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MediaErrorKind;
+
+    thread_local! {
+        // Test-only Bilibili acquisition adapter. HTTP transfer, run_track,
+        // media I/O, attempt paths and publication checks are real.
+        pub(super) static ACQUIRED_STREAM: std::cell::RefCell<Option<BilibiliStream>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    #[ignore = "requires same-build companion and synthetic fixtures; run in a fresh test process"]
+    fn live_default_media_through_native_track() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        let fixtures =
+            PathBuf::from(std::env::var_os("BILIKARA_LIBAV_FIXTURES").expect("fixtures"));
+        let companion =
+            PathBuf::from(std::env::var_os("BILIKARA_LIBAV_COMPANION").expect("companion"));
+        assert!(companion.is_file());
+        let legacy = std::env::var("BILIKARA_MEDIA_BACKEND").as_deref() == Ok("legacy");
+        let loads_before = crate::experimental_libav::TEST_LOADS.load(Ordering::Relaxed);
+        crate::media_routing::configure(crate::media_routing::Configuration {
+            mode: if legacy {
+                crate::media_routing::Mode::Legacy
+            } else {
+                crate::media_routing::Mode::Default
+            },
+            companion: Some(companion),
+        })
+        .unwrap();
+        let root = publication_root("live-media");
+        fs::create_dir_all(&root).unwrap();
+        let runtime =
+            CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("already reserved")));
+        let reservation = reservation(601);
+        let mut spec = job(&root);
+        spec.pages[0].duration_seconds = Some(1.0);
+        let queued = QueuedJob {
+            generation: 71,
+            cache_attempt_token: reservation.cache_attempt_token,
+            reservation: reservation.clone(),
+            spec,
+        };
+        let mut tracks = Vec::new();
+        for (name, kind, codec) in [
+            ("video.mp4", ExpectedMediaKind::Video, "h264"),
+            ("aac.m4a", ExpectedMediaKind::Audio, "aac"),
+            ("flac.mp4", ExpectedMediaKind::Audio, "flac"),
+        ] {
+            let bytes = fs::read(fixtures.join(name)).unwrap();
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/synthetic", server.local_addr().unwrap());
+            let transfer = thread::spawn(move || {
+                let (mut socket, _) = server.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).unwrap() > 0);
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .unwrap();
+                socket.write_all(&bytes).unwrap();
+            });
+            ACQUIRED_STREAM.with(|s| {
+                *s.borrow_mut() = Some(BilibiliStream {
+                    url,
+                    backup_urls: vec![],
+                    codec_id: None,
+                    codec_name: Some(codec.into()),
+                    codecs: None,
+                    mime_type: None,
+                    width: None,
+                    height: None,
+                    quality_id: None,
+                    bandwidth: None,
+                    order: None,
+                })
+            });
+            let track = TrackSpec {
+                key: codec.into(),
+                label: "synthetic".into(),
+                order: 0,
+                page: queued.spec.pages[0].clone(),
+                kind,
+            };
+            let result = run_track(
+                &runtime.shared,
+                &queued,
+                &track,
+                &Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            ACQUIRED_STREAM.with(|s| *s.borrow_mut() = None);
+            transfer.join().unwrap();
+            assert!(result.temporary_path.is_file());
+            assert!(
+                result.temporary_path.starts_with(
+                    root.join(".staging")
+                        .join(&reservation.item_incarnation_id)
+                        .join(&reservation.artifact_set_id)
+                )
+            );
+            assert_eq!(result.probe.codec, codec);
+            if codec != "aac" {
+                tracks.push(result);
+            }
+        }
+        let log = fs::read_to_string(&queued.spec.log_file).unwrap();
+        let loads_after = crate::experimental_libav::TEST_LOADS.load(Ordering::Relaxed);
+        if legacy {
+            assert_eq!(loads_before, loads_after, "legacy must not even load libav");
+        } else {
+            assert_eq!(loads_after - loads_before, 3);
+        }
+        let diagnostics: Vec<Value> = log
+            .lines()
+            .filter_map(|l| l.split_once("media_diagnostic: "))
+            .map(|(_, j)| serde_json::from_str(j).unwrap())
+            .collect();
+        assert_eq!(diagnostics.len(), 3);
+        for d in diagnostics {
+            assert_eq!(d["backend"], if legacy { "pure_rust" } else { "libav" });
+            assert_eq!(d["outcome"], "success");
+        }
+        let newer = root.join("artifacts/newer/video.mp4");
+        fs::create_dir_all(newer.parent().unwrap()).unwrap();
+        fs::write(&newer, b"newer competitor").unwrap();
+        let error =
+            publish_tracks_with_authorizer(&queued.spec, &reservation, tracks, |_, seen| {
+                assert_eq!(seen.cache_attempt_token, 601);
+                assert_eq!(seen.artifact_set_id, reservation.artifact_set_id);
+                Err(CacheRuntimeError::new(
+                    "cache_attempt_superseded",
+                    "removed or replaced",
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, "cache_attempt_superseded");
+        assert_eq!(fs::read(newer).unwrap(), b"newer competitor");
+        assert!(!root.join(&reservation.artifact_relative_directory).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn reservation(token: u64) -> CacheAttemptReservation {
         let item_incarnation_id = format!("i-{:032x}-{token:016x}", 1_u128);

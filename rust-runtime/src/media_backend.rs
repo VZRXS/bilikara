@@ -84,6 +84,18 @@ pub enum MediaErrorKind {
 }
 
 impl MediaErrorKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::SourceMissing => "source_missing",
+            Self::DestinationExists => "destination_exists",
+            Self::UnsupportedCodec => "unsupported_codec",
+            Self::UnsupportedContainerLayout => "unsupported_container_layout",
+            Self::MediaContractViolation => "media_contract_violation",
+            Self::InvalidMedia => "invalid_media",
+            Self::Io => "io",
+        }
+    }
     /// Whether a different media backend may be offered the same operation on
     /// the same input. This is deliberately narrower than "not retryable":
     /// terminal kinds such as [`MediaErrorKind::MediaContractViolation`] must
@@ -445,7 +457,7 @@ fn find_mpeg_descriptor(
     Ok(None)
 }
 
-fn aac_decoder_specific_config(path: &Path) -> Result<Option<Vec<u8>>, MediaError> {
+pub(crate) fn aac_decoder_specific_config(path: &Path) -> Result<Option<Vec<u8>>, MediaError> {
     let moov = top_level_boxes(path)?
         .into_iter()
         .find(|entry| entry.kind == *b"moov")
@@ -586,7 +598,7 @@ fn aac_audio_object_type(config: &[u8]) -> Option<u8> {
     Some(32 + ((first & 0x07) << 3) + (second >> 5))
 }
 
-fn validate_aac_decoder_specific_config(config: &[u8]) -> Result<(), MediaError> {
+pub(crate) fn validate_aac_decoder_specific_config(config: &[u8]) -> Result<(), MediaError> {
     let object_type = aac_audio_object_type(config)
         .ok_or_else(|| MediaError::invalid_media("AAC decoder configuration is empty"))?;
     if config.len() < 2 {

@@ -354,6 +354,8 @@ class RustRuntimeAdapterTest(unittest.TestCase):
                     "result": {
                         "source": probe(source, fast_start=False),
                         "output": probe(destination, fast_start=True),
+                        "diagnostic": {"operation": "mp4", "backend": "pure_rust",
+                                       "outcome": "success", "compatibility_reason": "not_provisioned"},
                     },
                 },
             }

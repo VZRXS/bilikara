@@ -66,11 +66,11 @@ impl PacketScan {
 
 impl LibavMetadataProbe {
     pub fn packet_scan_available(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            self.scan.is_some()
+            self.scan.is_ok()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             false
         }
@@ -85,37 +85,35 @@ impl LibavMetadataProbe {
         selection: ScanSelection,
         cancelled: &AtomicBool,
     ) -> Result<PacketScan, ProbeError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             self.scan_with_callback(source, selection, &super::Callback::new(cancelled))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = (source, selection, cancelled);
             Err(ProbeError::Unavailable(
-                "packet scan requires the optional Linux companion".into(),
+                "packet scan requires the optional Linux/Windows companion".into(),
             ))
         }
     }
-    #[cfg(target_os = "linux")]
-    pub(super) fn scan_with_callback(
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub(crate) fn scan_with_callback(
         &self,
         source: &Path,
         selection: ScanSelection,
         callback: &super::Callback<'_>,
     ) -> Result<PacketScan, ProbeError> {
         use super::{backend_error, cancellation_callback, open_input, status_error, wire};
-        use std::{os::fd::AsRawFd, sync::atomic::Ordering};
-        let capability = self.scan.as_ref().ok_or_else(|| {
-            ProbeError::Unavailable("companion packet scan schema v1 unavailable".into())
-        })?;
-        if callback.flag.load(Ordering::Relaxed) {
+        let capability = self.scan.as_ref().map_err(Clone::clone)?;
+        if callback.is_cancelled() {
             return Err(ProbeError::Cancelled);
         }
         let file = open_input(source)?;
+        let descriptor = self._library.descriptor(&file)?;
         let request = wire::ScanRequest {
             input: wire::Request {
-                fd: file.as_raw_fd(),
+                fd: descriptor.fd,
                 cancelled: cancellation_callback,
                 opaque: (callback as *const super::Callback<'_>).cast_mut().cast(),
             },
@@ -146,14 +144,14 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) struct Capability {
     scan: super::wire::Scan,
     release: super::wire::ScanRelease,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Capability {
-    pub(super) fn load(library: &super::wire::linux::Library) -> Result<Self, ProbeError> {
+    pub(super) fn load(library: &super::wire::Library) -> Result<Self, ProbeError> {
         use super::{backend_error, wire};
         use std::mem::{MaybeUninit, size_of, transmute};
         // SAFETY: trusted companion already passed M1 build negotiation. Only
@@ -183,12 +181,12 @@ impl Capability {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct OwnedScan<'a> {
     pointer: *mut super::wire::ScanResult,
     owner: &'a LibavMetadataProbe,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Drop for OwnedScan<'_> {
     fn drop(&mut self) {
         if !self.pointer.is_null() {
@@ -197,7 +195,7 @@ impl Drop for OwnedScan<'_> {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn convert(
     r: &super::wire::ScanResult,
     requested: ScanSelection,

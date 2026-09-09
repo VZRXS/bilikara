@@ -84,12 +84,18 @@ External-tool direction:
   resolution, selection, probing, and MP4/FLAC normalization are Rust-owned.
   BBDown, yt-dlp, aria2c, and FFmpeg CLI remain explicit desktop alternatives
   or compatibility fallbacks rather than hidden per-operation fallbacks.
-- Media backend: the existing pure-Rust `rust-runtime` `MediaBackend` now owns
-  supported MP4-family probe/validation and normalization. ffprobe remains an
-  explicit desktop compatibility path for unsupported containers/codecs, and
-  FFmpeg CLI retains DownKyi remux and full-packet scans. Consider direct FFmpeg
-  libraries only if a later measured coverage gap justifies their packaging and
-  cross-platform cost. Mobile production must not depend on CLI executables.
+- Media backend: S1–S3, M1–M3 and M5 MP4/FLAC capabilities are accepted. Current
+  M6 integrates default libav-first metadata, packet traversal, single-track
+  H.264/AAC MP4 copy/fast-start and FLAC-in-MP4 extraction in supported same-build
+  packages. Rust owns routing; Pure Rust and operation-specific same-build CLI
+  compatibility remain. `BILIKARA_MEDIA_BACKEND=legacy` at startup restores the
+  previous routes without libav. DownKyi timestamp remux, BBDown's own explicit
+  FFmpeg workflow and operations outside accepted profiles retain their paths.
+  Linux trusted-prefix integration is locally testable; Windows x64 package
+  execution needs Actions after review/push. Code review, Actions evidence and
+  deferred manual playback are separate gates. No ARM64/macOS or historical
+  Hi-Res acceptance is claimed. CLI stays packaged; original M7 removal is a
+  later-version decision. Mobile production must not depend on CLI executables.
 
 Casting foundation:
 

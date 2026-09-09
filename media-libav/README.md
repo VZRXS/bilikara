@@ -1,10 +1,32 @@
-# M1 optional libav metadata probe (Linux preview)
+# libav media integration
+
+## Current M6 behavior
+
+Supported provisioned packages now use libav first in normal Host/CacheRuntime
+operations: metadata, complete selected-track packet traversal, the accepted
+H.264/AAC MP4 copy/fast-start profile, and FLAC-in-MP4 to native FLAC. The one
+startup rollback is `BILIKARA_MEDIA_BACKEND=legacy`; unset or `default` selects
+libav first where provisioned. No smoke flag activates ordinary media routing.
+Unprovisioned targets retain their existing routes. Rust owns capability and
+error decisions; only explicit eligible Unsupported/Unavailable failures can
+use one operation-specific compatibility implementation. Profile timing/config
+limits that the retained writer cannot satisfy stay errors.
+
+The accepted Linux source-build prefix remains a local integration fixture, not
+a deployable package path. Windows x64 uses the actual packaged Python backend
+and restricted loader; Actions execution after push and manual playback remain
+pending separately from code review. See [M6 Windows integration](WINDOWS_PREVIEW.md).
+CLI remains packaged, with its own DownKyi timestamp and BBDown workflows.
+M7 CLI removal, other platforms/formats, full decode certification and historical
+Hi-Res acceptance are outside this closeout.
+
+## Historical M1–M5 developer entries
 
 `bilikara_runtime::experimental_libav::LibavMetadataProbe` is a developer-only
 Rust entry. The only opt-in is explicitly calling `unsafe load(absolute_path)`
 on a trusted companion, then `probe_metadata(absolute_input_path, &AtomicBool)`.
-The example exercises this exact entry. No normal application request calls it.
-No Python ABI, cache route, retry policy, publication rule or player changes.
+The example exercises this exact entry. M1 itself changed no normal application
+request, Python ABI, cache route, retry policy, publication rule or player.
 There is no fallback and no ffprobe subprocess in the M1 probe implementation.
 
 M2 extends this same example with an explicitly invoked developer `compare`
@@ -23,7 +45,7 @@ bounded encoded-content comparison and the runnable regression command.
 M5 also offers an explicit FLAC-in-MP4 → native FLAC profile through the same
 writer/staging/publisher. See [FLAC_NORMALIZATION.md](FLAC_NORMALIZATION.md) for
 the continuous sample-sequence contract, full PCM/Claxon diagnostic comparison,
-and the extended finite live suite. Neither profile changes production routing.
+and the extended finite live suite. Production routing is integrated by M6 above.
 
 ## Build and reproduce
 

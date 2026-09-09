@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import platform
 import sys
@@ -144,6 +145,10 @@ def _load_runtime_library(path: Path | None):
         library.bilikara_runtime_media_probe.restype = ctypes.c_void_p
         library.bilikara_runtime_media_normalize.argtypes = [ctypes.c_char_p]
         library.bilikara_runtime_media_normalize.restype = ctypes.c_void_p
+        library.bilikara_runtime_media_inspect.argtypes = [ctypes.c_char_p, _PROGRESS_CALLBACK, ctypes.c_void_p]
+        library.bilikara_runtime_media_inspect.restype = ctypes.c_void_p
+        library.bilikara_runtime_media_startup.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_media_startup.restype = ctypes.c_void_p
         library.bilikara_runtime_status_service.argtypes = [ctypes.c_char_p]
         library.bilikara_runtime_status_service.restype = ctypes.c_void_p
         library.bilikara_runtime_service.argtypes = [ctypes.c_char_p]
@@ -332,6 +337,8 @@ def app_state_request(command: str, **fields: Any) -> dict[str, Any]:
 
 
 def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
+    if _runtime_lib is not None and _media_startup_error:
+        raise RustRuntimeServiceError("invalid_request", _media_startup_error, response={})
     request = {"command": str(command), **fields}
     return _call_runtime_service("cache_runtime", request)
 
@@ -944,6 +951,8 @@ def probe_media(*, source: Path, expected_kind: str) -> dict[str, Any]:
 def normalize_media(
     *, source: Path, destination: Path, expected_kind: str
 ) -> dict[str, Any]:
+    if _media_startup_error:
+        raise RustMediaError("invalid_request", _media_startup_error, response={})
     request = {
         "schema_version": 1,
         "source": str(source.resolve()),
@@ -951,6 +960,9 @@ def normalize_media(
         "expected_kind": _normalized_media_kind(expected_kind),
     }
     result = _call_media_api("bilikara_runtime_media_normalize", request)
+    _validate_media_diagnostic(result.get("diagnostic"), outcome="success")
+    if result["diagnostic"]["operation"] not in {"mp4", "flac"}:
+        raise RustMediaError("invalid_response", "Invalid normalization operation", response={})
     source_result = result.get("source")
     output_result = result.get("output")
     if not isinstance(source_result, dict) or not isinstance(output_result, dict):
@@ -1028,6 +1040,11 @@ def _call_media_api(symbol: str, request: dict[str, Any]) -> dict[str, Any]:
 def _validate_media_probe(
     probe: dict[str, Any], *, expected_path: Path, expected_kind: str
 ) -> None:
+    if (not isinstance(probe.get("path"), str) or not isinstance(probe.get("codec"), str)
+            or type(probe.get("duration_seconds")) not in {int, float}
+            or any(type(probe.get(k)) is not int for k in ("sample_count", "sample_bytes", "file_bytes"))
+            or any(type(probe.get(k)) is not bool for k in ("fast_start", "fragmented"))):
+        raise RustMediaError("invalid_response", "Rust media backend returned invalid probe field types", response={})
     try:
         result_path = Path(str(probe.get("path") or "")).resolve()
         duration = float(probe.get("duration_seconds") or 0)
@@ -1045,6 +1062,7 @@ def _validate_media_probe(
         or str(probe.get("kind") or "") != _normalized_media_kind(expected_kind)
         or not str(probe.get("codec") or "")
         or duration <= 0
+        or not math.isfinite(duration)
         or sample_count <= 0
         or sample_bytes <= 0
         or file_bytes <= 0
@@ -1054,3 +1072,161 @@ def _validate_media_probe(
             "Rust media backend returned invalid probe metadata",
             response=probe,
         )
+
+
+def inspect_media(
+    *, source: Path, expected_kind: str, operation: str,
+    container_hint: str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    compatibility: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Transport Rust's media decision; never infer fallback from an error."""
+    if _runtime_lib is None:
+        raise RustRuntimeUnavailableError(_runtime_error or "Rust runtime is unavailable")
+    if _media_startup_error:
+        raise RustMediaError("invalid_request", _media_startup_error, response={})
+    request = {"schema_version": 1, "source": str(source.resolve()),
+               "expected_kind": _normalized_media_kind(expected_kind),
+               "operation": operation, "container_hint": container_hint, "compatibility": compatibility}
+
+    @_PROGRESS_CALLBACK
+    def cancelled(_done, _total, _context):
+        try:
+            return int(should_cancel is not None and should_cancel())
+        except Exception:
+            return 1
+
+    payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    pointer = _runtime_lib.bilikara_runtime_media_inspect(payload, cancelled, None)
+    if not pointer:
+        raise RustMediaError("invalid_response", "Rust media routing returned no response", response={})
+    try:
+        raw = ctypes.string_at(pointer)
+    finally:
+        _runtime_lib.bilikara_runtime_free_string(pointer)
+    try:
+        response = json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RustMediaError("invalid_response", "Malformed Rust media response", response={}) from exc
+    if not isinstance(response, dict) or type(response.get("schema_version")) is not int or response["schema_version"] != 1:
+        raise RustMediaError("invalid_response", "Invalid Rust media envelope", response={})
+    if response.get("status") == "failed" and isinstance(response.get("error"), dict):
+        failure = response["error"]
+        if failure.get("diagnostic") is not None:
+            _validate_media_diagnostic(failure["diagnostic"], outcome="failed")
+        raise RustMediaError(str(failure.get("kind") or "unknown"), "Rust media operation failed", response=response)
+    result = response.get("result")
+    if response.get("status") != "completed" or not isinstance(result, dict):
+        raise RustMediaError("invalid_response", "Invalid Rust media result", response={})
+    return _validate_inspection(result, source=source, expected_kind=expected_kind, operation=operation)
+
+
+_MEDIA_REASONS = {"legacy_override", "not_provisioned", "unavailable", "unsupported_format",
+                  "unsupported_codec", "unsupported_container_layout"}
+
+
+def _validate_media_diagnostic(value, *, outcome):
+    if (not isinstance(value, dict)
+            or set(value) != {"operation", "backend", "outcome", "compatibility_reason"}
+            or any(not isinstance(value.get(k), str) for k in ("operation", "backend", "outcome"))
+            or (value.get("compatibility_reason") is not None and not isinstance(value["compatibility_reason"], str))
+            or value.get("operation") not in {"metadata", "validate", "packet_scan", "mp4", "flac"}
+            or value.get("backend") not in {"libav", "pure_rust", "ffprobe", "ffmpeg"}
+            or value.get("outcome") != outcome
+            or value.get("compatibility_reason") not in _MEDIA_REASONS | {None}):
+        raise RustMediaError("invalid_response", "Invalid media diagnostic", response={})
+
+
+def _validate_inspection(result, *, source, expected_kind, operation):
+    def invalid():
+        raise RustMediaError("invalid_response", "Invalid Rust media result shape", response={})
+    if result.get("action") == "compatibility":
+        backend, reason = result.get("backend"), result.get("reason")
+        if not isinstance(reason, str) or not isinstance(backend, str) or reason not in _MEDIA_REASONS or backend not in {"legacy", "ffprobe", "ffmpeg"}:
+            invalid()
+        if (backend == "legacy") != (reason in {"legacy_override", "not_provisioned"}):
+            invalid()
+        if backend != "legacy" and (backend == "ffmpeg") != (operation == "packet_scan"):
+            invalid()
+        return result
+    if result.get("action") != "completed":
+        invalid()
+    metadata, diagnostic = result.get("metadata"), result.get("diagnostic")
+    if not isinstance(metadata, dict) or not isinstance(diagnostic, dict):
+        invalid()
+    _validate_media_diagnostic(diagnostic, outcome="success")
+    if (not isinstance(metadata.get("backend"), str) or metadata["backend"] not in {"libav", "pure_rust", "ffprobe"}
+            or diagnostic.get("backend") != metadata["backend"]
+            or diagnostic.get("operation") != operation or diagnostic.get("outcome") != "success"
+            or diagnostic.get("compatibility_reason") not in _MEDIA_REASONS | {None}
+            or metadata.get("path") != str(source.resolve())
+            or type(metadata.get("size")) is not int or metadata["size"] <= 0
+            or type(metadata.get("stream_count")) is not int or metadata["stream_count"] != 1 or not isinstance(metadata.get("container"), str)
+            or not metadata["container"]):
+        invalid()
+    depth = metadata.get("inspection_level")
+    if not {"duration_seconds", "streams", "inspection_level"}.issubset(metadata):
+        invalid()
+    if not isinstance(depth, str) or depth not in {"stream_metadata", "packet_scan", "sample_traversal"} or (operation != "metadata" and depth == "stream_metadata"):
+        invalid()
+    streams = metadata.get("streams")
+    if not isinstance(streams, list) or len(streams) != 1 or not isinstance(streams[0], dict):
+        invalid()
+    stream = streams[0]
+    if not {"kind", "codec", "duration_seconds"}.issubset(stream):
+        invalid()
+    if stream.get("kind") != expected_kind or (stream.get("codec") is not None and not isinstance(stream["codec"], str)):
+        invalid()
+    for duration in (metadata.get("duration_seconds"), stream.get("duration_seconds")):
+        if duration is not None and (type(duration) not in {int, float} or not math.isfinite(duration) or duration < 0):
+            invalid()
+    return result
+
+
+def media_compatibility_tool(name: str, existing: Path | None) -> Path | None:
+    """Same-package path facts for existing Host subprocess effects."""
+    if not _media_companion_provisioned:
+        return existing
+    if _media_tool_directory is None:
+        raise RustMediaError("unavailable", "Same-build media CLI path is unavailable", response={})
+    return _media_tool_directory / (name + (".exe" if os.name == "nt" else ""))
+
+
+def media_compatibility_env(env: dict[str, str]) -> dict[str, str]:
+    if platform.system() == "Linux" and _media_tool_directory is not None:
+        return {**env, "LD_LIBRARY_PATH": str(_media_tool_directory.parent / "lib")}
+    return env
+
+
+def _configure_media_routing() -> tuple[bool, Path | None, str]:
+    companion = None
+    tool_directory = None
+    if platform.system() == "Windows" and platform.machine().lower() in {"amd64", "x86_64"}:
+        from .config import VENDOR_DIR, INTERNAL_VENDOR_DIR
+        for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+            # Presence identifies a provisioned package even if a DLL was removed.
+            # Optional negotiation happens in Rust at the operation, not startup.
+            if (vendor / "ffmpeg-runtime.json").is_file():
+                companion = vendor.resolve() / "bilikara_media_libav.dll"
+                tool_directory = vendor.resolve()
+                break
+    elif platform.system() == "Linux":
+        path = os.environ.get("BILIKARA_LIBAV_COMPANION", "")
+        if path:
+            companion = Path(path).expanduser()
+            prefix = os.environ.get("BILIKARA_LIBAV_FFMPEG_PREFIX", "")
+            if prefix and Path(prefix).is_absolute():
+                tool_directory = Path(prefix) / "bin"
+    try:
+        result = _call_media_api("bilikara_runtime_media_startup", {
+            "mode": os.environ.get("BILIKARA_MEDIA_BACKEND", "default"),
+            "companion": str(companion) if companion is not None else None,
+        })
+        if result != {"configured": True}:
+            raise RustMediaError("invalid_response", "Invalid media startup response", response={})
+    except (RustMediaError, RustRuntimeUnavailableError):
+        return companion is not None, tool_directory, "Rust media startup configuration failed"
+    return companion is not None, tool_directory, ""
+
+
+_media_companion_provisioned, _media_tool_directory, _media_startup_error = _configure_media_routing()

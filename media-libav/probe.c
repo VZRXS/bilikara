@@ -5,7 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include "windows_io.h"
+#else
 #include <unistd.h>
+#endif
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
@@ -132,12 +136,18 @@ static uint32_t inspect(const BmRequest *q, BmResult **out,
     AVDictionary *options = NULL;
     int ret = 0;
     if (interrupted(&call)) { fail(r, BM_CANCELLED, "cancelled before discovery"); goto done; }
+#ifdef _WIN32
+    if (!bm_regular_fd(q->fd)) {
+        fail(r, BM_INVALID_REQUEST, "input must be a read-only regular file"); goto done;
+    }
+#else
     struct stat st;
     if (fstat(q->fd, &st) < 0) { fail(r, BM_IO, "cannot inspect input descriptor"); goto done; }
     int flags = fcntl(q->fd, F_GETFL);
     if (!S_ISREG(st.st_mode) || flags < 0 || (flags & O_ACCMODE) != O_RDONLY) {
         fail(r, BM_INVALID_REQUEST, "input must be a read-only regular file"); goto done;
     }
+#endif
     s = avformat_alloc_context();
     if (!s) { fail(r, BM_BACKEND_FAILURE, "cannot allocate format context"); goto done; }
     s->opaque = &call;

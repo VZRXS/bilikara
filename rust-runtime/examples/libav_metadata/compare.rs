@@ -5,7 +5,9 @@ use serde_json::json;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -18,6 +20,7 @@ mod packet_scan;
 mod remux;
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
 extern "C" fn cancel(_: libc::c_int) {
     CANCELLED.store(true, Ordering::Relaxed);
 }
@@ -106,6 +109,7 @@ fn capture_limited(
     let mut errors = child.0.stderr.take();
     // Linux-only example: nonblocking drain keeps output bounded and permits
     // cancellation/deadline checks without an extra reader thread.
+    #[cfg(target_os = "linux")]
     unsafe {
         for fd in std::iter::once(pipe.as_raw_fd()).chain(errors.as_ref().map(AsRawFd::as_raw_fd)) {
             let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -129,7 +133,7 @@ fn capture_limited(
         // Drain a bounded chunk from both pipes each iteration. Retain only a
         // diagnostic byte count, never stderr text or a localized classifier.
         if let Some(errors) = errors.as_mut() {
-            match errors.read(&mut buffer) {
+            match read_pipe(errors, &mut buffer) {
                 Ok(0) => errors_done = true,
                 Ok(n) => {
                     diagnostic_bytes += n;
@@ -145,7 +149,7 @@ fn capture_limited(
                 Err(_) => return Err(Outcome::ExecutionError),
             }
         }
-        match pipe.read(&mut buffer) {
+        match read_pipe(&mut pipe, &mut buffer) {
             Ok(0) => {
                 if let Some(status) = status.filter(|_| errors_done) {
                     return Ok(Output {
@@ -179,26 +183,47 @@ fn file(path: &Path) -> Result<File, Outcome> {
     if !path.is_absolute() {
         return Err(Outcome::InvalidRequest);
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Outcome::SourceMissing
-            } else {
-                Outcome::Io
-            }
-        })?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if !matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+            || path
+                .to_str()
+                .is_none_or(|p| p[2..].contains(':') || p.contains('\0'))
+        {
+            return Err(Outcome::InvalidRequest);
+        }
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    options.custom_flags(libc::O_NONBLOCK);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Outcome::SourceMissing
+        } else {
+            Outcome::Io
+        }
+    })?;
     if !file.metadata().map_err(|_| Outcome::Io)?.is_file() {
         return Err(Outcome::InvalidRequest);
     }
     Ok(file)
 }
 fn tool_command(prefix: &Path, tool: &str) -> Command {
-    let mut command = Command::new(prefix.join("bin").join(tool));
+    let mut command = Command::new(if cfg!(windows) {
+        prefix.join(format!("{tool}.exe"))
+    } else {
+        prefix.join("bin").join(tool)
+    });
+    #[cfg(target_os = "linux")]
+    command.env("LD_LIBRARY_PATH", prefix.join("lib"));
     command
-        .env("LD_LIBRARY_PATH", prefix.join("lib"))
         .env_remove("FFREPORT")
         .env_remove("LD_PRELOAD")
         .env_remove("LD_AUDIT")
@@ -350,6 +375,7 @@ pub fn run(arguments: &[OsString]) -> i32 {
         return 2;
     };
     // Process-local developer signal handler; M1 gets the same atomic flag.
+    #[cfg(target_os = "linux")]
     unsafe {
         libc::signal(libc::SIGINT, cancel as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, cancel as *const () as libc::sighandler_t);
@@ -500,7 +526,7 @@ pub fn run(arguments: &[OsString]) -> i32 {
     i32::from(failed)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     #[test]
@@ -593,4 +619,40 @@ mod tests {
         );
         std::fs::remove_dir(&dir).unwrap();
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_pipe(pipe: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    pipe.read(buffer)
+}
+#[cfg(target_os = "windows")]
+fn read_pipe(
+    pipe: &mut (impl Read + std::os::windows::io::AsRawHandle),
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    use windows_sys::Win32::{Foundation::ERROR_BROKEN_PIPE, System::Pipes::PeekNamedPipe};
+    let mut available = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            pipe.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+            Ok(0)
+        } else {
+            Err(error)
+        };
+    }
+    if available == 0 {
+        return Err(std::io::ErrorKind::WouldBlock.into());
+    }
+    let count = buffer.len().min(available as usize);
+    pipe.read(&mut buffer[..count])
 }

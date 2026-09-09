@@ -1,26 +1,29 @@
-//! Explicit, optional Linux libav stream metadata discovery.
+//! Explicit, optional libav stream metadata discovery.
 //!
 //! `avformat_open_input` + `avformat_find_stream_info` may read packets and do
 //! limited decoding. This is neither header-only I/O nor full scan/validation.
-//! No normal startup, cache, player, Python ABI or media path calls this module.
+//! Application routing lives in media_routing; this module owns native mechanics.
 //! See `media-libav/README.md` for the trusted-artifact contract and build.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod wire;
 
 /// Pure developer comparison semantics; never consulted by normal media work.
 pub mod comparison;
 mod scan;
 pub use scan::{PacketScan, PacketSummary, ScanSelection, ScanTerminal, TimestampBounds};
-mod remux;
+pub(crate) mod remux;
 pub use remux::{CopyProfile, CopyRemuxRequest, CopyRemuxResult, FlacStreamInfo};
 
 use crate::MediaError;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::MediaErrorKind;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+
+#[cfg(test)]
+pub(crate) static TEST_LOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
@@ -109,16 +112,16 @@ pub struct Metadata {
 /// values and released in the companion before each call returns.
 pub struct LibavMetadataProbe {
     info: BackendInfo,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     probe: wire::Probe,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     release: wire::Release,
-    #[cfg(target_os = "linux")]
-    _library: wire::linux::Library,
-    #[cfg(target_os = "linux")]
-    scan: Option<scan::Capability>,
-    #[cfg(target_os = "linux")]
-    remux: Option<remux::Capability>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    _library: wire::Library,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    scan: Result<scan::Capability, ProbeError>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    remux: Result<remux::Capability, ProbeError>,
 }
 
 impl LibavMetadataProbe {
@@ -131,7 +134,9 @@ impl LibavMetadataProbe {
     /// negotiation checks compatibility, not malicious-library safety or crash
     /// containment. Do not replace artifacts while loading/using this handle.
     pub unsafe fn load(companion: &Path) -> Result<Self, ProbeError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(test)]
+        TEST_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             if !companion.is_absolute() || !companion.is_file() {
                 return Err(ProbeError::Unavailable(
@@ -140,7 +145,7 @@ impl LibavMetadataProbe {
             }
             // SAFETY: propagated trusted-artifact precondition; every symbol is
             // negotiated before probing, and the handle is owned by this value.
-            let library = unsafe { wire::linux::Library::open(companion)? };
+            let library = unsafe { wire::Library::open(companion)? };
             let abi: wire::Abi = unsafe { std::mem::transmute(library.symbol(c"bm_abi_version")?) };
             if unsafe { abi() } != wire::ABI {
                 return Err(ProbeError::Unavailable("incompatible companion ABI".into()));
@@ -167,8 +172,8 @@ impl LibavMetadataProbe {
                     library.symbol(c"bm_release")?,
                 )
             };
-            let scan = scan::Capability::load(&library).ok();
-            let remux = remux::Capability::load(&library).ok();
+            let scan = scan::Capability::load(&library);
+            let remux = remux::Capability::load(&library);
             Ok(Self {
                 remux,
                 scan,
@@ -178,11 +183,11 @@ impl LibavMetadataProbe {
                 _library: library,
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = companion;
             Err(ProbeError::Unavailable(
-                "libav metadata loading is implemented only on Linux in M1".into(),
+                "libav metadata loading is requires the optional Linux/Windows companion".into(),
             ))
         }
     }
@@ -200,33 +205,32 @@ impl LibavMetadataProbe {
         source: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Metadata, ProbeError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             self.probe_with_callback(source, &Callback::new(cancelled))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = (source, cancelled);
             Err(ProbeError::Unavailable(
-                "libav metadata loading is implemented only on Linux in M1".into(),
+                "libav metadata loading is requires the optional Linux/Windows companion".into(),
             ))
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn probe_with_callback(
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub(crate) fn probe_with_callback(
         &self,
         source: &Path,
         callback: &Callback<'_>,
     ) -> Result<Metadata, ProbeError> {
-        use std::os::fd::AsRawFd;
-        use std::sync::atomic::Ordering;
-        if callback.flag.load(Ordering::Relaxed) {
+        if callback.is_cancelled() {
             return Err(ProbeError::Cancelled);
         }
         let file = open_input(source)?;
+        let descriptor = self._library.descriptor(&file)?;
         let request = wire::Request {
-            fd: file.as_raw_fd(),
+            fd: descriptor.fd,
             cancelled: cancellation_callback,
             opaque: (callback as *const Callback<'_>).cast_mut().cast(),
         };
@@ -252,9 +256,10 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
     use std::fs::OpenOptions;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::OpenOptionsExt;
     if !source.is_absolute() {
         return Err(media_error(
@@ -263,11 +268,18 @@ fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
         ));
     }
     // Preserve M1's descriptor-based check, including racing FIFO substitutions.
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(source)
-        .map_err(input_error)?;
+    #[cfg(target_os = "windows")]
+    wire::Library::check_local_path(source)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    options.custom_flags(libc::O_NONBLOCK);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(source).map_err(input_error)?;
     if !file.metadata().map_err(input_error)?.is_file() {
         return Err(media_error(
             MediaErrorKind::InvalidRequest,
@@ -277,7 +289,7 @@ fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
     Ok(file)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn media_error(kind: MediaErrorKind, message: &str) -> ProbeError {
     ProbeError::Media(MediaError {
         kind,
@@ -285,7 +297,7 @@ fn media_error(kind: MediaErrorKind, message: &str) -> ProbeError {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn input_error(error: std::io::Error) -> ProbeError {
     let kind = match error.kind() {
         std::io::ErrorKind::NotFound => MediaErrorKind::SourceMissing,
@@ -295,33 +307,55 @@ fn input_error(error: std::io::Error) -> ProbeError {
     media_error(kind, &error.to_string())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn backend_error(message: &str) -> ProbeError {
     ProbeError::BackendFailure(message.into())
 }
 
-#[cfg(target_os = "linux")]
-struct Callback<'a> {
-    flag: &'a AtomicBool,
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) struct Callback<'a> {
+    pub(crate) flag: &'a AtomicBool,
+    poll: Option<&'a dyn Fn() -> bool>,
     #[cfg(test)]
     cancel_on_observation: u32,
     #[cfg(test)]
     observations: std::sync::atomic::AtomicU32,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl<'a> Callback<'a> {
     fn new(flag: &'a AtomicBool) -> Self {
         Self {
             flag,
+            poll: None,
             #[cfg(test)]
             cancel_on_observation: 0,
             #[cfg(test)]
             observations: std::sync::atomic::AtomicU32::new(0),
         }
     }
+
+    pub(crate) fn with_poll(flag: &'a AtomicBool, poll: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            poll: Some(poll),
+            ..Self::new(flag)
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        // A panicking host callback fails closed as cancellation. It cannot
+        // unwind through the C interrupt callback or invite backend fallback.
+        if self.poll.is_some_and(|poll| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(poll)).unwrap_or(true)
+        }) {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+        self.flag.load(Ordering::Relaxed)
+    }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 extern "C" fn cancellation_callback(opaque: *mut std::ffi::c_void) -> i32 {
+    #[cfg(test)]
     use std::sync::atomic::Ordering;
     // SAFETY: private synchronous callback, borrowed from probe_with_callback.
     // Only non-panicking atomic operations occur; no unwind crosses C.
@@ -330,15 +364,15 @@ extern "C" fn cancellation_callback(opaque: *mut std::ffi::c_void) -> i32 {
     if callback.observations.fetch_add(1, Ordering::Relaxed) + 1 == callback.cancel_on_observation {
         callback.flag.store(true, Ordering::Relaxed);
     }
-    i32::from(callback.flag.load(Ordering::Relaxed))
+    i32::from(callback.is_cancelled())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct OwnedResult<'a> {
     pointer: *mut wire::ProbeResult,
     owner: &'a LibavMetadataProbe,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Drop for OwnedResult<'_> {
     fn drop(&mut self) {
         // SAFETY: only the allocating companion releases its aggregate. This
@@ -349,7 +383,7 @@ impl Drop for OwnedResult<'_> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn text<const N: usize>(value: &wire::Text<N>) -> Result<String, ProbeError> {
     let bytes = value
         .bytes
@@ -360,7 +394,7 @@ fn text<const N: usize>(value: &wire::Text<N>) -> Result<String, ProbeError> {
         .map_err(|_| backend_error("non-UTF-8 companion string"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn convert_info(i: &wire::Info) -> Result<BackendInfo, ProbeError> {
     let convert = || {
         let build_configuration = text(&i.build_config)?;
@@ -407,7 +441,7 @@ fn convert_info(i: &wire::Info) -> Result<BackendInfo, ProbeError> {
     convert().map_err(|error| ProbeError::Unavailable(error.to_string()))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn status_error(status: u32, message: String) -> ProbeError {
     match status {
         1 => ProbeError::Unavailable(message),
@@ -424,7 +458,7 @@ fn status_error(status: u32, message: String) -> ProbeError {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn ticks_us(value: i64, base: TimeBase) -> Result<i64, ProbeError> {
     if value == i64::MIN || base.numerator <= 0 || base.denominator <= 0 {
         return Err(backend_error("invalid known timestamp/time base"));
@@ -437,12 +471,12 @@ fn ticks_us(value: i64, base: TimeBase) -> Result<i64, ProbeError> {
     i64::try_from(rounded).map_err(|_| backend_error("timestamp conversion overflow"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn known<T: Copy>(bits: u32, bit: u32, value: T) -> Option<T> {
     (bits & bit != 0).then_some(value)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn convert_metadata(r: &wire::ProbeResult, backend: &str) -> Result<Metadata, ProbeError> {
     use wire::*;
     if r.status != 0 {

@@ -92,6 +92,16 @@ pub(super) mod linux {
     pub(in crate::experimental_libav) struct Library(*mut c_void);
 
     impl Library {
+        pub(in crate::experimental_libav) fn descriptor<'a>(
+            &'a self,
+            file: &std::fs::File,
+        ) -> Result<Descriptor<'a>, ProbeError> {
+            use std::os::fd::AsRawFd;
+            Ok(Descriptor {
+                fd: file.as_raw_fd(),
+                _owner: self,
+            })
+        }
         pub(in crate::experimental_libav) unsafe fn open(path: &Path) -> Result<Self, ProbeError> {
             let path = CString::new(path.as_os_str().as_bytes())
                 .map_err(|_| ProbeError::Unavailable("companion path contains NUL".into()))?;
@@ -118,6 +128,11 @@ pub(super) mod linux {
                 Ok(pointer)
             }
         }
+    }
+
+    pub(in crate::experimental_libav) struct Descriptor<'a> {
+        pub fd: i32,
+        _owner: &'a Library,
     }
 
     fn load_error() -> ProbeError {
@@ -213,3 +228,11 @@ pub(super) struct RemuxResult {
 pub(super) type GetRemuxInfo = unsafe extern "C" fn(u32, *mut RemuxInfo) -> u32;
 pub(super) type Remux = unsafe extern "C" fn(*const RemuxRequest, *mut *mut RemuxResult) -> u32;
 pub(super) type RemuxRelease = unsafe extern "C" fn(*mut RemuxResult);
+
+#[cfg(target_os = "linux")]
+pub(super) use linux::Library;
+#[cfg(target_os = "windows")]
+#[path = "windows.rs"]
+mod windows;
+#[cfg(target_os = "windows")]
+pub(super) use windows::Library;
