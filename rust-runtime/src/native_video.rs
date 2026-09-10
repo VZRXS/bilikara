@@ -12,7 +12,14 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-pub(crate) const USER_AGENT: &str = "Mozilla/5.0 bilikara/0.8 Android-Alpha";
+// Match the existing desktop BILIBILI_HEADERS web profile. Some media CDN
+// nodes reject abbreviated product UAs even when the metadata API accepts them.
+// Metadata, QR login and every native media candidate share this value.
+pub(crate) const USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (X11; Linux x86_64) ",
+    "AppleWebKit/537.36 (KHTML, like Gecko) ",
+    "Chrome/123.0.0.0 Safari/537.36"
+);
 // Keep native metadata on the same current API as the desktop Host adapter.
 const VIEW_ENDPOINT: &str = "https://api.bilibili.com/x/web-interface/wbi/view";
 
