@@ -11,6 +11,7 @@ mod internet_remote;
 mod json_http;
 mod media_backend;
 mod media_routing;
+mod native_host_storage;
 mod networking;
 mod status_service;
 mod update_installer;
@@ -19,7 +20,7 @@ pub use app_state::{
     AppSnapshot, AppState, AppStateRequest, AppStateResponse, AppStateSeed, BackupSeed, CacheEvent,
     HistoryEntry, PersistenceEffects, PersistenceSnapshot, PlayerSettingsSeed, PlaylistItem,
     PlaylistItemPatch, SessionArchiveSeed, SessionPlayedEntry, execute_app_state,
-    execute_app_state_json, initialize_app_state_once,
+    execute_app_state_json, initialize_app_state_once, initialize_native_host,
 };
 pub use bilibili_service::{
     BilibiliDashRequest, BilibiliDashResult, BilibiliServiceError, BilibiliStream,

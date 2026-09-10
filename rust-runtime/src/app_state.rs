@@ -14,6 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
+mod native_persistence;
+use crate::native_host_storage::NativeHostStorage;
+use native_persistence::storage_error_response;
+
 const SCHEMA_VERSION: u32 = 1;
 const MAX_ITEMS: usize = 10_000;
 const MAX_SESSION_USERS: usize = 32;
@@ -925,6 +929,7 @@ struct AppStateData {
 #[derive(Debug)]
 pub struct AppState {
     data: Option<AppStateData>,
+    native_storage: Option<NativeHostStorage>,
     next_cache_attempt_token: u64,
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
@@ -967,6 +972,7 @@ impl Default for AppState {
             });
         Self {
             data: None,
+            native_storage: None,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
@@ -4208,6 +4214,12 @@ impl AppState {
         }
         match request {
             AppStateRequest::Initialize { state, .. } => {
+                if self.native_storage.is_some() && self.data.is_some() {
+                    return invalid_request_response(
+                        "native_storage_conflict",
+                        "Use native initialization to reopen persisted AppState without replacing it",
+                    );
+                }
                 let namespace = match &self.identity_namespace {
                     Ok(namespace) => *namespace,
                     Err(message) => return internal_error_response(message),
@@ -4220,6 +4232,9 @@ impl AppState {
                             Err(error) => return execute_error_response(error),
                         };
                         let persistence = data.persistence_snapshot();
+                        if let Err(error) = self.persist_native(&data) {
+                            return storage_error_response(error);
+                        }
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
                         self.internet_remote_peers.clear();
@@ -4522,6 +4537,7 @@ impl AppState {
             }
             AppStateRequest::Shutdown { .. } => {
                 let was_initialized = self.data.take().is_some();
+                self.native_storage = None;
                 self.internet_remote_peers.clear();
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
@@ -4611,6 +4627,9 @@ impl AppState {
                     }
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
+                    if let Err(error) = self.persist_native(&next) {
+                        return storage_error_response(error);
+                    }
                     self.data = Some(next);
                     self.next_item_incarnation_id = next_item_incarnation_id;
                     AppStateResponse::Success(Box::new(AppStateSuccess {
@@ -4856,6 +4875,17 @@ pub fn initialize_app_state_once(seed: AppStateSeed) -> AppStateResponse {
         return internal_error_response("Rust AppState lock is poisoned");
     };
     state.initialize_once(seed)
+}
+
+/// Bootstrap a native Host using a private, versioned checkpoint. Every durable
+/// mutation (including runtime-originated cache updates) is saved under the same
+/// AppState lock before it is published. The desktop adapter remains opt-out.
+pub fn initialize_native_host(directory: &Path, initial: AppStateSeed) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_native(directory, initial)
 }
 
 pub(crate) fn begin_cache_attempt_for_runtime(
