@@ -17,8 +17,13 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+bilikara_runtime = { path = "../rust-runtime" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"

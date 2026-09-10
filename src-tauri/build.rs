@@ -1,5 +1,6 @@
 fn main() {
     let app_manifest = tauri_build::AppManifest::new().commands(&[
+        "android_alpha_status",
         "set_window_fullscreen",
         "restart_application",
         "get_presentation_displays",

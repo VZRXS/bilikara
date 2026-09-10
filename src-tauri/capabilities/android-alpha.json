@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android-alpha",
+  "description": "Read-only native bootstrap diagnostics from the packaged Android main page.",
+  "platforms": ["android"],
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["allow-android-alpha-status"]
+}

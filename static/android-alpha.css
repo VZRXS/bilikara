@@ -1,0 +1,10 @@
+:root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+body { margin: 0; }
+main {
+  max-width: 40rem;
+  margin: auto;
+  padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
+  line-height: 1.7;
+}
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; }

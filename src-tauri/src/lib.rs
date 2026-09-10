@@ -15,7 +15,16 @@ mod presentation;
 #[cfg(desktop)]
 mod window_lifecycle;
 
-#[cfg(desktop)]
+#[cfg(target_os = "android")]
+mod android;
+
+#[cfg(target_os = "ios")]
+compile_error!("iOS Host startup is not implemented; use the Android Alpha target");
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
     desktop::run();
+    #[cfg(target_os = "android")]
+    android::run();
 }

@@ -15,5 +15,8 @@ src-tauri/target/
 node_modules/
 rust/target/
 rust-runtime/target/
-src-tauri/gen/
+src-tauri/gen/*
+!src-tauri/gen/android/
+src-tauri/gen/android/**/*.jks
+src-tauri/gen/android/**/*.keystore
 .agent/
