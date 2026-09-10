@@ -27,7 +27,8 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".alpha"
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
+            // Only loopback is permitted by network_security_config.xml.
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false

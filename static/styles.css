@@ -11733,3 +11733,21 @@ body.is-presentation-control-host .presentation-host-controls {
     gap: 6px;
   }
 }
+.native-alpha-notice { display: none; }
+html[data-native-host="true"] .native-alpha-notice {
+  display: block;
+  padding: 0.8rem;
+  border: 1px solid currentColor;
+  border-radius: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+/* These capabilities are explicitly unavailable in the native Android Alpha.
+   Keep the shared UI and supported queue/player/login controls intact. */
+html[data-native-host="true"] :is(
+  [data-request-view="search"], [data-request-view="discover"], [data-request-view="sources"],
+  #work-rail-random, #gatcha-panel, #presentation-settings, #app-update-row,
+  #application-restart-row, #history-export-button, #diagnostic-package-button,
+  #developer-mode-trigger, #ffmpeg-status-row,
+  .cache-double-col:has(#cache-limit-slider), .cache-policy-row
+) { display: none !important; }

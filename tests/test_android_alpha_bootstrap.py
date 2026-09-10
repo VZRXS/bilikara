@@ -15,6 +15,7 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         cargo = tomllib.loads((TAURI / "Cargo.toml").read_text(encoding="utf-8"))
         dependencies = cargo["target"]['cfg(target_os = "android")']["dependencies"]
         self.assertEqual(dependencies["bilikara_runtime"]["path"], "../rust-runtime")
+        self.assertIn("native-host", dependencies["bilikara_runtime"]["features"])
         self.assertNotIn("tauri-plugin-dialog", cargo["dependencies"])
         self.assertNotIn("tauri-plugin-clipboard-manager", cargo["dependencies"])
         # Retain the existing desktop feature. It is inert on non-macOS targets,
@@ -30,12 +31,13 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         for forbidden in ("Command::new", "backend_process::", "execute_app_state_json", "CString"):
             self.assertNotIn(forbidden, source)
         for capability in ("host_api_ready", "playback_ready"):
-            self.assertIn(f"{capability}: false", source)
+            self.assertIn(f"{capability}: true", source)
         self.assertIn("persistence_ready: true", source)
-        self.assertIn('stage: "native-persistence"', source)
+        self.assertIn('stage: "native-host-alpha"', source)
         self.assertIn("if let Some(error) = &bootstrap.error", source)
-        self.assertIn("let error = initialize(app).err();", source)
-        self.assertIn("app.manage(AndroidBootstrap { error });", source)
+        self.assertIn("app.asset_resolver()", source)
+        self.assertIn("NativeHost::start(", source)
+        self.assertIn("app.manage(AndroidBootstrap { host, error });", source)
         self.assertNotIn("std::fs::remove", source)
 
     def test_bootstrap_ipc_is_local_read_only_and_mobile_scoped(self):
@@ -55,7 +57,7 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         self.assertEqual(config["app"]["windows"][0]["url"], "android-alpha.html")
         self.assertTrue(config["app"]["windows"][0]["visible"])
 
-    def test_android_uses_same_version_and_does_not_expose_a_host_service_yet(self):
+    def test_android_scopes_cleartext_to_loopback_and_keeps_foreground_only(self):
         config = json.loads((TAURI / "tauri.android.conf.json").read_text(encoding="utf-8"))
         self.assertNotIn("version", config)
         self.assertEqual(config["bundle"]["android"]["debugApplicationIdSuffix"], ".alpha")
@@ -69,6 +71,11 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         self.assertNotIn("FOREGROUND_SERVICE", manifest)
         self.assertNotIn("REQUEST_INSTALL_PACKAGES", manifest)
         self.assertNotIn('android:usesCleartextTraffic="true"', manifest)
+        self.assertIn('android:allowBackup="false"', manifest)
+        self.assertIn('@xml/network_security_config', manifest)
+        security = (TAURI / "gen/android/app/src/main/res/xml/network_security_config.xml").read_text(encoding="utf-8")
+        self.assertIn('<base-config cleartextTrafficPermitted="false"', security)
+        self.assertIn('includeSubdomains="false">127.0.0.1</domain>', security)
         activity = (TAURI / "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt").read_text(encoding="utf-8")
         self.assertIn("FLAG_KEEP_SCREEN_ON", activity)
         self.assertNotIn("PARTIAL_WAKE_LOCK", activity)
@@ -82,29 +89,37 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const source = fs.readFileSync("static/android-alpha.js", "utf8");
-const valid = {schema_version: 2, stage: "native-persistence", backend: "rust", revision: 0,
-  host_api_ready: false, persistence_ready: true, playback_ready: false};
+const valid = {schema_version: 3, stage: "native-host-alpha", backend: "rust", revision: 0,
+  host_api_ready: true, persistence_ready: true, playback_ready: true,
+  bootstrap_url: "http://127.0.0.1:12345/bootstrap/" + "a".repeat(43)};
 async function render(invoke) {
   const nodes = {"bootstrap-status": {textContent: ""}, "bootstrap-details": {hidden: true}};
-  const context = {window: invoke ? {__TAURI__: {core: {invoke}}} : {},
+  let destination = null;
+  const context = {URL, window: {location: {replace: url => {destination = url;}},
+    ...(invoke ? {__TAURI__: {core: {invoke}}} : {})},
     document: {getElementById: id => nodes[id]}};
   await vm.runInNewContext(source, context);
-  return nodes;
+  return {...nodes, destination};
 }
 (async () => {
   let calls = 0;
   const success = await render(async name => { calls++; assert.equal(name, "android_alpha_status"); return valid; });
   assert.equal(calls, 1);
-  assert.equal(success["bootstrap-details"].hidden, false);
-  assert.match(success["bootstrap-status"].textContent, /完整 Host 功能尚未接入/);
-  assert.match(success["bootstrap-status"].textContent, /原生存档已接入/);
+  assert.equal(success.destination, valid.bootstrap_url);
+  assert.match(success["bootstrap-status"].textContent, /Rust Host 已就绪/);
+  assert.ok(!success["bootstrap-status"].textContent.includes("a".repeat(43)));
   for (const invoke of [null, async () => {throw new Error("native failure");},
     async () => ({...valid, backend: "python"}), async () => ({...valid, revision: NaN}),
     async () => ({...valid, schema_version: 1}), async () => ({...valid, persistence_ready: false}),
-    async () => ({...valid, stage: "native-bootstrap"}), async () => ({...valid, host_api_ready: true})]) {
+    async () => ({...valid, stage: "native-bootstrap"}), async () => ({...valid, host_api_ready: false}),
+    ...["https://evil.test/bootstrap/", "http://localhost:12345/bootstrap/", "http://127.0.0.1/bootstrap/",
+      "http://token@127.0.0.1:12345/bootstrap/", "javascript:"].map(prefix => async () => ({...valid, bootstrap_url: prefix + "a".repeat(43)})),
+    async () => ({...valid, bootstrap_url: valid.bootstrap_url + "?leak=1"}),
+    async () => ({...valid, bootstrap_url: valid.bootstrap_url + "#leak"})]) {
     const failed = await render(invoke);
     assert.match(failed["bootstrap-status"].textContent, /启动检查失败/);
     assert.equal(failed["bootstrap-details"].hidden, true);
+    assert.equal(failed.destination, null);
   }
   const badStorage = await render(async () => {throw "native_storage_invalid: original preserved";});
   assert.match(badStorage["bootstrap-status"].textContent, /native_storage_invalid: original preserved/);

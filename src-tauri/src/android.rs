@@ -1,16 +1,18 @@
-//! Android's in-process Rust Host bootstrap and read-only startup probe. Storage
-//! is owned by AppState; the shell only resolves platform paths and reports errors.
-//! No network listener, Python process, or CLI fallback is exposed.
+//! Android's in-process Rust Host. The shell resolves private storage and serves
+//! the existing bundled Host/Remote assets; it owns no playlist business rules.
+use bilikara_runtime::native_host::{Asset, NativeHost};
 use bilikara_runtime::{
     AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
 };
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 // Operational startup result, not a second application-state authority.
 struct AndroidBootstrap {
     error: Option<String>,
+    host: Option<NativeHost>,
 }
 
 #[derive(Serialize)]
@@ -22,6 +24,7 @@ struct AndroidAlphaStatus {
     host_api_ready: bool,
     persistence_ready: bool,
     playback_ready: bool,
+    bootstrap_url: String,
 }
 
 #[tauri::command]
@@ -38,18 +41,23 @@ fn android_alpha_status(
             |error| format!("{}: {}", error.kind, error.message),
         )
     })?;
+    let host = bootstrap
+        .host
+        .as_ref()
+        .ok_or_else(|| "Native Host listener is unavailable".to_owned())?;
     Ok(AndroidAlphaStatus {
-        schema_version: 2,
-        stage: "native-persistence",
+        schema_version: 3,
+        stage: "native-host-alpha",
         backend: "rust",
         revision: snapshot.revision,
-        host_api_ready: false,
+        host_api_ready: true,
         persistence_ready: true,
-        playback_ready: false,
+        playback_ready: true,
+        bootstrap_url: host.bootstrap_url().to_owned(),
     })
 }
 
-fn initialize(app: &tauri::App) -> Result<(), String> {
+fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
     let directory = app
         .path()
         .app_data_dir()
@@ -77,12 +85,22 @@ fn initialize(app: &tauri::App) -> Result<(), String> {
             updated_at: now,
         },
     );
-    response.snapshot().map(|_| ()).ok_or_else(|| {
+    response.snapshot().ok_or_else(|| {
         response.error().map_or_else(
             || "Native Host returned no snapshot".to_owned(),
             |error| format!("{}: {}", error.kind, error.message),
         )
-    })
+    })?;
+    let resolver = app.asset_resolver();
+    NativeHost::start(
+        &directory,
+        Arc::new(move |path| {
+            resolver.get(path.to_owned()).map(|asset| Asset {
+                bytes: asset.bytes,
+                mime: asset.mime_type,
+            })
+        }),
+    )
 }
 
 pub(crate) fn run() {
@@ -91,8 +109,11 @@ pub(crate) fn run() {
         .setup(|app| {
             // Keep the local diagnostic page usable on a read/write failure.
             // Do not retry with empty defaults or delete the user's checkpoint.
-            let error = initialize(app).err();
-            app.manage(AndroidBootstrap { error });
+            let (host, error) = match initialize(app) {
+                Ok(host) => (Some(host), None),
+                Err(error) => (None, Some(error)),
+            };
+            app.manage(AndroidBootstrap { host, error });
             Ok(())
         })
         .run(tauri::generate_context!())

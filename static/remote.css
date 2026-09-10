@@ -5586,3 +5586,17 @@ html[data-remote-transport="internet"] #remote-qr-control,
 html[data-remote-transport="internet"] #history-export-row {
   display: none !important;
 }
+.native-alpha-notice { display: none; }
+html[data-native-host="true"] .native-alpha-notice {
+  display: block;
+  padding: 0.8rem;
+  border: 1px solid currentColor;
+  border-radius: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+html[data-native-host="true"] :is(
+  [data-remote-request-view="search"], [data-remote-request-view="discover"],
+  [data-remote-request-view="sources"], .gatcha-panel, #history-export-row,
+  #open-rating-button, #remote-qr-toggle, #remote-qr-content
+) { display: none !important; }

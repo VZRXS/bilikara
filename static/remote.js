@@ -1057,6 +1057,7 @@ function syncRemoteRequestViewSelection() {
 }
 
 function activateRemoteRequestView(view, { focusTab = false } = {}) {
+  if (document.documentElement?.dataset?.nativeHost === "true" && view !== "quick") return false;
   const nextView = normalizeRemoteRequestView(view, "");
   if (!nextView) {
     return false;
@@ -1311,6 +1312,8 @@ function setRemoteSettingsSectionOpen(open) {
 }
 
 function renderRemoteAccess(remoteAccess) {
+  // The native Host owns invitation distribution; a Remote has no Host invite.
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const preferredUrl = String(remoteAccess?.preferred_url || "");
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
   const localUrl = String(remoteAccess?.local_url || "");
@@ -2386,6 +2389,7 @@ function flushAllPendingAutoRatings() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const promptItems = ratingPromptItemsForItem(currentItem);
   const currentRateable = isItemRateable(promptItems.current, true);
   const previousRateable = isItemRateable(promptItems.previous, false);

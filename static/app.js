@@ -36,6 +36,11 @@ const searchResultItemByElement = new WeakMap();
 let searchDetailController = null;
 
 function openExternalUrl(url) {
+  if (document.documentElement?.dataset?.nativeHost === "true") {
+    // Do not navigate the only mobile player WebView away from the Host.
+    setAppMessage("Android Alpha：请在另一台设备打开链接，保持本机播放页面在前台。");
+    return;
+  }
   if (window.__TAURI__) {
     apiPost("/api/app/open-url", { url }).catch((err) => {
       console.error("Failed to open URL via backend:", err);
@@ -1334,6 +1339,7 @@ function canTogglePlayerFullscreen() {
 }
 
 function tauriInvoke() {
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
   return window.__TAURI__?.core?.invoke || null;
 }
 
@@ -3048,6 +3054,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
 }
 
 function tauriEventListen() {
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
   return window.__TAURI__?.event?.listen || null;
 }
 
@@ -3885,6 +3892,7 @@ function closeRequestDetailForNavigation() {
 }
 
 function activateRequestSubview(subview, { focusTab = false } = {}) {
+  if (document.documentElement?.dataset?.nativeHost === "true" && subview !== "quick") return false;
   const nextSubview = normalizeRequestSubview(subview, "");
   if (!nextSubview) {
     return false;
@@ -4402,6 +4410,7 @@ function restoreHostWorkspaceScrollPosition(workspace = state.activeHostWorkspac
 }
 
 function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
+  if (document.documentElement?.dataset?.nativeHost === "true" && workspace === "random") return false;
   const nextWorkspace = normalizeHostWorkspaceName(workspace, "");
   if (!nextWorkspace) {
     return false;
@@ -4984,6 +4993,7 @@ function initializePersistentStageFitting() {
 }
 
 function initializeWindowChrome() {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const tauriWindowApi = window.__TAURI__?.window;
   const appWindow = tauriWindowApi?.getCurrentWindow?.();
   const userAgent = String(navigator.userAgent || "");
@@ -5048,8 +5058,8 @@ function initializeHostShell() {
   state.activeHostWorkspace = "queue";
   state.focusedHostWorkspace = "queue";
   state.hostWorkspaceOverlayOpen = false;
-  state.requestSubview = "search";
-  state.focusedRequestSubview = "search";
+  state.requestSubview = document.documentElement?.dataset?.nativeHost === "true" ? "quick" : "search";
+  state.focusedRequestSubview = state.requestSubview;
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
   renderHostWorkspaceSelection();
@@ -5496,6 +5506,7 @@ function setRatingOptOut(enabled) {
 }
 
 function openRatingPrompt(item) {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
   if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
@@ -9665,7 +9676,17 @@ function renderRemoteQr(url, targets = []) {
       return;
     }
 
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    const nativeHost = document.documentElement?.dataset?.nativeHost === "true";
+    const qrUrl = nativeHost
+      ? String(state.data?.remote_access?.qr_image || "")
+      : `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    if (nativeHost && !qrUrl.startsWith("data:image/svg+xml;base64,")) {
+      image.removeAttribute("src");
+      image.classList.add("hidden");
+      placeholder.textContent = t("remote.qrFailed");
+      placeholder.classList.remove("hidden");
+      return;
+    }
     if (image.dataset.qrUrl === qrUrl) {
       return;
     }
@@ -17528,6 +17549,7 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
 }
 
 function scheduleStartupAppUpdateCheck() {
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return false;
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
   }
