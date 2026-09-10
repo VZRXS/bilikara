@@ -219,3 +219,23 @@ fn cache_retirement_preserves_inflight_publication_reservations() {
     .unwrap();
     assert!(app.native_can_retire_artifact(&item.item_incarnation_id, artifact));
 }
+
+#[test]
+fn bounded_native_diagnostics_keep_playback_facts_not_credentials_or_urls() {
+    let (mut app, _) = setup();
+    for _ in 0..120 {
+        app.native_diagnostic(
+            &json!({"event":"error", "media_kind":"audio", "paused":true,
+            "error_code":4, "action":"reload", "cookie":"secret", "url":"https://private"}),
+            1.0,
+        );
+    }
+    let result = app.native_diagnostics();
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 100);
+    assert_eq!(events[0]["paused"], true);
+    assert_eq!(events[0]["error_code"], 4);
+    assert_eq!(events[0]["action"], "reload");
+    assert!(!result.to_string().contains("secret"));
+    assert!(!result.to_string().contains("https://private"));
+}

@@ -502,13 +502,25 @@ impl AppState {
             "message",
             "item_id",
             "playback_generation",
+            "action",
+            "media_kind",
+            "current_time",
+            "duration",
+            "ready_state",
+            "network_state",
+            "paused",
+            "seeking",
+            "ended",
+            "error_code",
+            "error_message",
+            "play_rejection_name",
         ];
         let mut safe = json!({"at":now});
         for key in fields {
             if let Some(value) = body.get(key) {
                 if let Some(text) = value.as_str() {
                     safe[key] = json!(text.chars().take(240).collect::<String>());
-                } else if value.is_number() {
+                } else if value.is_number() || value.is_boolean() {
                     safe[key] = value.clone();
                 }
             }
