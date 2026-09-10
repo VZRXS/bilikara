@@ -13,6 +13,8 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 bilikara/0.8 Android-Alpha";
+// Keep native metadata on the same current API as the desktop Host adapter.
+const VIEW_ENDPOINT: &str = "https://api.bilibili.com/x/web-interface/wbi/view";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,10 +114,7 @@ pub fn fetch_native_video(
     let client = BilibiliHttpClient::new(cookie, USER_AGENT, "https://www.bilibili.com/", 15_000)
         .map_err(network_error)?;
     let value = client
-        .get_api_json(
-            &format!("https://api.bilibili.com/x/web-interface/view?{query}"),
-            "获取视频信息失败",
-        )
+        .get_api_json(&format!("{VIEW_ENDPOINT}?{query}"), "获取视频信息失败")
         .map_err(network_error)?;
     let view: View = serde_json::from_value(value.get("data").cloned().unwrap_or(Value::Null))
         .map_err(|_| NativeVideoError::invalid("B 站视频信息不完整"))?;
@@ -137,7 +136,11 @@ fn network_error(error: crate::bilibili_service::BilibiliServiceError) -> Native
         Some(-404 | 62002) => "视频不存在或不可访问".to_owned(),
         Some(-352 | -412 | 412) => "B 站暂时限制请求，请稍后重试".to_owned(),
         Some(code) => format!("B 站返回错误 ({code})"),
-        None => format!("无法获取视频信息（{}），请检查网络", error.kind),
+        None => match error.status_code {
+            Some(412 | 429) => "B 站暂时限制请求，请稍后重试（HTTP 412/429）".to_owned(),
+            Some(status) => format!("获取视频信息失败（HTTP {status}），请稍后重试"),
+            None => format!("无法获取视频信息（{}），请检查网络", error.kind),
+        },
     };
     NativeVideoError {
         code: error.kind,
@@ -313,6 +316,21 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uses_current_metadata_api_and_reports_only_safe_upstream_errors() {
+        assert_eq!(
+            VIEW_ENDPOINT,
+            "https://api.bilibili.com/x/web-interface/wbi/view"
+        );
+        let error = network_error(crate::bilibili_service::BilibiliServiceError {
+            kind: "http".into(),
+            message: "private URL and cookie must not escape".into(),
+            status_code: Some(412),
+            api_code: None,
+        });
+        assert!(error.message.contains("暂时限制"));
+        assert!(!error.message.contains("private"));
+    }
     fn view(parts: &[(&str, i64)]) -> View {
         View {
             aid: 1,
