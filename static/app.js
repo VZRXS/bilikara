@@ -10602,6 +10602,11 @@ function scheduleAcceptedHostPlaybackProgramReconciliation(
       state.data?.current_item ?? null,
       frontendPlaybackMode(state.data?.playback_mode),
     );
+    // A snapshot render may precede this microtask's media mount. Only consume
+    // its transition once the matching session can actually own the countdown.
+    if (typeof flushPendingSongTransitionOverlay === "function") {
+      flushPendingSongTransitionOverlay();
+    }
   });
   return true;
 }
@@ -11545,6 +11550,11 @@ function flushPendingSongTransitionOverlay() {
   }
   const currentItem = state.data?.current_item;
   if (!selectedVideoUrlForItem(currentItem) || !selectedAudioUrlForItem(currentItem)) {
+    return;
+  }
+  const session = state.hostPlaybackSession;
+  if (!isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.video?.dataset?.playerItemId !== currentItemId) {
     return;
   }
   const generation = state.pendingSongTransitionGeneration;
