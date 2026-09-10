@@ -14,7 +14,7 @@ use axum::{
     body::{Body, to_bytes},
     extract::{ConnectInfo, State},
     http::{HeaderMap, Method, Request, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
@@ -243,7 +243,7 @@ fn cookie(headers: &HeaderMap) -> String {
         .to_owned()
 }
 
-fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
+fn validate_host(headers: &HeaderMap, port: u16) -> Result<&str, ApiError> {
     let host = headers
         .get("host")
         .and_then(|value| value.to_str().ok())
@@ -259,6 +259,11 @@ fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
     {
         return Err(ApiError::new(403, "host", "无效的 Host 地址"));
     }
+    Ok(host)
+}
+
+fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
+    let host = validate_host(headers, port)?;
     if let Some(origin) = headers.get("origin")
         && origin.to_str().ok() != Some(&format!("http://{host}"))
     {
@@ -266,6 +271,24 @@ fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
     }
     if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") {
         return Err(ApiError::new(403, "origin", "不接受跨站请求"));
+    }
+    Ok(())
+}
+
+fn validate_entry_navigation(headers: &HeaderMap) -> Result<(), ApiError> {
+    // Capability redemption is the only cross-site exception. Modern browsers
+    // must be opening a top-level document, never fetching/embedding the URL.
+    // Older WebViews may omit Fetch Metadata; the unguessable capability (and
+    // actual loopback peer for Host) remains required independently below.
+    for (name, expected) in [
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+    ] {
+        if let Some(value) = headers.get(name)
+            && value.to_str().ok() != Some(expected)
+        {
+            return Err(ApiError::new(403, "origin", "启动链接只接受页面导航"));
+        }
     }
     Ok(())
 }
@@ -293,7 +316,8 @@ async fn handle_inner(
     address: SocketAddr,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    validate_origin(request.headers(), context.port)?;
+    // Check DNS-rebinding/port constraints even for the capability entry pages.
+    validate_host(request.headers(), context.port)?;
     let method = request.method().clone();
     if !matches!(method, Method::GET | Method::HEAD | Method::POST) {
         return Err(ApiError::new(405, "method", "不支持此请求方式"));
@@ -311,6 +335,7 @@ async fn handle_inner(
             .to_owned(),
     };
     if method == Method::GET && path.starts_with("/bootstrap/") {
+        validate_entry_navigation(request.headers())?;
         let secret = path.trim_start_matches("/bootstrap/");
         with_app(|app| {
             app.native_authorize(
@@ -322,16 +347,19 @@ async fn handle_inner(
                 true,
             )
         })?;
-        return Ok(redirect_cookie("/", secret));
+        return Ok(session_entry(EntryPage::Host, secret));
     }
     if method == Method::GET
         && matches!(path.as_str(), "/remote" | "/remote.html")
         && let Some((_, invite)) =
             url::form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == "invite")
     {
+        validate_entry_navigation(request.headers())?;
         let device_token = with_app(|app| app.native_redeem(&invite, &identity.token, token()?))?;
-        return Ok(redirect_cookie("/remote", &device_token));
+        return Ok(session_entry(EntryPage::Remote, &device_token));
     }
+    // APIs, authenticated assets and media keep the original origin checks.
+    validate_origin(request.headers(), context.port)?;
     if path == "/api/health" && method == Method::GET && identity.loopback {
         return Ok(json_response(
             200,
@@ -389,8 +417,29 @@ async fn handle_inner(
     Ok(json_response(200, json!({"ok":true,"data":result})))
 }
 
-fn redirect_cookie(location: &str, token: &str) -> Response {
-    let mut response = (StatusCode::SEE_OTHER, [("location", location)]).into_response();
+enum EntryPage {
+    Host,
+    Remote,
+}
+
+fn session_entry(page: EntryPage, token: &str) -> Response {
+    let location = match page {
+        EntryPage::Host => "/",
+        EntryPage::Remote => "/remote",
+    };
+    // A 303 keeps the navigation cross-site and can withhold a Strict cookie
+    // on the redirect target. Commit a local document first, then navigate
+    // within that origin. No token, request input or external resource appears
+    // in this document, and the zero-delay refresh replaces the entry URL.
+    let mut response = Html(format!(
+        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url={location}"><title>bilikara</title><body>正在进入 bilikara… <a href="{location}" rel="noreferrer">继续</a></body></html>"#
+    )).into_response();
+    response.headers_mut().insert(
+        "content-security-policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+            .parse()
+            .unwrap(),
+    );
     response.headers_mut().insert(
         "set-cookie",
         format!("bilikara_native={token}; Path=/; HttpOnly; SameSite=Strict")
@@ -463,6 +512,24 @@ mod tests {
         assert!(validate_origin(&headers, 4567).is_err());
         headers.insert("host", "127.0.0.1:9999".parse().unwrap());
         assert!(validate_origin(&headers, 4567).is_err());
+    }
+    #[test]
+    fn entry_accepts_only_document_navigation_when_metadata_is_present() {
+        let mut headers = HeaderMap::new();
+        assert!(validate_entry_navigation(&headers).is_ok());
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
+        headers.insert("sec-fetch-dest", "document".parse().unwrap());
+        assert!(validate_entry_navigation(&headers).is_ok());
+        for dest in ["iframe", "frame", "image", "empty"] {
+            headers.insert("sec-fetch-dest", dest.parse().unwrap());
+            assert!(validate_entry_navigation(&headers).is_err());
+        }
+        headers.insert("sec-fetch-dest", "document".parse().unwrap());
+        for mode in ["cors", "no-cors", "same-origin"] {
+            headers.insert("sec-fetch-mode", mode.parse().unwrap());
+            assert!(validate_entry_navigation(&headers).is_err());
+        }
     }
     #[test]
     fn invitation_qr_is_local_not_an_external_service() {

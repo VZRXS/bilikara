@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const {spawn} = require("node:child_process");
 const {once} = require("node:events");
 const {createInterface} = require("node:readline");
+const http = require("node:http");
 const path = require("node:path");
 const {chromium} = require("playwright");
 const [executable, directory, bvid, executablePath] = process.argv.slice(2);
@@ -20,9 +21,16 @@ async function run() {
     ]);
     const bootstrap = JSON.parse(line).bootstrap_url;
     const base = new URL(bootstrap).origin;
-    const auth = await fetch(bootstrap,{redirect:"manual"});
-    assert.equal(auth.status,303);
-    const cookie = auth.headers.get("set-cookie").split(";")[0];
+    // Use a document navigation, not fetch()'s cors request to a capability
+    // endpoint. The fixture browser test covers actual Strict-cookie storage.
+    const auth = await new Promise((resolve, reject) => {
+      http.get(bootstrap, {headers: {"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}}, response => {
+        response.resume();
+        resolve(response);
+      }).on("error", reject);
+    });
+    assert.equal(auth.statusCode, 200);
+    const cookie = auth.headers["set-cookie"][0].split(";")[0];
     async function post(route,body) {
       return (await fetch(base+route,{method:"POST",headers:{Cookie:cookie,"Content-Type":"application/json","X-Bilikara-Client":"network-smoke"},body:JSON.stringify(body)})).json();
     }

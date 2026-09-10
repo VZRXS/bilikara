@@ -65,6 +65,13 @@ fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
         ..host.clone()
     };
     assert!(app.native_authorize(&forged, true).is_err());
+    // Even a correct bootstrap token must not grant Host authority to a LAN
+    // peer. Cross-site entry handling must preserve the actual peer check.
+    let non_loopback = Identity {
+        loopback: false,
+        ..host.clone()
+    };
+    assert!(app.native_authorize(&non_loopback, true).is_err());
     let remote = Identity {
         token: "remote0".into(),
         loopback: false,

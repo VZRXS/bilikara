@@ -27,7 +27,32 @@ async function run() {
     const hostContext = await browser.newContext({viewport: {width: 1100, height: 760}});
     page = await hostContext.newPage();
     page.on("pageerror", error => errors.push(error.message));
-    await page.goto(bootstrap);
+    // Exercise the real Android startup script from Tauri's asset origin, not
+    // page.goto(bootstrap), which incorrectly gives Sec-Fetch-Site: none.
+    // Only native IPC is stubbed; the destination is the real Rust HTTP server.
+    await page.route("http://tauri.localhost/**", async route => {
+      const name = new URL(route.request().url()).pathname.slice(1);
+      const mime = name.endsWith(".js") ? "text/javascript" : name.endsWith(".css") ? "text/css" : "text/html";
+      assert.ok(["android-alpha.html", "android-alpha.js", "android-alpha.css"].includes(name));
+      await route.fulfill({contentType: mime, body: await fs.readFile(path.join("static", name))});
+    });
+    await page.addInitScript(url => {
+      if (location.origin !== "http://tauri.localhost") return;
+      window.__TAURI__ = {core: {invoke: async () => ({schema_version: 3, stage: "native-host-alpha", backend: "rust",
+        revision: 1, host_api_ready: true, persistence_ready: true, playback_ready: true, bootstrap_url: url})}};
+    }, bootstrap);
+    const entryResponse = page.waitForResponse(response => response.url() === bootstrap);
+    await page.goto("http://tauri.localhost/android-alpha.html");
+    const entry = await entryResponse;
+    assert.equal(entry.request().isNavigationRequest(), true);
+    assert.equal(entry.status(), 200, `Android startup rejected: ${await entry.text()}`);
+    // A same-origin landing document, not a cross-site HTTP redirect chain,
+    // must establish the Strict cookie before loading authenticated assets/API.
+    await page.waitForURL(new URL("/", bootstrap).href);
+    const hostCookie = (await hostContext.cookies(page.url())).find(cookie => cookie.name === "bilikara_native");
+    assert.equal(hostCookie?.httpOnly, true);
+    assert.equal(hostCookie?.sameSite, "Strict");
+    assert.equal(await page.evaluate(() => document.cookie.includes("bilikara_native")), false);
     await page.waitForFunction(() => state.data?.current_item?.cache_status === "ready");
     await page.waitForFunction(() => document.querySelector("video")?.currentTime > 0.3, null, {timeout: 20000});
     assert.equal(await page.locator("html").getAttribute("data-native-host"), "true");
@@ -39,7 +64,20 @@ async function run() {
     const remoteContext = await browser.newContext({viewport: {width: 412, height: 850}, isMobile: true, hasTouch: true});
     remote = await remoteContext.newPage();
     remote.on("pageerror", error => errors.push(error.message));
-    await remote.goto(invite);
+    // Scanning/opening an invite can also originate from a different site.
+    await remote.route("http://invite.localhost/", route => route.fulfill({
+      contentType: "text/html", body: '<!doctype html><button id="join">Join</button>',
+    }));
+    await remote.goto("http://invite.localhost/");
+    await remote.evaluate(url => document.querySelector("#join").addEventListener("click", () => location.assign(url)), invite);
+    const joinResponse = remote.waitForResponse(response => response.url() === invite);
+    await remote.locator("#join").click();
+    assert.equal((await joinResponse).status(), 200);
+    await remote.waitForURL(new URL("/remote", invite).href);
+    const remoteCookie = (await remoteContext.cookies(remote.url())).find(cookie => cookie.name === "bilikara_native");
+    assert.equal(remoteCookie?.httpOnly, true);
+    assert.equal(remoteCookie?.sameSite, "Strict");
+    assert.notEqual(remoteCookie?.value, hostCookie.value);
     await remote.locator("#remote-identity-input").fill("Native Remote");
     await remote.locator("#remote-identity-submit").click();
     await remote.waitForFunction(() => document.querySelector("#remote-identity-modal").classList.contains("hidden"));
@@ -78,7 +116,7 @@ async function run() {
     assert.deepEqual(errors, []);
     await page.screenshot({path: path.join(directory, "host.png")});
     await remote.screenshot({path: path.join(directory, "remote.png")});
-    console.log(JSON.stringify({passed: true, nativeHttp: true, sharedUi: true, realMedia: true, remotePauseSeekVocalNext: true, history: true, cacheRetirement: true, reload: true, errors}));
+    console.log(JSON.stringify({passed: true, crossSiteBootstrap: true, crossSiteInvite: true, strictCookies: true, nativeHttp: true, sharedUi: true, realMedia: true, remotePauseSeekVocalNext: true, history: true, cacheRetirement: true, reload: true, errors}));
   } catch (error) {
     if (page) console.log("Host state", await page.evaluate(() => ({
       item: state.data?.current_item?.id, cache: state.data?.current_item?.cache_status,

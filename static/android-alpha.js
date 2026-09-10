@@ -20,7 +20,7 @@
     }
     status.textContent = "Rust Host 已就绪，正在打开点歌和播放界面…";
     // The one-process Host credential is not displayed or logged. The local
-    // redirect exchanges it for an HttpOnly cookie before loading shared UI.
+    // entry document exchanges it for an HttpOnly cookie before loading shared UI.
     window.location.replace(destination.href);
   } catch (error) {
     status.textContent = "启动检查失败：" + (error?.message || String(error));

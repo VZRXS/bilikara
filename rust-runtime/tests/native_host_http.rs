@@ -62,8 +62,25 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let base = format!("http://127.0.0.1:{}", host.local_port());
     let anonymous = client.get(format!("{base}/api/state")).send().unwrap();
     assert_eq!(anonymous.status(), 403);
-    let bootstrap = client.get(host.bootstrap_url()).send().unwrap();
-    assert_eq!(bootstrap.status(), 303);
+    // Real WebView startup is a top-level cross-site navigation from Tauri's
+    // asset origin. Test it separately from ordinary same-origin HTTP requests.
+    let bootstrap = client
+        .get(host.bootstrap_url())
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .send()
+        .unwrap();
+    assert_eq!(bootstrap.status(), 200);
+    assert!(bootstrap.headers().get("location").is_none());
+    assert_eq!(bootstrap.headers()["referrer-policy"], "no-referrer");
+    assert_eq!(bootstrap.headers()["cache-control"], "no-store");
+    assert!(
+        bootstrap.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
     let cookie = bootstrap.headers()["set-cookie"]
         .to_str()
         .unwrap()
@@ -77,6 +94,72 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .unwrap()
             .contains("HttpOnly")
     );
+    assert!(
+        bootstrap.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("SameSite=Strict")
+    );
+    let entry_html = bootstrap.text().unwrap();
+    assert!(entry_html.contains("url=/\""));
+    assert!(!entry_html.contains(cookie.split('=').nth(1).unwrap()));
+    for (mode, dest) in [
+        ("cors", "empty"),
+        ("no-cors", "image"),
+        ("navigate", "iframe"),
+    ] {
+        let forbidden = client
+            .get(host.bootstrap_url())
+            .header("sec-fetch-site", "cross-site")
+            .header("sec-fetch-mode", mode)
+            .header("sec-fetch-dest", dest)
+            .send()
+            .unwrap();
+        assert_eq!(forbidden.status(), 403);
+        assert!(forbidden.headers().get("set-cookie").is_none());
+    }
+    let forged = client
+        .get(format!("{base}/bootstrap/{}", "a".repeat(43)))
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .send()
+        .unwrap();
+    assert_eq!(forged.status(), 403);
+    assert!(forged.headers().get("set-cookie").is_none());
+    let rebinding = client
+        .get(host.bootstrap_url())
+        .header("host", format!("evil.test:{}", host.local_port()))
+        .send()
+        .unwrap();
+    assert_eq!(rebinding.status(), 403);
+    assert!(rebinding.headers().get("set-cookie").is_none());
+    let same_origin = client
+        .get(format!("{base}/api/state"))
+        .header("cookie", &cookie)
+        .header("origin", &base)
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .unwrap();
+    assert_eq!(same_origin.status(), 200);
+    for path in [
+        "/",
+        "/api/state",
+        "/api/health",
+        "/api/events",
+        "/media/test.mp4",
+    ] {
+        let cross_site = client
+            .get(format!("{base}{path}"))
+            .header("cookie", &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document")
+            .send()
+            .unwrap();
+        assert_eq!(cross_site.status(), 403);
+        assert_eq!(cross_site.json::<Value>().unwrap()["code"], "origin");
+    }
     let post = |path: &str, body: Value, cookie: &str| {
         client
             .post(format!("{base}{path}"))
@@ -86,14 +169,16 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .send()
             .unwrap()
     };
-    let foreign = client
-        .post(format!("{base}/api/session-users/add"))
-        .header("cookie", &cookie)
-        .header("origin", "https://evil.test")
-        .json(&json!({"name":"Attacker"}))
-        .send()
-        .unwrap();
-    assert_eq!(foreign.status(), 403);
+    for origin in ["https://evil.test", "http://tauri.localhost", "null"] {
+        let foreign = client
+            .post(format!("{base}/api/session-users/add"))
+            .header("cookie", &cookie)
+            .header("origin", origin)
+            .json(&json!({"name":"Attacker"}))
+            .send()
+            .unwrap();
+        assert_eq!(foreign.status(), 403);
+    }
     assert_eq!(
         post("/api/session-users/add", json!({"name":"Alice"}), &cookie).status(),
         200
@@ -111,8 +196,29 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let invite = snapshot["data"]["remote_access"]["local_url"]
         .as_str()
         .unwrap();
-    let join = client.get(invite).send().unwrap();
-    assert_eq!(join.status(), 303);
+    for (mode, dest) in [
+        ("cors", "empty"),
+        ("no-cors", "image"),
+        ("navigate", "iframe"),
+    ] {
+        let forbidden = client
+            .get(invite)
+            .header("sec-fetch-mode", mode)
+            .header("sec-fetch-dest", dest)
+            .send()
+            .unwrap();
+        assert_eq!(forbidden.status(), 403);
+        assert!(forbidden.headers().get("set-cookie").is_none());
+    }
+    let join = client
+        .get(invite)
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .send()
+        .unwrap();
+    assert_eq!(join.status(), 200);
+    assert!(join.headers().get("location").is_none());
     let remote_cookie = join.headers()["set-cookie"]
         .to_str()
         .unwrap()
@@ -121,6 +227,9 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         .unwrap()
         .to_owned();
     assert_ne!(remote_cookie, cookie);
+    let entry_html = join.text().unwrap();
+    assert!(entry_html.contains("url=/remote\""));
+    assert!(!entry_html.contains(remote_cookie.split('=').nth(1).unwrap()));
     assert_eq!(
         post(
             "/api/session-users/add",

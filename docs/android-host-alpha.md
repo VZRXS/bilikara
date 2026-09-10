@@ -32,6 +32,12 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
 - The Tauri shell resolves app-private paths, loads bundled assets and keeps the
   foreground screen awake. A read-only schema-3 bootstrap exchanges a random
   loopback token for an HttpOnly cookie before entering the shared Host UI.
+  Entry is a capability-checked top-level navigation from Tauri's asset origin,
+  not an ordinary cross-site API call. A no-store local landing document sets
+  the `SameSite=Strict` cookie before navigating within the Host origin; it does
+  not use a cross-site HTTP redirect chain. LAN invitations use the same pattern.
+  All other paths retain origin/Host checks. Entry documents forbid frames and
+  external resources and never embed the credential in their HTML.
 - Host-only commands require both the Host cookie and a loopback connection.
   LAN Remote gets a separate per-device cookie via the Host's QR invitation.
   Cookies, QR login state, Host tokens and diagnostic access are not sent to Remote.
@@ -209,3 +215,7 @@ paths are passed to Rust by the runner. The network test makes real Bilibili
 requests, generates but does not scan a login QR, and never uses an existing user
 profile or contacts D1. It is opt-in, not part of routine unit tests. Browser tests
 are not equivalent to Android WebView or real output-device validation.
+The fixture test runs the actual Android startup script from `http://tauri.localhost`
+with only native IPC stubbed, then checks the real listener, strict cookies and
+shared player/Remote. Directly navigating to the bootstrap URL is insufficient:
+it misses the cross-site navigation that previously blocked Android startup.
