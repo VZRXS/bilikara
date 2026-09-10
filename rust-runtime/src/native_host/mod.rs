@@ -6,6 +6,7 @@ mod diagnostics;
 mod files;
 mod login;
 mod maintenance;
+mod network;
 
 use crate::app_state::native_session::{Identity, with_app};
 use axum::{
@@ -152,15 +153,9 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         .port();
     let host_token = token()?;
     let invite = token()?;
-    let lan_urls: Vec<String> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
+    let lan_urls: Vec<String> = network::lan_addresses()
         .into_iter()
-        .filter_map(|interface| match interface.ip() {
-            IpAddr::V4(ip) if ip.is_private() && !ip.is_loopback() => {
-                Some(format!("http://{ip}:{port}/remote?invite={invite}"))
-            }
-            _ => None,
-        })
+        .map(|ip| format!("http://{ip}:{port}/remote?invite={invite}"))
         .collect();
     let local = format!("http://127.0.0.1:{port}/remote?invite={invite}");
     let preferred = lan_urls.first().unwrap_or(&local).clone();
