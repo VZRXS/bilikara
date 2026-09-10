@@ -8,7 +8,7 @@ rust-version = "1.88"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "dep:qrcode"]
+native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "dep:qrcode", "reqwest/cookies"]
 
 [dependencies]
 base64 = "0.22"

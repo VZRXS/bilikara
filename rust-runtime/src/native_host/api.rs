@@ -6,7 +6,7 @@ use crate::app_state::{
 use crate::native_video::{NativeVideoRequest, fetch_native_video};
 
 pub(super) fn dispatch(
-    context: &HostContext,
+    context: &Arc<HostContext>,
     identity: &Identity,
     host: bool,
     method: &Method,
@@ -28,6 +28,12 @@ pub(super) fn dispatch(
     }
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
+    }
+    if path == "/api/bbdown/login/start" {
+        return login::begin(context.clone(), identity);
+    }
+    if path == "/api/bbdown/logout" {
+        return login::logout(context, identity);
     }
     if path == "/api/playlist/add" {
         let url = text(&body, "url")?;

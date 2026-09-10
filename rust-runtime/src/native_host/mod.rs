@@ -3,6 +3,7 @@
 mod api;
 mod cache;
 mod files;
+mod login;
 
 use crate::app_state::native_session::{Identity, with_app};
 use axum::{
@@ -156,6 +157,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
     let local = format!("http://127.0.0.1:{port}/remote?invite={invite}");
     let preferred = lan_urls.first().unwrap_or(&local).clone();
     let qr = qr_image(&preferred)?;
+    let saved_cookie = login::load(&directory)?;
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -168,6 +170,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         let session = app.native();
         session.host_token = host_token.clone();
         session.invite = invite;
+        session.cookie = saved_cookie;
         session.remote_access =
             json!({"local_url":local,"preferred_url":preferred,"lan_urls":lan_urls,"qr_image":qr});
         Ok(())

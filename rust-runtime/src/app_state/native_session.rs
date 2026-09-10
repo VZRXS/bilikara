@@ -15,6 +15,7 @@ pub(crate) struct NativeSession {
     pub invite: String,
     pub cookie: String,
     pub login: RuntimeStatusService,
+    pub login_generation: Option<u64>,
     pub remote_access: Value,
     pub revision: u64,
     devices: HashMap<String, Device>,
