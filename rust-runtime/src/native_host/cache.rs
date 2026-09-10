@@ -11,9 +11,17 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
     thread::Builder::new().name("native-host-cache".into()).spawn(move||{
         let mut fingerprint=String::new();
         let mut last_error=String::new();
+        let mut last_cleanup=std::time::Instant::now();
         while !context.stop.load(Ordering::Acquire){
             if let Err(error)=tick(&context,&mut fingerprint) && error.to_string()!=last_error {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
+            }
+            if last_cleanup.elapsed() >= Duration::from_secs(10) {
+                if maintenance::collect(&context.cache_root, false).is_err() {
+                    let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-cleanup-failed"}),now());Ok(())});
+                }
+                maintenance::trim_log(&context.directory);
+                last_cleanup=std::time::Instant::now();
             }
             thread::sleep(Duration::from_millis(200));
         }

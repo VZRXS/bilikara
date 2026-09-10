@@ -168,3 +168,54 @@ fn rapid_controls_are_queued_and_future_ack_cannot_drop_them() {
     );
     assert!(app.native_snapshot(false).unwrap()["player_control_command"].is_null());
 }
+
+#[test]
+fn cache_retirement_waits_for_queue_player_and_all_media_readers() {
+    let (mut app, host) = setup();
+    let (snapshot, claim) = ready(&mut app);
+    let item = snapshot.current_item.unwrap();
+    let i = &item.item_incarnation_id;
+    let a = &item.artifact_set_id;
+    assert!(!app.native_can_retire_artifact(i, a));
+    app.native_pin_media(&item.video_media_url).unwrap();
+    app.native_pin_media(&item.video_media_url).unwrap();
+    app.native_claim(&host, &claim, false).unwrap();
+    app.native_execute(AppStateRequest::RemoveItem {
+        schema_version: 1,
+        item_id: item.id.clone(),
+        now: 5.0,
+    })
+    .unwrap();
+    assert!(app.native_pin_media(&item.video_media_url).is_err());
+    assert!(!app.native_can_retire_artifact(i, a));
+    app.native_release_claim();
+    app.native_unpin_media(&item.video_media_url);
+    assert!(!app.native_can_retire_artifact(i, a));
+    app.native_unpin_media(&item.video_media_url);
+    assert!(app.native_can_retire_artifact(i, a));
+    assert!(!app.native_can_retire_artifact("../credentials", a));
+}
+
+#[test]
+fn cache_retirement_preserves_inflight_publication_reservations() {
+    let (mut app, _) = setup();
+    let (snapshot, _) = ready(&mut app);
+    let item = snapshot.current_item.unwrap();
+    let reservation = app
+        .native_execute(AppStateRequest::BeginCacheAttempt {
+            schema_version: 1,
+            item_id: item.id.clone(),
+            expected_item_incarnation_id: item.item_incarnation_id.clone(),
+        })
+        .unwrap();
+    let artifact = reservation["artifact_set_id"].as_str().unwrap();
+    assert_ne!(artifact, item.artifact_set_id);
+    assert!(!app.native_can_retire_artifact(&item.item_incarnation_id, artifact));
+    app.native_execute(AppStateRequest::RemoveItem {
+        schema_version: 1,
+        item_id: item.id,
+        now: 5.0,
+    })
+    .unwrap();
+    assert!(app.native_can_retire_artifact(&item.item_incarnation_id, artifact));
+}

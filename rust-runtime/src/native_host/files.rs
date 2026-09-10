@@ -1,6 +1,33 @@
 use super::*;
 use std::path::{Component, PathBuf};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+struct MediaLease(String);
+impl Drop for MediaLease {
+    fn drop(&mut self) {
+        let _ = with_app(|app| {
+            app.native_unpin_media(&self.0);
+            Ok(())
+        });
+    }
+}
+struct LeasedReader {
+    reader: tokio::io::Take<tokio::fs::File>,
+    _lease: MediaLease,
+}
+impl tokio::io::AsyncRead for LeasedReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buffer)
+    }
+}
 
 fn safe_relative(value: &str) -> Option<PathBuf> {
     if value.is_empty() || value.contains(['\\', '%', '\0']) || value.starts_with('/') {
@@ -101,22 +128,9 @@ pub(super) async fn media(
         return Err(ApiError::new(404, "not_found", "媒体不存在"));
     }
     let route = path.to_owned();
-    let allowed = with_app(|app| {
-        let snapshot = app.native_core_snapshot()?;
-        Ok(snapshot
-            .current_item
-            .iter()
-            .chain(snapshot.playlist.iter())
-            .any(|item| {
-                item.video_media_url == route
-                    || item.audio_variants.iter().any(|variant| {
-                        variant.get("audio_url").and_then(Value::as_str) == Some(&route)
-                    })
-            }))
-    })?;
-    if !allowed {
-        return Err(ApiError::new(404, "not_found", "媒体已过期"));
-    }
+    with_app(|app| app.native_pin_media(&route))?;
+    // Released on every early error/HEAD and when the streaming body is dropped.
+    let lease = MediaLease(route);
     let root = context
         .cache_root
         .canonicalize()
@@ -159,7 +173,10 @@ pub(super) async fn media(
         Body::empty()
     } else {
         Body::from_stream(tokio_util::io::ReaderStream::with_capacity(
-            file.take(end - start + 1),
+            LeasedReader {
+                reader: file.take(end - start + 1),
+                _lease: lease,
+            },
             64 * 1024,
         ))
     };

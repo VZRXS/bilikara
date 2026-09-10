@@ -5,6 +5,7 @@ mod cache;
 mod diagnostics;
 mod files;
 mod login;
+mod maintenance;
 
 use crate::app_state::native_session::{Identity, with_app};
 use axum::{
@@ -136,6 +137,10 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         .map_err(|_| ApiError::new(503, "storage", "无法创建媒体缓存目录"))?;
     std::fs::create_dir_all(directory.join("logs"))
         .map_err(|_| ApiError::new(503, "storage", "无法创建诊断目录"))?;
+    // No cache worker/listener exists yet. Old staging files cannot belong to a
+    // live attempt after the validated restart reset.
+    maintenance::collect(&cache_root, true)
+        .map_err(|_| ApiError::new(503, "cache_storage", "无法清理旧媒体缓存"))?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
         .map_err(|_| ApiError::new(503, "listen", "无法开启本地 Host 服务"))?;
     listener

@@ -25,17 +25,34 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     )
     .unwrap();
     assert!(initialize_native_host(&directory, seed).error().is_none());
+    let obsolete = format!(
+        "i-{}-0000000000000001/a-{}-0000000000000001",
+        "a".repeat(32),
+        "a".repeat(32)
+    );
+    for kind in ["artifacts", ".staging", ".retired"] {
+        let path = directory.join("media").join(kind).join(&obsolete);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("obsolete.mp4"), b"old generated test media").unwrap();
+    }
+    let untouched = directory.join("media/artifacts/not-an-owned-identity");
+    std::fs::create_dir_all(&untouched).unwrap();
+    std::fs::write(untouched.join("keep.txt"), b"do not remove unknown data").unwrap();
     let host = NativeHost::start(
         &directory,
         Arc::new(|path| match path {
             "index.html" | "remote.html" => Some(Asset {
-                bytes: b"<!doctype html>shared UI".to_vec(),
+                bytes: b"<!doctype html><html lang=\"en\">shared UI<script src=\"/internet-remote-host.js\" defer></script></html>".to_vec(),
                 mime: "text/html".into(),
             }),
             _ => None,
         }),
     )
     .unwrap();
+    for kind in ["artifacts", ".staging", ".retired"] {
+        assert!(!directory.join("media").join(kind).join(&obsolete).exists());
+    }
+    assert!(untouched.join("keep.txt").is_file());
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

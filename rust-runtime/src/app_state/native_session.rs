@@ -5,6 +5,7 @@ use super::*;
 use crate::native_host::ApiError;
 use crate::status_service::{BilibiliLoginFacts, RuntimeStatusService};
 use std::collections::VecDeque;
+mod media;
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ pub(crate) struct NativeSession {
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
+    media_readers: HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for NativeSession {
