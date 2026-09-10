@@ -7,6 +7,10 @@ rust-version = "1.88"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[example]]
+name = "native_host_alpha"
+required-features = ["native-host"]
+
 [features]
 native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "dep:qrcode", "reqwest/cookies"]
 
