@@ -5,6 +5,17 @@ use crate::app_state::{
 };
 use crate::native_video::{NativeVideoRequest, fetch_native_video};
 
+fn queue_space(length: usize) -> Result<(), ApiError> {
+    if length >= 200 {
+        return Err(ApiError::new(
+            429,
+            "queue_full",
+            "此 Alpha 点歌列表最多 200 首",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn dispatch(
     context: &Arc<HostContext>,
     identity: &Identity,
@@ -46,13 +57,7 @@ pub(super) fn dispatch(
             if snapshot.session_users.is_empty() {
                 return Err(ApiError::invalid("请先添加本场 KTV 用户"));
             }
-            if snapshot.playlist.len() >= 200 {
-                return Err(ApiError::new(
-                    429,
-                    "queue_full",
-                    "此 Alpha 点歌列表最多 200 首",
-                ));
-            }
+            queue_space(snapshot.playlist.len())?;
             Ok((app.native().cookie.clone(), snapshot.session_generation))
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
@@ -70,13 +75,17 @@ pub(super) fn dispatch(
         return with_app(|app| {
             let requester =
                 app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
-            if app.native_core_snapshot()?.session_generation != session_generation {
+            let snapshot = app.native_core_snapshot()?;
+            if snapshot.session_generation != session_generation {
                 return Err(ApiError::new(
                     409,
                     "session_changed",
                     "本场 KTV 已更换，请重新点歌",
                 ));
             }
+            // Other phones can finish metadata I/O first. Recheck admission
+            // under the same lock as AddItem, not only before the HTTP request.
+            queue_space(snapshot.playlist.len())?;
             let result = app.native_execute(AppStateRequest::AddItem {
                 schema_version: 1,
                 item: item.clone(),
@@ -276,4 +285,19 @@ fn unavailable() -> ApiError {
         "alpha_unavailable",
         "此功能尚未接入 Android Alpha；本版本先验证点歌、本机播放和局域网 Remote",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_queue_admission_rejects_the_first_overflow_and_larger_values() {
+        assert!(queue_space(0).is_ok());
+        assert!(queue_space(199).is_ok());
+        for length in [200, 201, usize::MAX] {
+            let error = queue_space(length).unwrap_err();
+            assert_eq!(error.status, 429);
+            assert_eq!(error.code, "queue_full");
+        }
+    }
 }
