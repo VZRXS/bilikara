@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm"]
+        os: ["ubuntu-latest", "windows-latest", "macos-latest"]
         python-version:
           - "3.11"
 
@@ -108,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: [{"os": "windows-latest", "label": "Windows x64", "slug": "windows", "arch": "x64"}, {"os": "windows-11-arm", "label": "Windows ARM64", "slug": "windows", "arch": "arm64"}, {"os": "macos-latest", "label": "macOS ARM64", "slug": "macos", "arch": "arm64"}, {"os": "macos-15-intel", "label": "macOS Intel", "slug": "macos", "arch": "x64"}, {"os": "ubuntu-latest", "label": "Linux x64", "slug": "linux", "arch": "x64"}, {"os": "ubuntu-24.04-arm", "label": "Linux ARM64", "slug": "linux", "arch": "arm64"}]
+        include: [{"os": "windows-latest", "label": "Windows x64", "slug": "windows", "arch": "x64"}, {"os": "windows-11-arm", "label": "Windows ARM64", "slug": "windows", "arch": "arm64"}, {"os": "macos-latest", "label": "macOS ARM64", "slug": "macos", "arch": "arm64"}, {"os": "macos-15-intel", "label": "macOS Intel", "slug": "macos", "arch": "x64"}]
 
 
     steps:
@@ -120,15 +120,31 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Resolve bundle archive name
+        id: bundle-name
+        shell: bash
+        env:
+          BUNDLE_SLUG: ${{ matrix.slug }}
+          BUNDLE_ARCH: ${{ matrix.arch }}
+        run: |
+          ref_name="${GITHUB_REF_NAME:-local}"
+          safe_ref="$(printf '%s' "$ref_name" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+          if [ -z "$safe_ref" ]; then
+            safe_ref="local"
+          fi
+          if [ "${GITHUB_REF_TYPE:-branch}" = "tag" ]; then
+            artifact_name="bilikara-${safe_ref}-${BUNDLE_SLUG}-${BUNDLE_ARCH}"
+          else
+            artifact_name="bilikara-${BUNDLE_SLUG}-${BUNDLE_ARCH}-${safe_ref}"
+          fi
+          archive_name="${artifact_name}.zip"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
+
       - name: Select native libav build prefix
         shell: bash
         run: echo "BILIKARA_LIBAV_PREFIX=$RUNNER_TEMP/bilikara-libav" >> "$GITHUB_ENV"
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf gnupg
 
       - name: Install macOS source verification tools
         if: runner.os == 'macOS'
@@ -204,7 +220,7 @@ jobs:
         run: ./media-libav/prepare-windows.ps1
 
       - name: Build same-source POSIX FFmpeg and companion
-        if: runner.os != 'Windows'
+        if: runner.os == 'macOS'
         run: bash media-libav/build-posix.sh
 
       - name: Build app bundle
@@ -272,15 +288,6 @@ jobs:
           npm run build:rust
           npm exec -- tauri build --bundles app -- --locked
 
-      - name: Build and inject Tauri on Linux
-        if: runner.os == 'Linux'
-        run: |
-          npm ci
-          npm exec -- tauri icon static/pic/icon.png
-          npm run build:rust
-          npm exec -- tauri build --no-bundle -- --locked
-          cp src-tauri/target/release/bilikara dist/bilikara/bilikara-desktop
-
       - name: Inject Tauri into Windows Bundle
         if: runner.os == 'Windows'
         shell: pwsh
@@ -311,22 +318,6 @@ jobs:
           if (-not (Test-Path $runtime)) { throw "Runtime BBDown was not restored: $runtime" }
           & $runtime --help
           if ($LASTEXITCODE -ne 0) { throw 'Restored BBDown version check failed' }
-
-      - name: Resolve bundle archive name
-        id: bundle-name
-        shell: bash
-        run: |
-          ref_name="${GITHUB_REF_NAME:-local}"
-          safe_ref="$(printf '%s' "$ref_name" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
-          if [ -z "$safe_ref" ]; then
-            safe_ref="local"
-          fi
-          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else (m or 'unknown'))")"
-          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}.zip"
-          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}"
-          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
-          echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
 
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'
@@ -457,14 +448,6 @@ jobs:
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
 
-      - name: Archive and smoke extracted Linux bundle
-        if: runner.os == 'Linux'
-        run: |
-          python -c 'import os,zipfile; from pathlib import Path; archive=zipfile.ZipFile(os.environ["BUNDLE_ARCHIVE"], "w", zipfile.ZIP_DEFLATED); [archive.write(p, p.relative_to("dist")) for p in Path("dist/bilikara").rglob("*") if p.is_file()]; archive.close()'
-          mkdir -p "$RUNNER_TEMP/Bilikara package 空"
-          unzip -q "$BUNDLE_ARCHIVE" -d "$RUNNER_TEMP/Bilikara package 空"
-          BILIKARA_HOME="$RUNNER_TEMP/bilikara-smoke-bootstrap" BILIKARA_LIBAV_SMOKE_RESULT="$PWD/dist/libav-smoke-result.json" "$RUNNER_TEMP/Bilikara package 空/bilikara/bilikara" --tool-smoke libav-package
-
       - name: Smoke extracted macOS libav package
         if: runner.os == 'macOS'
         run: |
@@ -482,13 +465,19 @@ jobs:
             cp -R "$BILIKARA_LIBAV_PREFIX/records/." dist/libav-build-records/
           fi
 
-      - name: Upload native bundle and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v6
+      - name: Upload native bundle
+        uses: actions/upload-artifact@v7
         with:
-          name: bilikara-${{ matrix.slug }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: ${{ steps.bundle-name.outputs.archive_name }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload native libav diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ steps.bundle-name.outputs.artifact_name }}
           path: |
-            bilikara-*.zip
             dist/libav-build-records
             dist/libav-smoke-result.json
           if-no-files-found: error

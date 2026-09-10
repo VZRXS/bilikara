@@ -351,18 +351,20 @@ assert any(p.samefile(expected) for p in candidates), candidates
 """, str(library)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_workflow_requires_all_native_targets_without_preview_input(self):
+    def test_workflow_tests_three_latest_platforms_and_bundles_windows_macos_without_preview_input(self):
         text = (ROOT / ".github/workflows/ci-bundle.yml").read_text(encoding="utf-8")
         test_match = re.search(r"^        os: (.+)$", text, re.M)
         bundle_match = re.search(r"^        include: (.+)$", text, re.M)
         self.assertIsNotNone(test_match)
         self.assertIsNotNone(bundle_match)
-        targets = ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm"]
-        self.assertEqual(json.loads(test_match[1]), targets)
+        self.assertEqual(json.loads(test_match[1]), ["ubuntu-latest", "windows-latest", "macos-latest"])
         bundles = json.loads(bundle_match[1])
-        self.assertEqual([entry["os"] for entry in bundles], targets)
+        self.assertEqual([entry["os"] for entry in bundles],
+                         ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"])
         self.assertEqual({(e["slug"], e["arch"]) for e in bundles},
-                         {(os, arch) for os in ("windows", "macos", "linux") for arch in ("x64", "arm64")})
+                         {(os, arch) for os in ("windows", "macos") for arch in ("x64", "arm64")})
+        bundle_job = text.split("\n  bundle:\n", 1)[1].split("\n  mirror-release-r2:\n", 1)[0]
+        self.assertNotIn("runner.os == 'Linux'", bundle_job)
         self.assertNotIn("windows_libav_preview", text)
         self.assertNotIn("BILIKARA_WINDOWS_LIBAV_PREVIEW", text)
         self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 2)
@@ -373,8 +375,7 @@ assert any(p.samefile(expected) for p in candidates), candidates
                               ("Inject Tauri into Windows", "Archive Windows bundle"),
                               ("Archive Windows bundle", "Smoke extracted Windows"),
                               ("Smoke extracted Windows", "Upload native bundle"),
-                              ("Smoke extracted macOS", "Upload native bundle"),
-                              ("Archive and smoke extracted Linux", "Upload native bundle")):
+                              ("Smoke extracted macOS", "Upload native bundle")):
             self.assertLess(text.index(before), text.index(after))
         self.assertIn("Expand-Archive -Path $env:BUNDLE_ARCHIVE", text)
         self.assertIn("--tool-smoke libav-package", text)

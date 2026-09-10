@@ -11,6 +11,14 @@ native MSVC environment, `build-windows.sh` and `prepare-windows.ps1`.
 build records, native drivers and the verified private dependency closure.
 Windows requires the shared MSVC CRT; MSYS2 supplies build tools only.
 
+CI tests use `ubuntu-latest`, `windows-latest` and `macos-latest`. Distributed
+bundles cover Windows and macOS x64/ARM64 only; Linux remains available for
+source builds. Branch artifacts and their ZIP archives end with the sanitized
+branch name (for example, `bilikara-windows-x64-work-v0.8.0.zip`). Tagged archives
+retain the `bilikara-v0.8.0-windows-x64.zip` format.
+Application ZIPs are uploaded directly with `archive: false`, without an outer
+artifact ZIP. Build and smoke diagnostics use separate `diagnostics-` artifacts.
+
 Every bundle includes source and license records. POSIX dependencies use
 `$ORIGIN` or `@loader_path`; macOS signing runs after final native-file staging.
 The mandatory Rust libraries do not link to libav at process startup.
