@@ -19,7 +19,7 @@ pub use app_state::{
     AppSnapshot, AppState, AppStateRequest, AppStateResponse, AppStateSeed, BackupSeed, CacheEvent,
     HistoryEntry, PersistenceEffects, PersistenceSnapshot, PlayerSettingsSeed, PlaylistItem,
     PlaylistItemPatch, SessionArchiveSeed, SessionPlayedEntry, execute_app_state,
-    execute_app_state_json,
+    execute_app_state_json, initialize_app_state_once,
 };
 pub use bilibili_service::{
     BilibiliDashRequest, BilibiliDashResult, BilibiliServiceError, BilibiliStream,

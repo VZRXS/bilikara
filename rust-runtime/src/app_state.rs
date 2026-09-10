@@ -882,6 +882,24 @@ pub enum AppStateResponse {
     Failure(AppStateFailure),
 }
 
+impl AppStateResponse {
+    /// Borrow the authoritative projection without JSON or the compatibility ABI.
+    /// Keep the response intact so transport adapters can still persist its effects.
+    pub fn snapshot(&self) -> Option<&AppSnapshot> {
+        match self {
+            Self::Success(success) => success.snapshot.as_ref(),
+            Self::Failure(_) => None,
+        }
+    }
+
+    pub fn error(&self) -> Option<&AppStateError> {
+        match self {
+            Self::Success(_) => None,
+            Self::Failure(failure) => Some(&failure.error),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
     revision: u64,
@@ -3539,6 +3557,22 @@ fn apply_mutation(
 }
 
 impl AppState {
+    fn initialize_once(&mut self, seed: AppStateSeed) -> AppStateResponse {
+        // Activity recreation must not reset an existing queue, playback generation,
+        // cache attempt, or authenticated Remote peer. The check and initialization
+        // execute under the same authoritative lock in the process-wide entry point.
+        if self.data.is_some() {
+            self.execute(AppStateRequest::Snapshot {
+                schema_version: SCHEMA_VERSION,
+            })
+        } else {
+            self.execute(AppStateRequest::Initialize {
+                schema_version: SCHEMA_VERSION,
+                state: Box::new(seed),
+            })
+        }
+    }
+
     fn execute_internet_remote_message(
         &mut self,
         peer_id: String,
@@ -4813,6 +4847,17 @@ pub fn execute_app_state(request: AppStateRequest) -> AppStateResponse {
     state.execute(request)
 }
 
+/// Bootstrap an in-process Host without replacing already initialized AppState.
+/// The caller owns seed loading and persistence of the returned effects. This is
+/// additive: the existing explicit Initialize command retains its reset semantics.
+pub fn initialize_app_state_once(seed: AppStateSeed) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_once(seed)
+}
+
 pub(crate) fn begin_cache_attempt_for_runtime(
     item_id: &str,
     expected_item_incarnation_id: &str,
@@ -4995,6 +5040,38 @@ mod tests {
         }))
         .snapshot
         .expect("initialize snapshot")
+    }
+
+    #[test]
+    fn native_bootstrap_preserves_existing_state_and_does_not_request_rewrites() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.playlist = vec![item("retained", "BV1z84y1p7oS", "Alice")];
+        let first = state.initialize_once(initial);
+        let first_snapshot = first.snapshot().expect("initialized").clone();
+        assert_eq!(first_snapshot.playlist.len(), 1);
+        assert!(first.error().is_none());
+
+        let mut replacement = seed();
+        replacement.session_users = vec!["Must not replace".to_owned()];
+        replacement.updated_at = 100.0;
+        let second = state.initialize_once(replacement);
+        assert_eq!(second.snapshot(), Some(&first_snapshot));
+        let second = success(second);
+        assert!(!second.committed);
+        assert_eq!(second.effects, PersistenceEffects::default());
+    }
+
+    #[test]
+    fn native_bootstrap_rejects_invalid_seed_without_poisoning_retry() {
+        let mut state = AppState::default();
+        let mut invalid = seed();
+        invalid.session_started_at = f64::NAN;
+        let failure = state.initialize_once(invalid);
+        assert!(failure.snapshot().is_none());
+        assert!(failure.error().is_some());
+        assert!(state.data.is_none());
+        assert!(state.initialize_once(seed()).snapshot().is_some());
     }
 
     fn success(response: AppStateResponse) -> AppStateSuccess {
