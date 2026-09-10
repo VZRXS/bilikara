@@ -9,11 +9,12 @@
 </head>
 <body>
   <main>
-    <p>ANDROID HOST ALPHA · 阶段 1</p>
+    <p>ANDROID HOST ALPHA · 阶段 2</p>
     <h1>原生启动检查</h1>
     <p id="bootstrap-status" role="status" aria-live="polite">正在检查 Rust 运行时…</p>
     <pre id="bootstrap-details" hidden></pre>
-    <p>这是启动验证包，还不能点歌或播放。它不启动 Python，不读取或覆盖已有曲库。</p>
+    <p>这是启动与存档验证包，还不能点歌或播放。它不启动 Python，不导入或修改桌面端曲库。</p>
+    <p>应用会在自己的私有目录保存和恢复队列、设置与历史。恢复后不会自动续播。如遇存档错误，请先保留应用数据，再排查。</p>
     <p>后续继续接入同一套 Host 界面和网页 Remote；先支持前台运行与 HDMI 镜像，暂不承诺锁屏运行。</p>
   </main>
 </body>

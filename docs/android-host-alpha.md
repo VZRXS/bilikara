@@ -25,11 +25,9 @@ Tauri IPC alone cannot serve another device's browser.
 - The Android shell links `bilikara_runtime` directly and initializes its existing
   process-wide AppState. Re-entering initialization does not reset live state.
 - A local-only, read-only command verifies that AppState returns a typed snapshot.
-- The packaged startup page explicitly reports that Host API, persistence and
-  playback are **not implemented**. No song mutations or external listeners exist.
-- State is ephemeral in this slice. No existing library is imported or overwritten.
-  Before enabling mutations, implement loading and atomic persistence of Rust
-  snapshots and honor all returned persistence effects.
+- At the initial bootstrap commit, the page reported Host API, persistence and
+  playback as unavailable. Slice 2 below replaces ephemeral state with native
+  storage; song mutations and external listeners are still not exposed.
 - The foreground Activity keeps the display awake for cable-mirror testing. This
   is not a background service, wake-lock workaround or lock-screen guarantee.
 - iOS is intentionally not enabled by this Android bootstrap.
@@ -37,6 +35,37 @@ Tauri IPC alone cannot serve another device's browser.
 This small startup page is a temporary diagnostic, not a replacement Host UI.
 Replace its launch URL with the shared Host when the compatible native server
 can provide the required services. Desktop continues using its current backend.
+
+## Slice 2: native saved state (current)
+
+- Android resolves its app-private data directory and calls `initialize_native_host`.
+  The shared process-wide Rust AppState remains the only mutable authority.
+  Rust owns loading, validation, restart policy and persistence; Tauri only adapts
+  platform paths/time and shows the startup result. No Python implementation is added.
+- `host-state.json` is a versioned, bounded checkpoint (32 MiB maximum) containing
+  the queue/current item, player settings, histories, session users, session archives
+  and backup. It does not import or change the desktop adapter's legacy JSON files.
+  Cookies, media files and Gacha configuration are **not** part of this checkpoint.
+- A lifetime file lock excludes a second writer. State-changing commits, including
+  those originating in the native cache runtime, save their restart-safe projection
+  under the AppState lock before publishing the new live state. Snapshot reads,
+  duplicate startup calls and cache-progress-only changes do not rewrite the file.
+- Writes use a bounded temporary file, flush/sync its contents, then replace the
+  checkpoint by same-directory rename. This protects against partial writes and
+  ordinary process interruption; abrupt power-loss durability still requires
+  filesystem/device testing (the parent directory is not explicitly fsynced).
+  The scratch file is never promoted during loading. Unsupported, malformed,
+  oversized or unreadable checkpoints fail closed instead of becoming empty state.
+  See the [Rust rename contract](https://doc.rust-lang.org/std/fs/fn.rename.html).
+- Saved queues resume with `current_item_started = false`, fresh item identities,
+  empty cache reservations and no restored Remote peers. Media artifacts must be
+  validated/rebuilt before playback; in-flight cache/playback credentials are not
+  revived. Page selections, settings and user history remain intact. Runtime reset
+  and backup discard are saved as state changes, so old records do not reappear.
+- The read-only startup response now uses schema 2 / `native-persistence` and reports
+  persistence ready. A storage error remains visible on the local diagnostic page;
+  it neither silently clears data nor falls back to an ephemeral Host. HTTP service,
+  login, song requests and playback remain unavailable in this build.
 
 ## Local build
 
@@ -62,7 +91,7 @@ production signing, release upload or Worker deployment is performed by this scr
 
 ## Next slices
 
-1. Native Host lifecycle, configuration, cookie loading and atomic persistence.
+1. Native Host configuration and cookie lifecycle (AppState checkpointing is implemented).
 2. Compatible Rust HTTP/SSE/static/media-Range service with Host/Remote auth boundaries.
 3. Login, browsing, request admission and native cache/download through shared services.
 4. Shared Host player on Android, media-library packaging, audio routing and HDMI recovery.

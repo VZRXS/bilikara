@@ -24,13 +24,19 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         self.assertIn("#[cfg_attr(mobile, tauri::mobile_entry_point)]", entry)
         self.assertIn('#[cfg(target_os = "android")]\nmod android;', entry)
         source = (TAURI / "src/android.rs").read_text(encoding="utf-8")
-        self.assertIn("initialize_app_state_once(AppStateSeed", source)
-        self.assertIn("app.path().app_data_dir()", source)
+        self.assertIn("initialize_native_host(", source)
+        self.assertRegex(source, r"app\s*\.path\(\)\s*\.app_data_dir\(\)")
         self.assertIn("execute_app_state(AppStateRequest::Snapshot", source)
         for forbidden in ("Command::new", "backend_process::", "execute_app_state_json", "CString"):
             self.assertNotIn(forbidden, source)
-        for capability in ("host_api_ready", "persistence_ready", "playback_ready"):
+        for capability in ("host_api_ready", "playback_ready"):
             self.assertIn(f"{capability}: false", source)
+        self.assertIn("persistence_ready: true", source)
+        self.assertIn('stage: "native-persistence"', source)
+        self.assertIn("if let Some(error) = &bootstrap.error", source)
+        self.assertIn("let error = initialize(app).err();", source)
+        self.assertIn("app.manage(AndroidBootstrap { error });", source)
+        self.assertNotIn("std::fs::remove", source)
 
     def test_bootstrap_ipc_is_local_read_only_and_mobile_scoped(self):
         for name in ("main", "controller"):
@@ -76,8 +82,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const source = fs.readFileSync("static/android-alpha.js", "utf8");
-const valid = {schema_version: 1, stage: "native-bootstrap", backend: "rust", revision: 0,
-  host_api_ready: false, persistence_ready: false, playback_ready: false};
+const valid = {schema_version: 2, stage: "native-persistence", backend: "rust", revision: 0,
+  host_api_ready: false, persistence_ready: true, playback_ready: false};
 async function render(invoke) {
   const nodes = {"bootstrap-status": {textContent: ""}, "bootstrap-details": {hidden: true}};
   const context = {window: invoke ? {__TAURI__: {core: {invoke}}} : {},
@@ -91,13 +97,18 @@ async function render(invoke) {
   assert.equal(calls, 1);
   assert.equal(success["bootstrap-details"].hidden, false);
   assert.match(success["bootstrap-status"].textContent, /完整 Host 功能尚未接入/);
+  assert.match(success["bootstrap-status"].textContent, /原生存档已接入/);
   for (const invoke of [null, async () => {throw new Error("native failure");},
     async () => ({...valid, backend: "python"}), async () => ({...valid, revision: NaN}),
-    async () => ({...valid, schema_version: 2}), async () => ({...valid, host_api_ready: true})]) {
+    async () => ({...valid, schema_version: 1}), async () => ({...valid, persistence_ready: false}),
+    async () => ({...valid, stage: "native-bootstrap"}), async () => ({...valid, host_api_ready: true})]) {
     const failed = await render(invoke);
     assert.match(failed["bootstrap-status"].textContent, /启动检查失败/);
     assert.equal(failed["bootstrap-details"].hidden, true);
   }
+  const badStorage = await render(async () => {throw "native_storage_invalid: original preserved";});
+  assert.match(badStorage["bootstrap-status"].textContent, /native_storage_invalid: original preserved/);
+  assert.equal(badStorage["bootstrap-details"].hidden, true);
 })().catch(error => {console.error(error); process.exitCode = 1;});
 '''
         result = subprocess.run([node, "-e", program], cwd=ROOT, capture_output=True, text=True, timeout=20)
