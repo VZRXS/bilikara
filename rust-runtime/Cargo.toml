@@ -7,8 +7,15 @@ rust-version = "1.88"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "dep:qrcode"]
+
 [dependencies]
 base64 = "0.22"
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util"] }
+tokio-util = { version = "0.7", optional = true, features = ["io"] }
+qrcode = { version = "0.14", optional = true, default-features = false, features = ["svg"] }
 bilikara_rust = { path = "../rust" }
 fs2 = "0.4"
 getrandom = "0.3"

@@ -15,6 +15,8 @@ use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
 mod native_persistence;
+#[cfg(feature = "native-host")]
+pub(crate) mod native_session;
 use crate::native_host_storage::NativeHostStorage;
 use native_persistence::storage_error_response;
 
@@ -887,6 +889,12 @@ pub enum AppStateResponse {
 }
 
 impl AppStateResponse {
+    pub fn result(&self) -> Option<&Value> {
+        match self {
+            Self::Success(success) => Some(&success.result),
+            Self::Failure(_) => None,
+        }
+    }
     /// Borrow the authoritative projection without JSON or the compatibility ABI.
     /// Keep the response intact so transport adapters can still persist its effects.
     pub fn snapshot(&self) -> Option<&AppSnapshot> {
@@ -935,6 +943,8 @@ pub struct AppState {
     next_artifact_set_id: u64,
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
     internet_remote_peers: InternetRemotePeers,
+    #[cfg(feature = "native-host")]
+    native_session: native_session::NativeSession,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -978,6 +988,8 @@ impl Default for AppState {
             next_artifact_set_id: 0,
             identity_namespace,
             internet_remote_peers: InternetRemotePeers::default(),
+            #[cfg(feature = "native-host")]
+            native_session: native_session::NativeSession::default(),
         }
     }
 }
@@ -4539,6 +4551,10 @@ impl AppState {
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
                 self.internet_remote_peers.clear();
+                #[cfg(feature = "native-host")]
+                {
+                    self.native_session = native_session::NativeSession::default();
+                }
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",

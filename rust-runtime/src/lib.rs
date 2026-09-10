@@ -12,6 +12,8 @@ mod internet_remote;
 mod json_http;
 mod media_backend;
 mod media_routing;
+#[cfg(feature = "native-host")]
+pub mod native_host;
 mod native_host_storage;
 mod native_video;
 mod networking;

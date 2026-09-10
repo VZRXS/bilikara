@@ -1,0 +1,170 @@
+use super::*;
+
+fn setup() -> (AppState, Identity) {
+    let mut app = AppState::default();
+    let seed:AppStateSeed=serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0})).unwrap();
+    assert!(
+        app.execute(AppStateRequest::Initialize {
+            schema_version: 1,
+            state: Box::new(seed)
+        })
+        .error()
+        .is_none()
+    );
+    app.native().host_token = "host-token".into();
+    app.native().invite = "invite-token".into();
+    let identity = Identity {
+        token: "host-token".into(),
+        loopback: true,
+        client: "host-webview".into(),
+    };
+    (app, identity)
+}
+
+fn ready(app: &mut AppState) -> (AppSnapshot, Value) {
+    let item:PlaylistItem=serde_json::from_value(json!({"id":"first","original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[120],"available_parts":["P1"]})).unwrap();
+    app.native_execute(AppStateRequest::AddItem {
+        schema_version: 1,
+        item,
+        position: "tail".into(),
+        requester_name: "Alice".into(),
+        reset_av_delay: false,
+        allow_repeat: false,
+        now: 2.0,
+    })
+    .unwrap();
+    let item = app.native_core_snapshot().unwrap().current_item.unwrap();
+    let reservation = app
+        .native_execute(AppStateRequest::BeginCacheAttempt {
+            schema_version: 1,
+            item_id: item.id.clone(),
+            expected_item_incarnation_id: item.item_incarnation_id,
+        })
+        .unwrap();
+    let directory = reservation["artifact_relative_directory"].as_str().unwrap();
+    let event:CacheEvent=serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{directory}/video.mp4"),"video_media_url":format!("/media/{directory}/video.mp4"),"audio_variants":[{"id":"p1_p1","label":"P1","page":1,"audio_url":format!("/media/{directory}/audio.m4a")}],"selected_audio_variant_id":"p1_p1","item_incarnation_id":reservation["item_incarnation_id"],"artifact_set_id":reservation["artifact_set_id"],"artifact_relative_directory":directory})).unwrap();
+    app.native_execute(AppStateRequest::ApplyCacheEvent {
+        schema_version: 1,
+        item_id: item.id,
+        cache_attempt_token: reservation["cache_attempt_token"].as_u64().unwrap(),
+        event,
+        now: 3.0,
+    })
+    .unwrap();
+    let snapshot = app.native_core_snapshot().unwrap();
+    let claim = json!({"playback_generation":snapshot.playback_generation,"item_incarnation_id":reservation["item_incarnation_id"],"artifact_set_id":reservation["artifact_set_id"]});
+    (snapshot, claim)
+}
+
+#[test]
+fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
+    let (mut app, host) = setup();
+    assert!(app.native_authorize(&host, true).unwrap());
+    let forged = Identity {
+        token: String::new(),
+        ..host.clone()
+    };
+    assert!(app.native_authorize(&forged, true).is_err());
+    let remote = Identity {
+        token: "remote0".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    assert!(app.native_redeem("wrong", "", "remote0".into()).is_err());
+    for index in 0..10 {
+        app.native_redeem("invite-token", "", format!("remote{index}"))
+            .unwrap();
+    }
+    assert!(
+        app.native_redeem("invite-token", "", "overflow".into())
+            .is_err()
+    );
+    assert_eq!(
+        app.native_redeem("invite-token", "remote0", "unused".into())
+            .unwrap(),
+        "remote0"
+    );
+    assert!(app.native_authorize(&remote, true).is_err());
+    assert!(!app.native_authorize(&remote, false).unwrap());
+    assert!(app.native_requester(&remote, "Alice").is_err());
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), false, 2.0)
+            .unwrap_err()
+            .code,
+        "session_user_already_exists"
+    );
+    app.native_register(&remote, &json!({"name":"Alice","claim":true}), false, 2.0)
+        .unwrap();
+    assert_eq!(
+        app.native_requester(&remote, "Spoofed user").unwrap(),
+        "Alice"
+    );
+    app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+    assert!(app.native_authorize(&host, true).is_err());
+}
+
+#[test]
+fn playback_claim_status_and_commands_are_exact_generation_bound() {
+    let (mut app, host) = setup();
+    let (snapshot, claim) = ready(&mut app);
+    assert_eq!(
+        app.native_claim(&host, &claim, false).unwrap()["claimed"],
+        true
+    );
+    let intruder = Identity {
+        client: "another-webview".into(),
+        ..host.clone()
+    };
+    assert_eq!(
+        app.native_claim(&intruder, &claim, false).unwrap()["claimed"],
+        false
+    );
+    let status = json!({"item_id":"first","playback_generation":snapshot.playback_generation,"status_sequence":1,"observed_phase":"playing","is_paused":false,"current_time":25.0,"duration":120.0});
+    app.native_player_status(&host, &status, 4.0).unwrap();
+    assert_eq!(
+        app.native_snapshot(false).unwrap()["player_status"]["current_time"],
+        25.0
+    );
+    assert!(app.native_player_status(&intruder, &status, 4.0).is_err());
+    assert_eq!(
+        app.native_player_status(&host, &status, 4.0).unwrap()["duplicate"],
+        true
+    );
+    let mut conflict = status.clone();
+    conflict["current_time"] = json!(2.0);
+    assert!(app.native_player_status(&host, &conflict, 4.0).is_err());
+    let control = json!({"item_id":"first","playback_generation":snapshot.playback_generation,"action":"pause"});
+    app.native_control(&host, &control, 4.0).unwrap();
+    app.native_execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 })
+        .unwrap();
+    assert!(app.native_control(&host, &control, 5.0).is_err());
+    assert!(app.native_player_status(&host, &status, 5.0).is_err());
+    let view = app.native_snapshot(true).unwrap();
+    assert!(view["player_status"].is_null());
+    assert!(view["player_control_command"].is_null());
+}
+
+#[test]
+fn rapid_controls_are_queued_and_future_ack_cannot_drop_them() {
+    let (mut app, host) = setup();
+    let (snapshot, _) = ready(&mut app);
+    let control = json!({"item_id":"first","playback_generation":snapshot.playback_generation,"action":"seek-relative","delta_seconds":15});
+    for _ in 0..16 {
+        app.native_control(&host, &control, 4.0).unwrap();
+    }
+    assert_eq!(
+        app.native_control(&host, &control, 4.0).unwrap_err().status,
+        429
+    );
+    app.native_ack(&host, &json!({"seq":999})).unwrap();
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["player_control_command"]["seq"],
+        1
+    );
+    app.native_ack(&host, &json!({"seq":1})).unwrap();
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["player_control_command"]["seq"],
+        2
+    );
+    assert!(app.native_snapshot(false).unwrap()["player_control_command"].is_null());
+}
