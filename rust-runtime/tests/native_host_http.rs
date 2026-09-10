@@ -187,6 +187,17 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     .json()
     .unwrap();
     assert_eq!(delay["data"]["effective_delay_ms"], 100);
+    assert_eq!(
+        post("/api/diagnostics/markdown", json!({}), &remote_cookie).status(),
+        403
+    );
+    let diagnostic: Value = post("/api/diagnostics/markdown", json!({}), &cookie)
+        .json()
+        .unwrap();
+    let markdown = diagnostic["data"]["markdown"].as_str().unwrap();
+    assert!(markdown.contains("rust-native"));
+    assert!(!markdown.contains(cookie.split('=').nth(1).unwrap()));
+    assert!(!markdown.contains("bilibili-login.json"));
     drop(host);
     std::thread::sleep(Duration::from_millis(500));
     execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });

@@ -2,6 +2,7 @@
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
 mod api;
 mod cache;
+mod diagnostics;
 mod files;
 mod login;
 
@@ -133,6 +134,8 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
     let cache_root = directory.join("media");
     std::fs::create_dir_all(&cache_root)
         .map_err(|_| ApiError::new(503, "storage", "无法创建媒体缓存目录"))?;
+    std::fs::create_dir_all(directory.join("logs"))
+        .map_err(|_| ApiError::new(503, "storage", "无法创建诊断目录"))?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
         .map_err(|_| ApiError::new(503, "listen", "无法开启本地 Host 服务"))?;
     listener

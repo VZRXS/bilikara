@@ -198,7 +198,7 @@ fn job(context: &HostContext, item: &PlaylistItem, cookie: &str) -> Result<Cache
     let pages=item.available_pages.iter().enumerate().filter(|(_,page)|item.selected_pages.contains(page)||**page==item.video_page).map(|(index,page)|json!({"page":page,"cid":item.available_cids.get(index),"duration_seconds":item.available_durations.get(index),"label":item.available_parts.get(index)})).collect::<Vec<_>>();
     serde_json::from_value(json!({
         "schema_version":1,"item_id":item.id,"item_incarnation_id":item.item_incarnation_id,"bvid":item.bvid,"aid":item.aid,
-        "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("native-cache.log"),
+        "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("logs/native-cache.log"),
         "cookie":cookie,"user_agent":crate::native_video::USER_AGENT,"referer":"https://www.bilibili.com/","timeout_ms":15000,
         "video_quality":"720P","avc_quality_cap":"720P","audio_hires":false,"selected_audio_variant_id":item.selected_audio_variant_id,
         "reported_ready":item.cache_status=="ready","existing_video_relative_path":item.video_relative_path,

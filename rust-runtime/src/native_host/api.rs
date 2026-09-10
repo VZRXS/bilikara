@@ -29,6 +29,9 @@ pub(super) fn dispatch(
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
     }
+    if path == "/api/diagnostics/markdown" {
+        return diagnostics::markdown(context, identity);
+    }
     if path == "/api/bbdown/login/start" {
         return login::begin(context.clone(), identity);
     }

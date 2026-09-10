@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct NativeSession {
     pub host_token: String,
     pub invite: String,
@@ -24,6 +24,17 @@ pub(crate) struct NativeSession {
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
+}
+
+impl std::fmt::Debug for NativeSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeSession")
+            .field("revision", &self.revision)
+            .field("device_count", &self.devices.len())
+            .field("logged_in", &!self.cookie.is_empty())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -266,6 +277,10 @@ impl AppState {
         value["gatcha"] = json!({"busy":false,"background_busy":false});
         value["app_update"] = json!({"state":"unsupported","supported":false});
         value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":3,"message":"Android Alpha"});
+        // The shared status chip aggregates these two fields. No external FFmpeg
+        // is installed or advertised; media normalization is in-process Rust.
+        value["ffmpeg"] =
+            json!({"available":true,"ready":true,"state":"ready","version":"Rust Native"});
         if host {
             let mut login =
                 serde_json::to_value(session.login.bilibili_snapshot(BilibiliLoginFacts {
