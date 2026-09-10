@@ -6,7 +6,7 @@ class TauriExportSourceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
-        cls.main_source = (root / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.main_source = (root / "src-tauri" / "src" / "desktop.rs").read_text(encoding="utf-8")
         cls.backend_source = (
             root / "src-tauri" / "src" / "backend_process.rs"
         ).read_text(encoding="utf-8")

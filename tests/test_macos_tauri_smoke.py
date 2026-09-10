@@ -131,7 +131,7 @@ class MacOSTauriAutoplayConfigurationTest(unittest.TestCase):
         self.assertEqual(capability["windows"], ["main"])
 
     def test_macos_main_webview_uses_creation_time_autoplay_policy(self):
-        main_source = (ROOT_DIR / "src-tauri" / "src" / "main.rs").read_text(
+        main_source = (ROOT_DIR / "src-tauri" / "src" / "desktop.rs").read_text(
             encoding="utf-8"
         )
         platform_source = (
