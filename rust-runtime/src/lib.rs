@@ -6,6 +6,7 @@ mod diagnostics;
 pub mod experimental_libav;
 mod ffi;
 mod gatcha_repository;
+mod http_client;
 mod http_downloader;
 mod internet_remote;
 mod json_http;

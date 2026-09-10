@@ -1,5 +1,4 @@
 use reqwest::Method;
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -58,7 +57,7 @@ pub fn execute_json_request(request: &JsonHttpRequest) -> Result<JsonHttpResult,
             }
         })?;
     let timeout_ms = request.timeout_ms.clamp(100, 300_000);
-    let client = Client::builder()
+    let client = crate::http_client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
         .map_err(transport_error)?;

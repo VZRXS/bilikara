@@ -148,7 +148,7 @@ where
         ));
     }
 
-    let client = Client::builder()
+    let client = crate::http_client::builder()
         .connect_timeout(Duration::from_millis(request.connect_timeout_ms))
         .timeout(Duration::from_millis(request.request_timeout_ms))
         .build()

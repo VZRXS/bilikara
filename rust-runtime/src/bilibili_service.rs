@@ -137,7 +137,7 @@ impl BilibiliHttpClient {
             referer: referer.to_owned(),
             timeout_ms,
         };
-        let client = Client::builder()
+        let client = crate::http_client::builder()
             .timeout(Duration::from_millis(timeout_ms.max(100)))
             .default_headers(request_headers(&request)?)
             .build()

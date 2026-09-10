@@ -85,6 +85,7 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+ "webpki-root-certs",
  "windows-sys 0.61.2",
  "zip",
 ]
