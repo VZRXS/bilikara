@@ -1,8 +1,8 @@
-//! Executed only from the extracted preview's Runtime test binary.
+//! Executed only from the extracted package's Runtime test binary.
 use super::*;
 
 #[test]
-#[ignore = "requires extracted Windows preview artifacts"]
+#[ignore = "requires extracted same-build package artifacts"]
 fn packaged_cancellation_and_collision() {
     let path = |name| PathBuf::from(std::env::var_os(name).expect("required package artifact"));
     let fixtures = path("BILIKARA_LIBAV_FIXTURES");
@@ -37,7 +37,7 @@ fn packaged_cancellation_and_collision() {
         assert!(!destination.exists());
         assert_eq!(fs::read(&source).unwrap(), original);
         flag.store(false, Ordering::Relaxed);
-        // Existing Rust before_publish seam and sentinel: the actual Windows
+        // Existing Rust before_publish seam and sentinel: the actual platform
         // no-replace hard_link must preserve a newly competing destination.
         let error = probe
             .remux_impl(

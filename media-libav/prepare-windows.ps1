@@ -1,8 +1,10 @@
 $ErrorActionPreference = 'Stop'
-$prefix = $env:BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX
-if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') { throw 'Expected native x64 MSVC environment' }
+$prefix = $env:BILIKARA_LIBAV_PREFIX
+$arch = $env:VSCMD_ARG_TGT_ARCH
+if ($arch -notin @('x64', 'arm64')) { throw 'Expected native x64 or ARM64 MSVC environment' }
+$rustArch = if ($arch -eq 'arm64') { 'aarch64' } else { 'x86_64' }
 $rustInfo = & rustc -vV
-if ($LASTEXITCODE -ne 0 -or -not ($rustInfo -match '^host: x86_64-pc-windows-msvc$')) { throw 'Expected the existing Rust x64 MSVC host target' }
+if ($LASTEXITCODE -ne 0 -or -not ($rustInfo -match "^host: $rustArch-pc-windows-msvc$")) { throw 'Expected the matching native Rust MSVC host target' }
 $driver = Join-Path $prefix 'driver'
 New-Item -ItemType Directory -Force $driver | Out-Null
 cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --example libav_metadata 2>&1 | Tee-Object (Join-Path $prefix "records/driver-build.log")
@@ -18,8 +20,8 @@ $tests = @($messages | ForEach-Object {
 })
 if ($tests.Count -ne 1) { throw 'Expected one Runtime library test executable' }
 Copy-Item $tests[0] (Join-Path $driver 'libav-runtime-tests.exe')
-$redist = @(Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC*.CRT') -Directory)
-if ($redist.Count -ne 1) { throw 'Expected one selected MSVC x64 redistributable directory' }
+$redist = @(Get-ChildItem (Join-Path $env:VCToolsRedistDir "$arch/Microsoft.VC*.CRT") -Directory)
+if ($redist.Count -ne 1) { throw 'Expected one selected MSVC redistributable directory' }
 & (Join-Path $env:pythonLocation 'python.exe') scripts/windows_libav_preview.py collect $prefix $redist[0].FullName (Join-Path $env:SystemRoot 'System32')
 if ($LASTEXITCODE -ne 0) { throw 'PE dependency collection failed' }
 # Resolve the product terms from this installation's catalog: recent VS

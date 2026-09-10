@@ -63,8 +63,10 @@ MACOS_SYSTEM_DEPENDENCY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
 def main() -> None:
-    from scripts.windows_libav_preview import preview_prefix, stage
-    preview = preview_prefix()
+    from scripts.libav_bundle import package_prefix, stage
+    prefix = package_prefix()
+    if prefix is None:
+        raise RuntimeError("BILIKARA_LIBAV_PREFIX is required for native libav bundles")
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
     version_arg = f"{VERSION_FILE}{data_separator}."
@@ -109,8 +111,7 @@ def main() -> None:
         command, shell=False, check=True, cwd=ROOT_DIR
     )
     _write_release_compliance_files()
-    if preview is not None:
-        stage(preview, ROOT_DIR / "dist" / APP_NAME)
+    stage(prefix, ROOT_DIR / "dist" / (f"{APP_NAME}.app" if platform.system() == "Darwin" else APP_NAME))
     if platform.system() == "Darwin":
         finalize_macos_app_bundle(ROOT_DIR / "dist" / f"{APP_NAME}.app")
     print()
@@ -191,7 +192,9 @@ def _sign_nested_macho_objects(app_path: Path) -> None:
     for root, _, files in os.walk(contents_dir):
         for name in files:
             p = Path(root) / name
-            if _is_macho_file(p):
+            # Signing the outer executable also seals its bundle. Defer it
+            # until every newly staged helper/library has been signed.
+            if p != contents_dir / "MacOS/bilikara" and _is_macho_file(p):
                 print(f"Signing nested Mach-O code object: {p}")
                 _sign_path(p)
 
@@ -313,8 +316,8 @@ def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate
         source = str(binary_path.resolve())
         # Preview DLLs are explicitly collected/staged after PyInstaller. Do
         # not let its import scanner choose a runner-installed FFmpeg DLL.
-        preview_tool = os.environ.get("BILIKARA_WINDOWS_LIBAV_PREVIEW") == "1" and binary_name in {"ffmpeg", "ffprobe"}
-        args.extend(["--add-data" if preview_tool else "--add-binary", f"{source}{data_separator}vendor"])
+        shared_tool = bool(os.environ.get("BILIKARA_LIBAV_PREFIX")) and binary_name in {"ffmpeg", "ffprobe"}
+        args.extend(["--add-data" if shared_tool else "--add-binary", f"{source}{data_separator}vendor"])
 
     if verbose:
         print("Bundling external tools:")
@@ -491,7 +494,14 @@ def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> 
                 "Verify GPL redistribution obligations for this release."
             )
         if platform.system() == "Darwin":
-            _validate_macos_tool_portability(binary_path)
+            if os.environ.get("BILIKARA_LIBAV_PREFIX"):
+                from scripts.libav_bundle import binary_info, system_import
+                for dependency in binary_info(binary_path)["imports"]:
+                    if not system_import(dependency) and (not dependency.startswith("@loader_path/") or
+                            not (binary_path.parent / dependency.removeprefix("@loader_path/")).is_file()):
+                        raise RuntimeError("Packaged FFmpeg has an unresolved private dependency")
+            else:
+                _validate_macos_tool_portability(binary_path)
 
 
 def _validate_bbdown_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:
@@ -862,10 +872,10 @@ def _python_certifi_args(data_separator: str, *, verbose: bool = False) -> list[
 
 def _resolve_bundle_binary_path(binary_name: str) -> Path | None:
     if binary_name in {"ffmpeg", "ffprobe"}:
-        from scripts.windows_libav_preview import preview_prefix
-        prefix = preview_prefix()
+        from scripts.libav_bundle import package_prefix
+        prefix = package_prefix()
         if prefix is not None:
-            return prefix / "bin" / f"{binary_name}.exe"
+            return prefix / "bin" / (binary_name + (".exe" if platform.system() == "Windows" else ""))
     direct = shutil.which(binary_name)
     if not direct:
         if binary_name == "ffprobe":

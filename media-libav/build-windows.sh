@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Windows runner only: MSYS2 provides shell/make, MSVC builds all native code.
 set -euo pipefail
-test "${VSCMD_ARG_TGT_ARCH:-}" = x64
-test "${BILIKARA_WINDOWS_LIBAV_PREVIEW:-}" = 1
+case "${VSCMD_ARG_TGT_ARCH:-}" in
+  x64) ffmpeg_arch=x86_64; rust_arch=x86_64; asm_flag=--disable-x86asm ;;
+  arm64) ffmpeg_arch=aarch64; rust_arch=aarch64; asm_flag=--disable-asm ;;
+  *) echo 'Expected native x64 or ARM64 MSVC environment' >&2; exit 1 ;;
+esac
+export BILIKARA_LIBAV_TARGET="$rust_arch-pc-windows-msvc"
 repo="$(pwd)"
 python_bin="$(cygpath -u "$pythonLocation")/python.exe"
-prefix="$(cygpath -m "$BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX")"
+prefix="$(cygpath -m "$BILIKARA_LIBAV_PREFIX")"
 work="$(cygpath -u "$RUNNER_TEMP")/bilikara-ffmpeg-source"
-export PATH="$(cygpath -u "$VCToolsInstallDir")/bin/Hostx64/x64:$PATH"
+compiler_dir="$(cygpath -u "$VCToolsInstallDir")/bin/Host${VSCMD_ARG_HOST_ARCH}/${VSCMD_ARG_TGT_ARCH}"
+export PATH="$compiler_dir:$PATH"
 mkdir -p "$prefix/source" "$prefix/licenses" "$prefix/records" "$work"
 trap 'test ! -f "$work/ffmpeg-9.0.1/ffbuild/config.log" || cp "$work/ffmpeg-9.0.1/ffbuild/config.log" "$prefix/records/config.log"' EXIT
 version=9.0.1
@@ -28,9 +33,9 @@ tar --force-local -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
 cd "$work/ffmpeg-${version}"
 # Preserve the accepted codec/demuxer corpus; no --disable-everything pruning.
 # /MD is required: fd protocol and companion must share the UCRT fd table.
-./configure --prefix="$prefix" --toolchain=msvc --arch=x86_64 --target-os=win64 \
+./configure --prefix="$prefix" --toolchain=msvc --arch="$ffmpeg_arch" --target-os=win64 \
   --extra-cflags=-MD --extra-cxxflags=-MD --disable-autodetect --disable-debug \
-  --disable-doc --disable-ffplay --disable-static --enable-shared --disable-x86asm \
+  --disable-doc --disable-ffplay --disable-static --enable-shared "$asm_flag" \
   --disable-avdevice --disable-swscale --enable-swresample --disable-network \
   2>&1 | tee "$prefix/records/configure.log"
 make -j4 2>&1 | tee "$prefix/records/build.log"
@@ -47,11 +52,11 @@ rustc -vV > "$prefix/records/rust-version.txt"
 "$python_bin" - <<'PY'
 import json, os
 from pathlib import Path
-p = Path(os.environ['BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX'])
+p = Path(os.environ['BILIKARA_LIBAV_PREFIX'])
 data = json.loads((p/'build-info.json').read_text())
-data.update(target='x86_64-pc-windows-msvc', source_url='https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz',
+data.update(target=os.environ['BILIKARA_LIBAV_TARGET'], source_url='https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz',
             release_signer='FCF986EA15E6E293A5644F10B4322F04D67658D8',
-            toolchain='MSVC x64 /MD; MSYS2 shell/make only',
+            toolchain='MSVC /MD; MSYS2 shell/make only',
             vc_tools_version=os.environ['VCToolsVersion'], windows_sdk=os.environ['WindowsSDKVersion'])
 (p/'build-info.json').write_text(json.dumps(data, indent=2)+'\n', encoding='utf-8')
 PY

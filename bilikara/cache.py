@@ -7173,11 +7173,10 @@ class CacheManager:
 
     @classmethod
     def _ffprobe_path_for_ffmpeg(cls, ffmpeg_path: Path) -> Path | None:
-        if os.name == "nt":
-            from .ffmpeg_vendor import runtime_files
-            for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
-                if runtime_files(vendor) is not None:
-                    return FFPROBE_RUNTIME_PATH if cls._is_usable_ffprobe(FFPROBE_RUNTIME_PATH) else None
+        from .ffmpeg_vendor import runtime_files
+        for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+            if runtime_files(vendor) is not None:
+                return FFPROBE_RUNTIME_PATH if cls._is_usable_ffprobe(FFPROBE_RUNTIME_PATH) else None
         candidates = []
         if FFPROBE_RUNTIME_PATH.exists():
             candidates.append(FFPROBE_RUNTIME_PATH)
@@ -9132,14 +9131,13 @@ class CacheManager:
     def _ensure_ffmpeg(self, force_refresh: bool = False) -> Path:
         with self.ffmpeg_prepare_lock:
             from .ffmpeg_vendor import MANIFEST, runtime_files
-            preview_files = None
-            if os.name == "nt":
-                for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
-                    preview_files = runtime_files(vendor)
-                    if preview_files is not None:
-                        break
+            packaged_files = None
+            for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+                packaged_files = runtime_files(vendor)
+                if packaged_files is not None:
+                    break
             override = Path(FFMPEG_PATH_OVERRIDE).expanduser() if FFMPEG_PATH_OVERRIDE else None
-            if preview_files is None and override and override.exists():
+            if packaged_files is None and override and override.exists():
                 version = self._read_ffmpeg_version(override)
                 if not version:
                     raise RuntimeError(f"外部 FFmpeg 不可执行: {override}")
@@ -9159,7 +9157,7 @@ class CacheManager:
 
             if source_ffmpeg:
                 FFMPEG_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-                if preview_files is not None:
+                if packaged_files is not None:
                     # Shared CLI copies need the exact vendor closure. Refresh
                     # a changed build together; identical sizes alone do not
                     # identify a build. A completed group can stay in use by
@@ -9170,7 +9168,7 @@ class CacheManager:
                         runtime_manifest.is_file()
                         and runtime_manifest.read_bytes() == source_manifest.read_bytes()
                     )
-                    for source in preview_files:
+                    for source in packaged_files:
                         self._sync_runtime_tool(source, FFMPEG_TOOLS_DIR / source.name,
                                                 force_refresh=force_refresh or not same_group)
                     # Only a complete copy establishes this restore marker.
@@ -9192,12 +9190,11 @@ class CacheManager:
             return runtime_ffmpeg
 
     def _preferred_ffmpeg_sources(self) -> tuple[Path | None, Path | None]:
-        if os.name == "nt":
-            from .ffmpeg_vendor import runtime_files
-            for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
-                if runtime_files(vendor) is not None:
-                    return vendor / "ffmpeg.exe", vendor / "ffprobe.exe"
+        from .ffmpeg_vendor import runtime_files
         tool_suffix = ".exe" if os.name == "nt" else ""
+        for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
+            if runtime_files(vendor) is not None:
+                return vendor / f"ffmpeg{tool_suffix}", vendor / f"ffprobe{tool_suffix}"
         vendor_pairs = (
             (
                 VENDOR_DIR / f"ffmpeg{tool_suffix}",

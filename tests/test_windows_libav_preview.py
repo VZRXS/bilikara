@@ -18,8 +18,9 @@ from types import SimpleNamespace
 
 import build_bundle
 from bilikara.ffmpeg_vendor import MANIFEST, runtime_files
-from bilikara.windows_preview_smoke import ModuleSnapshotPending, backend, clean_environment, comparison_has_same_build, module_paths, remove_package_dependency, require_x64, run
+from bilikara.windows_preview_smoke import ModuleSnapshotPending, backend, clean_environment, comparison_has_same_build, module_paths, remove_package_dependency, require_native_pe, run
 from scripts import windows_libav_preview as preview
+from scripts import libav_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,13 +81,13 @@ class WindowsPreviewTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.vendor = self.root / "bin"
         self.vendor.mkdir()
         self.names = ["ffmpeg.exe", "ffprobe.exe", "avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swresample-7.dll", "vcruntime140.dll"]
         for name in self.names + [preview.COMPANION]:
             (self.vendor / name).write_bytes(b"selected")
-        self.manifest = {"schema_version": 1, "version": "9.0.1", "target": preview.TARGET,
+        self.manifest = {"schema_version": 1, "version": "9.0.1", "target": "x86_64-pc-windows-msvc",
                          "runtime_files": self.names}
         self.write_manifest()
         for name in ("source/ffmpeg-9.0.1.tar.xz", "licenses/COPYING.LGPLv2.1", "build-info.json"):
@@ -97,23 +98,23 @@ class WindowsPreviewTests(unittest.TestCase):
     def write_manifest(self):
         (self.vendor / MANIFEST).write_text(json.dumps(self.manifest), encoding="utf-8")
 
-    def test_opt_in_off_preserves_discovery(self):
-        with patch.dict(os.environ, {"BILIKARA_WINDOWS_LIBAV_PREVIEW": "0"}), patch("build_bundle.shutil.which", return_value="/chosen/ffmpeg"), patch("build_bundle.platform.system", return_value="Linux"):
-            self.assertIsNone(preview.preview_prefix())
+    def test_unconfigured_tool_helper_preserves_developer_discovery(self):
+        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": ""}), patch("build_bundle.shutil.which", return_value="/chosen/ffmpeg"), patch("build_bundle.platform.system", return_value="Linux"):
+            self.assertIsNone(libav_bundle.package_prefix())
             self.assertEqual(build_bundle._resolve_bundle_binary_path("ffmpeg"), Path("/chosen/ffmpeg"))
 
     def test_prefix_is_explicit_fail_closed_and_never_uses_path(self):
-        with patch.dict(os.environ, {"BILIKARA_WINDOWS_LIBAV_PREVIEW": "1", "BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX": str(self.root)}), patch.object(preview.platform, "system", return_value="Windows"), patch.object(preview.platform, "machine", return_value="AMD64"), patch("build_bundle.shutil.which", side_effect=AssertionError("system fallback")):
+        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": str(self.root)}), patch.object(preview.platform, "system", return_value="Windows"), patch.object(preview.platform, "machine", return_value="AMD64"), patch("build_bundle.shutil.which", side_effect=AssertionError("system fallback")):
             self.assertEqual(build_bundle._resolve_bundle_binary_path("ffmpeg"), self.vendor / "ffmpeg.exe")
             (self.vendor / "avutil-61.dll").unlink()
             with self.assertRaises(RuntimeError):
                 build_bundle._resolve_bundle_binary_path("ffprobe")
-            with patch.dict(os.environ, {"BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX": ""}):
+            with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": "relative-prefix"}):
                 with self.assertRaises(RuntimeError):
-                    preview.preview_prefix()
+                    libav_bundle.package_prefix()
 
     def test_manifest_rejects_escape_wrong_target_and_missing_dependencies(self):
-        for change in ({"runtime_files": [*self.names, "../outside.dll"]}, {"target": "aarch64-pc-windows-msvc"}, {"version": "8.1.2"}, {"runtime_files": [*self.names, "missing.dll"]}):
+        for change in ({"runtime_files": [*self.names, "../outside.dll"]}, {"target": "i686-pc-windows-msvc"}, {"version": "8.1.2"}, {"runtime_files": [*self.names, "missing.dll"]}):
             with self.subTest(change=change):
                 old = self.manifest.copy()
                 self.manifest.update(change)
@@ -122,9 +123,9 @@ class WindowsPreviewTests(unittest.TestCase):
                     runtime_files(self.vendor)
                 self.manifest = old
 
-    def test_preview_stages_cli_as_data_avoiding_pyinstaller_import_search(self):
+    def test_shared_cli_stages_as_data_avoiding_pyinstaller_import_search(self):
         paths = {"ffmpeg": self.vendor / "ffmpeg.exe", "ffprobe": self.vendor / "ffprobe.exe", "BBDown": self.root / "BBDown.exe"}
-        with patch.dict(os.environ, {"BILIKARA_WINDOWS_LIBAV_PREVIEW": "1"}), patch.object(build_bundle, "_resolved_bundle_binary_paths", return_value=(paths, [])):
+        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": str(self.root)}), patch.object(build_bundle, "_resolved_bundle_binary_paths", return_value=(paths, [])):
             args = build_bundle._bundled_binary_args(";")
         self.assertEqual(args[0], "--add-data")
         self.assertEqual(args[2], "--add-data")
@@ -187,19 +188,24 @@ class WindowsPreviewTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 preview.collect(self.root, redist, system)
 
-    def test_extracted_machine_check_rejects_arm64_and_non_pe(self):
+    def test_extracted_machine_check_rejects_wrong_architecture_and_non_pe(self):
         path = self.root / "tool.exe"
-        for machine, good in ((0x8664, True), (0xaa64, False), (0x14c, False)):
-            data = bytearray(128)
-            data[:2] = b"MZ"
-            struct.pack_into("<I", data, 60, 64)
-            data[64:70] = b"PE\0\0" + struct.pack("<H", machine)
-            path.write_bytes(data)
-            if good:
-                require_x64(path)
-            else:
-                with self.assertRaises(RuntimeError):
-                    require_x64(path)
+        for host, expected in (("AMD64", 0x8664), ("arm64", 0xaa64)):
+            for machine in (0x8664, 0xaa64, 0x14c):
+                data = bytearray(128)
+                data[:2] = b"MZ"
+                struct.pack_into("<I", data, 60, 64)
+                data[64:70] = b"PE\0\0" + struct.pack("<H", machine)
+                path.write_bytes(data)
+                with self.subTest(host=host, machine=machine), patch("platform.machine", return_value=host):
+                    if machine == expected:
+                        require_native_pe(path)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            require_native_pe(path)
+            path.write_bytes(b"not a PE executable")
+            with patch("platform.machine", return_value=host), self.assertRaisesRegex(RuntimeError, "missing PE header"):
+                require_native_pe(path)
 
     def test_stage_preserves_vendor_closure_driver_and_provenance_layout(self):
         self.manifest.update(pe={n: {} for n in [*self.names, preview.COMPANION]}, vc_redist_files=["vcruntime140.dll"])
@@ -235,8 +241,8 @@ class WindowsPreviewTests(unittest.TestCase):
         self.assertNotIn("SYSTEMROOT", env)
         self.assertNotIn("BILIKARA_BILIBILI_COOKIE", env)
         self.assertNotIn("FFMPEG_PATH", env)
-        self.assertNotIn("private", env["PATH"])
-        self.assertIn("System32", env["PATH"])
+        self.assertEqual(env["PATH"].split(os.pathsep),
+                         [str(self.root / part) for part in ("System32", "", "System32/Wbem")])
 
     def test_backend_smoke_requires_the_packaged_runtime_file_identity(self):
         package = self.root / "package"
@@ -345,22 +351,33 @@ assert any(p.samefile(expected) for p in candidates), candidates
 """, str(library)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_workflow_opt_in_and_default_matrices_and_order(self):
+    def test_workflow_requires_all_native_targets_without_preview_input(self):
         text = (ROOT / ".github/workflows/ci-bundle.yml").read_text(encoding="utf-8")
-        match = re.search(r"include: \$\{\{ fromJSON\(inputs.windows_libav_preview && '([^']+)' \|\| '([^']+)'\)", text)
-        self.assertIsNotNone(match)
-        selected, default = map(json.loads, match.groups())
-        self.assertEqual([e["os"] for e in selected], ["windows-latest"])
-        self.assertEqual([e["os"] for e in default], ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"])
-        self.assertIn("type: boolean\n        default: false", text)
-        self.assertIn("if: runner.os == 'Windows' && !inputs.windows_libav_preview", text)
-        self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v') && !inputs.windows_libav_preview"), 2)
-        for before, after in (("Setup x64 MSVC preview", "Build same-source Windows"), ("Build same-source Windows", "Prepare preview driver"),
-                              ("Prepare preview driver", "Build app bundle"), ("Inject Tauri into Windows", "Archive Windows bundle"),
-                              ("Archive Windows bundle", "Smoke extracted Windows"), ("Smoke extracted Windows", "Upload Windows preview")):
+        test_match = re.search(r"^        os: (.+)$", text, re.M)
+        bundle_match = re.search(r"^        include: (.+)$", text, re.M)
+        self.assertIsNotNone(test_match)
+        self.assertIsNotNone(bundle_match)
+        targets = ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm"]
+        self.assertEqual(json.loads(test_match[1]), targets)
+        bundles = json.loads(bundle_match[1])
+        self.assertEqual([entry["os"] for entry in bundles], targets)
+        self.assertEqual({(e["slug"], e["arch"]) for e in bundles},
+                         {(os, arch) for os in ("windows", "macos", "linux") for arch in ("x64", "arm64")})
+        self.assertNotIn("windows_libav_preview", text)
+        self.assertNotIn("BILIKARA_WINDOWS_LIBAV_PREVIEW", text)
+        self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 2)
+        for before, after in (("Setup native MSVC", "Build same-source Windows"),
+                              ("Build same-source Windows", "Prepare native driver"),
+                              ("Prepare native driver", "Build app bundle"),
+                              ("Build same-source POSIX", "Build app bundle"),
+                              ("Inject Tauri into Windows", "Archive Windows bundle"),
+                              ("Archive Windows bundle", "Smoke extracted Windows"),
+                              ("Smoke extracted Windows", "Upload native bundle"),
+                              ("Smoke extracted macOS", "Upload native bundle"),
+                              ("Archive and smoke extracted Linux", "Upload native bundle")):
             self.assertLess(text.index(before), text.index(after))
-        self.assertIn("if: always() && inputs.windows_libav_preview", text)
         self.assertIn("Expand-Archive -Path $env:BUNDLE_ARCHIVE", text)
+        self.assertIn("--tool-smoke libav-package", text)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required for installed MSVC license collection")
     def test_msvc_license_collection_selects_product_and_requires_records(self):

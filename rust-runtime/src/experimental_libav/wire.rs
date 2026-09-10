@@ -78,8 +78,8 @@ pub(super) type GetInfo = unsafe extern "C" fn(u32, *mut Info) -> u32;
 pub(super) type Probe = unsafe extern "C" fn(*const Request, *mut *mut ProbeResult) -> u32;
 pub(super) type Release = unsafe extern "C" fn(*mut ProbeResult);
 
-#[cfg(target_os = "linux")]
-pub(super) mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod posix {
     use super::*;
     use crate::experimental_libav::ProbeError;
     use std::ffi::{CStr, CString};
@@ -229,8 +229,8 @@ pub(super) type GetRemuxInfo = unsafe extern "C" fn(u32, *mut RemuxInfo) -> u32;
 pub(super) type Remux = unsafe extern "C" fn(*const RemuxRequest, *mut *mut RemuxResult) -> u32;
 pub(super) type RemuxRelease = unsafe extern "C" fn(*mut RemuxResult);
 
-#[cfg(target_os = "linux")]
-pub(super) use linux::Library;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use posix::Library;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod windows;

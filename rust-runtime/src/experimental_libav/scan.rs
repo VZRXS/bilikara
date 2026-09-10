@@ -66,11 +66,11 @@ impl PacketScan {
 
 impl LibavMetadataProbe {
     pub fn packet_scan_available(&self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
             self.scan.is_ok()
         }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             false
         }
@@ -85,11 +85,11 @@ impl LibavMetadataProbe {
         selection: ScanSelection,
         cancelled: &AtomicBool,
     ) -> Result<PacketScan, ProbeError> {
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
             self.scan_with_callback(source, selection, &super::Callback::new(cancelled))
         }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             let _ = (source, selection, cancelled);
             Err(ProbeError::Unavailable(
@@ -97,7 +97,7 @@ impl LibavMetadataProbe {
             ))
         }
     }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub(crate) fn scan_with_callback(
         &self,
         source: &Path,
@@ -144,12 +144,12 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) struct Capability {
     scan: super::wire::Scan,
     release: super::wire::ScanRelease,
 }
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl Capability {
     pub(super) fn load(library: &super::wire::Library) -> Result<Self, ProbeError> {
         use super::{backend_error, wire};
@@ -181,12 +181,12 @@ impl Capability {
         }
     }
 }
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 struct OwnedScan<'a> {
     pointer: *mut super::wire::ScanResult,
     owner: &'a LibavMetadataProbe,
 }
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl Drop for OwnedScan<'_> {
     fn drop(&mut self) {
         if !self.pointer.is_null() {
@@ -195,7 +195,7 @@ impl Drop for OwnedScan<'_> {
         }
     }
 }
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) fn convert(
     r: &super::wire::ScanResult,
     requested: ScanSelection,

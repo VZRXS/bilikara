@@ -307,24 +307,23 @@ class MacOSBackendSmokeTest(unittest.TestCase):
         contents_dir = executable.parent.parent
         vendor_dir = contents_dir / "Frameworks" / "vendor"
 
-        with tempfile.TemporaryDirectory(prefix="bilikara-ffmpeg-smoke-") as temp_dir_value:
-            temp_dir = Path(temp_dir_value)
-            runtime_dir = (
-                temp_dir
-                / "Library"
-                / "Application Support"
-                / "bilikara"
-                / "tools"
-                / "bbdown"
-            )
-            runtime_dir.mkdir(parents=True)
-            minimal_env = {
-                "HOME": str(temp_dir),
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-                "TMPDIR": str(temp_dir),
-            }
+        with tempfile.TemporaryDirectory(prefix="bilikara ffmpeg smoke ") as temp_dir_value:
+            temp_dir = Path(temp_dir_value).resolve()
+            self._tool_smoke_root = temp_dir
+            marker, runtime_ffmpeg, app_home, minimal_env = self._run_packaged_tool_smoke("ffmpeg")
+            runtime_dir = app_home / "tools" / "bbdown"
+            self.assertEqual(runtime_ffmpeg, runtime_dir / "ffmpeg")
+            self.assertEqual(marker.get("version"), "9.0.1")
 
-            from bilikara.cache import CacheManager
+            from bilikara.ffmpeg_vendor import runtime_files
+
+            dependencies = runtime_files(vendor_dir)
+            self.assertIsNotNone(dependencies, "Packaged shared FFmpeg manifest is required")
+            for dependency in dependencies:
+                self.assertTrue(
+                    (runtime_dir / dependency.name).is_file(),
+                    f"Restored FFmpeg dependency is missing: {dependency.name}",
+                )
 
             for tool_name in ("ffmpeg", "ffprobe"):
                 packaged_tool = vendor_dir / tool_name
@@ -340,11 +339,6 @@ class MacOSBackendSmokeTest(unittest.TestCase):
                 )
 
                 runtime_tool = runtime_dir / tool_name
-                CacheManager._sync_runtime_tool(
-                    packaged_tool,
-                    runtime_tool,
-                    force_refresh=True,
-                )
                 self.assertTrue(os.access(runtime_tool, os.X_OK))
                 self._assert_tool_version(
                     runtime_tool,

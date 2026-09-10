@@ -155,6 +155,18 @@ fn resolve_backend_command_from(
         });
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        let backend = current_dir.join("bilikara");
+        if is_backend_candidate(&backend, current_exe) {
+            return Ok(BackendCommandResolution {
+                command: backend.to_string_lossy().to_string(),
+                args: vec![],
+                candidate_type: "linux-adjacent",
+            });
+        }
+    }
+
     // macOS packaged paths (dedicated backend candidate preferred over standalone app)
     let mac_dedicated = current_dir
         .join("bilikara-backend")
@@ -1037,6 +1049,28 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn packaged_linux_resolves_adjacent_executable_without_python() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "bilikara_linux_package_{}_{}",
+            std::process::id(),
+            unique_timestamp_millis()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let desktop = directory.join("bilikara-desktop");
+        let backend = directory.join("bilikara");
+        fs::write(&desktop, b"desktop").unwrap();
+        fs::write(&backend, b"backend").unwrap();
+        fs::set_permissions(&backend, fs::Permissions::from_mode(0o755)).unwrap();
+        let resolution = resolve_backend_command_from(&desktop, &directory, false).unwrap();
+        assert_eq!(resolution.candidate_type, "linux-adjacent");
+        assert_eq!(PathBuf::from(resolution.command), backend);
+        assert!(resolution.args.is_empty());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

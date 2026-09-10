@@ -10,6 +10,7 @@ from ctypes import wintypes
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import queue
 import secrets
@@ -199,15 +200,15 @@ def remove_package_dependency(package: Path, name: str) -> list[str]:
     return sorted(removed)
 
 
-def require_x64(path: Path) -> None:
+def require_native_pe(path: Path) -> None:
     with path.open("rb") as handle:
         dos = handle.read(64)
         if len(dos) != 64 or dos[:2] != b"MZ":
             raise RuntimeError("missing PE header")
         handle.seek(struct.unpack_from("<I", dos, 60)[0])
         header = handle.read(6)
-        if header != b"PE\0\0\x64\x86":
-            raise RuntimeError("package binary is not x64 PE")
+        if header != b"PE\0\0" + struct.pack("<H", 0xAA64 if platform.machine().lower() in {"arm64", "aarch64"} else 0x8664):
+            raise RuntimeError("package binary is not native PE")
 
 
 def run() -> str:
@@ -217,7 +218,7 @@ def run() -> str:
     vendor = package / "_internal/vendor"
     from .ffmpeg_vendor import runtime_files
     result_path = package / "libav-smoke-result.json"
-    report = {"schema_version": 1, "platform": "windows-x64-preview", "outcome": "failed",
+    report = {"schema_version": 1, "platform": "windows-" + platform.machine().lower(), "outcome": "failed",
               "manual_device": "pending", "checks": {}, "stage": "prepare"}
     checks = report["checks"]
     checks["extracted_location"] = {"has_spaces": " " in str(package),
@@ -320,15 +321,15 @@ def run() -> str:
                 raise RuntimeError("required optional capability missing")
             manifest = json.loads((vendor / "ffmpeg-runtime.json").read_text(encoding="utf-8"))
             for name in manifest["pe"]:
-                require_x64(vendor / name)
+                require_native_pe(vendor / name)
             for name in manifest["driver_pe"]:
-                require_x64(package / "preview" / name)
+                require_native_pe(package / "preview" / name)
             for name in ("bilikara_rust.dll", "bilikara_runtime.dll"):
-                require_x64(package / "_internal/rust" / name)
-            require_x64(package / "bilikara.exe")
-            require_x64(package / "bilikara-desktop.exe")
+                require_native_pe(package / "_internal/rust" / name)
+            require_native_pe(package / "bilikara.exe")
+            require_native_pe(package / "bilikara-desktop.exe")
             for path in runtime_files(vendor):
-                require_x64(cli / path.name)
+                require_native_pe(cli / path.name)
             checks["pe"] = manifest["pe"]
             child = subprocess.Popen([str(ffmpeg), "-v", "error", "-nostdin", "-re", "-stream_loop", "-1",
                 "-i", str(fixtures / "aac.m4a"), "-c", "copy", "-f", "null", "-"], env=env, cwd=work,
@@ -369,7 +370,7 @@ def run() -> str:
             test_env = dict(env, BILIKARA_LIBAV_FIXTURES=str(fixtures), BILIKARA_LIBAV_COMPANION=str(companion),
                             BILIKARA_M5_FAULT_COMPANION=str(vendor / "bilikara_media_libav_test.dll"))
             output = invoke([package / "preview/libav-runtime-tests.exe", "--exact",
-                "experimental_libav::remux::windows_tests::packaged_cancellation_and_collision",
+                "experimental_libav::remux::package_tests::packaged_cancellation_and_collision",
                 "--ignored", "--test-threads=1"], test_env, work)
             if b"1 passed; 0 failed; 0 ignored" not in output.stdout:
                 raise RuntimeError("required transform test did not run")

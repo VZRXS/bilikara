@@ -129,11 +129,11 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertTrue(payload["recipe_revision"])
 
     def test_normal_bundle_embeds_required_media_tools(self):
-        self.assertIn("Install FFmpeg on Windows", self.bundle_workflow)
-        self.assertIn("choco install ffmpeg -y --no-progress", self.bundle_workflow)
+        self.assertIn("Build same-source Windows FFmpeg and companion", self.bundle_workflow)
+        self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
         self.assertNotIn("for ($attempt", self.bundle_workflow)
         self.assertNotIn("Start-Sleep", self.bundle_workflow)
-        self.assertIn("Prepare pinned portable FFmpeg asset", self.bundle_workflow)
+        self.assertIn("Build same-source POSIX FFmpeg and companion", self.bundle_workflow)
         self.assertIn("Prepare pinned BBDown vendor", self.bundle_workflow)
         self.assertIn("scripts/prepare_bbdown_vendor.py", self.bundle_workflow)
         self.assertIn(

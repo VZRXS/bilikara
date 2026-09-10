@@ -1193,7 +1193,8 @@ def media_compatibility_tool(name: str, existing: Path | None) -> Path | None:
 
 
 def media_compatibility_env(env: dict[str, str]) -> dict[str, str]:
-    if platform.system() == "Linux" and _media_tool_directory is not None:
+    if (platform.system() == "Linux" and _media_tool_directory is not None
+            and not (_media_tool_directory / "ffmpeg-runtime.json").is_file()):
         return {**env, "LD_LIBRARY_PATH": str(_media_tool_directory.parent / "lib")}
     return env
 
@@ -1201,16 +1202,19 @@ def media_compatibility_env(env: dict[str, str]) -> dict[str, str]:
 def _configure_media_routing() -> tuple[bool, Path | None, str]:
     companion = None
     tool_directory = None
-    if platform.system() == "Windows" and platform.machine().lower() in {"amd64", "x86_64"}:
-        from .config import VENDOR_DIR, INTERNAL_VENDOR_DIR
+    from .config import VENDOR_DIR, INTERNAL_VENDOR_DIR
+    names = {"Windows": "bilikara_media_libav.dll", "Darwin": "libbilikara_media_libav.dylib",
+             "Linux": "libbilikara_media_libav.so"}
+    name = names.get(platform.system())
+    if name is not None:
         for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
-            # Presence identifies a provisioned package even if a DLL was removed.
-            # Optional negotiation happens in Rust at the operation, not startup.
+            # The manifest identifies provisioning even when an optional library
+            # is missing. Rust negotiates that library at the operation boundary.
             if (vendor / "ffmpeg-runtime.json").is_file():
-                companion = vendor.resolve() / "bilikara_media_libav.dll"
+                companion = vendor.resolve() / name
                 tool_directory = vendor.resolve()
                 break
-    elif platform.system() == "Linux":
+    if companion is None and platform.system() in {"Linux", "Darwin"}:
         path = os.environ.get("BILIKARA_LIBAV_COMPANION", "")
         if path:
             companion = Path(path).expanduser()

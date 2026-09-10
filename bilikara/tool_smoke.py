@@ -9,6 +9,13 @@ def packaged_tool_smoke_json(tool: str) -> str:
     if normalized == "media-routing":
         from .media_smoke import run
         return run()
+    if normalized == "libav-package":
+        import sys
+        if sys.platform == "win32":
+            from .windows_preview_smoke import run
+        else:
+            from .posix_libav_smoke import run
+        return run()
     if normalized == "windows-libav-preview":
         from .windows_preview_smoke import run
         return run()

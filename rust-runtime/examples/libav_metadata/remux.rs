@@ -4,7 +4,7 @@ use bilikara_runtime::experimental_libav::{
     CopyProfile, CopyRemuxRequest, ScanSelection,
     comparison::{packet_scan::ScanObservation, remux as content},
 };
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 
 #[path = "flac.rs"]
@@ -370,9 +370,9 @@ pub(super) fn run(
 
 fn private_directory(path: &Path) -> std::io::Result<()> {
     let builder = std::fs::DirBuilder::new();
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let mut builder = builder;
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     builder.mode(0o700);
     builder.create(path)
 }

@@ -1106,14 +1106,14 @@ mod tests {
         let (base, ranges, maximum_active, server) = serve_range_file();
         let root = test_dir("multipart");
         let destination = root.join("track.m4s");
-        let mut progress_updates = 0_usize;
+        let mut progress_updates = Vec::new();
         let result = download_to_path(
             &request(
                 destination.clone(),
                 vec![candidate(format!("{base}/media"))],
             ),
-            |_| {
-                progress_updates += 1;
+            |progress| {
+                progress_updates.push((Instant::now(), progress));
                 true
             },
         );
@@ -1152,9 +1152,30 @@ mod tests {
         assert!(result.elapsed_ms > 0);
         assert!(result.average_bytes_per_second > 0);
         assert!(
-            progress_updates <= 8,
-            "multipart progress must be coalesced, got {progress_updates} callbacks"
+            progress_updates.len() >= 2,
+            "start and completion are reported"
         );
+        let first_progress = &progress_updates.first().expect("initial progress").1;
+        assert_eq!(first_progress.downloaded_bytes, 0);
+        assert_eq!(first_progress.total_bytes, None);
+        let final_progress = &progress_updates.last().expect("completion progress").1;
+        assert_eq!(final_progress.downloaded_bytes, TEST_MULTIPART_BYTES as u64);
+        assert_eq!(
+            final_progress.total_bytes,
+            Some(TEST_MULTIPART_BYTES as u64)
+        );
+        // Completion is immediate; every earlier update must respect coalescing,
+        // regardless of how long the transfer takes on a loaded runner.
+        for pair in progress_updates[..progress_updates.len() - 1].windows(2) {
+            assert!(
+                pair[1].0.duration_since(pair[0].0) >= PROGRESS_NOTIFY_INTERVAL,
+                "multipart progress callbacks must be coalesced"
+            );
+        }
+        for pair in progress_updates.windows(2) {
+            assert!(pair[1].1.downloaded_bytes >= pair[0].1.downloaded_bytes);
+            assert_eq!(pair[1].1.total_bytes, Some(TEST_MULTIPART_BYTES as u64));
+        }
         assert_eq!(
             fs::metadata(&destination)
                 .expect("read output metadata")

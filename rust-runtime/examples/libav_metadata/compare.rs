@@ -5,9 +5,9 @@ use serde_json::json;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,7 +20,7 @@ mod packet_scan;
 mod remux;
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 extern "C" fn cancel(_: libc::c_int) {
     CANCELLED.store(true, Ordering::Relaxed);
 }
@@ -107,9 +107,9 @@ fn capture_limited(
     let mut child = OwnedChild(child);
     let mut pipe = child.0.stdout.take().ok_or(Outcome::ExecutionError)?;
     let mut errors = child.0.stderr.take();
-    // Linux-only example: nonblocking drain keeps output bounded and permits
+    // POSIX nonblocking drain keeps output bounded and permits
     // cancellation/deadline checks without an extra reader thread.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     unsafe {
         for fd in std::iter::once(pipe.as_raw_fd()).chain(errors.as_ref().map(AsRawFd::as_raw_fd)) {
             let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -196,7 +196,7 @@ fn file(path: &Path) -> Result<File, Outcome> {
     }
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     options.custom_flags(libc::O_NONBLOCK);
     #[cfg(windows)]
     {
@@ -375,7 +375,7 @@ pub fn run(arguments: &[OsString]) -> i32 {
         return 2;
     };
     // Process-local developer signal handler; M1 gets the same atomic flag.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGINT, cancel as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, cancel as *const () as libc::sighandler_t);
@@ -621,7 +621,7 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn read_pipe(pipe: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
     pipe.read(buffer)
 }

@@ -6,12 +6,6 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
-    inputs:
-      windows_libav_preview:
-        description: "Windows x64 same-build FFmpeg 9.0.1 / optional libav preview (artifact only)"
-        type: boolean
-        default: false
-        required: false
 
 permissions:
   contents: write
@@ -23,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.windows_libav_preview && '["windows-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
+        os: ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm"]
         python-version:
           - "3.11"
 
@@ -111,12 +105,10 @@ jobs:
     needs: test
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
-    env:
-      BILIKARA_WINDOWS_LIBAV_PREVIEW: ${{ inputs.windows_libav_preview && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows_libav_preview && '[{"os":"windows-latest","label":"Windows x64 libav preview","slug":"windows"}]' || '[{"os":"windows-latest","label":"Windows x64","slug":"windows"},{"os":"windows-11-arm","label":"Windows ARM64","slug":"windows"},{"os":"macos-latest","label":"macOS ARM64","slug":"macos"},{"os":"macos-15-intel","label":"macOS Intel","slug":"macos"}]') }}
+        include: [{"os": "windows-latest", "label": "Windows x64", "slug": "windows", "arch": "x64"}, {"os": "windows-11-arm", "label": "Windows ARM64", "slug": "windows", "arch": "arm64"}, {"os": "macos-latest", "label": "macOS ARM64", "slug": "macos", "arch": "arm64"}, {"os": "macos-15-intel", "label": "macOS Intel", "slug": "macos", "arch": "x64"}, {"os": "ubuntu-latest", "label": "Linux x64", "slug": "linux", "arch": "x64"}, {"os": "ubuntu-24.04-arm", "label": "Linux ARM64", "slug": "linux", "arch": "arm64"}]
 
 
     steps:
@@ -128,81 +120,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Select preview build prefix
-        if: inputs.windows_libav_preview
-        shell: pwsh
-        run: '"BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX=$env:RUNNER_TEMP/bilikara-windows-libav-preview" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+      - name: Select native libav build prefix
+        shell: bash
+        run: echo "BILIKARA_LIBAV_PREFIX=$RUNNER_TEMP/bilikara-libav" >> "$GITHUB_ENV"
 
-      - name: Install FFmpeg on Windows
-        if: runner.os == 'Windows' && !inputs.windows_libav_preview
-        shell: pwsh
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
-          choco install ffmpeg -y --no-progress
-          ffmpeg -version
-          ffprobe -version
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf gnupg
 
-      - name: Prepare pinned portable FFmpeg asset
+      - name: Install macOS source verification tools
         if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else m)")"
-          metadata_file="tools/ffmpeg/macos-${runner_arch}.json"
-          test -f "$metadata_file"
-
-          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["tool"] == "ffmpeg"; assert data["version"] == "8.1.2"; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$metadata_file" "$runner_arch"
-
-          asset_url="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["url"])' "$metadata_file")"
-          expected_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
-
-          archive_path="$RUNNER_TEMP/ffmpeg-${runner_arch}.tar.gz"
-          portable_ffmpeg_dir="$RUNNER_TEMP/bilikara-portable-ffmpeg"
-          mkdir -p "$portable_ffmpeg_dir"
-
-          curl --fail --location --retry 5 --retry-delay 2 --show-error --silent "$asset_url" --output "$archive_path"
-          actual_sha="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "FFmpeg asset SHA-256 mismatch: expected $expected_sha, got $actual_sha" >&2
-            exit 1
-          fi
-
-          tar -xzf "$archive_path" -C "$portable_ffmpeg_dir"
-
-          test -x "$portable_ffmpeg_dir/bin/ffmpeg"
-          test -x "$portable_ffmpeg_dir/bin/ffprobe"
-          test -f "$portable_ffmpeg_dir/source/ffmpeg-8.1.2.tar.xz"
-          test -f "$portable_ffmpeg_dir/licenses/COPYING.LGPLv2.1"
-
-          ffmpeg_ver="$("$portable_ffmpeg_dir/bin/ffmpeg" -version)"
-          ffprobe_ver="$("$portable_ffmpeg_dir/bin/ffprobe" -version)"
-          if ! printf '%s\n' "$ffmpeg_ver" | grep -F "ffmpeg version 8.1.2" >/dev/null; then
-            echo "Unexpected FFmpeg version" >&2
-            exit 1
-          fi
-          if ! printf '%s\n' "$ffprobe_ver" | grep -F "ffprobe version 8.1.2" >/dev/null; then
-            echo "Unexpected ffprobe version" >&2
-            exit 1
-          fi
-          if printf '%s\n' "$ffmpeg_ver" | grep -F -- "--enable-nonfree" >/dev/null; then
-            echo "Disallowed --enable-nonfree in FFmpeg build" >&2
-            exit 1
-          fi
-
-          for tool_binary in "$portable_ffmpeg_dir/bin/ffmpeg" "$portable_ffmpeg_dir/bin/ffprobe"; do
-            deps="$(/usr/bin/otool -L "$tool_binary")"
-            if printf '%s\n' "$deps" | grep -E '(@rpath|/opt/homebrew/|/usr/local/Cellar/)' >/dev/null; then
-              echo "Non-portable dependency in $tool_binary" >&2
-              exit 1
-            fi
-          done
-
-          printf '%s\n' "$portable_ffmpeg_dir/bin" >> "$GITHUB_PATH"
-          printf '%s\n' \
-            "BILIKARA_FFMPEG_SOURCE_VERSION=8.1.2" \
-            "BILIKARA_FFMPEG_SOURCE_URL=https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz" \
-            "BILIKARA_FFMPEG_SOURCE_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" \
-            "BILIKARA_FFMPEG_SOURCE_ARCHIVE=$portable_ffmpeg_dir/source/ffmpeg-8.1.2.tar.xz" \
-            "BILIKARA_FFMPEG_LICENSE_FILE=$portable_ffmpeg_dir/licenses/COPYING.LGPLv2.1" \
-            >> "$GITHUB_ENV"
+        run: brew list gnupg >/dev/null 2>&1 || brew install gnupg
 
       - name: Prepare pinned BBDown vendor
         shell: bash
@@ -240,21 +170,23 @@ jobs:
           shared-key: ci-bundle
 
       - name: Build Rust Backend Library
+        shell: bash
         run: |
+          set -euo pipefail
           cd rust
           cargo build --release --locked
           cd ../rust-runtime
           cargo build --release --locked
           cd ..
 
-      - name: Setup x64 MSVC preview environment
-        if: inputs.windows_libav_preview
+      - name: Setup native MSVC environment
+        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          arch: ${{ matrix.arch }}
 
-      - name: Setup preview build shell
-        if: inputs.windows_libav_preview
+      - name: Setup MSVC build shell
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
@@ -262,14 +194,18 @@ jobs:
           install: make diffutils pkgconf perl nasm curl gnupg
 
       - name: Build same-source Windows FFmpeg and companion
-        if: inputs.windows_libav_preview
+        if: runner.os == 'Windows'
         shell: msys2 {0}
         run: bash media-libav/build-windows.sh
 
-      - name: Prepare preview driver and PE dependencies
-        if: inputs.windows_libav_preview
+      - name: Prepare native driver and PE dependencies
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./media-libav/prepare-windows.ps1
+
+      - name: Build same-source POSIX FFmpeg and companion
+        if: runner.os != 'Windows'
+        run: bash media-libav/build-posix.sh
 
       - name: Build app bundle
         run: python build_bundle.py
@@ -336,6 +272,15 @@ jobs:
           npm run build:rust
           npm exec -- tauri build --bundles app -- --locked
 
+      - name: Build and inject Tauri on Linux
+        if: runner.os == 'Linux'
+        run: |
+          npm ci
+          npm exec -- tauri icon static/pic/icon.png
+          npm run build:rust
+          npm exec -- tauri build --no-bundle -- --locked
+          cp src-tauri/target/release/bilikara dist/bilikara/bilikara-desktop
+
       - name: Inject Tauri into Windows Bundle
         if: runner.os == 'Windows'
         shell: pwsh
@@ -379,9 +324,6 @@ jobs:
           runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else (m or 'unknown'))")"
           archive_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}.zip"
           artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}"
-          if [ "$BILIKARA_WINDOWS_LIBAV_PREVIEW" = 1 ]; then
-            archive_name="bilikara-${safe_ref}-windows-x64-libav-preview.zip"
-          fi
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
@@ -449,8 +391,8 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
-      - name: Smoke extracted Windows libav preview
-        if: inputs.windows_libav_preview
+      - name: Smoke extracted Windows libav package
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
@@ -515,45 +457,44 @@ jobs:
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
 
-      - name: Upload Windows bundle artifact
-        if: runner.os == 'Windows' && !inputs.windows_libav_preview
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: dist/bilikara
-          if-no-files-found: error
-
-      - name: Collect Windows preview diagnostics
-        if: always() && inputs.windows_libav_preview
-        shell: pwsh
+      - name: Archive and smoke extracted Linux bundle
+        if: runner.os == 'Linux'
         run: |
-          $records = Join-Path $env:BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX 'records'
-          if (Test-Path $records) {
-            New-Item -ItemType Directory -Force dist | Out-Null
-            Copy-Item $records dist/windows-libav-preview-records -Recurse -Force
-          }
+          python -c 'import os,zipfile; from pathlib import Path; archive=zipfile.ZipFile(os.environ["BUNDLE_ARCHIVE"], "w", zipfile.ZIP_DEFLATED); [archive.write(p, p.relative_to("dist")) for p in Path("dist/bilikara").rglob("*") if p.is_file()]; archive.close()'
+          mkdir -p "$RUNNER_TEMP/Bilikara package 空"
+          unzip -q "$BUNDLE_ARCHIVE" -d "$RUNNER_TEMP/Bilikara package 空"
+          BILIKARA_HOME="$RUNNER_TEMP/bilikara-smoke-bootstrap" BILIKARA_LIBAV_SMOKE_RESULT="$PWD/dist/libav-smoke-result.json" "$RUNNER_TEMP/Bilikara package 空/bilikara/bilikara" --tool-smoke libav-package
 
-      - name: Upload Windows preview package and diagnostics
-        if: always() && inputs.windows_libav_preview
+      - name: Smoke extracted macOS libav package
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/Bilikara package 空"
+          ditto -x -k "$BUNDLE_ARCHIVE" "$RUNNER_TEMP/Bilikara package 空"
+          BILIKARA_HOME="$RUNNER_TEMP/bilikara-smoke-bootstrap" BILIKARA_LIBAV_SMOKE_RESULT="$PWD/dist/libav-smoke-result.json" "$RUNNER_TEMP/Bilikara package 空/dist_release/bilikara.app/Contents/MacOS/bilikara" --tool-smoke libav-package
+          codesign --verify --deep --strict "$RUNNER_TEMP/Bilikara package 空/dist_release/bilikara.app"
+
+      - name: Collect native libav diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p dist/libav-build-records
+          if [ -d "$BILIKARA_LIBAV_PREFIX/records" ]; then
+            cp -R "$BILIKARA_LIBAV_PREFIX/records/." dist/libav-build-records/
+          fi
+
+      - name: Upload native bundle and diagnostics
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: bilikara-windows-x64-libav-preview-${{ github.run_id }}
+          name: bilikara-${{ matrix.slug }}-${{ matrix.arch }}-${{ github.run_id }}
           path: |
-            bilikara-*-windows-x64-libav-preview.zip
-            dist/windows-libav-preview-records
+            bilikara-*.zip
+            dist/libav-build-records
             dist/libav-smoke-result.json
           if-no-files-found: error
 
-      - name: Upload macOS bundle artifact
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: ${{ steps.bundle-name.outputs.archive_name }}
-          if-no-files-found: error
-
       - name: Upload bundle to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') && !inputs.windows_libav_preview
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
@@ -563,7 +504,7 @@ jobs:
   mirror-release-r2:
     name: Mirror Release To R2
     needs: bundle
-    if: startsWith(github.ref, 'refs/tags/v') && !inputs.windows_libav_preview
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     env:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

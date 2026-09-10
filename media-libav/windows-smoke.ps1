@@ -15,7 +15,7 @@ try {
     if ($child.ExitCode -ne 0) { throw "Preview smoke failed (exit $($child.ExitCode)); see libav-smoke-result.json" }
     $result = Get-Content (Join-Path $PSScriptRoot 'libav-smoke-result.json') -Raw | ConvertFrom-Json
     if ($result.outcome -ne 'success') { throw 'Preview smoke did not succeed' }
-    Write-Output 'Windows x64 synthetic artifact smoke succeeded; real-device manual checks remain separate.'
+    Write-Output 'Windows native synthetic artifact smoke succeeded; real-device manual checks remain separate.'
 } finally {
     if (Test-Path $previewHome) { Remove-Item $previewHome -Recurse -Force }
     $env:BILIKARA_HOME = $previousHome

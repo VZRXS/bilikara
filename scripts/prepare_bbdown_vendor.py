@@ -36,6 +36,14 @@ BBDOWN_ASSETS = {
         "BBDown_1.6.3_20240814_osx-arm64.zip",
         "4df84014d818bd6dff2b365b847645340e8955c4450fe965688f41af89a38baa",
     ),
+    ("linux", "x64"): (
+        "BBDown_1.6.3_20240814_linux-x64.zip",
+        "ec233b7d8d40b1cc4447dac05be343f53a757dc605743a8808abaa8e97e5d10e",
+    ),
+    ("linux", "arm64"): (
+        "BBDown_1.6.3_20240814_linux-arm64.zip",
+        "f58e0a18df1a589375428a0af27ea61f5ce96ffaf67d115f335d5f9bee9a34dc",
+    ),
 }
 
 

@@ -1,4 +1,4 @@
-"""Build/package-only Windows x64 preview helpers. Never search PATH for FFmpeg."""
+"""MSVC dependency collection and package staging for x64 and ARM64."""
 from __future__ import annotations
 
 import json
@@ -10,32 +10,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "ffmpeg-runtime.json"
-TARGET = "x86_64-pc-windows-msvc"
+TARGET = ("aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64") + "-pc-windows-msvc"
 COMPANION = "bilikara_media_libav.dll"
-
-
-def preview_prefix() -> Path | None:
-    if os.environ.get("BILIKARA_WINDOWS_LIBAV_PREVIEW") != "1":
-        return None
-    value = os.environ.get("BILIKARA_WINDOWS_LIBAV_PREVIEW_PREFIX", "")
-    prefix = Path(value)
-    if (platform.system() != "Windows" or platform.machine().lower() not in {"amd64", "x86_64"}
-            or not value or not prefix.is_absolute()):
-        raise RuntimeError("Windows libav preview requires an explicit x64 Windows prefix")
-    from bilikara.ffmpeg_vendor import runtime_files
-    if runtime_files(prefix / "bin") is None or not (prefix / "bin" / COMPANION).is_file():
-        raise RuntimeError("Windows libav preview prefix is incomplete; no system fallback")
-    for path in ("source/ffmpeg-9.0.1.tar.xz", "licenses/COPYING.LGPLv2.1", "build-info.json"):
-        if not (prefix / path).is_file():
-            raise RuntimeError("Windows libav preview provenance is incomplete")
-    return prefix
 
 
 def pe_info(path: Path) -> dict:
     import pefile  # PyInstaller's Windows packaging dependency; build-time only.
     with pefile.PE(str(path), fast_load=True) as pe:
-        if pe.FILE_HEADER.Machine != 0x8664:
-            raise RuntimeError(f"Expected x64 PE: {path.name}")
+        expected = 0xAA64 if TARGET.startswith("aarch64") else 0x8664
+        if pe.FILE_HEADER.Machine != expected:
+            raise RuntimeError(f"Expected native MSVC PE: {path.name}")
         pe.parse_data_directories(directories=[
             pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
             pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
@@ -43,7 +27,7 @@ def pe_info(path: Path) -> dict:
         imports = sorted({entry.dll.decode("ascii").lower()
                           for attr in ("DIRECTORY_ENTRY_IMPORT", "DIRECTORY_ENTRY_DELAY_IMPORT")
                           for entry in getattr(pe, attr, [])})
-        return {"machine": "x64", "imports": imports}
+        return {"machine": "arm64" if expected == 0xAA64 else "x64", "imports": imports}
 
 
 def collect(prefix: Path, redist: Path, system: Path) -> dict:
@@ -139,7 +123,7 @@ def stage(prefix: Path, bundle: Path) -> None:
         destination = bundle / "THIRD_PARTY_SOURCES/media-libav" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "media-libav" / name, destination)
-    shutil.copy2(ROOT / "media-libav/WINDOWS_PREVIEW.md", bundle / "WINDOWS_PREVIEW.md")
+    shutil.copy2(ROOT / "media-libav/PACKAGING.md", bundle / "LIBAV_PACKAGING.md")
     shutil.copy2(ROOT / "media-libav/windows-smoke.ps1", bundle / "libav-smoke.ps1")
     # Ensure all PE imports of the driver are app-local or Windows system APIs.
     for name in ("libav_metadata.exe", "libav-runtime-tests.exe"):
