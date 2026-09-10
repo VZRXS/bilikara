@@ -79,5 +79,7 @@ serving, playback, HDMI, background operation or iOS compatibility. Those requir
 their own integration/device checks. The current reqwest Android TLS platform
 verifier integration and native-media dependency closure must be checked before
 enabling network/download operations. Validate 16 KB alignment for every shipped
-native library, not just the Rust crate. Do not silently restore desktop CLI tools
-as mobile fallbacks.
+native library, not just the Rust crate. The Android linker explicitly requests
+16 KB max/common page sizes, including when using NDK r27; this does not replace
+a 16 KB device test. See [Android's page-size guidance](https://developer.android.com/guide/practices/page-sizes).
+Do not silently restore desktop CLI tools as mobile fallbacks.
