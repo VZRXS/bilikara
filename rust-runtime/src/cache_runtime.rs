@@ -2054,7 +2054,7 @@ fn duration_tolerance(expected: f64) -> f64 {
     3.0_f64.max(expected * 0.02)
 }
 
-fn variant_id(page: u32, label: &str, index: usize) -> String {
+pub(crate) fn variant_id(page: u32, label: &str, index: usize) -> String {
     let mut normalized = String::new();
     let mut separator = false;
     for character in label.to_ascii_lowercase().chars() {

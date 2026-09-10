@@ -13,6 +13,7 @@ mod json_http;
 mod media_backend;
 mod media_routing;
 mod native_host_storage;
+mod native_video;
 mod networking;
 mod status_service;
 mod update_installer;
@@ -45,6 +46,7 @@ pub use media_backend::{
     ExpectedMediaKind, MediaError, MediaErrorKind, MediaNormalizeRequest, MediaNormalizeResult,
     MediaPathRequest, MediaProbe, normalize_media, probe_media,
 };
+pub use native_video::{NativeVideoError, NativeVideoRequest, fetch_native_video};
 pub use networking::{
     InterfaceAddress, NetworkAddressRequest, NetworkAddressResult, detect_lan_ipv4_addresses,
     rank_lan_ipv4_candidates,
