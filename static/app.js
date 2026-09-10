@@ -3892,7 +3892,7 @@ function closeRequestDetailForNavigation() {
 }
 
 function activateRequestSubview(subview, { focusTab = false } = {}) {
-  if (document.documentElement?.dataset?.nativeHost === "true" && subview !== "quick") return false;
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && subview !== "quick") return false;
   const nextSubview = normalizeRequestSubview(subview, "");
   if (!nextSubview) {
     return false;
@@ -4410,7 +4410,7 @@ function restoreHostWorkspaceScrollPosition(workspace = state.activeHostWorkspac
 }
 
 function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
-  if (document.documentElement?.dataset?.nativeHost === "true" && workspace === "random") return false;
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && workspace === "random") return false;
   const nextWorkspace = normalizeHostWorkspaceName(workspace, "");
   if (!nextWorkspace) {
     return false;
