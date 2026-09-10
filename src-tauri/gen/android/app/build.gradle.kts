@@ -32,12 +32,9 @@ android {
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {
-                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
-                jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
-            }
+            // Strip packaged JNI debug sections for a practical sideload APK.
+            // Cargo's unstripped .so remains in target for crash symbolication;
+            // this does not change Rust behavior or disable WebView debugging.
         }
         getByName("release") {
             isMinifyEnabled = true
