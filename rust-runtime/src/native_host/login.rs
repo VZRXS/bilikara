@@ -227,6 +227,19 @@ fn active(context: &HostContext, generation: u64) -> bool {
         && with_app(|app| Ok(app.native().login_generation == Some(generation))).unwrap_or(false)
 }
 
+fn valid_qr_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some("passport.bilibili.com" | "account.bilibili.com")
+            )
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port_or_known_default() == Some(443)
+    })
+}
+
 fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
     let jar = Arc::new(Jar::default());
     let client = crate::http_client::builder()
@@ -242,9 +255,9 @@ fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
         .as_str()
         .filter(|value| value.len() <= 4096)
         .ok_or_else(|| ApiError::new(502, "login_qr", "B 站未返回登录二维码"))?;
-    let parsed =
-        url::Url::parse(qr).map_err(|_| ApiError::new(502, "login_qr", "B 站二维码无效"))?;
-    if parsed.scheme() != "https" || parsed.host_str() != Some("passport.bilibili.com") {
+    // Bilibili's current API uses account.bilibili.com; older responses use
+    // passport.bilibili.com. Both remain exact HTTPS origins, never arbitrary URLs.
+    if !valid_qr_url(qr) {
         return Err(ApiError::new(502, "login_qr", "B 站二维码地址无效"));
     }
     let key = generated["data"]["qrcode_key"]
@@ -372,6 +385,24 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn qr_origin_accepts_both_official_accounts_without_widening_network_trust() {
+        for value in [
+            "https://passport.bilibili.com/scan?token=test",
+            "https://account.bilibili.com/h5/account-h5/auth/scan-web?token=test",
+        ] {
+            assert!(valid_qr_url(value));
+        }
+        for value in [
+            "http://account.bilibili.com/scan",
+            "https://account.bilibili.com.evil.test/",
+            "https://evil.test/",
+            "https://user@account.bilibili.com/",
+            "https://account.bilibili.com:8443/",
+        ] {
+            assert!(!valid_qr_url(value));
+        }
+    }
     #[test]
     fn cookie_accepts_only_required_bilibili_pairs_without_header_injection() {
         assert_eq!(
