@@ -98,6 +98,26 @@ devices and long-session thermal behavior are **not established by desktop tests
 Background playback, lock-screen operation, interruption recovery and separate
 phone/TV layouts are later work; keep the Host foreground during this first test.
 
+### Android cache publication
+
+[Android's ordinary app sandbox](https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/main/private/app_neverallows.te)
+forbids hard links, even in app-private storage.
+Both completed downloads and normalized media therefore publish owned scratch
+files using atomic `renameat2(RENAME_NOREPLACE)` on Android. The syscall avoids
+requiring bionic's API-30 wrapper while the Alpha still targets API 24 minimum.
+An existing destination is never overwritten; unsupported kernels/filesystems
+fail explicitly, without a check-then-rename or partial-copy fallback. Other
+platforms retain the existing hard-link publication path.
+
+Local download write/flush/publication failures stop both CDN fallback attempts
+and track re-downloads, awaiting explicit retry. Network and media-input retry
+policies remain separate. Publication diagnostics retain the stage, I/O kind and
+numeric OS error, but not filesystem paths or download credentials. On Android,
+`PermissionDenied / os_error=13` at the old hard-link boundary reproduced the
+download-reset loop. Verification must run the APK in an ordinary Android app
+process: a Windows Host test or an `adb shell` filesystem probe does not exercise
+the same security domain.
+
 ## Slice 1: native bootstrap, not a playable Alpha
 
 - Tauri's library entry excludes the desktop process/window adapters on Android.

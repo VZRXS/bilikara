@@ -1432,7 +1432,9 @@ fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntime
                 DownloadErrorKind::DestinationExists => "destination_exists",
                 DownloadErrorKind::Network => "network",
                 DownloadErrorKind::HttpStatus => "http_status",
-                DownloadErrorKind::Io => "io",
+                // This is a local write/flush/publication error, not media
+                // input I/O. Starting another track download cannot fix it.
+                DownloadErrorKind::Io => "storage",
                 DownloadErrorKind::LengthMismatch => "length_mismatch",
                 DownloadErrorKind::EmptyBody => "empty_body",
                 DownloadErrorKind::Cancelled => "cancelled",
@@ -1467,6 +1469,7 @@ fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
             | "risk_control"
             | "selection"
             | "source_missing"
+            | "storage"
             | "destination_exists"
             | "unavailable"
             | "unsupported"
@@ -3193,6 +3196,45 @@ mod tests {
         let selected = select_video(&[stream(32, 500_000), stream(64, 1_000_000)], &guest_job)
             .expect("guest stream selection");
         assert_eq!(selected.quality_id, Some(64));
+    }
+
+    #[test]
+    fn download_storage_failure_stops_track_retries() {
+        let track = TrackSpec {
+            key: "audio-p1".to_owned(),
+            label: "audio P1".to_owned(),
+            order: 0,
+            page: CachePageSpec {
+                page: 1,
+                cid: 456,
+                duration_seconds: Some(120.0),
+                label: "P1".to_owned(),
+            },
+            kind: ExpectedMediaKind::Audio,
+        };
+        let error = cache_download_error(
+            &track,
+            DownloadError {
+                kind: DownloadErrorKind::Io,
+                message:
+                    "failed to publish completed download (io_kind=PermissionDenied, os_error=13)"
+                        .to_owned(),
+                candidate_index: Some(0),
+                http_status: None,
+            },
+        );
+        assert_eq!(error.kind, "storage");
+        assert!(error.message.contains("os_error=13"));
+        assert!(is_terminal_track_error(&error));
+        // Keep the existing media-input I/O taxonomy independent of failed
+        // writes/publishes in the downloader; do not change backend fallback.
+        assert!(!is_terminal_track_error(&CacheRuntimeError::new(
+            "io",
+            "media read failed"
+        )));
+        assert!(!is_terminal_track_error(&CacheRuntimeError::new(
+            "network", "reset"
+        )));
     }
 
     #[test]

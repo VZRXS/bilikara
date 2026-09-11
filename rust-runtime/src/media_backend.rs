@@ -1658,14 +1658,17 @@ fn owned_temporary_files(destination: &Path) -> Vec<PathBuf> {
 fn publish_no_replace(source: &Path, destination: &Path) -> Result<(), MediaError> {
     #[cfg(test)]
     run_competing_publisher(destination);
-    fs::hard_link(source, destination).map_err(|_| {
-        if destination.exists() {
+    crate::file_publication::publish_no_replace(source, destination).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists || destination.exists() {
             MediaError::new(
                 MediaErrorKind::DestinationExists,
                 "media destination appeared during normalization",
             )
         } else {
-            MediaError::io("failed to publish normalized media")
+            MediaError::io(crate::file_publication::io_failure_message(
+                "failed to publish normalized media",
+                &error,
+            ))
         }
     })
 }

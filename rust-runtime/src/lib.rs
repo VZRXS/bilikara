@@ -5,6 +5,7 @@ mod cloudflare_service;
 mod diagnostics;
 pub mod experimental_libav;
 mod ffi;
+mod file_publication;
 mod gatcha_repository;
 mod http_client;
 mod http_downloader;
