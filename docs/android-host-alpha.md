@@ -59,8 +59,14 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
 - Bilibili login cookies are stored separately in the application's private
   directory, never in the queue checkpoint or diagnostic output. Logout invalidates
   the in-flight polling generation and the saved credential. Android backup is
-  disabled. Login QR acquisition was checked; successful human scanning and login
-  persistence still require a device check.
+  disabled. Normal restarts and media-cache collection do not clear this file;
+  explicit logout clears it. Clearing Android app data or uninstalling also loses
+  credentials. Bilibili can still expire/revoke a saved credential; the local
+  logged-in badge currently means a credential is stored, not a fresh online
+  validity check. Log out and scan again after expiry. Offline integration checks
+  cover fresh-process restore, cache cleanup isolation, Remote/diagnostic privacy
+  and durable logout; a successful human scan/account expiry still need hardware
+  checks with a real account.
 - The shared player and Remote support queue/history, pause/resume, seek, next,
   original/accompaniment selection and the existing player settings. Native
   diagnostics retain bounded audio/video error facts and reuse the sanitized
@@ -317,6 +323,7 @@ cargo build --locked --features native-host --example native_host_alpha
 cd ..
 node tests/live_native_host_alpha.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_android_background.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
+node tests/live_native_login_persistence.js <native_host_alpha-exe> <new-private-dir>
 node tests/live_native_bilibili_alpha.js <native_host_alpha-exe> <another-new-private-dir> <BV> <chrome-exe>
 ```
 

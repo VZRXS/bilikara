@@ -19,7 +19,7 @@ class AndroidPortraitTest(unittest.TestCase):
             self.assertEqual(host.count(f'data-android-page="{page}"'), 1)
         translations = json.loads((ROOT / "static/i18n.json").read_text(encoding="utf-8"))["languages"]
         for language in ("zh", "ja", "en"):
-            for key in ("navigation", "playback", "queue", "me", "backToMe", "settingsHint", "downloadSettings"):
+            for key in ("navigation", "playback", "queue", "me", "backToMe", "settingsHint", "downloadSettings", "loginPersistence"):
                 self.assertTrue(translations[language][f"mobile.{key}"])
 
     def test_navigation_orientation_keyboard_and_settings_roundtrip(self):

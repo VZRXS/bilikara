@@ -316,7 +316,7 @@ html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row > 
 html[data-android-layout="portrait"] #android-account-slot .bbdown-login-badge { padding: 8px 16px; min-height: 44px; }
 html[data-android-layout="portrait"] #android-account-slot .bbdown-login-panel { padding: 12px 0 0; }
 html[data-android-layout="portrait"] #android-account-slot .bbdown-login-copy { display: none; }
-.android-login-hint { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+.android-login-hint, .android-login-persistence { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
 .android-my-card.is-logged .android-login-hint { display: none; }
 .android-my-page #android-settings-slot { margin-bottom: 18px; }
 .android-menu-row {
