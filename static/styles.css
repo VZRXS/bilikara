@@ -11751,3 +11751,49 @@ html[data-native-host="true"] :is(
   #developer-mode-trigger, #ffmpeg-status-row,
   .cache-double-col:has(#cache-limit-slider), .cache-policy-row
 ) { display: none !important; }
+
+/* The desktop tray's fixed, non-wrapping rows can start off-screen on a
+   phone. Keep the shared controls and DOM/tab order, but stack their labels
+   and wrap touch targets inside the native Host's scrollable tray. */
+@media (max-width: 900px) {
+  html[data-native-host="true"] .app-shell .stage-extended-controls > .av-sync-panel,
+  html[data-native-host="true"] .app-shell .stage-extended-controls > .volume-panel {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    overflow: visible;
+  }
+
+  html[data-native-host="true"] .app-shell .stage-extended-controls .av-sync-controls {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    justify-self: stretch;
+  }
+
+  html[data-native-host="true"] .app-shell .stage-extended-controls .av-sync-controls > button {
+    flex: 1 0 60px;
+    min-height: 44px;
+  }
+
+  html[data-native-host="true"] .app-shell .stage-extended-controls .av-sync-input-wrap {
+    flex: 1 0 112px;
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  html[data-native-host="true"] .app-shell .stage-extended-controls .volume-controls {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
+  html[data-native-host="true"] .app-shell .stage-extended-controls .volume-slider {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+}
