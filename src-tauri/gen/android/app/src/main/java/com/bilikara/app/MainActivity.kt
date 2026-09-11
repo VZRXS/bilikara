@@ -8,6 +8,7 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    HostWindowInsets.install(findViewById(android.R.id.content))
     // Foreground HDMI mirror testing only; this is not a background wake lock.
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
   }

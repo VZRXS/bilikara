@@ -80,6 +80,17 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         self.assertIn("FLAG_KEEP_SCREEN_ON", activity)
         self.assertNotIn("PARTIAL_WAKE_LOCK", activity)
 
+    def test_native_window_owns_insets_for_bootstrap_and_host(self):
+        activity = (TAURI / "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt").read_text(encoding="utf-8")
+        self.assertIn("HostWindowInsets.install(findViewById(android.R.id.content))", activity)
+        manifest = (TAURI / "gen/android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+        self.assertIn('android:windowSoftInputMode="adjustResize"', manifest)
+        source = (TAURI / "gen/android/app/src/main/java/com/bilikara/app/HostWindowInsets.kt").read_text(encoding="utf-8")
+        for kind in ("systemBars", "displayCutout", "ime"):
+            self.assertIn(f"WindowInsetsCompat.Type.{kind}()", source)
+        self.assertIn(".setInsets(handled, Insets.NONE)", source)
+        self.assertIn("ViewCompat.requestApplyInsets(content)", source)
+
     def test_bootstrap_page_reports_native_success_failure_and_wrong_schema(self):
         node = shutil.which("node")
         if not node:
