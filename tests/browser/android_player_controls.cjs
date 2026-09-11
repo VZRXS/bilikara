@@ -10,6 +10,7 @@ const { chromium } = require('playwright');
   const root = path.resolve(__dirname, '../..');
   const markup = fs.readFileSync(path.join(root, 'static/index.html'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'static/styles.css'), 'utf8');
+  const mobileStyles = fs.readFileSync(path.join(root, 'static/android-host.css'), 'utf8');
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.BILIKARA_BROWSER_EXECUTABLE
@@ -22,6 +23,8 @@ const { chromium } = require('playwright');
         await page.route('**/*', route => route.abort());
         await page.setContent('<html data-native-host="true"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body></body></html>');
         await page.addStyleTag({ content: styles });
+        await page.addStyleTag({ content: mobileStyles });
+        if (height > width) await page.evaluate(() => { document.documentElement.dataset.androidLayout = 'portrait'; });
         await page.evaluate(({ markup, density }) => {
           const source = new DOMParser().parseFromString(markup, 'text/html');
           const tray = source.querySelector('#stage-control-tray');
@@ -43,6 +46,11 @@ const { chromium } = require('playwright');
           });
         }, { markup, density });
         const controls = page.locator('.stage-extended-controls button:not(.playback-contextual-info-button), .stage-extended-controls input');
+        if (height > width) {
+          const tops = await page.locator('#av-sync-panel .av-sync-controls > *').evaluateAll(nodes => nodes.map(el => Math.round(el.getBoundingClientRect().top)));
+          const geometry = await page.locator('#av-sync-panel .av-sync-controls').evaluate(el => ({display:getComputedStyle(el).display, columns:getComputedStyle(el).gridTemplateColumns, width:el.clientWidth}));
+          assert.equal(new Set(tops).size, 1, `Delay controls must fit one row at ${width}: ${tops}; ${JSON.stringify(geometry)}`);
+        }
         for (const control of await controls.all()) {
           await control.scrollIntoViewIfNeeded();
           const result = await control.evaluate(el => {

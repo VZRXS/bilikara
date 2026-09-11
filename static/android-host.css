@@ -137,7 +137,7 @@ html[data-android-layout="portrait"] .left-column > .player-panel:not(:fullscree
 
 html[data-android-layout="portrait"] #current-title {
   white-space: normal;
-  font-size: 21px;
+  font-size: 18px;
   line-height: 1.4;
   max-height: 2.8em;
   display: -webkit-box;
@@ -160,6 +160,54 @@ html[data-android-layout="portrait"] .app-shell .stage-control-tray {
 
 html[data-android-layout="portrait"] .stage-extended-controls { padding: 0 10px; }
 html[data-android-layout="portrait"] .stage-control-tray .playback-primary-row { flex-wrap: wrap; }
+
+/* Fit the complete delay row without hiding operations or changing their order. */
+html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(52px, 1.6fr) repeat(4, minmax(0, 1fr));
+  gap: 3px;
+}
+html[data-android-layout="portrait"] .app-shell #key-shift-panel .av-sync-controls {
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 2fr) repeat(2, minmax(0, 1fr));
+}
+html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > :is(button, .av-sync-input-wrap) {
+  grid-column: auto;
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  height: 40px;
+  padding: 0 2px;
+  font-size: 11px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  font-size: 12px;
+  flex-shrink: 1;
+}
+html[data-android-layout="portrait"] .av-sync-step-symbol { display: none; }
+html[data-android-layout="portrait"] .app-shell .audio-switcher button {
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .history-title) {
+  font-size: 16px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+html[data-android-layout="portrait"] .queue-current-card { padding: 12px; }
+html[data-android-layout="portrait"] .queue-current-main { padding-right: 0; }
+html[data-android-layout="portrait"] .queue-current-requester { font-size: 12px; height: 28px; min-height: 28px; padding: 0 10px; }
 
 html[data-android-layout="portrait"] .android-page-tools {
   flex: 0 0 auto;
