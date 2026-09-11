@@ -77,6 +77,8 @@ hold accurately; normal polling remains unchanged, and pause, newer seek and
 session retirement cancel the callback. No device-specific fixed delay is used.
 Desktop/WebKit synchronization policy is unchanged. A seek may still incur one
 normal decode/buffer pause; this change targets the recurring post-seek stutter.
+The shared seek transaction also retires an in-flight play attempt before pausing
+it: a cancelled old play Promise must not mark the newer seek/resume as failed.
 
 The bounded native diagnostic event list now retains both media times, AV drift,
 per-track readiness/seeking/paused/rate and dropped/total video frame counts as

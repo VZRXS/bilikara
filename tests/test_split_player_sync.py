@@ -638,6 +638,39 @@ console.log(JSON.stringify({ waiting, held, recovery, audioSeeks: audio.seekWrit
                                   "recovery": "wait-for-audio-clock", "audioSeeks": 0,
                                   "videoSeeks": 0, "audioPaused": False, "frames": 1})
 
+    def test_seek_supersedes_inflight_play_attempt_without_startup_failure(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10), audio = new FakeMedia(9.8);
+mountedVideo = video; mountedAudio = audio;
+state.localPlaybackStartState = "pending";
+let rejectFirstPlay;
+video.play = function () {
+  this.paused = false; this.playCalls += 1;
+  if (this.playCalls === 1) return new Promise((resolve, reject) => { rejectFirstPlay = reject; });
+  return Promise.resolve();
+};
+startSplitPlaybackPair(video, audio, { userGesture: true });
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 45 });
+// Chromium rejects the old pending play when the seek transaction pauses it.
+rejectFirstPlay(Object.assign(new Error('interrupted by pause'), { name: 'AbortError' }));
+for (let i = 0; i < 8; i++) await Promise.resolve();
+const settled = settleSplitPlayerSeek(video, audio, true);
+for (let i = 0; i < 8; i++) await Promise.resolve();
+console.log(JSON.stringify({ settled, phase: state.hostPlaybackSession.phase,
+  shouldPlay: state.localShouldBePlaying, videoPaused: video.paused, audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls, audioPlayCalls: audio.playCalls,
+  videoTime: video.currentTime, audioTime: audio.currentTime }));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+        )
+        self.assertEqual(result, {"settled": True, "phase": "playing", "shouldPlay": True,
+                                  "videoPaused": False, "audioPaused": False,
+                                  "videoPlayCalls": 2, "audioPlayCalls": 2,
+                                  "videoTime": 45, "audioTime": 44.8})
+
     def test_audio_variant_click_preserves_intent_during_internal_video_hold(self):
         listener = self._slice(
             'elements.audioVariantBar.addEventListener("click",',

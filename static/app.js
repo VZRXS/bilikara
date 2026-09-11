@@ -11869,6 +11869,21 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
 
   clearLocalPlayerSeekState(session);
 
+  if (session.readyCommitted && ["starting", "start-retry-wait"].includes(session.phase)) {
+    // This seek deliberately pauses the pair, which can reject an outstanding
+    // play(). Retire that attempt BEFORE pausing so its AbortError cannot fail
+    // the current seek or a later resume. The settled seek owns the next start.
+    state.localPlaybackStartGeneration = Number(state.localPlaybackStartGeneration || 0) + 1;
+    clearSplitPlaybackStartupWatchdog(session);
+    if (session.webkitRetryTimer) {
+      window.clearTimeout(session.webkitRetryTimer);
+      session.webkitRetryTimer = null;
+    }
+    state.localPlaybackStartPromisesSettled = false;
+    state.localWebKitStartRetryDone = false;
+    setHostPlaybackSessionPhase(session, "ready-paused");
+  }
+
   const resumeAfterSeek = Boolean(
     options.resumeAfterSeek
     && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId),
