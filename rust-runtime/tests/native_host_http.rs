@@ -266,6 +266,63 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     assert!(snapshot["data"].get("remote_access").is_none());
     assert!(snapshot["data"]["bbdown"].get("login").is_none());
     assert_eq!(
+        post(
+            "/api/cache-policy",
+            json!({"max_cache_items":5}),
+            &remote_cookie
+        )
+        .status(),
+        403
+    );
+    let policy = post(
+        "/api/cache-policy",
+        json!({"max_cache_items":4,"video_quality":"1080P 高清"}),
+        &cookie,
+    )
+    .json::<Value>()
+    .unwrap();
+    assert_eq!(policy["data"]["cache_policy"]["max_cache_items"], 4);
+    assert_eq!(
+        policy["data"]["cache_policy"]["video_quality"],
+        "1080P 高清"
+    );
+    assert!(
+        policy["data"]["state_revision"].as_u64().unwrap()
+            > snapshot["data"]["state_revision"].as_u64().unwrap()
+    );
+    assert_eq!(
+        post(
+            "/api/cache-policy",
+            json!({"max_cache_items":2,"video_quality":"bad"}),
+            &cookie
+        )
+        .status(),
+        400
+    );
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("native-preferences.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["cache"]["max_cache_items"], 4);
+    assert_eq!(saved["cache"]["video_quality"], "1080P 高清");
+    // A failed write cannot publish an in-memory change or destroy the prior file.
+    std::fs::create_dir(directory.join("native-preferences.pending")).unwrap();
+    assert_eq!(
+        post("/api/cache-policy", json!({"max_cache_items":1}), &cookie).status(),
+        503
+    );
+    std::fs::remove_dir(directory.join("native-preferences.pending")).unwrap();
+    let unchanged = client
+        .get(format!("{base}/api/state"))
+        .header("cookie", &cookie)
+        .send()
+        .unwrap()
+        .json::<Value>()
+        .unwrap();
+    assert_eq!(
+        unchanged["data"]["cache_policy"],
+        policy["data"]["cache_policy"]
+    );
+    assert_eq!(
         client
             .get(format!("{base}/"))
             .header("cookie", &remote_cookie)

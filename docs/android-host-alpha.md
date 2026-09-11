@@ -47,8 +47,13 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
 - Local QR selection prefers Wi-Fi over cellular private addresses. Connect Wi-Fi
   before launching; restart the Alpha and scan its new QR after changing networks.
 - Native media responses support byte ranges for seeking and stream from files.
-  Three queued/current songs are prefetched; quality is fixed to AVC up to 720p
-  and ordinary audio. Failed jobs require an explicit retry, not an infinite loop.
+  Defaults are three queued/current songs, AVC up to 720p and ordinary audio.
+  Settings expose 1–5 cached songs, shared 360p–1080p60 quality choices, Hi-Res
+  preference and reset-offset preference, using Rust Native only. Settings persist
+  in app-private `native-preferences.json`, owned by AppState. Changes apply to
+  new downloads/retries; ready media is not discarded during playback. Actual
+  quality depends on Bilibili availability/account rights; Hi-Res output still
+  requires hardware testing. Failed jobs require an explicit retry, not a loop.
   Old artifact generations are reclaimed after both the player and open HTTP
   readers release them. A restart clears obsolete private staging/artifact files.
 - Bilibili login cookies are stored separately in the application's private

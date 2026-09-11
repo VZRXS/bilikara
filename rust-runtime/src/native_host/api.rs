@@ -40,6 +40,9 @@ pub(super) fn dispatch(
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
     }
+    if path == "/api/cache-policy" {
+        return preferences::update(context, identity, &body);
+    }
     if path == "/api/diagnostics/markdown" {
         return diagnostics::markdown(context, identity);
     }
@@ -86,12 +89,13 @@ pub(super) fn dispatch(
             // Other phones can finish metadata I/O first. Recheck admission
             // under the same lock as AddItem, not only before the HTTP request.
             queue_space(snapshot.playlist.len())?;
+            let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
             let result = app.native_execute(AppStateRequest::AddItem {
                 schema_version: 1,
                 item: item.clone(),
                 position: body["position"].as_str().unwrap_or("tail").into(),
                 requester_name: requester,
-                reset_av_delay: false,
+                reset_av_delay,
                 allow_repeat: body["allow_repeat"].as_bool().unwrap_or(false),
                 now: now(),
             });

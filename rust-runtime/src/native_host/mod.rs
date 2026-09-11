@@ -7,6 +7,7 @@ mod files;
 mod login;
 mod maintenance;
 mod network;
+pub(crate) mod preferences;
 
 use crate::app_state::native_session::{Identity, with_app};
 use axum::{
@@ -161,6 +162,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
     let preferred = lan_urls.first().unwrap_or(&local).clone();
     let qr = qr_image(&preferred)?;
     let saved_cookie = login::load(&directory)?;
+    let cache_policy = preferences::load(&directory)?;
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -174,6 +176,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         session.host_token = host_token.clone();
         session.invite = invite;
         session.cookie = saved_cookie;
+        session.cache_policy = cache_policy;
         session.remote_access =
             json!({"local_url":local,"preferred_url":preferred,"lan_urls":lan_urls,"qr_image":qr});
         Ok(())

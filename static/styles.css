@@ -11748,8 +11748,7 @@ html[data-native-host="true"] :is(
   [data-request-view="search"], [data-request-view="discover"], [data-request-view="sources"],
   #work-rail-random, #gatcha-panel, #presentation-settings, #app-update-row,
   #application-restart-row, #history-export-button, #diagnostic-package-button,
-  #developer-mode-trigger, #ffmpeg-status-row,
-  .cache-double-col:has(#cache-limit-slider), .cache-policy-row
+  #developer-mode-trigger, #ffmpeg-status-row
 ) { display: none !important; }
 
 /* The desktop tray's fixed, non-wrapping rows can start off-screen on a

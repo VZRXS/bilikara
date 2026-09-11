@@ -1,5 +1,6 @@
 //! In-process adapter for the existing native cache workers. Every event is
 //! applied through its reserved AppState attempt token; no Python event pump.
+use super::preferences::CachePolicy;
 use super::*;
 use crate::cache_runtime::{CacheJobSpec, CacheRuntimeCommand, execute_cache_runtime};
 use crate::{AppStateRequest, CacheEvent, PlaylistItem};
@@ -42,8 +43,13 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
             apply_event(event)?;
         }
     }
-    let (snapshot, cookie) =
-        with_app(|app| Ok((app.native_core_snapshot()?, app.native().cookie.clone())))?;
+    let (snapshot, cookie, policy) = with_app(|app| {
+        Ok((
+            app.native_core_snapshot()?,
+            app.native().cookie.clone(),
+            app.native().cache_policy.clone(),
+        ))
+    })?;
     let items: Vec<_> = snapshot
         .current_item
         .iter()
@@ -51,16 +57,20 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
         .collect();
     // Do not resubmit on every progress/status observation. Failure stays failed
     // until explicit retry, avoiding an unbounded Bilibili request loop.
-    let fingerprint = items
-        .iter()
-        .map(|item| {
-            format!(
-                "{}:{}:{}",
-                item.id, item.item_incarnation_id, item.cache_status
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|");
+    let fingerprint = format!(
+        "{}:{}",
+        policy.snapshot(),
+        items
+            .iter()
+            .map(|item| {
+                format!(
+                    "{}:{}:{}",
+                    item.id, item.item_incarnation_id, item.cache_status
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    );
     if fingerprint == *last_fingerprint {
         return Ok(());
     }
@@ -91,7 +101,7 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
                 cache_ready: item.cache_status == "ready",
             })
             .collect(),
-        max_items: 3,
+        max_items: policy.max_cache_items,
         retention_limit: 0,
         active_item_ids: active,
         primary_active_item_id: primary,
@@ -101,7 +111,7 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
     let jobs = items
         .iter()
         .filter(|item| plan.desired_ids.contains(&item.id) && item.cache_status != "failed")
-        .map(|item| job(context, item, &cookie))
+        .map(|item| job(context, item, &cookie, &policy))
         .collect::<Result<Vec<_>, _>>()?;
     execute_cache_runtime(CacheRuntimeCommand::Sync {
         cache_root: context.cache_root.clone(),
@@ -202,13 +212,18 @@ fn apply_event(event: &Value) -> Result<(), ApiError> {
     })
 }
 
-fn job(context: &HostContext, item: &PlaylistItem, cookie: &str) -> Result<CacheJobSpec, ApiError> {
+fn job(
+    context: &HostContext,
+    item: &PlaylistItem,
+    cookie: &str,
+    policy: &CachePolicy,
+) -> Result<CacheJobSpec, ApiError> {
     let pages=item.available_pages.iter().enumerate().filter(|(_,page)|item.selected_pages.contains(page)||**page==item.video_page).map(|(index,page)|json!({"page":page,"cid":item.available_cids.get(index),"duration_seconds":item.available_durations.get(index),"label":item.available_parts.get(index)})).collect::<Vec<_>>();
     serde_json::from_value(json!({
         "schema_version":1,"item_id":item.id,"item_incarnation_id":item.item_incarnation_id,"bvid":item.bvid,"aid":item.aid,
         "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("logs/native-cache.log"),
         "cookie":cookie,"user_agent":crate::native_video::USER_AGENT,"referer":"https://www.bilibili.com/","timeout_ms":15000,
-        "video_quality":"720P","avc_quality_cap":"720P","audio_hires":false,"selected_audio_variant_id":item.selected_audio_variant_id,
+        "video_quality":policy.video_quality,"avc_quality_cap":policy.video_quality,"audio_hires":policy.audio_hires,"selected_audio_variant_id":item.selected_audio_variant_id,
         "reported_ready":item.cache_status=="ready","existing_video_relative_path":item.video_relative_path,
         "existing_audio_variants":item.audio_variants.iter().map(|variant|json!({"id":variant.get("id"),"label":variant.get("label"),"page":variant.get("page"),"relative_path":variant.get("audio_url").and_then(Value::as_str).unwrap_or("").trim_start_matches("/media/")})).collect::<Vec<_>>()
     })).map_err(|_|ApiError::new(500,"cache_job","歌曲缺少原生缓存所需的分 P 信息"))
@@ -219,8 +234,9 @@ pub(super) fn retry(
     item: &PlaylistItem,
     cookie: &str,
 ) -> Result<(), ApiError> {
+    let policy = with_app(|app| Ok(app.native().cache_policy.clone()))?;
     execute_cache_runtime(CacheRuntimeCommand::Retry {
-        job: job(context, item, cookie)?,
+        job: job(context, item, cookie, &policy)?,
         urgent: true,
     })
     .map_err(cache_error)?;

@@ -3,9 +3,13 @@ use super::*;
 use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact};
 
 pub(super) fn markdown(context: &HostContext, identity: &Identity) -> Result<Value, ApiError> {
-    let (snapshot, events) = with_app(|app| {
+    let (snapshot, events, cache_policy) = with_app(|app| {
         app.native_authorize(identity, true)?;
-        Ok((app.native_core_snapshot()?, app.native_diagnostics()))
+        Ok((
+            app.native_core_snapshot()?,
+            app.native_diagnostics(),
+            app.native().cache_policy.snapshot(),
+        ))
     })?;
     // Never include the login checkpoint, access URLs, tokens, or raw HTTP headers.
     let items = snapshot
@@ -24,7 +28,7 @@ pub(super) fn markdown(context: &HostContext, identity: &Identity) -> Result<Val
         config_files: Vec::new(),
         system: json!({"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":"0.8.0-android-alpha"}),
         tools_and_tasks: json!({"backend":"rust-native"}),
-        cache_policy: json!({"max_cache_items":3,"video_quality":"720P","audio_hires":false}),
+        cache_policy,
         runtime_state: json!({"revision":snapshot.revision,"playback_generation":snapshot.playback_generation,"items":items,"diagnostics":events}),
         export_diagnostics: Vec::new(),
         internet_remote_diagnostics: Vec::new(),

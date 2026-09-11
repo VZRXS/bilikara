@@ -1,6 +1,7 @@
 //! Native HTTP session state lives under the same AppState mutex as the queue.
 //! This is transient transport/player ownership, never a second playlist or a
 //! persisted bearer-token store. A process restart invalidates every token.
+//! Validated cache preferences are reloaded separately from private storage.
 use super::*;
 use crate::native_host::ApiError;
 use crate::status_service::{BilibiliLoginFacts, RuntimeStatusService};
@@ -12,6 +13,7 @@ mod tests;
 
 #[derive(Default)]
 pub(crate) struct NativeSession {
+    pub cache_policy: crate::native_host::preferences::CachePolicy,
     pub host_token: String,
     pub invite: String,
     pub cookie: String,
@@ -275,10 +277,10 @@ impl AppState {
         value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":false,"shared_search":false,"desktop_tools":false,"playlist_export":false,"app_update":false});
         value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false});
-        value["cache_policy"] = json!({"enabled":true,"download_source":"native","video_quality":"720p","avc_quality_cap":"720p","audio_hires":false,"reset_offset_on_next":false,"max_cache_items":3});
+        value["cache_policy"] = session.cache_policy.snapshot();
         value["gatcha"] = json!({"busy":false,"background_busy":false});
         value["app_update"] = json!({"state":"unsupported","supported":false});
-        value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":3,"message":"Android Alpha"});
+        value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":"Android Alpha"});
         // The shared status chip aggregates these two fields. No external FFmpeg
         // is installed or advertised; media normalization is in-process Rust.
         value["ffmpeg"] =
