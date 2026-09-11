@@ -12433,6 +12433,7 @@ function requestSplitPlaybackStart(
   audio,
   { source = "", userGesture = false } = {},
 ) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return true;
   if (
     !splitPlaybackPairNeedsStart(video, audio)
     || shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
@@ -12522,6 +12523,7 @@ function setSplitPlaybackIntent(
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
   }
+  if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay)) return true;
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
@@ -12916,6 +12918,7 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
 }
 
 function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const session = state.hostPlaybackSession;
   if (
     !video
@@ -13235,6 +13238,7 @@ function playMediaBestEffort(
   media,
   { internalVideo = false, video = null, audio = null, mediaKind = "media" } = {},
 ) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const guardPendingPlay = isWebKitPlaybackRuntime();
   if (
     !media
@@ -13288,6 +13292,7 @@ function seekVideoForNavigation(video, targetTime) {
 }
 
 function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return "pause";
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return "none";
   }
@@ -14789,6 +14794,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "play", () => {
+    if (window.BilikaraAndroidPlayback?.blockStart()) return;
     if (video.dataset.bilikaraInternalPlay === "true") {
       delete video.dataset.bilikaraInternalPlay;
       return;
@@ -14817,6 +14823,7 @@ function renderPlayer(currentItem, playbackMode) {
       delete video.dataset.bilikaraInternalPause;
       return;
     }
+    if (window.BilikaraAndroidPlayback?.blockStart()) return;
     if (session.seekResumePending) {
       return;
     }
@@ -20389,6 +20396,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  if (window.BilikaraAndroidPlayback?.visibilityChanged()) return;
   if (
     !state.localShouldBePlaying
     || shouldHoldCurrentItemForTransition(state.data?.current_item)

@@ -99,6 +99,10 @@ remains laid out offscreen and inert when another page is visible. Browser
 history gives Android Back a parent page, including Me → Settings. At the root,
 Back can leave the foreground app; background playback remains out of scope.
 
+Category home retains the illustrated category cards. Inside a category, the
+switcher uses compact text tabs; catalog/search results remain two-column 16:9
+cards in portrait. Only the Android presentation changes, not the catalog data.
+
 The Activity applies real system-bar, display-cutout and keyboard insets to its
 content root, for both bootstrap and Host pages. Overlapping insets use their
 maximum rather than their sum and are zeroed before propagation to the WebView
@@ -127,6 +131,15 @@ Desktop/WebKit synchronization policy is unchanged. A seek may still incur one
 normal decode/buffer pause; this change targets the recurring post-seek stutter.
 The shared seek transaction also retires an in-flight play attempt before pausing
 it: a cancelled old play Promise must not mark the newer seek/resume as failed.
+
+Android pauses both media tracks when the WebView becomes hidden (Home or screen
+lock). Returning to the foreground resumes only a session that was playing before
+the app hid, with the same media elements and playback generation. Manual pause,
+an explicit pause while hidden, a replaced/ended song or page destruction cancels
+automatic resume. Late play completions and sync/seek retries cannot restart
+hidden media. This is a UI lifecycle adapter, not a persisted playback command or
+a background service; force-stop/process eviction does not promise auto-resume.
+The desktop hidden-playback recovery policy is unchanged.
 
 Android recovery events also keep the normal 140 ms audio-ahead correction
 threshold and 750 ms correction cooldown, even when a caller requests forced
@@ -172,8 +185,9 @@ not a Play Store release or production signing configuration.
 
 Physical-device codec support, actual audio output, HDMI behavior, 16-KB-page
 devices and long-session thermal behavior are **not established by desktop tests**.
-Background playback, lock-screen operation, interruption recovery and separate
-phone/TV layouts are later work; keep the Host foreground during this first test.
+Background playback, phone-call/audio-focus recovery and separate phone/TV layouts
+remain later work. Check Home/lock-screen pause and foreground resume separately
+on hardware, including after a seek and while manually paused.
 
 ### Android cache publication
 
@@ -302,6 +316,7 @@ cargo test --locked --features native-host
 cargo build --locked --features native-host --example native_host_alpha
 cd ..
 node tests/live_native_host_alpha.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
+node tests/live_android_background.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_native_bilibili_alpha.js <native_host_alpha-exe> <another-new-private-dir> <BV> <chrome-exe>
 ```
 

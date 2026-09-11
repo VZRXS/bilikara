@@ -36,6 +36,16 @@ class AndroidPortraitTest(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_android_background_playback_lifecycle(self):
+        host = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        self.assertLess(host.index('/app.js'), host.index('/android-playback.js'))
+        self.assertLess(host.index('/android-playback.js'), host.index('/android-host.js'))
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for frontend tests")
+        result = subprocess.run([node, "tests/android_playback_visibility.cjs"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

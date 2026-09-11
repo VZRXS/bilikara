@@ -64,6 +64,7 @@
     const data = {
       layout: portrait ? "portrait" : "landscape", page,
       native_window_controls: Boolean(window.BilikaraHostWindow),
+      playback_visibility: window.BilikaraAndroidPlayback?.diagnostics() || null,
       viewport: {width: window.innerWidth, height: window.innerHeight},
       qr_source: !source ? "missing" : source.startsWith("data:image/svg+xml;base64,") ? "inline-svg" : "invalid",
       qr_source_chars: source.length, image_policy_blocks: blockedImages,
