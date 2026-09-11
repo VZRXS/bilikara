@@ -246,3 +246,37 @@ fn bounded_native_diagnostics_keep_playback_facts_not_credentials_or_urls() {
     assert!(!result.to_string().contains("secret"));
     assert!(!result.to_string().contains("https://private"));
 }
+
+#[test]
+fn native_diagnostics_preserve_split_output_clock_facts_as_typed_values() {
+    let (mut app, _) = setup();
+    app.native_diagnostic(
+        &json!({
+            "event": "sync-wait-for-audio-clock",
+            "audio_current_time": 30.1, "video_current_time": 30.4,
+            "drift_seconds": 0.3, "effective_av_delay_seconds": 0.0,
+            "audio_ready_state": 4, "video_ready_state": 4,
+            "audio_paused": false, "video_paused": true,
+            "audio_seeking": false, "video_seeking": false,
+            "audio_playback_rate": 1.0, "video_playback_rate": 1.0,
+            "dropped_video_frames": 2, "total_video_frames": 300,
+            "audio_buffered_end": "https://private",
+            "video_buffered_end": {"cookie": "secret"},
+        }),
+        1.0,
+    );
+    let result = app.native_diagnostics();
+    let event = &result["events"][0];
+    assert_eq!(event["audio_current_time"], 30.1);
+    assert_eq!(event["video_current_time"], 30.4);
+    assert_eq!(event["drift_seconds"], 0.3);
+    assert_eq!(event["audio_ready_state"], 4);
+    assert_eq!(event["audio_paused"], false);
+    assert_eq!(event["video_paused"], true);
+    assert_eq!(event["audio_seeking"], false);
+    assert_eq!(event["audio_playback_rate"], 1.0);
+    assert_eq!(event["dropped_video_frames"], 2);
+    assert_eq!(event["total_video_frames"], 300);
+    assert!(!result.to_string().contains("secret"));
+    assert!(!result.to_string().contains("https://private"));
+}

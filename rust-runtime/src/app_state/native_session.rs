@@ -525,6 +525,42 @@ impl AppState {
                 }
             }
         }
+        // Keep both clocks, not just the media element that emitted an event.
+        // Readiness alone cannot explain post-seek output-clock recovery.
+        // These additions accept measurements only, never arbitrary text/URLs.
+        for key in [
+            "audio_current_time",
+            "video_current_time",
+            "drift_seconds",
+            "effective_av_delay_seconds",
+            "audio_playback_rate",
+            "video_playback_rate",
+            "audio_ready_state",
+            "video_ready_state",
+            "audio_network_state",
+            "video_network_state",
+            "audio_buffered_end",
+            "video_buffered_end",
+            "dropped_video_frames",
+            "total_video_frames",
+        ] {
+            if let Some(value) = body.get(key).filter(|v| v.is_number()) {
+                safe[key] = value.clone();
+            }
+        }
+        for key in [
+            "audio_paused",
+            "video_paused",
+            "audio_seeking",
+            "video_seeking",
+            "audio_ended",
+            "video_ended",
+            "local_should_be_playing",
+        ] {
+            if let Some(value) = body.get(key).filter(|v| v.is_boolean()) {
+                safe[key] = value.clone();
+            }
+        }
         let log = &mut self.native_session.diagnostics;
         if log.len() >= 100 {
             log.pop_front();

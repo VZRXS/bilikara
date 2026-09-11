@@ -67,6 +67,22 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
 
 ### Install and check on hardware
 
+The Android native Host still plays separate HTML video/audio elements in System
+WebView; it does not bundle libav or a Media3/ExoPlayer implementation. After a
+seek or play, `seeked`/`canplay` can precede continuous audio output-clock progress.
+If video runs ahead, Android now holds video until the measured audio time catches
+up (including the configured AV delay), rather than repeatedly seeking audio and
+flushing its output again. A session-owned animation-frame callback releases the
+hold accurately; normal polling remains unchanged, and pause, newer seek and
+session retirement cancel the callback. No device-specific fixed delay is used.
+Desktop/WebKit synchronization policy is unchanged. A seek may still incur one
+normal decode/buffer pause; this change targets the recurring post-seek stutter.
+
+The bounded native diagnostic event list now retains both media times, AV drift,
+per-track readiness/seeking/paused/rate and dropped/total video frame counts as
+numeric/boolean measurements. It does not accept URLs or credentials in these
+fields. For a device regression, capture diagnostics while the symptom is active.
+
 Build output: `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`.
 This is an ARM64 debug APK (`com.bilikara.app.alpha`, Android 7/API 24 minimum),
 not a Play Store release or production signing configuration.

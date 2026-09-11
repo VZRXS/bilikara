@@ -1291,6 +1291,24 @@ function isTauriWebKitRuntime() {
   return Boolean(window.__TAURI__) && isWebKitPlaybackRuntime();
 }
 
+function isAndroidNativePlaybackRuntime() {
+  return typeof document !== "undefined"
+    && document.documentElement?.dataset?.nativeHost === "true"
+    && typeof navigator !== "undefined"
+    && /Android/i.test(navigator.userAgent || "");
+}
+
+function clearAndroidAudioClockRecovery(session = state.hostPlaybackSession) {
+  if (!session) {
+    return;
+  }
+  if (session.audioClockRecoveryFrame != null) {
+    window.cancelAnimationFrame(session.audioClockRecoveryFrame);
+    session.audioClockRecoveryFrame = null;
+  }
+  session.audioClockRecovering = false;
+}
+
 function clearWebKitAudioStarvationTimer(session = state.hostPlaybackSession) {
   if (!session?.audioStarvationTimer) {
     return;
@@ -11108,6 +11126,7 @@ function clearLocalPlayerSyncTimer(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
+  clearAndroidAudioClockRecovery(session);
   if (session.syncTimer) {
     window.clearInterval(session.syncTimer);
     session.syncTimer = null;
@@ -11181,6 +11200,7 @@ function takeLocalPlayerSeekCompletion(session) {
 }
 
 function clearLocalPlayerSeekState(session = state.hostPlaybackSession) {
+  clearAndroidAudioClockRecovery(session);
   const completion = takeLocalPlayerSeekCompletion(session);
   if (typeof completion === "function") {
     try {
@@ -12158,6 +12178,26 @@ function holdVideoForAudio(video) {
   }
 }
 
+function scheduleAndroidAudioClockRecovery(video, audio) {
+  const session = state.hostPlaybackSession;
+  if (session.audioClockRecoveryFrame != null) {
+    return;
+  }
+  // The normal 120 ms tick is too coarse to release a held video in sync.
+  // Use frame cadence only while catching up, never a fixed audio delay.
+  const frame = window.requestAnimationFrame(() => {
+    if (
+      session.audioClockRecoveryFrame !== frame
+      || !isCurrentHostPlaybackSession(session, video, audio)
+    ) {
+      return;
+    }
+    session.audioClockRecoveryFrame = null;
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+  });
+  session.audioClockRecoveryFrame = frame;
+}
+
 function splitPlaybackStartOverlay() {
   return elements.playerFrame?.querySelector(".split-playback-start-overlay") || null;
 }
@@ -12468,6 +12508,9 @@ function setSplitPlaybackIntent(
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
   session.logicalPlayIntent = nextIntent;
+  if (!nextIntent) {
+    clearAndroidAudioClockRecovery(session);
+  }
   if (!session.readyCommitted) {
     state.localShouldBePlaying = shouldHoldCurrentItemForTransition(itemId)
       ? false
@@ -13231,6 +13274,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return "none";
   }
   if (audio.ended) {
+    clearAndroidAudioClockRecovery();
     return "none";
   }
 
@@ -13250,6 +13294,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const isWebKit = isWebKitPlaybackRuntime();
 
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
+    clearAndroidAudioClockRecovery();
     state.localShouldBePlaying = false;
     if (!audio.paused) {
       audio.pause();
@@ -13275,6 +13320,9 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
   if (audio.seeking) {
+    if (isAndroidNativePlaybackRuntime() && state.localShouldBePlaying) {
+      holdVideoForAudio(video);
+    }
     return reportAction("wait-for-audio");
   }
 
@@ -13292,6 +13340,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   }
 
   if (!state.localShouldBePlaying) {
+    clearAndroidAudioClockRecovery();
     if (!audio.paused) {
       audio.pause();
     }
@@ -13346,6 +13395,33 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
   const drift = audioTime - targetAudioTime;
   const absoluteDrift = Math.abs(drift);
+
+  const session = state.hostPlaybackSession;
+  if (isAndroidNativePlaybackRuntime()) {
+    const catchUpThreshold = session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
+      ? localPlayerForceSyncEpsilonSeconds
+      : localPlayerDriftToleranceSeconds;
+    if (drift < -catchUpThreshold) {
+      // seeked/canplay only establish decoder readiness. Android's separate
+      // audio output clock can still stall after seek/play while video runs.
+      // Seeking audio again restarts that stall. Let audio catch the held
+      // video instead, preserving both the audio timeline and the AV offset.
+      session.audioClockRecovering = true;
+      holdVideoForAudio(video);
+      playMediaBestEffort(audio, { video, audio, mediaKind: "audio" });
+      if (absoluteDrift < localPlayerHardSyncThresholdSeconds) {
+        scheduleAndroidAudioClockRecovery(video, audio);
+      }
+      return reportAction("wait-for-audio-clock");
+    }
+    if (session.audioClockRecovering) {
+      clearAndroidAudioClockRecovery(session);
+      state.localVideoDeferredRecovery = false;
+      state.localVideoHeldForAudio = false;
+      playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
+      return reportAction("audio-clock-aligned", true);
+    }
+  }
 
   const recovering = state.localVideoDeferredRecovery || state.localVideoHeldForAudio;
   const recoveringFromWebKitVideoStarvation = isWebKit && state.localVideoDeferredRecovery;
@@ -14131,6 +14207,8 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
     startupWatchdogTimer: null,
     webkitRetryTimer: null,
     audioStarvationTimer: null,
+    audioClockRecoveryFrame: null,
+    audioClockRecovering: false,
     hiddenPauseTimer: null,
     frameClickTimer: null,
     seekSettling: false,
@@ -19674,7 +19752,8 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     itemIncarnationId: currentItem.item_incarnation_id,
     variantId: nextVariantId,
     currentTime: video ? Number(video.currentTime || 0) : 0,
-    wasPlaying: video ? !video.paused : true,
+    // Buffering/clock recovery can hold video without changing play intent.
+    wasPlaying: Boolean(playbackSession.logicalPlayIntent),
   };
   state.pendingPlaybackRestore = pendingRestore;
   try {

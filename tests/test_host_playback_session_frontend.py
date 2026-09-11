@@ -267,6 +267,9 @@ function audioEventButton(currentItem) {{
         self.assertEqual(result["retryBusyObservations"], 2)
 
     def run_foundation(self, body: str) -> dict:
+        clock_recovery_cleanup = self.source_slice(
+            "function clearAndroidAudioClockRecovery", "function clearWebKitAudioStarvationTimer"
+        )
         equality = self.source_slice(
             "function playbackProgramDescriptorsEqual",
             "function isValidHostMediaLocator",
@@ -475,6 +478,7 @@ function apiPost(path, payload) {{
 let renderImpl = () => {{}};
 function render() {{ renderImpl(); }}
 {listener_lifecycle}
+{clock_recovery_cleanup}
 {seek_cleanup}
 {equality}
 {foundation}
