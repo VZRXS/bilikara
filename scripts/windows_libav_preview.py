@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "ffmpeg-runtime.json"
 TARGET = ("aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64") + "-pc-windows-msvc"
 COMPANION = "bilikara_media_libav.dll"
+TEST_COMPANION = "bilikara_media_libav_test.dll"
 
 
 def pe_info(path: Path) -> dict:
@@ -33,7 +34,7 @@ def pe_info(path: Path) -> dict:
 def collect(prefix: Path, redist: Path, system: Path) -> dict:
     """Walk actual PE imports; only selected build, VC redist and Windows OS."""
     bindir = prefix / "bin"
-    roots = ["ffmpeg.exe", "ffprobe.exe", COMPANION, "bilikara_media_libav_test.dll"]
+    roots = ["ffmpeg.exe", "ffprobe.exe", COMPANION, TEST_COMPANION]
     local = {p.name.lower(): p for p in bindir.glob("*.dll")}
     runtime = {p.name.lower(): p for p in redist.glob("*.dll")}
     drivers = list((prefix / "driver").glob("*.exe"))
@@ -96,20 +97,16 @@ def stage(prefix: Path, bundle: Path) -> None:
     vendor.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((prefix / "bin" / MANIFEST).read_text(encoding="utf-8"))
     for name in manifest["pe"]:
+        if name == TEST_COMPANION:
+            continue
         shutil.copy2(prefix / "bin" / name, vendor / name)
-    shutil.copy2(prefix / "bin" / MANIFEST, vendor / MANIFEST)
-    preview = bundle / "preview"
-    preview.mkdir(exist_ok=True)
-    for name in ("libav_metadata.exe", "libav-runtime-tests.exe"):
-        source = prefix / "driver" / name
-        pe_info(source)
-        shutil.copy2(source, preview / name)
-    # Rust /MD runtime must also be next to the developer executables.
-    for name in manifest["vc_redist_files"]:
-        shutil.copy2(vendor / name, preview / name)
+    runtime_manifest = {
+        key: manifest[key]
+        for key in ("schema_version", "version", "target", "runtime_files", "build_run", "build_attempt")
+        if key in manifest
+    }
+    (vendor / MANIFEST).write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(prefix / "licenses", bundle / "THIRD_PARTY_LICENSES/libav-preview", dirs_exist_ok=True)
-    shutil.copytree(prefix / "records", preview / "build", dirs_exist_ok=True)
-    shutil.copy2(prefix / "build-info.json", preview / "build-info.json")
     for source in (prefix / "source").glob("*.asc"):
         shutil.copy2(source, bundle / "THIRD_PARTY_SOURCES" / source.name)
     for name in ("bilikara_rust.dll", "bilikara_runtime.dll"):
@@ -124,12 +121,6 @@ def stage(prefix: Path, bundle: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "media-libav" / name, destination)
     shutil.copy2(ROOT / "media-libav/PACKAGING.md", bundle / "LIBAV_PACKAGING.md")
-    shutil.copy2(ROOT / "media-libav/windows-smoke.ps1", bundle / "libav-smoke.ps1")
-    # Ensure all PE imports of the driver are app-local or Windows system APIs.
-    for name in ("libav_metadata.exe", "libav-runtime-tests.exe"):
-        for dep in pe_info(preview / name)["imports"]:
-            if not (preview / dep).is_file() and not dep.startswith(("api-ms-win-", "ext-ms-win-")) and not (Path(os.environ["SystemRoot"]) / "System32" / dep).is_file():
-                raise RuntimeError(f"Missing developer driver runtime: {dep}")
 
 
 if __name__ == "__main__":

@@ -141,33 +141,38 @@ def stage(prefix: Path, bundle: Path) -> None:
     vendor = contents / ("Frameworks/vendor" if platform.system() == "Darwin" else "_internal/vendor")
     vendor.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((prefix / "bin/ffmpeg-runtime.json").read_text(encoding="utf-8"))
+    test_companion = COMPANIONS[platform.system()].replace("libav.", "libav_test.")
     for name in manifest["binaries"]:
+        if name == test_companion:
+            continue
         destination = vendor / name
         # Replace PyInstaller data links with private native files, before signing.
         if destination.is_symlink():
             destination.unlink()
         shutil.copy2(prefix / "bin" / name, destination)
     manifest_path = vendor / "ffmpeg-runtime.json"
+    runtime_manifest = {
+        key: manifest[key]
+        for key in ("schema_version", "version", "target", "runtime_files", "build_run", "build_attempt")
+        if key in manifest
+    }
     if platform.system() == "Darwin":
         # Frameworks contains code. Match PyInstaller's data layout: the real
         # manifest is a resource, with a relative link beside the native files.
         resource_vendor = resources / "vendor"
         resource_vendor.mkdir(parents=True, exist_ok=True)
         resource_manifest = resource_vendor / manifest_path.name
-        shutil.copy2(prefix / "bin" / manifest_path.name, resource_manifest)
+        resource_manifest.write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
         if manifest_path.exists() or manifest_path.is_symlink():
             manifest_path.unlink()
         manifest_path.symlink_to(os.path.relpath(resource_manifest, vendor))
     else:
-        shutil.copy2(prefix / "bin" / manifest_path.name, manifest_path)
-    shutil.copytree(prefix / "driver", resources / "libav-diagnostics", dirs_exist_ok=True)
-    shutil.copytree(prefix / "records", resources / "libav-diagnostics/build", dirs_exist_ok=True)
+        manifest_path.write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(prefix / "licenses", resources / "THIRD_PARTY_LICENSES/libav", dirs_exist_ok=True)
     sources = resources / "THIRD_PARTY_SOURCES"
     sources.mkdir(exist_ok=True)
     for source in (prefix / "source").iterdir():
         shutil.copy2(source, sources / source.name)
-    shutil.copy2(prefix / "build-info.json", resources / "libav-diagnostics/build-info.json")
     for name in ("probe.h", "probe.c", "remux.c", "test_shim.c", "windows_io.h", "build.py", "build-posix.sh", "fixtures/synthetic.h264"):
         destination = sources / "media-libav" / name
         destination.parent.mkdir(parents=True, exist_ok=True)

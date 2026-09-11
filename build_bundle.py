@@ -286,8 +286,15 @@ def _bundle_version() -> str:
     if version:
         return version
     ref_name = os.getenv("GITHUB_REF_NAME", "").strip()
-    if ref_name:
+    if ref_name and os.getenv("GITHUB_REF_TYPE", "").strip() == "tag":
         return ref_name
+    try:
+        package = json.loads((ROOT_DIR / "package.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        package = {}
+    version = package.get("version", "").strip() if isinstance(package, dict) else ""
+    if version:
+        return version
     return "dev"
 
 

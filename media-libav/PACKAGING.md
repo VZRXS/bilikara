@@ -17,19 +17,22 @@ source builds. Branch artifacts and their ZIP archives end with the sanitized
 branch name (for example, `bilikara-windows-x64-work-v0.8.0.zip`). Tagged archives
 retain the `bilikara-v0.8.0-windows-x64.zip` format.
 Application ZIPs are uploaded directly with `archive: false`, without an outer
-artifact ZIP. Build and smoke diagnostics use separate `diagnostics-` artifacts.
+artifact ZIP. The platform test jobs own native-media behavioral validation;
+bundle jobs build, stage, structurally verify, sign, archive and upload only.
+They do not publish separate diagnostics artifacts.
 
-Every bundle includes source and license records. POSIX dependencies use
+Every bundle includes source and license records. Build-only native test drivers,
+the fault-injection companion, smoke launchers and smoke result files are never
+staged into the application bundle. POSIX dependencies use
 `$ORIGIN` or `@loader_path`; macOS signing runs after final native-file staging.
 The mandatory Rust libraries do not link to libav at process startup.
 
 CI extracts each archive into a new path containing spaces and Unicode and
-executes the packaged backend with isolated synthetic state. Diagnostics cover
+performs structural, architecture and signing checks. Native-media tests cover
 default and legacy routing, CLI restoration, same-build comparisons, native
-cache routing, cancellation and publication collisions. The diagnostic test
-binary and fault companion are never loaded by normal application calls.
-Windows uses `libav-smoke.ps1`; POSIX uses `--tool-smoke libav-package` with
-`BILIKARA_LIBAV_SMOKE_RESULT` pointing to a writable result file.
+cache routing, cancellation and publication collisions before bundle
+publication. The source-tree diagnostic drivers and fault companion remain
+test-only and are never loaded by normal application calls.
 
 Automated synthetic checks do not establish manual device playback or real
 Hi-Res acceptance. Those checks retain their separately recorded status.

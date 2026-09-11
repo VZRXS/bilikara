@@ -47,27 +47,18 @@ No multi-track muxing, transcoding, decoding or extra formats were ported.
 **CLI remains packaged; original M7 removal is a later-version decision.** This
 does not establish a historical Hi-Res fix or other-platform acceptance.
 
-## Authorized execution later
+## CI execution
 
 Existing workflow: `.github/workflows/ci-bundle.yml` (`CI And Bundles`).
-Ref: **`work/v0.8.0`**, input **`windows_libav_preview=true`**.
-Jobs: `Test (windows-latest)`, then **`Bundle (Windows x64 libav preview)`**.
-Record the run's actual checkout commit when executing; preparation has no run ID.
+It runs test jobs on Ubuntu, Windows and macOS before the four Windows/macOS
+x64/ARM64 bundle jobs. Record the run's actual checkout commit when executing.
 
-The downloadable Actions artifact is
-`bilikara-windows-x64-libav-preview-<run_id>`, containing
-`bilikara-work-v0.8.0-windows-x64-libav-preview.zip`, build diagnostics and
-`libav-smoke-result.json`. Failure diagnostics are uploaded with `always()`;
-an archive/result may be absent if its build stage was not reached.
+Each downloadable Actions artifact is one platform application ZIP. Native
+behavioral validation belongs to the test jobs; bundle jobs do not publish or
+stage diagnostic payloads.
 
-Input absent/false preserves the three-OS test job, all four existing bundle
-targets (Windows x64/ARM64, macOS ARM64/Intel), Chocolatey on normal Windows,
-the macOS pinned assets and existing tag/release behavior. Preview selects
-Windows x64 only and explicitly excludes release upload/R2 mirroring even when
-manually invoked at a tag. It does not call `tool-assets.yml`, publish stable
-tool assets, dispatch another workflow or add permissions. The existing
-`internet-remote-sync.yml` push path filter does not match this increment;
-earlier unpublished commits must be checked separately before any approved push.
+The workflow does not call `tool-assets.yml`, publish stable tool assets or
+dispatch another workflow. Existing tag/release behavior is unchanged.
 
 ## One Windows build and package
 
@@ -90,7 +81,7 @@ All accepted capability flags remain, including shared libraries, disabled
 autodetection/network/avdevice/swscale/x86asm and enabled swresample. No codec or
 demuxer whitelist trimming, `--enable-gpl` or `--enable-nonfree` is added.
 The current Bilikara FFmpeg corpus uses local-file probe, copy/null validation
-and copy/fast-start normalization; these exact shapes are in the smoke. This
+and copy/fast-start normalization; these exact shapes are in the tests. This
 does not certify arbitrary network FFmpeg use or a live BBDown download.
 
 CLI and DLLs come from **one configure/build/install**. The companion compiles
@@ -116,14 +107,10 @@ bilikara/
   bilikara-desktop.exe         existing Tauri shell
   _internal/rust/              mandatory existing Rust DLLs
   _internal/vendor/            same-build ffmpeg.exe, ffprobe.exe, companion,
-                              private test companion, required DLL closure,
+                              required DLL closure,
                               ffmpeg-runtime.json, existing BBDown
-  preview/                    libav_metadata.exe, libav-runtime-tests.exe,
-                              required VC runtime, build/configuration records
   THIRD_PARTY_SOURCES/         exact FFmpeg source/signature and companion source
   THIRD_PARTY_LICENSES/        existing notices plus selected build materials
-  libav-smoke.ps1              explicit developer smoke entry
-  WINDOWS_PREVIEW.md
 ```
 
 Only preview CLI files are passed as PyInstaller data; explicit dependency staging
@@ -151,14 +138,15 @@ group. The preview ffprobe lookup also excludes system fallback. Removing only
 the companion leaves CLI restoration usable; removing a shared FFmpeg DLL makes
 its CLI fail, while mandatory AppState/backend startup must still work.
 
-## Finite artifact smoke and process boundary
+## Test and package boundary
 
-Actions archives then extracts outside the checkout/build prefix into a directory
-with spaces and `空`. `libav-smoke.ps1` launches the **packaged PyInstaller backend**
-only as the explicit smoke orchestrator; no separately installed Python is needed.
-Its child environment retains Windows system PATH entries, removes developer/tool
-overrides and credentials, and uses a disposable home with synthetic fixtures.
-It records the actual PyInstaller DLL directory without changing that setting.
+Native-media behavior is validated by the platform test job. The bundle job does
+not stage or invoke `libav-smoke.ps1`, the developer drivers, the fault-injection
+companion or smoke result files. It assembles the production runtime closure,
+then archives and extracts it outside the checkout/build prefix into a directory
+with spaces and `空` for structural verification. The source-tree smoke utility
+remains available for explicit developer diagnosis, but is not part of a release
+application or its bundle workflow.
 
 The small `--tool-smoke media-routing` adapter invokes **normal CacheManager and
 media FFI calls inside packaged `bilikara.exe`**, using ordinary startup discovery,
@@ -178,26 +166,25 @@ it was generated with `ffmpeg -v error -f lavfi -i color=c=black:s=64x48:r=12 -t
 -c:v libx264 -pix_fmt yuv420p -an -f h264 media-libav/fixtures/synthetic.h264`.
 The packaged CLI creates the AAC/FLAC fixtures from a short synthetic PCM WAV.
 
-The smoke also checks actual loaded vendor/restored CLI module paths and extracted
+The native-media tests check actual loaded vendor/restored CLI module paths and extracted
 x64 PE headers; default backend ready/health/shutdown without a media activation flag;
 fresh disposable copies without companion, without shared dependency, and with a
 wrong companion, including actual application compatibility/failure outcomes;
 both transforms' existing real-write cancellation checkpoint and
 before-publish collision sentinel; and existing BBDown offline restore/help.
-Required tests execute explicitly: missing artifacts/skips are failures.
-Sanitized JSON retains named stages/comparison outcomes on failure, with no raw
-stderr, credentials, real-account data, private media paths or payload archives.
+Required tests execute explicitly: missing artifacts/skips are failures. The
+source-tree diagnostic path retains sanitized JSON with named stages/comparison
+outcomes on failure and no raw stderr, credentials, real-account data, private
+media paths or payload archives.
 
 ## Manual checklist (separate from Actions)
 
 1. Download and extract the complete preview ZIP into a writable folder.
 2. Launch `bilikara-desktop.exe`; also check the backend via `bilikara.exe`.
 3. Check ordinary LAN Remote connection and playback on real devices.
-4. From PowerShell run `& 'C:\your folder\bilikara\libav-smoke.ps1'` and retain
-   its sanitized `libav-smoke-result.json`. This needs neither login nor Hi-Res media.
-5. Also test `BILIKARA_MEDIA_BACKEND=legacy` in a fresh process, then remove that
+4. Also test `BILIKARA_MEDIA_BACKEND=legacy` in a fresh process, then remove that
    environment override. Check normal close/restart in the disposable home.
-6. Record run/job/artifact results separately from device/model/playback results.
+5. Record run/job/artifact results separately from device/model/playback results.
 
 Ubuntu preparation cannot prove Windows compilation, loader behavior or package
 startup. No local Windows compiler, Wine, VM or remote desktop is required or

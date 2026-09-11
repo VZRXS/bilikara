@@ -302,23 +302,6 @@ jobs:
         if: runner.os == 'macOS'
         run: python scripts/embed_macos_backend.py dist/bilikara.app dist/Bilikara-Desktop.app
 
-      - name: Verify clean BBDown runtime restore on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $runtimeHome = Join-Path $env:RUNNER_TEMP 'bilikara-bbdown-runtime-smoke'
-          if (Test-Path $runtimeHome) { Remove-Item -Recurse -Force $runtimeHome }
-          New-Item -ItemType Directory -Path $runtimeHome | Out-Null
-          $env:BILIKARA_HOME = $runtimeHome
-          # The PyInstaller backend uses the Windows GUI subsystem, so invoking it
-          # directly from PowerShell can return before the smoke process exits.
-          $smoke = Start-Process -FilePath dist/bilikara/bilikara.exe -ArgumentList @('--tool-smoke', 'bbdown') -Wait -PassThru
-          if ($smoke.ExitCode -ne 0) { throw "Packaged BBDown runtime restore smoke failed with exit code $($smoke.ExitCode)" }
-          $runtime = Join-Path $runtimeHome 'tools/bbdown/BBDown.exe'
-          if (-not (Test-Path $runtime)) { throw "Runtime BBDown was not restored: $runtime" }
-          & $runtime --help
-          if ($LASTEXITCODE -ne 0) { throw 'Restored BBDown version check failed' }
-
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'
         run: |
@@ -371,31 +354,26 @@ jobs:
             /usr/bin/otool -L "$packaged_tool"
           done
 
-          echo "=== Running Python backend smoke test ==="
-          BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1 BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
-
-          echo "=== Running Tauri/backend shell and Finder-like environment smoke tests ==="
-          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
-
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
-      - name: Smoke extracted Windows libav package
+      - name: Verify extracted Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          Push-Location $package
-          try {
-            & './libav-smoke.ps1'
-          } finally {
-            Pop-Location
-            if (Test-Path "$package/libav-smoke-result.json") {
-              Copy-Item "$package/libav-smoke-result.json" dist/libav-smoke-result.json
+          foreach ($required in @('bilikara.exe', 'bilikara-desktop.exe', '_internal/vendor/ffmpeg.exe', '_internal/vendor/ffprobe.exe')) {
+            if (-not (Test-Path (Join-Path $package $required))) {
+              throw "Extracted bundle is missing $required"
+            }
+          }
+          foreach ($buildOnly in @('preview', 'libav-smoke.ps1', 'libav-smoke-result.json', '_internal/vendor/bilikara_media_libav_test.dll')) {
+            if (Test-Path (Join-Path $package $buildOnly)) {
+              throw "Build-only validation payload leaked into archive: $buildOnly"
             }
           }
 
@@ -408,6 +386,10 @@ jobs:
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
           test -s test_extract/dist_release/README-macOS.txt
           cmp README-macOS.txt test_extract/dist_release/README-macOS.txt
+          test ! -e test_extract/dist_release/bilikara.app/Contents/Resources/libav-diagnostics
+          test ! -e test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
+          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/libav-diagnostics
+          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
 
           echo "=== Verifying extracted bilikara.app ==="
           test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
@@ -444,42 +426,11 @@ jobs:
             /usr/bin/otool -L "$packaged_tool"
           done
 
-          echo "=== Running round-trip extracted shell and Finder-like smoke tests ==="
-          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
-          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
-
-      - name: Smoke extracted macOS libav package
-        if: runner.os == 'macOS'
-        run: |
-          mkdir -p "$RUNNER_TEMP/Bilikara package 空"
-          ditto -x -k "$BUNDLE_ARCHIVE" "$RUNNER_TEMP/Bilikara package 空"
-          BILIKARA_HOME="$RUNNER_TEMP/bilikara-smoke-bootstrap" BILIKARA_LIBAV_SMOKE_RESULT="$PWD/dist/libav-smoke-result.json" "$RUNNER_TEMP/Bilikara package 空/dist_release/bilikara.app/Contents/MacOS/bilikara" --tool-smoke libav-package
-          codesign --verify --deep --strict "$RUNNER_TEMP/Bilikara package 空/dist_release/bilikara.app"
-
-      - name: Collect native libav diagnostics
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p dist/libav-build-records
-          if [ -d "$BILIKARA_LIBAV_PREFIX/records" ]; then
-            cp -R "$BILIKARA_LIBAV_PREFIX/records/." dist/libav-build-records/
-          fi
-
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
         with:
           path: ${{ steps.bundle-name.outputs.archive_name }}
           archive: false
-          if-no-files-found: error
-
-      - name: Upload native libav diagnostics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: diagnostics-${{ steps.bundle-name.outputs.artifact_name }}
-          path: |
-            dist/libav-build-records
-            dist/libav-smoke-result.json
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release

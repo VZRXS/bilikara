@@ -70,6 +70,13 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertNotIn("R2_ACCESS_KEY_ID", bundle_job)
         self.assertNotIn("R2_SECRET_ACCESS_KEY", bundle_job)
         self.assertNotIn("aws s3", bundle_job)
+        for test_only_operation in (
+            "--tool-smoke",
+            "& './libav-smoke.ps1'",
+            "BILIKARA_REQUIRE_BACKEND_SMOKE",
+            "BILIKARA_REQUIRE_TAURI_SMOKE",
+        ):
+            self.assertNotIn(test_only_operation, bundle_job)
 
     def test_bundle_names_end_with_branch_and_preserve_tag_archive_names(self):
         block = self.bundle_workflow.split("      - name: Resolve bundle archive name\n", 1)[1].split(
@@ -87,14 +94,9 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertIn("archive: false", upload)
         self.assertNotIn("if: always()", upload)
         self.assertNotIn("dist/", upload)
-        diagnostics = self.bundle_workflow.split("      - name: Upload native libav diagnostics\n", 1)[1].split(
-            "      - name:", 1
-        )[0]
-        self.assertIn("if: always()", diagnostics)
-        self.assertIn("name: diagnostics-${{ steps.bundle-name.outputs.artifact_name }}", diagnostics)
-        self.assertIn("dist/libav-build-records", diagnostics)
-        self.assertIn("dist/libav-smoke-result.json", diagnostics)
-        self.assertNotIn(".zip", diagnostics)
+        self.assertNotIn("Upload native libav diagnostics", self.bundle_workflow)
+        self.assertNotIn("diagnostics-${{ steps.bundle-name.outputs.artifact_name }}", self.bundle_workflow)
+        self.assertNotIn("dist/libav-build-records", self.bundle_workflow)
         self.assertLess(self.bundle_workflow.index("Resolve bundle archive name"),
                         self.bundle_workflow.index("Build same-source Windows"))
         bash = shutil.which("bash")
@@ -206,9 +208,9 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             "Verify native backend and bundled tools on macOS",
             self.bundle_workflow,
         )
-        self.assertIn("Verify clean BBDown runtime restore on Windows", self.bundle_workflow)
+        self.assertNotIn("Verify clean BBDown runtime restore on Windows", self.bundle_workflow)
         self.assertIn("Locked aria2c metadata-only checks", self.bundle_workflow)
-        self.assertIn("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1", self.bundle_workflow)
+        self.assertNotIn("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1", self.bundle_workflow)
         self.assertIn("Packaged portable FFmpeg checks", self.bundle_workflow)
         self.assertIn("Running extracted portable FFmpeg checks", self.bundle_workflow)
         for tool in ("BBDown", "ffmpeg", "ffprobe"):

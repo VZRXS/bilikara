@@ -85,10 +85,13 @@ class LibavBundleTests(unittest.TestCase):
             for name in ("bin", "driver", "records", "licenses", "source"):
                 (prefix / name).mkdir(parents=True)
             names = ["ffmpeg", "ffprobe", "libavcodec.63.dylib"]
-            for name in names:
+            companion = "libbilikara_media_libav.dylib"
+            test_companion = "libbilikara_media_libav_test.dylib"
+            for name in [*names, companion, test_companion]:
                 (prefix / "bin" / name).write_bytes(b"native")
             data = dict(schema_version=1, version="9.0.1", target="x86_64-apple-darwin",
-                        runtime_files=names, binaries={name: {} for name in names})
+                        runtime_files=names,
+                        binaries={name: {} for name in [*names, companion, test_companion]})
             (prefix / "bin" / MANIFEST).write_text(json.dumps(data))
             (prefix / "build-info.json").write_text('{}')
             (app / "Contents/Frameworks/rust").mkdir(parents=True)
@@ -109,13 +112,18 @@ class LibavBundleTests(unittest.TestCase):
             self.assertFalse(Path(os.readlink(vendor / MANIFEST)).is_absolute())
             self.assertEqual((vendor / MANIFEST).resolve(), (resources / MANIFEST).resolve())
             self.assertEqual([p.name for p in runtime_files(vendor)], names)
+            self.assertNotIn("binaries", json.loads((resources / MANIFEST).read_text()))
+            self.assertNotIn("drivers", json.loads((resources / MANIFEST).read_text()))
+            self.assertTrue((vendor / companion).is_file())
+            self.assertFalse((vendor / test_companion).exists())
+            self.assertFalse((app / "Contents/Resources/libav-diagnostics").exists())
             self.assertEqual((resources / "aria2-macos.json").read_text(), '{}')
 
     def test_nested_signing_defers_outer_executable_until_bundle_seal(self):
         with tempfile.TemporaryDirectory() as temporary:
             app = Path(temporary) / "bilikara.app"
             main = app / "Contents/MacOS/bilikara"
-            helper = app / "Contents/Resources/libav-diagnostics/libav_metadata"
+            helper = app / "Contents/Resources/helper/native-helper"
             library = app / "Contents/Frameworks/vendor/libavcodec.63.dylib"
             for path in (main, helper, library):
                 path.parent.mkdir(parents=True, exist_ok=True)
