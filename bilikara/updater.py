@@ -4,10 +4,8 @@ import json
 import os
 import platform as platform_module
 import re
-import shlex
 import shutil
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -15,7 +13,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
@@ -1239,18 +1236,6 @@ def _download_url_to_path(
     return downloaded, total
 
 
-def _safe_extract_zip(zip_path: Path, destination: Path) -> Path:
-    destination.mkdir(parents=True, exist_ok=True)
-    destination_root = destination.resolve()
-    with zipfile.ZipFile(zip_path) as archive:
-        for member in archive.infolist():
-            member_path = (destination / member.filename).resolve()
-            if member_path != destination_root and not str(member_path).startswith(str(destination_root) + os.sep):
-                raise AppUpdateError("更新包路径不安全，已停止安装")
-        archive.extractall(destination)
-    return destination
-
-
 def _current_macos_app_path(executable_path: Path | None = None) -> Path | None:
     path = (executable_path or Path(sys.executable)).resolve()
     for parent in path.parents:
@@ -1266,30 +1251,6 @@ def _current_install_root(*, target: dict[str, str], executable_path: Path | Non
         if app_path is not None:
             return app_path
     return executable_path.parent
-
-
-def _find_windows_payload_root(extract_dir: Path, executable_name: str) -> Path:
-    direct = extract_dir / executable_name
-    if direct.exists():
-        return extract_dir
-    matches = sorted(extract_dir.rglob(executable_name), key=lambda item: len(item.parts))
-    if matches:
-        return matches[0].parent
-    exe_matches = sorted(extract_dir.rglob("*.exe"), key=lambda item: len(item.parts))
-    if exe_matches:
-        return exe_matches[0].parent
-    raise AppUpdateError("更新包里没有找到 Windows 可执行文件")
-
-
-def _find_macos_payload_app(extract_dir: Path, current_app_name: str) -> Path:
-    preferred = sorted(extract_dir.rglob(current_app_name), key=lambda item: len(item.parts)) if current_app_name else []
-    for item in preferred:
-        if item.suffix == ".app" and item.is_dir():
-            return item
-    apps = sorted(extract_dir.rglob("*.app"), key=lambda item: len(item.parts))
-    if apps:
-        return apps[0]
-    raise AppUpdateError("更新包里没有找到 macOS App")
 
 
 def _coerce_positive_pid(value: object) -> int | None:
@@ -1361,45 +1322,6 @@ exit /b 0
     with script_path.open("w", encoding="utf-8", newline="\r\n") as handle:
         handle.write(script)
     return ["cmd", "/c", str(script_path)]
-
-def _write_macos_restart_script(
-    script_path: Path,
-    *,
-    source_app: Path,
-    destination_app: Path,
-    pid: int,
-) -> list[str]:
-    script = f"""#!/bin/sh
-set -u
-PID={pid}
-SRC={shlex.quote(str(source_app))}
-DST={shlex.quote(str(destination_app))}
-BACKUP="${{DST}}.previous-update"
-while kill -0 "$PID" 2>/dev/null; do
-  sleep 1
-done
-rm -rf "$BACKUP"
-if [ -d "$DST" ]; then
-  mv "$DST" "$BACKUP" || exit 1
-fi
-ditto "$SRC" "$DST"
-STATUS=$?
-if [ "$STATUS" -eq 0 ]; then
-  rm -rf "$BACKUP"
-  open "$DST"
-  exit 0
-fi
-rm -rf "$DST"
-if [ -d "$BACKUP" ]; then
-  mv "$BACKUP" "$DST"
-  open "$DST"
-fi
-exit "$STATUS"
-"""
-    script_path.write_text(script, encoding="utf-8")
-    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
-    return ["/bin/sh", str(script_path)]
-
 
 def _launch_restart_helper(command: list[str]) -> None:
     rust_runtime.launch_update_helper(command)

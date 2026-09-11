@@ -874,18 +874,6 @@ def normalize_pool_entry(entry: dict) -> dict | None:
     return normalized
 
 
-def _normalize_pool_entries(entries: list[dict]) -> list[dict]:
-    normalized: list[dict] = []
-    seen_batch: set[str] = set()
-    for entry in entries:
-        normalized_entry = normalize_pool_entry(entry)
-        if not normalized_entry or normalized_entry["bvid"] in seen_batch:
-            continue
-        seen_batch.add(normalized_entry["bvid"])
-        normalized.append(normalized_entry)
-    return normalized
-
-
 def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
     try:
         payload = rust_runtime.cloudflare_service_request(
