@@ -341,6 +341,16 @@ mod tests {
     }
 
     #[test]
+    fn windows_virtual_only_service_returns_last_resort() {
+        let result = detect_lan_ipv4_addresses(&NetworkAddressRequest {
+            platform_name: "win32".to_owned(),
+            candidates: Some(vec![candidate("vEthernet (WSL)", "172.28.32.1", "virtual")]),
+            route_sources: Some(vec!["172.28.32.1".to_owned()]),
+        });
+        assert_eq!(result.addresses, vec!["172.28.32.1"]);
+    }
+
+    #[test]
     fn windows_proxy_adapters_do_not_beat_physical_lan() {
         let values = vec![
             candidate("singbox_tun", "172.19.0.1", "unknown"),

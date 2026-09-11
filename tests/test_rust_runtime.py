@@ -414,6 +414,26 @@ class RustRuntimeAdapterTest(unittest.TestCase):
         in {"1", "true", "yes", "on"},
         "native Rust runtime is optional outside the release gate",
     )
+    def test_native_windows_virtual_only_network_address_uses_real_abi(self):
+        addresses = rust_runtime.detect_lan_ipv4_addresses(
+            platform_name="win32",
+            candidates=[
+                {
+                    "name": "vEthernet (WSL)",
+                    "address": "172.28.32.1",
+                    "is_up": True,
+                    "interface_type": "virtual",
+                },
+            ],
+            route_sources=["172.28.32.1"],
+        )
+        self.assertEqual(addresses, ["172.28.32.1"])
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
     def test_native_runtime_services_use_the_real_abi(self):
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
