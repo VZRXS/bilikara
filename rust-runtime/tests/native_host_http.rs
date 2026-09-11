@@ -322,6 +322,180 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         unchanged["data"]["cache_policy"],
         policy["data"]["cache_policy"]
     );
+    // Local fixtures: pagination/search/random must not contact D1 or Bilibili.
+    let entries: Vec<Value> = (0..221).map(|index| json!({
+        "bvid":format!("BV{index:010}"),"title":format!("卡拉 高达 {index}"),"mid":"123",
+        "url":format!("https://www.bilibili.com/video/BV{index:010}"),"owner_name":"Fixture",
+        "fav_uid":"123","fav_folder_id":"456"
+    })).collect();
+    for (file, value) in [
+        (
+            "gatcha_uids.json",
+            json!({"schema_version":2,"uids":["123"],"profiles":{}}),
+        ),
+        (
+            "gatcha_cache.json",
+            json!({"schema_version":3,"uids":{"123":entries},"profiles":{}}),
+        ),
+        (
+            "gatcha_favlist.json",
+            json!({"schema_version":2,"uids":["123"],"folders":[{"id":"456","uid":"123","title":"卡拉","media_count":221}],"items":entries}),
+        ),
+    ] {
+        std::fs::write(directory.join(file), serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+    let get = |path: &str| {
+        client
+            .get(format!("{base}{path}"))
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+    };
+    for route in [
+        "/api/gatcha/browse?uid=123",
+        "/api/gatcha/favlist/browse?folder_id=123:456",
+    ] {
+        let mut ids = std::collections::HashSet::new();
+        for offset in [0, 100, 200] {
+            let page: Value = get(&format!("{route}&limit=100&offset={offset}"))
+                .json()
+                .unwrap();
+            assert_eq!(page["ok"], true, "{page}");
+            assert_eq!(page["data"]["matched_count"], 221);
+            assert_eq!(page["data"]["has_more"], offset < 200);
+            for item in page["data"]["items"].as_array().unwrap() {
+                assert!(ids.insert(item["bvid"].as_str().unwrap().to_owned()));
+            }
+        }
+        assert_eq!(ids.len(), 221);
+        let page: Value = get(&format!("{route}&q=%E9%AB%98%E8%BE%BE%20220"))
+            .json()
+            .unwrap();
+        assert_eq!(page["data"]["matched_count"], 1);
+    }
+    assert_eq!(get("/api/gatcha/browse?offset=-1").status(), 400);
+    assert_eq!(
+        get("/api/gatcha/browse?uid=123").json::<Value>().unwrap()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        221
+    );
+    assert_eq!(
+        get("/api/gatcha/favlist/browse?folder_id=123:456")
+            .json::<Value>()
+            .unwrap()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        221
+    );
+    assert_eq!(
+        get("/api/gatcha/search?q=220").json::<Value>().unwrap()["data"]["items"][0]["bvid"],
+        "BV0000000220"
+    );
+    let config: Value = post(
+        "/api/gatcha/pool-config",
+        json!({"uid_weight":0,"favlist_weight":100}),
+        &remote_cookie,
+    )
+    .json()
+    .unwrap();
+    assert_eq!(config["data"]["uid_options"][0]["count"], 221);
+    assert_eq!(config["data"]["favlist_folder_options"][0]["id"], "123:456");
+    assert_eq!(
+        get("/api/gatcha/candidate").json::<Value>().unwrap()["data"]["source"],
+        "favlist"
+    );
+    assert_eq!(
+        post(
+            "/api/gatcha/uids/preview",
+            json!({"uid":"123","cookie":"fake"}),
+            &cookie
+        )
+        .json::<Value>()
+        .unwrap()["code"],
+        "missing_cookie"
+    );
+    // Local fixtures: pagination/search/random must not contact D1 or Bilibili.
+    let entries: Vec<Value> = (0..221).map(|index| json!({
+        "bvid":format!("BV{index:010}"),"title":format!("卡拉 高达 {index}"),"mid":"123",
+        "url":format!("https://www.bilibili.com/video/BV{index:010}"),"owner_name":"Fixture",
+        "fav_uid":"123","fav_folder_id":"456"
+    })).collect();
+    for (file, value) in [
+        (
+            "gatcha_uids.json",
+            json!({"schema_version":2,"uids":["123"],"profiles":{}}),
+        ),
+        (
+            "gatcha_cache.json",
+            json!({"schema_version":3,"uids":{"123":entries},"profiles":{}}),
+        ),
+        (
+            "gatcha_favlist.json",
+            json!({"schema_version":2,"uids":["123"],"folders":[{"id":"456","uid":"123","title":"卡拉","media_count":221}],"items":entries}),
+        ),
+    ] {
+        std::fs::write(directory.join(file), serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+    let get = |path: &str| {
+        client
+            .get(format!("{base}{path}"))
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+    };
+    for route in [
+        "/api/gatcha/browse?uid=123",
+        "/api/gatcha/favlist/browse?folder_id=123:456",
+    ] {
+        let mut ids = std::collections::HashSet::new();
+        for offset in [0, 100, 200] {
+            let page: Value = get(&format!("{route}&limit=100&offset={offset}"))
+                .json()
+                .unwrap();
+            assert_eq!(page["ok"], true, "{page}");
+            assert_eq!(page["data"]["matched_count"], 221);
+            assert_eq!(page["data"]["has_more"], offset < 200);
+            for item in page["data"]["items"].as_array().unwrap() {
+                assert!(ids.insert(item["bvid"].as_str().unwrap().to_owned()));
+            }
+        }
+        assert_eq!(ids.len(), 221);
+        let page: Value = get(&format!("{route}&q=%E9%AB%98%E8%BE%BE%20220"))
+            .json()
+            .unwrap();
+        assert_eq!(page["data"]["matched_count"], 1);
+    }
+    assert_eq!(get("/api/gatcha/browse?offset=-1").status(), 400);
+    assert_eq!(
+        get("/api/gatcha/search?q=220").json::<Value>().unwrap()["data"]["items"][0]["bvid"],
+        "BV0000000220"
+    );
+    let config: Value = post(
+        "/api/gatcha/pool-config",
+        json!({"uid_weight":0,"favlist_weight":100}),
+        &remote_cookie,
+    )
+    .json()
+    .unwrap();
+    assert_eq!(config["data"]["uid_options"][0]["count"], 221);
+    assert_eq!(config["data"]["favlist_folder_options"][0]["id"], "123:456");
+    assert_eq!(
+        get("/api/gatcha/candidate").json::<Value>().unwrap()["data"]["source"],
+        "favlist"
+    );
+    assert_eq!(
+        post(
+            "/api/gatcha/uids/preview",
+            json!({"uid":"123","cookie":"fake"}),
+            &cookie
+        )
+        .json::<Value>()
+        .unwrap()["code"],
+        "missing_cookie"
+    );
     assert_eq!(
         client
             .get(format!("{base}/"))

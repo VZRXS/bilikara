@@ -22,11 +22,14 @@ pub(super) fn dispatch(
     host: bool,
     method: &Method,
     path: &str,
-    _query: &str,
+    query: &str,
     body: Value,
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
     if method == Method::GET {
+        if path.starts_with("/api/gatcha/") {
+            return library::read(context, path, query);
+        }
         return with_app(|app| match path {
             "/api/state" => app.native_snapshot(host),
             "/api/remote-identity" => app.native_identity(identity),
@@ -42,6 +45,9 @@ pub(super) fn dispatch(
     }
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
+    }
+    if path.starts_with("/api/gatcha/") {
+        return library::write(context, identity, path, &body);
     }
     if path == "/api/diagnostics/markdown" {
         return diagnostics::markdown(context, identity);

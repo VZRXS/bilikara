@@ -65,8 +65,16 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   original/accompaniment selection and the existing player settings. Native
   diagnostics retain bounded audio/video error facts and reuse the sanitized
   Markdown export. Use Settings → diagnostic information → copy diagnostic info.
-- Unsupported UI is explicitly hidden/disabled: shared-library search/Gacha,
-  favorites/following management, Internet Remote, independent dual display,
+- Following and public favorite folders use the existing Rust Gacha repository:
+  add/preview sources, paginated browsing and in-cache title search, manual
+  refresh, random candidates, and source weights/exclusions. Start with an empty
+  phone library; log in and add sources manually. There is no startup bulk scan,
+  D1 append or automatic desktop-library import. LAN Remote shares these APIs.
+  Network imports execute outside the AppState lock under one shared task lease;
+  refresh runs in the background and reports completion through SSE. Errors
+  trigger a shared 60-second library-task cooldown, not a playback interruption.
+- Unsupported UI is explicitly hidden/disabled: shared-library search,
+  Internet Remote, independent dual display,
   desktop tool/update/export controls. Do not mistake those gaps for full mobile
   feature parity. Public Remote and Worker code are not modified by this Alpha.
 

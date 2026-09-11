@@ -4,6 +4,7 @@ mod api;
 mod cache;
 mod diagnostics;
 mod files;
+mod library;
 mod login;
 mod maintenance;
 mod network;

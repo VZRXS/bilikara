@@ -14,6 +14,7 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub cache_policy: crate::native_host::preferences::CachePolicy,
+    pub library_cooldown_until: Option<std::time::Instant>,
     pub host_token: String,
     pub invite: String,
     pub cookie: String,
@@ -274,13 +275,14 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":false,"shared_search":false,"desktop_tools":false,"playlist_export":false,"app_update":false});
+        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":false,"desktop_tools":false,"playlist_export":false,"app_update":false});
         value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false});
         value["cache_policy"] = session.cache_policy.snapshot();
-        value["gatcha"] = json!({"busy":false,"background_busy":false});
+        value["gatcha"] = json!(session.login.gacha_snapshot());
         value["app_update"] = json!({"state":"unsupported","supported":false});
         value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":"Android Alpha"});
+        value["bbdown"]["logged_in"] = json!(!session.cookie.is_empty());
         // The shared status chip aggregates these two fields. No external FFmpeg
         // is installed or advertised; media normalization is in-process Rust.
         value["ffmpeg"] =
