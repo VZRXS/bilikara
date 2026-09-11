@@ -2548,6 +2548,12 @@ async function run() {
     const playerWebKitFullscreenScreenshotPath = suffixedPath(screenshotPath, "-player-fullscreen-webkit");
     const queueNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-queue");
     const historyNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-history");
+    const queueMinimumScreenshotPath = suffixedPath(screenshotPath, "-minimum-queue-menu");
+    const historyMinimumScreenshotPath = suffixedPath(screenshotPath, "-minimum-history-menu");
+    const duplicateConfirmNarrowScreenshotPath = suffixedPath(
+      screenshotPath,
+      "-duplicate-confirm-narrow",
+    );
     const narrowControlsScreenshotPath = suffixedPath(screenshotPath, "-narrow-controls");
     const narrowControlsTooltipScreenshotPath = suffixedPath(
       screenshotPath,
@@ -2555,6 +2561,9 @@ async function run() {
     );
     const controlsUpScreenshotPath = suffixedPath(screenshotPath, "-controls-up");
     const controlsInlineTallScreenshotPath = suffixedPath(screenshotPath, "-controls-inline-tall");
+    const stageTitleWideScreenshotPath = suffixedPath(screenshotPath, "-wide-title-two-lines");
+    const stageTitleLongScreenshotPath = suffixedPath(screenshotPath, "-wide-title-long-marquee");
+    const stageTitleShortScreenshotPath = suffixedPath(screenshotPath, "-short-title-marquee");
     if (shellWideScreenshotPath) {
       await shellPage.locator("#work-rail-queue").click();
       await shellPage.screenshot({ path: queueWideScreenshotPath, fullPage: false });
@@ -2932,6 +2941,271 @@ async function run() {
         await shellPage.screenshot({ path: shellShortScreenshotPath, fullPage: false });
       }
     }
+
+    const adaptiveStageTitle = "A moderately long current song title that should fit completely across two lines in the wide Host playback card";
+    const overlongStageTitle = `${adaptiveStageTitle} while this deliberately pathological suffix proves that a title requiring a third line returns to the readable single-line scrolling presentation instead of becoming a clipped two-line marquee`;
+    await shellPage.setViewportSize({ width: 1600, height: 1100 });
+    await shellPage.evaluate((title) => {
+      elements.currentTitleText.textContent = title;
+      measurePersistentStage();
+    }, adaptiveStageTitle);
+    await shellPage.waitForTimeout(120);
+    const wideStageTitleEvidence = await shellPage.evaluate(() => {
+      const title = elements.currentTitle;
+      const text = elements.currentTitleText;
+      const titleStyle = getComputedStyle(title);
+      const titleRect = title.getBoundingClientRect();
+      const panelRect = elements.playerPanel.getBoundingClientRect();
+      const variantButtons = [...elements.audioVariantBar.querySelectorAll(".audio-variant-button")];
+      const controlTail = elements.appShell.dataset.stageControlsLayout === "inline"
+        ? elements.stageControlTray.getBoundingClientRect()
+        : elements.stageControlsToggle.getBoundingClientRect();
+      return {
+        visibleLines: title.dataset.visibleLines,
+        singleLineOverflow: title.dataset.singleLineOverflow,
+        fitsWithinTwoLines: title.dataset.fitsWithinTwoLines,
+        naturalWrappedHeight: Number(title.dataset.naturalWrappedHeight || 0),
+        heightSlack: Number(title.dataset.heightSlack || 0),
+        titleHeight: titleRect.height,
+        lineHeight: Number.parseFloat(titleStyle.lineHeight),
+        scrolling: title.classList.contains("is-scrolling"),
+        animation: getComputedStyle(text).animationName,
+        controlsLayout: elements.appShell.dataset.stageControlsLayout,
+        controlsWithinCard: controlTail.bottom <= panelRect.bottom + 1,
+        variantHeight: elements.audioVariantAnchor.getBoundingClientRect().height,
+        variantsOneLine: variantButtons.every((button) => getComputedStyle(button).whiteSpace === "nowrap"),
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      wideStageTitleEvidence.visibleLines === "2"
+        && wideStageTitleEvidence.singleLineOverflow === "true"
+        && wideStageTitleEvidence.fitsWithinTwoLines === "true"
+        && wideStageTitleEvidence.naturalWrappedHeight <= (wideStageTitleEvidence.lineHeight * 2) + 1
+        && wideStageTitleEvidence.heightSlack >= wideStageTitleEvidence.lineHeight + 4
+        && wideStageTitleEvidence.titleHeight <= (wideStageTitleEvidence.lineHeight * 2) + 1
+        && !wideStageTitleEvidence.scrolling
+        && wideStageTitleEvidence.animation === "none"
+        && wideStageTitleEvidence.controlsWithinCard
+        && wideStageTitleEvidence.variantHeight <= 44
+        && wideStageTitleEvidence.variantsOneLine
+        && !wideStageTitleEvidence.horizontalOverflow,
+      "wide Stage title did not use real post-control spare height for its optional second line",
+      wideStageTitleEvidence,
+    );
+    if (stageTitleWideScreenshotPath) {
+      await shellPage.screenshot({ path: stageTitleWideScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.evaluate((title) => {
+      elements.currentTitleText.textContent = title;
+      measurePersistentStage();
+    }, overlongStageTitle);
+    await shellPage.waitForTimeout(120);
+    const overlongStageTitleEvidence = await shellPage.evaluate(() => ({
+      visibleLines: elements.currentTitle.dataset.visibleLines,
+      singleLineOverflow: elements.currentTitle.dataset.singleLineOverflow,
+      fitsWithinTwoLines: elements.currentTitle.dataset.fitsWithinTwoLines,
+      naturalWrappedHeight: Number(elements.currentTitle.dataset.naturalWrappedHeight || 0),
+      lineHeight: Number.parseFloat(getComputedStyle(elements.currentTitle).lineHeight),
+      scrolling: elements.currentTitle.classList.contains("is-scrolling"),
+      animation: getComputedStyle(elements.currentTitleText).animationName,
+      horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }));
+    assert(
+      overlongStageTitleEvidence.visibleLines === "1"
+        && overlongStageTitleEvidence.singleLineOverflow === "true"
+        && overlongStageTitleEvidence.fitsWithinTwoLines === "false"
+        && overlongStageTitleEvidence.naturalWrappedHeight > (overlongStageTitleEvidence.lineHeight * 2) + 1
+        && overlongStageTitleEvidence.scrolling
+        && overlongStageTitleEvidence.animation === "host-current-title-marquee"
+        && !overlongStageTitleEvidence.horizontalOverflow,
+      "a title requiring more than two lines became a clipped or scrolling two-line heading",
+      overlongStageTitleEvidence,
+    );
+    if (stageTitleLongScreenshotPath) {
+      await shellPage.screenshot({ path: stageTitleLongScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.setViewportSize({ width: 1280, height: 640 });
+    await shellPage.evaluate((title) => {
+      elements.currentTitleText.textContent = title;
+      measurePersistentStage();
+    }, adaptiveStageTitle);
+    await shellPage.waitForTimeout(120);
+    const shortStageTitleEvidence = await shellPage.evaluate(() => ({
+      visibleLines: elements.currentTitle.dataset.visibleLines,
+      singleLineOverflow: elements.currentTitle.dataset.singleLineOverflow,
+      fitsWithinTwoLines: elements.currentTitle.dataset.fitsWithinTwoLines,
+      heightSlack: Number(elements.currentTitle.dataset.heightSlack || 0),
+      scrolling: elements.currentTitle.classList.contains("is-scrolling"),
+      animation: getComputedStyle(elements.currentTitleText).animationName,
+      horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }));
+    assert(
+      shortStageTitleEvidence.visibleLines === "1"
+        && shortStageTitleEvidence.singleLineOverflow === "true"
+        && shortStageTitleEvidence.scrolling
+        && shortStageTitleEvidence.animation === "host-current-title-marquee"
+        && !shortStageTitleEvidence.horizontalOverflow,
+      "short wide Stage did not fall back to the one-line scrolling title",
+      shortStageTitleEvidence,
+    );
+    if (stageTitleShortScreenshotPath) {
+      await shellPage.screenshot({ path: stageTitleShortScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.setViewportSize({ width: 700, height: 900 });
+    await shellPage.locator("#work-rail-queue").click();
+    if (await shellPage.locator("#work-rail-queue").getAttribute("aria-expanded") !== "true") {
+      await shellPage.locator("#work-rail-queue").click();
+    }
+    await shellPage.waitForTimeout(180);
+    await shellPage.evaluate(() => {
+      const longTitle = "A deliberately long current song title proving narrow Host headings never paint beneath trailing actions";
+      elements.currentTitleText.textContent = longTitle;
+      elements.queueCurrentTitle.textContent = longTitle;
+      elements.playlist.querySelector(".song-title").textContent = "agony - KOTOKO - アニメ『神無月の巫女』ED";
+      measurePersistentStage();
+    });
+    await shellPage.locator("#playlist .menu-toggle").first().click();
+    const narrowQueueLayoutEvidence = await shellPage.evaluate(() => {
+      const stageTitle = elements.currentTitle.getBoundingClientRect();
+      const stageActions = document.querySelector(".player-panel > .panel-head .stage-actions")
+        .getBoundingClientRect();
+      const currentSide = elements.queueCurrent.querySelector(".queue-current-side").getBoundingClientRect();
+      const currentMain = elements.queueCurrent.querySelector(".queue-current-main").getBoundingClientRect();
+      const currentTag = elements.queueCurrentTag.getBoundingClientRect();
+      const currentTitle = elements.queueCurrentTitle.getBoundingClientRect();
+      const item = elements.playlist.querySelector(".song-item").getBoundingClientRect();
+      const itemTitle = elements.playlist.querySelector(".song-title");
+      const itemTitleRange = document.createRange();
+      itemTitleRange.selectNodeContents(itemTitle);
+      const menu = elements.playlist.querySelector(".menu-content:not(.hidden)").getBoundingClientRect();
+      const buttons = [...elements.playlist.querySelectorAll(".menu-content:not(.hidden) button")]
+        .map((button) => {
+          const rect = button.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, width: rect.width };
+        });
+      return {
+        stageTitle: { left: stageTitle.left, right: stageTitle.right, scrollWidth: elements.currentTitle.scrollWidth, clientWidth: elements.currentTitle.clientWidth },
+        stageActions: { left: stageActions.left, right: stageActions.right },
+        stageTitleOverflow: getComputedStyle(elements.currentTitle).overflowX,
+        stageTitleEllipsis: getComputedStyle(elements.currentTitle).textOverflow,
+        stageTitleLines: elements.currentTitle.dataset.visibleLines,
+        stageTitleScrolling: elements.currentTitle.classList.contains("is-scrolling"),
+        stageTitleAnimation: getComputedStyle(elements.currentTitleText).animationName,
+        currentColumns: getComputedStyle(elements.queueCurrent).gridTemplateColumns,
+        currentSide: { left: currentSide.left, right: currentSide.right, top: currentSide.top, bottom: currentSide.bottom },
+        currentMain: { left: currentMain.left, right: currentMain.right, top: currentMain.top, bottom: currentMain.bottom },
+        currentTag: { left: currentTag.left, right: currentTag.right, top: currentTag.top, bottom: currentTag.bottom },
+        currentTitle: { left: currentTitle.left, right: currentTitle.right, top: currentTitle.top, bottom: currentTitle.bottom },
+        menu: { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom },
+        item: { left: item.left, right: item.right, top: item.top, bottom: item.bottom },
+        itemTitleLines: itemTitleRange.getClientRects().length,
+        itemTitleFits: itemTitle.scrollWidth <= itemTitle.clientWidth + 1,
+        buttons,
+        buttonsDoNotOverlap: buttons.every((button, index) => index === 0 || buttons[index - 1].right <= button.left + 0.5),
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      narrowQueueLayoutEvidence.stageTitle.scrollWidth > narrowQueueLayoutEvidence.stageTitle.clientWidth
+        && narrowQueueLayoutEvidence.stageTitleOverflow === "hidden"
+        && narrowQueueLayoutEvidence.stageTitleEllipsis === "ellipsis"
+        && narrowQueueLayoutEvidence.stageTitleLines === "1"
+        && narrowQueueLayoutEvidence.stageTitleScrolling
+        && narrowQueueLayoutEvidence.stageTitleAnimation === "host-current-title-marquee"
+        && narrowQueueLayoutEvidence.stageTitle.right <= narrowQueueLayoutEvidence.stageActions.left - 8
+        && narrowQueueLayoutEvidence.currentColumns.split(" ").length === 2
+        && narrowQueueLayoutEvidence.currentSide.right < narrowQueueLayoutEvidence.currentMain.left
+        && narrowQueueLayoutEvidence.currentTitle.top < narrowQueueLayoutEvidence.currentTag.bottom
+        && narrowQueueLayoutEvidence.itemTitleLines === 1
+        && narrowQueueLayoutEvidence.itemTitleFits
+        && narrowQueueLayoutEvidence.menu.left >= narrowQueueLayoutEvidence.item.left - 1
+        && narrowQueueLayoutEvidence.menu.right <= narrowQueueLayoutEvidence.item.right + 1
+        && narrowQueueLayoutEvidence.menu.top >= narrowQueueLayoutEvidence.item.top - 1
+        && narrowQueueLayoutEvidence.menu.bottom <= narrowQueueLayoutEvidence.item.bottom + 1
+        && narrowQueueLayoutEvidence.buttonsDoNotOverlap
+        && !narrowQueueLayoutEvidence.horizontalOverflow,
+      "minimum-width Host title, current-song row, or Queue action menu overlapped",
+      narrowQueueLayoutEvidence,
+    );
+    if (queueMinimumScreenshotPath) {
+      await shellPage.screenshot({ path: queueMinimumScreenshotPath, fullPage: false });
+    }
+    await shellPage.keyboard.press("Escape");
+    await shellPage.setViewportSize({ width: 520, height: 560 });
+    await shellPage.waitForTimeout(120);
+    await shellPage.evaluate(() => openConfirm({
+      type: "duplicate-add",
+      message: "《agony - KOTOKO - アニメ『神無月の巫女』ED》本次已经点过 1 次，仍要继续点歌吗？",
+      primaryLabel: "确认",
+      x: window.innerWidth - 2,
+      y: window.innerHeight - 2,
+    }));
+    const duplicateConfirmNarrowEvidence = await shellPage.evaluate(() => {
+      const rect = elements.confirmPopover.getBoundingClientRect();
+      return {
+        rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        viewport: { width: innerWidth, height: innerHeight },
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      duplicateConfirmNarrowEvidence.rect.left >= 12
+        && duplicateConfirmNarrowEvidence.rect.top >= 12
+        && duplicateConfirmNarrowEvidence.rect.right <= duplicateConfirmNarrowEvidence.viewport.width - 12
+        && duplicateConfirmNarrowEvidence.rect.bottom <= duplicateConfirmNarrowEvidence.viewport.height - 12
+        && !duplicateConfirmNarrowEvidence.horizontalOverflow,
+      "narrow duplicate-request confirmation escaped the viewport",
+      duplicateConfirmNarrowEvidence,
+    );
+    if (duplicateConfirmNarrowScreenshotPath) {
+      await shellPage.screenshot({ path: duplicateConfirmNarrowScreenshotPath, fullPage: false });
+    }
+    await shellPage.evaluate(() => closeConfirm({ restoreFocus: false }));
+    await shellPage.setViewportSize({ width: 700, height: 900 });
+    await shellPage.waitForTimeout(120);
+    await shellPage.locator("#work-rail-history").click();
+    await shellPage.waitForTimeout(120);
+    await shellPage.locator("#history-list .menu-toggle").first().click();
+    const narrowHistoryLayoutEvidence = await shellPage.evaluate(() => {
+      const item = elements.historyList.querySelector(".history-item").getBoundingClientRect();
+      const menu = elements.historyList.querySelector(".menu-content:not(.hidden)").getBoundingClientRect();
+      const buttons = [...elements.historyList.querySelectorAll(".menu-content:not(.hidden) button")]
+        .map((button) => {
+          const rect = button.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, width: rect.width };
+        });
+      return {
+        item: { left: item.left, right: item.right, top: item.top, bottom: item.bottom },
+        menu: { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom },
+        buttons,
+        buttonsDoNotOverlap: buttons.every((button, index) => index === 0 || buttons[index - 1].right <= button.left + 0.5),
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    assert(
+      narrowHistoryLayoutEvidence.menu.left >= narrowHistoryLayoutEvidence.item.left - 1
+        && narrowHistoryLayoutEvidence.menu.right <= narrowHistoryLayoutEvidence.item.right + 1
+        && narrowHistoryLayoutEvidence.menu.top >= narrowHistoryLayoutEvidence.item.top - 1
+        && narrowHistoryLayoutEvidence.menu.bottom <= narrowHistoryLayoutEvidence.item.bottom + 1
+        && narrowHistoryLayoutEvidence.buttonsDoNotOverlap
+        && !narrowHistoryLayoutEvidence.horizontalOverflow,
+      "minimum-width History action menu overlapped or escaped its row",
+      narrowHistoryLayoutEvidence,
+    );
+    if (historyMinimumScreenshotPath) {
+      await shellPage.screenshot({ path: historyMinimumScreenshotPath, fullPage: false });
+    }
+    await shellPage.keyboard.press("Escape");
+    await shellPage.evaluate(() => {
+      const title = String(state.data?.current_item?.title || "");
+      elements.currentTitleText.textContent = title;
+      elements.queueCurrentTitle.textContent = title;
+      measurePersistentStage();
+    });
     const proportionalSplitFrames = [
       responsiveFrames.wide1600,
       responsiveFrames.wide1536,
@@ -3511,6 +3785,8 @@ async function run() {
         ordered: users.top >= login.bottom - 1,
         border: loginStyle.borderTopWidth,
         background: loginStyle.backgroundColor,
+        weight: loginStyle.fontWeight,
+        align: loginStyle.textAlign,
         drawDisabled: elements.gatchaButton.disabled,
       };
     });
@@ -3520,8 +3796,10 @@ async function run() {
         && gatchaPrerequisiteEvidence.ordered
         && gatchaPrerequisiteEvidence.border === "0px"
         && gatchaPrerequisiteEvidence.background === "rgba(0, 0, 0, 0)"
+        && Number(gatchaPrerequisiteEvidence.weight) >= 700
+        && gatchaPrerequisiteEvidence.align === "left"
         && gatchaPrerequisiteEvidence.drawDisabled,
-      "Gatcha did not expose ordered borderless login and Session User prerequisites",
+      "Gatcha prerequisites lost their ordered compact accent-warning treatment",
       gatchaPrerequisiteEvidence,
     );
     if (gatchaPrerequisiteScreenshotPath) {
@@ -4711,6 +4989,16 @@ async function run() {
     const playerFullscreenRemoteEvidence = await shellPage.evaluate(() => {
       const button = elements.playerFullscreenButton.getBoundingClientRect();
       const popup = elements.playerFullscreenRemotePopover.getBoundingClientRect();
+      const card = elements.playerFullscreenRemotePopover.querySelector(".remote-access-card");
+      const localContent = elements.playerFullscreenRemotePopover.querySelector(
+        ".remote-access-entry--local .remote-access-entry-content",
+      );
+      const localQr = elements.playerFullscreenRemotePopover.querySelector(
+        ".remote-access-entry--local .remote-access-qr",
+      ).getBoundingClientRect();
+      const publicEntry = elements.playerFullscreenRemotePopover.querySelector(
+        ".remote-access-entry--public",
+      );
       return {
         button: { left: button.left, top: button.top, right: button.right, bottom: button.bottom },
         popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
@@ -4725,8 +5013,19 @@ async function run() {
           elements.playerFullscreenButton.querySelector(".fullscreen-exit-hover-label"),
         ).opacity,
         label: elements.playerFullscreenButton.getAttribute("aria-label"),
-        publicHidden: elements.playerFullscreenPublicEntry.classList.contains("hidden"),
+        publicStatus: elements.playerFullscreenPublicMeta.textContent.trim(),
+        publicStatusVisualWidth: elements.playerFullscreenPublicMeta.getBoundingClientRect().width,
+        localOnly: card.classList.contains("is-local-only-preview"),
+        cardColumns: getComputedStyle(card).gridTemplateColumns,
+        localContentColumns: getComputedStyle(localContent).gridTemplateColumns,
+        localQr: { width: localQr.width, height: localQr.height },
+        publicEntryVisible: getComputedStyle(publicEntry).display !== "none",
+        copyTitleVisible: [...elements.playerFullscreenRemotePopover.querySelectorAll(".remote-access-copy-title")]
+          .some((node) => getComputedStyle(node).display !== "none"),
         localUrl: elements.playerFullscreenRemoteUrl.textContent.trim(),
+        localHint: elements.playerFullscreenRemoteUrlHint.textContent.trim(),
+        localDetailOrder: [...elements.playerFullscreenRemoteUrl.parentElement.children]
+          .map((node) => node.id || node.className),
         menuLocalUrl: elements.remotePopoverUrlLink.textContent.trim(),
         interactiveCount: elements.playerFullscreenRemotePopover.querySelectorAll(
           "button, input, select, textarea, a",
@@ -4744,16 +5043,41 @@ async function run() {
         && playerFullscreenRemoteEvidence.popup.right <= playerFullscreenRemoteEvidence.button.right + 1
         && playerFullscreenRemoteEvidence.popup.left < playerFullscreenRemoteEvidence.button.left
         && playerFullscreenRemoteEvidence.label.length > 0
-        && playerFullscreenRemoteEvidence.publicHidden
+        && playerFullscreenRemoteEvidence.publicStatus === "未创建"
+        && playerFullscreenRemoteEvidence.publicStatusVisualWidth <= 1
+        && playerFullscreenRemoteEvidence.localOnly
+        && playerFullscreenRemoteEvidence.cardColumns.split(" ").length === 1
+        && playerFullscreenRemoteEvidence.localContentColumns.startsWith("160px ")
+        && playerFullscreenRemoteEvidence.localQr.width === 160
+        && playerFullscreenRemoteEvidence.localQr.height === 160
+        && !playerFullscreenRemoteEvidence.publicEntryVisible
+        && playerFullscreenRemoteEvidence.copyTitleVisible
+        && playerFullscreenRemoteEvidence.localHint === "访问设备需与 Host 在同一网络"
+        && playerFullscreenRemoteEvidence.localDetailOrder.indexOf("player-fullscreen-remote-url")
+          < playerFullscreenRemoteEvidence.localDetailOrder.indexOf("player-fullscreen-remote-url-hint")
         && playerFullscreenRemoteEvidence.localUrl === playerFullscreenRemoteEvidence.menuLocalUrl
         && playerFullscreenRemoteEvidence.localUrl.endsWith("/remote")
         && playerFullscreenRemoteEvidence.interactiveCount === 0,
-      "single-screen fullscreen did not expose the icon-pair QR popup toward the lower left",
+      "single-screen fullscreen did not expose the local-only QR popup toward the lower left",
       playerFullscreenRemoteEvidence,
     );
     const playerFullscreenPublicEvidence = await shellPage.evaluate(async () => {
       const publicUrl = "https://remote.example.test/remote.html#room=review-room&join=fixture-token-long-enough-for-a-realistic-display-check&expires=1790000000";
-      const qrImage = elements.playerFullscreenRemoteQrImage.src;
+      const canvas = document.createElement("canvas");
+      canvas.width = 160;
+      canvas.height = 160;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, 160, 160);
+      context.fillStyle = "#000";
+      for (let row = 0; row < 20; row += 1) {
+        for (let column = 0; column < 20; column += 1) {
+          if (((row * 17) + (column * 11) + (row * column)) % 5 < 2) {
+            context.fillRect(column * 8, row * 8, 8, 8);
+          }
+        }
+      }
+      const qrImage = canvas.toDataURL("image/png");
       document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
         detail: {
           mode: "internet",
@@ -4761,7 +5085,8 @@ async function run() {
           url: publicUrl,
           qr_image: qrImage,
           password: "765432",
-          hint: "09/06 12:00 到期",
+          connected_count: 3,
+          hint: "已创建 · 连接 3",
         },
       }));
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -4770,12 +5095,27 @@ async function run() {
       const publicQr = elements.playerFullscreenPublicQrImage.closest(".remote-qr-wrap")
         .getBoundingClientRect();
       return {
-        publicHidden: elements.playerFullscreenPublicEntry.classList.contains("hidden"),
-        dividerHidden: elements.playerFullscreenPublicDivider.classList.contains("hidden"),
         localQr: { left: localQr.left, width: localQr.width, height: localQr.height },
         publicQr: { left: publicQr.left, width: publicQr.width, height: publicQr.height },
-        password: elements.playerFullscreenInternetPasswordValue.textContent.trim(),
-        expiry: elements.playerFullscreenPublicExpiry.textContent.trim(),
+        cardColumns: getComputedStyle(
+          elements.playerFullscreenRemotePopover.querySelector(".remote-access-card"),
+        ).gridTemplateColumns,
+        publicStatus: elements.playerFullscreenPublicMeta.textContent.trim(),
+        publicConnectionCount: elements.playerFullscreenPublicConnectionCount.textContent.trim(),
+        publicExpiryCount: elements.playerFullscreenRemotePopover.querySelectorAll(
+          "#player-fullscreen-public-expiry",
+        ).length,
+        publicActive: elements.playerFullscreenPublicMeta.classList.contains("is-active"),
+        publicRoomVisible: !elements.playerFullscreenPublicRoom.classList.contains("hidden"),
+        publicQrVisible: !elements.playerFullscreenPublicQrImage.classList.contains("hidden")
+          && elements.playerFullscreenPublicQrImage.naturalWidth > 0,
+        publicQrCount: elements.playerFullscreenRemotePopover.querySelectorAll(
+          "#player-fullscreen-public-qr-image",
+        ).length,
+        publicPassword: elements.playerFullscreenPublicPassword.textContent.trim(),
+        passwordCount: elements.playerFullscreenRemotePopover.querySelectorAll(
+          "#player-fullscreen-internet-password",
+        ).length,
         publicUrlVisible: elements.playerFullscreenRemotePopover.textContent.includes(publicUrl),
         interactiveCount: elements.playerFullscreenRemotePopover.querySelectorAll(
           "button, input, select, textarea, a",
@@ -4783,17 +5123,23 @@ async function run() {
       };
     });
     assert(
-      !playerFullscreenPublicEvidence.publicHidden
-        && !playerFullscreenPublicEvidence.dividerHidden
-        && Math.abs(playerFullscreenPublicEvidence.localQr.left
-          - playerFullscreenPublicEvidence.publicQr.left) <= 1
-        && playerFullscreenPublicEvidence.localQr.width === playerFullscreenPublicEvidence.publicQr.width
-        && playerFullscreenPublicEvidence.localQr.height === playerFullscreenPublicEvidence.publicQr.height
-        && playerFullscreenPublicEvidence.password === "765432"
-        && playerFullscreenPublicEvidence.expiry === "09/06 12:00 到期"
+      playerFullscreenPublicEvidence.publicStatus === "已创建 · 连接 3"
+        && playerFullscreenPublicEvidence.publicConnectionCount === "3"
+        && playerFullscreenPublicEvidence.publicExpiryCount === 0
+        && playerFullscreenPublicEvidence.publicActive
+        && playerFullscreenPublicEvidence.publicRoomVisible
+        && playerFullscreenPublicEvidence.publicQrVisible
+        && playerFullscreenPublicEvidence.publicQrCount === 1
+        && playerFullscreenPublicEvidence.publicQr.width === 160
+        && playerFullscreenPublicEvidence.publicQr.height === 160
+        && playerFullscreenPublicEvidence.publicPassword === "765432"
+        && playerFullscreenPublicEvidence.publicQr.left
+          >= playerFullscreenPublicEvidence.localQr.left + playerFullscreenPublicEvidence.localQr.width
+        && playerFullscreenPublicEvidence.cardColumns.split(" ").length === 2
+        && playerFullscreenPublicEvidence.passwordCount === 0
         && !playerFullscreenPublicEvidence.publicUrlVisible
         && playerFullscreenPublicEvidence.interactiveCount === 0,
-      "fullscreen Remote popover did not add the active public room as a read-only aligned result",
+      "fullscreen Remote popover did not keep the active public room as a compact read-only QR entry",
       playerFullscreenPublicEvidence,
     );
     if (playerFullscreenRemoteScreenshotPath) {
@@ -4804,11 +5150,12 @@ async function run() {
         detail: { mode: "local", active: false },
       }));
       await new Promise((resolve) => requestAnimationFrame(resolve));
-      return elements.playerFullscreenPublicEntry.classList.contains("hidden")
-        && elements.playerFullscreenPublicDivider.classList.contains("hidden");
+      return elements.playerFullscreenPublicMeta.textContent.trim() === "未创建"
+        && !elements.playerFullscreenPublicMeta.classList.contains("is-active")
+        && elements.playerFullscreenPublicRoom.classList.contains("hidden");
     });
     assert(fullscreenPublicRemoved,
-      "fullscreen Remote popover kept a public result after the room became inactive");
+      "fullscreen Remote popover kept an active public status after the room became inactive");
     await shellPage.mouse.move(600, 400);
     await fullscreenAction.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
     await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
@@ -5285,6 +5632,11 @@ async function run() {
       sourceControlGeometry,
       secretDialogGeometry,
       responsiveFrames,
+      adaptiveStageTitle: {
+        wide: wideStageTitleEvidence,
+        overlong: overlongStageTitleEvidence,
+        short: shortStageTitleEvidence,
+      },
       sourceResponsiveEvidence,
       fullscreen: {
         native: nativeFullscreenEvidence,
@@ -5305,6 +5657,8 @@ async function run() {
       narrowInitial,
       narrowQueue,
       narrowHistory,
+      narrowQueueLayoutEvidence,
+      narrowHistoryLayoutEvidence,
       narrowControlEvidence,
       upwardControlEvidence,
       tallInlineControlEvidence,
@@ -5335,10 +5689,15 @@ async function run() {
         dualScreenHostNarrow: presentationHostNarrowScreenshotPath,
         queueNarrow: queueNarrowScreenshotPath,
         historyNarrow: historyNarrowScreenshotPath,
+        queueMinimumMenu: queueMinimumScreenshotPath,
+        historyMinimumMenu: historyMinimumScreenshotPath,
         narrowControls: narrowControlsScreenshotPath,
         narrowControlsTooltip: narrowControlsTooltipScreenshotPath,
         controlsUp: controlsUpScreenshotPath,
         controlsInlineTall: controlsInlineTallScreenshotPath,
+        stageTitleWide: stageTitleWideScreenshotPath,
+        stageTitleLong: stageTitleLongScreenshotPath,
+        stageTitleShort: stageTitleShortScreenshotPath,
         gatchaWide: gatchaWideScreenshotPath,
         gatchaError: gatchaErrorScreenshotPath,
         gatchaPool: gatchaPoolScreenshotPath,
@@ -7111,12 +7470,43 @@ async function run() {
     const remotePopover = page.locator("#remote-mini-popover");
     await remoteControl.hover();
     assert(await remotePopover.isVisible(), "QR hover preview was lost");
+    const remoteHoverPreview = await page.evaluate(() => ({
+      roomControlsVisible: !document.querySelector("#internet-remote-internet-content").classList.contains("hidden")
+        && getComputedStyle(document.querySelector("#internet-remote-internet-content")).display !== "none",
+      closeVisible: getComputedStyle(document.querySelector("#remote-mini-popover-close")).display !== "none",
+      copyVisible: getComputedStyle(document.querySelector("#remote-popover-copy-link")).display !== "none",
+      chevronVisible: getComputedStyle(document.querySelector(".internet-remote-disclosure-chevron")).display !== "none",
+      localVisible: document.querySelector("#internet-remote-local-content").getBoundingClientRect().height > 0,
+      publicSummaryVisible: document.querySelector("#internet-remote-public-row").getBoundingClientRect().height > 0,
+      localOnly: document.querySelector("#remote-mini-popover .remote-access-card")
+        .classList.contains("is-local-only-preview"),
+      cardColumns: getComputedStyle(
+        document.querySelector("#remote-mini-popover .remote-access-card"),
+      ).gridTemplateColumns,
+    }));
+    assert(
+      remoteHoverPreview.localVisible
+        && !remoteHoverPreview.publicSummaryVisible
+        && remoteHoverPreview.localOnly
+        && remoteHoverPreview.cardColumns.split(" ").length === 1
+        && !remoteHoverPreview.roomControlsVisible
+        && !remoteHoverPreview.closeVisible
+        && !remoteHoverPreview.copyVisible
+        && !remoteHoverPreview.chevronVisible,
+      "QR hover preview exposed full-menu controls",
+      remoteHoverPreview,
+    );
     await page.mouse.move(10, 500);
     assert(!await remotePopover.isVisible(), "transient QR preview remained after pointer leave");
     await remoteTrigger.focus();
     assert(await remotePopover.isVisible(), "QR keyboard focus did not expose preview");
     await remoteTrigger.click();
     assert(await remoteTrigger.getAttribute("aria-expanded") === "true", "QR click did not pin the popup");
+    assert(
+      await page.locator("#internet-remote-internet-content").isVisible()
+        && await page.locator("#internet-remote-restart").isVisible(),
+      "pinning the mobile request popup did not expand the complete room menu",
+    );
     await page.mouse.move(10, 500);
     assert(await remotePopover.isVisible(), "pinned QR popup did not survive pointer leave");
     await remoteTrigger.click();
@@ -7158,7 +7548,6 @@ async function run() {
       const room = document.querySelector("#internet-remote-room");
       const url = document.querySelector("#internet-remote-url");
       const status = document.querySelector("#internet-remote-status");
-      disclosure.click();
       const styleRecord = (element) => {
         const style = getComputedStyle(element);
         return {
@@ -7233,6 +7622,11 @@ async function run() {
     await page.evaluate(() => { delete window.__TAURI__; });
     await page.locator("#remote-mini-popover-close").click();
     assert(!await remotePopover.isVisible(), "explicit QR close action did not close the popup");
+    assert(
+      !await page.locator("#internet-remote-internet-content").isVisible()
+        && !await page.locator("#internet-remote-restart").isVisible(),
+      "room controls lingered after the mobile request popup closed",
+    );
     assert(await settingsPanel.isVisible(), "explicit QR close action closed the Settings workspace");
     await remoteTrigger.click();
     await page.keyboard.press("Escape");
@@ -7283,7 +7677,7 @@ async function run() {
         && requestUserNoticeEvidence.border === "0px"
         && Number(requestUserNoticeEvidence.weight) >= 700
         && requestUserNoticeEvidence.align === "left",
-      "Request empty-user notice did not match the borderless Session Users prompt",
+      "Request empty-user prerequisite lost its compact accent-warning treatment",
       requestUserNoticeEvidence,
     );
     assert(
@@ -7458,7 +7852,8 @@ async function run() {
       state.data = { ...(state.data || {}), session_users: ["Toast Tester"] };
       renderRequesterSelect(state.data.session_users);
       elements.requesterSelect.value = "Toast Tester";
-      setLarkSearchMessage(t("request.parsing"));
+      const existingStatus = t("search.larkFound", { count: 5 });
+      setLarkSearchMessage(existingStatus);
       submitAddRequest = async () => { throw new Error("HTTP 412"); };
       try {
         await handleAddByUrl("BV1ToastFailure", "tail", null, "lark");
@@ -7470,6 +7865,7 @@ async function run() {
         toastText: elements.appToast.textContent.trim(),
         toastError: elements.appToast.classList.contains("is-error"),
         inlineText: elements.larkSearchMessage.textContent.trim(),
+        existingStatus,
       };
       state.data = { ...(state.data || {}), session_users: [] };
       renderRequesterSelect([]);
@@ -7479,8 +7875,8 @@ async function run() {
       requestFailureToastEvidence.toastVisible
         && requestFailureToastEvidence.toastText === "HTTP 412"
         && requestFailureToastEvidence.toastError
-        && !requestFailureToastEvidence.inlineText,
-      "request action failure stayed inline instead of using the bottom red toast",
+        && requestFailureToastEvidence.inlineText === requestFailureToastEvidence.existingStatus,
+      "request action failure replaced the search status instead of using the bottom red toast",
       requestFailureToastEvidence,
     );
     await page.evaluate(() => {
@@ -9271,6 +9667,31 @@ async function run() {
       render();
       openPlaybackSheet();
     });
+    const coarseVariantToggle = coarsePage.locator("#audio-variant-bar .audio-variant-toggle");
+    await coarseVariantToggle.tap();
+    await coarsePage.waitForTimeout(80);
+    const coarseVariantPopover = coarsePage.locator("#audio-variant-popover");
+    const coarseVariantOverflow = await coarseVariantPopover.evaluate((popover) => ({
+      scrollableClass: popover.classList.contains("is-scrollable"),
+      overflowY: getComputedStyle(popover).overflowY,
+      clientHeight: popover.clientHeight,
+      scrollHeight: popover.scrollHeight,
+      scrollTop: popover.scrollTop,
+    }));
+    await coarseVariantPopover.hover();
+    await coarsePage.mouse.wheel(0, 120);
+    await coarsePage.waitForTimeout(60);
+    const coarseVariantScrollTop = await coarseVariantPopover.evaluate((popover) => popover.scrollTop);
+    assert(
+      !coarseVariantOverflow.scrollableClass
+        && coarseVariantOverflow.overflowY === "hidden"
+        && coarseVariantOverflow.scrollHeight <= coarseVariantOverflow.clientHeight + 1
+        && coarseVariantOverflow.scrollTop === 0
+        && coarseVariantScrollTop === 0,
+      "one-row Remote part popup exposed a scrollbar or accepted scrolling",
+      { coarseVariantOverflow, coarseVariantScrollTop },
+    );
+    await coarsePage.keyboard.press("Escape");
     const coarseRemoteInfo = coarsePage.locator(
       "#playback-sheet .remote-info-button",
     ).first();
@@ -9742,7 +10163,18 @@ async function run() {
     await outputPage.waitForFunction(() => (
       Boolean(window.__presentationOutputChannel)
     ));
-    await outputPage.evaluate(() => {
+    const presentationPublicQrData = await outputPage.evaluate(async () => {
+      const response = await fetch("/api/internet-remote/qr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: "https://rtc.kevinx96.icu/remote.html#room=presentation-review&join=synthetic-review-token&expires=1790000000",
+        }),
+      });
+      const payload = await response.json();
+      return String(payload?.data?.image || "");
+    });
+    await outputPage.evaluate((publicQrImage) => {
       window.__deliverPresentationMaster({
         protocol: 1,
         type: "master-state",
@@ -9788,9 +10220,16 @@ async function run() {
             local_url: "http://127.0.0.1:8000/remote",
             lan_urls: ["http://192.0.2.44:8000/remote"],
           },
+          internetRemote: {
+            active: true,
+            hint: "Created · 2 connected",
+            connected_count: 2,
+            password: "765432",
+            qr_image: publicQrImage,
+          },
         },
       });
-    });
+    }, presentationPublicQrData);
     await outputPage.waitForFunction(() => (
       document.querySelector(".player-delay-overlay")
     ));
@@ -9833,22 +10272,113 @@ async function run() {
     );
     const outputAction = outputPage.locator("#controller-exit");
     const outputRemotePopover = outputPage.locator("#controller-remote-popover");
+    await outputPage.mouse.move(600, 400);
+    await outputPage.waitForTimeout(220);
+    await outputPage.evaluate(() => {
+      const button = document.querySelector("#controller-exit");
+      const startedAt = performance.now();
+      window.__presentationExitWidthTrace = {
+        samples: [{ elapsed: 0, width: button.getBoundingClientRect().width }],
+        done: false,
+      };
+      const sample = (now) => {
+        window.__presentationExitWidthTrace.samples.push({
+          elapsed: now - startedAt,
+          width: button.getBoundingClientRect().width,
+        });
+        if (now - startedAt < 260) {
+          requestAnimationFrame(sample);
+          return;
+        }
+        window.__presentationExitWidthTrace.done = true;
+      };
+      requestAnimationFrame(sample);
+    });
     await outputAction.hover();
+    await outputPage.waitForFunction(() => window.__presentationExitWidthTrace?.done === true);
+    const presentationExitWidthTrace = await outputPage.evaluate(() => {
+      const samples = window.__presentationExitWidthTrace.samples;
+      const widths = samples.map((sample) => sample.width);
+      return {
+        samples,
+        initial: widths[0],
+        final: widths.at(-1),
+        maximum: Math.max(...widths),
+        target: Number.parseFloat(getComputedStyle(document.querySelector("#controller-output-control"))
+          .getPropertyValue("--presentation-action-expanded-width")),
+        monotonic: widths.every((width, index) => index === 0 || width + 0.75 >= widths[index - 1]),
+      };
+    });
+    assert(
+      presentationExitWidthTrace.final > presentationExitWidthTrace.initial + 8
+        && Math.abs(presentationExitWidthTrace.final - presentationExitWidthTrace.target) <= 1
+        && presentationExitWidthTrace.maximum <= presentationExitWidthTrace.final + 0.75
+        && presentationExitWidthTrace.monotonic,
+      "dual-screen exit action flashed full width before its expansion transition",
+      presentationExitWidthTrace,
+    );
     await outputPage.waitForTimeout(180);
+    await outputPage.waitForFunction(() => (
+      document.querySelector("#controller-internet-remote-qr-image")?.naturalWidth > 0
+    ));
     const outputRemoteEvidence = await outputPage.evaluate(() => {
       const button = document.querySelector("#controller-exit").getBoundingClientRect();
       const popup = document.querySelector("#controller-remote-popover").getBoundingClientRect();
       return {
         visible: getComputedStyle(document.querySelector("#controller-remote-popover")).visibility === "visible",
         button: { left: button.left, top: button.top, right: button.right, bottom: button.bottom },
-        popup: { left: popup.left, top: popup.top, right: popup.right, bottom: popup.bottom },
+        popup: {
+          left: popup.left,
+          top: popup.top,
+          right: popup.right,
+          bottom: popup.bottom,
+          width: popup.width,
+        },
         link: document.querySelector("#controller-remote-url-link").href,
+        localHint: document.querySelector("#controller-remote-url-hint").textContent.trim(),
         phoneWidth: document.querySelector(".presentation-output-phone-icon")
           .getBoundingClientRect().width,
         exitHoverLabel: document.querySelector(".presentation-output-exit-label").textContent.trim(),
         exitHoverLabelOpacity: getComputedStyle(
           document.querySelector(".presentation-output-exit-label"),
         ).opacity,
+        publicMeta: document.querySelector("#controller-internet-remote-meta").textContent.trim(),
+        publicMetaVisualWidth: document.querySelector("#controller-internet-remote-meta")
+          .getBoundingClientRect().width,
+        publicConnectionIndicator: (() => {
+          const node = document.querySelector(".remote-access-public-connection-indicator");
+          const rect = node.getBoundingClientRect();
+          return {
+            width: rect.width,
+            height: rect.height,
+            svgCount: node.querySelectorAll("svg").length,
+            count: node.textContent.trim(),
+          };
+        })(),
+        copyTitleVisible: [...document.querySelectorAll("#controller-remote-popover .remote-access-copy-title")]
+          .some((node) => getComputedStyle(node).display !== "none"),
+        localDetailOrder: [...document.querySelector("#controller-remote-url-link").parentElement.children]
+          .map((node) => node.id || node.className),
+        publicRoomVisible: !document.querySelector("#controller-internet-remote-room").classList.contains("hidden"),
+        publicQrVisible: !document.querySelector("#controller-internet-remote-qr-image").classList.contains("hidden"),
+        publicPassword: document.querySelector("#controller-internet-remote-password").textContent.trim(),
+        localQr: (() => {
+          const rect = document.querySelector("#controller-remote-qr-image")
+            .closest(".remote-access-qr").getBoundingClientRect();
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        })(),
+        publicQr: (() => {
+          const rect = document.querySelector("#controller-internet-remote-qr-image")
+            .closest(".remote-access-qr").getBoundingClientRect();
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        })(),
+        cardColumns: getComputedStyle(document.querySelector(".remote-access-card")).gridTemplateColumns,
+        typography: {
+          entryTitle: getComputedStyle(document.querySelector(".remote-access-title")).fontSize,
+          shareTitle: getComputedStyle(document.querySelector(".remote-access-copy-title")).fontSize,
+          shareMeta: getComputedStyle(document.querySelector(".remote-access-meta")).fontSize,
+          localLink: getComputedStyle(document.querySelector("#controller-remote-url-link")).fontSize,
+        },
       };
     });
     assert(
@@ -9857,10 +10387,38 @@ async function run() {
         && outputRemoteEvidence.popup.right <= outputRemoteEvidence.button.right + 1
         && outputRemoteEvidence.popup.left < outputRemoteEvidence.button.left
         && outputRemoteEvidence.link === "http://192.0.2.44:8000/remote"
+        && outputRemoteEvidence.localHint === "Same network as Host"
         && outputRemoteEvidence.phoneWidth <= 1
         && outputRemoteEvidence.exitHoverLabel === "Exit Fullscreen"
-        && Number(outputRemoteEvidence.exitHoverLabelOpacity) >= 0.99,
+        && Number(outputRemoteEvidence.exitHoverLabelOpacity) >= 0.99
+        && outputRemoteEvidence.publicMeta === "Created · 2 connected"
+        && outputRemoteEvidence.publicMetaVisualWidth <= 1
+        && outputRemoteEvidence.publicConnectionIndicator.width >= 20
+        && outputRemoteEvidence.publicConnectionIndicator.height === 17
+        && outputRemoteEvidence.publicConnectionIndicator.svgCount === 1
+        && outputRemoteEvidence.publicConnectionIndicator.count === "2"
+        && !outputRemoteEvidence.copyTitleVisible
+        && outputRemoteEvidence.localDetailOrder.indexOf("controller-remote-url-link")
+          < outputRemoteEvidence.localDetailOrder.indexOf("controller-remote-url-hint")
+        && outputRemoteEvidence.publicRoomVisible
+        && outputRemoteEvidence.publicQrVisible
+        && outputRemoteEvidence.publicPassword === "765432"
+        && outputRemoteEvidence.publicQr.left
+          >= outputRemoteEvidence.localQr.left + outputRemoteEvidence.localQr.width
+        && Math.abs(outputRemoteEvidence.publicQr.top - outputRemoteEvidence.localQr.top) <= 1
+        && outputRemoteEvidence.cardColumns.split(" ").length === 2
+        && outputRemoteEvidence.publicQr.width === 160
+        && outputRemoteEvidence.publicQr.height === 160,
       "dual-screen output QR popup did not open toward the lower left with the LAN URL",
+      outputRemoteEvidence,
+    );
+    assert(
+      outputRemoteEvidence.popup.width === 390
+        && outputRemoteEvidence.typography.entryTitle === "14px"
+        && outputRemoteEvidence.typography.shareTitle === "14px"
+        && outputRemoteEvidence.typography.shareMeta === "12px"
+        && outputRemoteEvidence.typography.localLink === "12px",
+      "dual-screen Remote popup scale diverged from the main Host Remote popup",
       outputRemoteEvidence,
     );
     if (presentationOutputScreenshotPath) {
@@ -10309,6 +10867,7 @@ async function run() {
         presentationOutput: {
           ...outputLayoutEvidence,
           remoteAction: outputRemoteEvidence,
+          exitWidthTrace: presentationExitWidthTrace,
           deactivateCount: outputDeactivateCount,
           openUrlRequests: outputOpenUrlRequests,
           consoleErrors: outputConsoleErrors,

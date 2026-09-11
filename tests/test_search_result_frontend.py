@@ -474,6 +474,7 @@ const elements = {{
 }};
 function selectedRequesterName() {{ return "tester"; }}
 function setMessageForSource() {{}}
+function setAppMessage() {{}}
 function t(key) {{ return key; }}
 async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
 function applyStateSnapshot() {{}}
@@ -524,6 +525,7 @@ const elements = {{
 function currentBindingSelection() {{ return {{ selectedVideoPage: 1, selectedAudioPages: [2] }}; }}
 function setMessageForSource() {{}}
 function setAppMessage() {{}}
+function setRequestActionMessage() {{}}
 function t(key) {{ return key; }}
 function selectedRequesterName() {{ return "tester"; }}
 async function submitAddRequest() {{ return {{ playlist: [] }}; }}
@@ -579,6 +581,7 @@ const elements = {{
 function currentBindingSelection() {{ return {{ selectedVideoPage: 1, selectedAudioPages: [2] }}; }}
 function setMessageForSource() {{}}
 function setAppMessage() {{}}
+function setRequestActionMessage() {{}}
 function t(key) {{ return key; }}
 function selectedRequesterName() {{ return "tester"; }}
 async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
@@ -662,6 +665,7 @@ function currentBindingSelection() {{
 }}
 function setMessageForSource() {{}}
 function setAppMessage() {{}}
+function setRequestActionMessage() {{}}
 function t(key) {{ return key; }}
 function selectedRequesterName() {{ return "tester"; }}
 async function submitAddRequest(_url, _position, options) {{
@@ -816,6 +820,7 @@ const elements = {{
 function validatedRequesterNameForAdd() {{ return "tester"; }}
 function setMessageForSource() {{}}
 function setAppMessage() {{}}
+function setRequestActionMessage() {{}}
 function t(key) {{ return key; }}
 async function submitAddRequest() {{ return {{ playlist: [] }}; }}
 function render() {{ renderCount += 1; }}
@@ -1006,10 +1011,10 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         for css in (host_css, remote_css):
             self.assertIn("--rating-close-bg: rgba(109, 98, 88, 0.16);", css)
             self.assertIn("--rating-close-hover-bg: rgba(109, 98, 88, 0.28);", css)
-        for selector in (".remote-qr-popover-close", ".binding-sheet-close", ".rating-close"):
+        for selector in (".binding-sheet-close", ".rating-close"):
             self.assertIn(selector, remote_css)
         shared_remote_close_rule = re.search(
-            r"\.remote-qr-popover-close,\s*\.binding-sheet-close,\s*"
+            r"\.binding-sheet-close,\s*"
             r"\.rating-close\s*\{([^}]*)\}",
             remote_css,
         ).group(1)

@@ -100,7 +100,7 @@
                 </div>
                 <p class="remote-popover-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
                 <a id="remote-popover-url-link" class="remote-popover-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
-                <p id="remote-popover-url-hint" class="remote-popover-url-hint" data-i18n="remote.defaultHint">请确保手机和服务端在同一个局域网内。</p>
+                <p id="remote-popover-url-hint" class="remote-popover-url-hint" data-i18n="remote.defaultHint">访问设备需与 Host 在同一网络。</p>
               </div>
             </section>
 
@@ -176,7 +176,7 @@
           </div>
         </div>
         <div class="remote-request-tabs-viewport">
-          <div class="remote-request-tabs" role="tablist" aria-label="点歌视图"
+          <div id="remote-request-primary-tabs" class="remote-request-tabs" role="tablist" aria-label="点歌视图"
             data-i18n-aria-label="request.viewSelector">
             <button type="button" id="remote-request-quick-tab" class="remote-request-tab" role="tab"
               data-remote-request-view="quick" aria-controls="remote-request-quick-panel"
@@ -190,6 +190,11 @@
             <button type="button" id="remote-request-sources-tab" class="remote-request-tab" role="tab"
               data-remote-request-view="sources" aria-controls="remote-request-sources-panel"
               aria-selected="false" tabindex="-1" data-i18n="request.sourcesTab">来源</button>
+          </div>
+          <div id="remote-request-secondary-nav" class="remote-request-secondary-nav hidden" hidden inert>
+            <button type="button" id="remote-request-secondary-back" class="remote-request-secondary-back"
+              data-i18n="common.back">返回</button>
+            <div id="remote-request-secondary-slot" class="remote-request-secondary-slot"></div>
           </div>
         </div>
 
@@ -220,7 +225,7 @@
 
         <section id="remote-request-search-panel" class="remote-request-view" role="tabpanel"
           data-remote-request-panel="search" aria-labelledby="remote-request-search-tab" aria-hidden="true" hidden inert>
-          <div class="remote-search-toolbar">
+          <div id="remote-search-toolbar" class="remote-search-toolbar remote-request-secondary-home">
             <div class="remote-search-mode-tabs" role="tablist" aria-label="搜索范围"
               data-i18n-aria-label="search.modeSelector">
               <button type="button" id="remote-search-shared-tab" class="remote-search-mode-tab" role="tab"
@@ -268,17 +273,19 @@
         <section id="remote-request-discover-panel" class="remote-request-view" role="tabpanel"
           data-remote-request-panel="discover" aria-labelledby="remote-request-discover-tab"
           aria-hidden="true" hidden inert>
-          <div class="remote-discover-mode-tabs" role="tablist" aria-label="发现方式"
-            data-i18n-aria-label="discover.modeSelector">
-            <button type="button" id="remote-discover-categories-tab" class="remote-discover-mode-tab" role="tab"
-              data-remote-discover-mode="categories" aria-controls="remote-discover-categories-panel"
-              aria-selected="true" tabindex="0" data-i18n="discover.categories">类别</button>
-            <button type="button" id="remote-discover-name-tab" class="remote-discover-mode-tab" role="tab"
-              data-remote-discover-mode="name" aria-controls="remote-discover-name-panel"
-              aria-selected="false" tabindex="-1" data-i18n="discover.name">名称</button>
-            <button type="button" id="remote-discover-artist-tab" class="remote-discover-mode-tab" role="tab"
-              data-remote-discover-mode="artist" aria-controls="remote-discover-artist-panel"
-              aria-selected="false" tabindex="-1" data-i18n="discover.artist">歌手</button>
+          <div id="remote-discover-toolbar" class="remote-discover-toolbar remote-request-secondary-home">
+            <div class="remote-discover-mode-tabs" role="tablist" aria-label="发现方式"
+              data-i18n-aria-label="discover.modeSelector">
+              <button type="button" id="remote-discover-categories-tab" class="remote-discover-mode-tab" role="tab"
+                data-remote-discover-mode="categories" aria-controls="remote-discover-categories-panel"
+                aria-selected="true" tabindex="0" data-i18n="discover.categories">类别</button>
+              <button type="button" id="remote-discover-name-tab" class="remote-discover-mode-tab" role="tab"
+                data-remote-discover-mode="name" aria-controls="remote-discover-name-panel"
+                aria-selected="false" tabindex="-1" data-i18n="discover.name">名称</button>
+              <button type="button" id="remote-discover-artist-tab" class="remote-discover-mode-tab" role="tab"
+                data-remote-discover-mode="artist" aria-controls="remote-discover-artist-panel"
+                aria-selected="false" tabindex="-1" data-i18n="discover.artist">歌手</button>
+            </div>
           </div>
           <section id="remote-discover-categories-panel"
             class="remote-discover-mode-panel remote-search-browser-view" role="tabpanel"
@@ -297,14 +304,16 @@
         <section id="remote-request-sources-panel" class="remote-request-view" role="tabpanel"
           data-remote-request-panel="sources" aria-labelledby="remote-request-sources-tab"
           aria-hidden="true" hidden inert>
-          <div class="remote-sources-mode-tabs" role="tablist" aria-label="来源类型"
-            data-i18n-aria-label="sources.modeSelector">
-            <button type="button" id="remote-sources-uids-tab" class="remote-sources-mode-tab" role="tab"
-              data-remote-sources-mode="uids" aria-controls="remote-sources-uids-panel"
-              aria-selected="true" tabindex="0" data-i18n="sources.ownerList">UP 主列表</button>
-            <button type="button" id="remote-sources-favorites-tab" class="remote-sources-mode-tab" role="tab"
-              data-remote-sources-mode="favorites" aria-controls="remote-sources-favorites-panel"
-              aria-selected="false" tabindex="-1" data-i18n="sources.favorites">收藏夹</button>
+          <div id="remote-sources-toolbar" class="remote-sources-toolbar remote-request-secondary-home">
+            <div class="remote-sources-mode-tabs" role="tablist" aria-label="来源类型"
+              data-i18n-aria-label="sources.modeSelector">
+              <button type="button" id="remote-sources-uids-tab" class="remote-sources-mode-tab" role="tab"
+                data-remote-sources-mode="uids" aria-controls="remote-sources-uids-panel"
+                aria-selected="true" tabindex="0" data-i18n="sources.ownerList">UP 主列表</button>
+              <button type="button" id="remote-sources-favorites-tab" class="remote-sources-mode-tab" role="tab"
+                data-remote-sources-mode="favorites" aria-controls="remote-sources-favorites-panel"
+                aria-selected="false" tabindex="-1" data-i18n="sources.favorites">收藏夹</button>
+            </div>
           </div>
 
           <section id="remote-sources-uids-panel"
@@ -321,9 +330,9 @@
                     autocomplete="off"
                   />
                   <button type="submit" id="sources-add-follow-uid-button" class="primary-button" data-i18n="gatcha.add">添加</button>
+                  <button type="button" id="refresh-gatcha-cache-button" class="secondary-button source-refresh-button"
+                    data-i18n="gatcha.refresh">手动更新</button>
                 </form>
-                <button type="button" id="refresh-gatcha-cache-button" class="secondary-button source-refresh-button"
-                  data-i18n="gatcha.refresh">手动更新</button>
               </div>
               <p class="gatcha-message hidden" id="gatcha-uid-message" role="status"></p>
               <div id="sources-follow-grid" class="follow-up-grid"></div>

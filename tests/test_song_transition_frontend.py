@@ -16,7 +16,10 @@ class SongTransitionFrontendTest(unittest.TestCase):
     @classmethod
     def source_slice(cls, start: str, end: str) -> str:
         start_index = cls.source.index(start)
-        return cls.source[start_index : cls.source.index(end, start_index)]
+        end_index = cls.source.index(end, start_index)
+        if end_index <= start_index:
+            raise ValueError(f"Empty source slice: {start!r} to {end!r}")
+        return cls.source[start_index:end_index]
 
     def run_node(self, script: str) -> dict:
         completed = subprocess.run(
@@ -199,7 +202,7 @@ console.log(JSON.stringify({{
         )
         clear_delay = self.source_slice(
             "function clearLocalAdvanceDelay",
-            "async function finishLocalAdvanceDelay",
+            "function teardownMountedPlayer",
         )
         advance_functions = self.source_slice(
             "async function advanceLocalPlayerNow", "async function reorderPlaylist"
@@ -554,7 +557,7 @@ console.log(JSON.stringify({{
             "function hasPendingSongTransitionOverlayForItem",
         )
         clear_delay = self.source_slice(
-            "function clearLocalAdvanceDelay", "async function finishLocalAdvanceDelay"
+            "function clearLocalAdvanceDelay", "function teardownMountedPlayer"
         )
         advance_functions = self.source_slice(
             "async function advanceLocalPlayerNow", "async function reorderPlaylist"
@@ -979,7 +982,7 @@ console.log(JSON.stringify({{ stale, syncs, clears, shouldPlay: state.localShoul
         )
         has_overlay = self.source_slice(
             "function hasLocalAdvanceDelayOverlay",
-            "function startLocalAdvanceDelay",
+            "function clearLocalAdvanceDelay",
         )
         hold = self.source_slice(
             "function shouldHoldCurrentItemForTransition",
@@ -987,7 +990,7 @@ console.log(JSON.stringify({{ stale, syncs, clears, shouldPlay: state.localShoul
         )
         clear_delay = self.source_slice(
             "function clearLocalAdvanceDelay",
-            "async function finishLocalAdvanceDelay",
+            "function teardownMountedPlayer",
         )
         sessions = self.source_slice(
             "function hostPlaybackMountData",
@@ -1360,9 +1363,9 @@ console.log(JSON.stringify({{
             "async function handleSplitAudioEnded",
             "function holdVideoForAudio",
         )
-        overlay_completion = self.source_slice(
-            "async function finishLocalAdvanceDelay",
-            "function setPlayerFrameContent",
+        playback_ended = self.source_slice(
+            "async function handleLocalPlaybackEnded",
+            "async function reorderPlaylist",
         )
         remote_source = (
             Path(__file__).resolve().parents[1] / "static" / "remote.js"
@@ -1375,7 +1378,9 @@ console.log(JSON.stringify({{
         self.assertIn("playback_generation: expectedPlaybackGeneration", advance)
         self.assertIn('apiPostExactStateCommand("/api/player/next", {', advance)
         self.assertIn('handleLocalPlaybackEnded("media-ended", state.hostPlaybackSession)', ended)
-        self.assertIn("advanceLocalPlayerNow({ showTransition: false, session })", overlay_completion)
+        self.assertIn("return advanceLocalPlayerNow({", playback_ended)
+        self.assertIn("isCurrentHostPlaybackSession(session, session.video, session.audio)", playback_ended)
+        self.assertIn("expectedPlaybackGeneration,", playback_ended)
         self.assertIn('requestNextTrack().catch(() => {})', media_session)
         self.assertIn('case "nextTrack"', controller)
         self.assertIn(

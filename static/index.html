@@ -8,6 +8,7 @@
   <link rel="icon" href="/pic/icon.png" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/song-detail.css" />
+  <link rel="stylesheet" href="/remote-access.css" />
 </head>
 
 <body>
@@ -41,13 +42,14 @@
               </span>
             </span>
           </button>
-          <div class="remote-mini-popover" id="remote-mini-popover" role="dialog"
+          <div class="remote-mini-popover remote-access-popover" id="remote-mini-popover" role="dialog"
             data-i18n-aria-label="remote.openInBrowser" aria-label="手机浏览器打开">
-            <div class="remote-card remote-mini-popover-card">
+            <div class="remote-card remote-mini-popover-card remote-access-card">
               <button type="button" class="banner-close remote-mini-popover-close" id="remote-mini-popover-close"
                 data-i18n-aria-label="common.close" aria-label="关闭">×</button>
-              <div class="internet-remote-status-summary cache-contextual-info-region">
-                <strong class="internet-remote-entry-title" id="internet-remote-summary"
+              <section class="remote-access-entry remote-access-entry--local">
+              <div class="internet-remote-status-summary cache-contextual-info-region remote-access-heading">
+                <strong class="internet-remote-entry-title remote-access-title" id="internet-remote-summary"
                   data-i18n="internetRemote.localEntry">本地入口</strong>
                 <span class="cache-advanced-info internet-remote-summary-info">
                   <button type="button" class="cache-advanced-info-button" aria-expanded="false"
@@ -56,36 +58,38 @@
                     <span class="contextual-info-glyph" aria-hidden="true">i</span>
                   </button>
                   <span class="cache-advanced-tooltip" id="internet-remote-mode-description" role="tooltip">
-                    <span data-i18n="internetRemote.localEntryDescription">手机与 Host 在同一局域网时可直接使用本地入口。公网房间运行期间，本地 Remote 仍可同时使用。</span>
+                    <span data-i18n="internetRemote.localEntryDescription">访问设备与 Host 位于同一局域网时可直接使用本地入口。公网房间运行期间，本地 Remote 仍可同时使用。</span>
                     <span id="internet-remote-local-address-detail"></span>
                   </span>
                 </span>
               </div>
-              <div id="internet-remote-local-content" class="internet-remote-share-layout internet-remote-local-content">
-                <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
+              <div id="internet-remote-local-content" class="internet-remote-share-layout internet-remote-local-content remote-access-entry-content">
+                <div class="remote-qr-wrap remote-mini-popover-qr-wrap remote-access-qr">
                   <img id="remote-popover-qr-image" class="remote-qr-image hidden" alt="手机访问二维码"
                     data-i18n-alt="remote.qrAlt" />
-                  <div id="remote-popover-qr-placeholder" class="remote-qr-placeholder" data-i18n="remote.qrLoading">
+                  <div id="remote-popover-qr-placeholder" class="remote-qr-placeholder remote-access-qr-placeholder" data-i18n="remote.qrLoading">
                     正在生成二维码...
                   </div>
                 </div>
-                <div class="internet-remote-share-details">
-                  <p class="internet-remote-share-title" data-i18n="internetRemote.localScanTitle">扫码连接</p>
-                  <p id="remote-popover-url-hint" class="internet-remote-share-meta"
-                    data-i18n="internetRemote.localSameNetwork">手机与电脑需在同一网络</p>
-                  <a id="remote-popover-url-link" class="internet-remote-local-link" href="/remote"></a>
+                <div class="internet-remote-share-details remote-access-details">
+                  <p class="internet-remote-share-title remote-access-copy-title" data-i18n="internetRemote.localScanTitle">扫码连接</p>
+                  <a id="remote-popover-url-link" class="internet-remote-local-link remote-access-link" href="/remote"></a>
+                  <p id="remote-popover-url-hint" class="internet-remote-share-meta remote-access-meta"
+                    data-i18n="internetRemote.localSameNetwork">访问设备需与 Host 在同一网络</p>
                   <div class="internet-remote-share-actions">
                     <button type="button" class="toolbar-button ghost" id="remote-popover-copy-link"
                       data-i18n="internetRemote.copyLink">复制链接</button>
                   </div>
                 </div>
               </div>
+              </section>
               <div class="internet-remote-divider" aria-hidden="true"></div>
-              <div class="internet-remote-public-row cache-contextual-info-region"
+              <section class="remote-access-entry remote-access-entry--public">
+              <div class="internet-remote-public-row cache-contextual-info-region remote-access-heading"
                 id="internet-remote-public-row">
                 <button type="button" class="internet-remote-disclosure" id="internet-remote-disclosure"
                   aria-expanded="false" aria-controls="internet-remote-internet-content">
-                  <span class="internet-remote-entry-title" data-i18n="internetRemote.internetEntry">公网入口</span>
+                  <span class="internet-remote-entry-title remote-access-title" data-i18n="internetRemote.internetEntry">公网入口</span>
                 </button>
                 <span class="cache-advanced-info internet-remote-public-info">
                   <button type="button" class="cache-advanced-info-button" aria-expanded="false"
@@ -98,8 +102,18 @@
                     不在同一网络也能使用。创建房间后，扫码并输入房间密码即可连接。
                   </span>
                 </span>
-                <span class="internet-remote-disclosure-meta" id="internet-remote-public-meta"
-                  data-i18n="internetRemote.notCreated">尚未创建房间</span>
+                <span class="remote-access-public-state">
+                  <span class="internet-remote-disclosure-meta remote-access-status remote-access-public-status"
+                    id="internet-remote-public-meta" data-i18n="internetRemote.notCreated">尚未创建房间</span>
+                  <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                      <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                    </svg>
+                    <span id="internet-remote-public-connection-count">0</span>
+                  </span>
+                </span>
                 <svg class="internet-remote-disclosure-chevron" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="1.8"
                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -116,10 +130,9 @@
                       <button type="button" class="icon-button" id="internet-remote-regenerate"
                         data-i18n-title="internetRemote.regenerate" data-i18n-aria-label="internetRemote.regenerate"
                         title="随机生成新密码" aria-label="随机生成新密码">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                          <path d="M20 11a8 8 0 1 0-2.34 5.66"></path>
-                          <path d="M20 4v7h-7"></path>
+                          <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"></path>
                         </svg>
                       </button>
                     </span>
@@ -152,19 +165,18 @@
                   <button type="button" class="next-button" id="internet-remote-restart"
                     data-i18n="internetRemote.create">创建房间</button>
                 </div>
-                <div class="internet-remote-room internet-remote-share-layout hidden" id="internet-remote-room">
-                  <div class="remote-qr-wrap internet-remote-public-qr-wrap">
+                <div class="internet-remote-room internet-remote-share-layout remote-access-entry-content hidden" id="internet-remote-room">
+                  <div class="remote-qr-wrap internet-remote-public-qr-wrap remote-access-qr">
                     <img id="internet-remote-qr" class="remote-qr-image hidden" alt="公网 Remote 二维码"
                       data-i18n-alt="internetRemote.publicQrAlt">
-                    <div id="internet-remote-qr-placeholder" class="remote-qr-placeholder"
+                    <div id="internet-remote-qr-placeholder" class="remote-qr-placeholder remote-access-qr-placeholder"
                       data-i18n="remote.qrLoading">正在生成二维码...</div>
                   </div>
-                  <div class="internet-remote-share-details">
-                    <p class="internet-remote-share-title" data-i18n="internetRemote.publicScanTitle">
+                  <div class="internet-remote-share-details remote-access-details">
+                    <p class="internet-remote-share-title remote-access-copy-title" data-i18n="internetRemote.publicScanTitle">
                       扫码后输入房间密码
                     </p>
-                    <p class="internet-remote-share-meta" id="internet-remote-expiry"></p>
-                    <p class="internet-remote-current-password hidden" id="internet-remote-current-password">
+                    <p class="internet-remote-current-password remote-access-password hidden" id="internet-remote-current-password">
                       <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
                       <strong id="internet-remote-current-password-value"></strong>
                     </p>
@@ -179,6 +191,10 @@
                 <p class="internet-remote-live-region" id="internet-remote-status" role="status"
                   aria-live="polite"></p>
               </div>
+              </section>
+              <p class="remote-access-expand-hint" data-i18n="internetRemote.openFullMenu">
+                点击展开完整设置
+              </p>
             </div>
           </div>
         </div>
@@ -249,7 +265,12 @@
                   </button>
                   <button type="button" class="icon-button presentation-refresh-button" id="presentation-refresh-button"
                     data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
-                    title="刷新显示器" aria-label="刷新显示器">↻</button>
+                    title="刷新显示器" aria-label="刷新显示器">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"></path>
+                    </svg>
+                  </button>
                 </div>
               </div>
               <div class="presentation-display-list" id="presentation-display-list" aria-live="polite"></div>
@@ -453,7 +474,9 @@
           <div class="panel-head host-peer-head">
             <div class="host-peer-heading">
               <p class="section-tag" data-i18n="player.tag">Now Playing</p>
-              <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
+              <h2 id="current-title">
+                <span id="current-title-text" class="current-title-text" data-i18n="player.noSong">还没有歌曲</span>
+              </h2>
             </div>
             <div class="stage-actions">
               <div class="fullscreen-action-control" id="player-fullscreen-control">
@@ -478,53 +501,62 @@
                     <span class="fullscreen-exit-hover-label" data-i18n="player.fullscreenExit">退出全屏</span>
                   </span>
                 </button>
-                <div class="fullscreen-remote-popover" id="player-fullscreen-remote-popover" role="region"
+                <div class="fullscreen-remote-popover remote-access-popover" id="player-fullscreen-remote-popover" role="region"
                   aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
-                  <div class="remote-card remote-mini-popover-card fullscreen-remote-popover-card">
-                    <section class="fullscreen-remote-entry" id="player-fullscreen-local-entry">
-                      <div class="internet-remote-status-summary">
-                        <strong class="internet-remote-entry-title"
+                  <div class="remote-card remote-mini-popover-card fullscreen-remote-popover-card remote-access-card">
+                    <section class="fullscreen-remote-entry remote-access-entry remote-access-entry--local" id="player-fullscreen-local-entry">
+                      <div class="internet-remote-status-summary remote-access-heading">
+                        <strong class="internet-remote-entry-title remote-access-title"
                           data-i18n="internetRemote.localEntry">本地入口</strong>
                       </div>
-                      <div class="internet-remote-share-layout">
-                        <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
+                      <div class="internet-remote-share-layout remote-access-entry-content">
+                        <div class="remote-qr-wrap remote-mini-popover-qr-wrap remote-access-qr">
                           <img id="player-fullscreen-remote-qr-image" class="remote-qr-image hidden"
                             alt="手机访问二维码" data-i18n-alt="remote.qrAlt" />
-                          <div id="player-fullscreen-remote-qr-placeholder" class="remote-qr-placeholder"
+                          <div id="player-fullscreen-remote-qr-placeholder" class="remote-qr-placeholder remote-access-qr-placeholder"
                             data-i18n="remote.qrLoading">正在生成二维码...</div>
                         </div>
-                        <div class="internet-remote-share-details">
-                          <p class="internet-remote-share-title"
+                        <div class="internet-remote-share-details remote-access-details">
+                          <p class="internet-remote-share-title remote-access-copy-title"
                             data-i18n="internetRemote.localScanTitle">扫码连接</p>
-                          <p id="player-fullscreen-remote-url-hint" class="internet-remote-share-meta">
-                            手机与电脑需在同一网络
+                          <p id="player-fullscreen-remote-url" class="internet-remote-local-link remote-access-link"></p>
+                          <p id="player-fullscreen-remote-url-hint" class="internet-remote-share-meta remote-access-meta">
+                            访问设备需与 Host 在同一网络
                           </p>
-                          <p id="player-fullscreen-remote-url" class="internet-remote-local-link"></p>
                         </div>
                       </div>
                     </section>
-                    <div class="internet-remote-divider hidden" id="player-fullscreen-public-divider"
-                      aria-hidden="true"></div>
-                    <section class="fullscreen-remote-entry hidden" id="player-fullscreen-public-entry">
-                      <div class="internet-remote-status-summary">
-                        <strong class="internet-remote-entry-title"
+                    <div class="internet-remote-divider" aria-hidden="true"></div>
+                    <section class="fullscreen-remote-entry remote-access-entry remote-access-entry--public" id="player-fullscreen-public-entry">
+                      <div class="fullscreen-remote-public-summary remote-access-heading">
+                        <strong class="internet-remote-entry-title remote-access-title"
                           data-i18n="internetRemote.internetEntry">公网入口</strong>
+                        <span class="remote-access-public-state">
+                          <span class="internet-remote-disclosure-meta remote-access-status remote-access-public-status"
+                            id="player-fullscreen-public-meta" data-i18n="internetRemote.notCreated">尚未创建房间</span>
+                          <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                              stroke-linecap="round" stroke-linejoin="round">
+                              <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                              <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                            </svg>
+                            <span id="player-fullscreen-public-connection-count">0</span>
+                          </span>
+                        </span>
                       </div>
-                      <div class="internet-remote-share-layout">
-                        <div class="remote-qr-wrap internet-remote-public-qr-wrap">
+                      <div class="internet-remote-share-layout remote-access-entry-content hidden" id="player-fullscreen-public-room">
+                        <div class="remote-qr-wrap internet-remote-public-qr-wrap remote-access-qr">
                           <img id="player-fullscreen-public-qr-image" class="remote-qr-image hidden"
                             alt="公网 Remote 二维码" data-i18n-alt="internetRemote.publicQrAlt" />
-                          <div id="player-fullscreen-public-qr-placeholder" class="remote-qr-placeholder"
+                          <div id="player-fullscreen-public-qr-placeholder" class="remote-qr-placeholder remote-access-qr-placeholder"
                             data-i18n="remote.qrLoading">正在生成二维码...</div>
                         </div>
-                        <div class="internet-remote-share-details">
-                          <p class="internet-remote-share-title"
+                        <div class="internet-remote-share-details remote-access-details">
+                          <p class="internet-remote-share-title remote-access-copy-title"
                             data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
-                          <p id="player-fullscreen-public-expiry" class="internet-remote-share-meta"></p>
-                          <p id="player-fullscreen-internet-password"
-                            class="internet-remote-current-password hidden">
+                          <p class="internet-remote-current-password remote-access-password">
                             <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
-                            <strong id="player-fullscreen-internet-password-value"></strong>
+                            <strong id="player-fullscreen-public-password"></strong>
                           </p>
                         </div>
                       </div>
@@ -1173,7 +1205,7 @@
                   /remote
                 </a>
                 <p id="remote-url-hint" class="remote-url-hint">
-                  请确保手机和服务端在同一个局域网内。
+                  访问设备需与 Host 在同一网络。
                 </p>
               </div>
             </div>

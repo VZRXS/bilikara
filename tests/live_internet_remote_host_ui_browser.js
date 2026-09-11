@@ -46,9 +46,11 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
   let roomSequence = 0;
 
   const screenshots = {
+    hoverPreview: suffixedPath(screenshotPath, "-internet-remote-hover-preview"),
     localUncreated: suffixedPath(screenshotPath, "-internet-remote-local-uncreated"),
     creating: suffixedPath(screenshotPath, "-internet-remote-creating"),
     active: suffixedPath(screenshotPath, "-internet-remote-active"),
+    activePreview: suffixedPath(screenshotPath, "-internet-remote-active-preview"),
     draft: suffixedPath(screenshotPath, "-internet-remote-draft"),
     unreadyFailure: suffixedPath(screenshotPath, "-internet-remote-unready-failure"),
     narrowDarkJa: suffixedPath(screenshotPath, "-internet-remote-narrow-dark-ja"),
@@ -214,8 +216,50 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
       state.data = { ...(state.data || {}), remote_access: remoteAccess };
       renderRemoteAccess(remoteAccess);
     }, localShareUrl);
+    await page.locator("#remote-mini-control").hover();
+    const hoverPreview = await page.evaluate(() => {
+      const card = document.querySelector("#remote-mini-popover .remote-access-card");
+      const cardRect = card.getBoundingClientRect();
+      const localQr = document.querySelector("#remote-popover-qr-image")
+        .closest(".remote-access-qr").getBoundingClientRect();
+      return {
+        localVisible: document.querySelector("#internet-remote-local-content").getBoundingClientRect().height > 0,
+        publicVisible: document.querySelector("#internet-remote-public-row").getBoundingClientRect().height > 0,
+        controlsVisible: getComputedStyle(document.querySelector("#internet-remote-internet-content")).display !== "none",
+        localOnly: card.classList.contains("is-local-only-preview"),
+        copyTitleVisible: [...document.querySelectorAll("#remote-mini-popover .remote-access-copy-title")]
+          .some((node) => getComputedStyle(node).display !== "none"),
+        cardColumns: getComputedStyle(card).gridTemplateColumns,
+        localColumns: getComputedStyle(document.querySelector("#internet-remote-local-content")).gridTemplateColumns,
+        localQr: {
+          left: localQr.left,
+          top: localQr.top,
+          width: localQr.width,
+          height: localQr.height,
+          offsetLeft: localQr.left - cardRect.left,
+          offsetTop: localQr.top - cardRect.top,
+        },
+      };
+    });
+    assert(
+      hoverPreview.localVisible
+        && !hoverPreview.publicVisible
+        && !hoverPreview.controlsVisible
+        && hoverPreview.localOnly
+        && hoverPreview.copyTitleVisible
+        && hoverPreview.cardColumns.split(" ").length === 1
+        && hoverPreview.localColumns.includes("160px")
+        && hoverPreview.localQr.width === 160
+        && hoverPreview.localQr.height === 160,
+      "uncreated Host hover preview retained an empty public column or changed local QR geometry",
+      hoverPreview,
+    );
+    await screenshot("hoverPreview");
     await page.locator("#remote-mini-trigger").click();
-    await page.locator("#internet-remote-public-row").click();
+    assert(
+      await page.locator("#internet-remote-internet-content").isVisible(),
+      "Host click did not expand the full public-room menu",
+    );
     const intervalBaseline = await page.evaluate(() => window.__internetRemoteIntervalCount);
     const uncreated = await page.evaluate(() => {
       const room = document.querySelector("#internet-remote-room");
@@ -225,6 +269,10 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
       const link = document.querySelector("#remote-popover-url-link");
       const roomStyle = getComputedStyle(room);
       const statusRect = status.getBoundingClientRect();
+      const card = document.querySelector("#remote-mini-popover .remote-access-card");
+      const cardRect = card.getBoundingClientRect();
+      const localQr = document.querySelector("#remote-popover-qr-image")
+        .closest(".remote-access-qr").getBoundingClientRect();
       return {
         roomHidden: room.classList.contains("hidden"),
         roomDisplay: roomStyle.display,
@@ -236,6 +284,15 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
         localLinkDisplay: getComputedStyle(link).display,
         localTarget: link.getAttribute("href"),
         localQrVisible: !document.querySelector("#remote-popover-qr-image").classList.contains("hidden"),
+        managementLayout: card.classList.contains("is-management-layout"),
+        localQr: {
+          left: localQr.left,
+          top: localQr.top,
+          width: localQr.width,
+          height: localQr.height,
+          offsetLeft: localQr.left - cardRect.left,
+          offsetTop: localQr.top - cardRect.top,
+        },
       };
     });
     assert(
@@ -248,7 +305,14 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
         && uncreated.localLinkText === localShareUrl
         && uncreated.localLinkDisplay !== "none"
         && uncreated.localTarget === localShareUrl
-        && uncreated.localQrVisible,
+        && uncreated.localQrVisible
+        && uncreated.managementLayout
+        && Math.abs(uncreated.localQr.left - hoverPreview.localQr.left) <= 1
+        && Math.abs(uncreated.localQr.top - hoverPreview.localQr.top) <= 1
+        && Math.abs(uncreated.localQr.offsetLeft - hoverPreview.localQr.offsetLeft) <= 1
+        && Math.abs(uncreated.localQr.offsetTop - hoverPreview.localQr.offsetTop) <= 1
+        && uncreated.localQr.width === hoverPreview.localQr.width
+        && uncreated.localQr.height === hoverPreview.localQr.height,
       "uncreated public room reserved result space or hid the Local access URL",
       uncreated,
     );
@@ -278,6 +342,8 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
     await page.waitForFunction(() => document.querySelector("#app-toast")?.classList.contains("hidden"));
 
     const active = await page.evaluate(() => {
+      const card = document.querySelector("#remote-mini-popover .remote-access-card")
+        .getBoundingClientRect();
       const localQr = document.querySelector("#remote-popover-qr-image").parentElement.getBoundingClientRect();
       const publicQr = document.querySelector("#internet-remote-qr").parentElement.getBoundingClientRect();
       const localQrWrap = document.querySelector("#remote-popover-qr-image").parentElement.getBoundingClientRect();
@@ -285,7 +351,14 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
       const publicLink = document.querySelector("#internet-remote-url");
       const localLink = document.querySelector("#remote-popover-url-link");
       return {
-        localQr: { left: localQr.left, width: localQr.width, height: localQr.height },
+        localQr: {
+          left: localQr.left,
+          top: localQr.top,
+          width: localQr.width,
+          height: localQr.height,
+          offsetLeft: localQr.left - card.left,
+          offsetTop: localQr.top - card.top,
+        },
         publicQr: { left: publicQr.left, width: publicQr.width, height: publicQr.height },
         localQrWrap: { left: localQrWrap.left, width: localQrWrap.width, height: localQrWrap.height },
         publicQrWrap: { left: publicQrWrap.left, width: publicQrWrap.width, height: publicQrWrap.height },
@@ -293,9 +366,15 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
         publicText: publicLink.textContent,
         publicDisplay: getComputedStyle(publicLink).display,
         localUrl: localLink.getAttribute("href"),
-        expiry: document.querySelector("#internet-remote-expiry").textContent.trim(),
+        expiryCount: document.querySelectorAll("#internet-remote-expiry").length,
         resultHidden: document.querySelector("#internet-remote-room").classList.contains("hidden"),
         statusText: document.querySelector("#internet-remote-public-meta").textContent.trim(),
+        statusVisualWidth: document.querySelector("#internet-remote-public-meta").getBoundingClientRect().width,
+        connectionIndicatorDisplay: getComputedStyle(
+          document.querySelector(".remote-access-public-connection-indicator"),
+        ).display,
+        connectionCount: document.querySelector("#internet-remote-public-connection-count").textContent.trim(),
+        copyTitleDisplay: getComputedStyle(document.querySelector(".remote-access-copy-title")).display,
         statusLiveRegionHeight: document.querySelector("#internet-remote-status").getBoundingClientRect().height,
       };
     });
@@ -306,9 +385,15 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
         && active.publicUrl.startsWith("https://rtc.kevinx96.icu/remote.html#room=")
         && active.publicUrl.includes("&join=")
         && active.publicUrl.includes("&expires=")
-        && active.expiry.length > 0
+        && active.expiryCount === 0
         && active.statusText.includes("连接 0")
+        && active.statusVisualWidth > 1
+        && active.connectionIndicatorDisplay === "none"
+        && active.connectionCount === "0"
+        && active.copyTitleDisplay !== "none"
         && active.statusLiveRegionHeight <= 1
+        && Math.abs(active.localQr.offsetLeft - hoverPreview.localQr.offsetLeft) <= 1
+        && Math.abs(active.localQr.offsetTop - hoverPreview.localQr.offsetTop) <= 1
         && Math.abs(active.localQrWrap.left - active.publicQrWrap.left) <= 1
         && active.localQrWrap.width === 160
         && active.publicQrWrap.width === 160
@@ -323,6 +408,157 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
     if (screenshots.publicQr) {
       await page.locator("#internet-remote-qr").screenshot({ path: screenshots.publicQr });
     }
+    const contextualInfoHitEvidence = {};
+    for (const [name, rowTarget, infoButton, tooltip] of [
+      ["local", "#internet-remote-summary", ".internet-remote-summary-info .cache-advanced-info-button", "#internet-remote-mode-description"],
+      ["public", "#internet-remote-disclosure", ".internet-remote-public-info .cache-advanced-info-button", "#internet-remote-public-description"],
+    ]) {
+      await page.locator(rowTarget).hover();
+      await page.waitForTimeout(220);
+      const rowOpenedTooltip = await page.locator(tooltip).evaluate((node) => (
+        getComputedStyle(node).visibility === "visible"
+      ));
+      await page.locator(infoButton).hover();
+      await page.waitForTimeout(220);
+      const buttonOpenedTooltip = await page.locator(tooltip).evaluate((node) => (
+        getComputedStyle(node).visibility === "visible"
+      ));
+      const buttonBounds = await page.locator(infoButton).evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      });
+      contextualInfoHitEvidence[name] = { rowOpenedTooltip, buttonOpenedTooltip, buttonBounds };
+      await page.mouse.move(600, 700);
+      await page.waitForTimeout(240);
+    }
+    assert(
+      Object.values(contextualInfoHitEvidence).every((entry) => (
+        !entry.rowOpenedTooltip
+          && entry.buttonOpenedTooltip
+          && entry.buttonBounds.width === 32
+          && entry.buttonBounds.height === 32
+      )),
+      "Local/Public contextual help still used the complete entry row as its hover target",
+      contextualInfoHitEvidence,
+    );
+    await page.evaluate(() => setRemoteQrPinned(false));
+    await page.locator("#remote-mini-control").hover();
+    await page.waitForTimeout(80);
+    const activePreview = await page.evaluate(() => {
+      const cardNode = document.querySelector("#remote-mini-popover .remote-mini-popover-card");
+      const card = cardNode.getBoundingClientRect();
+      const cardStyle = getComputedStyle(cardNode);
+      const local = document.querySelector("#internet-remote-local-content").getBoundingClientRect();
+      const publicRoom = document.querySelector("#internet-remote-room").getBoundingClientRect();
+      const localQr = document.querySelector("#remote-popover-qr-image").parentElement.getBoundingClientRect();
+      const publicQr = document.querySelector("#internet-remote-qr").parentElement.getBoundingClientRect();
+      return {
+        card: { left: card.left, right: card.right, top: card.top, bottom: card.bottom },
+        local: { left: local.left, right: local.right, top: local.top, bottom: local.bottom },
+        publicRoom: {
+          left: publicRoom.left,
+          right: publicRoom.right,
+          top: publicRoom.top,
+          bottom: publicRoom.bottom,
+        },
+        localQr: {
+          left: localQr.left,
+          right: localQr.right,
+          top: localQr.top,
+          width: localQr.width,
+          height: localQr.height,
+          offsetLeft: localQr.left - card.left,
+          offsetTop: localQr.top - card.top,
+        },
+        localQrImage: (() => {
+          const rect = document.querySelector("#remote-popover-qr-image").getBoundingClientRect();
+          return { left: rect.left, right: rect.right, width: rect.width };
+        })(),
+        publicQr: {
+          left: publicQr.left,
+          right: publicQr.right,
+          top: publicQr.top,
+          width: publicQr.width,
+          height: publicQr.height,
+        },
+        publicQrImage: (() => {
+          const rect = document.querySelector("#internet-remote-qr").getBoundingClientRect();
+          return { left: rect.left, right: rect.right, width: rect.width };
+        })(),
+        publicQrVisible: !document.querySelector("#internet-remote-qr").classList.contains("hidden"),
+        passwordVisible: !document.querySelector("#internet-remote-current-password").classList.contains("hidden"),
+        password: document.querySelector("#internet-remote-current-password-value").textContent.trim(),
+        publishedPassword: window.__internetRemoteDisplays.at(-1).password,
+        publishedConnectedCount: window.__internetRemoteDisplays.at(-1).connected_count,
+        configVisible: getComputedStyle(document.querySelector(".internet-remote-config-row")).display !== "none",
+        actionsVisible: getComputedStyle(document.querySelector(".internet-remote-actions")).display !== "none",
+        copyVisible: document.querySelector("#internet-remote-copy-link").getBoundingClientRect().height > 0,
+        copyTitleVisible: [...document.querySelectorAll("#remote-mini-popover .remote-access-copy-title")]
+          .some((node) => getComputedStyle(node).display !== "none"),
+        expandHint: document.querySelector(".remote-access-expand-hint").textContent.trim(),
+        expandHintVisible: document.querySelector(".remote-access-expand-hint").getBoundingClientRect().height > 0,
+        publicStatusVisualWidth: document.querySelector("#internet-remote-public-meta").getBoundingClientRect().width,
+        publicConnectionIndicator: (() => {
+          const node = document.querySelector(".remote-access-public-connection-indicator");
+          const rect = node.getBoundingClientRect();
+          return {
+            display: getComputedStyle(node).display,
+            width: rect.width,
+            height: rect.height,
+            svgCount: node.querySelectorAll("svg").length,
+            count: node.textContent.trim(),
+          };
+        })(),
+        localDetailOrder: [...document.querySelector("#internet-remote-local-content .remote-access-details").children]
+          .map((node) => node.id || node.className),
+        horizontalOverflow: document.querySelector("#remote-mini-popover .remote-mini-popover-card").scrollWidth
+          > document.querySelector("#remote-mini-popover .remote-mini-popover-card").clientWidth,
+        horizontalStudy: {
+          currentWidth: card.width,
+          columns: cardStyle.gridTemplateColumns,
+          inlinePadding: Number.parseFloat(cardStyle.paddingLeft)
+            + Number.parseFloat(cardStyle.paddingRight),
+          qrGap: publicQr.left - localQr.right,
+        },
+      };
+    });
+    assert(
+      Math.abs(activePreview.local.top - activePreview.publicRoom.top) <= 1
+        && activePreview.local.right < activePreview.publicRoom.left
+        && activePreview.localQr.right < activePreview.publicQr.left
+        && Math.abs(activePreview.localQr.top - activePreview.publicQr.top) <= 1
+        && activePreview.localQr.width === 160
+        && activePreview.localQr.height === 160
+        && activePreview.publicQr.width === 160
+        && activePreview.publicQr.height === 160
+        && Math.abs(activePreview.localQr.offsetLeft - hoverPreview.localQr.offsetLeft) <= 1
+        && Math.abs(activePreview.localQr.offsetTop - hoverPreview.localQr.offsetTop) <= 1
+        && Math.abs(activePreview.localQrImage.width - 154) <= 1
+        && Math.abs(activePreview.publicQrImage.width - activePreview.localQrImage.width) <= 1
+        && activePreview.publicQrVisible
+        && activePreview.passwordVisible
+        && activePreview.password === activePreview.publishedPassword
+        && activePreview.publishedConnectedCount === 0
+        && !activePreview.configVisible
+        && !activePreview.actionsVisible
+        && !activePreview.copyVisible
+        && !activePreview.copyTitleVisible
+        && activePreview.expandHintVisible
+        && activePreview.expandHint.length > 0
+        && activePreview.publicStatusVisualWidth <= 1
+        && ["flex", "inline-flex"].includes(activePreview.publicConnectionIndicator.display)
+        && activePreview.publicConnectionIndicator.width >= 20
+        && activePreview.publicConnectionIndicator.height === 17
+        && activePreview.publicConnectionIndicator.svgCount === 1
+        && activePreview.publicConnectionIndicator.count === "0"
+        && activePreview.localDetailOrder.indexOf("remote-popover-url-link")
+          < activePreview.localDetailOrder.indexOf("remote-popover-url-hint")
+        && !activePreview.horizontalOverflow,
+      "active hover preview did not place Local/Public QR entries side by side without management controls",
+      activePreview,
+    );
+    await screenshot("activePreview");
+    await page.evaluate(() => setRemoteQrPinned(true));
     await page.locator("#remote-popover-copy-link").click();
     await page.locator("#internet-remote-copy-link").click();
     await page.locator("#remote-popover-url-link").click();
@@ -345,7 +581,6 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
     await page.locator("#internet-remote-duration").fill("6");
     const draft = await page.evaluate(() => ({
       resultUrl: document.querySelector("#internet-remote-url").getAttribute("href"),
-      expiry: document.querySelector("#internet-remote-expiry").textContent.trim(),
       passwordVisible: !document.querySelector("#internet-remote-current-password").classList.contains("hidden"),
       actualPassword: document.querySelector("#internet-remote-current-password-value").textContent,
       button: document.querySelector("#internet-remote-restart").textContent.trim(),
@@ -609,6 +844,15 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
           restartColor: getComputedStyle(restart).color,
           restartDisabled: restart.disabled,
           successColor: getComputedStyle(document.querySelector("#internet-remote-public-meta")).color,
+          entryTitleFontSize: getComputedStyle(
+            document.querySelector("#remote-mini-popover .internet-remote-entry-title"),
+          ).fontSize,
+          shareTitleFontSize: getComputedStyle(
+            document.querySelector("#remote-mini-popover .internet-remote-share-title"),
+          ).fontSize,
+          shareMetaFontSize: getComputedStyle(
+            document.querySelector("#remote-mini-popover .internet-remote-share-meta"),
+          ).fontSize,
           clippedActionLabels: [...publicActions.querySelectorAll("button")].filter((button) => (
             button.scrollWidth > button.clientWidth
           )).map((button) => button.textContent.trim()),
@@ -634,9 +878,11 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
           successColor: "rgb(0, 255, 163)",
         },
       }[variant.theme];
+      const sharedRemoteAlpha = evidence.popupSurfaces.mobileRemote.alpha;
       assert(
-        evidence.backgroundAlpha === 1
-          && Object.values(evidence.popupSurfaces).every((surface) => surface.alpha === 1)
+        evidence.backgroundAlpha === sharedRemoteAlpha
+          && evidence.popupSurfaces.fullscreenRemote.alpha === sharedRemoteAlpha
+          && sharedRemoteAlpha >= 0.7
           && evidence.restartBackground === expectedThemeColors.restartBackground
           && evidence.restartColor === expectedThemeColors.restartColor
           && evidence.successColor === expectedThemeColors.successColor
@@ -646,7 +892,10 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
           && evidence.clippedActionLabels.length === 0
           && evidence.localLinkVisible
           && evidence.localLinkText === localShareUrl
-          && evidence.openButtonCount === 0,
+          && evidence.openButtonCount === 0
+          && evidence.entryTitleFontSize === "14px"
+          && evidence.shareTitleFontSize === "14px"
+          && evidence.shareMetaFontSize === "12px",
         "theme or translated Internet access controls overflowed the popup",
         evidence,
       );
@@ -670,9 +919,12 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
     assert(unexpectedConsoleErrors.length === 0, "Internet Remote fixture page logged console errors", unexpectedConsoleErrors);
     return {
       passed: true,
+      hoverPreview,
       uncreated,
       pending,
       active,
+      activePreview,
+      contextualInfoHitEvidence,
       draft,
       rebuilt,
       failedRebuild,

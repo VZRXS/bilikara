@@ -39,10 +39,17 @@
     outputControl: document.getElementById("controller-output-control"),
     exit: document.getElementById("controller-exit"),
     remotePopover: document.getElementById("controller-remote-popover"),
+    remoteAccessCard: document.querySelector("#controller-remote-popover .remote-access-card"),
     remoteQrImage: document.getElementById("controller-remote-qr-image"),
     remoteQrPlaceholder: document.getElementById("controller-remote-qr-placeholder"),
     remoteUrlLink: document.getElementById("controller-remote-url-link"),
     remoteUrlHint: document.getElementById("controller-remote-url-hint"),
+    internetRemoteMeta: document.getElementById("controller-internet-remote-meta"),
+    internetRemoteConnectionCount: document.getElementById("controller-internet-remote-connection-count"),
+    internetRemoteRoom: document.getElementById("controller-internet-remote-room"),
+    internetRemoteQrImage: document.getElementById("controller-internet-remote-qr-image"),
+    internetRemoteQrPlaceholder: document.getElementById("controller-internet-remote-qr-placeholder"),
+    internetRemotePassword: document.getElementById("controller-internet-remote-password"),
     error: document.getElementById("controller-error"),
     unavailable: document.getElementById("controller-unavailable"),
   };
@@ -83,6 +90,36 @@
       const translated = state.translations[element.dataset.i18nAlt];
       if (translated) element.setAttribute("alt", translated);
     });
+    syncExitExpandedWidth();
+  }
+
+  function syncExitExpandedWidth() {
+    const button = elements.exit;
+    const label = button?.querySelector(".presentation-output-exit-label");
+    const exitIcon = button?.querySelector(".presentation-output-exit-icon");
+    if (!button || !label || !exitIcon) return;
+    const buttonStyle = getComputedStyle(button);
+    const iconStyle = getComputedStyle(exitIcon);
+    const controlStyle = getComputedStyle(elements.outputControl);
+    const number = (value) => Number.parseFloat(value) || 0;
+    const labelWidth = Math.max(label.scrollWidth, label.getBoundingClientRect().width);
+    const expandedWidth = Math.ceil(
+      number(buttonStyle.paddingLeft)
+        + number(buttonStyle.paddingRight)
+        + number(buttonStyle.borderLeftWidth)
+        + number(buttonStyle.borderRightWidth)
+        + number(iconStyle.width)
+        + number(controlStyle.getPropertyValue("--presentation-action-label-gap"))
+        + labelWidth,
+    );
+    elements.outputControl.style.setProperty(
+      "--presentation-action-expanded-width",
+      `${Math.max(112, expandedWidth)}px`,
+    );
+    elements.outputControl.style.setProperty(
+      "--presentation-action-label-width",
+      `${Math.ceil(labelWidth)}px`,
+    );
   }
 
   async function loadTranslations() {
@@ -130,6 +167,51 @@
       elements.remoteQrPlaceholder.classList.remove("hidden");
     };
     elements.remoteQrImage.src = qrUrl;
+  }
+
+  function renderInternetRemote(candidate) {
+    const active = Boolean(candidate?.active);
+    elements.remoteAccessCard.classList.toggle("is-local-only-preview", !active);
+    const connectedCount = active
+      ? Math.max(0, Math.trunc(Number(candidate?.connected_count) || 0))
+      : 0;
+    elements.internetRemoteMeta.textContent = active
+      ? t("internetRemote.createdStatus").replace("{count}", String(connectedCount))
+      : t("internetRemote.notCreated");
+    elements.internetRemoteMeta.classList.toggle("is-active", active);
+    elements.internetRemoteConnectionCount.textContent = String(connectedCount);
+    elements.internetRemoteRoom.classList.toggle("hidden", !active);
+    elements.internetRemotePassword.textContent = active
+      ? String(candidate?.password || "").slice(0, 32)
+      : "";
+    const qrImage = active && String(candidate?.qr_image || "").startsWith("data:image/png;base64,")
+      ? String(candidate.qr_image)
+      : "";
+    if (elements.internetRemoteQrImage.__bilikaraQrImage === qrImage) return;
+    elements.internetRemoteQrImage.__bilikaraQrImage = qrImage;
+    elements.internetRemoteQrImage.classList.add("hidden");
+    if (!qrImage) {
+      elements.internetRemoteQrImage.removeAttribute("src");
+      elements.internetRemoteQrPlaceholder.textContent = active
+        ? t("remote.qrImageFailed")
+        : t("internetRemote.notCreated");
+      elements.internetRemoteQrPlaceholder.classList.toggle("hidden", !active);
+      return;
+    }
+    elements.internetRemoteQrPlaceholder.textContent = t("remote.qrLoading");
+    elements.internetRemoteQrPlaceholder.classList.remove("hidden");
+    elements.internetRemoteQrImage.onload = () => {
+      if (elements.internetRemoteQrImage.__bilikaraQrImage !== qrImage) return;
+      elements.internetRemoteQrImage.classList.remove("hidden");
+      elements.internetRemoteQrPlaceholder.classList.add("hidden");
+    };
+    elements.internetRemoteQrImage.onerror = () => {
+      if (elements.internetRemoteQrImage.__bilikaraQrImage !== qrImage) return;
+      elements.internetRemoteQrImage.classList.add("hidden");
+      elements.internetRemoteQrPlaceholder.textContent = t("remote.qrImageFailed");
+      elements.internetRemoteQrPlaceholder.classList.remove("hidden");
+    };
+    elements.internetRemoteQrImage.src = qrImage;
   }
 
   function setRemoteQrPinned(pinned) {
@@ -362,6 +444,7 @@
     state.lastMasterEnvelope = candidate;
     applyLanguage(candidate.payload?.language);
     renderRemoteAccess(candidate.payload?.remoteAccess);
+    renderInternetRemote(candidate.payload?.internetRemote);
     const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
     const nextClock = sync.normalizeClock(candidate.payload?.clock);
     if (!nextScene || nextScene.generation !== state.session?.generation) return;

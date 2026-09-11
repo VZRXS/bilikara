@@ -30,6 +30,7 @@ class ControllerFrontendTest(unittest.TestCase):
         static = ROOT / "static"
         cls.html = (static / "controller.html").read_text(encoding="utf-8")
         cls.css = (static / "controller.css").read_text(encoding="utf-8")
+        cls.shared_css = (static / "remote-access.css").read_text(encoding="utf-8")
         cls.source = (static / "controller.js").read_text(encoding="utf-8")
 
     def test_output_window_is_a_stage_not_a_second_control_console(self):
@@ -56,10 +57,19 @@ class ControllerFrontendTest(unittest.TestCase):
                 "controller-remote-popover",
                 "controller-remote-qr-image",
                 "controller-remote-url-link",
+                "controller-internet-remote-meta",
+                "controller-internet-remote-connection-count",
+                "controller-internet-remote-room",
+                "controller-internet-remote-qr-image",
+                "controller-internet-remote-qr-placeholder",
+                "controller-internet-remote-password",
                 "controller-error",
                 "controller-unavailable",
             }.issubset(parser.ids)
         )
+        self.assertIn("candidate?.qr_image", self.source)
+        self.assertIn("candidate?.password", self.source)
+        self.assertIn("__bilikaraQrImage", self.source)
         for rejected_id in (
             "controller-play-toggle",
             "controller-back-15",
@@ -94,6 +104,8 @@ class ControllerFrontendTest(unittest.TestCase):
         self.assertIn("activationUsesTouch(event)", self.source)
         self.assertIn("setRemoteQrPinned(true)", self.source)
         self.assertIn("candidate.payload?.remoteAccess", self.source)
+        self.assertIn("candidate.payload?.internetRemote", self.source)
+        self.assertIn("function renderInternetRemote", self.source)
         self.assertIn("applyLanguage(candidate.payload?.language)", self.source)
         self.assertIn('fetch("/api/app/open-url"', self.source)
         self.assertIn("position: fixed", self.css)
@@ -111,6 +123,26 @@ class ControllerFrontendTest(unittest.TestCase):
         )
         self.assertIn(".presentation-output-exit-label", self.css)
         self.assertIn("cubic-bezier(0.16, 1, 0.3, 1)", self.css)
+        self.assertIn('href="/remote-access.css"', self.html)
+        self.assertIn("width: min(390px, calc(100vw - 32px))", self.shared_css)
+        self.assertIn(".remote-access-card", self.shared_css)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", self.shared_css)
+        self.assertIn("font-size: 12px", self.shared_css)
+        self.assertNotIn("remote-access-public-state-icon", self.html)
+        self.assertIn(
+            'class="remote-access-public-connection-indicator"',
+            self.html,
+        )
+        self.assertIn("candidate?.connected_count", self.source)
+        local_details = self.html[
+            self.html.index('id="controller-remote-url-link"')
+            - 200 : self.html.index('id="controller-internet-remote-meta"')
+        ]
+        self.assertLess(
+            local_details.index('id="controller-remote-url-link"'),
+            local_details.index('id="controller-remote-url-hint"'),
+        )
+        self.assertNotIn("presentation-remote-meta-font-size", self.css)
 
     def test_output_fails_closed_without_tauri_or_sync_contract(self):
         self.assertIn('typeof invoke !== "function"', self.source)

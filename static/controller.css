@@ -74,6 +74,10 @@ body.is-cursor-hidden * {
 }
 
 .presentation-output-control {
+  --presentation-action-collapsed-width: 84px;
+  --presentation-action-expanded-width: 112px;
+  --presentation-action-label-width: 110px;
+  --presentation-action-label-gap: 8px;
   position: fixed;
   top: 16px;
   right: 16px;
@@ -84,9 +88,9 @@ body.is-cursor-hidden * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  min-width: 84px;
-  max-width: 84px;
+  width: var(--presentation-action-collapsed-width);
+  min-width: var(--presentation-action-collapsed-width);
+  max-width: none;
   min-height: 42px;
   padding: 0 12px;
   overflow: hidden;
@@ -100,7 +104,7 @@ body.is-cursor-hidden * {
   font-weight: 700;
   cursor: pointer;
   transition:
-    max-width 170ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 170ms cubic-bezier(0.16, 1, 0.3, 1),
     color 120ms ease-out,
     background 120ms ease-out,
     border-color 120ms ease-out;
@@ -149,7 +153,7 @@ body.is-cursor-hidden * {
 }
 
 .presentation-output-exit:hover:not(:disabled) {
-  max-width: 180px;
+  width: var(--presentation-action-expanded-width);
   color: var(--ink);
   background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
   border-color: color-mix(in srgb, var(--accent) 42%, transparent);
@@ -169,7 +173,6 @@ body.is-cursor-hidden * {
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
-  width: min(360px, calc(100vw - 32px));
   visibility: hidden;
   opacity: 0;
   transform: translateY(-5px);
@@ -186,70 +189,6 @@ body.is-cursor-hidden * {
   transform: translateY(0);
   transition-delay: 0s;
   pointer-events: auto;
-}
-
-.presentation-output-remote-card {
-  display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  border: var(--settings-panel-border);
-  border-radius: 20px;
-  color: var(--ink);
-  background: var(--settings-panel-bg);
-  box-shadow: var(--shadow);
-  user-select: text;
-}
-
-.presentation-output-qr-wrap {
-  width: 160px;
-  height: 160px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  background: #fff;
-}
-
-.presentation-output-qr-image {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.presentation-output-qr-placeholder {
-  padding: 12px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
-  text-align: center;
-}
-
-.presentation-output-remote-copy {
-  min-width: 0;
-  text-align: left;
-}
-
-.presentation-output-remote-copy p {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.presentation-output-remote-copy a {
-  display: block;
-  overflow-wrap: anywhere;
-  color: var(--accent-deep);
-  font-size: 16px;
-  line-height: 1.45;
-}
-
-.presentation-output-remote-copy small {
-  display: block;
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -275,8 +214,8 @@ body.is-cursor-hidden * {
   }
 
   .presentation-output-control:hover .presentation-output-exit-label {
-    max-width: 110px;
-    margin-left: 8px;
+    max-width: var(--presentation-action-label-width);
+    margin-left: var(--presentation-action-label-gap);
     opacity: 1;
     transform: translateX(0);
   }
@@ -305,32 +244,16 @@ body.is-cursor-hidden * {
 
 @media (max-width: 560px) {
   .presentation-output-control {
+    --presentation-action-collapsed-width: 80px;
     top: 10px;
     right: 10px;
   }
 
   .presentation-output-exit {
-    min-width: 80px;
-    max-width: 80px;
     min-height: 38px;
     padding: 0 10px;
   }
 
-  .presentation-output-remote-popover {
-    width: min(340px, calc(100vw - 20px));
-  }
-}
-
-@media (max-width: 350px) {
-  .presentation-output-remote-card {
-    grid-template-columns: minmax(0, 1fr);
-    justify-items: center;
-  }
-
-  .presentation-output-remote-copy {
-    width: 100%;
-    text-align: center;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -107,7 +107,8 @@ class AvDelayFrontendTest(unittest.TestCase):
     def test_contextual_info_styles_cover_fine_and_coarse_pointers(self):
         self.assertIn("@media (hover: hover) and (pointer: fine)", self.host_css)
         self.assertIn("@media (hover: none), (pointer: coarse)", self.host_css)
-        self.assertIn(".cache-contextual-info-region:hover .cache-advanced-info-button", self.host_css)
+        self.assertIn(".cache-advanced-info:hover .cache-advanced-info-button", self.host_css)
+        self.assertNotIn(".cache-contextual-info-region:hover .cache-advanced-info-button", self.host_css)
         self.assertIn(".cache-advanced-info.is-visible .cache-advanced-tooltip", self.host_css)
         self.assertIn("@media (hover: hover) and (pointer: fine)", self.remote_css)
         self.assertIn("@media (hover: none), (pointer: coarse)", self.remote_css)

@@ -93,7 +93,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
             r'<div class="panel-head remote-request-head">\s*'
             r'<div>.*?</div>\s*</div>\s*'
             r'<div class="remote-request-tabs-viewport">\s*'
-            r'<div class="remote-request-tabs" role="tablist"',
+            r'<div id="remote-request-primary-tabs" class="remote-request-tabs" role="tablist"',
             self.markup,
             re.DOTALL,
         ))
@@ -103,6 +103,15 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(heading_rule)
         self.assertIn("display: block", heading_rule.group(1))
         self.assertNotIn("grid-template-columns", heading_rule.group(1))
+        for element_id in (
+            "remote-request-secondary-nav",
+            "remote-request-secondary-back",
+            "remote-request-secondary-slot",
+        ):
+            self.assertEqual(self.markup.count(f'id="{element_id}"'), 1)
+        self.assertIn("function syncRemoteRequestTabPresentation()", self.script)
+        self.assertIn("elements.remoteRequestSecondarySlot.append(activeTablist)", self.script)
+        self.assertIn("restoreRemoteRequestSecondaryTablists(activeView)", self.script)
 
     def test_quick_request_actions_match_host_primary_secondary_layout(self):
         action_row = re.search(
@@ -275,7 +284,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         ):
             self.assertIn(f'data-i18n="{key}"', self.host_markup)
 
-    def test_scrollable_rail_and_natural_document_height_contract(self):
+    def test_scrollable_rail_and_bounded_request_card_contract(self):
         viewport_rule = re.search(
             r"\.remote-request-tabs-viewport\s*\{([^}]*)\}", self.styles
         )
@@ -304,6 +313,14 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIn("white-space: nowrap", tab_rule.group(1))
         self.assertIn("min-height: 48px", self.styles)
         self.assertIn(".remote-request-tabs-viewport::-webkit-scrollbar", self.styles)
+        secondary_nav_rule = re.search(
+            r"\.remote-request-secondary-nav\s*\{([^}]*)\}", self.styles
+        )
+        self.assertIsNotNone(secondary_nav_rule)
+        self.assertIn(
+            "grid-template-columns: max-content minmax(0, 1fr)",
+            secondary_nav_rule.group(1),
+        )
         result_rule = re.search(
             r"\.remote-search-mode-panel > \.search-results,.*?\{([^}]*)\}",
             self.styles,
@@ -311,7 +328,40 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         )
         self.assertIsNotNone(result_rule)
         self.assertIn("max-height: none", result_rule.group(1))
-        self.assertIn("overflow: visible", result_rule.group(1))
+        self.assertIn("overflow-y: auto", result_rule.group(1))
+        self.assertIn("scrollbar-width: thin", result_rule.group(1))
+        request_card_rule = re.search(r"\.request-panel\s*\{([^}]*)\}", self.styles)
+        self.assertIsNotNone(request_card_rule)
+        for declaration in (
+            "grid-template-rows: auto auto minmax(0, 1fr)",
+            "height: clamp(430px, 62dvh, 560px)",
+            "overflow: hidden",
+        ):
+            self.assertIn(declaration, request_card_rule.group(1))
+        request_view_rule = re.search(
+            r"\.request-panel > \.remote-request-view\s*\{([^}]*)\}",
+            self.styles,
+        )
+        self.assertIsNotNone(request_view_rule)
+        self.assertIn("overflow-y: hidden", request_view_rule.group(1))
+        self.assertIn("overscroll-behavior-y: contain", request_view_rule.group(1))
+        self.assertIn(
+            ".request-panel > #remote-request-quick-panel::-webkit-scrollbar-thumb",
+            self.styles,
+        )
+        self.assertIsNotNone(re.search(
+            r'id="sources-follow-uid-form".*?id="sources-add-follow-uid-button".*?'
+            r'id="refresh-gatcha-cache-button".*?</form>',
+            self.markup,
+            re.DOTALL,
+        ))
+        source_form_rule = re.search(
+            r"#sources-follow-uid-form\s*\{([^}]*)\}", self.styles
+        )
+        self.assertIn(
+            "grid-template-columns: minmax(0, 1fr) auto auto",
+            source_form_rule.group(1),
+        )
         document_layout_styles = self.styles[
             : self.styles.index("/* Remote playback dock and responsive bottom sheet */")
         ]

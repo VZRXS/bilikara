@@ -140,6 +140,51 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn("z-index: 1305", self.styles)
         self.assertNotIn("z-index: 1400", self.styles)
 
+    def test_request_actions_use_toasts_and_duplicate_confirm_measures_real_height(self):
+        form_message = self.script[
+            self.script.index("function setFormMessage") :
+            self.script.index("function setSearchMessage")
+        ]
+        self.assertIn('elements.formMessage.textContent = ""', form_message)
+        self.assertIn("setAppMessage(message, isError)", form_message)
+
+        add_by_url = self.script[
+            self.script.index("async function handleAddByUrl") :
+            self.script.index("async function discardBackup")
+        ]
+        self.assertIn("setRequestActionMessage", add_by_url)
+        self.assertNotIn("setMessageForSource", add_by_url)
+
+        remote_add_by_url = self.remote_script[
+            self.remote_script.index("async function addByUrl") :
+            self.remote_script.index("async function confirmGatchaCandidate")
+        ]
+        self.assertIn("setAppMessage", remote_add_by_url)
+        self.assertNotIn("setMessageForSource", remote_add_by_url)
+
+        confirm_render = self.script[
+            self.script.index("function renderConfirmPopover") :
+            self.script.index("function anchorPointForEvent")
+        ]
+        self.assertIn("getBoundingClientRect()", confirm_render)
+        self.assertIn('style.visibility = "hidden"', confirm_render)
+        self.assertIn("measuredRect.height", confirm_render)
+        confirm_rule = re.search(r"\.confirm-popover\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("max-height: calc(100dvh - 24px)", confirm_rule)
+        self.assertIn("overflow-y: auto", confirm_rule)
+
+    def test_narrow_request_mode_tabs_share_a_row_with_their_contract(self):
+        media = self.styles[
+            self.styles.index("@media (max-width: 699px)") :
+            self.styles.index("@media (pointer: coarse)")
+        ]
+        mode_head = re.search(r"\.request-mode-head\s*\{([^}]*)\}", media).group(1)
+        self.assertIn("grid-template-columns: max-content minmax(0, 1fr)", mode_head)
+        mode_tabs = re.search(r"\.request-mode-tabs\s*\{([^}]*)\}", media).group(1)
+        self.assertIn("width: auto", mode_tabs)
+        contract = re.search(r"\.request-mode-contract\s*\{([^}]*)\}", media).group(1)
+        self.assertIn("text-align: right", contract)
+
     def test_peer_buttons_and_close_controls_share_geometry_and_motion(self):
         self.assertIn("width: 32px;\n  height: 32px;", self.styles)
         self.assertIn("font: 400 20px/0 sans-serif", self.styles)
@@ -212,7 +257,6 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("--remote-peer-action-height: 44px", self.remote_styles)
         self.assertIn("--remote-close-control-size: 32px", self.remote_styles)
         self.assertIn(
-            ".remote-qr-popover-close,\n"
             ".binding-sheet-close,\n"
             ".rating-close",
             self.remote_styles,
@@ -725,8 +769,9 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             'id="player-fullscreen-control"',
             'id="player-fullscreen-remote-popover"',
             'id="player-fullscreen-remote-qr-image"',
-            'id="player-fullscreen-public-entry"',
+            'id="player-fullscreen-public-meta"',
             'id="player-fullscreen-public-qr-image"',
+            'id="player-fullscreen-public-password"',
             'class="fullscreen-enter-icon"',
             'class="fullscreen-phone-icon"',
             'class="fullscreen-exit-icon"',
@@ -737,14 +782,18 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "function playerFullscreenActivationUsesTouch",
             "function syncPlayerFullscreenExpandedWidth",
             "setPlayerFullscreenRemotePinned(true)",
-            "playerFullscreenPublicEntry",
+            "playerFullscreenPublicMeta",
         ):
             self.assertIn(marker, self.script)
-        fullscreen_popover = re.search(
-            r'<div class="fullscreen-remote-popover".*?\n\s*</div>\n\s*</div>\n\s*</div>',
-            self.markup,
-            re.DOTALL,
-        ).group(0)
+        fullscreen_popover_start = self.markup.index(
+            '<div class="fullscreen-remote-popover remote-access-popover"'
+        )
+        fullscreen_popover_end = self.markup.index(
+            '<div class="player-frame"', fullscreen_popover_start
+        )
+        fullscreen_popover = self.markup[
+            fullscreen_popover_start:fullscreen_popover_end
+        ]
         self.assertNotIn("<button", fullscreen_popover)
         self.assertNotIn("<input", fullscreen_popover)
         self.assertNotIn("<a ", fullscreen_popover)
@@ -916,6 +965,28 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             r"\.left-column \.panel-head h2\s*\{[^}]*font-size:",
         )
 
+    def test_stage_title_uses_spare_height_before_single_line_marquee(self):
+        current_title = re.search(
+            r'<h2 id="current-title">(.*?)</h2>', self.markup, re.DOTALL
+        ).group(1)
+        self.assertIn('id="current-title-text"', current_title)
+        self.assertIn('data-i18n="player.noSong"', current_title)
+        self.assertIn('titleHeightSlack >= titleLineHeight + 4', self.script)
+        self.assertIn('titleFitsWithinTwoLines', self.script)
+        self.assertIn('titleNaturalWrappedHeight', self.script)
+        self.assertIn('!narrowShell', self.script)
+        self.assertIn('titleNode?.classList.toggle("is-two-line"', self.script)
+        self.assertIn('titleNode.classList.add("is-scrolling")', self.script)
+        self.assertIn('--host-current-title-marquee-offset', self.script)
+        self.assertIn('#current-title.is-two-line .current-title-text', self.styles)
+        self.assertIn('#current-title.is-measuring-two-line .current-title-text', self.styles)
+        self.assertIn('-webkit-line-clamp: 2', self.styles)
+        self.assertIn('@keyframes host-current-title-marquee', self.styles)
+        self.assertRegex(
+            self.styles,
+            r"\.audio-variant-button\s*\{[^}]*white-space:\s*nowrap",
+        )
+
     def test_advanced_service_copy_uses_info_buttons_and_local_update_badge(self):
         restart = re.search(
             r'id="application-restart-row".*?</div>\s*</div>',
@@ -1006,18 +1077,22 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("background: transparent", notice)
         self.assertIn("color: var(--accent)", notice)
         self.assertIn("font-weight: 700", notice)
+        self.assertIn("border: 0", notice)
         self.assertIn("text-align: left", notice)
         message_surfaces = self.styles[
             self.styles.index(".message-surface,") :
             self.styles.index(".message-inline:empty,")
         ]
         self.assertIn("text-align: left", message_surfaces)
+        self.assertIn("background: var(--btn-secondary-bg)", message_surfaces)
         session_empty = re.findall(
             r"(?m)^\.session-user-list \.session-user-empty\s*\{([^}]*)\}",
             self.styles,
         )
         self.assertTrue(session_empty)
         self.assertIn("text-align: left", session_empty[-1])
+        self.assertIn("background: var(--btn-secondary-bg)", session_empty[-1])
+        self.assertIn("color: var(--muted)", session_empty[-1])
         self.assertEqual(
             self.translations["languages"]["zh"]["list.emptyHint"],
             "请前往“点歌”界面点歌。",

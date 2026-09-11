@@ -6,6 +6,7 @@
   <title>Bilikara Stage</title>
   <link rel="icon" href="/pic/icon.png">
   <link rel="stylesheet" href="/controller.css">
+  <link rel="stylesheet" href="/remote-access.css">
 </head>
 <body>
   <main class="presentation-output-shell" id="controller-shell" aria-label="Bilikara 副屏播放窗口">
@@ -31,22 +32,64 @@
           <span class="presentation-output-exit-label" data-i18n="player.fullscreenExit">退出全屏</span>
         </span>
       </button>
-      <div class="presentation-output-remote-popover" id="controller-remote-popover" role="dialog"
+      <div class="presentation-output-remote-popover remote-access-popover" id="controller-remote-popover" role="dialog"
         aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
-        <div class="presentation-output-remote-card">
-          <div class="presentation-output-qr-wrap">
-            <img id="controller-remote-qr-image" class="presentation-output-qr-image hidden"
-              alt="手机访问二维码" data-i18n-alt="remote.qrAlt">
-            <div id="controller-remote-qr-placeholder" class="presentation-output-qr-placeholder"
-              data-i18n="remote.qrLoading">正在生成二维码...</div>
-          </div>
-          <div class="presentation-output-remote-copy">
-            <p data-i18n="remote.openInBrowser">手机浏览器打开</p>
-            <a id="controller-remote-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
-            <small id="controller-remote-url-hint" data-i18n="remote.defaultHint">
-              请确保手机和服务端在同一个局域网内。
-            </small>
-          </div>
+        <div class="presentation-output-remote-card remote-access-card">
+          <section class="presentation-output-remote-entry remote-access-entry remote-access-entry--local">
+            <div class="remote-access-heading">
+            <strong class="presentation-output-entry-title remote-access-title"
+              data-i18n="internetRemote.localEntry">本地入口</strong>
+            </div>
+            <div class="presentation-output-share-layout remote-access-entry-content">
+              <div class="presentation-output-qr-wrap remote-access-qr">
+                <img id="controller-remote-qr-image" class="presentation-output-qr-image hidden"
+                  alt="手机访问二维码" data-i18n-alt="remote.qrAlt">
+                <div id="controller-remote-qr-placeholder" class="presentation-output-qr-placeholder remote-access-qr-placeholder"
+                  data-i18n="remote.qrLoading">正在生成二维码...</div>
+              </div>
+              <div class="presentation-output-remote-copy remote-access-details">
+                <p class="remote-access-copy-title" data-i18n="remote.openInBrowser">手机浏览器打开</p>
+                <a class="remote-access-link" id="controller-remote-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
+                <small class="remote-access-meta" id="controller-remote-url-hint" data-i18n="remote.defaultHint">
+                  访问设备需与 Host 在同一网络。
+                </small>
+              </div>
+            </div>
+          </section>
+          <div class="presentation-output-remote-divider" aria-hidden="true"></div>
+          <section class="presentation-output-remote-entry remote-access-entry remote-access-entry--public">
+            <div class="presentation-output-public-summary remote-access-heading">
+              <strong class="presentation-output-entry-title remote-access-title"
+                data-i18n="internetRemote.internetEntry">公网入口</strong>
+              <span class="remote-access-public-state">
+                <span class="remote-access-status remote-access-public-status" id="controller-internet-remote-meta"
+                  data-i18n="internetRemote.notCreated">尚未创建房间</span>
+                <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                    <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                  </svg>
+                  <span id="controller-internet-remote-connection-count">0</span>
+                </span>
+              </span>
+            </div>
+            <div class="presentation-output-share-layout remote-access-entry-content hidden" id="controller-internet-remote-room">
+              <div class="presentation-output-qr-wrap remote-access-qr">
+                <img id="controller-internet-remote-qr-image" class="presentation-output-qr-image hidden"
+                  alt="公网 Remote 二维码" data-i18n-alt="internetRemote.publicQrAlt">
+                <div id="controller-internet-remote-qr-placeholder" class="presentation-output-qr-placeholder remote-access-qr-placeholder"
+                  data-i18n="remote.qrLoading">正在生成二维码...</div>
+              </div>
+              <div class="presentation-output-remote-copy remote-access-details">
+                <p class="remote-access-copy-title" data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
+                <small class="presentation-output-password remote-access-password">
+                  <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                  <strong id="controller-internet-remote-password"></strong>
+                </small>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>

@@ -116,18 +116,6 @@
     }));
   }
 
-  function compactExpiry(expiresAt) {
-    const locale = state.language === "ja" ? "ja-JP" : state.language === "en" ? "en-US" : "zh-CN";
-    const time = new Intl.DateTimeFormat(locale, {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(new Date(expiresAt));
-    return tr("internetRemote.expiryCompact", "{time} 到期", { time });
-  }
-
   function publishInternetRemoteDisplay() {
     const online = state.mode === "internet" && Boolean(state.roomId && !state.expired);
     const active = Boolean(
@@ -136,6 +124,7 @@
       && state.remoteUrl
       && !state.expired,
     );
+    const connectedCount = [...peers.values()].filter((peer) => peer.authorized).length;
     const hint = !online
       ? tr("internetRemote.localHint", "同一局域网内直接扫码")
       : state.busy
@@ -143,7 +132,7 @@
         : state.expired
           ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
           : active
-            ? compactExpiry(state.expiresAt)
+            ? tr("internetRemote.createdStatus", "已创建 · 连接 {count}", { count: connectedCount })
             : tr("internetRemote.notCreated", "未创建");
     document.dispatchEvent(new CustomEvent("bilikara:internet-remote-display", {
       detail: {
@@ -152,6 +141,7 @@
         url: active ? state.remoteUrl : "",
         qr_image: active ? state.qrImage : "",
         password: active ? state.password : "",
+        connected_count: active ? connectedCount : 0,
         hint,
       },
     }));
@@ -159,17 +149,28 @@
 
   function render() {
     const online = state.mode === "internet";
+    const fullMenuOpen = elements.settings.classList.contains("is-qr-pinned");
     const roomActive = Boolean(state.roomId && !state.expired);
     const connectedCount = [...peers.values()].filter((peer) => peer.authorized).length;
     const roomResultAvailable = Boolean(roomActive && state.remoteUrl);
+    elements.card.classList.toggle(
+      "is-local-only-preview",
+      !fullMenuOpen && !roomResultAvailable,
+    );
     const passwordDraftChanged = roomActive
       && elements.password.value.trim() !== state.password;
     const lifetimeDraftChanged = roomActive
       && Number(elements.duration.value.trim()) !== state.lifetimeHours;
     const draftChanged = passwordDraftChanged || lifetimeDraftChanged;
     elements.settings.classList.toggle("is-internet-mode", online && roomActive);
-    elements.disclosure.setAttribute("aria-expanded", String(state.internetExpanded));
-    elements.internetContent.classList.toggle("hidden", !state.internetExpanded);
+    elements.settings.classList.toggle("has-active-internet-room", roomResultAvailable);
+    const fullInternetContentVisible = fullMenuOpen && state.internetExpanded;
+    const compactRoomPreviewVisible = !fullMenuOpen && roomResultAvailable;
+    const internetContentVisible = fullInternetContentVisible || compactRoomPreviewVisible;
+    elements.disclosure.tabIndex = fullMenuOpen ? 0 : -1;
+    elements.disclosure.setAttribute("aria-expanded", String(fullInternetContentVisible));
+    elements.internetContent.classList.toggle("hidden", !internetContentVisible);
+    elements.internetContent.inert = !fullInternetContentVisible;
     elements.summary.textContent = tr("internetRemote.localEntry", "本地入口");
     elements.publicMeta.textContent = !state.available
       ? tr("internetRemote.unavailableShort", "WebRTC 不可用")
@@ -183,6 +184,7 @@
             ? tr("internetRemote.createFailedShort", "创建失败")
             : tr("internetRemote.notCreated", "未创建");
     elements.publicMeta.classList.toggle("is-active", roomActive && !state.busy);
+    elements.publicConnectionCount.textContent = String(roomActive ? connectedCount : 0);
     elements.publicMeta.classList.toggle(
       "is-error",
       !state.busy && (!state.available || state.expired || state.roomFailure),
@@ -208,9 +210,10 @@
     elements.copy.disabled = !roomResultAvailable;
     elements.url.href = roomResultAvailable ? state.remoteUrl : "";
     elements.url.textContent = "";
-    elements.expiry.textContent = roomResultAvailable ? compactExpiry(state.expiresAt) : "";
-    elements.currentPassword.classList.toggle("hidden", !roomResultAvailable || !passwordDraftChanged);
-    elements.currentPasswordValue.textContent = roomResultAvailable && passwordDraftChanged
+    const currentPasswordVisible = roomResultAvailable
+      && (compactRoomPreviewVisible || passwordDraftChanged);
+    elements.currentPassword.classList.toggle("hidden", !currentPasswordVisible);
+    elements.currentPasswordValue.textContent = currentPasswordVisible
       ? state.password
       : "";
     if (state.qrImage && roomResultAvailable) {
@@ -877,11 +880,13 @@
       settings: document.getElementById("remote-mini-control"),
       toggle: document.getElementById("remote-mini-trigger"),
       panel: document.getElementById("remote-mini-popover"),
+      card: document.querySelector("#remote-mini-popover .remote-access-card"),
       disclosureRow: document.getElementById("internet-remote-public-row"),
       disclosure: document.getElementById("internet-remote-disclosure"),
       internetContent: document.getElementById("internet-remote-internet-content"),
       summary: document.getElementById("internet-remote-summary"),
       publicMeta: document.getElementById("internet-remote-public-meta"),
+      publicConnectionCount: document.getElementById("internet-remote-public-connection-count"),
       modeDescription: document.getElementById("internet-remote-mode-description"),
       password: document.getElementById("internet-remote-password"),
       duration: document.getElementById("internet-remote-duration"),
@@ -892,7 +897,6 @@
       qr: document.getElementById("internet-remote-qr"),
       qrPlaceholder: document.getElementById("internet-remote-qr-placeholder"),
       url: document.getElementById("internet-remote-url"),
-      expiry: document.getElementById("internet-remote-expiry"),
       currentPassword: document.getElementById("internet-remote-current-password"),
       currentPasswordValue: document.getElementById("internet-remote-current-password-value"),
       copy: document.getElementById("internet-remote-copy-link"),
@@ -902,7 +906,10 @@
     elements.password.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
     elements.duration.value = String(DEFAULT_ROOM_LIFETIME_HOURS);
     elements.disclosureRow.addEventListener("click", (event) => {
-      if (event.target.closest(".cache-advanced-info")) return;
+      if (
+        !elements.settings.classList.contains("is-qr-pinned")
+        || event.target.closest(".cache-advanced-info")
+      ) return;
       state.internetExpanded = !state.internetExpanded;
       render();
     });
@@ -942,6 +949,11 @@
         render();
       }
     }
+  });
+
+  document.addEventListener("bilikara:remote-access-menu", (event) => {
+    state.internetExpanded = Boolean(event.detail?.expanded);
+    if (elements) render();
   });
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize);

@@ -1833,7 +1833,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     except ImportError as exc:
                         raise RuntimeError("QR generator is unavailable") from exc
                     qr_buffer = io.BytesIO()
-                    qrcode.make(remote_url).save(qr_buffer, format="PNG")
+                    qr_code = qrcode.QRCode(border=0)
+                    qr_code.add_data(remote_url)
+                    qr_code.make(fit=True)
+                    qr_code.make_image(
+                        fill_color="black", back_color="white"
+                    ).save(qr_buffer, format="PNG")
                     result = {
                         "image": "data:image/png;base64,"
                         + base64.b64encode(qr_buffer.getvalue()).decode("ascii")

@@ -354,13 +354,6 @@
   gap: 8px;
 }
 
-.queue-title-row {
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 7px;
-}
-
 .queue-title {
   font-size: 17px;
   font-weight: 700;
