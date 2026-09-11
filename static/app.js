@@ -3910,7 +3910,6 @@ function closeRequestDetailForNavigation() {
 }
 
 function activateRequestSubview(subview, { focusTab = false } = {}) {
-  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && !["quick", "sources"].includes(subview)) return false;
   const nextSubview = normalizeRequestSubview(subview, "");
   if (!nextSubview) {
     return false;
@@ -5075,7 +5074,7 @@ function initializeHostShell() {
   state.activeHostWorkspace = "queue";
   state.focusedHostWorkspace = "queue";
   state.hostWorkspaceOverlayOpen = false;
-  state.requestSubview = document.documentElement?.dataset?.nativeHost === "true" ? "quick" : "search";
+  state.requestSubview = "search";
   state.focusedRequestSubview = state.requestSubview;
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";

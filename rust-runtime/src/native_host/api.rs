@@ -27,6 +27,12 @@ pub(super) fn dispatch(
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
     if method == Method::GET {
+        if matches!(
+            path,
+            "/api/lark/search" | "/api/d1/browse" | "/api/d1/category-browse"
+        ) {
+            return catalog::read(path, query);
+        }
         if path.starts_with("/api/gatcha/") {
             return library::read(context, path, query);
         }

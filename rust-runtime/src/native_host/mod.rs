@@ -2,6 +2,7 @@
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
 mod api;
 mod cache;
+mod catalog;
 mod diagnostics;
 mod files;
 mod library;

@@ -73,8 +73,12 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   Network imports execute outside the AppState lock under one shared task lease;
   refresh runs in the background and reports completion through SSE. Errors
   trigger a shared 60-second library-task cooldown, not a playback interruption.
-- Unsupported UI is explicitly hidden/disabled: shared-library search,
-  Internet Remote, independent dual display,
+- Shared keyword search, category/name/artist browsing use only the existing
+  Cloudflare read-only catalog API (the legacy `/api/lark/search` UI name is kept,
+  not a Feishu integration). Identical queries are cached for 60 seconds, at most
+  two uncached queries run concurrently, and failures back off for 30 seconds.
+  Empty search/categories do not hit the network; no prewarm or cloud writes run.
+- Unsupported UI is explicitly hidden/disabled: Internet Remote, independent dual display,
   desktop tool/update/export controls. Do not mistake those gaps for full mobile
   feature parity. Public Remote and Worker code are not modified by this Alpha.
 
@@ -237,7 +241,7 @@ and debuggable; it is intended for private Alpha testing.
 ## Next slices after device acceptance
 
 1. Device audio/HDMI lifecycle findings and long-session tests.
-2. Native search/Gacha/favorites services and remaining Host feature parity.
+2. Remaining Host feature parity: Internet Remote, export and platform integration.
 3. Background media lifecycle, interruptions and reconnection.
 4. Platform build jobs, signed distribution and a unified desktop/mobile release.
 

@@ -56,7 +56,8 @@ async function run() {
     await page.waitForFunction(() => state.data?.current_item?.cache_status === "ready");
     await page.waitForFunction(() => document.querySelector("video")?.currentTime > 0.3, null, {timeout: 20000});
     assert.equal(await page.locator("html").getAttribute("data-native-host"), "true");
-    assert.equal(await page.locator('[data-request-view="search"]').isVisible(), false);
+    await page.locator("#work-rail-request").click();
+    assert.equal(await page.locator('[data-request-view="search"]').isVisible(), true);
     assert.equal(await page.evaluate(() => tauriInvoke()), null);
     await page.waitForFunction(() => state.data?.player_status?.observed_phase === "playing");
     const retiredMedia = await page.evaluate(() => state.data.current_item.video_relative_path);

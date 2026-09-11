@@ -15,6 +15,9 @@ mod tests;
 pub(crate) struct NativeSession {
     pub cache_policy: crate::native_host::preferences::CachePolicy,
     pub library_cooldown_until: Option<std::time::Instant>,
+    pub catalog_cache: VecDeque<(String, std::time::Instant, Value)>,
+    pub catalog_inflight: std::collections::HashSet<String>,
+    pub catalog_backoff: Option<std::time::Instant>,
     pub host_token: String,
     pub invite: String,
     pub cookie: String,
@@ -275,7 +278,7 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":false,"desktop_tools":false,"playlist_export":false,"app_update":false});
+        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":false,"app_update":false});
         value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false});
         value["cache_policy"] = session.cache_policy.snapshot();
