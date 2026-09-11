@@ -4135,6 +4135,7 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
   if (typeof scheduleQueueScrollOwnershipSync === "function") {
     scheduleQueueScrollOwnershipSync();
   }
+  globalThis.BilikaraAndroidHost?.syncVisibility();
   if (
     previousNarrowToolLayout
     && previousNarrowToolLayout !== nextNarrowToolLayout
@@ -4294,6 +4295,11 @@ function syncNarrowToolLayout() {
   if (!elements.appShell) {
     return "wide";
   }
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+    elements.appShell.dataset.narrowToolLayout = "portrait";
+    elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
+    return "portrait";
+  }
   if (!narrowHostViewport()) {
     elements.appShell.dataset.narrowToolLayout = "wide";
     elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
@@ -4405,6 +4411,7 @@ function syncNarrowToolLayout() {
 }
 
 function hostNarrowToolSheetUsesOverlay() {
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) return false;
   return narrowHostViewport()
     && elements.appShell?.dataset.narrowToolLayout !== "resident";
 }
@@ -4493,6 +4500,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     });
   }
   restoreHostWorkspaceScrollPosition(nextWorkspace);
+  globalThis.BilikaraAndroidHost?.workspaceActivated(nextWorkspace, inputOrigin);
 
   const trigger = hostWorkspaceButton(nextWorkspace);
   if (inputOrigin === "pointer") {
@@ -4888,6 +4896,21 @@ function measurePersistentStage() {
   state.stageMeasureFrame = null;
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
+  }
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+    const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
+    elements.appShell.dataset.stageMode = "portrait";
+    elements.appShell.dataset.stageControlsLayout = "inline";
+    elements.appShell.dataset.stageControlDensity = "compact";
+    elements.playerPanel.style.removeProperty("--stage-frame-inline-size");
+    elements.playerPanel.style.removeProperty("--stage-frame-block-size");
+    elements.currentTitle?.classList.remove("is-two-line", "is-scrolling");
+    if (changed || !state.stageControlTrayOpen) {
+      clearStageControlTrayPosition();
+      setStageControlTrayOpen(true, {moveFocus: false});
+    }
+    syncAudioVariantOverflow();
+    return "portrait";
   }
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
   const titleNode = elements.currentTitle;
@@ -9402,6 +9425,7 @@ function syncTopControlPopoverPositions() {
     if (!trigger || !popup) {
       return;
     }
+    if (popup === elements.cachePanel && globalThis.BilikaraAndroidHost?.isPortrait()) return;
     if (!compact) {
       for (const property of ["left", "right", "top"]) {
         popup.style[property] = "";
@@ -10699,6 +10723,7 @@ async function apiPostExactStateCommand(url, payload = {}, options = {}) {
 }
 
 function syncCachePanelVisibility(options = {}) {
+  if (globalThis.BilikaraAndroidHost?.settingsEmbedded()) state.cacheSettingsOpen = true;
   const expanded = String(state.cacheSettingsOpen);
   if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);

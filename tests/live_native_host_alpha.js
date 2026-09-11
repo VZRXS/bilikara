@@ -45,7 +45,10 @@ async function run() {
     await page.goto("http://tauri.localhost/android-alpha.html");
     const entry = await entryResponse;
     assert.equal(entry.request().isNavigationRequest(), true);
-    assert.equal(entry.status(), 200, `Android startup rejected: ${await entry.text()}`);
+    // The landing page navigates immediately; Chromium may already have
+    // released its response body. Only fetch diagnostics on an actual error.
+    assert.equal(entry.status(), 200, entry.status() === 200 ? undefined
+      : `Android startup rejected: ${await entry.text().catch(() => "body no longer available")}`);
     // A same-origin landing document, not a cross-site HTTP redirect chain,
     // must establish the Strict cookie before loading authenticated assets/API.
     await page.waitForURL(new URL("/", bootstrap).href);

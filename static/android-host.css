@@ -1,0 +1,313 @@
+/* Native Android portrait shell; desktop and landscape keep styles.css. */
+.android-host-only { display: none; }
+
+html[data-android-layout="portrait"] {
+  --mobile-dock-height: 68px;
+}
+
+html[data-android-layout="portrait"] body {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+html[data-android-layout="portrait"] :where(.android-host-only):not([hidden]) {
+  display: block;
+}
+
+html[data-android-layout="portrait"] .app-shell {
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 56px auto minmax(0, 1fr) var(--mobile-dock-height);
+  gap: 0;
+  overflow: hidden;
+  --host-peer-title-size: 22px;
+  --host-peer-panel-padding: 14px;
+  --host-peer-request-head-padding: 14px;
+}
+
+html[data-android-layout="portrait"] .topbar {
+  grid-row: 1;
+  height: 56px;
+  min-height: 56px;
+  margin: 0;
+  padding: 0 16px;
+}
+
+/* Only Play needs the brand/invite bar; reclaim its row on every other page. */
+html[data-android-layout="portrait"]:not([data-android-page="playback"]) .app-shell {
+  grid-template-rows: 0 auto minmax(0, 1fr) var(--mobile-dock-height);
+}
+html[data-android-layout="portrait"]:not([data-android-page="playback"]) .topbar {
+  display: none;
+}
+
+html[data-android-layout="portrait"] .host-brand h1 { font-size: 27px; }
+html[data-android-layout="portrait"] .critical-banner-region { grid-row: 2; padding: 0 12px; }
+html[data-android-layout="portrait"] .shell-body { grid-row: 3; padding: 0 12px 8px; }
+html[data-android-layout="portrait"] .layout { display: block; }
+html[data-android-layout="portrait"] .layout > .work-rail { display: none; }
+
+html[data-android-layout="portrait"] .host-content-region {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+  overflow: hidden;
+}
+
+html[data-android-layout="portrait"] .app-shell .host-workspace-region {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  flex: 1 1 0;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  opacity: 1;
+  transform: none;
+  transition: none;
+  box-shadow: none;
+  border-radius: 18px;
+}
+
+html[data-android-layout="portrait"] .app-shell .host-workspace-region[hidden] { display: none; }
+
+html[data-android-layout="portrait"] .left-column {
+  position: relative;
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior-y: contain;
+}
+
+/* Keep a full-sized live media tree offscreen, not display:none or remounted. */
+html[data-android-layout="portrait"] .left-column.android-stage-away {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  pointer-events: none;
+}
+
+html[data-android-layout="portrait"] .left-column > .player-panel:not(:fullscreen):not(.is-tauri-fullscreen) {
+  height: auto;
+  min-height: 100%;
+  grid-template-rows: auto;
+  align-content: start;
+  gap: 14px;
+  padding: 14px;
+  overflow: visible;
+}
+
+html[data-android-layout="portrait"] #current-title {
+  white-space: normal;
+  font-size: 21px;
+  line-height: 1.4;
+  max-height: 2.8em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+html[data-android-layout="portrait"] #current-title-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  animation: none;
+  transform: none;
+}
+
+html[data-android-layout="portrait"] .left-column .player-frame { width: 100%; }
+html[data-android-layout="portrait"] .app-shell .stage-control-tray {
+  min-width: 0;
+  max-width: 100%;
+}
+
+html[data-android-layout="portrait"] .stage-extended-controls { padding: 0 10px; }
+html[data-android-layout="portrait"] .stage-control-tray .playback-primary-row { flex-wrap: wrap; }
+
+html[data-android-layout="portrait"] .android-page-tools {
+  flex: 0 0 auto;
+  padding: 4px 0;
+}
+
+html[data-android-layout="portrait"] .android-page-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+}
+
+html[data-android-layout="portrait"] .android-page-tabs[hidden],
+html[data-android-layout="portrait"] .android-settings-back[hidden] { display: none; }
+
+.android-page-tabs button,
+.android-settings-back {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+}
+
+.android-page-tabs button { flex: 1; }
+.android-page-tabs button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.android-settings-back { color: var(--accent); }
+
+html[data-android-layout="portrait"] .android-host-dock {
+  grid-row: 4;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0;
+  padding: 4px 4px 6px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  /* Native root already owns system/gesture/IME insets. No second safe-area. */
+}
+
+.android-host-dock button {
+  min-width: 0;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 4px 1px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.android-host-dock svg {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.android-host-dock button[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.android-host-dock button:focus-visible,
+.android-menu-row:focus-visible,
+.android-page-tabs button:focus-visible,
+.android-settings-back:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+html[data-android-layout="portrait"] .android-my-page {
+  flex: 1;
+  min-height: 0;
+  padding: 22px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  overflow-y: auto;
+}
+
+.android-my-page h2 { margin: 0 0 24px; font-size: 26px; }
+.android-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 80px;
+  padding: 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--bottom-panel-bg);
+  font: inherit;
+}
+
+.android-menu-row strong { display: block; font-size: 18px; }
+.android-menu-row small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.5; }
+
+html[data-android-layout="portrait"] #android-settings-slot #cache-settings {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+html[data-android-layout="portrait"] #android-settings-slot #cache-settings-toggle { display: none; }
+html[data-android-layout="portrait"] #android-settings-slot #cache-panel {
+  position: static;
+  inset: auto !important;
+  display: block;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 14px;
+  overflow: visible;
+  box-shadow: none;
+  transform: none;
+}
+
+html[data-android-layout="portrait"] #android-settings-slot .cache-panel-row { flex-wrap: wrap; gap: 12px; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
+
+/* The request header must not compete with four mode tabs on one phone row. */
+html[data-android-layout="portrait"] .request-workspace-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+html[data-android-layout="portrait"] .request-workspace-head .host-peer-heading { display: block; }
+html[data-android-layout="portrait"] .request-subview-tabs {
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+html[data-android-layout="portrait"] .request-subview-tabs button { flex: 0 0 auto; min-height: 44px; }
+html[data-android-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
+html[data-android-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
+html[data-android-layout="portrait"] .category-browser-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+html[data-android-layout="portrait"] .category-browser-card-name { padding: 8px; font-size: 20px; }
+html[data-android-layout="portrait"] .category-browser-tabs { padding-right: 0; }
+html[data-android-layout="portrait"] .native-alpha-notice { font-size: 12px; }
+html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }

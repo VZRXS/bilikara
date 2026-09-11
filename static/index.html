@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/song-detail.css" />
   <link rel="stylesheet" href="/remote-access.css" />
+  <link rel="stylesheet" href="/android-host.css" />
 </head>
 
 <body>
@@ -469,6 +470,26 @@
     <div class="shell-body">
       <main class="layout">
         <section class="host-content-region">
+          <div class="android-host-only android-page-tools" id="android-page-tools" hidden>
+            <div id="android-queue-tabs" class="android-page-tabs" hidden>
+              <button type="button" data-android-workspace="queue" data-i18n="mobile.queue">播放队列</button>
+              <button type="button" data-android-workspace="history" data-i18n="shell.history">历史</button>
+            </div>
+            <div id="android-request-tabs" class="android-page-tabs" hidden>
+              <button type="button" data-android-workspace="request" data-i18n="shell.request">点歌</button>
+              <button type="button" data-android-workspace="random" data-i18n="shell.random">试试运气</button>
+            </div>
+            <button type="button" class="android-settings-back" id="android-settings-back" hidden>
+              <span aria-hidden="true">←</span> <span data-i18n="mobile.backToMe">返回我的</span>
+            </button>
+          </div>
+          <section class="android-host-only android-my-page" id="android-my-page" aria-labelledby="android-my-title" hidden inert>
+            <h2 id="android-my-title" data-i18n="mobile.me">我的</h2>
+            <button type="button" class="android-menu-row" id="android-open-settings">
+              <span><strong data-i18n="shell.settings">设置</strong><small data-i18n="mobile.settingsHint">画质、缓存、Bilibili 登录、外观与诊断</small></span>
+              <span aria-hidden="true">›</span>
+            </button>
+          </section>
           <section class="left-column" aria-label="Stage" data-i18n-aria-label="shell.stage">
         <section class="player-panel">
           <div class="panel-head host-peer-head">
@@ -750,6 +771,9 @@
           </header>
 
           <div class="settings-workspace-body">
+            <section class="android-host-only settings-section" id="android-settings-slot" aria-labelledby="android-download-settings-title">
+              <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
+            </section>
             <section class="settings-section" aria-labelledby="settings-appearance-title">
               <div class="settings-section-heading">
                 <p class="section-tag" data-i18n="settings.appearanceTag">Appearance</p>
@@ -1415,6 +1439,23 @@
       </main>
     </div>
 
+    <nav class="android-host-only android-host-dock" id="android-host-dock" aria-label="主要页面" data-i18n-aria-label="mobile.navigation" hidden>
+      <button type="button" data-android-page="playback" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/><path d="M4 5v14"/></svg><span data-i18n="mobile.playback">播放</span>
+      </button>
+      <button type="button" data-android-page="queue">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h8M3 6h.01M3 12h.01M3 18h.01"/></svg><span data-i18n="mobile.queue">播放队列</span>
+      </button>
+      <button type="button" data-android-page="request">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg><span data-i18n="shell.request">点歌</span>
+      </button>
+      <button type="button" data-android-page="users">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 4a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></svg><span data-i18n="shell.users">本场用户</span>
+      </button>
+      <button type="button" data-android-page="my">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="mobile.me">我的</span>
+      </button>
+    </nav>
   </div>
   <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
 
@@ -1727,6 +1768,7 @@
   <script src="/internet-remote-transport.js" defer></script>
   <script src="/internet-remote-host.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/android-host.js" defer></script>
 </body>
 
 </html>

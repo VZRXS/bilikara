@@ -84,6 +84,37 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
 
 ### Install and check on hardware
 
+#### Portrait navigation and system insets
+
+Android portrait uses five bottom navigation pages: Player, Queue (including
+History), Request (including the existing search/discovery/sources and Random),
+Session Users, and Me. Me → Settings contains the shared quality/cache/login
+controls plus appearance and diagnostics. These are the same controls, event
+handlers and AppState commands as desktop, not a separate mobile backend.
+
+Landscape retains the existing Host layout. Physical screen orientation, rather
+than keyboard-resized viewport dimensions, selects the shell. Rotation and page
+changes never reparent or recreate the video/audio elements; the playing stage
+remains laid out offscreen and inert when another page is visible. Browser
+history gives Android Back a parent page, including Me → Settings. At the root,
+Back can leave the foreground app; background playback remains out of scope.
+
+The Activity applies real system-bar, display-cutout and keyboard insets to its
+content root, for both bootstrap and Host pages. Overlapping insets use their
+maximum rather than their sum and are zeroed before propagation to the WebView
+to avoid double padding. No fixed status-bar height or WebView-version-specific
+CSS safe-area support is required. Test portrait/landscape, gesture and three-
+button navigation, keyboard show/hide, long song titles, all five pages, and
+continuous audio while changing pages on hardware. Tap the video to reveal its
+existing pause/seek controls; AV delay, volume and key controls are inline.
+
+Automated checks: `python -m unittest tests.test_android_portrait tests.test_android_alpha_bootstrap -v`,
+`tests/live_android_portrait.js` with the native Host example and synthetic media,
+plus the Android instrumentation test `HostWindowInsetsTest` for cutouts,
+rotation, keyboard union and inset reset.
+
+#### Playback and installation
+
 The Android native Host still plays separate HTML video/audio elements in System
 WebView; it does not bundle libav or a Media3/ExoPlayer implementation. After a
 seek or play, `seeked`/`canplay` can precede continuous audio output-clock progress.

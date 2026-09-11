@@ -5,6 +5,9 @@ import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 
 class MainActivity : TauriActivity() {
+  // Same-document Host page history supports the system Back gesture.
+  override val handleBackNavigation: Boolean = true
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
