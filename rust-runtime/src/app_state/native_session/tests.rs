@@ -255,6 +255,11 @@ fn native_diagnostics_preserve_split_output_clock_facts_as_typed_values() {
             "event": "sync-wait-for-audio-clock",
             "audio_current_time": 30.1, "video_current_time": 30.4,
             "drift_seconds": 0.3, "effective_av_delay_seconds": 0.0,
+            "drift_before_correction_seconds": -0.6,
+            "correction_target_audio_time": 30.4,
+            "sync_force_correction": true,
+            "local_video_held_for_audio": true,
+            "local_video_deferred_recovery": false,
             "audio_ready_state": 4, "video_ready_state": 4,
             "audio_paused": false, "video_paused": true,
             "audio_seeking": false, "video_seeking": false,
@@ -270,6 +275,11 @@ fn native_diagnostics_preserve_split_output_clock_facts_as_typed_values() {
     assert_eq!(event["audio_current_time"], 30.1);
     assert_eq!(event["video_current_time"], 30.4);
     assert_eq!(event["drift_seconds"], 0.3);
+    assert_eq!(event["drift_before_correction_seconds"], -0.6);
+    assert_eq!(event["correction_target_audio_time"], 30.4);
+    assert_eq!(event["sync_force_correction"], true);
+    assert_eq!(event["local_video_held_for_audio"], true);
+    assert_eq!(event["local_video_deferred_recovery"], false);
     assert_eq!(event["audio_ready_state"], 4);
     assert_eq!(event["audio_paused"], false);
     assert_eq!(event["video_paused"], true);
@@ -279,4 +289,23 @@ fn native_diagnostics_preserve_split_output_clock_facts_as_typed_values() {
     assert_eq!(event["total_video_frames"], 300);
     assert!(!result.to_string().contains("secret"));
     assert!(!result.to_string().contains("https://private"));
+}
+
+#[test]
+fn native_sync_decision_measurements_reject_text_and_objects() {
+    let (mut app, _) = setup();
+    app.native_diagnostic(
+        &json!({
+            "event": "sync-audio-drift-correction",
+            "drift_before_correction_seconds": "secret",
+            "correction_target_audio_time": {"url":"https://private"},
+            "sync_force_correction": "secret",
+            "local_video_held_for_audio": 1,
+            "local_video_deferred_recovery": {},
+        }),
+        1.0,
+    );
+    let result = app.native_diagnostics();
+    let event = &result["events"][0];
+    assert_eq!(event.as_object().unwrap().len(), 2); // event and at only
 }

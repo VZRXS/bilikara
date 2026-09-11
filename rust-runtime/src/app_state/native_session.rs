@@ -532,6 +532,8 @@ impl AppState {
             "audio_current_time",
             "video_current_time",
             "drift_seconds",
+            "drift_before_correction_seconds",
+            "correction_target_audio_time",
             "effective_av_delay_seconds",
             "audio_playback_rate",
             "video_playback_rate",
@@ -556,6 +558,9 @@ impl AppState {
             "audio_ended",
             "video_ended",
             "local_should_be_playing",
+            "sync_force_correction",
+            "local_video_held_for_audio",
+            "local_video_deferred_recovery",
         ] {
             if let Some(value) = body.get(key).filter(|v| v.is_boolean()) {
                 safe[key] = value.clone();

@@ -12050,6 +12050,8 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
     local_should_be_playing: state.localShouldBePlaying,
     local_audio_playback_blocked: state.localAudioPlaybackBlocked,
     local_video_playback_blocked: state.localVideoPlaybackBlocked,
+    local_video_held_for_audio: state.localVideoHeldForAudio,
+    local_video_deferred_recovery: state.localVideoDeferredRecovery,
     is_webkit_runtime: isWebKitPlaybackRuntime(),
     is_tauri_runtime: Boolean(window.__TAURI__),
     is_tauri_webkit_runtime: isTauriWebKitRuntime(),
@@ -12077,6 +12079,7 @@ function reportMediaDiagnostic(
   audio = null,
   action = "none",
   playRejection = null,
+  syncDecision = null,
 ) {
   if (
     !media
@@ -12110,6 +12113,7 @@ function reportMediaDiagnostic(
     play_rejection_name: playRejection ? String(playRejection.name || "Error") : "",
     url_basename: mediaUrlBasename(media),
     ...(video && audio ? splitSyncSnapshot(video, audio, currentAvOffsetSeconds(), action) : {}),
+    ...syncDecision,
   };
   console.info("[player-media]", payload);
   apiPost("/api/player/diagnostic", payload).catch(() => {});
@@ -12120,7 +12124,7 @@ function reportSplitStartupDiagnostic(itemId, video, audio, eventName) {
   reportMediaDiagnostic(itemId, "split", audio, eventName, video, audio, eventName);
 }
 
-function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false) {
+function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false, syncDecision = null) {
   if (!isActiveSplitPlayer(video, audio)) {
     return false;
   }
@@ -12133,7 +12137,7 @@ function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false) 
   }
   state.localPlayerSyncLastAction = action;
   state.localPlayerSyncLastDiagnosticAt = now;
-  reportMediaDiagnostic(itemId, "split", audio, `sync-${action}`, video, audio, action);
+  reportMediaDiagnostic(itemId, "split", audio, `sync-${action}`, video, audio, action, null, syncDecision);
   return true;
 }
 
@@ -13302,11 +13306,16 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     video.playbackRate = requestedRate;
   }
 
-  const reportAction = (action, force = false) => {
-    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force);
+  const reportAction = (action, force = false, correction = null) => {
+    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force, {
+      sync_force_correction: Boolean(forceCorrection),
+      ...correction,
+    });
     return action;
   };
   const isWebKit = isWebKitPlaybackRuntime();
+
+  const isAndroid = isAndroidNativePlaybackRuntime();
 
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
     clearAndroidAudioClockRecovery();
@@ -13335,7 +13344,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
   if (audio.seeking) {
-    if (isAndroidNativePlaybackRuntime() && state.localShouldBePlaying) {
+    if (isAndroid && state.localShouldBePlaying) {
       holdVideoForAudio(video);
     }
     return reportAction("wait-for-audio");
@@ -13412,7 +13421,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const absoluteDrift = Math.abs(drift);
 
   const session = state.hostPlaybackSession;
-  if (isAndroidNativePlaybackRuntime()) {
+  if (isAndroid) {
     const catchUpThreshold = session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
       ? localPlayerForceSyncEpsilonSeconds
       : localPlayerDriftToleranceSeconds;
@@ -13441,22 +13450,36 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const recovering = state.localVideoDeferredRecovery || state.localVideoHeldForAudio;
   const recoveringFromWebKitVideoStarvation = isWebKit && state.localVideoDeferredRecovery;
   const now = Date.now();
-  const seekThreshold = isWebKit
-    ? localPlayerHardSyncThresholdSeconds
-    : forceCorrection
-      ? localPlayerForceSyncEpsilonSeconds
-      : recovering
-        ? localPlayerDriftToleranceSeconds
-        : absoluteDrift >= localPlayerHardSyncThresholdSeconds
-          ? localPlayerHardSyncThresholdSeconds
-          : localPlayerModerateSyncThresholdSeconds;
-  const seekAllowed = (!isWebKit && forceCorrection)
+  // Android recovery/playing events are not explicit user seeks. A single
+  // audio packet can appear ahead while video resumes. Do not lower the
+  // threshold to 15 ms or bypass cooldown: that seeks audio again, queues
+  // waiting/canplay, and can feed the same recovery loop indefinitely.
+  // Manual seek and AV-offset changes have their own immediate positioning.
+  const seekThreshold = isAndroid
+    ? localPlayerModerateSyncThresholdSeconds
+    : isWebKit
+      ? localPlayerHardSyncThresholdSeconds
+      : forceCorrection
+        ? localPlayerForceSyncEpsilonSeconds
+        : recovering
+          ? localPlayerDriftToleranceSeconds
+          : absoluteDrift >= localPlayerHardSyncThresholdSeconds
+            ? localPlayerHardSyncThresholdSeconds
+            : localPlayerModerateSyncThresholdSeconds;
+  const seekAllowed = (!isWebKit && !isAndroid && forceCorrection)
     || now - state.localPlayerSyncLastSeekAt >= localPlayerSyncSeekCooldownMs;
   let action = "none";
+  let correction = null;
   if (!recoveringFromWebKitVideoStarvation && absoluteDrift >= seekThreshold && seekAllowed) {
     if (setMediaCurrentTime(audio, targetAudioTime)) {
       state.localPlayerSyncLastSeekAt = now;
       action = "audio-drift-correction";
+      correction = {
+        // Same sign as drift_seconds (video minus offset-adjusted audio).
+        // The post-seek snapshot alone misleadingly reports zero drift.
+        drift_before_correction_seconds: -drift,
+        correction_target_audio_time: targetAudioTime,
+      };
     }
   }
 
@@ -13474,7 +13497,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   if (action === "none" && recovering) {
     action = "resume";
   }
-  return reportAction(action, action === "audio-drift-correction");
+  return reportAction(action, action === "audio-drift-correction", correction);
 }
 
 function syncMountedLocalPlayer(forceCorrection = false) {

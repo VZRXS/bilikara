@@ -80,6 +80,17 @@ normal decode/buffer pause; this change targets the recurring post-seek stutter.
 The shared seek transaction also retires an in-flight play attempt before pausing
 it: a cancelled old play Promise must not mark the newer seek/resume as failed.
 
+Android recovery events also keep the normal 140 ms audio-ahead correction
+threshold and 750 ms correction cooldown, even when a caller requests forced
+synchronization. Previously repeated recovery events could reset audio for a
+single AAC packet (about 21 ms), then trigger more waiting/recovery events.
+Explicit user seeks and AV-offset changes still reposition immediately. These
+thresholds are not fixed output-latency compensation; there is no 250 ms offset.
+Correction diagnostics preserve `drift_before_correction_seconds` (video minus
+offset-adjusted audio), `correction_target_audio_time`, and whether the caller
+requested forced sync, alongside the existing post-correction snapshot. Timing
+agreement is not proof of acoustic A/V sync on a physical speaker/HDMI output.
+
 The bounded native diagnostic event list now retains both media times, AV drift,
 per-track readiness/seeking/paused/rate and dropped/total video frame counts as
 numeric/boolean measurements. It does not accept URLs or credentials in these

@@ -435,6 +435,88 @@ console.log(JSON.stringify({ action, videoTime: video.currentTime, audioTime: au
         self.assertEqual(result["videoSeekWrites"], 0)
         self.assertEqual(result["audioSeekWrites"], 1)
 
+    def test_android_recovery_events_do_not_seek_one_audio_packet_ahead(self):
+        events = """
+function registerRecovery(video, audio) {
+  const session = state.hostPlaybackSession;
+  const synchronizeStartupPlayer = () => false;
+""" + self.video_recovery_event_source + "\n}"
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const video = new FakeMedia(8.661754), audio = new FakeMedia(8.683087);
+mountedVideo = video; mountedAudio = audio; effectiveOffsetSeconds = 0;
+video.paused = false; audio.paused = false;
+registerRecovery(video, audio);
+// Replay repeated starvation/recovery events, not just a single sync call.
+// Each recovery sees audio one 48-kHz AAC packet ahead (21.333 ms).
+for (let i = 0; i < 32; i++) {
+  nowMs += 70;
+  video.readyState = 1; video.dispatchMediaEvent("waiting");
+  video._time += 0.07; audio._time = video._time + 0.021333;
+  video.readyState = 4; video.dispatchMediaEvent("canplay");
+  audio.dispatchMediaEvent("canplay");
+  await Promise.resolve();
+}
+console.log(JSON.stringify({ seeks: audio.seekWrites, audioPaused: audio.paused,
+  videoPaused: video.paused, videoTime: video.currentTime, actions }));
+""",
+            self.sync_source,
+            events,
+        )
+        self.assertEqual(result["seeks"], 0, result)
+        self.assertFalse(result["audioPaused"])
+        self.assertFalse(result["videoPaused"])
+        self.assertGreater(result["videoTime"], 10)
+
+    def test_android_forced_audio_ahead_correction_respects_cooldown(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const video = new FakeMedia(10), audio = new FakeMedia(10.6);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+const first = syncSplitPlayer(video, audio, 0, true);
+audio._time = 10.6; nowMs += 50;
+const second = syncSplitPlayer(video, audio, 0, true);
+const seeksDuringCooldown = audio.seekWrites;
+nowMs += 750;
+const third = syncSplitPlayer(video, audio, 0, true);
+console.log(JSON.stringify({ first, second, third, seeksDuringCooldown, seeks: audio.seekWrites }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["first"], "audio-drift-correction")
+        self.assertEqual(result["second"], "none")
+        self.assertEqual(result["seeksDuringCooldown"], 1)
+        self.assertEqual(result["third"], "audio-drift-correction")
+        self.assertEqual(result["seeks"], 2)
+
+    def test_audio_correction_diagnostic_preserves_pre_seek_drift(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10), audio = new FakeMedia(10.6);
+mountedVideo = video; mountedAudio = audio; effectiveOffsetSeconds = 0;
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, true);
+const payload = diagnosticPosts.at(-1).payload;
+console.log(JSON.stringify(payload));
+""",
+            self.sync_source,
+            self.diagnostic_source,
+        )
+        self.assertEqual(result["event"], "sync-audio-drift-correction")
+        self.assertAlmostEqual(result["drift_before_correction_seconds"], -0.6)
+        self.assertEqual(result["correction_target_audio_time"], 10)
+        self.assertTrue(result["sync_force_correction"])
+        self.assertEqual(result["drift_seconds"], 0)
+
     def test_android_seek_output_clock_recovers_without_reseeking_audio(self):
         result = self.run_node(
             """
