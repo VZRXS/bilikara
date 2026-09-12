@@ -218,9 +218,75 @@ html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .his
   overflow-wrap: anywhere;
   white-space: normal;
 }
-html[data-android-layout="portrait"] .queue-current { padding: 12px; }
-html[data-android-layout="portrait"] .queue-current-main { padding-right: 0; }
-html[data-android-layout="portrait"] .queue-current-requester { font-size: 12px; height: 28px; min-height: 28px; padding: 0 10px; }
+html[data-android-layout="portrait"] .queue-current {
+  padding: 12px;
+  grid-template-columns: var(--queue-badge-column-width) minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(44px, auto);
+  gap: 6px 8px;
+}
+html[data-android-layout="portrait"] :is(.queue-current-main, .queue-current-meta) { display: contents; }
+html[data-android-layout="portrait"] .queue-current-side { grid-column: 1; grid-row: 1 / span 2; }
+html[data-android-layout="portrait"] .queue-current-title { grid-column: 2 / 4; grid-row: 1; }
+html[data-android-layout="portrait"] .queue-current-requester {
+  grid-column: 2;
+  grid-row: 2;
+  font-size: 12px;
+  height: 28px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0 10px;
+  display: block;
+  line-height: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-android-layout="portrait"] .queue-current-next {
+  position: relative;
+  inset: auto;
+  grid-column: 3;
+  grid-row: 2;
+  align-self: center;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+/* Match the requester's visual height without shrinking the touch target. */
+html[data-android-layout="portrait"] .queue-current-next::before {
+  content: "";
+  position: absolute;
+  inset: -8px 0;
+}
+
+/* Anchor the queue menu to the whole card, not the 44px ellipsis button.
+   All five actions fit; translated labels may wrap within their own cell. */
+html[data-android-layout="portrait"] .song-item { position: relative; }
+html[data-android-layout="portrait"] .song-actions-wrap { position: static; }
+html[data-android-layout="portrait"] .song-actions.menu-content {
+  inset: auto 54px 8px 6px;
+  width: auto;
+  display: grid;
+  grid-template-columns: 28px 28px minmax(0, 1fr) minmax(0, 1fr) 28px;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 16px;
+  transform: none;
+  animation: none;
+}
+html[data-android-layout="portrait"] .song-actions.menu-content button {
+  grid-area: auto;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+html[data-android-layout="portrait"] .queue-current-cache-detail { grid-column: 2 / 4; grid-row: 3; }
 
 /* Give each binding choice readable line length; only the choices scroll. */
 html[data-android-layout="portrait"] #binding-modal { padding: 12px; }

@@ -37,6 +37,57 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     const navigate = name => page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
     const cases = {
+      async queueMenu() {
+        await navigate("queue");
+        for (const width of [320, 358, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          for (const language of ["zh", "en", "ja"]) {
+            await page.evaluate(language => {
+              const item = state.data.playlist[0];
+              renderPlaylist([item], state.data.current_item, state.data.cache_policy);
+              const texts = {zh: ["立即播放", "顶歌"], en: ["Play now", "Move next"], ja: ["今すぐ再生", "次に再生"]}[language];
+              document.querySelector('#playlist [data-action="play-now"]').textContent = texts[0];
+              document.querySelector('#playlist [data-action="move-next"]').textContent = texts[1];
+            }, language);
+            await page.locator('#playlist [data-action="toggle-menu"]').click();
+            const boxes = await page.locator("#playlist .song-actions").evaluate(menu => {
+              const box = el => el.getBoundingClientRect().toJSON();
+              return {menu: box(menu), list: box(document.getElementById("playlist")), buttons: [...menu.children].map(box)};
+            });
+            for (const button of boxes.buttons) {
+              assert.ok(button.left >= Math.max(0, boxes.list.left) && button.right <= Math.min(width, boxes.list.right), `Every ${language} action fits ${width}px: ${JSON.stringify(boxes)}`);
+              assert.ok(button.top >= boxes.menu.top && button.bottom <= boxes.menu.bottom, "Actions stay within the menu");
+            }
+            for (const button of await page.locator("#playlist .song-actions button:enabled").all()) await button.click({trial: true});
+            await page.locator('#playlist [data-action="toggle-menu"]').click();
+          }
+        }
+      },
+      async queue() {
+        await navigate("queue");
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          for (const requester of ["kevinx96", "非常非常长的点歌人 VeryLongRequester", ""]) {
+            const metrics = await page.evaluate(requester => {
+              renderQueueCurrent({...state.data.current_item, display_title: "【ニコカラ/卡拉OK】【自用】家庭教师歌曲串烧 - Long title ".repeat(4), requester_name: requester});
+              const rect = id => document.getElementById(id).getBoundingClientRect().toJSON();
+              return {title: rect("queue-current-title"), button: rect("next-button"), requester: rect("queue-current-requester")};
+            }, requester);
+            assert.ok(metrics.button.y >= metrics.title.bottom, "Skip stays below the title");
+            if (requester) {
+              assert.ok(Math.abs(metrics.button.y + metrics.button.height / 2 - metrics.requester.y - metrics.requester.height / 2) <= 1, `Skip aligns with the requester row: ${JSON.stringify(metrics)}`);
+              assert.equal(metrics.button.height, metrics.requester.height, "Skip is the same compact pill height as the desktop-style requester badge");
+              assert.ok(metrics.requester.right <= metrics.button.x, "Long requester must not overlap Skip");
+            }
+            const touchArea = await page.locator("#next-button").evaluate(button => {
+              const rect = button.getBoundingClientRect();
+              return [-7, rect.height + 7].every(y => button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + y)));
+            });
+            assert.ok(touchArea, "Compact Skip keeps a 44px touch area above and below its visible pill");
+          }
+        }
+        await page.locator("#next-button").click({trial: true});
+      },
       async binding() {
         await navigate("playback");
         for (const width of [320, 392, 412]) {
