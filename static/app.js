@@ -782,6 +782,7 @@ const elements = {
   gatchaErrorView: document.getElementById("gatcha-error-view"),
   gatchaStateViews: document.querySelectorAll("[data-gatcha-view]"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
+  gatchaCandidateCard: document.getElementById("gatcha-candidate-card"),
   searchForm: document.getElementById("search-form"),
   searchQuery: document.getElementById("search-query"),
   searchButton: document.getElementById("search-button"),
@@ -8736,6 +8737,22 @@ function renderGatchaWorkspace() {
   });
   if (elements.gatchaCandidateTitle) {
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate?.title || t("gatcha.titleLoading");
+  }
+  if (document.documentElement?.dataset?.nativeHost === "true" && elements.gatchaCandidateCard) {
+    const container = elements.gatchaCandidateCard;
+    const candidate = state.gatchaCandidate;
+    container.hidden = !candidate;
+    elements.gatchaCandidateTitle.hidden = Boolean(candidate);
+    // Reuse search's safe metadata renderer, without a second add button or
+    // reloading the same cover on each playback/SSE state update.
+    if (!candidate) container.replaceChildren();
+    else if (searchResultItemByElement.get(container.firstElementChild) !== candidate
+      || container.lang !== document.documentElement.lang) {
+      container.lang = document.documentElement.lang;
+      container.replaceChildren(createSearchResultItem(candidate, {
+        showPrimaryAction: false, showDeveloperActions: false,
+      }));
+    }
   }
   if (elements.gatchaMessage) {
     elements.gatchaMessage.textContent = state.gatchaMessage || "";

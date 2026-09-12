@@ -90,7 +90,9 @@ console.log(JSON.stringify({{
         styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('fallback.className = "search-result-cover-fallback"', script)
         self.assertIn("#host-workspace-request .search-result-cover-fallback", styles)
-        self.assertIn(".request-workspace .search-result-cover-fallback", styles)
+        self.assertIn(":is(.request-workspace, .search-card-surface) .search-result-cover-fallback", styles)
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="gatcha-candidate-card" class="search-card-surface"', html)
         self.assertNotIn(".search-result-cover.is-empty span", styles)
 
     def test_host_history_icon_button_matches_other_history_actions(self):

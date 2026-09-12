@@ -1831,7 +1831,7 @@ fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&Stri
                 .unwrap_or_default(),
         ),
     );
-    for key in ["bvid", "title", "url"] {
+    for key in ["bvid", "title", "url", "owner_name", "owner_url"] {
         payload.insert(
             key.to_owned(),
             Value::String(first_text(entry, &[key]).unwrap_or_default()),
@@ -1844,6 +1844,31 @@ fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&Stri
         }
     }
     Value::Object(payload)
+}
+
+#[cfg(test)]
+mod candidate_card_tests {
+    use super::*;
+
+    #[test]
+    fn random_candidates_keep_cover_duration_plays_and_uploader_metadata() {
+        let entry = json!({"bvid":"BV1z84y1p7oS","title":"Test song","url":"https://www.bilibili.com/video/BV1z84y1p7oS",
+            "owner_name":"Test UP","owner_url":"https://space.bilibili.com/42","cover_url":"https://i0.hdslb.com/test.jpg",
+            "played_count":"1234","preserved_1":"241","cookie":"never export"});
+        for source in ["cache", "favlist"] {
+            let candidate = candidate_payload(entry.as_object().unwrap(), source, None);
+            for key in [
+                "owner_name",
+                "owner_url",
+                "cover_url",
+                "played_count",
+                "preserved_1",
+            ] {
+                assert_eq!(candidate[key], entry[key]);
+            }
+            assert!(candidate.get("cookie").is_none());
+        }
+    }
 }
 
 fn entry_payload(entry: &Map<String, Value>) -> Value {

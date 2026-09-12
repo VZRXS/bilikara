@@ -37,6 +37,44 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     const navigate = name => page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
     const cases = {
+      async gatchaCard() {
+        await navigate("request");
+        await page.locator("#android-request-random").click();
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          await page.evaluate(() => {
+            state.gatchaCandidate = {bvid: "BV1z84y1p7oS", title: "歌曲标题 <script>not HTML</script>",
+              url: "https://www.bilibili.com/video/BV1z84y1p7oS", cover_url: "/pic/icon.png",
+              owner_name: "Test UP", preserved_1: "241", played_count: "12345"};
+            state.gatchaView = "candidate";
+            renderGatchaWorkspace();
+          });
+          const card = page.locator("#gatcha-candidate-card");
+          assert.equal(await card.locator("img").count(), 1);
+          assert.equal(await card.locator("img").isVisible(), true, "The actual cover must be painted, not just present in the DOM");
+          await card.locator("img").scrollIntoViewIfNeeded();
+          await page.waitForFunction(() => {
+            const image = document.querySelector("#gatcha-candidate-card img");
+            return image.complete && image.naturalWidth > 0;
+          });
+          const artwork = await card.locator("img").boundingBox();
+          assert.ok(artwork.width > 150 && artwork.height > 80, "Cover has a usable rendered size");
+          assert.ok(Math.abs(artwork.width / artwork.height - 16 / 9) < 0.05, "Cover keeps search's aspect ratio");
+          assert.equal(await card.locator(".search-result-duration").isVisible(), true);
+          assert.equal(await card.locator(".search-result-status").isVisible(), true);
+          assert.equal(await card.locator(".search-result-duration").textContent(), "4:01");
+          assert.ok((await card.textContent()).includes("Test UP"));
+          assert.equal(await card.locator("script,button").count(), 0, "Text is escaped and Confirm remains the only add action");
+          const box = await card.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= width);
+          await page.locator("#gatcha-confirm-button").click({trial: true});
+          assert.equal(await card.evaluate(el => {
+            const image = el.querySelector("img"); renderGatchaWorkspace(); return image === el.querySelector("img");
+          }), true, "Playback renders do not reload the cover");
+        }
+        await page.evaluate(() => { state.gatchaCandidate = {title: "No artwork", bvid: "BV1z84y1p7oS"}; renderGatchaWorkspace(); });
+        assert.equal(await page.locator("#gatcha-candidate-card .search-result-cover-fallback").count(), 1);
+      },
       async tooltip() {
         await navigate("playback");
         for (const width of [320, 392, 412]) {

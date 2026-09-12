@@ -441,6 +441,15 @@ html[data-android-layout="portrait"] .android-my-page {
 }
 
 .android-my-page h2 { margin: 0 0 16px; font-size: 24px; }
+
+/* Single random pick, with the same metadata as the search feed. */
+html[data-native-host="true"] #gatcha-candidate-card { width: min(100%, 280px); text-align: left; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-cover img { position: absolute; inset: 0; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-meta { padding: 0 8px; gap: 4px; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-title { font-size: 14px; line-height: 1.35; }
+html[data-native-host="true"] #gatcha-candidate-card .search-result-url { font-size: 11px; }
 .android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
 .android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
 html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
