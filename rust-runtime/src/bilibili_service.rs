@@ -174,6 +174,19 @@ impl BilibiliHttpClient {
 pub fn fetch_dash_playurl(
     request: &BilibiliDashRequest,
 ) -> Result<BilibiliDashResult, BilibiliServiceError> {
+    fetch_dash_playurl_with(request, |client, params| {
+        client.get_wbi_json(PLAYURL_URL, params, "playurl request failed")
+    })
+}
+
+// Keep simulated responses private to unit tests; no endpoint override in the ABI.
+fn fetch_dash_playurl_with(
+    request: &BilibiliDashRequest,
+    fetch: impl FnOnce(
+        &BilibiliHttpClient,
+        BTreeMap<String, String>,
+    ) -> Result<Value, BilibiliServiceError>,
+) -> Result<BilibiliDashResult, BilibiliServiceError> {
     validate_request(request)?;
     let client = BilibiliHttpClient::new(
         &request.cookie,
@@ -194,7 +207,7 @@ pub fn fetch_dash_playurl(
     if !request.bvid.trim().is_empty() {
         params.insert("bvid".to_owned(), request.bvid.trim().to_owned());
     }
-    let payload = client.get_wbi_json(PLAYURL_URL, params, "playurl request failed")?;
+    let payload = fetch(&client, params)?;
     parse_playurl_payload(&payload)
 }
 
@@ -343,14 +356,14 @@ fn get_json(client: &Client, url: &str) -> Result<Value, BilibiliServiceError> {
     let response = client
         .get(url)
         .send()
-        .map_err(|error| service_error("network", error.to_string(), None))?;
+        .map_err(|error| service_error("network", error.without_url().to_string(), None))?;
     let status = response.status();
     if !status.is_success() {
         return Err(http_status_error(status.as_u16()));
     }
     response
         .json::<Value>()
-        .map_err(|error| service_error("invalid_response", error.to_string(), None))
+        .map_err(|error| service_error("invalid_response", error.without_url().to_string(), None))
 }
 
 fn http_status_error(status_code: u16) -> BilibiliServiceError {
@@ -467,7 +480,7 @@ fn parse_durl_stream(value: &Value) -> Option<BilibiliStream> {
         height: None,
         quality_id: None,
         bandwidth: None,
-        order: integer(object, &["order"]),
+        order: Some(integer(object, &["order"]).unwrap_or(0)),
     })
 }
 
@@ -485,12 +498,12 @@ fn parse_video_stream(value: &Value) -> Option<BilibiliStream> {
         backup_urls: backup_urls(object),
         codec_id: Some(codec_id),
         codec_name: Some(codec_name),
-        codecs: text(object, &["codecs"]),
-        mime_type: text(object, &["mimeType", "mime_type"]),
-        width: unsigned(object, &["width"]),
-        height: unsigned(object, &["height"]),
-        quality_id: integer(object, &["id"]),
-        bandwidth: unsigned(object, &["bandwidth"]),
+        codecs: Some(text(object, &["codecs"]).unwrap_or_default()),
+        mime_type: Some(text(object, &["mimeType", "mime_type"]).unwrap_or_default()),
+        width: Some(unsigned(object, &["width"]).unwrap_or(0)),
+        height: Some(unsigned(object, &["height"]).unwrap_or(0)),
+        quality_id: Some(integer(object, &["id"]).unwrap_or(0)),
+        bandwidth: Some(unsigned(object, &["bandwidth"]).unwrap_or(0)),
         order: None,
     })
 }
@@ -502,12 +515,12 @@ fn parse_audio_stream(value: &Value) -> Option<BilibiliStream> {
         backup_urls: backup_urls(object),
         codec_id: None,
         codec_name: None,
-        codecs: text(object, &["codecs"]),
-        mime_type: text(object, &["mimeType", "mime_type"]),
+        codecs: Some(text(object, &["codecs"]).unwrap_or_default()),
+        mime_type: Some(text(object, &["mimeType", "mime_type"]).unwrap_or_default()),
         width: None,
         height: None,
-        quality_id: integer(object, &["id"]),
-        bandwidth: unsigned(object, &["bandwidth"]),
+        quality_id: Some(integer(object, &["id"]).unwrap_or(0)),
+        bandwidth: Some(unsigned(object, &["bandwidth"]).unwrap_or(0)),
         order: None,
     })
 }
@@ -544,7 +557,12 @@ fn stream_url(object: &serde_json::Map<String, Value>) -> Option<String> {
 fn backup_urls(object: &serde_json::Map<String, Value>) -> Vec<String> {
     ["backupUrl", "backup_url"]
         .iter()
-        .find_map(|key| object.get(*key).and_then(Value::as_array))
+        .find_map(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_array)
+                .filter(|items| !items.is_empty())
+        })
         .map(|values| {
             values
                 .iter()
@@ -558,19 +576,21 @@ fn backup_urls(object: &serde_json::Map<String, Value>) -> Vec<String> {
 }
 
 fn text(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| object.get(*key))
-        .and_then(|value| match value {
-            Value::String(text) => Some(text.trim().to_owned()),
-            Value::Number(number) => Some(number.to_string()),
-            _ => None,
-        })
+    keys.iter().find_map(|key| match object.get(*key)? {
+        Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    })
 }
 
 fn integer(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
-    keys.iter()
-        .find_map(|key| object.get(*key))
-        .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+    keys.iter().find_map(|key| {
+        let value = object.get(*key)?;
+        value
+            .as_i64()
+            .filter(|value| *value != 0)
+            .or_else(|| value.as_str()?.parse().ok())
+    })
 }
 
 fn unsigned(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
@@ -658,6 +678,170 @@ fn default_referer() -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dash_http_timeout_and_decode_errors_omit_signed_urls() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for timeout in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://{}/playurl?w_rid=fixture-secret",
+                listener.local_addr().unwrap()
+            );
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                assert!(socket.read(&mut buffer).unwrap() > 0);
+                if timeout {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                let _ = socket.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad",
+                );
+            });
+            let client =
+                BilibiliHttpClient::new("", "fixture-agent", "https://www.bilibili.com/", 100)
+                    .unwrap();
+            let error = client.get_json(&url).unwrap_err();
+            server.join().unwrap();
+            assert_eq!(
+                error.kind,
+                if timeout {
+                    "network"
+                } else {
+                    "invalid_response"
+                }
+            );
+            assert!(!error.message.contains("fixture-secret"));
+            assert!(!error.message.contains("w_rid"));
+            assert!(!error.message.contains(&url));
+        }
+    }
+
+    #[test]
+    fn downkyi_representation_preserves_aliases_defaults_and_url_order() {
+        let parsed = parse_playurl_payload(&json!({"code": 0, "data": {"dash": {
+            "video": [null, {"baseUrl": ""}, {
+                "baseUrl": null, "base_url": "https://video",
+                "backupUrl": [], "backup_url": ["https://b2", "https://b1", "https://b2"],
+                "codecid": 0, "codecId": "12", "id": "80", "width": "1920",
+                "mimeType": "", "mime_type": "video/mp4"
+            }, {"baseUrl": "https://av1", "codecid": 13}],
+            "audio": [{"base_url": "https://audio", "id": "30280", "bandwidth": "192000",
+                       "mime_type": "audio/mp4"}, {"baseUrl": "https://default"}],
+            "flac": {"audio": {"baseUrl": "https://flac", "id": 0, "codecs": "", "mimeType": null}},
+            "dolby": {"audio": [null, {}, {"base_url": "https://dolby"}, {"baseUrl": "https://later"}]}
+        }}})).unwrap();
+        assert_eq!(parsed.video.len(), 2);
+        let video = &parsed.video[0];
+        assert_eq!(video.url, "https://video");
+        assert_eq!(
+            video.backup_urls,
+            ["https://b2", "https://b1", "https://b2"]
+        );
+        assert_eq!(video.codec_name.as_deref(), Some("hevc"));
+        assert_eq!(video.codec_id, Some(12));
+        assert_eq!(video.quality_id, Some(80));
+        assert_eq!(video.width, Some(1920));
+        assert_eq!(video.height, Some(0));
+        assert_eq!(video.bandwidth, Some(0));
+        assert_eq!(video.codecs.as_deref(), Some(""));
+        assert_eq!(video.mime_type.as_deref(), Some("video/mp4"));
+        assert_eq!(parsed.video[1].codec_name.as_deref(), Some("av1"));
+        assert_eq!(parsed.audio[0].quality_id, Some(30280));
+        assert_eq!(parsed.audio[0].bandwidth, Some(192000));
+        assert_eq!(parsed.audio[0].mime_type.as_deref(), Some("audio/mp4"));
+        assert_eq!(parsed.audio[1].quality_id, Some(0));
+        assert_eq!(parsed.audio[1].bandwidth, Some(0));
+        let flac = parsed.flac.unwrap();
+        assert_eq!(flac.quality_id, Some(30251));
+        assert_eq!(flac.codecs.as_deref(), Some("flac"));
+        assert_eq!(flac.mime_type.as_deref(), Some("audio/flac"));
+        let dolby = parsed.dolby.unwrap();
+        assert_eq!(dolby.url, "https://dolby");
+        assert_eq!(dolby.quality_id, Some(30250));
+        assert_eq!(dolby.codecs.as_deref(), Some("ec-3"));
+        assert_eq!(dolby.mime_type.as_deref(), Some("audio/mp4"));
+        assert_eq!(dolby.codec_name.as_deref(), Some("eac3"));
+    }
+
+    #[test]
+    fn downkyi_durl_keeps_input_order_and_optional_defaults() {
+        let parsed = parse_playurl_payload(&json!({"data": {"durl": [
+            {"url": "https://second", "order": "2", "backup_url": ["https://b2", "https://b1"]},
+            {"url": "https://first", "order": 1}, {"url": "https://default"}
+        ]}}))
+        .unwrap();
+        assert_eq!(
+            parsed.video.iter().map(|s| s.order).collect::<Vec<_>>(),
+            [Some(2), Some(1), Some(0)]
+        );
+        assert_eq!(parsed.video[0].url, "https://second");
+        assert_eq!(parsed.video[0].backup_urls, ["https://b2", "https://b1"]);
+        assert!(parsed.audio.is_empty());
+        assert!(parsed.flac.is_none());
+        assert!(parsed.dolby.is_none());
+        assert!(parsed.video[0].quality_id.is_none());
+        assert!(parse_playurl_payload(&json!([])).is_err());
+        assert!(parse_playurl_payload(&json!({"data": {"durl": []}})).is_err());
+    }
+
+    #[test]
+    fn dash_service_private_transport_seam_preserves_options_and_errors() {
+        let request: BilibiliDashRequest = serde_json::from_value(json!({
+            "bvid": "BVfixture", "cid": 456, "avid": 123, "qn": 80, "fnval": 16,
+            "cookie": "SESSDATA=fixture", "user_agent": "fixture-agent",
+            "referer": "https://www.bilibili.com/video/BVfixture", "timeout_ms": 15000
+        }))
+        .unwrap();
+        let headers = request_headers(&request).unwrap();
+        assert_eq!(headers[COOKIE], "SESSDATA=fixture");
+        assert_eq!(headers[USER_AGENT], "fixture-agent");
+        assert_eq!(headers[REFERER], request.referer);
+        let parsed = fetch_dash_playurl_with(&request, |_client, params| {
+            assert_eq!(
+                params,
+                BTreeMap::from([
+                    ("bvid".into(), "BVfixture".into()),
+                    ("cid".into(), "456".into()),
+                    ("avid".into(), "123".into()),
+                    ("qn".into(), "80".into()),
+                    ("fnval".into(), "16".into()),
+                    ("fourk".into(), "1".into()),
+                    ("platform".into(), "web".into())
+                ])
+            );
+            Ok(json!({"data": {"dash": {"video": [], "audio": []}}}))
+        })
+        .unwrap();
+        assert!(parsed.video.is_empty());
+        for (code, kind) in [
+            (-101, "authentication"),
+            (-403, "forbidden"),
+            (62002, "unavailable"),
+            (-352, "risk_control"),
+            (-412, "risk_control"),
+            (412, "risk_control"),
+            (-400, "invalid_request"),
+            (-500, "api"),
+        ] {
+            let error =
+                fetch_dash_playurl_with(&request, |_, _| Ok(json!({"code": code}))).unwrap_err();
+            assert_eq!(error.kind, kind);
+            assert_eq!(error.api_code, Some(code));
+        }
+        for status in [401, 402, 403, 412, 429, 500, 503] {
+            let expected = http_status_error(status);
+            let error =
+                fetch_dash_playurl_with(&request, |_, _| Err(expected.clone())).unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(error.status_code, Some(status));
+        }
+    }
 
     #[test]
     fn wbi_signing_is_stable_and_filters_forbidden_characters() {

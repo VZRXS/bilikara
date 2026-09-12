@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import bilikara.bilibili as bilibili_module
+from bilikara import rust_runtime
 from bilikara.bilibili import (
     BilibiliError,
     ManualBindingRequiredError,
@@ -2968,28 +2969,24 @@ class BilibiliParserTest(unittest.TestCase):
         )
 
 
-    @patch("bilikara.bilibili.request_json")
-    @patch("bilikara.bilibili.get_cached_wbi_keys")
-    def test_fetch_dash_playurl_rejects_non_dict_payload(self, mock_get_cached_wbi_keys, mock_request_json):
-        mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
-        mock_request_json.return_value = []
-
-        with self.assertRaisesRegex(BilibiliError, "播放地址响应格式异常"):
+    @patch("bilikara.rust_runtime._call_runtime_service", return_value=[])
+    def test_fetch_dash_playurl_rejects_non_dict_payload(self, _service):
+        with self.assertRaisesRegex(BilibiliError, "invalid response") as raised:
             fetch_dash_playurl("BV1xx411c7mD", 456)
+        self.assertEqual(raised.exception.kind, "invalid_response")
+        self.assertIsInstance(raised.exception.__cause__, rust_runtime.RustRuntimeServiceError)
 
-    @patch("bilikara.bilibili.request_json")
-    @patch("bilikara.bilibili.get_cached_wbi_keys")
-    def test_fetch_dash_playurl_preserves_explicit_authentication_error(
-        self, mock_get_cached_wbi_keys, mock_request_json
-    ):
-        mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
-        mock_request_json.return_value = {"code": -101, "message": "账号未登录"}
-
+    @patch("bilikara.rust_runtime._call_runtime_service")
+    def test_fetch_dash_playurl_preserves_explicit_authentication_error(self, service):
+        service.side_effect = rust_runtime.RustRuntimeServiceError(
+            "authentication", "账号未登录",
+            response={"error": {"kind": "authentication", "api_code": -101}},
+        )
         with self.assertRaisesRegex(BilibiliError, "invalid or expired") as raised:
             fetch_dash_playurl("BV1xx411c7mD", 456)
-
         self.assertEqual(raised.exception.kind, "authentication")
         self.assertEqual(raised.exception.api_code, -101)
+        self.assertIs(raised.exception.__cause__, service.side_effect)
 
 
 if __name__ == "__main__":

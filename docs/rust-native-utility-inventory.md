@@ -88,6 +88,37 @@ No named candidate qualified as an unconsumed ordinary private leftover without
 a freeze or useful test role. This closeout changes factual documentation and
 test attribution, not runtime dispatch, public schemas or reference algorithms.
 
+## P05: DASH / DownKyi service reuse slice
+
+DownKyi now calls `_download_selected_streams` → `_resolve_dash_streams`
+(`native_media=False`) → `bilikara.bilibili.fetch_dash_playurl` →
+`rust_runtime.fetch_bilibili_dash_playurl` → existing Runtime `bilibili_dash`
+FFI dispatch → `bilibili_service::fetch_dash_playurl`. Python's public name and
+signature remain as a credential/options/error adapter, without a DASH HTTP,
+WBI or parser fallback. Native unavailability is explicit.
+
+The existing Rust service now supplies ordinary-stream numeric/text defaults,
+empty/null field alias fallback and special-audio defaults required by this
+consumer. Input durl order, primary/backup ordering and first valid Dolby entry
+remain intact. Invalid URL entries are filtered by the Rust service; DownKyi
+still rejects durl-only responses lacking audio. Ordinary audio now also retains
+snake_case MIME metadata; it does not change selection. Signed request URLs are
+removed from HTTP transport/decode errors. Typed service kind/API/HTTP codes and
+exception causes survive the Python adapter.
+
+DownKyi keeps its quality/codec/Hi-Res selectors (including Dolby before FLAC),
+aria2 execution, FFmpeg compatibility normalization, track validation,
+publication and retries. It does not submit Rust CacheRuntime jobs, and reuse of
+Rust resolution does not enable Native's AVC/audio restrictions.
+
+This is only the first P05 service integration after T closeout, within v0.8
+Rust Core Convergence / Preview. Shared Python `get_cached_wbi_keys`, `get_wbi_keys`,
+`get_mixin_key`, `enc_wbi` and cache remain for `_request_gatcha_page` and
+`_request_gatcha_uid_profile`: monthly D1 maintenance, Gatcha legacy rebuild and
+protected Python references/tests still consume them. Gatcha/maintenance WBI
+and complete login integration remain outside this slice. S1–S3/M1–M6 and T
+closeout remain closed; no protected reference or public API is retired here.
+
 ## Existing native utility domains
 
 | Python module and helper | Category | Inputs → output | Dependencies | Pure | Phase 1 decision |

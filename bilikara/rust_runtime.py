@@ -517,6 +517,29 @@ def fetch_bilibili_dash_playurl(
                 f"Rust Bilibili service omitted {key} streams",
                 response=result,
             )
+    streams = [*result["video"], *result["audio"]]
+    for key in ("flac", "dolby"):
+        if result.get(key) is not None:
+            streams.append(result[key])
+    for stream in streams:
+        if (
+            not isinstance(stream, dict)
+            or not isinstance(stream.get("url"), str)
+            or not stream["url"].strip()
+            or not isinstance(stream.get("backup_urls"), list)
+            or any(not isinstance(url, str) for url in stream["backup_urls"])
+            or any(
+                key in stream and not isinstance(stream[key], str)
+                for key in ("codec_name", "codecs", "mime_type")
+            )
+            or any(
+                key in stream and type(stream[key]) is not int
+                for key in ("codec_id", "width", "height", "quality_id", "bandwidth", "order")
+            )
+        ):
+            raise RustRuntimeServiceError(
+                "invalid_response", "Rust Bilibili service returned an invalid stream", response={}
+            )
     return result
 
 

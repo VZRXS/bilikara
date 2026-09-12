@@ -184,7 +184,7 @@ When completing a task, agents must report:
 | :--- | :--- |
 | `server.py` | HTTP Server, API endpoints, SSE event hub (`AppContext`). |
 | `store.py` | `PlaylistStore` AppState/FFI adapter, defensive read-only projection, and atomic JSON persistence derived from Rust snapshots. |
-| `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper. |
+| `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper; DASH is a thin adapter to the Rust Bilibili service for DownKyi too. Shared Gatcha/maintenance WBI helpers remain. |
 | `cache.py` | Rust CacheRuntime adapter/state projection plus compatibility orchestration for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. |
 | `rust_backend.py` | Native FFI loader, JSON payload validation, frozen compatibility fallbacks for older domains, and fail-closed adapters for new Rust-authoritative capabilities. |
 | `updater.py` | GitHub release checking, semver comparison, update asset resolution. |

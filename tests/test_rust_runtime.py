@@ -77,6 +77,100 @@ class FakeAppStateLibrary:
 
 
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_public_dash_adapter_forwards_credentials_options_and_representation(self):
+        from bilikara import bilibili
+        result = {
+            "video": [{"url": "https://video", "backup_urls": ["https://b2", "https://b1"], "order": 2}],
+            "audio": [], "flac": None, "dolby": None,
+        }
+        for bbdown_cookie, config_cookie, expected in [
+            ("SESSDATA=fixture", "SESSDATA=config", "SESSDATA=fixture"),
+            ("", "SESSDATA=config", "SESSDATA=config"), ("", "", ""),
+        ]:
+            with self.subTest(cookie_source=expected):
+                library = FakeServiceLibrary({"schema_version": 1, "status": "completed", "result": result})
+                with patch.object(rust_runtime, "_runtime_lib", library), patch.object(
+                    bilibili, "cookie_from_bbdown_data", return_value=bbdown_cookie
+                ), patch.object(bilibili.cfg, "COOKIE", config_cookie), patch.dict(
+                    bilibili.BILIBILI_HEADERS,
+                    {"User-Agent": "fixture-agent", "Referer": "https://www.bilibili.com/video/BVfixture", "Cookie": "stale"},
+                ), patch.object(bilibili, "request_json", side_effect=AssertionError("retired HTTP")), patch.object(
+                    bilibili, "get_cached_wbi_keys", side_effect=AssertionError("retired WBI")
+                ):
+                    actual = bilibili.fetch_dash_playurl("BVfixture", 456, avid=123, qn=80, fnval=16)
+                self.assertEqual(actual, result)
+                self.assertEqual(library.request, {"service": "bilibili_dash", "request": {
+                    "schema_version": 1, "bvid": "BVfixture", "cid": 456, "avid": 123,
+                    "qn": 80, "fnval": 16, "cookie": expected, "user_agent": "fixture-agent",
+                    "referer": "https://www.bilibili.com/video/BVfixture", "timeout_ms": 15000,
+                }})
+
+    def test_public_dash_errors_keep_type_codes_chain_and_retry_classification(self):
+        from bilikara import bilibili
+        for kind, api_code, status, terminal in [
+            ("authentication", -101, None, True), ("forbidden", -403, None, True),
+            ("unavailable", 62002, None, True), ("risk_control", -352, None, True),
+            ("risk_control", -412, None, True), ("authentication", None, 401, True),
+            ("unavailable", None, 402, True), ("forbidden", None, 403, True),
+            ("http", None, 429, False), ("http", None, 503, False),
+            ("network", None, None, False), ("invalid_response", None, None, False),
+        ]:
+            with self.subTest(kind=kind, api=api_code, status=status):
+                library = FakeServiceLibrary({"schema_version": 1, "status": "failed", "error": {
+                    "kind": kind, "message": "fixture failure", "api_code": api_code, "status_code": status,
+                }})
+                with patch.object(rust_runtime, "_runtime_lib", library), patch.object(
+                    bilibili, "effective_bilibili_cookie", return_value=""
+                ), self.assertRaises(bilibili.BilibiliError) as raised:
+                    bilibili.fetch_dash_playurl("BVfixture", 456)
+                error = raised.exception
+                self.assertEqual((error.kind, error.api_code, error.status_code), (kind, api_code, status))
+                self.assertIsInstance(error.__cause__, rust_runtime.RustRuntimeServiceError)
+                self.assertEqual(CacheManager._is_terminal_track_failure(error), terminal)
+
+    def test_public_dash_unavailable_has_no_python_fallback(self):
+        from bilikara import bilibili
+        with patch.object(rust_runtime, "_runtime_lib", None), patch.object(
+            bilibili, "effective_bilibili_cookie", return_value=""
+        ), patch.object(bilibili, "request_json") as http, patch.object(bilibili, "get_cached_wbi_keys") as wbi:
+            with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                bilibili.fetch_dash_playurl("BVfixture", 456)
+        http.assert_not_called()
+        wbi.assert_not_called()
+
+    def test_public_dash_rejects_malformed_native_streams(self):
+        from bilikara import bilibili
+        for stream in [None, {}, {"url": "x", "backup_urls": "bad"},
+                       {"url": "x", "backup_urls": [], "quality_id": "80"},
+                       {"url": "x", "backup_urls": [None]}]:
+            for key in ("video", "audio", "flac", "dolby"):
+                result = {"video": [], "audio": [], "flac": None, "dolby": None}
+                if stream is None and key in ("flac", "dolby"):
+                    continue  # None is a valid absent special stream.
+                result[key] = [stream] if key in ("video", "audio") else stream
+                with self.subTest(stream=stream, key=key), patch.object(
+                    rust_runtime, "_call_runtime_service", return_value=result
+                ), patch.object(bilibili, "effective_bilibili_cookie", return_value=""):
+                    with self.assertRaises(bilibili.BilibiliError) as raised:
+                        bilibili.fetch_dash_playurl("BVfixture", 456)
+                    self.assertEqual(raised.exception.kind, "invalid_response")
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower() in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_public_dash_invalid_request_uses_real_abi_without_network(self):
+        from bilikara import bilibili
+        self.assertIsNotNone(rust_runtime._runtime_lib)
+        with patch.object(bilibili, "effective_bilibili_cookie", return_value=""), patch.object(
+            bilibili, "request_json", side_effect=AssertionError("retired HTTP")
+        ):
+            for bvid, cid in [("BVfixture", 0), ("", 456)]:
+                with self.subTest(bvid=bvid, cid=cid), self.assertRaises(bilibili.BilibiliError) as raised:
+                    bilibili.fetch_dash_playurl(bvid, cid)
+                self.assertEqual(raised.exception.kind, "invalid_request")
+                self.assertIsInstance(raised.exception.__cause__, rust_runtime.RustRuntimeServiceError)
+
     def test_app_state_adapter_sends_one_strict_request_and_returns_full_result(self):
         response = {
             "schema_version": 1,

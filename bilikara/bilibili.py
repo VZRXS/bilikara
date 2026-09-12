@@ -3243,183 +3243,35 @@ def fetch_dash_playurl(
     qn: int = 127,
     fnval: int = 4048,
 ) -> dict:
-    """Fetch DASH playurl from Bilibili API, returning stream URLs for video/audio.
+    """Resolve DASH through the shared Rust service; retain the Host API name.
 
-    Args:
-        bvid: BV ID of the video.
-        cid: CID of the specific page.
-        avid: AV ID (optional, derived from bvid if not given).
-        qn: Quality ID (default 127 = 8K, API will auto-downgrade).
-        fnval: DASH format flag (default 4048 = all DASH formats).
-
-    Returns:
-        Dict with keys:
-          - "video": list of dicts with "url", "backup_urls", "codec_id", "codec_name", "width", "height"
-          - "audio": list of dicts with "url", "backup_urls", "bandwidth"
-          - "flac": dict or None with "url", "backup_urls" if Hi-Res FLAC available
-          - "dolby": dict or None with "url", "backup_urls" if Dolby Atmos available
+    Rust owns HTTP, WBI and response parsing. DownKyi callers keep their own
+    existing selection and external-download path, independent of Native media.
     """
-    if not bvid and not avid:
-        raise BilibiliError("bvid 和 avid 至少需要提供一个")
-
     try:
-        img_key, sub_key = get_cached_wbi_keys()
-    except Exception as exc:
-        raise BilibiliError(f"WBI 签名失败: {exc}") from exc
-
-    params = {
-        "cid": str(cid),
-        "qn": str(qn),
-        "fnval": str(fnval),
-        "fourk": "1",
-        "platform": "web",
-    }
-    if avid:
-        params["avid"] = str(avid)
-    if bvid:
-        params["bvid"] = bvid
-
-    signed_params = enc_wbi(params, img_key, sub_key)
-    query_string = urllib.parse.urlencode(signed_params)
-    api_url = f"https://api.bilibili.com/x/player/wbi/playurl?{query_string}"
-
-    payload = request_json(api_url)
-    if not isinstance(payload, dict):
-        raise BilibiliError("播放地址响应格式异常")
-    code = int(payload.get("code") or 0) if isinstance(payload.get("code"), (int, float)) else 0
-    if code != 0:
-        message = str(payload.get("message") or "获取播放地址失败")
-        kind = {
-            -101: "authentication",
-            -403: "forbidden",
-            -404: "unavailable",
-            -400: "invalid_request",
-            -352: "risk_control",
-            -412: "risk_control",
-            412: "risk_control",
-            62002: "unavailable",
-        }.get(code, "api")
-        if kind == "authentication":
-            display_message = (
-                f"Bilibili login/Cookie is invalid or expired (API {code})"
-            )
-        elif kind in {"forbidden", "unavailable"}:
-            display_message = f"视频播放地址不可用: {message}"
-        elif kind == "risk_control":
-            display_message = f"请求被风控拦截: {message}"
-        else:
-            display_message = message
-        error = BilibiliError(display_message)
-        error.kind = kind
-        error.api_code = code
-        raise error
-
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        raise BilibiliError("播放地址响应格式异常")
-
-    dash = data.get("dash")
-    if not isinstance(dash, dict):
-        durl_list = data.get("durl")
-        if isinstance(durl_list, list) and durl_list:
-            urls = []
-            for segment in durl_list:
-                if isinstance(segment, dict):
-                    url = str(segment.get("url") or "").strip()
-                    backup_urls = segment.get("backup_url") or []
-                    urls.append({
-                        "url": url,
-                        "backup_urls": [str(u).strip() for u in backup_urls if u],
-                        "order": int(segment.get("order") or 0),
-                    })
-            return {"video": urls, "audio": [], "flac": None, "dolby": None}
-        raise BilibiliError("视频不支持 DASH 格式且无可回退地址")
-
-    video_streams = []
-    for video in dash.get("video") or []:
-        if not isinstance(video, dict):
-            continue
-        base_url = str(video.get("baseUrl") or video.get("base_url") or "").strip()
-        if not base_url:
-            continue
-        backup_urls = video.get("backupUrl") or video.get("backup_url") or []
-        codec_id = int(video.get("codecid") or video.get("codecId") or 0)
-        codec_map = {7: "avc", 12: "hevc", 13: "av1"}
-        video_streams.append({
-            "url": base_url,
-            "backup_urls": [str(u).strip() for u in backup_urls if u],
-            "codec_id": codec_id,
-            "codec_name": codec_map.get(codec_id, f"codec_{codec_id}"),
-            "codecs": str(video.get("codecs") or ""),
-            "mime_type": str(video.get("mimeType") or video.get("mime_type") or ""),
-            "width": int(video.get("width") or 0),
-            "height": int(video.get("height") or 0),
-            "quality_id": int(video.get("id") or 0),
-            "bandwidth": int(video.get("bandwidth") or 0),
-        })
-
-    audio_streams = []
-    for audio in dash.get("audio") or []:
-        if not isinstance(audio, dict):
-            continue
-        base_url = str(audio.get("baseUrl") or audio.get("base_url") or "").strip()
-        if not base_url:
-            continue
-        backup_urls = audio.get("backupUrl") or audio.get("backup_url") or []
-        audio_streams.append({
-            "url": base_url,
-            "backup_urls": [str(u).strip() for u in backup_urls if u],
-            "quality_id": int(audio.get("id") or 0),
-            "bandwidth": int(audio.get("bandwidth") or 0),
-            "codecs": str(audio.get("codecs") or ""),
-            "mime_type": str(audio.get("mimeType") or ""),
-        })
-
-    flac_info = None
-    flac = dash.get("flac")
-    if isinstance(flac, dict):
-        flac_audio = flac.get("audio")
-        if isinstance(flac_audio, dict):
-            flac_url = str(flac_audio.get("baseUrl") or flac_audio.get("base_url") or "").strip()
-            if flac_url:
-                flac_backup = flac_audio.get("backupUrl") or flac_audio.get("backup_url") or []
-                flac_info = {
-                    "url": flac_url,
-                    "backup_urls": [str(u).strip() for u in flac_backup if u],
-                    "quality_id": int(flac_audio.get("id") or 30251),
-                    "bandwidth": int(flac_audio.get("bandwidth") or 0),
-                    "codecs": str(flac_audio.get("codecs") or "flac"),
-                    "mime_type": str(flac_audio.get("mimeType") or flac_audio.get("mime_type") or "audio/flac"),
-                    "codec_name": "flac",
-                }
-
-    dolby_info = None
-    dolby = dash.get("dolby")
-    if isinstance(dolby, dict):
-        dolby_audio_list = dolby.get("audio") or []
-        for dolby_audio in dolby_audio_list:
-            if not isinstance(dolby_audio, dict):
-                continue
-            dolby_url = str(dolby_audio.get("baseUrl") or dolby_audio.get("base_url") or "").strip()
-            if dolby_url:
-                dolby_backup = dolby_audio.get("backupUrl") or dolby_audio.get("backup_url") or []
-                dolby_info = {
-                    "url": dolby_url,
-                    "backup_urls": [str(u).strip() for u in dolby_backup if u],
-                    "quality_id": int(dolby_audio.get("id") or 30250),
-                    "bandwidth": int(dolby_audio.get("bandwidth") or 0),
-                    "codecs": str(dolby_audio.get("codecs") or "ec-3"),
-                    "mime_type": str(dolby_audio.get("mimeType") or dolby_audio.get("mime_type") or "audio/mp4"),
-                    "codec_name": "eac3",
-                }
-                break
-
-    return {
-        "video": video_streams,
-        "audio": audio_streams,
-        "flac": flac_info,
-        "dolby": dolby_info,
-    }
+        return rust_runtime.fetch_bilibili_dash_playurl(
+            bvid=bvid,
+            cid=cid,
+            avid=avid,
+            qn=qn,
+            fnval=fnval,
+            cookie=effective_bilibili_cookie(),
+            user_agent=str(BILIBILI_HEADERS.get("User-Agent") or ""),
+            referer=str(BILIBILI_HEADERS.get("Referer") or ""),
+            timeout_ms=15_000,
+        )
+    except rust_runtime.RustRuntimeServiceError as exc:
+        details = exc.response.get("error")
+        details = details if isinstance(details, dict) else {}
+        api_code = details.get("api_code")
+        message = str(exc)
+        if exc.kind == "authentication" and api_code is not None:
+            message = f"Bilibili login/Cookie is invalid or expired (API {api_code})"
+        error = BilibiliError(message)
+        error.kind = exc.kind
+        error.api_code = api_code
+        error.status_code = details.get("status_code")
+        raise error from exc
 
 
 def _py_fetch_gatcha_candidate() -> dict | None:

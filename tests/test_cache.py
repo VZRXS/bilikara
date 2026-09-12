@@ -9025,6 +9025,99 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             video_page=1,
         )
 
+    def test_downkyi_durl_still_rejects_missing_audio_after_public_adapter(self):
+        from bilikara import bilibili
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(rust_runtime, "_call_runtime_service", return_value={
+                    "video": [{"url": "https://media.example/segment", "backup_urls": [], "order": 2}],
+                    "audio": [], "flac": None, "dolby": None,
+                }), patch.object(bilibili, "effective_bilibili_cookie", return_value=""), patch(
+                    "bilikara.cache.effective_bilibili_cookie", return_value=""
+                ), self.assertRaisesRegex(bilibili.BilibiliError, "未找到符合质量要求的音频流"):
+                    manager._resolve_dash_streams(self._single_downkyi_item())
+            finally:
+                manager.shutdown()
+
+    def test_downkyi_public_dash_adapter_keeps_non_native_selection_and_aria2(self):
+        from bilikara import bilibili
+        item = self._single_downkyi_item("p05-downkyi")
+        def stream(name, **fields):
+            return {"url": f"https://media.example/{name}",
+                    "backup_urls": [f"https://backup2.example/{name}", f"https://backup1.example/{name}"], **fields}
+        dash = {
+            "video": [stream("avc", codec_name="avc", quality_id=32, bandwidth=20),
+                      stream("hevc", codec_name="hevc", quality_id=80, bandwidth=10),
+                      stream("av1", codec_name="av1", quality_id=80, bandwidth=5)],
+            "audio": [stream("low", quality_id=30216, bandwidth=1), stream("regular", quality_id=30280, bandwidth=2)],
+            "flac": stream("flac", quality_id=30251, codec_name="flac"),
+            "dolby": stream("dolby", quality_id=30250, codec_name="eac3"),
+        }
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.video_quality = "1080P 高清"
+                with patch.object(manager, "_should_force_avc_locked", return_value=False), patch.object(
+                    rust_runtime, "_call_runtime_service", return_value=dash
+                ) as service, patch.object(bilibili, "effective_bilibili_cookie", return_value="SESSDATA=fixture"), patch(
+                    "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=fixture"
+                ), patch.object(manager, "_download_stream_with_rust") as native_download, patch.object(
+                    manager, "_download_dash_streams_native"
+                ) as native_group, patch.object(manager, "_download_stream_with_aria2c") as aria:
+                    aria.side_effect = lambda _id, _bin, _ffmpeg, target, _log, **kw: Path(target) / kw["out_name"]
+                    for hires, flac, dolby in [
+                        (False, dash["flac"], dash["dolby"]),
+                        (True, dash["flac"], dash["dolby"]),
+                        (True, dash["flac"], None), (True, None, None),
+                    ]:
+                        dash["flac"] = flac
+                        dash["dolby"] = dolby
+                        manager.audio_hires = hires
+                        resolved = manager._resolve_dash_streams(item)
+                        expected_video = manager._select_dash_video_stream(dash["video"], max_quality_id=80)
+                        self.assertEqual(resolved["video"], [expected_video])
+                        self.assertNotEqual(expected_video["codec_name"], "avc")
+                        self.assertEqual(resolved["audio"][0]["quality_id"], 30280)
+                        self.assertEqual(resolved["dolby"], dash["dolby"] if hires else None)
+                        self.assertEqual(resolved["flac"], flac if hires else None)
+                        aria.reset_mock()
+                        manager._download_dash_streams_with_aria2c(
+                            item, Path("/tools/aria2c"), Path("/tools/ffmpeg"), self.cache_dir / item.id,
+                            Path(self.temp_dir.name) / "p05.log", dash_streams=resolved,
+                            video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                            audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                            cache_attempt_token=1,
+                        )
+                        self.assertEqual(aria.call_count, 2)
+                        by_kind = {call.kwargs["stream_kind"]: call for call in aria.call_args_list}
+                        audio = dolby if hires and dolby else flac if hires and flac else dash["audio"][1]
+                        for kind, selected in [("video", expected_video), ("audio", audio)]:
+                            call = by_kind[kind]
+                            self.assertEqual(call.args[1], Path("/tools/aria2c"))
+                            self.assertEqual(call.kwargs["urls"], [selected["url"], *selected["backup_urls"]])
+                            self.assertEqual(call.kwargs["cookie"], "SESSDATA=fixture")
+                    with patch.object(manager, "_raise_if_priority_shift"), patch.object(
+                        manager, "_begin_download_progress"
+                    ), patch.object(manager, "_download_dash_streams_with_aria2c",
+                                    side_effect=RuntimeError("fixture stops before publication")) as group:
+                        with self.assertRaisesRegex(RuntimeError, "fixture stops before publication"):
+                            manager._download_selected_streams(
+                                item, Path("/tools/aria2c"), Path("/tools/ffmpeg"), self.cache_dir / item.id,
+                                Path(self.temp_dir.name) / "dispatch.log", cache_attempt_token=1,
+                                download_source=DOWNLOAD_SOURCE_DOWNKYI,
+                            )
+                        self.assertTrue(group.call_args.kwargs["validate_tracks"])
+                    self.assertTrue(service.call_args_list)
+                    for call in service.call_args_list:
+                        self.assertEqual(call.args[0], "bilibili_dash")
+                        self.assertEqual(call.args[1]["cid"], 111)
+                        self.assertEqual(call.args[1]["cookie"], "SESSDATA=fixture")
+                    native_download.assert_not_called()
+                    native_group.assert_not_called()
+            finally:
+                manager.shutdown()
+
     def test_rust_native_guest_resolves_dash_and_downgrades_quality_without_python_fallback(self):
         item = self._single_downkyi_item("native-guest")
         guest_dash = {
