@@ -21,6 +21,11 @@ class RemoteSearchHardeningTest(unittest.TestCase):
         cls.cover_source = cls._slice(
             "function appendSearchResultCoverFallback", "function createSearchResultRow"
         )
+        # Search-only fixtures omit the outer request panel. Load the real
+        # current dependency so its no-panel branch executes in these slices.
+        cls.size_tier_source = cls._slice(
+            "function syncRemoteRequestPanelSizeTier", "function syncRemoteSearchModeSelection"
+        )
         cls.render_source = cls._slice(
             "function renderSearchResultItems", "function appendSearchResultItems"
         )
@@ -147,6 +152,7 @@ console.log(JSON.stringify({{
         batch = self.run_node(
             f"""
 const expandedSearchEagerCoverCount = 6;
+const elements = {{}};
 const rows = [];
 const container = {{
   _innerHTML: "",
@@ -164,6 +170,7 @@ function applyRequestResultSelection() {{}}
 function requestDetailOwnerForContainer() {{ return "categories"; }}
 function t(key) {{ return key; }}
 const document = {{ createElement() {{ return {{}}; }} }};
+{self.size_tier_source}
 {self.render_source}
 renderSearchResultItems(container, Array.from({{ length: 8 }}, (_, index) => ({{ id: index }})));
 console.log(JSON.stringify({{ eager: rows.map((row) => row.eagerCover) }}));
@@ -225,6 +232,7 @@ function renderLarkSearchResults(items) {{
   items.forEach((item) => sharedResults.appendChild(createSearchResultRow(item, {{ eagerCover: false }})));
 }}
 
+{self.size_tier_source}
 {self.render_source}
 {self.sync_source}
 

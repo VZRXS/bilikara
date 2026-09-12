@@ -33,6 +33,17 @@ impl QrImageError {
     }
 }
 
+pub(crate) fn encode_qr(payload: &str) -> Result<QrCode, QrImageError> {
+    QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::M).map_err(|error| match error
+    {
+        QrError::DataTooLong => QrImageError {
+            kind: QrImageErrorKind::CapacityExceeded,
+            message: "QR payload exceeds M-level capacity",
+        },
+        _ => QrImageError::encoding_failed(),
+    })
+}
+
 /// Preserve UTF-8 payload bytes, choose a fitting standard QR version at M level,
 /// and render black/white pixels. Both existing callers use scale 10; the Remote
 /// UI supplies its own quiet space (border 0), while login uses border 4.
@@ -52,16 +63,7 @@ pub fn generate_qr_png(
             message: "QR image scale or border exceeds the supported limit",
         });
     }
-    let code =
-        QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::M).map_err(|error| {
-            match error {
-                QrError::DataTooLong => QrImageError {
-                    kind: QrImageErrorKind::CapacityExceeded,
-                    message: "QR payload exceeds M-level capacity",
-                },
-                _ => QrImageError::encoding_failed(),
-            }
-        })?;
+    let code = encode_qr(payload)?;
     let scale = module_scale as usize;
     let border = border as usize;
     let width = (code.width() + 2 * border) * scale;

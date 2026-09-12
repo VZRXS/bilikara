@@ -35,11 +35,7 @@ fn remove_part_suffix(display_title: &str, part_title: &str) -> String {
     }
 }
 
-pub(crate) fn clean_display_title_impl(
-    title: &str,
-    display_title: &str,
-    part_title: &str,
-) -> String {
+pub fn clean_display_title_impl(title: &str, display_title: &str, part_title: &str) -> String {
     init_regexes();
 
     let title_sanitized = title.replace('\0', "");

@@ -21,6 +21,9 @@ tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", 
 tokio-util = { version = "0.7", optional = true, features = ["io"] }
 time = { version = "0.3", optional = true }
 bilikara_rust = { path = "../rust" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+cosmic-text = { version = "0.17", default-features = false, features = ["std", "swash", "fontconfig"] }
+csv = "1.4"
 fs2 = "0.4"
 getrandom = "0.3"
 if-addrs = "0.13"

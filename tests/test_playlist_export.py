@@ -1,274 +1,186 @@
+"""Behavior tests for P03's real Rust renderer/Runtime/FFI and HTTP consumers.
+Pillow and ZXing are independent test decoders, never production renderers.
+"""
+import base64
+import csv
+from datetime import datetime
+import io
+import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
+import zxingcpp
 
-import bilikara.playlist_export as playlist_export
-from bilikara.playlist_export import (
-    _find_system_font,
-    _bundled_source_han_sans_path,
-    _font_supports_char,
-    _hidden_process_kwargs,
-    _load_font,
-    _select_font_for_char,
-    _measure_text_with_fallback,
-    _draw_text_with_fallback,
-    playlist_image_export,
-    prewarm_playlist_export_fonts,
-)
+from bilikara import playlist_export as export, rust_runtime, server
+
+SYNTHETIC = [
+    {"title": "【ニコカラ】你好、日本語 Latin Café ★ 😀", "display_title": 'CSV, "quotes"\nsecond line',
+     "requester_name": ' Alice, "B"\nC ', "owner_name": "山田 🎶", "owner_mid": 123,
+     "request_count": 3, "requested_at": 1718000000, "played_at": 1718000200,
+     "resolved_url": "https://www.bilibili.com/video/BV1xx411c7xv", "original_url": "av123", "part_title": "原曲"},
+    {"title": "long 中文日本語 " * 30, "requester_name": "点歌人" * 20,
+     "owner_name": "UP主" * 20, "played_at": 1718000100},
+]
+
 
 class PlaylistExportTest(unittest.TestCase):
-    def tearDown(self):
-        _find_system_font.cache_clear()
+    @classmethod
+    def setUpClass(cls):
+        if not rust_runtime.app_state_available():
+            raise RuntimeError("P03 export tests require the real Rust Runtime library")
 
-    def test_find_system_font_is_cached_by_weight(self):
-        completed = SimpleNamespace(
-            returncode=0,
-            stdout="/fonts/example.ttf: Example\n",
-        )
-        _find_system_font.cache_clear()
-        with patch("bilikara.playlist_export.shutil.which", return_value="fc-list"), patch(
-            "bilikara.playlist_export.subprocess.run",
-            return_value=completed,
-        ) as run:
-            self.assertEqual(_find_system_font(bold=False), "/fonts/example.ttf")
-            self.assertEqual(_find_system_font(bold=False), "/fonts/example.ttf")
-            self.assertEqual(_find_system_font(bold=True), "/fonts/example.ttf")
-            self.assertEqual(_find_system_font(bold=True), "/fonts/example.ttf")
+    def decode_png(self, payload, rows):
+        image = Image.open(io.BytesIO(payload))
+        image.load()
+        self.assertEqual(image.format, "PNG")
+        self.assertEqual(image.mode, "RGB")
+        self.assertEqual(image.size, (1600, max(760, 634 + rows * 104)))
+        qr = zxingcpp.read_barcode(image.crop((80, 430 + rows * 104, 260, 610 + rows * 104)))
+        self.assertIsNotNone(qr)
+        self.assertTrue(qr.valid)
+        self.assertEqual(qr.bytes, export.PROJECT_URL.encode())
+        self.assertEqual(qr.ec_level, "M")
+        return image
 
-        self.assertEqual(run.call_count, 2)
+    def test_empty_single_and_boundary_multi_page_real_ffi(self):
+        for count in [0, 2, 80, 81]:
+            with self.subTest(count=count):
+                items = [{"title": f"合成歌单 Synthetic {i}", "requested_at": 1718000000 + i} for i in range(count)]
+                payload, mime, filename = export.playlist_image_export(items)
+                if count <= 80:
+                    self.assertEqual((mime, filename), ("image/png", "bilikara-playlist.png"))
+                    self.decode_png(payload, count)
+                else:
+                    self.assertEqual((mime, filename), ("application/zip", "bilikara-playlist-images.zip"))
+                    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                        self.assertIsNone(archive.testzip())
+                        self.assertEqual(archive.namelist(), ["bilikara-playlist-page-01.png", "bilikara-playlist-page-02.png"])
+                        first = self.decode_png(archive.read(archive.namelist()[0]), 80)
+                        last = self.decode_png(archive.read(archive.namelist()[1]), 1)
+                        self.assertNotEqual(first.crop((94, 371, 145, 407)).tobytes(), last.crop((94, 371, 145, 407)).tobytes())
 
-    def test_hidden_process_kwargs_prevent_windows_console(self):
-        startupinfo = SimpleNamespace(dwFlags=0, wShowWindow=None)
-        startupinfo_cls = Mock(return_value=startupinfo)
-        with patch("bilikara.playlist_export.os.name", "nt"), patch.object(
-            playlist_export.subprocess,
-            "STARTUPINFO",
-            startupinfo_cls,
-            create=True,
-        ):
-            kwargs = _hidden_process_kwargs()
+    def test_long_fields_multilingual_symbols_emoji_and_alternate_rows(self):
+        payload, _, _ = export.playlist_image_export(SYNTHETIC, logo_path=Path("unused-logo.png"))
+        image = self.decode_png(payload, 2)
+        self.assertEqual(image.getpixel((100, 365)), (255, 255, 255))
+        self.assertEqual(image.getpixel((100, 469)), (251, 246, 239))
+        # Time content is inside the card, and all body glyphs remain above footer.
+        self.assertGreater(len(set(image.crop((1280, 371, 1505, 413)).getdata())), 10)
+        self.assertGreater(len(set(image.crop((158, 371, 650, 450)).getdata())), 10)
 
-        self.assertEqual(kwargs["creationflags"], 0x08000000)
-        self.assertEqual(startupinfo.dwFlags & 0x00000001, 0x00000001)
-        self.assertEqual(startupinfo.wShowWindow, 0)
-        self.assertIs(kwargs["startupinfo"], startupinfo)
+    def test_csv_exact_bom_quoting_newlines_columns_custom_label_and_order(self):
+        values = [SYNTHETIC[1], {"title": "Undated", "requested_at": 0}, SYNTHETIC[0],
+                  {"title": "Tie", "requested_at": 1718000000, "request_count": "bad"}]
+        payload = export.playlist_csv_bytes(values, time_header="自定义时间")
+        self.assertTrue(payload.startswith(b"\xef\xbb\xbf"))
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"), newline="")))
+        self.assertEqual(rows[0], ["序号", "标题", "BV 号", "点歌人", "UP 主", "UP 主 UID", "点歌次数", "自定义时间", "视频链接", "原始链接", "分P/版本"])
+        self.assertEqual([r[0] for r in rows[1:]], ["1", "2", "3", "4"])
+        self.assertEqual([r[1] for r in rows[1:]], [SYNTHETIC[0]["display_title"], "Tie", SYNTHETIC[1]["title"].strip(), "Undated"])
+        self.assertEqual(rows[1][2:7], ["BV1xx411c7xv", 'Alice, "B"\nC', "山田 🎶", "123", "3"])
+        self.assertEqual(rows[-1][7], "")
+        # Independent stdlib writer reconstructs every byte including CRLF and quoting.
+        expected = io.StringIO(newline="")
+        csv.writer(expected).writerows(rows)
+        self.assertEqual(payload, ("\ufeff" + expected.getvalue()).encode())
+        self.assertEqual(len(list(csv.reader(io.StringIO(export.playlist_csv_bytes([]).decode("utf-8-sig"))))), 1)
 
-    def test_load_font_returns_list_of_fonts(self):
-        fonts = _load_font(ImageFont, 24)
-        self.assertIsInstance(fonts, list)
-        self.assertTrue(len(fonts) > 0)
-        # Check that they are either FreeTypeFont or standard ImageFont
-        for font in fonts:
-            self.assertTrue(
-                isinstance(font, (ImageFont.FreeTypeFont, ImageFont.ImageFont))
-            )
+    def test_local_time_including_dst_is_not_utc(self):
+        # Windows uses the OS timezone; TZ overrides are a POSIX test facility.
+        cases = [(os.environ.get("TZ", ""), datetime.fromtimestamp(1718000000).strftime("%Y-%m-%d %H:%M:%S"))] if os.name == "nt" else [
+            ("Asia/Tokyo", "2024-06-10 15:13:20"),
+            ("America/New_York", "2024-06-10 02:13:20"),
+        ]
+        for zone, expected in cases:
+            code = "from bilikara.playlist_export import playlist_csv_bytes; print(playlist_csv_bytes([{'requested_at':1718000000}]).decode('utf-8-sig'))"
+            result = subprocess.run([sys.executable, "-c", code], env={**os.environ, "TZ": zone}, capture_output=True, text=True, check=True)
+            self.assertIn(expected, result.stdout)
 
-    def test_bundled_font_path_is_absolute_and_rooted_at_configured_static_dir(self):
-        expected = (playlist_export.STATIC_DIR / "fonts" / "SourceHanSans-VF.ttf").resolve()
-        self.assertEqual(_bundled_source_han_sans_path(), expected)
-        self.assertTrue(_bundled_source_han_sans_path().is_absolute())
-
-        frozen_static_dir = Path("/runtime/Contents/Resources/static")
-        with patch.object(playlist_export, "STATIC_DIR", frozen_static_dir):
-            self.assertEqual(
-                _bundled_source_han_sans_path(),
-                (frozen_static_dir / "fonts" / "SourceHanSans-VF.ttf").resolve(),
-            )
-
-    def test_load_font_uses_bundled_source_han_after_current_directory_changes(self):
-        expected = _bundled_source_han_sans_path()
+    def test_configured_bundle_root_and_cwd_independence(self):
         original_cwd = Path.cwd()
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "Contents" / "Resources" / "static"
+            (root / "fonts").mkdir(parents=True)
+            shutil.copyfile(export.STATIC_DIR / "fonts" / "SourceHanSans-VF.ttf", root / "fonts" / "SourceHanSans-VF.ttf")
             try:
-                os.chdir(temporary_directory)
-                fonts = _load_font(ImageFont, 24)
+                os.chdir(temporary)
+                with patch.object(export, "STATIC_DIR", root):
+                    export.prewarm_playlist_export_fonts()
+                    self.decode_png(export.playlist_image_export([SYNTHETIC[0]])[0], 1)
             finally:
                 os.chdir(original_cwd)
 
-        self.assertGreater(len(fonts), 0)
-        self.assertEqual(Path(fonts[0].path).resolve(), expected)
+    def test_prewarm_best_effort_and_actual_export_errors_propagate(self):
+        with patch.object(export, "prewarm_playlist_fonts", side_effect=RuntimeError("font failure")):
+            export.prewarm_playlist_export_fonts()
+        with patch.object(export, "STATIC_DIR", Path("/nonexistent-synthetic-export-root")):
+            export.prewarm_playlist_export_fonts()
+            with self.assertRaises(rust_runtime.RustRuntimeServiceError) as error:
+                export.playlist_image_export([])
+            self.assertEqual(error.exception.kind, "font_unavailable")
+        with patch.object(rust_runtime, "_runtime_lib", None):
+            for call in [lambda: export.playlist_csv_bytes([]), lambda: export.playlist_image_export([])]:
+                with self.assertRaises(rust_runtime.RustRuntimeUnavailableError): call()
 
-    def test_bundled_source_han_is_primary_for_ordinary_export_text_and_uses_fallback_for_emoji(self):
-        fonts = _load_font(ImageFont, 24)
-        primary = fonts[0]
-        self.assertEqual(Path(primary.path).resolve(), _bundled_source_han_sans_path())
+    def test_invalid_ffi_request_and_artifact_fail_explicitly(self):
+        for request in [{"operation": "bogus"}, {"operation": "csv", "items": [None], "time_header": "time"}]:
+            with self.assertRaises(rust_runtime.RustRuntimeServiceError) as error:
+                rust_runtime._call_runtime_service("playlist_export", request)
+            self.assertEqual(error.exception.kind, "invalid_request")
+        for artifact in [{}, {"data_base64": "@@", "mime_type": "image/png", "filename": "bad.png", "missing_glyphs": []},
+                         {"data_base64": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode(), "mime_type": "image/png", "filename": "bilikara-playlist.png", "missing_glyphs": []}]:
+            with patch.object(rust_runtime, "_call_runtime_service", return_value=artifact):
+                with self.assertRaises(rust_runtime.RustRuntimeServiceError): export.playlist_image_export([])
 
-        for char in ("A", "7", "你", "日", "。", "!"):
-            self.assertTrue(_font_supports_char(primary, char), char)
-            self.assertIs(_select_font_for_char(fonts, char), primary)
+    def test_production_export_does_not_import_pillow(self):
+        code = '''
+import builtins, sys
+original = builtins.__import__
+def guarded(name, *args, **kwargs):
+    if name == "PIL" or name.startswith("PIL."):
+        raise AssertionError("Production export attempted to import Pillow")
+    return original(name, *args, **kwargs)
+builtins.__import__ = guarded
+from bilikara.playlist_export import playlist_image_export, playlist_csv_bytes, prewarm_playlist_export_fonts
+prewarm_playlist_export_fonts()
+assert playlist_image_export([])[1] == "image/png"
+assert playlist_image_export([{"title":"A"},{"title":"B"}], page_size=1)[1] == "application/zip"
+assert playlist_csv_bytes([]).startswith(b"\\xef\\xbb\\xbf")
+assert not any(m == "PIL" or m.startswith("PIL.") for m in sys.modules)
+'''
+        subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
 
-        class EmojiFallback:
-            @staticmethod
-            def getindex(char):
-                return 1 if char == "🌟" else 0
+    def test_real_http_consumer_for_history_played_alias_and_zip(self):
+        for route, source, count in [("playlist", "history", 1), ("history", "played", 81)]:
+            handler = server.BilikaraHandler.__new__(server.BilikaraHandler)
+            handler.path = f"/api/{route}/export?format=image&source={source}&page_size=80"
+            handler.headers = {}
+            items = [{"title": f"合成 HTTP {i}"} for i in range(count)]
+            context = SimpleNamespace(touch_client=lambda *a, **k: None, history_snapshot=lambda: items, session_played_snapshot=lambda: items)
+            writes = []
+            handler._write_download = lambda payload, content_type, filename: writes.append((payload, content_type, filename))
+            handler._write_json = lambda *a, **k: self.fail(f"HTTP export failed: {a}")
+            with patch.object(server, "CONTEXT", context), patch.object(server.time, "strftime", return_value="20240101-123456"):
+                handler.do_GET()
+            self.assertEqual(len(writes), 1)
+            payload, mime, filename = writes[0]
+            self.assertEqual(filename, f"bilikara-{source}-20240101-123456." + ("png" if count == 1 else "zip"))
+            self.assertEqual(mime, "image/png" if count == 1 else "application/zip")
+            if count == 1: self.decode_png(payload, 1)
+            else:
+                with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                    self.assertEqual(len(archive.namelist()), 2)
+                    self.decode_png(archive.read(archive.namelist()[1]), 1)
 
-        self.assertFalse(_font_supports_char(primary, "🌟"))
-        fallback = EmojiFallback()
-        self.assertIs(_select_font_for_char([primary, fallback], "🌟"), fallback)
-
-    def test_variable_font_weight_selection_uses_the_bundled_font_for_normal_and_bold(self):
-        expected = _bundled_source_han_sans_path()
-
-        class FakeVariableFont:
-            def __init__(self, path):
-                self.path = str(path)
-                self.variation_axes = []
-
-            @staticmethod
-            def get_variation_axes():
-                return [{"name": b"Weight"}]
-
-            def set_variation_by_axes(self, axes):
-                self.variation_axes.append(axes)
-
-        class FakeFontModule:
-            def __init__(self):
-                self.successful_paths = []
-
-            def truetype(self, path, _size, index=0):
-                del index
-                resolved_path = Path(path).resolve()
-                if resolved_path != expected:
-                    raise OSError("unavailable fallback font")
-                self.successful_paths.append(resolved_path)
-                return FakeVariableFont(resolved_path)
-
-            @staticmethod
-            def load_default():
-                raise AssertionError("the bundled font should load")
-
-        with patch("bilikara.playlist_export._find_system_font", return_value=None):
-            normal_module = FakeFontModule()
-            normal_fonts = _load_font(normal_module, 24)
-            bold_module = FakeFontModule()
-            bold_fonts = _load_font(bold_module, 24, bold=True)
-
-        self.assertEqual(normal_module.successful_paths, [expected])
-        self.assertEqual(bold_module.successful_paths, [expected])
-        self.assertEqual(normal_fonts[0].variation_axes, [[450]])
-        self.assertEqual(bold_fonts[0].variation_axes, [[800]])
-
-    def test_measure_text_with_fallback(self):
-        fonts = _load_font(ImageFont, 24)
-        img = Image.new("RGB", (100, 100))
-        draw = ImageDraw.Draw(img)
-        
-        # Test normal ascii
-        len_ascii = _measure_text_with_fallback(draw, "Hello", fonts)
-        self.assertGreater(len_ascii, 0)
-        
-        # Test CJK + Emoji/Special characters
-        len_cjk = _measure_text_with_fallback(draw, "你好 🌟", fonts)
-        self.assertGreater(len_cjk, 0)
-
-    def test_draw_text_with_fallback(self):
-        fonts = _load_font(ImageFont, 24)
-        img = Image.new("RGB", (100, 100))
-        draw = ImageDraw.Draw(img)
-        
-        # Draw without raising exceptions
-        _draw_text_with_fallback(draw, (0, 0), "Hello 你好 🌟", "#000000", fonts)
-
-    def test_select_font_for_char_uses_support_probe_without_getindex(self):
-        primary_font = object()
-        symbol_font = object()
-
-        def fake_supports(font, char):
-            if char == "A":
-                return font is primary_font
-            if char == "★":
-                return font is symbol_font
-            return False
-
-        with patch("bilikara.playlist_export._font_supports_char", side_effect=fake_supports):
-            self.assertIs(_select_font_for_char([primary_font, symbol_font], "A"), primary_font)
-            self.assertIs(_select_font_for_char([primary_font, symbol_font], "★"), symbol_font)
-
-    def test_prewarm_playlist_export_fonts_loads_exact_render_fonts_and_cmaps(self):
-        fonts = [[object(), object()], [object()], [object()], [object()], [object()]]
-        with patch(
-            "bilikara.playlist_export._load_font", side_effect=fonts
-        ) as load_font, patch(
-            "bilikara.playlist_export._font_codepoints"
-        ) as font_codepoints, patch(
-            "bilikara.playlist_export.playlist_image_export",
-            side_effect=AssertionError("prewarm must not render an image"),
-        ):
-            prewarm_playlist_export_fonts()
-
-        self.assertEqual(
-            [(call.args[1], call.kwargs["bold"]) for call in load_font.call_args_list],
-            [(72, True), (27, False), (25, True), (24, False), (22, False)],
-        )
-        self.assertEqual(
-            [call.args[0] for call in font_codepoints.call_args_list],
-            [font for group in fonts for font in group],
-        )
-
-    def test_prewarm_uses_the_same_bundled_font_source_as_rendering(self):
-        expected = _bundled_source_han_sans_path()
-        successful_paths = []
-
-        class FakeFont:
-            def __init__(self, path):
-                self.path = str(path)
-
-            @staticmethod
-            def get_variation_axes():
-                return []
-
-        def load_bundled_font(path, _size, index=0):
-            del index
-            resolved_path = Path(path).resolve()
-            if resolved_path != expected:
-                raise OSError("unavailable fallback font")
-            successful_paths.append(resolved_path)
-            return FakeFont(resolved_path)
-
-        with patch("PIL.ImageFont.truetype", side_effect=load_bundled_font), patch(
-            "bilikara.playlist_export._font_codepoints"
-        ), patch("bilikara.playlist_export._find_system_font", return_value=None):
-            prewarm_playlist_export_fonts()
-
-        self.assertEqual(successful_paths, [expected] * 5)
-
-    def test_prewarm_playlist_export_fonts_swallows_font_errors(self):
-        with patch(
-            "bilikara.playlist_export._load_font",
-            side_effect=RuntimeError("font discovery failed"),
-        ):
-            prewarm_playlist_export_fonts()
-
-    def test_playlist_image_export_renders(self):
-        entries = [
-            {
-                "title": "bilikara 2026：你好、カラオケ! 🌟",
-                "display_title": "bilikara 2026：你好、カラオケ! 🌟",
-                "part_title": "",
-                "original_url": "https://www.bilibili.com/video/BV1xx411c7xv",
-                "requester_name": "点歌人 Alice 7 💖",
-                "owner_name": "UP主 山田 🎶",
-                "requested_at": 1718000000.0,
-            }
-        ]
-        
-        # Render a simple playlist image
-        logo_path = Path("static/logo.png") # fake or none, playlist_image_export handles missing logo gracefully
-        image_bytes, content_type, filename = playlist_image_export(
-            entries,
-            logo_path=logo_path,
-            title="测试歌单",
-            page_size=50,
-        )
-        
-        self.assertGreater(len(image_bytes), 0)
-        self.assertEqual(content_type, "image/png")
-        self.assertTrue(filename.endswith(".png"))
 
 if __name__ == "__main__":
     unittest.main()

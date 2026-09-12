@@ -286,14 +286,14 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 如果当前歌曲已经缓存完成，前端会使用浏览器里的分离视频 / 音频播放器播放本地文件
 - 本地播放时，视频与音频流会分开同步，用来支持独立的音画延迟补偿、音量控制、静音和升降 key
 - Host 页面和手机端控制台会共享同一套播放器设置，包括音画延迟、音量、静音状态和音调调整
-- 歌单 CSV 由后端直接生成；歌单图片导出依赖 Pillow，并带有多字体 fallback 以尽量处理特殊符号和多语言标题
+- 歌单 CSV、图片与多页 ZIP 由 Rust Runtime 生成；图片使用内置思源黑体及系统字体回退，支持多语言、符号和可用 Emoji 字体
 - 备份会保存歌单和播放器设置，不保存缓存媒体文件；恢复后会重新进入自动缓存流程
 
 ## 注意
 
 - 本地缓存依赖运行环境能访问 B 站；打包版首次使用默认 BBDown 不需要联网准备工具，用户选择 DownKyi 时自动准备 aria2c 需要访问项目工具镜像，Rust Runtime 随应用打包
 - 音画延迟补偿、音量控制、静音、远程暂停 / 跳转 / 切换音轨、升降 key 等能力依赖本地缓存媒体和浏览器媒体能力
-- 图片导出需要 Pillow；打包依赖中已包含 Pillow，脚本运行环境如果缺失则只能导出 CSV
+- 导出需要随应用提供的 Rust Runtime；图片与启动字体预热共用 Rust 字体资源，不依赖 Pillow。没有可用字体的字符以 Unicode 编号显示
 - Rust 下载与媒体后端状态会显示在右上角服务设置面板中
 - 如果 Windows 后端打包版出现启动异常或页面打不开，可先尝试 `python build_bundle.py --console`，或设置 `BILIKARA_STARTUP_LOG=1` 收集启动日志
 - Tauri 桌面入口会设置 `BILIKARA_LAUNCH_MODE=tauri` 和 `BILIKARA_STARTUP_LOG=1`，桌面启动问题通常可先查看 `runtime/data/logs/startup.log`

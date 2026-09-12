@@ -18,6 +18,7 @@ pub mod native_host;
 mod native_host_storage;
 mod native_video;
 mod networking;
+pub mod playlist_export;
 mod qr_image;
 mod status_service;
 mod update_installer;

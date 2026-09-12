@@ -77,7 +77,7 @@ Keep the following operations in their respective Host (Python / Tauri) or UI (J
 
 - DOM event handling, button states, modal behavior, toast notifications, and UI rendering (`static/`).
 - HTTP request/response routing, SSE connection lifecycle, cookies, URL fetching, and API endpoints (`bilikara/`).
-- Filesystem I/O, archive extraction, font discovery, and system paths.
+- Retained Host filesystem I/O, archive extraction, and system paths. Export font discovery/rendering and archive assembly belong to Rust Runtime.
 - Subprocess execution and management for `BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`, or `ffprobe`.
 - Host runtime capability detection and environment variable evaluation.
 - Real-time clock acquisition and timestamping.
@@ -89,10 +89,13 @@ These are retained adapter and I/O responsibilities, not Python application-core
 ownership. Existing operational code may be maintained for release safety, but
 new stateful backend capabilities belong in Rust AppState.
 
-`bilikara/playlist_export.py` is an explicit frozen legacy exception for v0.7.
-Its Pillow renderer and `prewarm_playlist_export_fonts()` must remain together:
-a Rust prewarm would not warm Pillow's caches. A future migration should move
-the complete export/render pipeline instead of adding a parallel Rust prewarm.
+P03 releases only the former `bilikara/playlist_export.py` subsystem freeze.
+CSV/image interpretation, layout, font discovery/fallback/cache/prewarm, PNG and
+multi-page ZIP encoding now belong to Rust. Python retains the public entry
+signatures, configured asset-root transport, native output validation and HTTP
+responses. The renderer and prewarm share Rust font resources; there is no
+Pillow renderer or Python semantic fallback. All other frozen references and
+public-interface retention decisions remain unchanged.
 
 ## 5. UI Asynchronous-Action Policy
 
@@ -225,6 +228,7 @@ When completing a task, agents must report:
 | `src/status_service.rs` | Bilibili login state and Gacha refresh lease/status ownership. |
 | `src/update_installer.rs` | Update extraction, helper generation, and helper launch validation. |
 | `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
+| `src/playlist_export.rs` and `src/playlist_export/` | Complete CSV/image export service, local-time formatting, reusable fonts, text layout/rasterization, PNG/ZIP and coarse wire adaptation; no AppState lock during rendering. |
 | `src/networking.rs` | Native LAN interface discovery and address ranking. |
 | `src/ffi.rs` | Temporary C ABI, including the additive schema-v1 AppState request entry used by the Python Host adapter. |
 

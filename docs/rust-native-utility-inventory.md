@@ -20,6 +20,9 @@ orchestration.
 
 ## v0.8 T2/T7 retention closeout
 
+Historical closeout record: P03's explicit authorization below supersedes only
+its playlist-export freeze. The remaining decisions retain their original scope.
+
 This bounded recheck uses the corrected legacy inventory as historical
 candidates, not deletion authority. T4/C01, P01, T5 and the pushed T6 work are
 preserved. The older Phase-1 tables below are not the current removal backlog.
@@ -87,6 +90,71 @@ is an exact alias of `/api/playlist/export`, not a separate renderer.
 No named candidate qualified as an unconsumed ordinary private leftover without
 a freeze or useful test role. This closeout changes factual documentation and
 test attribution, not runtime dispatch, public schemas or reference algorithms.
+
+## P03: complete playlist/history export (current implementation)
+
+The user released the freeze only for the complete export subsystem. The earlier
+retention decision below is historical for this subsystem; all other reference
+and public-interface retention decisions still apply. CSV ordering/fields,
+image titles, numbering, local-time formatting, layout, font discovery/fallback,
+450/800 variable weights, prewarm/cache, PNG and sequential multi-page ZIP now
+execute in Rust. `rust/src/playlist_export.rs` is immutable domain policy;
+`rust-runtime/src/playlist_export.rs` and its `render`/`wire` modules own operational
+rendering and encoding. The existing Runtime dispatcher carries one whole export
+request; no AppState lock, per-glyph FFI, sidecar or Python semantic fallback.
+
+`bilikara/playlist_export.py` retains public signatures and configured asset-path
+transport. `rust_runtime.py` validates/decode native artifacts. The existing Host
+HTTP routes, snapshots, permissions, download names and startup thread remain.
+`logo_path` remains accepted and unused, as in the established production design.
+Pillow is removed from production packaging requirements; it remains test-only
+in `requirements-test-qr.txt` and in `scripts/render_transition_overlay_preview.py`.
+
+Design remains 1600 px wide, 80 entries per default image page, dynamic height,
+empty export, warm palette, headings, alternating rows, three-line truncation,
+footer and project QR. The HTTP consumer still supplies its own existing default
+page size (200). Columns now fit the card (1412 px total versus the old 1536 px),
+and text uses the shaper's baseline/line metrics to keep the third line inside
+its row. Missing installed glyphs use visible `[U+XXXX]` labels and report a
+warning; an actual font/raster/encoding failure is an error. P01's maintained
+M-level QR encoder replaces the old hand-written export QR encoder.
+
+COSMIC Text 0.17 supports the repository MSRV (1.80 minimum); newer 0.18/0.19
+require 1.89. fontdb discovers platform fonts without a CLI, browser or network.
+CSV retains UTF-8 BOM, CRLF records, minimal quoting, embedded newlines and custom
+time headers. Local time uses chrono's platform local timezone, including DST.
+Prewarm and rendering share the same loaded fonts, shaped fonts and glyph cache.
+
+Current progress ledger (P05 + P03 batch, 2026-09-13):
+
+| Scope | Implementation | Local validation | Independent review | Push in this task |
+| --- | --- | --- | --- | --- |
+| P05 DASH/DownKyi slice | Present at starting HEAD `2f5a02b`; retained, with a test fixture thread-isolation correction | Prior focused evidence retained; current 15-test slice and combined suite pass | Deferred under current batch authorization | No |
+| P03 complete export | Implemented in current local diff | Core/Runtime export tests, real FFI/HTTP/PNG/ZIP/CSV/QR checks and combined gate pass | Deferred | No |
+| S1–S3/M1–M6, completed T/P01 | Existing accepted/completed scopes preserved | No broader acceptance inferred | Prior status unchanged | No |
+| Other P scopes / D0 | Not started by this task | No new validation claimed | Unknown / prior status unchanged | No |
+
+Combined gate: Core 217 tests, Runtime 171 passed + 15 existing ignored, Tauri
+77 tests, Python 1577 tests with 15 existing conditional skips; all Cargo
+fmt/clippy/test/release checks, compilation, npm ci/build and diff checks pass.
+The first Python run exposed five pre-existing Remote test-slice dependency
+failures. Loading the actual missing UI helper preserved every assertion. A
+subsequent run exposed P05's global dispatcher mock intercepting a background
+cache poll; scoping the fixture to the tested thread preserved every assertion.
+The final Python integration rerun passed. These were test-harness corrections,
+not production UI/P05 reimplementations. Windows/macOS packaging remains a
+separate authorized Actions step; no such run occurred here.
+
+P03 removes Python CSV/render/font/encoding responsibilities. Retained adapters
+and remaining P05 WBI, T2/T7 references/public interfaces and D0 boundaries are
+listed above/below. Other remaining Python groups retain their existing audit
+IDs; the complete external P-ID mapping was unavailable in the local handoff,
+so this ledger does not invent IDs or completion claims for login, Local Remote
+identity, HTTP/SSE, updater and external-tool workers.
+
+Evidence and exact commands: `/tmp/bilikara-p03-export/P03-HANDOFF.md`,
+`validation-summary.json`, `comparison.json`; current original handoff updated
+at `/tmp/bilikara-t4-python-remnants/HANDOFF.md`. Historical audit text remains.
 
 ## P05: DASH / DownKyi service reuse slice
 

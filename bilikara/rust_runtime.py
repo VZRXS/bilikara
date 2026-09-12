@@ -88,6 +88,56 @@ def generate_qr_image(payload: str, *, border: int) -> QrImage:
     return QrImage(png=png, data_url="data:image/png;base64," + encoded)
 
 
+def export_playlist_artifact(request: dict[str, Any]) -> tuple[bytes, str, str]:
+    """Transport a complete export; validate the native artifact envelope."""
+    result = _call_runtime_service("playlist_export", request)
+    try:
+        encoded = result.get("data_base64")
+        mime, filename = result.get("mime_type"), result.get("filename")
+        missing = result.get("missing_glyphs")
+        if (not isinstance(encoded, str) or not isinstance(missing, list)
+                or any(not isinstance(codepoint, str) for codepoint in missing)):
+            raise ValueError
+        payload = base64.b64decode(encoded, validate=True)
+        contracts = {
+            "text/csv; charset=utf-8": ("bilikara-playlist.csv", b"\xef\xbb\xbf"),
+            "image/png": ("bilikara-playlist.png", b"\x89PNG\r\n\x1a\n"),
+            "application/zip": ("bilikara-playlist-images.zip", b"PK\x03\x04"),
+        }
+        if (not isinstance(mime, str) or mime not in contracts
+                or filename != contracts[mime][0] or not payload.startswith(contracts[mime][1])
+                or (request["operation"] == "csv") != (mime == "text/csv; charset=utf-8")):
+            raise ValueError
+        if mime == "image/png" and (
+            len(payload) < 67 or payload[8:16] != b"\x00\x00\x00\rIHDR"
+            or int.from_bytes(payload[16:20], "big") != 1600
+            or not 760 <= int.from_bytes(payload[20:24], "big") <= 2**31 - 1
+            or payload[24:29] != b"\x08\x02\x00\x00\x00"
+            or payload[-12:] != b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+        raise RustRuntimeServiceError(
+            "invalid_response", "Rust export service returned an invalid artifact", response={}
+        ) from exc
+    if missing:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Export fonts lack %s; visible codepoint labels were rendered", ", ".join(missing)
+        )
+    return payload, mime, filename
+
+
+def prewarm_playlist_fonts(font_path: Path) -> None:
+    result = _call_runtime_service("playlist_export", {
+        "operation": "prewarm", "font_path": str(font_path),
+    })
+    if result != {"prewarmed": True}:
+        raise RustRuntimeServiceError(
+            "invalid_response", "Rust export font prewarm returned an invalid result", response={}
+        )
+
+
 class RustAppStateError(RuntimeError):
     def __init__(
         self,

@@ -15,6 +15,12 @@ class RemoteSearchExpansionTest(unittest.TestCase):
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
         source = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        # Include the current UI dependency; its real no-panel branch applies
+        # to this search-only fixture. Keep all search assertions unchanged.
+        cls.size_tier_source = source[
+            source.index("function syncRemoteRequestPanelSizeTier(") :
+            source.index("function syncRemoteSearchModeSelection(")
+        ]
         cls.search_source = source[
             source.index("const canonicalBilikaraSearch =") :
             source.index("function d1BrowseTitle(")
@@ -85,6 +91,7 @@ function searchLarkPool(query) {{
   return new Promise((resolve, reject) => resolvers.set(query, {{ resolve, reject }}));
 }}
 
+{self.size_tier_source}
 {self.search_source}
 {self.form_handlers}
 

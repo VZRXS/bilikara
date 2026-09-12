@@ -9054,13 +9054,24 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             "flac": stream("flac", quality_id=30251, codec_name="flac"),
             "dolby": stream("dolby", quality_id=30250, codec_name="eac3"),
         }
+        # Other tests can have live cache-event pollers. Keep their Runtime
+        # traffic real; the main-thread DownKyi calls must still all be DASH.
+        owner_thread = threading.get_ident()
+        original_service = rust_runtime._call_runtime_service
+        service = Mock(return_value=dash)
+
+        def isolated_service(name, request):
+            if threading.get_ident() == owner_thread:
+                return service(name, request)
+            return original_service(name, request)
+
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 manager.video_quality = "1080P 高清"
                 with patch.object(manager, "_should_force_avc_locked", return_value=False), patch.object(
-                    rust_runtime, "_call_runtime_service", return_value=dash
-                ) as service, patch.object(bilibili, "effective_bilibili_cookie", return_value="SESSDATA=fixture"), patch(
+                    rust_runtime, "_call_runtime_service", side_effect=isolated_service
+                ), patch.object(bilibili, "effective_bilibili_cookie", return_value="SESSDATA=fixture"), patch(
                     "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=fixture"
                 ), patch.object(manager, "_download_stream_with_rust") as native_download, patch.object(
                     manager, "_download_dash_streams_native"

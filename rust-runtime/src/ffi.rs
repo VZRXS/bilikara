@@ -101,6 +101,7 @@ struct StatusServiceWireResponse {
 )]
 enum RuntimeServiceCommand {
     QrImage(Value),
+    PlaylistExport(Value),
     BilibiliDash(BilibiliDashRequest),
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
@@ -383,6 +384,9 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
         let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
         let command: RuntimeServiceCommand = serde_json::from_str(request_text).ok()?;
         let response = match command {
+            RuntimeServiceCommand::PlaylistExport(request) => {
+                service_result(crate::playlist_export::execute_export_wire(request))
+            }
             RuntimeServiceCommand::QrImage(request) => service_result(qr_image_result(request)),
             RuntimeServiceCommand::BilibiliDash(request) => {
                 service_result(fetch_dash_playurl(&request))
