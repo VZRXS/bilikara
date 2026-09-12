@@ -140,6 +140,7 @@ html[data-android-layout="portrait"] #current-title {
   font-size: 18px;
   line-height: 1.4;
   max-height: 2.8em;
+  overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -189,7 +190,7 @@ html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
   flex-shrink: 1;
 }
 html[data-android-layout="portrait"] .av-sync-step-symbol { display: none; }
-html[data-android-layout="portrait"] .app-shell .audio-switcher button {
+html[data-android-layout="portrait"] .app-shell .audio-variant-button {
   min-height: 40px;
   padding: 8px 12px;
   font-size: 14px;
@@ -205,7 +206,7 @@ html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .his
   overflow-wrap: anywhere;
   white-space: normal;
 }
-html[data-android-layout="portrait"] .queue-current-card { padding: 12px; }
+html[data-android-layout="portrait"] .queue-current { padding: 12px; }
 html[data-android-layout="portrait"] .queue-current-main { padding-right: 0; }
 html[data-android-layout="portrait"] .queue-current-requester { font-size: 12px; height: 28px; min-height: 28px; padding: 0 10px; }
 
@@ -417,11 +418,13 @@ html[data-android-layout="portrait"] #android-request-tabs .request-subview-tabs
 html[data-android-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
 html[data-android-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
 html[data-android-layout="portrait"] .category-browser-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-html[data-android-layout="portrait"] :is(.category-browser-tab-media, .category-browser-card-media) { display: none; }
-html[data-android-layout="portrait"] :is(.category-browser-card, .category-browser-tab) {
+html[data-android-layout="portrait"] .category-browser-card-name { font-size: 20px; padding: 10px; }
+/* Only the in-category switcher is text-only; the category home keeps artwork. */
+html[data-android-layout="portrait"] .category-browser-tab-media { display: none; }
+html[data-android-layout="portrait"] .category-browser-tab {
   aspect-ratio: auto;
   height: 40px;
   padding: 0 12px;
@@ -430,7 +433,7 @@ html[data-android-layout="portrait"] :is(.category-browser-card, .category-brows
   border-radius: 12px;
 }
 html[data-android-layout="portrait"] .category-browser-tab { flex: 0 0 auto; }
-html[data-android-layout="portrait"] :is(.category-browser-card-name, .category-browser-tab-name) {
+html[data-android-layout="portrait"] .category-browser-tab-name {
   position: static;
   padding: 0;
   color: var(--ink);
@@ -441,16 +444,65 @@ html[data-android-layout="portrait"] :is(.category-browser-card-name, .category-
 }
 html[data-android-layout="portrait"] .category-browser-tab.active { background: var(--accent-soft); border-color: var(--accent); }
 html[data-android-layout="portrait"] .category-browser-tab.active .category-browser-tab-name { color: var(--accent-deep); text-shadow: none; }
-html[data-native-host="true"][data-android-layout="portrait"] .app-shell :is(.category-browser-card-name, .category-browser-tab-name) {
+html[data-native-host="true"][data-android-layout="portrait"] .app-shell .category-browser-tab-name {
   -webkit-text-stroke: 0;
   text-shadow: none;
 }
 html[data-native-host="true"][data-android-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
 html[data-android-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
 html[data-android-layout="portrait"] .request-mode-head { padding: 8px 10px; }
-html[data-android-layout="portrait"] .request-discover-view > .request-mode-panel { padding: 8px 10px; }
+html[data-android-layout="portrait"] :is(.request-discover-view, .request-search-view) > .request-mode-panel { padding: 8px 10px; }
 html[data-android-layout="portrait"] .category-browser-detail { gap: 8px; }
-html[data-android-layout="portrait"] .request-workspace .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+html[data-android-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
+   Keep one renderer for category/search/source cards, including missing art. */
+html[data-android-layout="portrait"] #host-workspace-request .search-result-item {
+  gap: 5px;
+  padding: 0 0 6px;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-cover {
+  flex: 0 0 auto;
+  min-height: 0;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  font-size: 11px;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-cover img {
+  /* Intrinsic portrait/square artwork must not expand the aspect-ratio box. */
+  position: absolute;
+  inset: 0;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-meta {
+  gap: 3px;
+  padding: 0 7px;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-title {
+  font-size: 14px;
+  line-height: 1.35;
+  min-height: 2.7em;
+  max-height: 2.7em;
+}
+html[data-android-layout="portrait"] #host-workspace-request :is(.search-result-status, .search-result-url) {
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-owner { flex: 1; }
+/* The detail sheet retains the full BV number; don't squeeze the uploader.
+   If no uploader is available, keep BV as the card's metadata fallback. */
+html[data-android-layout="portrait"] #host-workspace-request .search-result-owner ~ .search-result-bvid { display: none; }
+html[data-android-layout="portrait"] #host-workspace-request .search-result-plays { gap: 3px; }
+html[data-android-layout="portrait"] #host-workspace-request .search-result-rating-stars {
+  left: 5px;
+  bottom: 5px;
+  font-size: 12px;
+}
+html[data-android-layout="portrait"] #host-workspace-request .search-result-duration {
+  right: 5px;
+  bottom: 5px;
+  padding: 2px 4px;
+  font-size: 10px;
+}
 html[data-android-layout="portrait"] .tag-browser-message { font-size: 11px; padding: 4px 8px; }
 html[data-android-layout="portrait"] .native-alpha-notice { font-size: 12px; }
 html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }
