@@ -37,6 +37,64 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     const navigate = name => page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
     const cases = {
+      async tooltip() {
+        await navigate("playback");
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          for (const id of ["host-av-sync-info", "host-key-shift-info"]) {
+            await page.locator(`[aria-describedby="${id}"]`).tap();
+            await page.locator(`#${id}`).waitFor({state: "visible"});
+            const result = await page.locator(`#${id}`).evaluate(tooltip => {
+              // Coarse-pointer tooltips are intentionally not interactive. Opt
+              // into hit testing only to inspect their actual paint order.
+              tooltip.style.pointerEvents = "auto";
+              const rect = tooltip.getBoundingClientRect();
+              const points = [0.2, 0.5, 0.8].flatMap(x => [0.3, 0.7].map(y => [rect.x + rect.width * x, rect.y + rect.height * y]));
+              const covered = points.map(([x, y]) => document.elementFromPoint(x, y)).filter(el => !tooltip.contains(el));
+              tooltip.style.removeProperty("pointer-events");
+              return {left: rect.left, right: rect.right, covered: covered.map(el => el?.className)};
+            });
+            assert.ok(result.left >= 0 && result.right <= width, "Tooltip stays on screen");
+            assert.deepEqual(result.covered, [], `Tooltip paints above parts and controls: ${JSON.stringify(result)}`);
+            await page.locator(`[aria-describedby="${id}"]`).tap();
+          }
+        }
+      },
+      async centeredValues() {
+        await navigate("playback");
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          for (const [id, values] of [["av-offset-input", ["0", "200", "-5000"]], ["key-shift-input", ["0", "-6", "6"]]]) {
+            for (const [value, mode] of ["input", "render"].flatMap(mode => values.map(value => [value, mode]))) {
+              const metrics = await page.evaluate(({id, value, mode}) => {
+                const input = document.getElementById(id);
+                const settings = structuredClone(state.data.player_settings);
+                if (mode === "input") {
+                  input.value = value;
+                  input.dispatchEvent(new Event("input", {bubbles: true}));
+                } else if (id === "av-offset-input") {
+                  state.data.player_settings.av_delay.effective_delay_ms = Number(value);
+                  renderAvSyncControls("local", state.data.player_settings);
+                } else {
+                  state.data.player_settings.key_shift = Number(value);
+                  renderKeyShiftControls("local");
+                }
+                const field = input.parentElement.getBoundingClientRect();
+                const number = input.getBoundingClientRect(), unit = input.nextElementSibling.getBoundingClientRect();
+                const style = getComputedStyle(input), canvas = document.createElement("canvas").getContext("2d");
+                canvas.font = style.font;
+                const textWidth = canvas.measureText(value).width;
+                const inkLeft = style.textAlign === "right" ? number.right - textWidth : style.textAlign === "center" ? (number.left + number.right - textWidth) / 2 : number.left;
+                state.data.player_settings = settings;
+                return {fieldCenter: (field.left + field.right) / 2, valueCenter: (inkLeft + unit.right) / 2,
+                  left: number.left, right: unit.right, fieldLeft: field.left, fieldRight: field.right};
+              }, {id, value, mode});
+              assert.ok(Math.abs(metrics.fieldCenter - metrics.valueCenter) <= 1, `${id} ${value} ${mode}: value and unit centered together ${JSON.stringify(metrics)}`);
+              assert.ok(metrics.left >= metrics.fieldLeft && metrics.right <= metrics.fieldRight, "Values remain inside narrow fields");
+            }
+          }
+        }
+      },
       async queueMenu() {
         await navigate("queue");
         for (const width of [320, 358, 392, 412]) {

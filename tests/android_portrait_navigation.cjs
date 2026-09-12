@@ -6,7 +6,7 @@ const source = fs.readFileSync("static/android-host.js", "utf8");
 
 function setup(native = true, orientationType = "portrait-primary") {
   class Node {
-    constructor(id) { this.id=id; this.dataset={}; this.attrs={}; this.hidden=true; this.inert=false; this.listeners={}; this.children=[]; this.parentElement=null; this.classes=new Set();
+    constructor(id) { this.id=id; this.dataset={}; this.attrs={}; this.value="0"; this.style={setProperty(){}}; this.hidden=true; this.inert=false; this.listeners={}; this.children=[]; this.parentElement=null; this.classes=new Set();
       this.classList={toggle:(k,v)=>v?this.classes.add(k):this.classes.delete(k),remove:k=>this.classes.delete(k)}; }
     setAttribute(k,v) { this.attrs[k]=String(v); }
     removeAttribute(k) { delete this.attrs[k]; }

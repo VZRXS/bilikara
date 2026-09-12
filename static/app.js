@@ -13649,6 +13649,7 @@ function renderKeyShiftControls(playbackMode) {
   if (elements.keyShiftResetButton) {
     elements.keyShiftResetButton.disabled = keyShift === 0;
   }
+  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
 }
 
 async function setLocalPlayerKeyShift(keyShift) {
@@ -14190,6 +14191,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
     elements.avOffsetInput.value = String(offsetMs);
   }
+  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
 }
 
 function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback) {

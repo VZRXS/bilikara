@@ -104,6 +104,7 @@
 
   function syncVisibility() {
     if (!portrait) return;
+    syncPlayerFieldWidths();
     root.dataset.androidPage = page;
     const playingPage = page === "playback";
     const myHome = page === "my" && !settings;
@@ -137,6 +138,13 @@
     // Same-document history also gives Android's Back gesture a real parent
     // page; do not put credentials, room handles or business state in the URL.
     history[replace ? "replaceState" : "pushState"]({...history.state, androidHost: route}, "");
+  }
+
+  function syncPlayerFieldWidths() {
+    for (const id of ["av-offset-input", "key-shift-input"]) {
+      const input = byId(id);
+      input.style.setProperty("--android-value-chars", String(Math.max(1, input.value.length)));
+    }
   }
 
   function navigate(next, {openSettings = false, remember = true} = {}) {
@@ -202,7 +210,7 @@
     schedulePersistentStageMeasurement();
   }
 
-  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
+  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
   const fullscreenRemote = byId("android-fullscreen-remote-button");
   fullscreenRemote.addEventListener("click", () => {
     if (!state.playerFullscreenRemotePinned) retryFailedQr();
@@ -267,6 +275,9 @@
     navigate(page, {openSettings: settings, remember: false});
   });
   window.screen?.orientation?.addEventListener("change", updateOrientation);
+  for (const id of ["av-offset-input", "key-shift-input"]) {
+    byId(id).addEventListener("input", syncPlayerFieldWidths);
+  }
   window.addEventListener("resize", updateOrientation);
   updateOrientation();
   saveRoute(true);

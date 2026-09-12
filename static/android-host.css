@@ -162,6 +162,13 @@ html[data-android-layout="portrait"] .app-shell .stage-control-tray {
 html[data-android-layout="portrait"] .stage-extended-controls { padding: 0 10px; }
 html[data-android-layout="portrait"] .stage-control-tray .playback-primary-row { flex-wrap: wrap; }
 
+/* Inline controls are not a modal. Their desktop z-index trapped fixed
+   tooltips below the neighbouring part bar (7 versus 10). Let the tooltip's
+   own shared overlay layer participate; keep popup/fullscreen layers intact. */
+html[data-android-layout="portrait"] .app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
+  z-index: auto;
+}
+
 /* Fit the complete delay row without hiding operations or changing their order. */
 html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
   display: grid;
@@ -182,12 +189,15 @@ html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-syn
   border-radius: 10px;
   white-space: nowrap;
 }
+html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap { justify-content: center; }
 html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
   min-width: 0;
-  width: 100%;
+  width: calc(var(--android-value-chars, 1) * 1ch);
   padding: 0;
-  font-size: 12px;
-  flex-shrink: 1;
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  flex: 0 1 auto;
 }
 html[data-android-layout="portrait"] .av-sync-step-symbol { display: none; }
 html[data-android-layout="portrait"] .app-shell .audio-variant-button {
