@@ -38,6 +38,9 @@ function d1BrowseModeState(kind) {
   return state.d1BrowseModes[kind === "artist" ? "artist" : "name"];
 }
 """
+            for start_marker in ("function d1BrowseItemKey(", "function mergeBrowseItems("):
+                start = source.index(start_marker)
+                remote_mode_helper += source[start:source.index("\n}", start) + 2]
         script = f"""
 const state = {{
   d1BrowseKind: "",

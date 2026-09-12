@@ -649,10 +649,12 @@ def browse_d1_pool(
     tag: str = "",
     locale: str = "",
     limit: int = 100,
+    offset: int = 0,
 ) -> dict:
     normalized_kind = "artist" if str(kind or "").strip().lower() == "artist" else "name"
     params = {
         "kind": normalized_kind,
+        "offset": str(max(0, int(offset))),
         "limit": str(max(1, int(limit))),
     }
     if letter:
@@ -695,7 +697,9 @@ def browse_d1_pool(
             continue
         seen_bvids.add(item["bvid"])
         items.append(item)
+    pagination = {key: payload[key] for key in ("offset", "next_offset", "has_more") if isinstance(payload, dict) and key in payload}
     return {
+        **pagination,
         "kind": str(payload.get("kind") or normalized_kind) if isinstance(payload, dict) else normalized_kind,
         "letter": str(payload.get("letter") or letter) if isinstance(payload, dict) else letter,
         "query": str(payload.get("query") or query) if isinstance(payload, dict) else query,

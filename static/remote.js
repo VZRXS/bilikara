@@ -3262,9 +3262,10 @@ async function searchLarkPoolTable(query, tableIndex) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
-async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100, offset = 0 } = {}) {
   const params = new URLSearchParams();
   params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("offset", String(offset));
   params.set("limit", String(limit));
   const normalizedLetter = String(letter || "").trim().toUpperCase();
   const normalizedQuery = String(query || "").trim();
@@ -4242,7 +4243,9 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   }
   if (results) {
     if (mode.tag) {
+      const scrollTop = results.scrollTop;
       renderSearchResultItems(results, items, t("search.larkNoResults"));
+      results.scrollTop = scrollTop;
     } else {
       results.innerHTML = "";
       results.classList.add("hidden");
@@ -4252,6 +4255,10 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     let text = "";
     if (mode.tag && !mode.loading) {
       text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+      if (typeof mode.data?.has_more === "boolean") {
+        text = paginatedBrowseStatus(items, {loading:mode.loading,hasMore:mode.data.has_more,
+          loadingText:t("search.browseLoading"),emptyText:t("search.larkNoResults")});
+      }
     } else if (!mode.tag && tags.length) {
       text = t("search.browseTagsFound", { count: tags.length });
     }
@@ -4260,15 +4267,20 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   }
 }
 
-async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "" } = {}) {
+async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "", append = false } = {}) {
   const normalizedKind = kind === "artist" ? "artist" : "name";
   const mode = d1BrowseModeState(normalizedKind);
+  if (append && (mode.loading || !mode.tag || !mode.data?.has_more)) return;
+  const offset = append ? Number(mode.data.next_offset) : 0;
   const searchSeq = mode.seq + 1;
   mode.seq = searchSeq;
-  mode.letter = String(letter || "").trim().toUpperCase();
-  mode.query = String(query || "").trim();
-  mode.tag = String(tag || "").trim();
-  mode.locale = String(locale || "").trim();
+  if (!append) {
+    mode.letter = String(letter || "").trim().toUpperCase();
+    mode.query = String(query || "").trim();
+    mode.tag = String(tag || "").trim();
+    mode.locale = String(locale || "").trim();
+    mode.data = null;
+  }
   mode.loading = true;
   mode.error = "";
   renderD1BrowseView(normalizedKind);
@@ -4280,11 +4292,16 @@ async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", quer
       tag: mode.tag,
       locale: mode.locale,
       limit: mode.tag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      offset,
     });
     if (mode.seq !== searchSeq) {
       return;
     }
-    mode.data = data || {};
+    const items = mergeBrowseItems(append ? mode.data?.items : [], data?.items);
+    mode.data = {...data, items};
+    if (typeof data?.has_more === "boolean") {
+      mode.data.has_more = data.has_more && Number.isSafeInteger(data.next_offset) && data.next_offset > offset && Boolean(data.items?.length);
+    }
   } catch (error) {
     if (mode.seq === searchSeq) {
       mode.error = error.message;
@@ -4477,12 +4494,11 @@ function shouldAutoLoadNextBrowsePage(resultsContainer, { active, loading, hasMo
   if (!active || loading || !hasMore || !resultsContainer) {
     return false;
   }
-  const bounds = resultsContainer.getBoundingClientRect?.();
-  return Boolean(
-    bounds
-    && bounds.bottom <= window.innerHeight + browseAutoLoadThresholdPx
-    && bounds.bottom >= 0
-  );
+  // Browse now owns an inner scrolling viewport. Its outer rectangle never
+  // approaches the window edge as the user scrolls through its song cards.
+  if (!resultsContainer.getClientRects().length) return false;
+  return resultsContainer.scrollHeight - resultsContainer.clientHeight
+    - resultsContainer.scrollTop <= browseAutoLoadThresholdPx;
 }
 
 function maybeLoadMoreCategoryBrowse(resultsContainer) {
@@ -8797,23 +8813,31 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
   }
 });
 
-window.addEventListener("scroll", () => {
+window.addEventListener("scroll", (event) => {
+  if (state.remoteRequestView === "discover" && ["name","artist"].includes(state.remoteDiscoverMode)) {
+    const kind = state.remoteDiscoverMode;
+    const mode = d1BrowseModeState(kind);
+    const results = d1BrowsePanel(kind)?.querySelector("[data-d1-browse-results]");
+    if (event.target === results && shouldAutoLoadNextBrowsePage(results,
+      {active:Boolean(mode.tag),loading:mode.loading,hasMore:mode.data?.has_more})) {
+      loadD1Browse({kind,append:true});
+    }
+  }
   if (
     state.remoteRequestView === "discover"
     && state.remoteDiscoverMode === "categories"
     && state.categoryBrowseSelectedId
   ) {
-    maybeLoadMoreCategoryBrowse(
-      elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]"),
-    );
+    const results = elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]");
+    if (event.target === results) maybeLoadMoreCategoryBrowse(results);
   }
   if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "uids") {
-    maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
+    if (event.target === elements.sourcesFollowResults) maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
   }
   if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "favorites") {
-    maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
+    if (event.target === elements.favlistSongResults) maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
   }
-}, { passive: true });
+}, { passive: true, capture: true });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
   canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");

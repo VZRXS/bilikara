@@ -1533,7 +1533,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 limit = 100
             try:
-                results = browse_d1_pool(kind, letter=letter, query=search_query, tag=tag, locale=locale, limit=limit)
+                offset = max(0, min(100000, int(route_query.get("offset", ["0"])[0] or "0")))
+                results = browse_d1_pool(kind, letter=letter, query=search_query, tag=tag, locale=locale, limit=limit, offset=offset)
                 if isinstance(results.get("items"), list):
                     results["items"] = annotate_gatcha_local_status(results["items"])
                 self._write_json({"ok": True, "data": results})

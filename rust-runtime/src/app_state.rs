@@ -3695,6 +3695,7 @@ impl AppState {
                 tag,
                 locale,
                 limit,
+                offset,
             } => {
                 return internet_remote_reply(
                     data,
@@ -3703,6 +3704,7 @@ impl AppState {
                     Some(json!({
                         "kind": "catalog_browse",
                         "browse_kind": kind,
+                        "offset": offset,
                         "letter": letter,
                         "query": query,
                         "tag": tag,

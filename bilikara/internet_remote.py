@@ -227,6 +227,7 @@ def _run_host_effect(
             tag=str(effect["tag"]),
             locale=str(effect["locale"]),
             limit=int(effect["limit"]),
+            offset=int(effect.get("offset", 0)),
         )
         public_response["data"] = _public_catalog_browse(result)
         return public_response
@@ -467,7 +468,9 @@ def _public_catalog_browse(result: object) -> dict[str, Any]:
                 "count": max(0, int(item.get("count") or 0)),
             }
         )
+    pagination = {key: value[key] for key in ("offset", "next_offset", "has_more") if key in value}
     return {
+        **pagination,
         "kind": "artist" if value.get("kind") == "artist" else "name",
         "letter": _bounded_text(value.get("letter"), 8),
         "query": _bounded_text(value.get("query"), 400),

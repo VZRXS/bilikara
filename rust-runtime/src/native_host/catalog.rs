@@ -34,6 +34,8 @@ fn plan(path: &str, query: &str) -> Result<Query, ApiError> {
             ("/search", json!({"items":[]}), keyword.is_empty())
         }
         "/api/d1/browse" => {
+            let offset = query_number(query, "offset", 0, 100_000)?;
+            params.append_pair("offset", &offset.to_string());
             let kind = if query_value(query, "kind") == "artist" {
                 "artist"
             } else {
@@ -58,7 +60,7 @@ fn plan(path: &str, query: &str) -> Result<Query, ApiError> {
             }
             (
                 "/browse",
-                json!({"kind":kind,"letter":letter,"tag":tag,"locale":locale,"query":keyword,"tags":[],"items":[]}),
+                json!({"kind":kind,"letter":letter,"tag":tag,"locale":locale,"query":keyword,"offset":offset,"tags":[],"items":[]}),
                 false,
             )
         }
@@ -184,7 +186,7 @@ fn normalize(query: &Query, payload: &Value) -> Result<Value, ApiError> {
             "tag":field(&v["tag"]),"letter":field(&v["letter"]),"locale":field(&v["locale"]),"yomi":field(&v["yomi"]),"count":v["count"].as_u64().unwrap_or(0)
         })).collect::<Vec<_>>());
     }
-    if query.path.starts_with("/browse-category?") {
+    if query.path.starts_with("/browse-category?") || data.get("has_more").is_some() {
         let offset = query.defaults["offset"].as_u64().unwrap_or(0);
         let count = result["items"].as_array().map_or(0, Vec::len) as u64;
         let next = data["next_offset"].as_u64().unwrap_or(offset + count);
@@ -414,5 +416,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["tags"][0]["count"], 12);
+        assert!(
+            value.get("has_more").is_none(),
+            "legacy Worker must not advertise pagination"
+        );
+        let q = plan("/api/d1/browse", "kind=artist&tag=test&offset=100").unwrap();
+        assert!(q.path.contains("offset=100"));
+        let value = normalize(
+            &q,
+            &json!({"items":[item],"has_more":true,"next_offset":101}),
+        )
+        .unwrap();
+        assert_eq!(value["next_offset"], 101);
+        assert_eq!(value["has_more"], true);
+        let value = normalize(
+            &q,
+            &json!({"items":[item],"has_more":true,"next_offset":100}),
+        )
+        .unwrap();
+        assert_eq!(value["has_more"], false, "non-advancing page must not loop");
+        assert!(plan("/api/d1/browse", "offset=100001").is_err());
     }
 }

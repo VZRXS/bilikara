@@ -9713,6 +9713,15 @@ body[data-tauri-platform="macos"] .topbar {
   max-height: none;
 }
 
+/* Favorites use the outer source viewport. The old ID-specific search rule
+   made this full-content-height grid an overscroll-containment trap: it could
+   not scroll itself and swallowed wheel/touch input meant for its parent. */
+#host-workspace-request #favlist-song-results {
+  height: auto;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
 @media (max-width: 1230px) {
   .topbar {
     padding-left: 13px;
