@@ -1926,7 +1926,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         self.assertEqual(entry["title"], item.display_title)
         self.assertEqual(entry["url"], item.original_url)
 
-    def test_successful_add_is_not_failed_by_indexing_scheduler_error(self):
+    def test_successful_add_is_not_failed_by_indexing_rejection_or_error(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes = []
         handler._write_json = lambda payload, status=None: writes.append((payload, status))
@@ -1952,6 +1952,40 @@ class PlaylistAddRequestTest(unittest.TestCase):
             snapshot=lambda: {"playlist": [item.bvid]},
         )
 
+        service_error = rust_runtime.RustRuntimeServiceError(
+            "queue_unavailable", "worker unavailable", response={},
+        )
+        for result, error in (
+            ({"accepted": False, "reason": "queue_full"}, None),
+            (None, rust_runtime.RustRuntimeUnavailableError("missing")),
+            (None, service_error),
+            (None, RuntimeError("scheduler failed")),
+        ):
+            with self.subTest(result=result, error=type(error).__name__):
+                added.clear()
+                writes.clear()
+                with (
+                    patch("bilikara.server.CONTEXT", context),
+                    patch("bilikara.server.fetch_video_item", return_value=item) as fetch,
+                    patch.object(
+                        rust_runtime, "cloudflare_service_request",
+                        return_value=result, side_effect=error,
+                    ) as enqueue,
+                    patch("builtins.print") as mock_print,
+                ):
+                    handler._handle_add({"url": item.original_url})
+
+                fetch.assert_called_once()
+                enqueue.assert_called_once()
+                self.assertEqual(enqueue.call_args.args, ("enqueue_append",))
+                self.assertEqual(len(added), 1)
+                self.assertIs(added[0][0], item)
+                self.assertEqual(writes, [({"ok": True, "data": {"playlist": [item.bvid]}}, None)])
+                self.assertEqual(mock_print.call_count, int(error is not None))
+
+        # Keep coverage of the caller's outer containment if the entry itself raises.
+        added.clear()
+        writes.clear()
         with (
             patch("bilikara.server.CONTEXT", context),
             patch("bilikara.server.fetch_video_item", return_value=item),
@@ -1962,7 +1996,6 @@ class PlaylistAddRequestTest(unittest.TestCase):
             patch("builtins.print") as mock_print,
         ):
             handler._handle_add({"url": item.original_url})
-
         self.assertEqual(len(added), 1)
         self.assertEqual(writes, [({"ok": True, "data": {"playlist": [item.bvid]}}, None)])
         mock_print.assert_called_once_with(

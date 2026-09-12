@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import re
 import sys
 import threading
@@ -1383,90 +1382,8 @@ def append_lark_pool_entries(entries: list[dict]) -> dict:
     return append_cloudflare_pool_entries(entries)
 
 
-class _BackgroundAppendScheduler:
-    def __init__(self, *, max_pending: int = 64) -> None:
-        self._queue: queue.Queue[list[dict]] = queue.Queue(maxsize=max_pending)
-        self._lock = threading.Lock()
-        self._worker: threading.Thread | None = None
-        self._last_saturation_log_at = float("-inf")
-
-    @staticmethod
-    def _error_text(error: object) -> str:
-        return " ".join(str(error or "unknown error").split())[:300]
-
-    @classmethod
-    def _process(cls, entries: list[dict]) -> None:
-        try:
-            result = append_lark_pool_entries(entries)
-            error = str(result.get("error") or "").strip() if isinstance(result, dict) else ""
-            if error:
-                print(
-                    f"[bilikara:lark] background append failed for {len(entries)} item(s): {cls._error_text(error)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[bilikara:lark] background append failed for {len(entries)} item(s): {cls._error_text(exc)}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    def _run(self) -> None:
-        while True:
-            entries = self._queue.get()
-            try:
-                self._process(entries)
-            finally:
-                self._queue.task_done()
-
-    def _ensure_worker(self) -> bool:
-        with self._lock:
-            if self._worker is not None and self._worker.is_alive():
-                return True
-            worker = threading.Thread(
-                target=self._run,
-                daemon=True,
-                name="lark-pool-append",
-            )
-            try:
-                worker.start()
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    f"[bilikara:lark] background append scheduling failed: {self._error_text(exc)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return False
-            self._worker = worker
-            return True
-
-    def submit(self, entries: list[dict]) -> bool:
-        if not self._ensure_worker():
-            return False
-        try:
-            self._queue.put_nowait(entries)
-            return True
-        except queue.Full:
-            now = time.monotonic()
-            should_log = False
-            with self._lock:
-                if now - self._last_saturation_log_at >= 30.0:
-                    self._last_saturation_log_at = now
-                    should_log = True
-            if should_log:
-                print(
-                    "[bilikara:lark] background append queue is full; dropping best-effort indexing",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            return False
-
-
-_BACKGROUND_APPEND_SCHEDULER = _BackgroundAppendScheduler(max_pending=64)
-
-
 def append_lark_pool_entries_in_background(entries: list[dict]) -> bool:
+    """Best-effort indexing: True means Rust queue acceptance, not delivery."""
     normalized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
     if not normalized_entries:
         return False
@@ -1478,22 +1395,15 @@ def append_lark_pool_entries_in_background(entries: list[dict]) -> bool:
             timeout=20,
             entries=normalized_entries,
         )
-        return bool(result.get("accepted"))
-    except rust_runtime.RustRuntimeUnavailableError:
-        try:
-            return _BACKGROUND_APPEND_SCHEDULER.submit(normalized_entries)
-        except Exception as exc:  # noqa: BLE001
-            print(
-                "[bilikara:lark] background append scheduling failed: "
-                f"{_BackgroundAppendScheduler._error_text(exc)}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return False
+        return isinstance(result, dict) and result.get("accepted") is True
     except Exception as exc:  # noqa: BLE001
+        kind = (
+            "runtime_unavailable"
+            if isinstance(exc, rust_runtime.RustRuntimeUnavailableError)
+            else "scheduling_error"
+        )
         print(
-            "[bilikara:lark] background append scheduling failed: "
-            f"{_BackgroundAppendScheduler._error_text(exc)}",
+            f"[bilikara:lark] background append rejected: {kind} ({type(exc).__name__[:80]})",
             file=sys.stderr,
             flush=True,
         )

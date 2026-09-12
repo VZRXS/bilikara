@@ -4,6 +4,96 @@ from unittest.mock import patch
 import bilikara.lark_pool_client as lark_pool
 
 
+class BackgroundAppendTest(unittest.TestCase):
+    def setUp(self):
+        self.request = self.enterContext(patch.object(
+            lark_pool.rust_runtime, "cloudflare_service_request",
+            return_value={"accepted": True, "count": 1},
+        ))
+        self.diagnostic = self.enterContext(patch("builtins.print"))
+        self.enterContext(patch.object(lark_pool, "_CLOUDFLARE_API_URL", "http://127.0.0.1:1"))
+        self.secondary_paths = [
+            self.enterContext(patch.object(owner, name))
+            for owner, name in (
+                (lark_pool, "append_lark_pool_entries"),
+                (lark_pool, "append_cloudflare_pool_entries"),
+                (lark_pool, "_cloudflare_json"),
+                (lark_pool, "_post_json"),
+                (lark_pool, "_get_json"),
+                (lark_pool, "normalize_pool_entry"),
+                (lark_pool.rust_runtime, "json_http_request"),
+                (lark_pool.threading, "Thread"),
+            )
+        ]
+        self.entries = [{"bvid": "BV1xx411c7mD", "title": " Song ",
+                         "mid": "", "owner_mid": "42", "played_count": 7}]
+
+    def tearDown(self):
+        for path in self.secondary_paths:
+            path.assert_not_called()
+
+    def test_native_acceptance_only_enqueues_copied_dictionaries(self):
+        entries = [None, *self.entries, "ignored", {}, self.entries[0]]
+        self.assertIs(lark_pool.append_lark_pool_entries_in_background(entries), True)
+        self.request.assert_called_once_with(
+            "enqueue_append",
+            base_url="http://127.0.0.1:1",
+            user_agent=f"bilikara/{getattr(lark_pool.cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+            timeout=20,
+            entries=[self.entries[0], {}, self.entries[0]],
+        )
+        copied = self.request.call_args.kwargs["entries"]
+        self.assertIsNot(copied[0], self.entries[0])
+        self.assertIsNot(copied[2], self.entries[0])
+        self.assertIsNot(copied[0], copied[2])
+        self.diagnostic.assert_not_called()
+
+    def test_injected_native_rejection_and_invalid_acceptance_do_not_retry(self):
+        # Adapter injection proves routing, not real Rust queue saturation.
+        for result in (
+            {"accepted": False},
+            {"accepted": False, "count": 1, "reason": "queue_full"},
+            {"accepted": False, "count": 0},
+            {}, None, [],
+            *({"accepted": value} for value in (None, 0, 1, "false", "true", [], {})),
+        ):
+            with self.subTest(result=result):
+                self.request.reset_mock()
+                self.request.return_value = result
+                self.assertIs(lark_pool.append_lark_pool_entries_in_background(self.entries), False)
+                self.request.assert_called_once()
+                self.assertEqual(self.request.call_args.args, ("enqueue_append",))
+        self.diagnostic.assert_not_called()
+
+    def test_unavailable_and_service_exceptions_are_contained_and_redacted(self):
+        sensitive = "private title cookie authorization https://signed.invalid/?token=secret raw body"
+        for error, kind in (
+            (lark_pool.rust_runtime.RustRuntimeUnavailableError(sensitive), "runtime_unavailable"),
+            (lark_pool.rust_runtime.RustRuntimeServiceError(
+                "queue_unavailable", sensitive, response={"body_preview": sensitive},
+            ), "scheduling_error"),
+            (RuntimeError(sensitive), "scheduling_error"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.request.reset_mock()
+                self.diagnostic.reset_mock()
+                self.request.side_effect = error
+                self.assertIs(lark_pool.append_lark_pool_entries_in_background(self.entries), False)
+                self.request.assert_called_once()
+                self.assertEqual(self.request.call_args.args, ("enqueue_append",))
+                self.diagnostic.assert_called_once_with(
+                    f"[bilikara:lark] background append rejected: {kind} ({type(error).__name__})",
+                    file=lark_pool.sys.stderr, flush=True,
+                )
+
+    def test_empty_filtered_input_never_enters_runtime(self):
+        for entries in ([], [None, 42, "ignored", []]):
+            with self.subTest(entries=entries):
+                self.assertIs(lark_pool.append_lark_pool_entries_in_background(entries), False)
+        self.request.assert_not_called()
+        self.diagnostic.assert_not_called()
+
+
 class LarkPoolClientTest(unittest.TestCase):
     def test_lark_http_transport_delegates_to_rust_runtime(self):
         with patch.object(
@@ -167,98 +257,6 @@ class LarkPoolClientTest(unittest.TestCase):
 
         cloudflare.assert_called_once()
         self.assertEqual(result, {"attempted": 0, "added": 0})
-
-    def test_background_append_reports_returned_error(self):
-        with (
-            patch.object(lark_pool, "append_lark_pool_entries", return_value={"error": "timeout"}),
-            patch("builtins.print") as mock_print,
-        ):
-            lark_pool._BackgroundAppendScheduler._process([{"bvid": "BV1xx411c7mD"}])
-
-        mock_print.assert_called_once_with(
-            "[bilikara:lark] background append failed for 1 item(s): timeout",
-            file=lark_pool.sys.stderr,
-            flush=True,
-        )
-
-    def test_background_append_scheduler_has_one_worker_and_bounded_queue(self):
-        started = []
-
-        class FakeThread:
-            def __init__(self, *, target, daemon, name):
-                self.target = target
-                self.daemon = daemon
-                self.name = name
-                self.alive = False
-
-            def start(self):
-                self.alive = True
-                started.append(self)
-
-            def is_alive(self):
-                return self.alive
-
-        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
-        with (
-            patch.object(lark_pool.threading, "Thread", FakeThread),
-            patch.object(lark_pool.time, "monotonic", return_value=31.0),
-            patch("builtins.print") as mock_print,
-        ):
-            self.assertTrue(scheduler.submit([{"bvid": "BV1xx411c7mD"}]))
-            self.assertFalse(scheduler.submit([{"bvid": "BV1yy411c7mD"}]))
-
-        self.assertEqual(len(started), 1)
-        self.assertEqual(started[0].name, "lark-pool-append")
-        mock_print.assert_called_once_with(
-            "[bilikara:lark] background append queue is full; dropping best-effort indexing",
-            file=lark_pool.sys.stderr,
-            flush=True,
-        )
-
-    def test_background_append_scheduling_failure_is_contained(self):
-        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
-        with (
-            patch.object(scheduler, "submit", side_effect=RuntimeError("scheduler failed")),
-            patch.object(lark_pool, "_BACKGROUND_APPEND_SCHEDULER", scheduler),
-            patch.object(
-                lark_pool.rust_runtime,
-                "cloudflare_service_request",
-                side_effect=lark_pool.rust_runtime.RustRuntimeUnavailableError("missing"),
-            ),
-            patch("builtins.print") as mock_print,
-        ):
-            self.assertFalse(
-                lark_pool.append_lark_pool_entries_in_background(
-                    [{"bvid": "BV1xx411c7mD"}],
-                )
-            )
-
-        mock_print.assert_called_once_with(
-            "[bilikara:lark] background append scheduling failed: scheduler failed",
-            file=lark_pool.sys.stderr,
-            flush=True,
-        )
-
-    def test_background_append_thread_start_failure_is_contained(self):
-        class FailingThread:
-            def __init__(self, **_kwargs):
-                pass
-
-            def start(self):
-                raise RuntimeError("thread unavailable")
-
-        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
-        with (
-            patch.object(lark_pool.threading, "Thread", FailingThread),
-            patch("builtins.print") as mock_print,
-        ):
-            self.assertFalse(scheduler.submit([{"bvid": "BV1xx411c7mD"}]))
-
-        mock_print.assert_called_once_with(
-            "[bilikara:lark] background append scheduling failed: thread unavailable",
-            file=lark_pool.sys.stderr,
-            flush=True,
-        )
 
     def test_active_tables_skip_tables_without_search_fields(self):
         with (
