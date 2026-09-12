@@ -15769,6 +15769,11 @@ function cacheSizeLabelForItem(item) {
   if (size > 0) {
     return formatCompactBytes(size);
   }
+  // Native Host can publish a ready artifact without optional byte-size data.
+  // Readiness comes from AppState, not from whether that metadata is present.
+  if (item.cache_status === "ready") {
+    return t("status.ready");
+  }
   if (item.cache_status === "failed") {
     return t("status.failed");
   }

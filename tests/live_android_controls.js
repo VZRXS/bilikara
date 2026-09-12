@@ -63,6 +63,31 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
           }
         }
       },
+      async cache() {
+        await navigate("queue");
+        const ready = await page.evaluate(() => {
+          const item = state.data.playlist.find(item => item.cache_status === "ready");
+          if (!item) throw Error("The Rust fixture must publish a completed queue item");
+          renderPlaylist([item], state.data.current_item, state.data.cache_policy);
+          return {status: item.cache_status, size: item.cache_size_bytes || 0,
+            label: document.querySelector("#playlist .song-size-label").textContent,
+            expected: t("status.ready"), checkVisible: !document.querySelector("#playlist .song-badge-check").classList.contains("hidden")};
+        });
+        assert.equal(ready.size, 0, "Native snapshot has no byte-size metadata");
+        assert.equal(ready.checkVisible, true);
+        assert.equal(ready.label, ready.expected, "Missing size must not turn a ready cache into Pending");
+        const labels = await page.evaluate(() => ({
+          knownSize: cacheSizeLabelForItem({cache_status: "ready", cache_size_bytes: 1048576}),
+          expectedSize: formatCompactBytes(1048576),
+          failed: cacheSizeLabelForItem({cache_status: "failed"}), expectedFailed: t("status.failed"),
+          pending: cacheSizeLabelForItem({cache_status: "pending"}), expectedPending: t("status.pendingCache"),
+          downloading: cacheSizeLabelForItem({cache_status: "downloading", cache_progress: 25}),
+        }));
+        assert.equal(labels.knownSize, labels.expectedSize);
+        assert.equal(labels.failed, labels.expectedFailed);
+        assert.equal(labels.pending, labels.expectedPending);
+        assert.equal(labels.downloading, "25%");
+      },
       async queue() {
         await navigate("queue");
         for (const width of [320, 392, 412]) {
