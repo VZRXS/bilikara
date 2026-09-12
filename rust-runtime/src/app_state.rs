@@ -533,6 +533,12 @@ pub enum AppStateRequest {
         new_session: SessionArchiveSeed,
         now: f64,
     },
+    ResolveNativeSession {
+        schema_version: u32,
+        continue_previous: bool,
+        new_session: SessionArchiveSeed,
+        now: f64,
+    },
     ResetRuntime {
         schema_version: u32,
         new_session: SessionArchiveSeed,
@@ -681,6 +687,7 @@ impl AppStateRequest {
             | Self::DiscardBackup { schema_version, .. }
             | Self::ContinuePreviousSession { schema_version, .. }
             | Self::BeginSession { schema_version, .. }
+            | Self::ResolveNativeSession { schema_version, .. }
             | Self::ResetRuntime { schema_version, .. }
             | Self::ResetPlayer { schema_version, .. }
             | Self::RestartPlaybackProgram { schema_version }
@@ -735,6 +742,7 @@ impl AppStateRequest {
             | Self::DiscardBackup { now, .. }
             | Self::ContinuePreviousSession { now, .. }
             | Self::BeginSession { now, .. }
+            | Self::ResolveNativeSession { now, .. }
             | Self::ResetRuntime { now, .. }
             | Self::ResetPlayer { now, .. }
             | Self::ApplyPlayerStatusObservation { now, .. }
@@ -915,6 +923,7 @@ impl AppStateResponse {
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
     revision: u64,
+    native_session_choice_pending: bool,
     session_generation: u64,
     playback_generation: u64,
     playback_mode: String,
@@ -1739,6 +1748,7 @@ impl AppStateData {
         validate_seed(&seed)?;
         Ok(Self {
             revision: 1,
+            native_session_choice_pending: false,
             session_generation: 1,
             playback_generation: 1,
             playback_mode: seed.playback_mode,
@@ -3304,6 +3314,29 @@ fn apply_mutation(
             result.effects.delete_backup = true;
             Ok(result)
         }
+        AppStateRequest::ResolveNativeSession {
+            continue_previous,
+            new_session,
+            ..
+        } => {
+            if !data.native_session_choice_pending {
+                return Ok(MutationResult::unchanged(mutation_value(false)));
+            }
+            validate_archive(&new_session)?;
+            if !continue_previous {
+                reset_current_identity(data);
+                data.session_history.clear();
+                data.session_users.clear();
+                replace_session_archive(data, &new_session);
+                data.previous_session = None;
+                data.backup = None;
+                increment_session_generation(data)?;
+            }
+            data.native_session_choice_pending = false;
+            let mut result = MutationResult::changed(mutation_value(true), false);
+            result.effects.delete_backup = !continue_previous;
+            Ok(result)
+        }
         AppStateRequest::ResetRuntime { new_session, .. } => {
             validate_archive(&new_session)?;
             data.playback_mode = "local".to_owned();
@@ -4585,6 +4618,10 @@ impl AppState {
                     AppStateRequest::RestoreBackup { .. }
                         | AppStateRequest::DiscardBackup { .. }
                         | AppStateRequest::BeginSession { .. }
+                        | AppStateRequest::ResolveNativeSession {
+                            continue_previous: false,
+                            ..
+                        }
                         | AppStateRequest::ResetRuntime { .. }
                 );
                 let mutation = match apply_mutation(

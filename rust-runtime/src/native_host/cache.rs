@@ -36,6 +36,9 @@ fn cache_error(error: crate::CacheRuntimeError) -> ApiError {
 }
 
 fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiError> {
+    if with_app(|app| Ok(app.native_session_choice_pending()))? {
+        return Ok(());
+    }
     let events = execute_cache_runtime(CacheRuntimeCommand::DrainEvents { max_events: 128 })
         .map_err(cache_error)?;
     if let Some(events) = events["events"].as_array() {

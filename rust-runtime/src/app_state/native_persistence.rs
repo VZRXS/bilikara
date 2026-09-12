@@ -75,6 +75,13 @@ impl AppState {
             Ok(value) => value,
             Err(error) => return storage_error_response(error),
         };
+        let needs_session_choice = loaded.as_ref().is_some_and(|seed| {
+            seed.current_item.is_some()
+                || !seed.playlist.is_empty()
+                || !seed.session_users.is_empty()
+                || !seed.session_played.is_empty()
+                || !seed.session_history.is_empty()
+        });
         let mut seed = loaded.unwrap_or(initial);
         // Validate before normalization. A malformed saved file is not a new
         // installation, and must never be overwritten by an empty default seed.
@@ -86,6 +93,11 @@ impl AppState {
         let response = self.initialize_once(seed);
         if response.error().is_some() {
             self.native_storage = None;
+        } else if let Some(data) = self.data.as_mut() {
+            // Process-local decision, never persisted as an already answered
+            // prompt. Reloading a WebView/re-entering initialization is not a
+            // new launch; reopening the checkpoint in a new process is.
+            data.native_session_choice_pending = needs_session_choice;
         }
         response
     }
@@ -149,6 +161,81 @@ mod tests {
             "session_played_file": "native-session.json", "session_users": ["Alice"]
         }))
         .unwrap()
+    }
+
+    fn resolve_session(state: &mut AppState, continue_previous: bool) -> AppSnapshot {
+        snapshot(state.execute(AppStateRequest::ResolveNativeSession {
+            schema_version: 1,
+            continue_previous,
+            new_session: SessionArchiveSeed {
+                file_name: "next-session.json".into(),
+                session_started_at: 99.0,
+                items: vec![],
+            },
+            now: 99.0,
+        }))
+    }
+
+    #[test]
+    fn session_choice_is_process_local_continue_preserves_state_and_new_clears_only_this_session() {
+        let directory = TestDirectory::new();
+        let mut initial = seed();
+        initial.current_item = Some(item("current"));
+        initial.playlist = vec![item("queued")];
+        initial.player_settings.volume_percent = 64;
+        initial.history = vec![serde_json::from_value(json!({
+            "key":"song:1", "display_title":"Test song", "original_url":"https://example.test/video",
+            "resolved_url":"https://example.test/video?p=1", "requested_at":10, "title":"Test song",
+            "part_title":"P1", "requester_name":"Alice", "request_count":1
+        })).unwrap()];
+        initial.session_history = initial.history.clone();
+        initial.session_played = vec![serde_json::from_value(json!({
+            "key":"song:1", "item_id":"current", "display_title":"Test song", "title":"Test song", "part_title":"P1",
+            "original_url":"https://example.test/video", "resolved_url":"https://example.test/video?p=1",
+            "bvid":"BV1z84y1p7oS", "aid":1, "cid":2, "page":1, "played_at":10
+        })).unwrap()];
+        let mut first = AppState::default();
+        snapshot(first.initialize_native(&directory.0, initial.clone()));
+        assert!(!first.data.as_ref().unwrap().native_session_choice_pending);
+        drop(first);
+
+        let mut second = AppState::default();
+        snapshot(second.initialize_native(&directory.0, seed()));
+        assert!(second.data.as_ref().unwrap().native_session_choice_pending);
+        let continued = resolve_session(&mut second, true);
+        assert!(!second.data.as_ref().unwrap().native_session_choice_pending);
+        assert_eq!(continued.session_users, initial.session_users);
+        assert_eq!(continued.session_played, initial.session_played);
+        assert_eq!(continued.playlist.len(), 1);
+        assert_eq!(second.data.as_ref().unwrap().session_started_at, 10.0);
+        // Duplicate/opposite UI submission must not accidentally erase a session.
+        assert_eq!(resolve_session(&mut second, false), continued);
+        snapshot(second.initialize_native(&directory.0, seed()));
+        assert!(!second.data.as_ref().unwrap().native_session_choice_pending);
+        drop(second);
+
+        let mut third = AppState::default();
+        let restored = snapshot(third.initialize_native(&directory.0, seed()));
+        assert!(third.data.as_ref().unwrap().native_session_choice_pending);
+        let fresh = resolve_session(&mut third, false);
+        assert!(fresh.current_item.is_none() && fresh.playlist.is_empty());
+        assert!(
+            fresh.session_users.is_empty()
+                && fresh.session_played.is_empty()
+                && fresh.session_history.is_empty()
+        );
+        assert_eq!(fresh.history, initial.history);
+        assert_eq!(
+            third.data.as_ref().unwrap().player_settings,
+            initial.player_settings
+        );
+        assert!(fresh.session_generation > restored.session_generation);
+        assert_eq!(saved(&directory).session_played_file, "next-session.json");
+        drop(third);
+        // An empty new session does not demand a pointless choice on next launch.
+        let mut fourth = AppState::default();
+        snapshot(fourth.initialize_native(&directory.0, seed()));
+        assert!(!fourth.data.as_ref().unwrap().native_session_choice_pending);
     }
 
     fn item(id: &str) -> PlaylistItem {

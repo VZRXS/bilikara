@@ -9196,6 +9196,7 @@ function disconnectClient() {
 }
 
 function render() {
+  if (window.BilikaraAndroidHost?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
     return;
@@ -9324,6 +9325,7 @@ function renderSessionUsers(sessionUsers) {
 
     elements.sessionUserList.appendChild(item);
   });
+  window.BilikaraAndroidHost?.syncSessionUsers();
 }
 
 

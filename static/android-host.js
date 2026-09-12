@@ -6,6 +6,109 @@
   if (root.dataset.nativeHost !== "true") return;
 
   const byId = (id) => document.getElementById(id);
+  const sessionHelp = document.querySelector('[data-i18n="session.help"]');
+  if (sessionHelp) sessionHelp.dataset.i18n = "mobile.sessionHelp";
+  let selectedSessionUser = "";
+  let userActionBusy = false;
+  function syncSessionUsers() {
+    if (!state.data?.session_users?.includes(selectedSessionUser)) selectedSessionUser = "";
+    const list = byId("session-user-list");
+    for (const badge of list.querySelectorAll(".session-user-badge")) {
+      badge.draggable = false;
+      let toggle = badge.querySelector(".android-user-toggle");
+      if (!toggle) {
+        toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "android-user-toggle";
+        toggle.textContent = badge.dataset.name;
+        badge.querySelector(".session-user-name").replaceWith(toggle);
+        const actions = document.createElement("div");
+        actions.className = "android-user-actions";
+        for (const [action,label] of [["up","↑"],["down","↓"],["remove",t("common.delete")]]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.userAction = action;
+          button.textContent = label;
+          button.setAttribute("aria-label", action === "remove" ? t("common.delete") : t(action === "up" ? "common.moveUp" : "common.moveDown"));
+          actions.append(button);
+        }
+        badge.append(actions);
+      }
+      const open = badge.dataset.name === selectedSessionUser;
+      badge.querySelector(".android-user-actions").hidden = !open;
+      toggle.setAttribute("aria-expanded", String(open));
+      badge.classList.toggle("is-actions-open", open);
+      for (const button of badge.querySelectorAll("[data-user-action]")) {
+        const index = Number(badge.dataset.index);
+        button.disabled = userActionBusy || (button.dataset.userAction === "up" && index === 0)
+          || (button.dataset.userAction === "down" && index === (state.data?.session_users?.length || 0) - 1);
+      }
+    }
+  }
+  byId("session-user-list").addEventListener("contextmenu", event => event.preventDefault());
+  byId("session-user-list").addEventListener("click", async event => {
+    const badge = event.target.closest(".session-user-badge");
+    if (!badge || userActionBusy) return;
+    const button = event.target.closest("[data-user-action]");
+    if (!button) {
+      selectedSessionUser = selectedSessionUser === badge.dataset.name ? "" : badge.dataset.name;
+      syncSessionUsers();
+      return;
+    }
+    if (button.disabled) return;
+    userActionBusy = true;
+    const label = button.textContent;
+    button.textContent = t("remoteIdentity.saving");
+    button.setAttribute("aria-busy", "true");
+    syncSessionUsers();
+    try {
+      if (button.dataset.userAction === "remove") await removeSessionUser(badge.dataset.name);
+      else await moveSessionUser(badge.dataset.name, Number(badge.dataset.index) + (button.dataset.userAction === "up" ? -1 : 1));
+    } finally {
+      button.textContent = label;
+      button.removeAttribute("aria-busy");
+      userActionBusy = false;
+      syncSessionUsers();
+    }
+  });
+  document.addEventListener("click", event => {
+    if (event.target.closest("#session-user-list") || userActionBusy || !selectedSessionUser) return;
+    selectedSessionUser = "";
+    syncSessionUsers();
+  });
+  const sessionChoice = byId("android-session-choice");
+  let sessionChoiceBusy = false;
+  function syncSessionChoice() {
+    const pending = Boolean(state.data?.session_flags?.startup_choice_pending);
+    if (pending && !sessionChoice.open) sessionChoice.showModal();
+    else if (!pending && sessionChoice.open) sessionChoice.close();
+    return pending;
+  }
+  sessionChoice.addEventListener("cancel", event => event.preventDefault());
+  sessionChoice.addEventListener("click", async event => {
+    const button = event.target.closest("[data-session-choice]");
+    if (!button || sessionChoiceBusy) return;
+    sessionChoiceBusy = true;
+    const buttons = Array.from(sessionChoice.querySelectorAll("button"));
+    const disabled = buttons.map(item => item.disabled);
+    const label = button.textContent;
+    buttons.forEach(item => { item.disabled = true; });
+    button.setAttribute("aria-busy", "true");
+    button.textContent = t("remoteIdentity.saving");
+    byId("android-session-choice-error").textContent = "";
+    try {
+      await apiPostStateSnapshot("/api/session/startup-choice", {choice:button.dataset.sessionChoice});
+      render();
+      syncSessionChoice();
+    } catch (error) {
+      byId("android-session-choice-error").textContent = error.message;
+    } finally {
+      buttons.forEach((item,index) => { item.disabled = disabled[index]; });
+      button.removeAttribute("aria-busy");
+      button.textContent = label;
+      sessionChoiceBusy = false;
+    }
+  });
   const dock = byId("android-host-dock");
   const tools = byId("android-page-tools");
   const myPage = byId("android-my-page");
@@ -210,7 +313,7 @@
     schedulePersistentStageMeasurement();
   }
 
-  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
+  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncSessionChoice, syncSessionUsers, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
   const fullscreenRemote = byId("android-fullscreen-remote-button");
   fullscreenRemote.addEventListener("click", () => {
     if (!state.playerFullscreenRemotePinned) retryFailedQr();

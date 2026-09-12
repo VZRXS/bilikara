@@ -58,6 +58,35 @@ pub(super) fn dispatch(
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
     }
+    if path == "/api/session/startup-choice" {
+        return with_app(|app| {
+            app.native_authorize(identity, true)?;
+            let continue_previous = match body["choice"].as_str() {
+                Some("continue") => true,
+                Some("new") => false,
+                _ => return Err(ApiError::invalid("请选择继续上一场或开启新一场")),
+            };
+            let now = now();
+            app.native_execute(AppStateRequest::ResolveNativeSession {
+                schema_version: 1,
+                continue_previous,
+                new_session: crate::app_state::SessionArchiveSeed {
+                    file_name: format!("native-session-{}.json", (now * 1000.0) as u64),
+                    session_started_at: now,
+                    items: Vec::new(),
+                },
+                now,
+            })?;
+            app.native_snapshot(true)
+        });
+    }
+    if with_app(|app| Ok(app.native_session_choice_pending()))? {
+        return Err(ApiError::new(
+            409,
+            "session_choice_pending",
+            "请先在 Host 选择继续上一场或开启新一场",
+        ));
+    }
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
     }
@@ -214,7 +243,9 @@ pub(super) fn dispatch(
             "/api/session-users/reorder" => {
                 command["command"] = json!("move_session_user_to_index");
                 command["name"] = body["name"].clone();
-                command["target_index"] = body["target_index"].clone();
+                // Shared Host sends `index`; retain the early Alpha spelling.
+                command["target_index"] =
+                    body.get("index").unwrap_or(&body["target_index"]).clone();
             }
             "/api/playlist/remove" | "/api/playlist/play-now" | "/api/playlist/move-next" => {
                 command["command"] = json!(match path {

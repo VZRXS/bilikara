@@ -105,6 +105,12 @@ fn number(body: &Value, key: &str) -> Result<f64, ApiError> {
 }
 
 impl AppState {
+    pub(crate) fn native_session_choice_pending(&self) -> bool {
+        self.data
+            .as_ref()
+            .is_some_and(|data| data.native_session_choice_pending)
+    }
+
     pub(crate) fn native(&mut self) -> &mut NativeSession {
         &mut self.native_session
     }
@@ -297,7 +303,8 @@ impl AppState {
         };
         value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":false});
         value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
-        value["session_flags"] = json!({"auto_restored_backup":false});
+        value["session_flags"] = json!({"auto_restored_backup":false,
+            "startup_choice_pending":self.native_session_choice_pending()});
         value["cache_policy"] = session.cache_policy.snapshot();
         value["gatcha"] = json!(session.login.gacha_snapshot());
         value["app_update"] = json!({"state":"unsupported","supported":false});

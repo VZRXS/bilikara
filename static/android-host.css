@@ -2,6 +2,54 @@
 .android-host-only { display: none; }
 .android-fullscreen-remote-button { display: none; }
 
+#android-session-choice {
+  width: min(440px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--ink);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+#android-session-choice::backdrop { background: rgb(0 0 0 / 45%); }
+#android-session-choice h2 { margin: 0 0 12px; font-size: 21px; }
+#android-session-choice p { line-height: 1.6; }
+#android-session-choice-error { color: var(--danger, #b33); }
+.android-session-choice-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.android-session-choice-actions button { flex: 1; min-height: 44px; }
+
+html[data-native-host="true"] .session-user-list { padding: 0 0 10px; }
+html[data-native-host="true"] .session-user-badge {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  height: auto;
+  min-height: 44px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 12px;
+  border-radius: 20px;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+}
+html[data-native-host="true"] .session-user-badge.is-actions-open { min-width: 184px; }
+.android-user-toggle {
+  min-height: 36px;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.android-user-actions:not([hidden]) { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; padding: 4px 0; }
+.android-user-actions button { min-width: 40px; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--panel); }
+.android-user-actions button[data-user-action="remove"] { color: var(--red); }
+
 /* Two distinct hit targets on Android; desktop keeps its hover affordance. */
 html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) .fullscreen-action-control {
   display: flex;

@@ -1770,6 +1770,15 @@
     </div>
   </div>
 
+  <dialog id="android-session-choice" aria-labelledby="android-session-choice-title">
+    <h2 id="android-session-choice-title" data-i18n="mobile.sessionChoiceTitle">开始本场卡拉 OK</h2>
+    <p data-i18n="mobile.sessionChoiceHint">继续上一场会保留本场用户、队列和本场歌单。开启新一场会清空这些内容，但保留历史记录、登录和设置。</p>
+    <p id="android-session-choice-error" role="alert"></p>
+    <div class="android-session-choice-actions">
+      <button type="button" class="toolbar-button" data-session-choice="continue" data-i18n="backup.continuePreviousSession">继续上一场</button>
+      <button type="button" class="next-button" data-session-choice="new" data-i18n="mobile.newSession">开启新一场</button>
+    </div>
+  </dialog>
   <script src="/jungle.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/export-download.js" defer></script>

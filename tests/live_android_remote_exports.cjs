@@ -68,6 +68,11 @@ const installState = value => {
     nativeBrowser=await attachNative();
     const host = nativeBrowser;
     await host.waitForFunction(()=>typeof state!=='undefined' && state.data?.capabilities?.playlist_export);
+    await host.waitForFunction(()=>Boolean(window.BilikaraAndroidHost));
+    if(await host.evaluate(()=>state.data.session_flags?.startup_choice_pending)) {
+      await host.evaluate(()=>document.querySelector('[data-session-choice="continue"]').click());
+      await host.waitForFunction(()=>!state.data.session_flags.startup_choice_pending);
+    }
     assert.equal(await host.evaluate(()=>state.data.history.length),51);
     const access = await host.evaluate(()=>({origin:location.origin,invite:state.data.remote_access.local_url}));
     forwardPort = new URL(access.origin).port;
