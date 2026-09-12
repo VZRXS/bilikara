@@ -12,6 +12,9 @@
   const settingsBack = byId("android-settings-back");
   const queueTabs = byId("android-queue-tabs");
   const requestTabs = byId("android-request-tabs");
+  const sharedRequestTabs = document.querySelector(".request-subview-tabs");
+  const requestTabsAnchor = document.createComment("desktop request tabs position");
+  sharedRequestTabs.before(requestTabsAnchor);
   const cacheSettings = byId("cache-settings");
   const cacheAnchor = document.createComment("desktop cache settings position");
   cacheSettings.before(cacheAnchor);
@@ -63,6 +66,19 @@
 
   function settingsEmbedded() { return portrait && page === "my" && settings; }
 
+  function syncRequestTabs() {
+    if (!portrait) return;
+    const random = state.activeHostWorkspace === "random";
+    const randomButton = byId("android-request-random");
+    randomButton.setAttribute("aria-selected", String(random));
+    randomButton.tabIndex = random ? 0 : -1;
+    for (const button of sharedRequestTabs.querySelectorAll("[data-request-view]")) {
+      const active = !random && button.dataset.requestView === state.requestSubview;
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    }
+  }
+
   function syncVisibility() {
     if (!portrait) return;
     root.dataset.androidPage = page;
@@ -89,6 +105,7 @@
     for (const button of tools.querySelectorAll("[data-android-workspace]")) {
       button.setAttribute("aria-pressed", String(button.dataset.androidWorkspace === state.activeHostWorkspace));
     }
+    syncRequestTabs();
   }
 
   function saveRoute(replace = false) {
@@ -136,9 +153,11 @@
     if (state.hostWorkspaceTransitionTimer) clearTimeout(state.hostWorkspaceTransitionTimer);
     state.hostWorkspaceTransitionTimer = null;
     if (portrait) {
+      requestTabs.append(sharedRequestTabs);
       byId("android-settings-slot").append(cacheSettings);
       navigate(page, {openSettings: settings, remember: false});
     } else {
+      requestTabsAnchor.after(sharedRequestTabs);
       cacheAnchor.after(cacheSettings);
       state.cacheSettingsOpen = false;
       syncCachePanelVisibility();
@@ -154,7 +173,7 @@
     schedulePersistentStageMeasurement();
   }
 
-  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, diagnosticsMarkdown};
+  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, syncRequestTabs, diagnosticsMarkdown};
   const fullscreenRemote = byId("android-fullscreen-remote-button");
   fullscreenRemote.addEventListener("click", () => {
     if (!state.playerFullscreenRemotePinned) retryFailedQr();
@@ -180,14 +199,27 @@
     if (button) navigate(button.dataset.androidPage);
   });
   tools.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-android-workspace]");
+    const button = event.target.closest("[data-android-workspace], [data-request-view]");
     if (!button) return;
-    const workspace = button.dataset.androidWorkspace;
+    const workspace = button.dataset.requestView ? "request" : button.dataset.androidWorkspace;
     if (page === "queue") queueView = workspace;
     else if (page === "request") requestView = workspace;
     activateHostWorkspace(workspace, {inputOrigin: "android-navigation"});
     saveRoute(true);
   });
+  sharedRequestTabs.addEventListener("keydown", (event) => {
+    if (!portrait || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    // Capture before the desktop four-tab handler: the portrait row has five.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const buttons = Array.from(sharedRequestTabs.querySelectorAll("button"));
+    let index = buttons.indexOf(event.target);
+    if (event.key === "Home") index = 0;
+    else if (event.key === "End") index = buttons.length - 1;
+    else index = (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[index]?.click();
+    buttons[index]?.focus();
+  }, true);
   byId("android-open-settings").addEventListener("click", () => navigate("my", {openSettings: true}));
   settingsBack.addEventListener("click", () => {
     navigate("my", {remember: false});

@@ -356,10 +356,7 @@ html[data-android-layout="portrait"] #android-settings-slot .cache-quality-selec
 
 /* The request header must not compete with four mode tabs on one phone row. */
 html[data-android-layout="portrait"] .request-workspace-head {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 12px;
+  display: none;
 }
 
 html[data-android-layout="portrait"] .request-workspace-head .host-peer-heading { display: block; }
@@ -374,13 +371,52 @@ html[data-android-layout="portrait"] .request-subview-tabs {
 }
 
 html[data-android-layout="portrait"] .request-subview-tabs button { flex: 0 0 auto; min-height: 44px; }
+html[data-android-layout="portrait"] #android-request-tabs .request-subview-tabs {
+  padding: 3px;
+  gap: 0;
+}
+html[data-android-layout="portrait"] #android-request-tabs .request-subview-tabs button {
+  flex: 1 0 auto;
+  padding: 6px 8px;
+  font-size: 12px;
+}
 html[data-android-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
 html[data-android-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
 html[data-android-layout="portrait"] .category-browser-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
-html[data-android-layout="portrait"] .category-browser-card-name { padding: 8px; font-size: 20px; }
-html[data-android-layout="portrait"] .category-browser-tabs { padding-right: 0; }
+html[data-android-layout="portrait"] :is(.category-browser-tab-media, .category-browser-card-media) { display: none; }
+html[data-android-layout="portrait"] :is(.category-browser-card, .category-browser-tab) {
+  aspect-ratio: auto;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+html[data-android-layout="portrait"] .category-browser-tab { flex: 0 0 auto; }
+html[data-android-layout="portrait"] :is(.category-browser-card-name, .category-browser-tab-name) {
+  position: static;
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+}
+html[data-android-layout="portrait"] .category-browser-tab.active { background: var(--accent-soft); border-color: var(--accent); }
+html[data-android-layout="portrait"] .category-browser-tab.active .category-browser-tab-name { color: var(--accent-deep); text-shadow: none; }
+html[data-native-host="true"][data-android-layout="portrait"] .app-shell :is(.category-browser-card-name, .category-browser-tab-name) {
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+}
+html[data-native-host="true"][data-android-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
+html[data-android-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
+html[data-android-layout="portrait"] .request-mode-head { padding: 8px 10px; }
+html[data-android-layout="portrait"] .request-discover-view > .request-mode-panel { padding: 8px 10px; }
+html[data-android-layout="portrait"] .category-browser-detail { gap: 8px; }
+html[data-android-layout="portrait"] .request-workspace .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+html[data-android-layout="portrait"] .tag-browser-message { font-size: 11px; padding: 4px 8px; }
 html[data-android-layout="portrait"] .native-alpha-notice { font-size: 12px; }
 html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }

@@ -475,10 +475,7 @@
               <button type="button" data-android-workspace="queue" data-i18n="mobile.queue">播放队列</button>
               <button type="button" data-android-workspace="history" data-i18n="shell.history">历史</button>
             </div>
-            <div id="android-request-tabs" class="android-page-tabs" hidden>
-              <button type="button" data-android-workspace="request" data-i18n="shell.request">点歌</button>
-              <button type="button" data-android-workspace="random" data-i18n="shell.random">试试运气</button>
-            </div>
+            <div id="android-request-tabs" hidden></div>
             <button type="button" class="android-settings-back" id="android-settings-back" hidden>
               <span aria-hidden="true">←</span> <span data-i18n="mobile.backToMe">返回我的</span>
             </button>
@@ -965,6 +962,9 @@
                 aria-selected="false" tabindex="-1" data-i18n="request.discoverTab">发现</button>
               <button type="button" role="tab" data-request-view="sources" aria-controls="request-sources-panel"
                 aria-selected="false" tabindex="-1" data-i18n="request.sourcesTab">来源</button>
+              <button type="button" role="tab" class="android-host-only" id="android-request-random"
+                data-android-workspace="random" aria-controls="gatcha-panel" aria-selected="false"
+                tabindex="-1" data-i18n="shell.random">试试运气</button>
             </nav>
           </header>
 

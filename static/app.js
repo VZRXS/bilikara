@@ -3909,6 +3909,7 @@ function syncRequestSubviewSelection() {
     syncSourcesModeSelection();
   }
   syncRequestSessionUserNoticePlacement();
+  globalThis.BilikaraAndroidHost?.syncRequestTabs?.();
 }
 
 function closeRequestDetailForNavigation() {

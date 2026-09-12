@@ -14,8 +14,8 @@ function setup(native = true, orientationType = "portrait-primary") {
     append(node) { node.parentElement=this; }
     before(node) { node.parentElement=this.parentElement; }
     after(node) { node.parentElement=this.parentElement; }
-    querySelectorAll() { return this.children; }
-    closest(selector) { return selector.includes("workspace") ? (this.dataset.androidWorkspace ? this:null) : (this.dataset.androidPage ? this:null); }
+    querySelectorAll(selector) { return this.children.filter(n=>selector==="button" || (selector.includes("data-request-view") ? n.dataset.requestView : selector.includes("workspace") ? n.dataset.androidWorkspace : n.dataset.androidPage)); }
+    closest(selector) { return selector.includes("workspace") ? (this.dataset.androidWorkspace || this.dataset.requestView ? this:null) : (this.dataset.androidPage ? this:null); }
   }
   const nodes=new Map();
   const get=id=>{if(!nodes.has(id)) nodes.set(id,new Node(id)); return nodes.get(id);};
@@ -23,8 +23,14 @@ function setup(native = true, orientationType = "portrait-primary") {
   dock.children=["playback","queue","request","users","my"].map(p=>{const n=new Node(p);n.dataset.androidPage=p;return n;});
   tools.children=["queue","history","request","random"].map(p=>{const n=new Node(p);n.dataset.androidWorkspace=p;return n;});
   get("cache-settings").parentElement=get("top-controls");
+  const requestTabs=get("shared-request-tabs");
+  requestTabs.parentElement=get("request-header");
+  requestTabs.children=["quick","search","discover","sources"].map(p=>{const n=new Node(p);n.dataset.requestView=p;return n;});
+  const random=get("android-request-random");
+  random.dataset.androidWorkspace="random";
+  requestTabs.children.push(random);
   const root={dataset:{nativeHost:native?"true":"false"}};
-  const state={activeHostWorkspace:"queue",cacheSettingsOpen:false};
+  const state={activeHostWorkspace:"queue",requestSubview:"quick",cacheSettingsOpen:false};
   const elements={leftColumn:get("stage"),hostWorkspaceRegion:get("workspace")};
   const listeners={};
   const orientation={type:orientationType,addEventListener:(k,fn)=>{listeners.orientation=fn;}};
@@ -32,7 +38,7 @@ function setup(native = true, orientationType = "portrait-primary") {
   const calls=[];
   const window={screen:{orientation},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},
-    document:{documentElement:root,getElementById:get,createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    document:{documentElement:root,getElementById:get,querySelector:()=>requestTabs,createComment:()=>new Node("anchor"),addEventListener:()=>{}},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     renderHostWorkspaceSelection:()=>window.BilikaraAndroidHost?.syncVisibility(),
     activateHostWorkspace:(name,{inputOrigin}={})=>{state.activeHostWorkspace=name;calls.push(name);window.BilikaraAndroidHost?.workspaceActivated(name,inputOrigin);window.BilikaraAndroidHost?.syncVisibility();},
@@ -57,6 +63,9 @@ assert.equal(mobile.state.activeHostWorkspace,"history");
 mobile.clickPage("request");
 mobile.clickWorkspace("random");
 assert.equal(mobile.state.activeHostWorkspace,"random");
+assert.equal(mobile.get("android-request-random").attrs["aria-selected"],"true");
+assert.equal(mobile.get("shared-request-tabs").parentElement.id,"android-request-tabs");
+assert.ok(mobile.get("shared-request-tabs").children.filter(n=>n.dataset.requestView).every(n=>n.attrs["aria-selected"]==="false"));
 mobile.clickPage("playback");
 mobile.clickPage("queue");
 assert.equal(mobile.state.activeHostWorkspace,"history");
@@ -83,6 +92,7 @@ mobile.orientation.type="landscape-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,true);
 assert.equal(mobile.elements.leftColumn.inert,false);
 assert.equal(mobile.get("cache-settings").parentElement.id,"top-controls");
+assert.equal(mobile.get("shared-request-tabs").parentElement.id,"request-header");
 mobile.orientation.type="portrait-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,false);
 assert.equal(mobile.root.dataset.androidPage,"my");
