@@ -155,7 +155,7 @@ async function installWorkspaceRoutes(context, routeState) {
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        data: { items: query === "workspace-empty" ? [] : resultItems("SHARED", 5) },
+        data: { items: query === "workspace-empty" ? [] : resultItems("SHARED", 8) },
       }),
     });
   });
@@ -167,7 +167,7 @@ async function installWorkspaceRoutes(context, routeState) {
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        data: { items: query === "workspace-empty" ? [] : resultItems("LOCAL", 4) },
+        data: { items: query === "workspace-empty" ? [] : resultItems("LOCAL", 8) },
       }),
     });
   });
@@ -175,7 +175,7 @@ async function installWorkspaceRoutes(context, routeState) {
     routeState.categoryRequests.push(route.request().url());
     const url = new URL(route.request().url());
     const offset = Number(url.searchParams.get("offset") || 0);
-    const items = resultItems("CATEGORY", 4);
+    const items = resultItems("CATEGORY", 8);
     return route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -197,7 +197,7 @@ async function installWorkspaceRoutes(context, routeState) {
     const letter = url.searchParams.get("letter") || "";
     const tag = url.searchParams.get("tag") || "";
     const data = tag
-      ? { kind, letter, tag, tags: [], items: resultItems(kind === "artist" ? "ARTIST" : "NAME", 4) }
+      ? { kind, letter, tag, tags: [], items: resultItems(kind === "artist" ? "ARTIST" : "NAME", 8) }
       : {
         kind,
         letter,
@@ -223,8 +223,8 @@ async function installWorkspaceRoutes(context, routeState) {
         data: {
           selected_folder_id: folderId,
           query: url.searchParams.get("q") || "",
-          folders: [{ id: "7", title: "Browser favorites", media_count: 4 }],
-          items: folderId ? resultItems("FAVORITE", 4) : [],
+          folders: [{ id: "7", title: "Browser favorites", media_count: 8 }],
+          items: folderId ? resultItems("FAVORITE", 8) : [],
         },
       }),
     });
@@ -241,8 +241,8 @@ async function installWorkspaceRoutes(context, routeState) {
         data: {
           selected_uid: uid,
           query: url.searchParams.get("q") || "",
-          owners: [{ uid: "42", name: "Browser uploader", count: 4 }],
-          items: uid ? resultItems("UPLOADER", 4) : [],
+          owners: [{ uid: "42", name: "Browser uploader", count: 8 }],
+          items: uid ? resultItems("UPLOADER", 8) : [],
         },
       }),
     });
@@ -356,6 +356,21 @@ async function requestWorkspaceMetrics(page) {
     const quickActionRow = activePanel?.querySelector(".request-action-row");
     const quickPrimaryAction = quickActionRow?.querySelector(".primary-button");
     const quickNextAction = quickActionRow?.querySelector("#add-next-button");
+    const browseScroller = Array.from(activePanel?.querySelectorAll(
+      ".search-results, .category-browser-home, .tag-browser-tags, .follow-up-grid",
+    ) || []).find((element) => (
+      element.getClientRects().length > 0
+      && ["auto", "scroll"].includes(getComputedStyle(element).overflowY)
+    ));
+    const browseCards = Array.from(browseScroller?.querySelectorAll(
+      ".search-result-item, .category-browser-card, .tag-browser-tag, .follow-up-button",
+    ) || []).filter((element) => element.getClientRects().length > 0);
+    const browseRowTops = [...new Set(browseCards.map((element) => (
+      Math.round(element.getBoundingClientRect().top * 10) / 10
+    )))].sort((first, second) => first - second);
+    const browseRowPitch = browseRowTops.length > 1
+      ? browseRowTops[1] - browseRowTops[0]
+      : browseCards[0]?.getBoundingClientRect().height || 0;
     const verticalOwners = Array.from(requestCard?.querySelectorAll("div, section, form, article") || [])
       .filter((element) => {
         const style = getComputedStyle(element);
@@ -387,6 +402,7 @@ async function requestWorkspaceMetrics(page) {
       },
       scrollY,
       requestCard: rect(requestCard),
+      requestSize: requestCard?.dataset.requestSize || "",
       requestCardOverflowY: getComputedStyle(requestCard).overflowY,
       requestCardMinHeight: getComputedStyle(requestCard).minHeight,
       requestCardMaxHeight: getComputedStyle(requestCard).maxHeight,
@@ -451,6 +467,19 @@ async function requestWorkspaceMetrics(page) {
       activePanelScrollHeight: activePanel?.scrollHeight || 0,
       activePanelScrollbarWidth: getComputedStyle(activePanel).scrollbarWidth,
       activePanelScrollbarColor: getComputedStyle(activePanel).scrollbarColor,
+      browse: browseScroller ? {
+        scroller: rect(browseScroller),
+        clientHeight: browseScroller.clientHeight,
+        scrollHeight: browseScroller.scrollHeight,
+        itemCount: browseCards.length,
+        rowCount: browseRowTops.length,
+        rowPitch: browseRowPitch,
+        visibleRowCapacity: browseRowPitch > 0 ? browseScroller.clientHeight / browseRowPitch : 0,
+      } : null,
+      persistentBrowseMessages: Array.from(activePanel?.querySelectorAll(
+        ".search-message, .tag-browser-message, #sources-follow-message, #favlist-browse-message",
+      ) || []).filter((element) => element.getClientRects().length > 0)
+        .map((element) => element.textContent.trim()).filter(Boolean),
       panelStates: Array.from(requestCard?.querySelectorAll("[data-remote-request-panel]") || [])
         .map((panel) => ({
           id: panel.id,
@@ -512,11 +541,12 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
       && (metrics.activePanelId === "remote-request-quick-panel"
         ? metrics.activePanelOverflowY === "auto" && metrics.activePanelScrollbarWidth === "thin"
         : metrics.activePanelOverflowY === "hidden")
-      && metrics.requestCard.height <= 560.5
+      && ["compact", "standard", "browse", "browse-deep"].includes(metrics.requestSize)
+      && metrics.requestCard.height <= 880.5
       && metrics.verticalOwners.length <= 1
       && metrics.verticalOwners.every((owner) => owner.insideActivePanel),
-    `${label}: bounded Request card did not keep one content-only scroll owner`,
-    metrics.verticalOwners,
+    `${label}: adaptive Request card did not keep one content-only scroll owner`,
+    metrics,
   );
   assert(metrics.searchModalCount === 0, `${label}: retired advanced modal is still present`, metrics);
   assert(metrics.gatchaUidEntryCount === 0, `${label}: retired Gatcha UID entry is still present`, metrics);
@@ -573,18 +603,57 @@ async function activateAndCapture(page, selector, screenshot, activePanelId) {
   return requestWorkspaceMetrics(page);
 }
 
-async function requestFirstResult(page, containerSelector, routeState, label) {
+async function requestFirstResult(page, containerSelector, routeState, label, screenshot = "") {
   const row = page.locator(`${containerSelector} .search-result-item[data-url]`).first();
   const expectedUrl = await row.getAttribute("data-url");
   const before = routeState.addRequests.length;
   await row.click({ position: { x: 12, y: 12 } });
-  await page.waitForFunction(() => document.querySelector(".request-panel > .song-detail-view:not(.hidden)"));
+  await page.waitForFunction(() => document.querySelector(".remote-shell > .song-detail-view:not(.hidden)"));
+  const detailGeometry = await page.evaluate(() => {
+    const bounds = (element) => {
+      const rect = element?.getBoundingClientRect();
+      return rect ? {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      } : null;
+    };
+    const root = document.querySelector(".remote-shell > .song-detail-view:not(.hidden)");
+    const card = root?.querySelector(".song-detail-card");
+    const dock = document.querySelector("#playback-dock:not(.hidden)");
+    return {
+      root: bounds(root),
+      card: bounds(card),
+      dock: bounds(dock),
+      parentId: root?.parentElement?.id || "",
+      insideRequestCard: Boolean(document.querySelector(".request-panel")?.contains(root)),
+      viewport: { width: innerWidth, height: innerHeight },
+      documentHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    };
+  });
+  assert(
+    detailGeometry.parentId === "remote-shell"
+      && !detailGeometry.insideRequestCard
+      && Math.abs(detailGeometry.root.left) <= 1
+      && Math.abs(detailGeometry.root.top) <= 1
+      && Math.abs(detailGeometry.root.width - detailGeometry.viewport.width) <= 1
+      && Math.abs(detailGeometry.root.height - detailGeometry.viewport.height) <= 1
+      && detailGeometry.card.left >= -1
+      && detailGeometry.card.right <= detailGeometry.viewport.width + 1
+      && !detailGeometry.documentHorizontalOverflow,
+    `${label}: song detail is not scoped to the safe visible viewport`,
+    detailGeometry,
+  );
+  await capture(page, screenshot);
   try {
     await Promise.all([
       page.waitForResponse((candidate) => (
         new URL(candidate.url()).pathname === "/api/playlist/add"
       ), { timeout: 10000 }),
-      page.locator(".request-panel > .song-detail-view [data-song-detail-request]").click(),
+      page.locator(".remote-shell > .song-detail-view [data-song-detail-request]").click(),
     ]);
   } catch (error) {
     error.detail = await page.evaluate(({ selector, url }) => ({
@@ -604,13 +673,14 @@ async function requestFirstResult(page, containerSelector, routeState, label) {
     throw new Error(`${error.message}\n${label} diagnostics: ${JSON.stringify(error.detail)}`);
   }
   await page.waitForFunction(() => !state.submitting);
-  await page.waitForFunction(() => document.querySelector(".request-panel > .song-detail-view")?.classList.contains("hidden"));
+  await page.waitForFunction(() => document.querySelector(".remote-shell > .song-detail-view")?.classList.contains("hidden"));
   assert(
     routeState.addRequests.length === before + 1
       && routeState.addRequests.at(-1)?.url === expectedUrl,
     `${label}: result request did not preserve its URL and request path`,
     { expectedUrl, requests: routeState.addRequests.slice(before) },
   );
+  return detailGeometry;
 }
 
 async function runPrimaryGate(browser, baseUrl, screenshotPath) {
@@ -639,6 +709,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     "quick",
     "searchSharedEmpty",
     "searchSharedResults",
+    "searchSharedDetail",
     "searchLocal",
     "categoriesHome",
     "categoriesOverflow",
@@ -688,6 +759,28 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     );
     assert(states.searchSharedEmpty.activeElementTag !== "INPUT", "Search tab activation auto-focused an input", states.searchSharedEmpty);
     assertWorkspaceGeometry(states.searchSharedEmpty, "375 Search / Shared empty", { requireNoRailOverflow: true });
+    const secondaryBackIconGeometry = await page.evaluate(() => {
+      const button = document.querySelector("#remote-request-secondary-back");
+      const icon = button?.querySelector(".remote-request-secondary-back-icon");
+      const buttonRect = button?.getBoundingClientRect();
+      const iconRect = icon?.getBoundingClientRect();
+      return {
+        button: buttonRect ? { top: buttonRect.top, height: buttonRect.height } : null,
+        icon: iconRect ? { top: iconRect.top, height: iconRect.height } : null,
+        centerDelta: buttonRect && iconRect
+          ? Math.abs((buttonRect.top + buttonRect.height / 2) - (iconRect.top + iconRect.height / 2))
+          : Infinity,
+        animationName: getComputedStyle(document.querySelector("#remote-search-shared-tab")).animationName,
+        animationTiming: getComputedStyle(document.querySelector("#remote-search-shared-tab")).animationTimingFunction,
+      };
+    });
+    assert(
+      secondaryBackIconGeometry.centerDelta <= 1
+        && secondaryBackIconGeometry.animationName === "remote-tab-select"
+        && secondaryBackIconGeometry.animationTiming.includes("0.16"),
+      "Secondary Back icon or non-linear tab selection motion lost its geometry contract",
+      secondaryBackIconGeometry,
+    );
 
     const sharedResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/lark/search"
@@ -695,12 +788,18 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#lark-search-query").fill("workspace-results");
     await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
     await sharedResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 5);
+    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.searchSharedResults = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchSharedResults, "375 Search / Shared results", { requireNoRailOverflow: true });
     await capture(page, paths.searchSharedResults);
-    await requestFirstResult(page, "#lark-search-results", routeState, "Shared");
+    const sharedDetailGeometry = await requestFirstResult(
+      page,
+      "#lark-search-results",
+      routeState,
+      "Shared",
+      paths.searchSharedDetail,
+    );
 
     const localSwitchCount = routeState.apiRequests.length;
     await page.locator("#remote-search-local-tab").click();
@@ -712,7 +811,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#search-query").fill("workspace-local");
     await page.locator("#search-form").evaluate((form) => form.requestSubmit());
     await localResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.searchLocal = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchLocal, "375 Search / Local", { requireNoRailOverflow: true });
@@ -805,7 +904,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     ));
     await page.locator("#remote-discover-categories-panel .category-browser-card").first().click();
     await categoryResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 8);
     const categorySearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/category-browse" && url.searchParams.get("q") === "workspace-category";
@@ -814,10 +913,36 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-categories-panel [data-category-browse-search]")
       .evaluate((form) => form.requestSubmit());
     await categorySearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.categoriesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.categoriesDetail, "375 Discover / Categories detail", { requireNoRailOverflow: true });
+    const categoryBackGeometry = await page.evaluate(() => {
+      const rail = document.querySelector("#remote-discover-categories-panel [data-category-browser-tabs]");
+      const back = rail?.querySelector("[data-category-browse-back]");
+      const peer = rail?.querySelector("[data-category-id]");
+      const backRect = back?.getBoundingClientRect();
+      const peerRect = peer?.getBoundingClientRect();
+      return {
+        first: rail?.firstElementChild === back,
+        className: back?.className || "",
+        back: backRect ? { width: backRect.width, height: backRect.height } : null,
+        peer: peerRect ? { width: peerRect.width, height: peerRect.height } : null,
+        separateNavRows: document.querySelectorAll(
+          "#remote-discover-categories-panel .category-browser-detail > .tag-browser-nav",
+        ).length,
+      };
+    });
+    assert(
+      categoryBackGeometry.first
+        && categoryBackGeometry.separateNavRows === 0
+        && categoryBackGeometry.className === "secondary-button tag-browser-back"
+        && categoryBackGeometry.back.width < categoryBackGeometry.peer.width
+        && categoryBackGeometry.back.width > 44
+        && categoryBackGeometry.back.height === 44,
+      "Category Back did not preserve the pre-change Remote category Back control inside the category rail",
+      categoryBackGeometry,
+    );
     await capture(page, paths.categoriesDetail);
     await requestFirstResult(page, "#remote-discover-categories-panel", routeState, "Categories");
     await page.locator("#remote-discover-categories-panel [data-category-browse-back]").click();
@@ -838,7 +963,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-name-panel [data-tag]").first().click();
     await nameItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 8);
     const nameSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
@@ -848,7 +973,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-name-panel [data-d1-browse-query]").fill("workspace-name");
     await page.locator("#remote-discover-name-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
     await nameSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.name = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.name, "375 Discover / Name", { requireNoRailOverflow: true });
@@ -878,7 +1003,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-artist-panel [data-tag]").first().click();
     await artistItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 8);
     const artistSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
@@ -888,7 +1013,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-artist-panel [data-d1-browse-query]").fill("workspace-artist");
     await page.locator("#remote-discover-artist-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
     await artistSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.artist = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.artist, "375 Discover / Artist", { requireNoRailOverflow: true });
@@ -914,8 +1039,16 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       "Sources / Uploader List did not retain the cache refresh action",
       routeState.refreshRequests,
     );
-    const refreshStatus = (await page.locator("#gatcha-uid-message").textContent() || "").trim();
-    assert(Boolean(refreshStatus), "Sources cache refresh did not expose status feedback");
+    const refreshFeedback = await page.evaluate(() => ({
+      inline: elements.gatchaUidMessage?.textContent.trim() || "",
+      toast: elements.appToast?.textContent.trim() || "",
+      toastVisible: !elements.appToast?.classList.contains("hidden"),
+    }));
+    assert(
+      !refreshFeedback.inline && refreshFeedback.toastVisible && Boolean(refreshFeedback.toast),
+      "Sources cache refresh did not move terminal feedback out of the card and into the toast",
+      refreshFeedback,
+    );
 
     const uploaderDetailResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -923,7 +1056,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#sources-follow-grid [data-uid]").click();
     await uploaderDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 8);
     const uploaderSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/browse" && url.searchParams.get("q") === "workspace-uploader";
@@ -931,7 +1064,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#sources-follow-search-query").fill("workspace-uploader");
     await page.locator("#sources-follow-search-form").evaluate((form) => form.requestSubmit());
     await uploaderSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.uploaderDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.uploaderDetail, "375 Sources / selected uploader", { requireNoRailOverflow: true });
@@ -940,13 +1073,13 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
 
     const uploaderRow = page.locator("#sources-follow-results .search-result-item").first();
     await uploaderRow.click({ position: { x: 12, y: 12 } });
-    await page.waitForFunction(() => document.querySelector(".request-panel > .song-detail-view:not(.hidden)"));
+    await page.waitForFunction(() => document.querySelector(".remote-shell > .song-detail-view:not(.hidden)"));
     await page.evaluate(() => {
       state.sourcesFollowBrowseRenderSignature = "";
       renderSourcesFollowBrowse();
     });
-    await page.locator(".request-panel > .song-detail-view .song-detail-close").click();
-    await page.waitForFunction(() => document.querySelector(".request-panel > .song-detail-view")?.classList.contains("hidden"));
+    await page.locator(".remote-shell > .song-detail-view .song-detail-close").click();
+    await page.waitForFunction(() => document.querySelector(".remote-shell > .song-detail-view")?.classList.contains("hidden"));
     const restoredFocus = await page.evaluate(() => ({
       owner: document.activeElement?.dataset?.requestResultOwner || "",
       id: document.activeElement?.id || "",
@@ -977,7 +1110,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#favlist-grid [data-folder-id]").click();
     await favoritesDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 8);
     const favoriteSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/favlist/browse" && url.searchParams.get("q") === "workspace-favorites";
@@ -985,7 +1118,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#favlist-search-query").fill("workspace-favorites");
     await page.locator("#favlist-search-form").evaluate((form) => form.requestSubmit());
     await favoriteSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 8);
     await bringRequestCardIntoView(page);
     states.favoritesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.favoritesDetail, "375 Sources / selected folder", { requireNoRailOverflow: true });
@@ -1011,8 +1144,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         && retainedNodes.quickValue === "BV1PRESERVEDQUICK"
         && retainedNodes.sharedValue === "workspace-results"
         && retainedNodes.localValue === "workspace-local"
-        && retainedNodes.sharedRows === 5
-        && retainedNodes.localRows === 4,
+        && retainedNodes.sharedRows === 8
+        && retainedNodes.localRows === 8,
       "Switching views remounted or cleared Quick/Search owners",
       retainedNodes,
     );
@@ -1184,12 +1317,58 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       "Switching to Quick programmatically scrolled the document",
       { scrollBeforeCompact, after: compactMetrics.scrollY },
     );
+    const standardStates = [
+      states.searchSharedEmpty,
+      states.categoriesHome,
+      states.uploaderList,
+      states.favoritesList,
+    ];
+    const browseStates = [states.searchSharedResults, states.searchLocal];
+    const deepBrowseStates = [
+      states.categoriesDetail,
+      states.name,
+      states.artist,
+      states.uploaderDetail,
+      states.favoritesDetail,
+    ];
     assert(
-      Object.values(states).every((entry) => (
-        Math.abs(entry.requestCard.height - compactMetrics.requestCard.height) <= 1
+      compactMetrics.requestSize === "compact"
+        && standardStates.every((entry) => entry.requestSize === "standard")
+        && browseStates.every((entry) => entry.requestSize === "browse")
+        && deepBrowseStates.every((entry) => entry.requestSize === "browse-deep")
+        && compactMetrics.requestCard.height < Math.min(...standardStates.map((entry) => entry.requestCard.height))
+        && Math.max(...standardStates.map((entry) => entry.requestCard.height))
+          < Math.min(...browseStates.map((entry) => entry.requestCard.height))
+        && Math.max(...browseStates.map((entry) => entry.requestCard.height))
+          < Math.min(...deepBrowseStates.map((entry) => entry.requestCard.height)),
+      "Request card did not adapt from compact to standard and browse content tiers",
+      Object.fromEntries(Object.entries({ ...states, compactMetrics })
+        .map(([name, entry]) => [name, { size: entry.requestSize, height: entry.requestCard.height }])),
+    );
+    const browseCapacityStates = [states.categoriesHome, ...browseStates, ...deepBrowseStates];
+    assert(
+      browseCapacityStates.every((entry) => (
+        entry.browse?.visibleRowCapacity >= 2
+          && entry.browse.visibleRowCapacity <= 2.6
       )),
-      "Request card height changed between Quick and browse/result views",
-      Object.fromEntries(Object.entries(states).map(([name, entry]) => [name, entry.requestCard.height])),
+      "Browse result viewport does not expose roughly 2–2.5 card rows",
+      browseCapacityStates.map((entry) => ({
+        size: entry.requestSize,
+        browse: entry.browse,
+      })),
+    );
+    assert(
+      [...browseStates, ...deepBrowseStates]
+        .every((entry) => entry.persistentBrowseMessages.length === 0),
+      "Stable browse results retained an inline success/status message",
+      [...browseStates, ...deepBrowseStates].map((entry) => entry.persistentBrowseMessages),
+    );
+    assert(
+      Object.values(states).every((entry) => entry.persistentBrowseMessages.every((message) => (
+        !/已显示|向下滚动|Showing all|scroll down|スクロール|全\s*\d+\s*件/.test(message)
+      ))),
+      "A loaded-count/scroll instruction remained in stable browse content",
+      Object.fromEntries(Object.entries(states).map(([name, entry]) => [name, entry.persistentBrowseMessages])),
     );
     assert(compactMetrics.gatchaVisible, "Gatcha is no longer a separate visible card");
     assert(routeState.addRequests.length === 7, "Not every retained result owner requested successfully", routeState.addRequests);
@@ -1203,6 +1382,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       languageMetrics,
       retainedNodes,
       focus: { detachedUploaderReturn: restoredFocus },
+      navigation: { secondaryBackIconGeometry, categoryBackGeometry },
+      detailGeometry: sharedDetailGeometry,
       network: {
         totalApiRequests: routeState.apiRequests.length,
         pureSwitchDelta: routeState.apiRequests.length - pureSwitchBefore,

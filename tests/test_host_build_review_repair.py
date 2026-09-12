@@ -173,17 +173,18 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("max-height: calc(100dvh - 24px)", confirm_rule)
         self.assertIn("overflow-y: auto", confirm_rule)
 
-    def test_narrow_request_mode_tabs_share_a_row_with_their_contract(self):
+    def test_narrow_request_mode_tabs_do_not_reserve_a_status_message_column(self):
         media = self.styles[
             self.styles.index("@media (max-width: 699px)") :
             self.styles.index("@media (pointer: coarse)")
         ]
         mode_head = re.search(r"\.request-mode-head\s*\{([^}]*)\}", media).group(1)
-        self.assertIn("grid-template-columns: max-content minmax(0, 1fr)", mode_head)
+        self.assertIn("display: flex", mode_head)
+        self.assertNotIn("grid-template-columns", mode_head)
         mode_tabs = re.search(r"\.request-mode-tabs\s*\{([^}]*)\}", media).group(1)
         self.assertIn("width: auto", mode_tabs)
-        contract = re.search(r"\.request-mode-contract\s*\{([^}]*)\}", media).group(1)
-        self.assertIn("text-align: right", contract)
+        self.assertNotIn("request-mode-contract", self.markup)
+        self.assertNotIn("searchModeContract", self.script)
 
     def test_peer_buttons_and_close_controls_share_geometry_and_motion(self):
         self.assertIn("width: 32px;\n  height: 32px;", self.styles)
@@ -720,14 +721,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn(".request-discover-view > .request-mode-panel {\n  overflow: hidden;", self.styles)
         self.assertIn(".request-discover-view .category-browser,", self.styles)
         self.assertIn("height: 100%;\n  overflow: hidden;", self.styles)
-        self.assertIn(
-            ".tag-browser.has-request-session-user-notice",
-            self.styles,
-        )
-        self.assertIn(
-            ".category-browser-detail.has-request-session-user-notice",
-            self.styles,
-        )
+        self.assertIn(".tag-browser.has-request-session-user-notice", self.styles)
+        self.assertIn(".category-browser-detail.has-request-session-user-notice", self.styles)
 
     def test_follow_owner_detail_assigns_scrolling_to_cards_only(self):
         owner = self.script[
@@ -1068,7 +1063,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn('closest("[data-tauri-drag-region]")', chrome)
         self.assertIn("appWindow.toggleMaximize()", chrome)
 
-    def test_request_empty_users_search_feedback_and_discover_controls_match_review(self):
+    def test_request_feedback_uses_persistent_prerequisite_and_action_toasts(self):
         self.assertIn('id="request-session-user-notice"', self.markup)
         self.assertIn('data-i18n="session.empty"', self.markup)
         notice = re.search(

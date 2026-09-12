@@ -948,6 +948,41 @@ function setRemoteTabPanelVisibility(panel, visible) {
   panel.setAttribute("aria-hidden", String(!visible));
 }
 
+function syncRemoteRequestPanelSizeTier() {
+  if (!elements.requestPanel) {
+    return;
+  }
+  let tier = "standard";
+  if (state.remoteRequestView === "quick") {
+    tier = "compact";
+  } else {
+    const activePanel = Array.from(elements.remoteRequestViewPanels || [])
+      .find((panel) => !panel.hidden && !panel.inert);
+    const visibleResults = Array.from(activePanel?.querySelectorAll?.(".search-result-item") || [])
+      .filter((item) => !item.closest("[hidden], .hidden"));
+    if (visibleResults.length) {
+      const deepBrowse = (
+        state.remoteRequestView === "discover"
+        && (
+          (state.remoteDiscoverMode === "categories" && Boolean(state.categoryBrowseSelectedId))
+          || (["name", "artist"].includes(state.remoteDiscoverMode)
+            && Boolean(d1BrowseModeState(state.remoteDiscoverMode).tag))
+        )
+      ) || (
+        state.remoteRequestView === "sources"
+        && (
+          (state.remoteSourcesMode === "uids" && Boolean(state.followBrowseSelectedUid))
+          || (state.remoteSourcesMode === "favorites" && Boolean(state.favlistBrowseSelectedFolderId))
+        )
+      );
+      tier = deepBrowse ? "browse-deep" : "browse";
+    }
+  }
+  if (elements.requestPanel.dataset.requestSize !== tier) {
+    elements.requestPanel.dataset.requestSize = tier;
+  }
+}
+
 function syncRemoteSearchModeSelection() {
   const activeMode = normalizeRemoteSearchMode(state.remoteSearchMode);
   state.remoteSearchMode = activeMode;
@@ -1177,6 +1212,7 @@ function syncRemoteRequestViewSelection() {
   syncRemoteDiscoverModeSelection();
   syncRemoteSourcesModeSelection();
   syncRemoteRequestTabPresentation();
+  syncRemoteRequestPanelSizeTier();
 }
 
 function activateRemoteRequestView(
@@ -3673,6 +3709,7 @@ function renderSearchResults(items) {
     empty.className = "search-empty";
     empty.textContent = t("search.empty");
     elements.searchResults.appendChild(empty);
+    syncRemoteRequestPanelSizeTier();
     return;
   }
 
@@ -3702,6 +3739,7 @@ function renderSearchResults(items) {
     row.append(meta, button);
     elements.searchResults.appendChild(row);
   });
+  syncRemoteRequestPanelSizeTier();
 }
 
 function renderLarkSearchResults(items) {
@@ -3716,6 +3754,7 @@ function renderLarkSearchResults(items) {
     empty.className = "search-empty";
     empty.textContent = t("search.larkNoResults");
     elements.larkSearchResults.appendChild(empty);
+    syncRemoteRequestPanelSizeTier();
     return;
   }
 
@@ -3744,6 +3783,7 @@ function renderLarkSearchResults(items) {
     row.append(meta, button);
     elements.larkSearchResults.appendChild(row);
   });
+  syncRemoteRequestPanelSizeTier();
 }
 
 function setSourcesFollowBrowseMessage(message, isError = false) {
@@ -3764,12 +3804,21 @@ function setFavlistBrowseMessage(message, isError = false) {
   elements.favlistBrowseMessage.classList.toggle("hidden", !message);
 }
 
-function setSourceManagementMessage(target, message, isError = false) {
+function setSourceManagementInlineMessage(target, message, isError = false) {
   if (target === "sources-favorites") {
     setFavlistBrowseMessage(message, isError);
     return;
   }
   setSourcesFollowBrowseMessage(message, isError);
+}
+
+function setSourceManagementMessage(target, message, isError = false) {
+  setSourceManagementInlineMessage(target, "");
+  setAppMessage(message, isError);
+}
+
+function setSourceManagementLoadingMessage(target, message) {
+  setSourceManagementInlineMessage(target, message);
 }
 
 function appendSearchResultCoverFallback(cover, item, stateName) {
@@ -3891,6 +3940,7 @@ function renderSearchResultItems(container, items, emptyText = "") {
     empty.className = "search-empty";
     empty.textContent = emptyText || t("search.empty");
     container.appendChild(empty);
+    syncRemoteRequestPanelSizeTier();
     return;
   }
   normalizedItems.forEach((item, index) => {
@@ -3900,6 +3950,7 @@ function renderSearchResultItems(container, items, emptyText = "") {
     applyRequestResultSelection(row, item, requestDetailOwnerForContainer(container));
     container.appendChild(row);
   });
+  syncRemoteRequestPanelSizeTier();
 }
 
 function appendSearchResultItems(container, items) {
@@ -3916,6 +3967,7 @@ function appendSearchResultItems(container, items) {
     applyRequestResultSelection(row, item, requestDetailOwnerForContainer(container));
     container.appendChild(row);
   });
+  syncRemoteRequestPanelSizeTier();
 }
 
 const canonicalBilikaraSearch = {
@@ -3950,6 +4002,7 @@ function syncBilikaraSearchView() {
       renderLarkSearchResults(items);
     }
   }
+  syncRemoteRequestPanelSizeTier();
 }
 
 async function executeCanonicalBilikaraSearch(queryStr) {
@@ -3957,10 +4010,11 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   if (!query) {
     canonicalBilikaraSearch.query = "";
     canonicalBilikaraSearch.items = [];
-    canonicalBilikaraSearch.message = t("search.keywordRequired");
-    canonicalBilikaraSearch.isError = true;
+    canonicalBilikaraSearch.message = "";
+    canonicalBilikaraSearch.isError = false;
     canonicalBilikaraSearch.hasSearched = false;
     syncBilikaraSearchView();
+    setAppMessage(t("search.keywordRequired"), true);
     return;
   }
 
@@ -3994,17 +4048,16 @@ async function executeCanonicalBilikaraSearch(queryStr) {
     });
 
     canonicalBilikaraSearch.items = freshItems;
-    canonicalBilikaraSearch.message = freshItems.length
-      ? t("search.larkFound", { count: freshItems.length })
-      : t("search.larkNoResults");
+    canonicalBilikaraSearch.message = freshItems.length ? "" : t("search.larkNoResults");
     canonicalBilikaraSearch.isError = false;
   } catch (error) {
     if (canonicalBilikaraSearch.seq !== searchSeq) {
       return;
     }
     canonicalBilikaraSearch.items = [];
-    canonicalBilikaraSearch.message = error.message || t("error.larkSearchFailed");
-    canonicalBilikaraSearch.isError = true;
+    canonicalBilikaraSearch.message = "";
+    canonicalBilikaraSearch.isError = false;
+    setAppMessage(error.message || t("error.larkSearchFailed"), true);
   } finally {
     if (canonicalBilikaraSearch.seq === searchSeq) {
       canonicalBilikaraSearch.loading = false;
@@ -4253,18 +4306,13 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   }
   if (message) {
     let text = "";
-    if (mode.tag && !mode.loading) {
-      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
-      if (typeof mode.data?.has_more === "boolean") {
-        text = paginatedBrowseStatus(items, {loading:mode.loading,hasMore:mode.data.has_more,
-          loadingText:t("search.browseLoading"),emptyText:t("search.larkNoResults")});
-      }
-    } else if (!mode.tag && tags.length) {
-      text = t("search.browseTagsFound", { count: tags.length });
+    if (mode.tag && !mode.loading && !items.length) {
+      text = t("search.larkNoResults");
     }
-    message.textContent = mode.error || (mode.loading ? t("search.browseLoading") : text);
-    message.classList.toggle("is-error", Boolean(mode.error));
+    message.textContent = mode.loading ? t("search.browseLoading") : text;
+    message.classList.remove("is-error");
   }
+  syncRemoteRequestPanelSizeTier();
 }
 
 async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "", append = false } = {}) {
@@ -4305,6 +4353,7 @@ async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", quer
   } catch (error) {
     if (mode.seq === searchSeq) {
       mode.error = error.message;
+      setAppMessage(error.message, true);
     }
   } finally {
     if (mode.seq === searchSeq) {
@@ -4335,15 +4384,14 @@ function ensureCategoryBrowseView() {
         <button type="submit" class="primary-button" data-category-browse-submit></button>
       </form>
       <div class="category-browser-tabs" data-category-browser-tabs></div>
-      <div class="tag-browser-nav">
-        <button type="button" class="secondary-button tag-browser-back" data-category-browse-back></button>
-        <div class="tag-browser-current hidden" data-category-browse-current></div>
-      </div>
       <div class="search-results category-browser-results" data-category-browse-results></div>
       <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
     </div>
   `;
   elements.remoteDiscoverCategoriesPanel.appendChild(view);
+  view.querySelector("[data-category-browse-results]")?.addEventListener("scroll", (event) => {
+    maybeLoadMoreCategoryBrowse(event.currentTarget);
+  }, { passive: true });
   return view;
 }
 
@@ -4369,6 +4417,16 @@ function createCategoryBrowseCard(category, { compact = false } = {}) {
   return button;
 }
 
+function createCategoryBrowseBackCard() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary-button tag-browser-back";
+  button.dataset.categoryBrowseBack = "";
+  button.setAttribute("aria-label", t("common.back"));
+  button.textContent = t("common.back");
+  return button;
+}
+
 function renderCategoryBrowseView() {
   const view = ensureCategoryBrowseView();
   if (!view) {
@@ -4382,7 +4440,6 @@ function renderCategoryBrowseView() {
   const tabs = view.querySelector("[data-category-browser-tabs]");
   const queryInput = view.querySelector("[data-category-browse-query]");
   const submitButton = view.querySelector("[data-category-browse-submit]");
-  const backButton = view.querySelector("[data-category-browse-back]");
   const results = view.querySelector("[data-category-browse-results]");
   const message = view.querySelector("[data-category-browse-message]");
 
@@ -4395,6 +4452,7 @@ function renderCategoryBrowseView() {
     });
   }
   if (!selected) {
+    syncRemoteRequestPanelSizeTier();
     return;
   }
   if (queryInput && document.activeElement !== queryInput) {
@@ -4408,12 +4466,11 @@ function renderCategoryBrowseView() {
     submitButton.disabled = state.categoryBrowseLoading;
     submitButton.toggleAttribute("aria-busy", state.categoryBrowseLoading);
   }
-  if (backButton) {
-    backButton.textContent = t("common.back");
-    backButton.disabled = state.categoryBrowseLoading;
-  }
   if (tabs) {
     tabs.innerHTML = "";
+    const backButton = createCategoryBrowseBackCard();
+    backButton.disabled = state.categoryBrowseLoading;
+    tabs.appendChild(backButton);
     categories.forEach((category) => {
       const tab = createCategoryBrowseCard(category, { compact: true });
       tab.classList.toggle("active", category.id === selected.id);
@@ -4426,20 +4483,15 @@ function renderCategoryBrowseView() {
   }
   if (message) {
     let text = "";
-    if (state.categoryBrowseError) {
-      text = state.categoryBrowseError;
-    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+    if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
       text = t("search.browseLoading");
-    } else if (state.categoryBrowseItems.length) {
-      text = state.categoryBrowseHasMore
-        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
-        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
-    } else if (!state.categoryBrowseLoading) {
+    } else if (!state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
       text = t("search.larkNoResults");
     }
     message.textContent = text;
-    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+    message.classList.remove("is-error");
   }
+  syncRemoteRequestPanelSizeTier();
 }
 
 async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
@@ -4481,6 +4533,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
   } catch (error) {
     if (state.categoryBrowseSeq === searchSeq) {
       state.categoryBrowseError = error.message;
+      setAppMessage(error.message, true);
     }
   } finally {
     if (state.categoryBrowseSeq === searchSeq) {
@@ -4494,11 +4547,13 @@ function shouldAutoLoadNextBrowsePage(resultsContainer, { active, loading, hasMo
   if (!active || loading || !hasMore || !resultsContainer) {
     return false;
   }
-  // Browse now owns an inner scrolling viewport. Its outer rectangle never
-  // approaches the window edge as the user scrolls through its song cards.
+  // Browse owns an inner scrolling viewport; hidden panels cannot load pages.
   if (!resultsContainer.getClientRects().length) return false;
-  return resultsContainer.scrollHeight - resultsContainer.clientHeight
-    - resultsContainer.scrollTop <= browseAutoLoadThresholdPx;
+  const remainingScroll = resultsContainer.scrollHeight
+    - resultsContainer.scrollTop
+    - resultsContainer.clientHeight;
+  return Number.isFinite(remainingScroll)
+    && remainingScroll <= browseAutoLoadThresholdPx;
 }
 
 function maybeLoadMoreCategoryBrowse(resultsContainer) {
@@ -4541,16 +4596,11 @@ function maybeLoadMoreFollowBrowse(resultsContainer) {
   }
 }
 
-function paginatedBrowseStatus(items, { loading, hasMore, loadingText, emptyText = "" }) {
+function paginatedBrowseStatus(items, { loading, loadingText, emptyText = "" }) {
   if (loading) {
     return items.length ? t("follow.loadingMore") : loadingText;
   }
-  if (items.length) {
-    return hasMore
-      ? t("search.categoryLoadedMore", { count: items.length })
-      : t("search.categoryLoadedAll", { count: items.length });
-  }
-  return emptyText;
+  return items.length ? "" : emptyText;
 }
 
 function selectedFavlistFolder() {
@@ -4634,10 +4684,8 @@ function renderFavlistBrowse() {
         elements.favlistGrid.appendChild(button);
       });
     }
-    setFavlistBrowseMessage(
-      state.favlistBrowseError || (state.favlistBrowseLoading ? t("favlist.loadingFolders") : ""),
-      Boolean(state.favlistBrowseError),
-    );
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    syncRemoteRequestPanelSizeTier();
     return;
   }
 
@@ -4670,15 +4718,12 @@ function renderFavlistBrowse() {
     items,
     state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
   );
-  if (state.favlistBrowseError) {
-    setFavlistBrowseMessage(state.favlistBrowseError, true);
-  } else {
-    setFavlistBrowseMessage(paginatedBrowseStatus(items, {
-      loading: state.favlistBrowseLoading,
-      hasMore,
-      loadingText: t("favlist.loadingItems"),
-    }));
-  }
+  setFavlistBrowseMessage(paginatedBrowseStatus(items, {
+    loading: state.favlistBrowseLoading,
+    hasMore,
+    loadingText: t("favlist.loadingItems"),
+  }));
+  syncRemoteRequestPanelSizeTier();
 }
 
 async function loadFavlistBrowse({
@@ -4722,6 +4767,7 @@ async function loadFavlistBrowse({
   } catch (error) {
     if (state.favlistBrowseSeq === seq) {
       state.favlistBrowseError = error.message;
+      setAppMessage(error.message, true);
     }
   } finally {
     if (state.favlistBrowseSeq === seq) {
@@ -4887,7 +4933,7 @@ function initSearchDetailController() {
     return;
   }
   searchDetailController = window.BilikaraSongDetail.createSongDetailController({
-    container: elements.requestPanel,
+    container: elements.remoteShell,
     t,
     requestButtonClass: "primary-button",
     nextButtonClass: "secondary-button",
@@ -5050,10 +5096,8 @@ function renderSourcesFollowBrowse() {
         elements.sourcesFollowGrid.appendChild(button);
       });
     }
-    setSourcesFollowBrowseMessage(
-      state.followBrowseError || (state.followBrowseLoading ? t("follow.loadingOwners") : ""),
-      Boolean(state.followBrowseError),
-    );
+    setSourcesFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    syncRemoteRequestPanelSizeTier();
     return;
   }
 
@@ -5082,15 +5126,12 @@ function renderSourcesFollowBrowse() {
     items,
     state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
   );
-  if (state.followBrowseError) {
-    setSourcesFollowBrowseMessage(state.followBrowseError, true);
-  } else {
-    setSourcesFollowBrowseMessage(paginatedBrowseStatus(items, {
-      loading: state.followBrowseLoading,
-      hasMore,
-      loadingText: t("follow.loadingItems"),
-    }));
-  }
+  setSourcesFollowBrowseMessage(paginatedBrowseStatus(items, {
+    loading: state.followBrowseLoading,
+    hasMore,
+    loadingText: t("follow.loadingItems"),
+  }));
+  syncRemoteRequestPanelSizeTier();
 }
 
 async function loadFollowBrowse({
@@ -5132,6 +5173,7 @@ async function loadFollowBrowse({
   } catch (error) {
     if (state.followBrowseSeq === seq) {
       state.followBrowseError = error.message;
+      setAppMessage(error.message, true);
     }
   } finally {
     if (state.followBrowseSeq === seq) {
@@ -5165,7 +5207,7 @@ async function addGatchaUidFromInput(input, { messageTarget = "sources-follow" }
 
   state.gatchaUidSaving = true;
   renderSourceManagementControls();
-  setSourceManagementMessage(messageTarget, t("gatcha.checkingUid"));
+  setSourceManagementLoadingMessage(messageTarget, t("gatcha.checkingUid"));
   try {
     const preview = await previewGatchaUid(uid);
     const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
@@ -5184,7 +5226,7 @@ async function addGatchaUidFromInput(input, { messageTarget = "sources-follow" }
       renderSourceManagementControls();
       return;
     }
-    setSourceManagementMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
+    setSourceManagementLoadingMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
     const result = await addGatchaUid(normalizedUid);
     setSourceManagementMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
     if (input) {
@@ -5212,7 +5254,7 @@ async function previewGatchaFavlistFromInput(input, { messageTarget = "sources-f
   }
   state.gatchaFavlistSaving = true;
   renderSourceManagementControls();
-  setSourceManagementMessage(messageTarget, t("gatcha.readingFavlists"));
+  setSourceManagementLoadingMessage(messageTarget, t("gatcha.readingFavlists"));
   try {
     const result = await previewGatchaFavlist(uid);
     openGatchaFavlistSheet(result?.uid || uid, result, { messageTarget });
@@ -5254,11 +5296,20 @@ function setGatchaMessage(message, isError = false) {
 }
 
 function setGatchaUidMessage(message, isError = false) {
+  if (elements.gatchaUidMessage) {
+    elements.gatchaUidMessage.textContent = "";
+    elements.gatchaUidMessage.classList.remove("is-error");
+    elements.gatchaUidMessage.classList.add("hidden");
+  }
+  setAppMessage(message, isError);
+}
+
+function setGatchaUidLoadingMessage(message) {
   if (!elements.gatchaUidMessage) {
     return;
   }
   elements.gatchaUidMessage.textContent = message || "";
-  elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
+  elements.gatchaUidMessage.classList.remove("is-error");
   elements.gatchaUidMessage.classList.toggle("hidden", !message);
 }
 
@@ -7057,7 +7108,7 @@ async function confirmGatchaFavlistSheet() {
 
   state.gatchaFavlistSaving = true;
   renderSourceManagementControls();
-  setSourceManagementMessage(messageTarget, t("favlist.pullingSelected"));
+  setSourceManagementLoadingMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistSheet();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
@@ -8530,7 +8581,8 @@ elements.searchForm.addEventListener("submit", async (event) => {
   const query = String(elements.searchQuery.value || "").trim();
   if (!query) {
     hideSearchResults();
-    setSearchMessage(t("search.keywordRequired"), true);
+    setSearchMessage("");
+    setAppMessage(t("search.keywordRequired"), true);
     return;
   }
 
@@ -8540,10 +8592,11 @@ elements.searchForm.addEventListener("submit", async (event) => {
   try {
     const items = await searchGatchaCache(query);
     renderSearchResults(items);
-    setSearchMessage(items.length ? t("search.localFound", { count: items.length }) : t("search.localNotFound"));
+    setSearchMessage(items.length ? "" : t("search.localNotFound"));
   } catch (error) {
     hideSearchResults();
-    setSearchMessage(error.message, true);
+    setSearchMessage("");
+    setAppMessage(error.message, true);
   } finally {
     elements.searchButton.disabled = false;
     elements.searchButton.removeAttribute("aria-busy");
@@ -8812,6 +8865,14 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
     }
   }
 });
+
+elements.sourcesFollowResults?.addEventListener("scroll", (event) => {
+  maybeLoadMoreFollowBrowse(event.currentTarget);
+}, { passive: true });
+
+elements.favlistSongResults?.addEventListener("scroll", (event) => {
+  maybeLoadMoreFavlistBrowse(event.currentTarget);
+}, { passive: true });
 
 window.addEventListener("scroll", (event) => {
   if (state.remoteRequestView === "discover" && ["name","artist"].includes(state.remoteDiscoverMode)) {
@@ -9482,7 +9543,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   }
   state.gatchaRefreshSaving = true;
   renderSourceManagementControls();
-  setGatchaUidMessage(t("gatcha.refreshingBackground"));
+  setGatchaUidLoadingMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
     if (result?.started !== false && state.data) {

@@ -6516,13 +6516,14 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 .category-browser-detail {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
 }
 
 .category-browser-tabs {
   min-width: 0;
   display: flex;
+  align-items: center;
   gap: 10px;
   overflow-x: auto;
   padding: 0 46px 4px 0;
@@ -8301,6 +8302,8 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .work-rail-button,
+  .request-subview-tabs button[aria-selected="true"],
+  .request-mode-tabs button[aria-selected="true"],
   .host-workspace-fragment.is-tool-transition-in,
   .host-workspace-fragment.is-tool-transition-out,
   .host-workspace-fragment.is-tool-transition-resume,
@@ -8376,6 +8379,21 @@ body {
   background: var(--accent);
   color: var(--on-accent, #fff);
   box-shadow: 0 6px 18px rgba(208, 90, 63, 0.2);
+  animation: host-request-tab-select 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes host-request-tab-select {
+  0% {
+    filter: saturate(0.78) brightness(0.97);
+  }
+
+  62% {
+    filter: saturate(1.08) brightness(1.02);
+  }
+
+  100% {
+    filter: none;
+  }
 }
 
 .request-subview-tabs button:focus-visible,
@@ -8433,13 +8451,6 @@ body {
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
-}
-
-.request-mode-contract {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
 }
 
 .request-search-view > .request-mode-panel {
@@ -8916,8 +8927,7 @@ body {
   }
 
   .request-mode-head {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
+    display: flex;
     align-items: center;
   }
 
@@ -8926,11 +8936,6 @@ body {
     max-width: 100%;
   }
 
-  .request-mode-contract {
-    min-width: 0;
-    justify-self: end;
-    text-align: right;
-  }
 }
 
 @media (pointer: coarse) {
@@ -10331,7 +10336,7 @@ body.is-presentation-stage-only .left-column {
 }
 
 .request-discover-view .category-browser-detail.has-request-session-user-notice {
-  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
 
 .request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-search {
@@ -10346,16 +10351,12 @@ body.is-presentation-stage-only .left-column {
   grid-row: 3;
 }
 
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .tag-browser-nav {
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-results {
   grid-row: 4;
 }
 
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-results {
-  grid-row: 5;
-}
-
 .request-discover-view .category-browser-detail.has-request-session-user-notice > .tag-browser-message {
-  grid-row: 6;
+  grid-row: 5;
 }
 
 /* In an UP detail, only the card list scrolls; its title and query controls

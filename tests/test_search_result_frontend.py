@@ -982,7 +982,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertIn('const container = elements.requestWorkspace;', host_js)
         self.assertNotIn('elements.searchModal.classList.add("closing");', host_js)
         self.assertNotIn('elements.searchModal.classList.add("closing");', remote_js)
-        self.assertIn("container: elements.requestPanel", remote_js)
+        self.assertIn("container: elements.remoteShell", remote_js)
         detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
         self.assertIn('root.className = "song-detail-view hidden";', detail_js)
         self.assertIn(">×</button>", detail_js)
@@ -1003,9 +1003,9 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertNotIn("#search-modal-content-placeholder", detail_css)
         self.assertIn("transform 180ms cubic-bezier(0.16, 1, 0.3, 1)", detail_css)
         self.assertIn("background 180ms ease", detail_css)
-        self.assertIn(".request-panel .song-detail-close", detail_css)
+        self.assertIn(".remote-shell > .song-detail-view .song-detail-close", detail_css)
         self.assertIn("touch-action: manipulation;", detail_css)
-        self.assertIn(".request-panel .song-detail-close:hover", detail_css)
+        self.assertIn(".remote-shell > .song-detail-view .song-detail-close:hover", detail_css)
         self.assertNotIn("remote-search-modal", detail_css + remote_css)
         self.assertIn("transform: scale(1.04);", detail_css)
         self.assertIn("transform: scale(0.96);", detail_css)
@@ -1028,7 +1028,9 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         mobile_css = detail_css.split("@media (max-width: 680px) {", 1)[1].split(
             "@media (prefers-reduced-motion: reduce)", 1
         )[0]
-        close_rule = mobile_css.split(".request-panel .song-detail-close {", 1)[1].split("}", 1)[0]
+        close_rule = mobile_css.split(
+            ".remote-shell > .song-detail-view .song-detail-close {", 1
+        )[1].split("}", 1)[0]
         generic_close_rule = mobile_css.split(".song-detail-close {", 1)[1].split(
             "}", 1
         )[0]

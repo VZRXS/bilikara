@@ -7658,27 +7658,22 @@ async function run() {
     const emptyRequesterButton = page.locator("#requester-empty-button");
     assert(await emptyRequesterButton.isVisible(), "empty requester action did not replace the disabled select");
     assert(!await page.locator("#requester-select").isVisible(), "empty requester select remained visible");
-    const requestUserNotice = page.locator("#request-session-user-notice");
-    assert(await requestUserNotice.isVisible(), "empty-user notice was not shown across Request tabs");
-    const requestUserNoticeEvidence = await requestUserNotice.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return {
-        text: element.textContent.trim(),
-        background: style.backgroundColor,
-        border: style.borderTopWidth,
-        color: style.color,
-        weight: style.fontWeight,
-        align: style.textAlign,
-      };
-    });
+    const requestMessageEvidence = await page.evaluate(() => ({
+      prerequisiteCount: document.querySelectorAll("#request-session-user-notice").length,
+      prerequisiteVisible: Boolean(elements.requestSessionUserNotice?.getClientRects().length),
+      prerequisiteText: elements.requestSessionUserNotice?.textContent.trim() || "",
+      persistentMessages: Array.from(elements.requestWorkspace.querySelectorAll(
+        "#form-message, .search-message, .gatcha-message",
+      )).filter((element) => element.getClientRects().length > 0)
+        .map((element) => element.textContent.trim()).filter(Boolean),
+    }));
     assert(
-      requestUserNoticeEvidence.text === "先添加本场用户，服务端和客户端才能开始点歌。"
-        && requestUserNoticeEvidence.background === "rgba(0, 0, 0, 0)"
-        && requestUserNoticeEvidence.border === "0px"
-        && Number(requestUserNoticeEvidence.weight) >= 700
-        && requestUserNoticeEvidence.align === "left",
-      "Request empty-user prerequisite lost its compact accent-warning treatment",
-      requestUserNoticeEvidence,
+      requestMessageEvidence.prerequisiteCount === 1
+        && requestMessageEvidence.prerequisiteVisible
+        && requestMessageEvidence.prerequisiteText === "先添加本场用户，服务端和客户端才能开始点歌。"
+        && requestMessageEvidence.persistentMessages.length === 0,
+      "Request did not separate its persistent user prerequisite from action-time toast feedback",
+      requestMessageEvidence,
     );
     assert(
       await page.locator("#work-rail-users").evaluate((element) => element.classList.contains("needs-attention")),
@@ -7720,51 +7715,6 @@ async function run() {
       await page.screenshot({ path: requestEmptyScreenshotPath, fullPage: false });
     }
 
-    const requestTabsWithNotice = [];
-    for (const view of ["search", "discover", "sources", "quick"]) {
-      await page.locator(`[data-request-view="${view}"]`).click();
-      requestTabsWithNotice.push(await page.evaluate((activeView) => {
-        const notice = elements.requestSessionUserNotice;
-        const subview = elements.requestWorkspace.querySelector(`[data-request-panel="${activeView}"]`);
-        const visibleInput = Array.from(subview?.querySelectorAll("input") || [])
-          .find((input) => input.getClientRects().length > 0);
-        const secondaryTabs = subview?.querySelector(".request-mode-tabs");
-        const geometry = () => ({
-          inputTop: visibleInput?.getBoundingClientRect().top ?? null,
-          tabsTop: secondaryTabs?.getBoundingClientRect().top ?? null,
-        });
-        const withNotice = geometry();
-        notice.hidden = true;
-        notice.setAttribute("aria-hidden", "true");
-        syncRequestSessionUserNoticePlacement();
-        const withoutNotice = geometry();
-        notice.hidden = false;
-        notice.setAttribute("aria-hidden", "false");
-        syncRequestSessionUserNoticePlacement();
-        const noticeRect = notice.getBoundingClientRect();
-        const inputRect = visibleInput?.getBoundingClientRect();
-        const tabsRect = secondaryTabs?.getBoundingClientRect();
-        return {
-          view: activeView,
-          visible: Boolean(notice.offsetWidth || notice.offsetHeight),
-          owner: notice.parentElement?.id || notice.parentElement?.className || "",
-          afterInput: !inputRect || noticeRect.top >= inputRect.bottom - 1,
-          afterSecondaryTabs: !tabsRect || noticeRect.top >= tabsRect.bottom - 1,
-          inputStable: withNotice.inputTop === withoutNotice.inputTop,
-          tabsStable: withNotice.tabsTop === withoutNotice.tabsTop,
-        };
-      }, view));
-    }
-    assert(
-      requestTabsWithNotice.every((entry) => entry.visible
-        && entry.afterInput
-        && entry.afterSecondaryTabs
-        && entry.inputStable
-        && entry.tabsStable),
-      "one or more Request tabs misplaced the empty-user notice or shifted controls above it",
-      requestTabsWithNotice,
-    );
-
     await page.locator('[data-request-view="sources"]').click();
     await page.locator('[data-sources-mode="favorites"]').click();
     await page.waitForTimeout(80);
@@ -7778,18 +7728,18 @@ async function run() {
       const notice = elements.requestSessionUserNotice.getBoundingClientRect();
       const firstCard = elements.favlistGrid.firstElementChild?.getBoundingClientRect();
       return {
-        noticeAfterSearch: notice.top >= action.bottom - 1,
+        noticeAfterAction: notice.top >= action.bottom - 1,
         cardAfterNotice: Boolean(firstCard) && firstCard.top >= notice.bottom - 1,
         noticeGap: notice.top - action.bottom,
         cardGap: firstCard ? firstCard.top - notice.bottom : null,
       };
     });
     assert(
-      favoriteNoticeLayout.noticeAfterSearch
+      favoriteNoticeLayout.noticeAfterAction
         && favoriteNoticeLayout.cardAfterNotice
         && favoriteNoticeLayout.noticeGap <= 14
         && favoriteNoticeLayout.cardGap <= 16,
-      "Favorites warning or cards did not follow the search row in document order",
+      "Favorites prerequisite or content did not follow its fixed action row in document order",
       favoriteNoticeLayout,
     );
     if (requestEmptyFavoritesScreenshotPath) {
@@ -7926,7 +7876,6 @@ async function run() {
         });
         restoreD1BrowseMode(activeMode);
         renderD1BrowseView();
-        syncRequestSessionUserNoticePlacement();
       }, mode);
       discoverEmptyLayouts.push(await page.evaluate((activeMode) => {
         const panel = document.querySelector(`[data-discover-panel="${activeMode}"]`);
@@ -7960,7 +7909,6 @@ async function run() {
       state.categoryBrowseSelectedId = "";
       activateDiscoverMode("categories");
       renderCategoryBrowseView();
-      syncRequestSessionUserNoticePlacement();
     });
     await page.locator("#request-discover-categories .category-browser-card").first()
       .evaluate((button) => button.click());
@@ -7969,14 +7917,22 @@ async function run() {
       const panel = elements.discoverCategoriesPanel;
       const form = panel.querySelector("[data-category-browse-search]").getBoundingClientRect();
       const notice = elements.requestSessionUserNotice.getBoundingClientRect();
-      const tabs = panel.querySelector("[data-category-browser-tabs]").getBoundingClientRect();
-      const navigation = panel.querySelector(".tag-browser-nav").getBoundingClientRect();
+      const tabRail = panel.querySelector("[data-category-browser-tabs]");
+      const tabs = tabRail.getBoundingClientRect();
+      const back = tabRail.querySelector("[data-category-browse-back]");
+      const peer = tabRail.querySelector("[data-category-id]");
+      const backBounds = back.getBoundingClientRect();
+      const peerBounds = peer.getBoundingClientRect();
       const results = panel.querySelector("[data-category-browse-results]").getBoundingClientRect();
       return {
         noticeAfterSearch: notice.top >= form.bottom - 1,
         tabsAfterNotice: tabs.top >= notice.bottom - 1,
-        navigationAfterTabs: navigation.top >= tabs.bottom - 1,
-        resultsAfterNavigation: results.top >= navigation.bottom - 1,
+        backIsFirstCategory: tabRail.firstElementChild === back,
+        backUsesStandardActionStyle: back.matches(".tag-browser-back")
+          && backBounds.width < peerBounds.width
+          && backBounds.height === 40,
+        dedicatedNavigationRemoved: !panel.querySelector(".category-browser-detail > .tag-browser-nav"),
+        resultsAfterTabs: results.top >= tabs.bottom - 1,
       };
     });
     assert(

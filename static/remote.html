@@ -168,7 +168,7 @@
         </div>
       </header>
 
-      <section class="panel request-panel">
+      <section class="panel request-panel" data-request-size="compact">
         <div class="panel-head remote-request-head">
           <div>
             <p class="panel-tag" data-i18n="request.tag">Song Request</p>
@@ -193,7 +193,12 @@
           </div>
           <div id="remote-request-secondary-nav" class="remote-request-secondary-nav hidden" hidden inert>
             <button type="button" id="remote-request-secondary-back" class="remote-request-secondary-back"
-              data-i18n="common.back">返回</button>
+              data-i18n-aria-label="common.back" aria-label="返回">
+              <svg class="remote-request-secondary-back-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m14.5 6-6 6 6 6"></path>
+              </svg>
+              <span data-i18n="common.back">返回</span>
+            </button>
             <div id="remote-request-secondary-slot" class="remote-request-secondary-slot"></div>
           </div>
         </div>

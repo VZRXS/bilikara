@@ -64,6 +64,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
             )
         ]
         self.assertEqual(len(request_cards), 1)
+        self.assertEqual(request_cards[0].get("data-request-size"), "compact")
         tabs = self.elements_with("data-remote-request-view")
         panels = self.elements_with("data-remote-request-panel")
         values = ["quick", "search", "discover", "sources"]
@@ -112,6 +113,46 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIn("function syncRemoteRequestTabPresentation()", self.script)
         self.assertIn("elements.remoteRequestSecondarySlot.append(activeTablist)", self.script)
         self.assertIn("restoreRemoteRequestSecondaryTablists(activeView)", self.script)
+
+    def test_back_controls_use_centered_svg_and_category_card_geometry(self):
+        secondary_back = re.search(
+            r'<button type="button" id="remote-request-secondary-back".*?</button>',
+            self.markup,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(secondary_back)
+        self.assertIn("remote-request-secondary-back-icon", secondary_back.group(0))
+        self.assertIn('data-i18n="common.back"', secondary_back.group(0))
+        self.assertNotIn('content: "‹"', self.styles)
+        self.assertIn("display: inline-flex", self.styles)
+        self.assertIn("function createCategoryBrowseBackCard()", self.script)
+        self.assertIn(
+            'button.className = "secondary-button tag-browser-back"',
+            self.script,
+        )
+        self.assertIn('button.textContent = t("common.back")', self.script)
+        self.assertNotIn("category-browser-back-tab-icon", self.script)
+        self.assertIn('tabs.appendChild(backButton)', self.script)
+        category_template = self.script[
+            self.script.index("function ensureCategoryBrowseView()") :
+            self.script.index("function createCategoryBrowseCard")
+        ]
+        self.assertNotIn('class="tag-browser-nav"', category_template)
+
+    def test_request_tabs_use_bounded_non_linear_motion(self):
+        self.assertIn(
+            "animation: remote-tab-select 200ms cubic-bezier(0.16, 1, 0.3, 1)",
+            self.styles,
+        )
+        self.assertIn("@keyframes remote-tab-select", self.styles)
+        reduced_motion = re.search(
+            r"@media \(prefers-reduced-motion: reduce\)\s*\{(.*?)\n\}\n\n\.remote-menu-panel",
+            self.styles,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(reduced_motion)
+        self.assertIn('.remote-request-tab[aria-selected="true"]', reduced_motion.group(1))
+        self.assertIn("animation: none", reduced_motion.group(1))
 
     def test_quick_request_actions_match_host_primary_secondary_layout(self):
         action_row = re.search(
@@ -334,10 +375,21 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(request_card_rule)
         for declaration in (
             "grid-template-rows: auto auto minmax(0, 1fr)",
-            "height: clamp(430px, 62dvh, 560px)",
+            "height: clamp(390px, 48dvh, 430px)",
             "overflow: hidden",
         ):
             self.assertIn(declaration, request_card_rule.group(1))
+        for tier, height in (
+            ("compact", "height: auto"),
+            ("browse", "height: clamp(430px, 53dvh, 460px)"),
+            ("browse-deep", "height: clamp(700px, 86dvh, 740px)"),
+        ):
+            tier_rule = re.search(
+                rf'\.request-panel\[data-request-size="{tier}"\]\s*\{{([^}}]*)\}}',
+                self.styles,
+            )
+            self.assertIsNotNone(tier_rule)
+            self.assertIn(height, tier_rule.group(1))
         request_view_rule = re.search(
             r"\.request-panel > \.remote-request-view\s*\{([^}]*)\}",
             self.styles,
@@ -519,8 +571,81 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
                 self.script,
                 rf"\b{owner}: \{{ selectedKey: \"\", focusElement: null \}}",
             )
-        self.assertIn("container: elements.requestPanel", self.script)
+        self.assertIn("container: elements.remoteShell", self.script)
         self.assertIn("resolveReturnFocus: resolveRequestDetailReturnFocus", self.script)
+
+    def test_browse_height_and_pagination_follow_visible_content_scroller(self):
+        self.assertIn("function syncRemoteRequestPanelSizeTier()", self.script)
+        self.assertIn('tier = deepBrowse ? "browse-deep" : "browse";', self.script)
+        self.assertIn("resultsContainer.scrollHeight", self.script)
+        self.assertIn("- resultsContainer.scrollTop", self.script)
+        self.assertIn("- resultsContainer.clientHeight", self.script)
+        self.assertRegex(
+            self.script,
+            r'(?s)elements\.sourcesFollowResults\?\.addEventListener\("scroll".*?passive: true',
+        )
+        self.assertRegex(
+            self.script,
+            r'(?s)elements\.favlistSongResults\?\.addEventListener\("scroll".*?passive: true',
+        )
+        self.assertNotIn('t("search.categoryLoadedMore"', self.script)
+        self.assertNotIn('t("search.categoryLoadedAll"', self.script)
+        self.assertNotIn('"search.categoryLoadedMore"', self.i18n_text)
+        self.assertNotIn('"search.categoryLoadedAll"', self.i18n_text)
+        for script in (
+            self.script,
+            (ROOT / "static" / "app.js").read_text(encoding="utf-8"),
+        ):
+            self.assertIn('items.length ? "" : t("search.localNotFound")', script)
+            self.assertNotIn(
+                'items.length ? t("search.localFound", { count: items.length })',
+                script,
+            )
+
+    def test_only_loading_and_empty_browse_messages_remain_inline(self):
+        host_script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        host_markup = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("request-mode-contract", host_markup)
+        self.assertIn('id="request-session-user-notice"', host_markup)
+        self.assertNotIn("searchModeContract", host_script)
+        self.assertIn("syncRequestSessionUserNoticePlacement", host_script)
+        self.assertIn("function setSourceManagementLoadingMessage", self.script)
+        self.assertRegex(
+            self.script,
+            r'function setSourceManagementMessage\(target, message, isError = false\) \{\s*'
+            r'setSourceManagementInlineMessage\(target, ""\);\s*'
+            r'setAppMessage\(message, isError\);',
+        )
+        self.assertIn("function setGatchaUidFlowLoadingMessage", host_script)
+        self.assertRegex(
+            host_script,
+            re.compile(
+                r'function setGatchaUidFlowMessage\(target, message, isError = false\).*?'
+                r'setFollowBrowseMessage\(""\);.*?setAppMessage\(message, isError\);',
+                re.DOTALL,
+            ),
+        )
+        for script in (self.script, host_script):
+            self.assertNotIn("message.textContent = state.categoryBrowseError", script)
+            self.assertNotIn("message.textContent = mode.error", script)
+
+    def test_remote_song_detail_is_viewport_scoped_outside_filtered_request_card(self):
+        self.assertIn("container: elements.remoteShell", self.script)
+        self.assertNotIn("container: elements.requestPanel", self.script)
+        detail_rule = re.search(
+            r"\.remote-shell > \.song-detail-view\s*\{([^}]*)\}",
+            self.styles,
+        )
+        self.assertIsNotNone(detail_rule)
+        for declaration in (
+            "position: fixed",
+            "inset: 0",
+            "z-index: var(--remote-layer-modal)",
+            "env(safe-area-inset-top, 0px)",
+            "env(safe-area-inset-bottom, 0px)",
+        ):
+            self.assertIn(declaration, detail_rule.group(1))
+        self.assertNotIn(".request-panel > .song-detail-view", self.styles)
 
     def test_tab_controller_keeps_nodes_state_focus_and_networks_independent(self):
         controller = self.script[

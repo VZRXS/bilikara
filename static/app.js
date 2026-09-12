@@ -729,7 +729,6 @@ const elements = {
   requestSubviewPanels: document.querySelectorAll("[data-request-panel]"),
   searchModeButtons: document.querySelectorAll("[data-search-mode]"),
   searchModePanels: document.querySelectorAll("[data-search-panel]"),
-  searchModeContract: document.getElementById("search-mode-contract"),
   discoverModeButtons: document.querySelectorAll("[data-discover-mode]"),
   discoverModePanels: document.querySelectorAll("[data-discover-panel]"),
   discoverCategoriesPanel: document.getElementById("request-discover-categories"),
@@ -3823,10 +3822,6 @@ function syncSearchModeSelection() {
   elements.searchModePanels?.forEach((panel) => {
     setRequestPanelVisibility(panel, panel.dataset.searchPanel === activeMode);
   });
-  setTextContent(
-    elements.searchModeContract,
-    t(activeMode === "shared" ? "search.sharedContract" : "search.localContract"),
-  );
   syncRequestSessionUserNoticePlacement();
 }
 
@@ -6155,7 +6150,7 @@ async function confirmGatchaUidAdd(intent) {
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  setGatchaUidFlowLoadingMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
   try {
     const result = await addGatchaUid(intent.uid);
     setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, intent.uid));
@@ -7493,14 +7488,11 @@ function renderD1BrowseView() {
   }
   if (message) {
     let text = "";
-    if (level === "items" && !state.d1BrowseLoading) {
-      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
-    } else if (level === "tags" && tags.length) {
-      text = t("search.browseTagsFound", { count: tags.length });
+    if (level === "items" && !state.d1BrowseLoading && !items.length) {
+      text = t("search.larkNoResults");
     }
-    message.textContent = state.d1BrowseError
-      || (state.d1BrowseLoading ? t("search.browseLoading") : text);
-    message.classList.toggle("is-error", Boolean(state.d1BrowseError));
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.remove("is-error");
   }
 }
 
@@ -7570,6 +7562,7 @@ async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = stat
       if (!isolatedMode || state.d1BrowseKind === normalizedKind) {
         state.d1BrowseError = error.message;
       }
+      setAppMessage(error.message, true);
     }
   } finally {
     if ((isolatedMode?.seq ?? state.d1BrowseSeq) === searchSeq) {
@@ -8109,10 +8102,6 @@ function ensureCategoryBrowseView() {
         <button type="submit" class="next-button" data-category-browse-submit></button>
       </form>
       <div class="category-browser-tabs" data-category-browser-tabs></div>
-      <div class="tag-browser-nav">
-        <button type="button" class="tag-browser-back" data-category-browse-back></button>
-        <div class="tag-browser-current" data-category-browse-current></div>
-      </div>
       <div class="search-results category-browser-results" data-category-browse-results></div>
       <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
     </div>
@@ -8138,6 +8127,16 @@ function createCategoryBrowseCard(category, { compact = false } = {}) {
   return button;
 }
 
+function createCategoryBrowseBackCard() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tag-browser-back";
+  button.dataset.categoryBrowseBack = "";
+  button.setAttribute("aria-label", t("common.back"));
+  button.textContent = t("common.back");
+  return button;
+}
+
 function renderCategoryBrowseView() {
   const view = ensureCategoryBrowseView();
   if (!view) {
@@ -8152,8 +8151,6 @@ function renderCategoryBrowseView() {
   const tabs = view.querySelector("[data-category-browser-tabs]");
   const queryInput = view.querySelector("[data-category-browse-query]");
   const submitButton = view.querySelector("[data-category-browse-submit]");
-  const backButton = view.querySelector("[data-category-browse-back]");
-  const current = view.querySelector("[data-category-browse-current]");
   const results = view.querySelector("[data-category-browse-results]");
   const message = view.querySelector("[data-category-browse-message]");
 
@@ -8178,16 +8175,11 @@ function renderCategoryBrowseView() {
     submitButton.textContent = t("search.submit");
     submitButton.disabled = state.categoryBrowseLoading;
   }
-  if (backButton) {
-    backButton.textContent = t("common.back");
-    backButton.disabled = false;
-  }
-  if (current) {
-    current.textContent = "";
-    current.classList.add("hidden");
-  }
   if (tabs) {
     tabs.innerHTML = "";
+    const backButton = createCategoryBrowseBackCard();
+    backButton.disabled = false;
+    tabs.appendChild(backButton);
     categories.forEach((category) => {
       const tab = createCategoryBrowseCard(category, { compact: true });
       tab.classList.toggle("active", category.id === selected.id);
@@ -8200,19 +8192,13 @@ function renderCategoryBrowseView() {
   }
   if (message) {
     let text = "";
-    if (state.categoryBrowseError) {
-      text = state.categoryBrowseError;
-    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+    if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
       text = t("search.browseLoading");
-    } else if (state.categoryBrowseItems.length) {
-      text = state.categoryBrowseHasMore
-        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
-        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
-    } else if (!state.categoryBrowseLoading) {
+    } else if (!state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
       text = t("search.larkNoResults");
     }
     message.textContent = text;
-    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+    message.classList.remove("is-error");
   }
 }
 
@@ -8261,6 +8247,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
   } catch (error) {
     if (state.categoryBrowseSeq === searchSeq) {
       state.categoryBrowseError = error.message;
+      setAppMessage(error.message, true);
     }
   } finally {
     if (state.categoryBrowseSeq === searchSeq) {
@@ -8443,7 +8430,8 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
     }
   } catch (error) {
     if (state.followBrowseSeq === seq) {
-      setFollowBrowseMessage(error.message, true);
+      setFollowBrowseMessage("");
+      setAppMessage(error.message, true);
     }
   } finally {
     if (state.followBrowseSeq === seq) {
@@ -8599,7 +8587,8 @@ async function loadFavlistBrowse({
       state.favlistBrowseLoading = false;
       renderFavlistBrowse();
       if (caughtError) {
-        setFavlistBrowseMessage(caughtError.message, true);
+        setFavlistBrowseMessage("");
+        setAppMessage(caughtError.message, true);
       }
     }
   }
@@ -8654,7 +8643,7 @@ async function previewGatchaUidAddFromInput(input, {
 
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  setGatchaUidFlowLoadingMessage(messageTarget, t("gatcha.checkingUid"));
   try {
     const preview = await previewGatchaUid(uid);
     const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
@@ -8697,7 +8686,7 @@ async function previewGatchaFavlistFromInput(input, {
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  setGatchaUidFlowLoadingMessage(messageTarget, t("gatcha.readingFavlists"));
   try {
     const result = await previewGatchaFavlist(uid);
     openGatchaFavlistModal(result?.uid || uid, result, { messageTarget: modalSource });
@@ -8989,12 +8978,17 @@ function localizedCacheMessageLines(message, cacheStatus = "") {
     .join("\n");
 }
 
-function setGatchaUidMessage(message, isError = false) {
+function setGatchaUidInlineMessage(message, isError = false) {
   const normalizedMessage = String(message || "");
   if (elements.gatchaUidMessage) {
     elements.gatchaUidMessage.textContent = normalizedMessage;
     elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
   }
+}
+
+function setGatchaUidMessage(message, isError = false) {
+  const normalizedMessage = String(message || "");
+  setGatchaUidInlineMessage("");
   const toastSignature = JSON.stringify({ message: normalizedMessage, isError: Boolean(isError) });
   if (!normalizedMessage) {
     state.gatchaUidLastToastSignature = "";
@@ -9008,16 +9002,28 @@ function setGatchaUidMessage(message, isError = false) {
 
 function setGatchaUidFlowMessage(target, message, isError = false) {
   if (target === "follow-modal") {
-    setFollowBrowseMessage(message, isError);
+    setFollowBrowseMessage("");
     setAppMessage(message, isError);
     return;
   }
   if (target === "favlist-modal") {
-    setFavlistBrowseMessage(message, isError);
+    setFavlistBrowseMessage("");
     setAppMessage(message, isError);
     return;
   }
   setGatchaUidMessage(message, isError);
+}
+
+function setGatchaUidFlowLoadingMessage(target, message) {
+  if (target === "follow-modal") {
+    setFollowBrowseMessage(message);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message);
+    return;
+  }
+  setGatchaUidInlineMessage(message);
 }
 
 function clearGatchaUidFlowInput(inputId) {
@@ -16527,7 +16533,7 @@ async function confirmGatchaFavlistModal() {
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
+  setGatchaUidFlowLoadingMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
@@ -18465,7 +18471,8 @@ elements.searchForm?.addEventListener("submit", async (event) => {
     modeState.items = [];
     modeState.error = t("search.keywordRequired");
     modeState.message = "";
-    setSearchMessage(modeState.error, true);
+    setSearchMessage("");
+    setAppMessage(modeState.error, true);
     return;
   }
 
@@ -18484,7 +18491,7 @@ elements.searchForm?.addEventListener("submit", async (event) => {
       return;
     }
     modeState.items = items;
-    modeState.message = items.length ? t("search.localFound", { count: items.length }) : t("search.localNotFound");
+    modeState.message = items.length ? "" : t("search.localNotFound");
     if (items.length) {
       renderSearchResults(items);
     } else {
@@ -18496,7 +18503,8 @@ elements.searchForm?.addEventListener("submit", async (event) => {
       modeState.items = [];
       modeState.error = error.message;
       hideSearchResults();
-      setSearchMessage(modeState.error, true);
+      setSearchMessage("");
+      setAppMessage(modeState.error, true);
     }
   } finally {
     if (modeState.seq === seq) {
@@ -18652,7 +18660,8 @@ async function handleLarkSearchSubmit(event) {
     modeState.items = [];
     modeState.error = t("search.keywordRequired");
     modeState.message = "";
-    setLarkSearchMessage(modeState.error, true);
+    setLarkSearchMessage("");
+    setAppMessage(modeState.error, true);
     return;
   }
 
@@ -18698,20 +18707,24 @@ async function handleLarkSearchSubmit(event) {
       hideLarkSearchResults();
     }
     modeState.items = collectedItems;
-    modeState.message = (
-      collectedItems.length
-        ? t(partialFailure ? "search.larkFoundPartial" : "search.larkFound", { count: collectedItems.length })
-        : partialFailure
-          ? t("search.larkPartialNoResults")
-          : t("search.larkNoResults")
-    );
-    setLarkSearchMessage(modeState.message, partialFailure && !collectedItems.length);
+    modeState.message = collectedItems.length
+      ? (partialFailure ? t("search.larkFoundPartial", { count: collectedItems.length }) : "")
+      : partialFailure
+        ? t("search.larkPartialNoResults")
+        : t("search.larkNoResults");
+    if (partialFailure && collectedItems.length) {
+      setLarkSearchMessage("");
+      setAppMessage(modeState.message, false);
+    } else {
+      setLarkSearchMessage(modeState.message);
+    }
   } catch (error) {
     if (state.larkSearchSeq === searchSeq) {
       modeState.items = [];
       modeState.error = error.message;
       hideLarkSearchResults();
-      setLarkSearchMessage(modeState.error, true);
+      setLarkSearchMessage("");
+      setAppMessage(modeState.error, true);
     }
   } finally {
     if (state.larkSearchSeq === searchSeq) {
@@ -21274,7 +21287,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   }
   state.gatchaRefreshSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.refreshingBackground"));
+  setGatchaUidInlineMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
     if (result?.started !== false && state.data) {

@@ -304,7 +304,7 @@ console.log(JSON.stringify({{
         )
         selector_layers = {
             ".playback-dock": "dock",
-            ".request-panel > .song-detail-view": "modal",
+            ".remote-shell > .song-detail-view": "modal",
             ".playback-sheet": "modal",
             ".binding-sheet": "modal",
             ".rating-modal": "modal",

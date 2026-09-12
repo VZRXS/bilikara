@@ -52,7 +52,7 @@
 
 .request-workspace .song-detail-close,
 .selection-modal .song-detail-close,
-.request-panel .song-detail-close {
+.remote-shell > .song-detail-view .song-detail-close {
   width: 32px;
   height: 32px;
   min-height: 32px;
@@ -81,8 +81,8 @@
   .request-workspace .song-detail-close:focus-visible,
   .selection-modal .song-detail-close:hover,
   .selection-modal .song-detail-close:focus-visible,
-  .request-panel .song-detail-close:hover,
-  .request-panel .song-detail-close:focus-visible {
+  .remote-shell > .song-detail-view .song-detail-close:hover,
+  .remote-shell > .song-detail-view .song-detail-close:focus-visible {
     background: var(--rating-close-hover-bg);
     transform: scale(1.04);
   }
@@ -90,19 +90,19 @@
 
 .request-workspace .song-detail-close:active:not(:disabled),
 .selection-modal .song-detail-close:active:not(:disabled),
-.request-panel .song-detail-close:active:not(:disabled) {
+.remote-shell > .song-detail-view .song-detail-close:active:not(:disabled) {
   transform: scale(0.96);
 }
 
 .request-workspace .song-detail-close:focus-visible,
 .selection-modal .song-detail-close:focus-visible,
-.request-panel .song-detail-close:focus-visible {
+.remote-shell > .song-detail-view .song-detail-close:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
   outline-offset: 2px;
 }
 
 @media (hover: none), (pointer: coarse) {
-  .request-panel .song-detail-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+  .remote-shell > .song-detail-view .song-detail-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
     transform: scale(0.97);
   }
 }
@@ -337,7 +337,7 @@
     height: 32px;
   }
 
-  .request-panel .song-detail-close {
+  .remote-shell > .song-detail-view .song-detail-close {
     padding-bottom: 3px;
   }
 
