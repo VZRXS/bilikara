@@ -6,6 +6,7 @@ mod catalog;
 mod diagnostics;
 mod files;
 mod library;
+pub(crate) use library::LibraryDiagnostic;
 mod login;
 pub(crate) use login::LoginDiagnostic;
 mod maintenance;
@@ -166,6 +167,8 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
     let qr = qr_image(&preferred)?;
     let saved_cookie = login::load(&directory)?;
     let cache_policy = preferences::load(&directory)?;
+    // Seed/migrate configured UP sources before any login-triggered refresh.
+    library::initialize(&directory)?;
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -225,6 +228,9 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         })
         .map_err(|_| ApiError::new(503, "runtime", "无法创建 Host 服务线程"))?;
     cache::start_pump(context.clone())?;
+    if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
+        library::refresh_after_login(&context, "credential_restore");
+    }
     Ok(NativeHost {
         bootstrap_url: format!("http://127.0.0.1:{port}/bootstrap/{host_token}"),
         context,

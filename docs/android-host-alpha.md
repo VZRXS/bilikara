@@ -73,9 +73,15 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   Markdown export. Use Settings → diagnostic information → copy diagnostic info.
 - Following and public favorite folders use the existing Rust Gacha repository:
   add/preview sources, paginated browsing and in-cache title search, manual
-  refresh, random candidates, and source weights/exclusions. Start with an empty
-  phone library; log in and add sources manually. There is no startup bulk scan,
-  D1 append or automatic desktop-library import. LAN Remote shares these APIs.
+  refresh, random candidates, and source weights/exclusions. New installations
+  seed the same 27 default UPs as desktop. A one-time old-Alpha migration adds
+  missing defaults while retaining custom sources, cached songs and exclusions;
+  subsequent starts do not re-add removed sources. Successful QR login and app startup
+  with a saved credential refresh those configured UPs/favorite folders once,
+  using the same lease/cooldown as manual refresh. This does not discover all
+  account followings, append to D1 or import the desktop library. LAN Remote
+  shares these APIs. Diagnostics retain bounded trigger/start/result/error-code
+  observations and UP/favorite failure counts, never cookies or raw responses.
   Network imports execute outside the AppState lock under one shared task lease;
   refresh runs in the background and reports completion through SSE. Errors
   trigger a shared 60-second library-task cooldown, not a playback interruption.

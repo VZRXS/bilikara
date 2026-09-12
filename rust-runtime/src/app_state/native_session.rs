@@ -15,6 +15,7 @@ mod tests;
 pub(crate) struct NativeSession {
     pub cache_policy: crate::native_host::preferences::CachePolicy,
     pub library_cooldown_until: Option<std::time::Instant>,
+    pub library_refresh_active: bool,
     pub catalog_cache: VecDeque<(String, std::time::Instant, Value)>,
     pub catalog_inflight: std::collections::HashSet<String>,
     pub catalog_backoff: Option<std::time::Instant>,
@@ -32,6 +33,7 @@ pub(crate) struct NativeSession {
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
     login_diagnostics: VecDeque<crate::native_host::LoginDiagnostic>,
+    library_diagnostics: VecDeque<crate::native_host::LibraryDiagnostic>,
     media_readers: HashMap<String, usize>,
 }
 
@@ -583,7 +585,19 @@ impl AppState {
 
     pub(crate) fn native_diagnostics(&self) -> Value {
         json!({"backend":"rust","events":self.native_session.diagnostics,
-            "bilibili_login":self.native_session.login_diagnostics})
+            "bilibili_login":self.native_session.login_diagnostics,
+            "library_refresh":self.native_session.library_diagnostics,
+            "gatcha_task":self.native_session.login.gacha_snapshot()})
+    }
+    pub(crate) fn native_library_diagnostic(
+        &mut self,
+        diagnostic: crate::native_host::LibraryDiagnostic,
+    ) {
+        let log = &mut self.native_session.library_diagnostics;
+        if log.len() >= 50 {
+            log.pop_front();
+        }
+        log.push_back(diagnostic);
     }
     pub(crate) fn native_login_diagnostic(
         &mut self,

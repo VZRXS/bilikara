@@ -519,16 +519,17 @@ fn finish(
     generation: u64,
     result: Result<String, ApiError>,
 ) -> Result<(), ApiError> {
-    with_app(|app| {
+    let logged_in = with_app(|app| {
         let session = app.native();
         if context.stop.load(Ordering::Acquire) || session.login_generation != Some(generation) {
-            return Ok(());
+            return Ok(false);
         }
         let result = result.and_then(|cookie| {
             save(&context.directory, &cookie)?;
             Ok(cookie)
         });
         let mut diagnostic = LoginDiagnostic::new(generation, "finish");
+        let logged_in = result.is_ok();
         if let Err(error) = &result {
             diagnostic.result = error_result(error);
         }
@@ -551,13 +552,148 @@ fn finish(
         session.login_generation = None;
         session.revision += 1;
         app.native_login_diagnostic(diagnostic);
-        Ok(())
-    })
+        Ok(logged_in)
+    })?;
+    if logged_in {
+        library::refresh_after_login(context, "login_success");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_login_refreshes_library_once_but_stale_or_failed_login_does_not() {
+        let directory =
+            std::env::temp_dir().join(format!("bilikara-login-library-{}", token().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        // Explicitly empty configured library; defaults are covered separately.
+        fs::write(
+            directory.join("gatcha_uids.json"),
+            br#"{"schema_version":2,"uids":[],"profiles":{}}"#,
+        )
+        .unwrap();
+        let context = HostContext {
+            cache_root: directory.join("media"),
+            directory: directory.clone(),
+            assets: Arc::new(|_| None),
+            stop: Arc::new(AtomicBool::new(false)),
+            api_slots: Arc::new(Semaphore::new(1)),
+            event_slots: Arc::new(Semaphore::new(1)),
+            port: 0,
+        };
+        let generation = with_app(|app| {
+            let session = app.native();
+            let generation = session.login.begin_bilibili_login("test".into());
+            session.login_generation = Some(generation);
+            Ok(generation)
+        })
+        .unwrap();
+        // No configured sources: the real refresh pipeline must complete without
+        // any Bilibili/D1 request, still publishing its status and repository file.
+        finish(
+            &context,
+            generation,
+            Ok("SESSDATA=synthetic; bili_jct=synthetic".into()),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            let status = with_app(|app| Ok(app.native().login.gacha_snapshot())).unwrap();
+            if status.last_status == crate::status_service::GachaTaskStatus::Success
+                || Instant::now() >= deadline
+            {
+                break status;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            status.last_status,
+            crate::status_service::GachaTaskStatus::Success,
+            "Persisting the login must trigger the configured-library refresh"
+        );
+        assert!(!status.busy);
+        let checkpoint = fs::read(directory.join("gatcha_cache.json")).unwrap();
+        finish(
+            &context,
+            generation,
+            Ok("SESSDATA=stale; bili_jct=stale".into()),
+        )
+        .unwrap();
+        let failed_generation = with_app(|app| {
+            let session = app.native();
+            let generation = session.login.begin_bilibili_login("test".into());
+            session.login_generation = Some(generation);
+            Ok(generation)
+        })
+        .unwrap();
+        finish(&context, failed_generation, Err(network_failure())).unwrap();
+        assert_eq!(
+            fs::read(directory.join("gatcha_cache.json")).unwrap(),
+            checkpoint
+        );
+        assert_eq!(
+            with_app(|app| Ok(app.native().login.gacha_snapshot().last_updated_at)).unwrap(),
+            status.last_updated_at
+        );
+        with_app(|app| {
+            assert!(
+                app.native()
+                    .login
+                    .try_begin_gacha_refresh("manual".into(), None)
+            );
+            Ok(())
+        })
+        .unwrap();
+        library::refresh_after_login(&context, "credential_restore");
+        assert_eq!(
+            with_app(|app| Ok(app.native_diagnostics()["library_refresh"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["error_code"]
+                .clone()))
+            .unwrap(),
+            "library_busy"
+        );
+        with_app(|app| {
+            let session = app.native();
+            session.login.release_gacha_refresh();
+            session.library_cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+            Ok(())
+        })
+        .unwrap();
+        library::refresh_after_login(&context, "credential_restore");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while with_app(|app| Ok(app.native().library_refresh_active)).unwrap()
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        with_app(|app| {
+            let session = app.native();
+            assert!(!session.library_refresh_active);
+            assert_eq!(
+                session.login.gacha_snapshot().last_status,
+                crate::status_service::GachaTaskStatus::Success
+            );
+            assert!(
+                session.library_cooldown_until.is_some(),
+                "Automatic refresh preserves manual cooldown"
+            );
+            Ok(())
+        })
+        .unwrap();
+        with_app(|app| {
+            app.native().cookie.clear();
+            app.native().library_cooldown_until = None;
+            Ok(())
+        })
+        .unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     fn network_failure() -> ApiError {
         ApiError::new(502, "login_network", "test transport failure")

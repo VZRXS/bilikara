@@ -17,6 +17,7 @@ async function run() {
     url:`https://www.bilibili.com/video/BV${String(n).padStart(10,"0")}`,fav_uid:"123",fav_folder_id:"456"}));
   for (const [name,data] of Object.entries({
     "gatcha_uids.json":{schema_version:2,uids:["123"],profiles:{}},
+    "native-library-defaults.json":{schema_version:1},
     "gatcha_cache.json":{schema_version:3,uids:{123:items},profiles:{}},
     "gatcha_favlist.json":{schema_version:2,uids:["123"],folders:[{id:"456",uid:"123",title:"卡拉",media_count:221}],items},
   })) await fs.writeFile(path.join(directory,name),JSON.stringify(data));

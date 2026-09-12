@@ -55,6 +55,10 @@ async function withHost(check) {
   // Fail if a supplied directory already exists; never touch a real profile.
   await fs.mkdir(path.dirname(path.resolve(directory)),{recursive:true});
   await fs.mkdir(directory);
+  // This fixture deliberately opts out of seeded sources: dummy login must never
+  // cause live network requests. Source seeding has its own startup regression.
+  await fs.writeFile(path.join(directory,"gatcha_uids.json"),JSON.stringify({schema_version:2,uids:[],profiles:{}}));
+  await fs.writeFile(path.join(directory,"native-library-defaults.json"),JSON.stringify({schema_version:1}));
   const checkpoint=path.join(directory,"bilibili-login.json");
   const dummyCookie="SESSDATA=alpha-synthetic-session; bili_jct=alpha-synthetic-csrf";
   await fs.writeFile(checkpoint,JSON.stringify({schema_version:1,cookie:dummyCookie}));
@@ -69,7 +73,15 @@ async function withHost(check) {
       assert.equal(snapshot.bbdown.login.logged_in,true);
       assert.equal(await fs.readFile(checkpoint,"utf8"),saved);
       await assert.rejects(fs.stat(oldArtifact),{code:"ENOENT"});
+      const deadline=Date.now()+5000;
+      while ((await api("/api/state")).gatcha.background_busy && Date.now()<deadline) {
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
       const diagnostic=await api("/api/diagnostics/markdown",{});
+      const runtime=JSON.parse(diagnostic.markdown.split("## Native runtime (sanitized)")[1].split("```json")[1].split("```")[0]);
+      const refresh=runtime.diagnostics.library_refresh;
+      assert.equal(refresh.filter(event=>event.trigger==="credential_restore" && event.event==="started").length,1,"One automatic refresh per restored Host process");
+      assert.ok(refresh.some(event=>event.event==="success"),"Empty configured library refresh completes without network");
       for(const text of [JSON.stringify(snapshot),diagnostic.markdown]) {
         assert.ok(!text.includes("alpha-synthetic-session") && !text.includes("alpha-synthetic-csrf"));
       }
@@ -90,6 +102,9 @@ async function withHost(check) {
   }
   await withHost(async api=>{
     assert.equal((await api("/api/state")).bbdown.login.logged_in,false,"Explicit logout persists across restart");
+    const diagnostic=await api("/api/diagnostics/markdown",{});
+    const runtime=JSON.parse(diagnostic.markdown.split("## Native runtime (sanitized)")[1].split("```json")[1].split("```")[0]);
+    assert.deepEqual(runtime.diagnostics.library_refresh,[],"Signed-out startup does not refresh");
   });
   console.log("PASS three fresh Host processes: login retention, cache cleanup isolation, Remote/diagnostic privacy, durable logout; no Bilibili requests");
 })().catch(error=>{console.error(error);process.exitCode=1;});

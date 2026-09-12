@@ -103,6 +103,16 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let entry_html = bootstrap.text().unwrap();
     assert!(entry_html.contains("url=/\""));
     assert!(!entry_html.contains(cookie.split('=').nth(1).unwrap()));
+    // Real native startup seeds the desktop defaults before login/refresh.
+    let defaults: Value = client
+        .get(format!("{base}/api/gatcha/uids"))
+        .header("cookie", &cookie)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(defaults["data"]["count"], 27);
+    assert_eq!(defaults["data"]["uids"][0], "3145040");
     for (mode, dest) in [
         ("cors", "empty"),
         ("no-cors", "image"),

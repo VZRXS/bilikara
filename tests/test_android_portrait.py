@@ -1,5 +1,6 @@
 """Portrait navigation is UI-only and does not replace shared Host/media state."""
 import json
+import ast
 import shutil
 import subprocess
 import unittest
@@ -9,6 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AndroidPortraitTest(unittest.TestCase):
+    def test_native_default_up_sources_match_desktop(self):
+        config = ast.parse((ROOT / "bilikara/config.py").read_text(encoding="utf-8"))
+        desktop = next(ast.literal_eval(node.value) for node in config.body
+                       if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "GATCHA_UIDS" for target in node.targets))
+        native = json.loads((ROOT / "rust-runtime/src/native_host/default_uids.json").read_text(encoding="utf-8"))
+        self.assertEqual(native, desktop)
+        self.assertEqual(len(native), len(set(native)))
+
     def test_shared_host_includes_five_translated_mobile_pages(self):
         host = (ROOT / "static/index.html").read_text(encoding="utf-8")
         remote = (ROOT / "static/remote.html").read_text(encoding="utf-8")
