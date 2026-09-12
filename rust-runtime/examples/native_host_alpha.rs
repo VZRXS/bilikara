@@ -20,10 +20,18 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
         .take(count)
         .enumerate()
     {
-        let item = json!({"id":id,"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"video_page":1,
+        let mut item = json!({"id":id,"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"video_page":1,
             "title":format!("Native Alpha fixture {}",index+1),"part_title":"Original","display_title":format!("Native Alpha fixture {}",index+1),"cover_url":"","embed_url":"",
             "selected_pages":[1,2],"selected_cids":[2,3],"selected_durations":[90,90],"selected_parts":["Original","Instrumental"],
             "available_pages":[1,2],"available_cids":[2,3],"available_durations":[90,90],"available_parts":["Original","Instrumental"]});
+        // Layout tests must use the same metadata as subsequent SSE snapshots.
+        // The third part is available but deliberately not bound/cached.
+        if std::env::var_os("BILIKARA_NATIVE_FIXTURE_THREE_PARTS").is_some() {
+            item["available_pages"] = json!([1, 2, 3]);
+            item["available_cids"] = json!([2, 3, 4]);
+            item["available_durations"] = json!([90, 90, 90]);
+            item["available_parts"] = json!(["on vocal", "off vocal 有和声", "off vocal 无和声"]);
+        }
         let added = execute(
             json!({"schema_version":1,"command":"add_item","item":item,"position":"tail","requester_name":"Alice","reset_av_delay":false,"allow_repeat":true,"now":3.0}),
         );

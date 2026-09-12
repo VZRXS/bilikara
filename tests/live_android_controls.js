@@ -10,7 +10,10 @@ const {chromium} = require("playwright");
 const [exe, directory, video, audio, executablePath, selected = "all"] = process.argv.slice(2);
 
 (async () => {
-  const server = spawn(exe, [path.resolve(directory), path.resolve("static"), path.resolve(video), path.resolve(audio)], {stdio: ["pipe", "pipe", "pipe"]});
+  const server = spawn(exe, [path.resolve(directory), path.resolve("static"), path.resolve(video), path.resolve(audio)], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {...process.env, BILIKARA_NATIVE_FIXTURE_THREE_PARTS: "1"},
+  });
   const lines = createInterface({input: server.stdout});
   server.stderr.on("data", () => {});
   let browser;
@@ -263,11 +266,12 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
       },
       async variants() {
         await navigate("playback");
+        assert.deepEqual(await page.evaluate(() => state.data.current_item.available_pages), [1, 2, 3],
+          "The native fixture and live snapshots must retain all three available parts");
         for (const width of [320, 392, 412]) {
           await page.setViewportSize({width, height: 817});
           await page.evaluate(() => {
-            renderAudioVariantBar({...state.data.current_item, available_pages: [1, 2, 3],
-              available_parts: ["on vocal", "off vocal 有和声", "off vocal 无和声"]}, "local");
+            renderAudioVariantBar(state.data.current_item, "local");
             syncAudioVariantOverflow();
           });
           const metrics = await page.locator(".audio-variant-list").evaluate(list => {
