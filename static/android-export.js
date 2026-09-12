@@ -22,7 +22,7 @@
   root.BilikaraAndroidExport = {
     saveHistory(format, source, pageSize) {
       if (pending) return Promise.reject(new Error("另一项导出尚未完成"));
-      if (!["csv", "image"].includes(format) || !["played", "history"].includes(source)
+      if (!["csv", "image"].includes(format) || !(["played", "history"].includes(source) || /^played-[A-Za-z0-9._-]{1,128}\.json$/.test(source))
         || ![50, 60, 80, 100, 150, 200].includes(pageSize)) return Promise.reject(new Error("无效的导出选项"));
       return new Promise((resolve, reject) => {
         const id = `export-${++sequence}`;

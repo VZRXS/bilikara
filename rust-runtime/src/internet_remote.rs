@@ -630,6 +630,7 @@ mod tests {
                 session_started_at: 1.0,
                 session_played_file: "played.json".into(),
                 session_played: vec![],
+                session_archives: vec![],
                 previous_session: None,
                 backup: None,
                 updated_at: 1.0,

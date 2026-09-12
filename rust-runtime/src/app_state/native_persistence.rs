@@ -40,6 +40,7 @@ impl AppStateData {
             session_started_at: self.session_started_at,
             session_played_file: self.session_played_file.clone(),
             session_played: self.session_played.clone(),
+            session_archives: self.session_archives.clone(),
             previous_session: self.previous_session.clone(),
             backup: self.backup.clone(),
             updated_at: self.updated_at,
@@ -231,11 +232,20 @@ mod tests {
         );
         assert!(fresh.session_generation > restored.session_generation);
         assert_eq!(saved(&directory).session_played_file, "next-session.json");
+        assert_eq!(saved(&directory).session_archives.len(), 1);
+        assert_eq!(
+            saved(&directory).session_archives[0].items,
+            initial.session_played
+        );
         drop(third);
         // An empty new session does not demand a pointless choice on next launch.
         let mut fourth = AppState::default();
         snapshot(fourth.initialize_native(&directory.0, seed()));
         assert!(!fourth.data.as_ref().unwrap().native_session_choice_pending);
+        assert_eq!(
+            fourth.data.as_ref().unwrap().session_archives[0].items,
+            initial.session_played
+        );
     }
 
     fn item(id: &str) -> PlaylistItem {

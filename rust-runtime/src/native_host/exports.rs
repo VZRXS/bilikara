@@ -103,11 +103,7 @@ fn project(
                 part: item.part_title.clone(),
             })
             .collect(),
-        _ => {
-            return Err(ApiError::invalid(
-                "请选择本场记录或全部历史；Android 暂无分场归档导出",
-            ));
-        }
+        _ => return Err(ApiError::invalid("请选择本场记录、全部历史或有效的旧场次")),
     };
     // Match desktop export: chronological, stable on equal timestamps, missing
     // timestamps last. Do not mutate/reorder AppState or merge separate plays.
@@ -122,12 +118,58 @@ fn project(
 
 pub(super) fn snapshot(identity: &Identity, query: &str) -> Result<Value, ApiError> {
     let source = library::query_value(query, "source");
-    let snapshot = with_app(|app| {
+    with_app(|app| {
         app.native_authorize(identity, true)?;
-        app.native_core_snapshot()
+        let (revision, rows) = selected_rows(app, &source)?;
+        encode(revision, &source, rows)
+    })
+}
+
+fn archive_id(archive: &crate::SessionArchiveSeed) -> String {
+    if archive.file_name.starts_with("played-") {
+        archive.file_name.clone()
+    } else {
+        format!("played-{}", archive.file_name)
+    }
+}
+
+fn valid_source(source: &str) -> bool {
+    ["played", "history"].contains(&source)
+        || regex::Regex::new(r"^played-[A-Za-z0-9._-]{1,128}\.json$")
+            .unwrap()
+            .is_match(source)
+}
+
+fn selected_rows(
+    app: &crate::app_state::AppState,
+    source: &str,
+) -> Result<(u64, Vec<ExportRow>), ApiError> {
+    if !valid_source(source) {
+        return Err(ApiError::invalid("无效的导出场次"));
+    }
+    let snapshot = app.native_core_snapshot()?;
+    let rows = if ["played", "history"].contains(&source) {
+        project(&snapshot.history, &snapshot.session_played, source)?
+    } else {
+        let archive = app
+            .native_session_archives()
+            .into_iter()
+            .find(|archive| archive_id(archive) == source)
+            .ok_or_else(|| ApiError::new(404, "session_not_found", "旧场次不存在"))?;
+        project(&[], &archive.items, "played")?
+    };
+    Ok((snapshot.revision, rows))
+}
+
+pub(super) fn sessions(identity: &Identity) -> Result<Value, ApiError> {
+    let mut archives = with_app(|app| {
+        app.native_authorize(identity, true)?;
+        Ok(app.native_session_archives())
     })?;
-    let rows = project(&snapshot.history, &snapshot.session_played, &source)?;
-    encode(snapshot.revision, &source, rows)
+    archives.sort_by(|a, b| b.session_started_at.total_cmp(&a.session_started_at));
+    Ok(json!(archives.iter().map(|archive| json!({
+        "id":archive_id(archive), "started_at":archive.session_started_at, "count":archive.items.len()
+    })).collect::<Vec<_>>()))
 }
 
 fn encode(revision: u64, source: &str, rows: Vec<ExportRow>) -> Result<Value, ApiError> {
@@ -160,11 +202,11 @@ impl Options {
         let source = library::query_value(query, "source");
         let page_size = library::query_number(query, "page_size", 200, 200)?;
         if !["csv", "image"].contains(&format.as_str())
-            || !["played", "history"].contains(&source.as_str())
+            || !valid_source(&source)
             || ![50, 60, 80, 100, 150, 200].contains(&page_size)
         {
             return Err(ApiError::invalid(
-                "无效的导出选项；请选择本场记录或全部历史",
+                "无效的导出选项；请选择本场记录、全部历史或有效的旧场次",
             ));
         }
         Ok(Self {
@@ -253,13 +295,13 @@ pub(super) async fn download(
         .try_acquire_owned()
         .map_err(|_| ApiError::new(429, "export_busy", "另一项导出正在进行，请稍后重试"))?;
     let (scratch, permit, mime, filename, length) = tokio::task::spawn_blocking(move || {
-        let snapshot = with_app(|app| {
+        let (revision, rows) = with_app(|app| {
             app.native_requester(&identity, "")?;
-            app.native_core_snapshot()
+            if !["played", "history"].contains(&options.source.as_str()) { app.native_authorize(&identity, true)?; }
+            selected_rows(app, &options.source)
         })?;
-        let rows = project(&snapshot.history, &snapshot.session_played, &options.source)?;
         let (mime, extension) = options.file_type(rows.len());
-        let data = encode(snapshot.revision, &options.source, rows)?;
+        let data = encode(revision, &options.source, rows)?;
         let spec = json!({"format":options.format,"source":options.source,"pageSize":options.page_size,"data":data}).to_string();
         let scratch = Scratch::create(&context.directory)?;
         renderer(&spec, &scratch.0).map_err(|_| export_failed())?;

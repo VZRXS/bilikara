@@ -67,7 +67,7 @@ internal class PlaylistExport(private val request: ExportRequest, private val ro
           .setMaxLines(lines).setEllipsize(TextUtils.TruncateAt.END).build()
         canvas.save(); canvas.translate(x, y); layout.draw(canvas); canvas.restore()
       }
-      line("bilikara · ${if (request.source == "played") "本场记录" else "全部历史"}", 32f, 26f, 30f, true)
+      line("bilikara · ${when (request.source) { "played" -> "本场记录"; "history" -> "全部历史"; else -> "旧场次记录" }}", 32f, 26f, 30f, true)
       line("共 ${rows.size} 首   ·   第 ${page + 1} / $pages 页", 32f, 72f, 16f)
       if (entries.isEmpty()) line("暂无记录", 32f, 124f, 20f)
       entries.forEachIndexed { index, row ->

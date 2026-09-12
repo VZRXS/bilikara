@@ -17264,9 +17264,10 @@ async function fetchPlayedSessions() {
       historyOpt.dataset.i18n = "history.allSource";
       elements.confirmSource.appendChild(historyOpt);
 
-      // 3. 历史场次 (限制显示最近 10 场)
+      // Native archives are bounded by AppState; keep every saved session selectable.
       const rawSessions = res.data;
-      const displaySessions = rawSessions.slice(0, 10);
+      const displaySessions = document.documentElement?.dataset?.nativeHost === "true"
+        ? rawSessions : rawSessions.slice(0, 10);
 
       // Helper to parse filename as fallback if backend returns old model
       const parseSessionId = (id) => {
@@ -17298,6 +17299,11 @@ async function fetchPlayedSessions() {
       // Group displaySessions by year and month
       const groups = [];
       displaySessions.forEach(session => {
+        if (Number.isFinite(session.started_at) && session.started_at > 0) {
+          const date = new Date(session.started_at * 1000);
+          session = { ...session, year: date.getFullYear(), month: date.getMonth() + 1,
+            day: date.getDate(), hour: date.getHours(), minute: date.getMinutes() };
+        }
         const parsed = (session.year > 0 && session.month > 0)
           ? session
           : (parseSessionId(session.id) || { year: 0, month: 0, day: 0, hour: 0, minute: 0 });

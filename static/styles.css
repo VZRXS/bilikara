@@ -11637,7 +11637,7 @@ html[data-native-host="true"] .native-alpha-notice {
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"] :is(
   #presentation-settings, #app-update-row,
-  #application-restart-row, #history-export-button, #diagnostic-package-button,
+  #application-restart-row, #diagnostic-package-button,
   #developer-mode-trigger, #ffmpeg-status-row
 ) { display: none !important; }
 

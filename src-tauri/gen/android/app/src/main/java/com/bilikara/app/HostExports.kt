@@ -129,7 +129,7 @@ internal data class ExportRequest(val id: String, val format: String, val source
   companion object {
     fun validated(id: String, format: String, source: String, pageSize: Int): ExportRequest? =
       if (id.matches(Regex("[A-Za-z0-9_-]{1,64}")) && format in listOf("csv", "image") &&
-        source in listOf("played", "history") && pageSize in listOf(50, 60, 80, 100, 150, 200))
+        (source in listOf("played", "history") || source.matches(Regex("^played-[A-Za-z0-9._-]{1,128}\\.json$"))) && pageSize in listOf(50, 60, 80, 100, 150, 200))
         ExportRequest(id, format, source, pageSize) else null
   }
 }

@@ -269,6 +269,9 @@ pub struct AppStateSeed {
     pub session_played_file: String,
     #[serde(default)]
     pub session_played: Vec<SessionPlayedEntry>,
+    /// Native Host's closed sessions; absent in legacy desktop seeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_archives: Vec<SessionArchiveSeed>,
     #[serde(default)]
     pub previous_session: Option<SessionArchiveSeed>,
     #[serde(default)]
@@ -937,6 +940,7 @@ struct AppStateData {
     session_started_at: f64,
     session_played_file: String,
     session_played: Vec<SessionPlayedEntry>,
+    session_archives: Vec<SessionArchiveSeed>,
     previous_session: Option<SessionArchiveSeed>,
     backup: Option<BackupSeed>,
     updated_at: f64,
@@ -1723,6 +1727,22 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
     for entry in &seed.session_played {
         validate_session_played_entry(entry)?;
     }
+    if seed.session_archives.len() > 1000 {
+        return Err(rejected(
+            "too_many_sessions",
+            "session archive limit reached",
+        ));
+    }
+    let mut archive_names = HashSet::new();
+    for archive in &seed.session_archives {
+        validate_archive(archive)?;
+        if !archive_names.insert(&archive.file_name) {
+            return Err(rejected(
+                "invalid_session_archive",
+                "duplicate session archive identity",
+            ));
+        }
+    }
     validate_session_users(&seed.session_users)?;
     if let Some(previous) = &seed.previous_session {
         validate_archive(previous)?;
@@ -1762,6 +1782,7 @@ impl AppStateData {
             session_started_at: seed.session_started_at,
             session_played_file: seed.session_played_file,
             session_played: seed.session_played,
+            session_archives: seed.session_archives,
             previous_session: seed
                 .previous_session
                 .filter(|entry| !entry.items.is_empty()),
@@ -3324,6 +3345,30 @@ fn apply_mutation(
             }
             validate_archive(&new_session)?;
             if !continue_previous {
+                if new_session.file_name == data.session_played_file
+                    || data.session_archives.iter().any(|archive| {
+                        archive.file_name == new_session.file_name
+                            || archive.file_name == data.session_played_file
+                    })
+                {
+                    return Err(rejected(
+                        "duplicate_session",
+                        "session archive identity must be unique",
+                    ));
+                }
+                if !data.session_played.is_empty() {
+                    if data.session_archives.len() >= 1000 {
+                        return Err(rejected(
+                            "too_many_sessions",
+                            "session archive limit reached; existing records were preserved",
+                        ));
+                    }
+                    data.session_archives.push(SessionArchiveSeed {
+                        file_name: data.session_played_file.clone(),
+                        session_started_at: data.session_started_at,
+                        items: data.session_played.clone(),
+                    });
+                }
                 reset_current_identity(data);
                 data.session_history.clear();
                 data.session_users.clear();
@@ -3343,6 +3388,7 @@ fn apply_mutation(
             data.player_settings = PlayerSettingsSeed::default();
             reset_current_identity(data);
             data.history.clear();
+            data.session_archives.clear();
             data.session_history.clear();
             data.session_users.clear();
             replace_session_archive(data, &new_session);
@@ -5112,6 +5158,7 @@ mod tests {
             session_started_at: 10.0,
             session_played_file: "played-current.json".to_owned(),
             session_played: Vec::new(),
+            session_archives: Vec::new(),
             previous_session: None,
             backup: None,
             updated_at: 10.0,

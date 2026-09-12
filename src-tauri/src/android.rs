@@ -162,6 +162,7 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
             session_started_at: now,
             session_played_file: "native-session.json".to_owned(),
             session_played: Vec::new(),
+            session_archives: Vec::new(),
             previous_session: None,
             backup: None,
             updated_at: now,

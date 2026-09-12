@@ -106,6 +106,13 @@ fn number(body: &Value, key: &str) -> Result<f64, ApiError> {
 }
 
 impl AppState {
+    pub(crate) fn native_session_archives(&self) -> Vec<SessionArchiveSeed> {
+        self.data
+            .as_ref()
+            .map(|data| data.session_archives.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn native_session_choice_pending(&self) -> bool {
         self.data
             .as_ref()
