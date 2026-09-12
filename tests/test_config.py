@@ -91,33 +91,32 @@ class ConfigPathTest(unittest.TestCase):
                         with patch("bilikara.config.subprocess.run", side_effect=AssertionError("git should not run")):
                             self.assertEqual(config._detect_app_version(), "v0.4.0")
 
-    def test_pick_windows_physical_host_prefers_non_virtual_adapter_with_gateway(self):
-        payload = [
-            {
-                "InterfaceAlias": "vEthernet (WSL)",
-                "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter",
-                "IPv4Address": [{"IPAddress": "172.18.0.1"}],
-                "IPv4DefaultGateway": [],
-            },
-            {
-                "InterfaceAlias": "Wi-Fi",
-                "InterfaceDescription": "Intel Wi-Fi Adapter",
-                "IPv4Address": [{"IPAddress": "192.168.31.8"}],
-                "IPv4DefaultGateway": [{"NextHop": "192.168.31.1"}],
-            },
-        ]
-        self.assertEqual(config._pick_windows_physical_host(payload), "192.168.31.8")
+    def test_detect_windows_host_uses_first_rust_result_including_virtual_address(self):
+        for addresses in (["192.168.31.8", "192.168.31.9"], ["172.28.32.1", "192.168.31.8"]):
+            with self.subTest(addresses=addresses):
+                with patch("bilikara.rust_runtime.detect_lan_ipv4_addresses", return_value=addresses) as detect:
+                    self.assertEqual(config._detect_windows_physical_host(), addresses[0])
+                detect.assert_called_once_with(platform_name="win32")
 
-    def test_pick_windows_physical_host_returns_none_for_virtual_only_candidates(self):
-        payload = [
-            {
-                "InterfaceAlias": "vEthernet (Default Switch)",
-                "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter",
-                "IPv4Address": [{"IPAddress": "172.28.32.1"}],
-                "IPv4DefaultGateway": [{"NextHop": "172.28.32.254"}],
-            }
-        ]
-        self.assertIsNone(config._pick_windows_physical_host(payload))
+    def test_detect_windows_host_returns_none_for_empty_rust_result(self):
+        with patch("bilikara.rust_runtime.detect_lan_ipv4_addresses", return_value=[]) as detect:
+            self.assertIsNone(config._detect_windows_physical_host())
+        detect.assert_called_once_with(platform_name="win32")
+
+    def test_detect_windows_host_returns_none_on_detection_exception(self):
+        with patch("bilikara.rust_runtime.detect_lan_ipv4_addresses", side_effect=RuntimeError("unavailable")) as detect:
+            self.assertIsNone(config._detect_windows_physical_host())
+        detect.assert_called_once_with(platform_name="win32")
+
+    def test_windows_frozen_uses_rust_virtual_last_resort(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(config.sys, "frozen", True, create=True),
+            patch.object(config.os, "name", "nt"),
+            patch("bilikara.rust_runtime.detect_lan_ipv4_addresses", return_value=["172.28.32.1"]) as detect,
+        ):
+            self.assertEqual(config._default_host(), "172.28.32.1")
+        detect.assert_called_once_with(platform_name="win32")
 
 
 if __name__ == "__main__":

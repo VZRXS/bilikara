@@ -1,92 +1,11 @@
 from __future__ import annotations
 
-import ipaddress
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "bilikara"
-WINDOWS_VIRTUAL_ADAPTER_KEYWORDS = (
-    "hyper-v",
-    "vethernet",
-    "vmware",
-    "virtualbox",
-    "wsl",
-    "docker",
-    "tailscale",
-    "zerotier",
-    "singbox",
-    "sing-box",
-    "singbox_tun",
-    "sing-tun",
-    "mihomo",
-    "meta",
-    "clash",
-    "v2rayn",
-    "nekoray",
-    "hiddify",
-    "tun2socks",
-    "wintun",
-    "loopback",
-    "bluetooth",
-    "vmess",
-    "vless",
-    "trojan",
-    "shadowsocks",
-)
-
-
-def _looks_like_windows_virtual_adapter(*labels: object) -> bool:
-    text = " ".join(str(label or "") for label in labels).lower()
-    return any(keyword in text for keyword in WINDOWS_VIRTUAL_ADAPTER_KEYWORDS)
-
-
-def _pick_windows_physical_host(adapter_configs: object) -> str | None:
-    configs = adapter_configs if isinstance(adapter_configs, list) else [adapter_configs]
-    preferred: list[str] = []
-    fallback: list[str] = []
-    seen: set[str] = set()
-
-    for config in configs:
-        if not isinstance(config, dict):
-            continue
-
-        alias = config.get("InterfaceAlias")
-        description = config.get("InterfaceDescription")
-        if _looks_like_windows_virtual_adapter(alias, description):
-            continue
-
-        gateway = config.get("IPv4DefaultGateway")
-        gateway_entries = gateway if isinstance(gateway, list) else [gateway] if gateway else []
-        has_default_gateway = any(isinstance(entry, dict) and entry.get("NextHop") for entry in gateway_entries)
-
-        addresses = config.get("IPv4Address")
-        address_entries = addresses if isinstance(addresses, list) else [addresses] if addresses else []
-        for entry in address_entries:
-            if not isinstance(entry, dict):
-                continue
-            ip = str(entry.get("IPAddress") or "").strip()
-            if not ip or ip in seen:
-                continue
-            seen.add(ip)
-            try:
-                address = ipaddress.ip_address(ip)
-            except ValueError:
-                continue
-            if address.version != 4 or address.is_loopback or address.is_unspecified:
-                continue
-            if address.is_private and not address.is_link_local:
-                if has_default_gateway:
-                    preferred.append(ip)
-                else:
-                    fallback.append(ip)
-
-    if preferred:
-        return preferred[0]
-    if fallback:
-        return fallback[0]
-    return None
 
 
 def _detect_windows_physical_host() -> str | None:
@@ -111,9 +30,9 @@ def _default_host() -> str:
     if override:
         return override
 
-    # Packaged Windows keeps its concrete LAN listener for the existing Local
-    # Remote. The server adds a separate loopback-only companion listener for
-    # the Host UI, without exposing virtual adapters.
+    # Packaged Windows uses the Rust-selected address for Local Remote,
+    # preferring physical interfaces with a virtual address as a last resort.
+    # The Host UI uses a separate loopback-only companion listener.
     if getattr(sys, "frozen", False) and os.name == "nt":
         physical_host = _detect_windows_physical_host()
         if physical_host:

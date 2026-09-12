@@ -39,10 +39,17 @@
     outputControl: document.getElementById("controller-output-control"),
     exit: document.getElementById("controller-exit"),
     remotePopover: document.getElementById("controller-remote-popover"),
+    remoteAccessCard: document.querySelector("#controller-remote-popover .remote-access-card"),
     remoteQrImage: document.getElementById("controller-remote-qr-image"),
     remoteQrPlaceholder: document.getElementById("controller-remote-qr-placeholder"),
     remoteUrlLink: document.getElementById("controller-remote-url-link"),
     remoteUrlHint: document.getElementById("controller-remote-url-hint"),
+    internetRemoteMeta: document.getElementById("controller-internet-remote-meta"),
+    internetRemoteConnectionCount: document.getElementById("controller-internet-remote-connection-count"),
+    internetRemoteRoom: document.getElementById("controller-internet-remote-room"),
+    internetRemoteQrImage: document.getElementById("controller-internet-remote-qr-image"),
+    internetRemoteQrPlaceholder: document.getElementById("controller-internet-remote-qr-placeholder"),
+    internetRemotePassword: document.getElementById("controller-internet-remote-password"),
     error: document.getElementById("controller-error"),
     unavailable: document.getElementById("controller-unavailable"),
   };
@@ -83,6 +90,36 @@
       const translated = state.translations[element.dataset.i18nAlt];
       if (translated) element.setAttribute("alt", translated);
     });
+    syncExitExpandedWidth();
+  }
+
+  function syncExitExpandedWidth() {
+    const button = elements.exit;
+    const label = button?.querySelector(".presentation-output-exit-label");
+    const exitIcon = button?.querySelector(".presentation-output-exit-icon");
+    if (!button || !label || !exitIcon) return;
+    const buttonStyle = getComputedStyle(button);
+    const iconStyle = getComputedStyle(exitIcon);
+    const controlStyle = getComputedStyle(elements.outputControl);
+    const number = (value) => Number.parseFloat(value) || 0;
+    const labelWidth = Math.max(label.scrollWidth, label.getBoundingClientRect().width);
+    const expandedWidth = Math.ceil(
+      number(buttonStyle.paddingLeft)
+        + number(buttonStyle.paddingRight)
+        + number(buttonStyle.borderLeftWidth)
+        + number(buttonStyle.borderRightWidth)
+        + number(iconStyle.width)
+        + number(controlStyle.getPropertyValue("--presentation-action-label-gap"))
+        + labelWidth,
+    );
+    elements.outputControl.style.setProperty(
+      "--presentation-action-expanded-width",
+      `${Math.max(112, expandedWidth)}px`,
+    );
+    elements.outputControl.style.setProperty(
+      "--presentation-action-label-width",
+      `${Math.ceil(labelWidth)}px`,
+    );
   }
 
   async function loadTranslations() {
@@ -111,7 +148,7 @@
     if (!url) return;
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
     elements.remoteUrlLink.textContent = url;
-    elements.remoteUrlHint.textContent = t("remote.defaultHint");
+    elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
     if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
     elements.remoteQrImage.dataset.qrUrl = qrUrl;
@@ -130,6 +167,51 @@
       elements.remoteQrPlaceholder.classList.remove("hidden");
     };
     elements.remoteQrImage.src = qrUrl;
+  }
+
+  function renderInternetRemote(candidate) {
+    const active = Boolean(candidate?.active);
+    elements.remoteAccessCard.classList.toggle("is-local-only-preview", !active);
+    const connectedCount = active
+      ? Math.max(0, Math.trunc(Number(candidate?.connected_count) || 0))
+      : 0;
+    elements.internetRemoteMeta.textContent = active
+      ? t("internetRemote.createdStatus").replace("{count}", String(connectedCount))
+      : t("internetRemote.notCreated");
+    elements.internetRemoteMeta.classList.toggle("is-active", active);
+    elements.internetRemoteConnectionCount.textContent = String(connectedCount);
+    elements.internetRemoteRoom.classList.toggle("hidden", !active);
+    elements.internetRemotePassword.textContent = active
+      ? String(candidate?.password || "").slice(0, 32)
+      : "";
+    const qrImage = active && String(candidate?.qr_image || "").startsWith("data:image/png;base64,")
+      ? String(candidate.qr_image)
+      : "";
+    if (elements.internetRemoteQrImage.__bilikaraQrImage === qrImage) return;
+    elements.internetRemoteQrImage.__bilikaraQrImage = qrImage;
+    elements.internetRemoteQrImage.classList.add("hidden");
+    if (!qrImage) {
+      elements.internetRemoteQrImage.removeAttribute("src");
+      elements.internetRemoteQrPlaceholder.textContent = active
+        ? t("remote.qrImageFailed")
+        : t("internetRemote.notCreated");
+      elements.internetRemoteQrPlaceholder.classList.toggle("hidden", !active);
+      return;
+    }
+    elements.internetRemoteQrPlaceholder.textContent = t("remote.qrLoading");
+    elements.internetRemoteQrPlaceholder.classList.remove("hidden");
+    elements.internetRemoteQrImage.onload = () => {
+      if (elements.internetRemoteQrImage.__bilikaraQrImage !== qrImage) return;
+      elements.internetRemoteQrImage.classList.remove("hidden");
+      elements.internetRemoteQrPlaceholder.classList.add("hidden");
+    };
+    elements.internetRemoteQrImage.onerror = () => {
+      if (elements.internetRemoteQrImage.__bilikaraQrImage !== qrImage) return;
+      elements.internetRemoteQrImage.classList.add("hidden");
+      elements.internetRemoteQrPlaceholder.textContent = t("remote.qrImageFailed");
+      elements.internetRemoteQrPlaceholder.classList.remove("hidden");
+    };
+    elements.internetRemoteQrImage.src = qrImage;
   }
 
   function setRemoteQrPinned(pinned) {
@@ -163,18 +245,28 @@
     }
   }
 
-  function setError(message = "") {
-    const normalized = String(message || "").trim();
+  function setError(message = "", key = "") {
+    if (key) elements.error.dataset.i18n = key;
+    else delete elements.error.dataset.i18n;
+    const normalized = message === key ? "" : String(message || "").trim();
     elements.error.textContent = normalized;
     elements.error.classList.toggle("hidden", !normalized);
+    if (state.failedClosed) {
+      // The generic status is already shown in the empty stage; avoid overlapping alerts.
+      elements.unavailable.classList.toggle("hidden", Boolean(normalized));
+    }
   }
 
-  function failClosed(message = "") {
+  function failClosed(message = "", key = "") {
     state.failedClosed = true;
     state.session = null;
     elements.exit.disabled = true;
     elements.unavailable.classList.remove("hidden");
-    if (message) setError(message);
+    if (elements.status) {
+      elements.status.dataset.i18n = "controller.unavailable";
+      elements.status.textContent = elements.unavailable.textContent;
+    }
+    if (message) setError(message, key);
   }
 
   function normalizeSession(candidate) {
@@ -204,9 +296,10 @@
       || !session
       || !["activating", "active"].includes(session.phase);
     if (!state.scene?.videoUrl && elements.status) {
-      elements.status.textContent = session?.phase === "active"
-        ? t("controller.noSong")
-        : t("controller.statusActivating");
+      elements.status.dataset.i18n = session?.phase === "active"
+        ? "controller.noSong"
+        : "controller.statusActivating";
+      elements.status.textContent = t(elements.status.dataset.i18n);
     }
   }
 
@@ -214,7 +307,7 @@
     if (state.failedClosed) return null;
     const session = normalizeSession(candidate);
     if (!session) {
-      failClosed(t("controller.invalidState"));
+      failClosed(t("controller.invalidState"), "controller.invalidState");
       return null;
     }
     if (
@@ -222,7 +315,7 @@
       && expectedGeneration > 0
       && session.generation !== expectedGeneration
     ) {
-      failClosed(t("controller.staleWindow"));
+      failClosed(t("controller.staleWindow"), "controller.staleWindow");
       return null;
     }
     state.session = session;
@@ -271,8 +364,11 @@
     if (overlay) elements.frame.appendChild(overlay);
   }
 
-  function showEmpty(message) {
-    if (elements.status) elements.status.textContent = String(message || "");
+  function showEmpty(key) {
+    if (elements.status) {
+      elements.status.dataset.i18n = key;
+      elements.status.textContent = t(key);
+    }
     preserveOverlayAndReplace(elements.empty);
     state.video = null;
   }
@@ -320,7 +416,7 @@
     }
     if (video.paused && !video.ended && video.readyState >= 1) {
       video.play().catch(() => {
-        setError(t("controller.autoplayBlocked"));
+        setError(t("controller.autoplayBlocked"), "controller.autoplayBlocked");
       });
     }
   }
@@ -329,7 +425,7 @@
     document.documentElement.dataset.theme = scene.theme;
     document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
     if (!scene.videoUrl) {
-      showEmpty(t("controller.noSong"));
+      showEmpty("controller.noSong");
       renderOverlay();
       return;
     }
@@ -345,7 +441,7 @@
     video.src = scene.videoUrl;
     video.addEventListener("loadedmetadata", applyClock);
     video.addEventListener("canplay", applyClock);
-    video.addEventListener("error", () => setError(t("controller.outputVideoFailed")));
+    video.addEventListener("error", () => setError(t("controller.outputVideoFailed"), "controller.outputVideoFailed"));
     state.video = video;
     preserveOverlayAndReplace(video);
     renderOverlay();
@@ -362,6 +458,7 @@
     state.lastMasterEnvelope = candidate;
     applyLanguage(candidate.payload?.language);
     renderRemoteAccess(candidate.payload?.remoteAccess);
+    renderInternetRemote(candidate.payload?.internetRemote);
     const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
     const nextClock = sync.normalizeClock(candidate.payload?.clock);
     if (!nextScene || nextScene.generation !== state.session?.generation) return;
@@ -400,7 +497,7 @@
       || !Number.isSafeInteger(expectedGeneration)
       || expectedGeneration < 1
     ) {
-      failClosed(t("controller.tauriRequired"));
+      failClosed(t("controller.tauriRequired"), "controller.tauriRequired");
       return;
     }
     if (typeof BroadcastChannel === "function") {

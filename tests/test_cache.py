@@ -6814,12 +6814,14 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
     def _run_native_track_loop(
         self, manager: CacheManager, item_id: str, artifacts: dict[str, list[Path]]
     ) -> tuple[dict[str, Path] | None, list[str], BaseException | None]:
-        """Drive the production native retry loop over prepared artifacts.
+        """Drive the retained Python Native reference over prepared artifacts.
 
         Only the byte transfer is controlled: `_download_stream_with_rust` is
         replaced by a hand that copies a prepared file. The retry decision,
         `rust_runtime.normalize_media` across the real media FFI, and the
-        publication of the accepted artifact are all production code.
+        publication of the accepted artifact are exercised in this historical
+        adapter. This does not exercise production Rust CacheRuntime dispatch;
+        the enqueue/retry/sync tests cover that ownership boundary separately.
         """
         item = self.store.get_item(item_id)
         manager.desired_ids.add(item_id)

@@ -555,6 +555,7 @@ const elements = {
   diagnosticCopyButton: document.getElementById("diagnostic-copy-button"),
   diagnosticPackageButton: document.getElementById("diagnostic-package-button"),
   currentTitle: document.getElementById("current-title"),
+  currentTitleText: document.getElementById("current-title-text"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
   presentationHostAnnouncement: document.getElementById("presentation-host-announcement"),
@@ -574,13 +575,12 @@ const elements = {
   playerFullscreenRemoteQrPlaceholder: document.getElementById("player-fullscreen-remote-qr-placeholder"),
   playerFullscreenRemoteUrl: document.getElementById("player-fullscreen-remote-url"),
   playerFullscreenRemoteUrlHint: document.getElementById("player-fullscreen-remote-url-hint"),
-  playerFullscreenPublicDivider: document.getElementById("player-fullscreen-public-divider"),
-  playerFullscreenPublicEntry: document.getElementById("player-fullscreen-public-entry"),
+  playerFullscreenPublicRoom: document.getElementById("player-fullscreen-public-room"),
   playerFullscreenPublicQrImage: document.getElementById("player-fullscreen-public-qr-image"),
   playerFullscreenPublicQrPlaceholder: document.getElementById("player-fullscreen-public-qr-placeholder"),
-  playerFullscreenPublicExpiry: document.getElementById("player-fullscreen-public-expiry"),
-  playerFullscreenInternetPassword: document.getElementById("player-fullscreen-internet-password"),
-  playerFullscreenInternetPasswordValue: document.getElementById("player-fullscreen-internet-password-value"),
+  playerFullscreenPublicPassword: document.getElementById("player-fullscreen-public-password"),
+  playerFullscreenPublicMeta: document.getElementById("player-fullscreen-public-meta"),
+  playerFullscreenPublicConnectionCount: document.getElementById("player-fullscreen-public-connection-count"),
   stageControlsToggle: document.getElementById("stage-controls-toggle"),
   stageControlsClose: document.getElementById("stage-controls-close"),
   stageControlBackdrop: document.getElementById("stage-control-backdrop"),
@@ -836,8 +836,17 @@ function setFormMessage(message, isError = false) {
     message = "";
     isError = false;
   }
-  elements.formMessage.textContent = message;
-  elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
+  elements.formMessage.textContent = "";
+  elements.formMessage.style.color = "var(--muted)";
+  setAppMessage(message, isError);
+}
+
+function setRequestActionMessage(message, isError = false) {
+  if (isError && requiresSessionUsers(message)) {
+    showSessionUsersRequiredToast();
+    return;
+  }
+  setAppMessage(message, isError);
 }
 
 function setSearchMessage(message, isError = false) {
@@ -1326,10 +1335,6 @@ function isAudiencePlayerSurface() {
   return isPlayerPanelFullscreen();
 }
 
-function isPlayerPanelFullscreenForTransition() {
-  return isPlayerPanelFullscreen() || smokeTestBypassPlayerFullscreen;
-}
-
 function supportsPlayerFullscreen() {
   if (isTauriWebKitRuntime()) {
     return Boolean(elements.playerPanel);
@@ -1678,6 +1683,15 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     clock,
     language: state.language,
     remoteAccess: state.data?.remote_access || null,
+    internetRemote: {
+      active: Boolean(state.internetRemoteDisplay?.active),
+      hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
+      connected_count: Math.max(0, Math.trunc(Number(state.internetRemoteDisplay?.connected_count) || 0)),
+      password: String(state.internetRemoteDisplay?.password || "").slice(0, 32),
+      qr_image: String(state.internetRemoteDisplay?.qr_image || "").startsWith("data:image/png;base64,")
+        ? String(state.internetRemoteDisplay.qr_image).slice(0, 524_288)
+        : "",
+    },
   }, {
     senderId: state.presentationOutputSenderId,
     sequence: ++state.presentationOutputSequence,
@@ -4875,6 +4889,15 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
+  const titleNode = elements.currentTitle;
+  const titleTextNode = elements.currentTitleText || titleNode;
+  titleNode?.classList.remove("is-two-line", "is-scrolling");
+  titleNode?.style.removeProperty("--host-current-title-marquee-offset");
+  titleNode?.style.removeProperty("--host-current-title-marquee-duration");
+  if (titleNode) {
+    titleNode.dataset.visibleLines = "1";
+  }
   const presentationActive = presentationCompositionActive();
   const presentationContextChanged = state.stageMeasuredPresentationActive !== presentationActive;
   state.stageMeasuredPresentationActive = presentationActive;
@@ -4886,7 +4909,7 @@ function measurePersistentStage() {
   const panelGap = parseFloat(panelStyle.rowGap || panelStyle.gap) || 0;
   const innerWidth = Math.max(0, elements.playerPanel.clientWidth - panelPaddingInline);
   const innerHeight = Math.max(0, elements.playerPanel.clientHeight - panelPaddingBlock);
-  const headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || 0;
+  let headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || 0;
   const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
     ? elements.audioVariantAnchor.getBoundingClientRect().height
     : 0;
@@ -4903,7 +4926,6 @@ function measurePersistentStage() {
   const inlineFit = findStageControlFit(innerWidth, { layout: "inline" });
   const inlineTraySize = inlineFit.size;
   const trayHeight = inlineTraySize.height;
-  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
   const inlineWidthSlack = innerWidth - inlineTraySize.width;
   const minimumPresentationFrameHeight = Math.min(
     fullFrameHeight,
@@ -4943,6 +4965,50 @@ function measurePersistentStage() {
           ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
           : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
+  const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
+  const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
+  const titleAvailableWidth = titleNode?.clientWidth || 0;
+  const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
+  const titleOverflowDistance = Math.max(0, titleNaturalWidth - titleAvailableWidth);
+  const titleOverflowsSingleLine = titleOverflowDistance > 1;
+  let titleNaturalWrappedHeight = titleLineHeight;
+  if (!narrowShell && titleOverflowsSingleLine && titleNode && titleTextNode) {
+    titleNode.classList.add("is-measuring-two-line");
+    titleNaturalWrappedHeight = titleTextNode.scrollHeight;
+    titleNode.classList.remove("is-measuring-two-line");
+  }
+  const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
+  const popupHeightSlack = innerHeight - (
+    headerHeight
+      + variantHeight
+      + presentationControlsHeight
+      + fullFrameHeight
+      + toggleHeight
+      + (panelGap * persistentRowGapCount)
+  );
+  const titleHeightSlack = inlineControls ? inlineHeightSlack : popupHeightSlack;
+  const titleCanUseTwoLines = !narrowShell
+    && titleOverflowsSingleLine
+    && titleFitsWithinTwoLines
+    && titleLineHeight > 0
+    && titleHeightSlack >= titleLineHeight + 4;
+  titleNode?.classList.toggle("is-two-line", titleCanUseTwoLines);
+  if (titleNode) {
+    titleNode.dataset.visibleLines = titleCanUseTwoLines ? "2" : "1";
+    titleNode.dataset.singleLineOverflow = String(titleOverflowsSingleLine);
+    titleNode.dataset.fitsWithinTwoLines = String(titleFitsWithinTwoLines);
+    titleNode.dataset.naturalWrappedHeight = String(Math.round(titleNaturalWrappedHeight * 100) / 100);
+    titleNode.dataset.heightSlack = String(Math.round(titleHeightSlack * 100) / 100);
+  }
+  if (titleOverflowsSingleLine && !titleCanUseTwoLines && titleNode) {
+    const durationSeconds = Math.max(6, Math.min(16, 3 + (titleOverflowDistance / 28)));
+    titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
+    titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
+    titleNode.classList.add("is-scrolling");
+  }
+  if (titleCanUseTwoLines) {
+    headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
+  }
   const popupFit = inlineControls
     ? inlineFit
     : findStageControlFit(Math.min(860, Math.max(280, window.innerWidth - 24)), { layout: "popup" });
@@ -5641,23 +5707,6 @@ function handleRatingCurrentItemChange(currentItem) {
 
 function handleRequesterSelectionChange() {
   render();
-}
-
-async function apiGet(url, options = {}) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: clientHeaders(),
-    signal: options.signal,
-  });
-  const data = await parseApiResponse(response, url);
-  if (!response.ok || !data.ok) {
-    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
-    error.status = response.status;
-    error.code = data.code || "";
-    error.payload = data;
-    throw error;
-  }
-  return data.data;
 }
 
 const hevcCanPlayTypes = [
@@ -8891,13 +8940,6 @@ function localizedCacheMessageLines(message, cacheStatus = "") {
     .join("\n");
 }
 
-function syncLarkSearchInputs(value) {
-  const nextValue = String(value || "");
-  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== nextValue) {
-    elements.larkSearchQuery.value = nextValue;
-  }
-}
-
 function setGatchaUidMessage(message, isError = false) {
   const normalizedMessage = String(message || "");
   if (elements.gatchaUidMessage) {
@@ -9114,7 +9156,8 @@ function render() {
   const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");
   if (currentTitle !== state.currentTitleRenderSignature) {
     state.currentTitleRenderSignature = currentTitle;
-    setTextContent(elements.currentTitle, currentTitle);
+    setTextContent(elements.currentTitleText || elements.currentTitle, currentTitle);
+    schedulePersistentStageMeasurement();
   }
   renderListHeader(data.playlist, data.history || []);
   renderRequesterSelect(data.session_users || []);
@@ -9236,13 +9279,22 @@ function renderSessionUsers(sessionUsers) {
 
 
 function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
-  state.remoteQrPinned = Boolean(pinned);
+  const nextPinned = Boolean(pinned);
+  const changed = state.remoteQrPinned !== nextPinned;
+  state.remoteQrPinned = nextPinned;
   elements.remoteMiniControl?.classList.toggle("is-qr-pinned", state.remoteQrPinned);
+  elements.remoteMiniPopover?.querySelector(".remote-access-card")
+    ?.classList.toggle("is-management-layout", state.remoteQrPinned);
   elements.remoteMiniControl?.classList.toggle(
     "is-qr-dismissed",
     !state.remoteQrPinned && Boolean(dismissTransient),
   );
   elements.remoteMiniTrigger?.setAttribute("aria-expanded", String(state.remoteQrPinned));
+  if (changed) {
+    document.dispatchEvent(new CustomEvent("bilikara:remote-access-menu", {
+      detail: { expanded: state.remoteQrPinned },
+    }));
+  }
   if (typeof scheduleTopControlPopoverPositionSync === "function") {
     scheduleTopControlPopoverPositionSync();
   }
@@ -9456,16 +9508,15 @@ function cacheAdvancedInfoSupportsHover(event) {
 }
 
 
-function renderProvidedRemoteQr(source, { image, placeholder }, { cacheKey = "", emptyMessage = "" } = {}) {
+function renderProvidedRemoteQr(source, { image, placeholder }, emptyMessage = "") {
   if (!image || !placeholder) {
     return;
   }
   const normalizedSource = String(source || "").trim();
-  const sourceKey = normalizedSource ? `provided:${cacheKey || normalizedSource.length}` : `provided-empty:${emptyMessage}`;
-  if (image.dataset.qrUrl === sourceKey) {
+  if (image.__bilikaraQrImage === normalizedSource) {
     return;
   }
-  image.dataset.qrUrl = sourceKey;
+  image.__bilikaraQrImage = normalizedSource;
   image.classList.add("hidden");
   if (!normalizedSource) {
     image.removeAttribute("src");
@@ -9476,12 +9527,12 @@ function renderProvidedRemoteQr(source, { image, placeholder }, { cacheKey = "",
   placeholder.textContent = t("remote.qrLoading");
   placeholder.classList.remove("hidden");
   image.onload = () => {
-    if (image.dataset.qrUrl !== sourceKey) return;
+    if (image.__bilikaraQrImage !== normalizedSource) return;
     placeholder.classList.add("hidden");
     image.classList.remove("hidden");
   };
   image.onerror = () => {
-    if (image.dataset.qrUrl !== sourceKey) return;
+    if (image.__bilikaraQrImage !== normalizedSource) return;
     image.classList.add("hidden");
     placeholder.textContent = t("remote.qrImageFailed");
     placeholder.classList.remove("hidden");
@@ -9494,26 +9545,33 @@ function renderPlayerFullscreenRemoteAccess({
   localDisplayUrl,
   localHint,
   internetActive,
-  internetUrl,
-  internetHint,
-  internetPassword,
   internetQrImage,
+  internetPassword,
+  internetConnectedCount,
 }) {
   const normalizedLocalQrUrl = String(localQrUrl || "").trim();
   const normalizedLocalDisplayUrl = String(localDisplayUrl || "").trim();
-  const normalizedInternetUrl = String(internetUrl || "").trim();
-  const normalizedInternetPassword = String(internetPassword || "").trim();
+  elements.playerFullscreenRemotePopover?.querySelector(".remote-access-card")
+    ?.classList.toggle("is-local-only-preview", !internetActive);
   setTextContent(elements.playerFullscreenRemoteUrl, normalizedLocalDisplayUrl);
   elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
-  elements.playerFullscreenPublicDivider?.classList.toggle("hidden", !internetActive);
-  elements.playerFullscreenPublicEntry?.classList.toggle("hidden", !internetActive);
-  setTextContent(elements.playerFullscreenPublicExpiry, String(internetHint || "").trim());
-  elements.playerFullscreenInternetPassword?.classList.toggle(
-    "hidden",
-    !internetActive || !normalizedInternetPassword,
+  setTextContent(
+    elements.playerFullscreenPublicMeta,
+    internetActive
+      ? t("internetRemote.createdStatus", { count: internetConnectedCount })
+      : t("internetRemote.notCreated"),
   );
-  setTextContent(elements.playerFullscreenInternetPasswordValue, normalizedInternetPassword);
+  elements.playerFullscreenPublicMeta?.classList.toggle("is-active", internetActive);
+  setTextContent(
+    elements.playerFullscreenPublicConnectionCount,
+    String(internetActive ? internetConnectedCount : 0),
+  );
+  elements.playerFullscreenPublicRoom?.classList.toggle("hidden", !internetActive);
+  setTextContent(
+    elements.playerFullscreenPublicPassword,
+    internetActive ? String(internetPassword || "").trim() : "",
+  );
 
   renderRemoteQr(normalizedLocalQrUrl, [{
     image: elements.playerFullscreenRemoteQrImage,
@@ -9527,12 +9585,7 @@ function renderPlayerFullscreenRemoteAccess({
       image: elements.playerFullscreenPublicQrImage,
       placeholder: elements.playerFullscreenPublicQrPlaceholder,
     },
-    {
-      cacheKey: internetActive ? normalizedInternetUrl : "",
-      emptyMessage: internetActive
-        ? t("remote.qrLoading")
-        : t("internetRemote.notCreated"),
-    },
+    internetActive ? t("remote.qrLoading") : t("internetRemote.notCreated"),
   );
 }
 
@@ -9583,10 +9636,11 @@ function renderRemoteAccess(remoteAccess) {
       && internetDisplay?.active
       && internetDisplay?.url,
   );
-  const internetUrl = internetActive ? String(internetDisplay?.url || "") : "";
-  const internetHint = internetActive ? String(internetDisplay?.hint || "") : "";
-  const internetPassword = internetActive ? String(internetDisplay?.password || "") : "";
   const internetQrImage = internetActive ? String(internetDisplay?.qr_image || "") : "";
+  const internetPassword = internetActive ? String(internetDisplay?.password || "") : "";
+  const internetConnectedCount = internetActive
+    ? Math.max(0, Math.trunc(Number(internetDisplay?.connected_count) || 0))
+    : 0;
   const signature = JSON.stringify({
     language: state.language,
     displayUrl,
@@ -9594,10 +9648,9 @@ function renderRemoteAccess(remoteAccess) {
     shareableUrl,
     localOpenUrl,
     internetActive,
-    internetUrl,
-    internetHint,
-    internetPassword,
     internetQrImage,
+    internetPassword,
+    internetConnectedCount,
   });
   if (signature === state.remoteAccessRenderSignature) {
     return;
@@ -9626,9 +9679,7 @@ function renderRemoteAccess(remoteAccess) {
   setTextContent(elements.remoteUrlHint, displayHint);
   setTextContent(
     elements.remotePopoverUrlHint,
-    shareableUrl
-      ? t("internetRemote.localSameNetwork")
-      : t("internetRemote.localNoLanAddress"),
+    t("internetRemote.localSameNetwork"),
   );
   setTextContent(
     elements.remotePopoverLocalAddressDetail,
@@ -9659,14 +9710,11 @@ function renderRemoteAccess(remoteAccess) {
   renderPlayerFullscreenRemoteAccess({
     localQrUrl: shareableUrl,
     localDisplayUrl: popoverTargetUrl,
-    localHint: shareableUrl
-      ? t("internetRemote.localSameNetwork")
-      : t("internetRemote.localNoLanAddress"),
+    localHint: t("internetRemote.localSameNetwork"),
     internetActive,
-    internetUrl,
-    internetHint,
-    internetPassword,
     internetQrImage,
+    internetPassword,
+    internetConnectedCount,
   });
 }
 
@@ -9732,10 +9780,12 @@ document.addEventListener("bilikara:internet-remote-display", (event) => {
     url: String(detail.url || "").slice(0, 4096),
     qr_image: String(detail.qr_image || "").slice(0, 1_000_000),
     password: String(detail.password || "").slice(0, 32),
+    connected_count: Math.max(0, Math.trunc(Number(detail.connected_count) || 0)),
     hint: String(detail.hint || "").slice(0, 512),
   };
   state.remoteAccessRenderSignature = "";
   renderRemoteAccess(state.data?.remote_access || null);
+  publishPresentationOutputState();
 });
 
 async function copyRemoteUrlFromLink(link) {
@@ -10169,10 +10219,6 @@ function formatQualityLabel(value) {
     "360P 流畅": t("quality.360p"),
   };
   return labels[normalized] || normalized;
-}
-
-function formatPlaybackMode(_mode) {
-  return t("service.localPlayback");
 }
 
 function renderCacheSlider(cachePolicy) {
@@ -11011,26 +11057,6 @@ function currentItemIdFromData(data) {
   return String(data?.current_item?.id || "");
 }
 
-function durationSecondsForItemPage(item, page) {
-  if (!item) {
-    return 0;
-  }
-  const targetPage = Number(page || 0);
-  for (const [pagesKey, durationsKey] of [
-    ["selected_pages", "selected_durations"],
-    ["available_pages", "available_durations"],
-  ]) {
-    const pages = Array.isArray(item[pagesKey]) ? item[pagesKey] : [];
-    const durations = Array.isArray(item[durationsKey]) ? item[durationsKey] : [];
-    const index = pages.findIndex((candidate) => Number(candidate) === targetPage);
-    const duration = Number(durations[index] || 0);
-    if (index >= 0 && Number.isFinite(duration) && duration > 0) {
-      return duration;
-    }
-  }
-  return 0;
-}
-
 function durationSecondsForItem(item) {
   if (!item) {
     return 0;
@@ -11619,46 +11645,6 @@ function hasLocalAdvanceDelayOverlay() {
   );
 }
 
-function startLocalAdvanceDelay(delaySeconds) {
-  const currentItemId = String(state.data?.current_item?.id || "");
-  if (!currentItemId) {
-    return;
-  }
-  const session = state.hostPlaybackSession;
-  if (!isCurrentHostPlaybackSession(session, session?.video, session?.audio)) {
-    return;
-  }
-  clearLocalAdvanceDelay();
-  state.localAdvanceInFlight = true;
-  state.localAdvanceDelayItemId = currentItemId;
-  state.localAdvanceDelayToken += 1;
-  const token = state.localAdvanceDelayToken;
-  state.localAdvanceOverlayDurationMs = delaySeconds * 1000;
-  state.localAdvanceDelayStartAt = Date.now() + localAdvanceOverlayFadeMs;
-  state.localAdvanceDelayDeadline = state.localAdvanceDelayStartAt + state.localAdvanceOverlayDurationMs;
-  stopMountedPlayerForAdvanceDelay(currentItemId);
-  updateLocalAdvanceDelayOverlay(session);
-  let countdownTimer = null;
-  countdownTimer = window.setInterval(() => {
-    if (
-      state.localAdvanceCountdownTimer !== countdownTimer
-      || !isCurrentHostPlaybackSession(session, session.video, session.audio)
-    ) {
-      return;
-    }
-    updateLocalAdvanceDelayOverlay(session);
-  }, 250);
-  state.localAdvanceCountdownTimer = countdownTimer;
-  let delayTimer = null;
-  delayTimer = window.setTimeout(() => {
-    if (state.localAdvanceDelayTimer !== delayTimer) {
-      return;
-    }
-    finishLocalAdvanceDelay(token, currentItemId, session).catch(() => {});
-  }, Math.max(0, state.localAdvanceDelayDeadline - Date.now()));
-  state.localAdvanceDelayTimer = delayTimer;
-}
-
 function clearLocalAdvanceDelay({ resetInFlight = false, hideOverlay = true, onOverlayHidden = null } = {}) {
   if (state.localAdvanceDelayTimer) {
     window.clearTimeout(state.localAdvanceDelayTimer);
@@ -11684,49 +11670,6 @@ function clearLocalAdvanceDelay({ resetInFlight = false, hideOverlay = true, onO
   if (resetInFlight) {
     state.localAdvanceInFlight = false;
   }
-}
-
-async function finishLocalAdvanceDelay(token, itemId, session) {
-  if (
-    token !== state.localAdvanceDelayToken
-    || itemId !== state.localAdvanceDelayItemId
-    || !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
-  ) {
-    return;
-  }
-  updateLocalAdvanceDelayOverlay(session);
-  clearLocalAdvanceDelay({
-    resetInFlight: true,
-    onOverlayHidden: () => {
-      if (isCurrentHostPlaybackSession(session, session.video, session.audio)) {
-        advanceLocalPlayerNow({ showTransition: false, session }).catch(() => {});
-      }
-    },
-  });
-}
-
-function setPlayerFrameContent(html) {
-  const overlay = playerDelayOverlay();
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  const nextNodes = Array.from(template.content.childNodes);
-  Array.from(elements.playerFrame.childNodes).forEach((node) => {
-    if (node !== overlay) {
-      node.remove();
-    }
-  });
-  elements.playerFrame.prepend(...nextNodes);
-  if (overlay && overlay.parentElement !== elements.playerFrame) {
-    elements.playerFrame.appendChild(overlay);
-  }
-}
-
-function syncPlayerFrameCacheHint(currentItem) {
-  const hint = elements.playerFrame.querySelector(".empty-state .empty-hint");
-  if (!hint || !currentItem) {
-    return;
-  }
-  setTextContent(hint, hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"));
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
@@ -16125,10 +16068,9 @@ function confirmPopoverPlacement(intent, width, popoverHeight) {
     };
   }
 
-  const anchorOutsideViewport = anchorRect.bottom < margin || anchorRect.top > window.innerHeight - margin;
   return {
     left,
-    top: anchorOutsideViewport ? rawTop : Math.min(Math.max(rawTop, margin), maxTop),
+    top: Math.min(Math.max(rawTop, margin), maxTop),
   };
 }
 
@@ -16153,11 +16095,6 @@ function renderConfirmPopover() {
   const hasSourceSelect = Boolean(intent.sourceSelect);
   const hasPageSizeSelect = Boolean(intent.pageSizeSelect);
   const hideMessage = Boolean(intent.hideMessage);
-  const width = hasSourceSelect || hasPageSizeSelect ? 420 : 260;
-  const popoverHeight = (hasSecondaryAction ? 126 : 112)
-    + (hasSourceSelect || hasPageSizeSelect ? 76 : 0)
-    - (hideMessage ? 34 : 0);
-  const { left, top } = confirmPopoverPlacement(intent, width, popoverHeight);
 
   elements.confirmText.textContent = intent.message || "";
   elements.confirmText.classList.toggle("hidden", hideMessage);
@@ -16196,10 +16133,16 @@ function renderConfirmPopover() {
     elements.confirmSecondary.textContent = intent.secondaryLabel || "";
     elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
   }
+  elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect || hasPageSizeSelect);
+  elements.confirmPopover.style.left = "0px";
+  elements.confirmPopover.style.top = "0px";
+  elements.confirmPopover.style.visibility = "hidden";
+  elements.confirmPopover.classList.remove("hidden");
+  const measuredRect = elements.confirmPopover.getBoundingClientRect();
+  const { left, top } = confirmPopoverPlacement(intent, measuredRect.width, measuredRect.height);
   elements.confirmPopover.style.left = `${left}px`;
   elements.confirmPopover.style.top = `${top}px`;
-  elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect || hasPageSizeSelect);
-  elements.confirmPopover.classList.remove("hidden");
+  elements.confirmPopover.style.removeProperty("visibility");
 }
 
 function anchorPointForEvent(event, fallbackElement) {
@@ -16377,7 +16320,7 @@ function renderBindingOption(inputType, name, entry, checked) {
 function openBindingModal(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
-    setMessageForSource(intent?.source || "request-form", t("binding.readFailed"), true);
+    setRequestActionMessage(t("binding.readFailed"), true);
     return;
   }
   state.bindingIntent = {
@@ -16398,6 +16341,7 @@ function openBindingModal(intent, payload) {
     );
   });
   elements.bindingModal.classList.remove("hidden");
+  elements.bindingModalClose?.focus({ preventScroll: true });
 }
 
 function closeGatchaFavlistModal({ restoreFocus = true } = {}) {
@@ -16847,11 +16791,11 @@ async function confirmBindingModal() {
   const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
-    setMessageForSource(source, t("binding.selectVideoPart"), true);
+    setRequestActionMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
-    setMessageForSource(source, t("binding.selectAudioPart"), true);
+    setRequestActionMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -16872,7 +16816,7 @@ async function confirmBindingModal() {
       selectedAudioPages,
     });
     if (!accepted && source === "gatcha") {
-      setMessageForSource(source, t("error.requestFailed"), true);
+      setRequestActionMessage(t("error.requestFailed"), true);
       return;
     }
     closeBindingModal({ restoreFocus: source !== "gatcha" });
@@ -16887,8 +16831,7 @@ async function confirmBindingModal() {
       clearAcceptedGatchaCandidate();
     }
     const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
-    setMessageForSource(source, message);
-    setAppMessage(message);
+    setRequestActionMessage(message);
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -16930,7 +16873,7 @@ async function confirmBindingModal() {
       });
       return;
     }
-    setMessageForSource(source, error.message, true);
+    setRequestActionMessage(error.message, true);
   } finally {
     if (button) {
       button.disabled = false;
@@ -17022,14 +16965,13 @@ async function handleAddByUrl(
     return false;
   }
   const isHistory = source === "history";
-  setMessageForSource(source, isHistory ? t("history.addingFromHistory") : t("request.parsing"));
+  setRequestActionMessage(isHistory ? t("history.addingFromHistory") : t("request.parsing"));
   try {
     await submitAddRequest(url, position, { requesterName });
     const message = isHistory
       ? (position === "next" ? t("history.addedNext") : t("history.addedTail"))
       : (position === "next" ? t("request.addedNext") : t("request.addedTail"));
-    setMessageForSource(source, message);
-    setAppMessage(message);
+    setRequestActionMessage(message);
     if (originatedFromDetail) {
       if (typeof searchDetailController !== "undefined") searchDetailController?.close({ immediate: true });
     }
@@ -17067,10 +17009,10 @@ async function handleAddByUrl(
         x: anchorPoint?.x ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).y,
       });
-      setMessageForSource(source, t("request.duplicateHint"));
+      setRequestActionMessage(t("request.duplicateHint"));
       return false;
     }
-    setMessageForSource(source, error.message, true);
+    setRequestActionMessage(error.message, true);
     return false;
   }
 }
@@ -19054,6 +18996,7 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
 
 document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
   const info = region.querySelector(".cache-advanced-info");
+  const hoverTarget = region.closest("#remote-mini-popover") ? info : region;
   region.addEventListener("click", (event) => {
     const button = event.target.closest(".cache-advanced-info-button");
     if (!button) {
@@ -19068,7 +19011,7 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
     closeCacheAdvancedInfo();
     setCacheAdvancedInfoVisible(info, { pinned: true });
   });
-  region.addEventListener("pointerenter", (event) => {
+  hoverTarget?.addEventListener("pointerenter", (event) => {
     if (!info || !cacheAdvancedInfoSupportsHover(event) || info.classList.contains("is-visible")) {
       return;
     }
@@ -19081,12 +19024,12 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
     }
     cacheAdvancedInfoHoverTimer = window.setTimeout(() => {
       cacheAdvancedInfoHoverTimer = null;
-      if (region.matches(":hover")) {
+      if (hoverTarget.matches(":hover")) {
         showCacheAdvancedInfoTransient(info, "pointer");
       }
     }, cacheAdvancedInfoHoverDelayMs);
   });
-  region.addEventListener("pointerleave", () => {
+  hoverTarget?.addEventListener("pointerleave", () => {
     if (cacheAdvancedInfoHoverTimer) {
       window.clearTimeout(cacheAdvancedInfoHoverTimer);
       cacheAdvancedInfoHoverTimer = null;
@@ -19098,7 +19041,7 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
       cacheAdvancedInfoLeaveTimer = null;
       if (
         !info?.classList.contains("is-pinned")
-        && !region.matches(":hover")
+        && !hoverTarget.matches(":hover")
         && !info?.contains(document.activeElement)
       ) {
         info?.classList.remove("is-visible");
@@ -19941,6 +19884,22 @@ elements.confirmSecondary?.addEventListener("click", async () => {
   }
 });
 
+elements.bindingModal?.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = [...elements.bindingModal.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first?.focus();
+  }
+});
+
 elements.bindingModalClose?.addEventListener("click", () => {
   closeBindingModal();
 });
@@ -20199,7 +20158,7 @@ elements.confirmOk.addEventListener("click", async () => {
         selectedAudioPages: Array.isArray(intent.selectedAudioPages) ? intent.selectedAudioPages : undefined,
       });
       if (!accepted && source === "gatcha") {
-        setMessageForSource(source, t("error.requestFailed"), true);
+        setRequestActionMessage(t("error.requestFailed"), true);
         return;
       }
       closeConfirm({ restoreFocus: source !== "gatcha" });
@@ -20214,8 +20173,7 @@ elements.confirmOk.addEventListener("click", async () => {
         }
       }
       const message = intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail");
-      setMessageForSource(source, message);
-      setAppMessage(message);
+      setRequestActionMessage(message);
       if (source === "gatcha") {
         clearAcceptedGatchaCandidate();
       }
@@ -20223,7 +20181,7 @@ elements.confirmOk.addEventListener("click", async () => {
     }
   } catch (error) {
     if (intent?.type === "duplicate-add") {
-      setMessageForSource(intent.source || "request-form", error.message, true);
+      setRequestActionMessage(error.message, true);
     } else {
       setAppMessage(error.message, true);
     }

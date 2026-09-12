@@ -269,7 +269,7 @@ console.log(JSON.stringify({{
 
     def test_safe_area_cover_progress_and_ready_state_match_review_delta(self):
         dock_rule = re.search(r"\.playback-dock\s*\{([^}]*)\}", self.styles).group(1)
-        self.assertIn("bottom: calc(12px + env(safe-area-inset-bottom, 0px))", dock_rule)
+        self.assertIn("bottom: calc(20px + env(safe-area-inset-bottom, 0px))", dock_rule)
         self.assertIn("left: calc(12px + env(safe-area-inset-left, 0px))", dock_rule)
         self.assertIn("right: calc(12px + env(safe-area-inset-right, 0px))", dock_rule)
         self.assertIn("viewport-fit=cover", self.markup)
@@ -416,10 +416,20 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
         popover_rule = re.search(r"\.audio-variant-popover\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("position: absolute", popover_rule)
         self.assertIn("z-index: 40", popover_rule)
-        self.assertIn("overflow-y: auto", popover_rule)
+        self.assertIn("overflow-y: hidden", popover_rule)
         self.assertIn("max-height: 240px", popover_rule)
-        self.assertIn("touch-action: pan-y", popover_rule)
+        self.assertIn("touch-action: manipulation", popover_rule)
         self.assertIn("background: var(--audio-variant-popover-bg)", popover_rule)
+        scrollable_rule = re.search(
+            r"\.audio-variant-popover\.is-scrollable\s*\{([^}]*)\}",
+            self.styles,
+        ).group(1)
+        self.assertIn("overflow-y: auto", scrollable_rule)
+        self.assertIn("touch-action: pan-y", scrollable_rule)
+        self.assertIn("scrollbar-width: thin", scrollable_rule)
+        self.assertIn('popover.classList.toggle("is-scrollable", scrollable)', render_source)
+        self.assertIn("popover.scrollHeight || 0", render_source)
+        self.assertIn("visibleHeight - borderHeight + 1", render_source)
         button_label_rule = re.search(
             r"\.audio-variant-button-label\s*\{([^}]*)\}",
             self.styles,

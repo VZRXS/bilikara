@@ -414,6 +414,94 @@ class RustRuntimeAdapterTest(unittest.TestCase):
         in {"1", "true", "yes", "on"},
         "native Rust runtime is optional outside the release gate",
     )
+    def test_native_cloudflare_enqueue_accepts_before_loopback_delivery(self):
+        from bilikara import lark_pool_client
+
+        received = threading.Event()
+        release_response = threading.Event()
+        responded = threading.Event()
+        gate_expired = threading.Event()
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append((self.path, payload, self.headers.get("Authorization")))
+                received.set()
+                if not release_response.wait(timeout=10):
+                    gate_expired.set()
+                body = b'{"added": 1}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                responded.set()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            empty = rust_runtime.cloudflare_service_request(
+                "enqueue_append", base_url=base_url, user_agent="bilikara-test",
+                entries=[{"bvid": "invalid", "title": "fixture"}],
+            )
+            self.assertEqual(empty, {"accepted": False, "count": 0})
+            # No adapter/library mock: this exercises the actual loaded C ABI.
+            self.assertIsInstance(rust_runtime._runtime_lib, ctypes.CDLL)
+            with patch.object(lark_pool_client, "_CLOUDFLARE_API_URL", base_url):
+                accepted = lark_pool_client.append_lark_pool_entries_in_background([
+                    {"bvid": "BV1xx411c7mD", "title": " fixture ",
+                     "mid": "", "owner_mid": "42", "owner_name": "", "author": "ignored"},
+                    {"bvid": "BV1xx411c7mD", "title": "duplicate"},
+                    {"bvid": "invalid", "title": "invalid"},
+                ])
+            self.assertIs(accepted, True)
+            self.assertTrue(received.wait(timeout=5), "Rust worker did not reach loopback")
+            self.assertFalse(gate_expired.is_set(), "caller waited for HTTP delivery")
+            self.assertFalse(responded.is_set(), "acceptance must precede fixture response")
+            self.assertEqual(requests, [("/batch-add", {"records": [{
+                "mid": "", "bvid": "BV1xx411c7mD", "title": "fixture",
+                "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+                "owner_name": "", "owner_url": "",
+            }]}, None)])
+            release_response.set()
+            self.assertTrue(responded.wait(timeout=5))
+        finally:
+            release_response.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_windows_virtual_only_network_address_uses_real_abi(self):
+        addresses = rust_runtime.detect_lan_ipv4_addresses(
+            platform_name="win32",
+            candidates=[
+                {
+                    "name": "vEthernet (WSL)",
+                    "address": "172.28.32.1",
+                    "is_up": True,
+                    "interface_type": "virtual",
+                },
+            ],
+            route_sources=["172.28.32.1"],
+        )
+        self.assertEqual(addresses, ["172.28.32.1"])
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
     def test_native_runtime_services_use_the_real_abi(self):
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):

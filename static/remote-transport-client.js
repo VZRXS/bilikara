@@ -67,6 +67,10 @@
     identityInput: null,
     passwordInput: null,
     connectButton: null,
+    translate: null,
+    translateRoot: null,
+    connectionMessage: "",
+    connectionIsError: false,
   };
 
   function loadPeerId() {
@@ -86,12 +90,58 @@
     return state.readyPromise;
   }
 
-  function setConnectionStatus(message, isError = false) {
-    if (state.status) state.status.textContent = message || "";
+  // Exact messages owned by this adapter; unknown server/native details remain verbatim.
+  const connectionMessageKeys = Object.freeze({
+    "请输入 ID 和 4–32 位房间密码。": "internetRemote.joinRequired",
+    "当前浏览器不支持此公网连接。": "internetRemote.unavailable",
+    "房间链接无效，请重新扫描 Host 二维码。": "internetRemote.invalidLink",
+    "正在连接…": "remote.connectionConnecting",
+    "正在重新连接…": "remote.connectionReconnecting",
+    "等待 Host…": "internetRemote.waitingForHost",
+    "Host 不在线。": "internetRemote.hostOffline",
+    "信令暂时不可用。": "internetRemote.signalingUnavailable",
+    "正在认证…": "internetRemote.authenticating",
+    "尝试过多，请一分钟后再试。": "internetRemote.tooManyAttempts",
+    "房间密码错误。": "internetRemote.wrongPassword",
+    "连接失败": "internetRemote.connectionFailed",
+    "无法自动恢复连接，请重新连接。": "internetRemote.reconnectFailed",
+    "Host 响应超时": "internetRemote.hostTimeout",
+    "连接已重置": "internetRemote.connectionReset",
+    "尚未连接 Host": "internetRemote.notConnected",
+    "信令未连接": "internetRemote.signalingNotConnected",
+  });
+
+  function translatedCopy(key, fallback) {
+    const translated = state.translate?.(key);
+    return translated && translated !== key ? translated : fallback;
+  }
+
+  function renderConnectionCopy() {
+    const raw = state.connectionMessage;
+    const key = Object.hasOwn(connectionMessageKeys, raw) ? connectionMessageKeys[raw] : null;
+    const message = key ? translatedCopy(key, raw) : raw;
+    if (state.status) state.status.textContent = message;
     if (state.error) {
-      state.error.textContent = isError ? message || "" : "";
-      state.error.classList.toggle("hidden", !isError);
+      state.error.textContent = state.connectionIsError ? message : "";
+      state.error.classList.toggle("hidden", !state.connectionIsError);
     }
+    if (state.connectButton) {
+      const busy = state.connectButton.hasAttribute("aria-busy") && !state.connectionIsError;
+      state.connectButton.dataset.i18n = busy ? "remote.connectionConnecting" : "internetRemote.connect";
+      state.connectButton.textContent = translatedCopy(state.connectButton.dataset.i18n, busy ? "正在连接" : "连接");
+    }
+  }
+
+  function localize(translate, translateRoot) {
+    state.translate = translate;
+    state.translateRoot = translateRoot;
+    renderConnectionCopy();
+  }
+
+  function setConnectionStatus(message, isError = false) {
+    state.connectionMessage = String(message || "");
+    state.connectionIsError = isError;
+    renderConnectionCopy();
   }
 
   function ensureJoinOverlay() {
@@ -101,13 +151,13 @@
     overlay.innerHTML = `
       <form class="internet-remote-join-card">
         <p class="panel-tag">INTERNET REMOTE</p>
-        <h1>连接 bilikara 房间</h1>
-        <p class="internet-remote-join-copy">使用 Host 显示的房间密码连接。连接后将使用与本地 Remote 相同的界面。</p>
-        <label>我的 ID<input name="identity" type="text" maxlength="24" autocomplete="nickname" required></label>
-        <label>房间密码<input name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" required></label>
+        <h1 data-i18n="internetRemote.joinTitle">连接 bilikara 房间</h1>
+        <p class="internet-remote-join-copy" data-i18n="internetRemote.joinDescription">使用 Host 显示的房间密码连接。连接后将使用与本地 Remote 相同的界面。</p>
+        <label><span data-i18n="remoteIdentity.inputLabel">ID</span><input name="identity" type="text" maxlength="24" autocomplete="nickname" required></label>
+        <label><span data-i18n="internetRemote.password">房间密码</span><input name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" required></label>
         <p class="internet-remote-join-status" role="status"></p>
         <p class="internet-remote-join-error hidden" role="alert"></p>
-        <button type="submit" class="primary-button">连接</button>
+        <button type="submit" class="primary-button" data-i18n="internetRemote.connect">连接</button>
       </form>`;
     document.body.appendChild(overlay);
     state.overlay = overlay;
@@ -117,8 +167,10 @@
     state.passwordInput = overlay.querySelector('input[name="password"]');
     state.connectButton = overlay.querySelector('button[type="submit"]');
     state.identityInput.value = state.identity;
+    state.translateRoot?.(overlay);
     overlay.querySelector("form").addEventListener("submit", (event) => {
       event.preventDefault();
+      if (state.connectButton.disabled) return;
       const identity = String(state.identityInput.value || "").trim();
       const password = String(state.passwordInput.value || "");
       if (!identity || password.length < 4 || password.length > 32) {
@@ -184,7 +236,7 @@
     state.socket = null;
     previousSocket?.close(1000, "reconnecting");
     resetPeer();
-    setConnectionStatus("正在连接…");
+    setConnectionStatus(state.reconnectAttempts ? "正在重新连接…" : "正在连接…");
     const socket = new WebSocket(signalingUrl(), ["bilikara-v1", `remote.${joinToken}.${peerId}`]);
     state.socket = socket;
     socket.addEventListener("open", () => setConnectionStatus("等待 Host…"));
@@ -283,6 +335,7 @@
         document.documentElement.dataset.remoteTransport = "internet";
         state.connectButton.disabled = false;
         state.connectButton.removeAttribute("aria-busy");
+        renderConnectionCopy();
         state.readyResolve?.();
       }).catch(fail);
       startHeartbeat();
@@ -858,6 +911,7 @@
   global.BilikaraRemoteTransport = Object.freeze({
     mode: "internet",
     ready,
+    localize,
     fetch: fetchInternet,
     createStateSource,
     disconnect,

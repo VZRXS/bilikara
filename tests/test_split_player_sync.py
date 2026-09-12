@@ -118,7 +118,10 @@ class SplitPlayerSyncTest(unittest.TestCase):
     @classmethod
     def _slice(cls, start: str, end: str) -> str:
         start_index = cls.source.index(start)
-        return cls.source[start_index : cls.source.index(end, start_index)]
+        end_index = cls.source.index(end, start_index)
+        if end_index <= start_index:
+            raise ValueError(f"Empty source slice: {start!r} to {end!r}")
+        return cls.source[start_index:end_index]
 
     def run_node(self, body: str, *sources: str) -> dict:
         script = f"""
@@ -5098,7 +5101,7 @@ console.log(JSON.stringify({{ afterRetired, effects }}));
         automatic_sources = (
             automatic_renderer,
             self._slice("function mountHostPlaybackSessionElements", "function reconcileHostPlaybackSession"),
-            self._slice("function startLocalAdvanceDelay", "function clearLocalAdvanceDelay"),
+            self._slice("function showSongTransitionOverlayForData", "function maybeShowSongTransitionOverlay"),
             self._slice("async function handleSplitVideoEnded", "function holdVideoForAudio"),
             self._slice("function requireSplitPlaybackUserGesture", "function setSplitPlaybackIntent"),
             self._slice("function failSplitPlaybackStartup", "function scheduleWebKitSplitPlaybackRetry"),

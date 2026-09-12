@@ -1,0 +1,306 @@
+/* Shared read-only Local/Public Remote access card used by the Host and the
+   presentation output. Surface-specific CSS owns only positioning, opening,
+   and the Host's expanded management controls. */
+.remote-access-popover {
+  width: min(390px, calc(100vw - 32px));
+}
+
+.remote-access-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 0;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: var(--settings-panel-border);
+  border-radius: 20px;
+  color: var(--ink);
+  background: var(--settings-panel-bg);
+  box-shadow: var(--shadow);
+  user-select: text;
+}
+
+/* The Host's legacy .remote-card theme rule intentionally keeps ordinary
+   page cards translucent. Remote-access cards are floating menus, so keep
+   all three owners (Host, fullscreen, and presentation output) on the same
+   opaque settings surface instead of allowing content to show through. */
+:root:is([data-theme="dark"], [data-theme="blue"]) .remote-access-card {
+  background: var(--settings-panel-bg);
+}
+
+/* A compact surface without an active public room uses the same local-entry
+   geometry as the Host's complete menu. This keeps the QR anchored at the
+   same coordinates when the menu is expanded instead of retaining an empty
+   public column. */
+.remote-access-card:is(.is-local-only-preview, .is-management-layout) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.remote-access-card.is-local-only-preview .remote-access-entry--public {
+  display: none;
+}
+
+.remote-access-card:is(.is-local-only-preview, .is-management-layout)
+  .remote-access-entry-content {
+  grid-template-columns: 160px minmax(0, 1fr);
+  align-items: center;
+  justify-items: stretch;
+  gap: 14px;
+}
+
+.remote-access-card:is(.is-local-only-preview, .is-management-layout)
+  .remote-access-qr {
+  justify-self: start;
+}
+
+.remote-access-card.is-local-only-preview .remote-access-entry--local {
+  padding-right: 0;
+}
+
+.remote-access-card > :is(.internet-remote-divider, .presentation-output-remote-divider) {
+  display: none;
+}
+
+.remote-access-entry {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 8px;
+}
+
+.remote-access-entry--local {
+  padding-right: 9px;
+}
+
+/* Keep the LAN QR on one fixed card-relative axis in the local-only preview,
+   the two-entry preview, and the expanded stacked management view. */
+.remote-access-entry--local .remote-access-qr {
+  justify-self: start;
+}
+
+.remote-access-entry--public {
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+}
+
+.remote-access-heading {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+}
+
+.remote-access-title,
+.remote-access-copy-title {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: normal;
+}
+
+.remote-access-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.remote-access-copy-title {
+  display: none;
+}
+
+/* With only the LAN entry available, the compact preview has room for the
+   same scan heading as the complete menu. The copy action remains pinned-only. */
+.remote-access-card.is-local-only-preview .remote-access-copy-title {
+  display: block;
+}
+
+.remote-access-heading > .internet-remote-disclosure {
+  flex: 0 0 auto;
+}
+
+.remote-access-status {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-access-status.is-active {
+  color: var(--green, #2f8f62);
+}
+
+.remote-access-status.is-error {
+  color: var(--danger-btn-color, var(--red));
+}
+
+.remote-access-public-state {
+  display: flex;
+  min-width: 0;
+  margin-left: auto;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.remote-access-public-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+  white-space: nowrap;
+}
+
+.remote-access-public-connection-indicator {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  color: var(--green, #2f8f62);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.remote-access-public-connection-indicator svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+
+.remote-access-public-status:not(.is-active) + .remote-access-public-connection-indicator {
+  visibility: hidden;
+}
+
+.remote-access-entry-content {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 8px;
+}
+
+.remote-access-qr {
+  display: grid;
+  width: 160px;
+  height: 160px;
+  box-sizing: border-box;
+  padding: 3px;
+  place-items: center;
+  justify-self: center;
+  overflow: hidden;
+  border: 0;
+  background: #fff;
+}
+
+.remote-access-qr img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.remote-access-qr-placeholder {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.remote-access-details {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  text-align: left;
+}
+
+.remote-access-meta,
+.remote-access-password,
+.remote-access-link {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+}
+
+.remote-access-password {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+}
+
+.remote-access-password strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.remote-access-link {
+  display: block;
+  max-width: 100%;
+  color: var(--accent-deep);
+  line-height: 1.35;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.remote-access-expand-hint {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+@media (max-width: 430px) {
+  .remote-access-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .remote-access-entry--local {
+    padding-right: 0;
+    padding-bottom: 12px;
+  }
+
+  .remote-access-entry--public {
+    padding-top: 12px;
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .remote-access-card.is-management-layout .remote-access-public-status {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: hidden;
+    clip: auto;
+  }
+
+  .remote-access-card.is-management-layout .remote-access-public-connection-indicator {
+    display: none;
+  }
+
+}

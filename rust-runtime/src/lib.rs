@@ -18,6 +18,7 @@ pub mod native_host;
 mod native_host_storage;
 mod native_video;
 mod networking;
+mod qr_image;
 mod status_service;
 mod update_installer;
 
@@ -54,6 +55,7 @@ pub use networking::{
     InterfaceAddress, NetworkAddressRequest, NetworkAddressResult, detect_lan_ipv4_addresses,
     rank_lan_ipv4_candidates,
 };
+pub use qr_image::{QrImageError, QrImageErrorKind, generate_qr_png};
 pub use status_service::{
     BilibiliLoginFacts, BilibiliLoginSnapshot, BilibiliLoginStatus, BilibiliLoginUpdate,
     GachaTaskSnapshot, GachaTaskStatus, GachaTaskUpdate, RuntimeStatusService,

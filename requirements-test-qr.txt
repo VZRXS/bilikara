@@ -1,0 +1,3 @@
+# Independent local QR decoder used only by tests/test_qr_image.py.
+# Pillow is already a runtime dependency for the frozen playlist renderer.
+zxing-cpp==2.3.0

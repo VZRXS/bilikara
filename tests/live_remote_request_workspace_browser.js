@@ -35,7 +35,8 @@ async function waitForThemeControlsSettled(page) {
     const activePanel = document.querySelector('.remote-request-view:not([hidden])');
     const activeTabs = [
       document.querySelector('.remote-request-tab[aria-selected="true"]'),
-      activePanel?.querySelector('[role="tab"][aria-selected="true"]'),
+      document.querySelector('#remote-request-secondary-nav [role="tab"][aria-selected="true"]')
+        || activePanel?.querySelector('[role="tab"][aria-selected="true"]'),
     ].filter(Boolean);
     const peerActions = [
       document.querySelector("#resort-playlist-button"),
@@ -328,7 +329,11 @@ async function requestWorkspaceMetrics(page) {
     const heading = requestCard?.querySelector(".remote-request-head");
     const viewport = requestCard?.querySelector(".remote-request-tabs-viewport");
     const strip = viewport?.querySelector(".remote-request-tabs");
+    const secondaryNav = viewport?.querySelector(".remote-request-secondary-nav");
+    const primaryVisible = Boolean(strip?.getClientRects().length);
+    const visibleStrip = primaryVisible ? strip : secondaryNav;
     const tabs = Array.from(strip?.querySelectorAll(".remote-request-tab") || []);
+    const secondaryTabs = Array.from(secondaryNav?.querySelectorAll('[role="tab"]') || []);
     const activePanel = requestCard?.querySelector('.remote-request-view:not([hidden])');
     const visualStyle = (element) => {
       if (!element) return null;
@@ -354,7 +359,8 @@ async function requestWorkspaceMetrics(page) {
     const verticalOwners = Array.from(requestCard?.querySelectorAll("div, section, form, article") || [])
       .filter((element) => {
         const style = getComputedStyle(element);
-        return ["auto", "scroll"].includes(style.overflowY)
+        return element.getClientRects().length > 0
+          && ["auto", "scroll"].includes(style.overflowY)
           && element.scrollHeight > element.clientHeight + 1;
       })
       .map((element) => ({
@@ -363,6 +369,8 @@ async function requestWorkspaceMetrics(page) {
         clientHeight: element.clientHeight,
         scrollHeight: element.scrollHeight,
         overflowY: getComputedStyle(element).overflowY,
+        insideActivePanel: activePanel?.contains(element) || false,
+        bounds: rect(element),
       }));
     return {
       viewport: { width: innerWidth, height: innerHeight },
@@ -381,14 +389,27 @@ async function requestWorkspaceMetrics(page) {
       requestCard: rect(requestCard),
       requestCardOverflowY: getComputedStyle(requestCard).overflowY,
       requestCardMinHeight: getComputedStyle(requestCard).minHeight,
+      requestCardMaxHeight: getComputedStyle(requestCard).maxHeight,
       heading: rect(heading),
       railViewport: rect(viewport),
-      railStrip: rect(strip),
+      railStrip: rect(visibleStrip),
       railClientWidth: viewport?.clientWidth || 0,
       railScrollWidth: viewport?.scrollWidth || 0,
       railScrollLeft: viewport?.scrollLeft || 0,
-      stripClientWidth: strip?.clientWidth || 0,
-      stripScrollWidth: strip?.scrollWidth || 0,
+      stripClientWidth: visibleStrip?.clientWidth || 0,
+      stripScrollWidth: visibleStrip?.scrollWidth || 0,
+      primaryTabsVisible: primaryVisible,
+      secondaryNav: rect(secondaryNav),
+      secondaryNavVisible: Boolean(secondaryNav?.getClientRects().length),
+      secondaryBack: rect(secondaryNav?.querySelector("#remote-request-secondary-back")),
+      secondaryTabs: secondaryTabs.map((tab) => ({
+        id: tab.id,
+        label: tab.textContent.trim(),
+        bounds: rect(tab),
+        lines: lineCount(tab),
+        textFits: tab.scrollWidth <= tab.clientWidth + 1,
+        ...visualStyle(tab),
+      })),
       tabs: tabs.map((tab) => ({
         id: tab.id,
         label: tab.textContent.trim(),
@@ -401,7 +422,10 @@ async function requestWorkspaceMetrics(page) {
       })),
       segmentedStyles: {
         topActive: visualStyle(strip?.querySelector('[aria-selected="true"]')),
-        secondaryActive: visualStyle(activePanel?.querySelector('[role="tab"][aria-selected="true"]')),
+        secondaryActive: visualStyle(
+          secondaryNav?.querySelector('[role="tab"][aria-selected="true"]')
+            || activePanel?.querySelector('[role="tab"][aria-selected="true"]'),
+        ),
         primaryButton: visualStyle(activePanel?.querySelector(".primary-button")),
       },
       formControls: {
@@ -422,6 +446,11 @@ async function requestWorkspaceMetrics(page) {
       ].map((element) => ({ id: element?.id || "", ...visualStyle(element) })),
       activePanelId: activePanel?.id || "",
       activePanel: rect(activePanel),
+      activePanelOverflowY: getComputedStyle(activePanel).overflowY,
+      activePanelClientHeight: activePanel?.clientHeight || 0,
+      activePanelScrollHeight: activePanel?.scrollHeight || 0,
+      activePanelScrollbarWidth: getComputedStyle(activePanel).scrollbarWidth,
+      activePanelScrollbarColor: getComputedStyle(activePanel).scrollbarColor,
       panelStates: Array.from(requestCard?.querySelectorAll("[data-remote-request-panel]") || [])
         .map((panel) => ({
           id: panel.id,
@@ -451,14 +480,19 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
   );
   assert(metrics.tabs.length === 4, `${label}: top rail does not contain four stable tabs`, metrics.tabs);
   assert(
-    metrics.tabs.every((tab) => tab.bounds.height >= 44 && tab.lines === 1 && tab.textFits),
-    `${label}: tab touch target or unwrapped/unclipped label contract failed`,
-    metrics.tabs,
+    metrics.primaryTabsVisible
+      ? metrics.tabs.every((tab) => tab.bounds.height >= 44 && tab.lines === 1 && tab.textFits)
+      : metrics.secondaryTabs.every((tab) => tab.bounds.height >= 44 && tab.lines === 1 && tab.textFits)
+        && metrics.secondaryBack?.height >= 44,
+    `${label}: visible tab touch target or unwrapped/unclipped label contract failed`,
+    { primary: metrics.tabs, secondary: metrics.secondaryTabs, back: metrics.secondaryBack },
   );
   assert(
-    metrics.tabs.every((tab) => Math.abs(tab.bounds.top - metrics.tabs[0].bounds.top) <= 1),
-    `${label}: top tabs wrapped out of one row`,
-    metrics.tabs,
+    metrics.primaryTabsVisible
+      ? metrics.tabs.every((tab) => Math.abs(tab.bounds.top - metrics.tabs[0].bounds.top) <= 1)
+      : metrics.secondaryTabs.every((tab) => Math.abs(tab.bounds.top - metrics.secondaryBack.top) <= 1),
+    `${label}: visible tabs wrapped out of one row`,
+    { primary: metrics.tabs, secondary: metrics.secondaryTabs, back: metrics.secondaryBack },
   );
   assert(
     metrics.heading.bottom <= metrics.railViewport.top + 1
@@ -474,9 +508,14 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
     metrics.panelStates,
   );
   assert(
-    metrics.verticalOwners.length === 0
-      && !["auto", "scroll"].includes(metrics.requestCardOverflowY),
-    `${label}: Request card acquired an internal vertical scroller`,
+    metrics.requestCardOverflowY === "hidden"
+      && (metrics.activePanelId === "remote-request-quick-panel"
+        ? metrics.activePanelOverflowY === "auto" && metrics.activePanelScrollbarWidth === "thin"
+        : metrics.activePanelOverflowY === "hidden")
+      && metrics.requestCard.height <= 560.5
+      && metrics.verticalOwners.length <= 1
+      && metrics.verticalOwners.every((owner) => owner.insideActivePanel),
+    `${label}: bounded Request card did not keep one content-only scroll owner`,
     metrics.verticalOwners,
   );
   assert(metrics.searchModalCount === 0, `${label}: retired advanced modal is still present`, metrics);
@@ -490,9 +529,10 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
     );
     const viewport = metrics.railViewport;
     assert(
-      metrics.tabs.every((tab) => tab.bounds.left >= viewport.left - 1 && tab.bounds.right <= viewport.right + 1),
-      `${label}: one or more top tabs are not simultaneously visible`,
-      metrics.tabs,
+      (metrics.primaryTabsVisible ? metrics.tabs : metrics.secondaryTabs)
+        .every((tab) => tab.bounds.left >= viewport.left - 1 && tab.bounds.right <= viewport.right + 1),
+      `${label}: one or more visible tabs are not simultaneously visible`,
+      { primary: metrics.tabs, secondary: metrics.secondaryTabs },
     );
   }
   if (metrics.quickActions) {
@@ -520,6 +560,9 @@ async function bringRequestCardIntoView(page) {
 }
 
 async function activateAndCapture(page, selector, screenshot, activePanelId) {
+  if (!await page.locator(selector).isVisible() && await page.locator("#remote-request-secondary-back").isVisible()) {
+    await page.locator("#remote-request-secondary-back").click();
+  }
   await page.locator(selector).click();
   await page.waitForFunction((id) => {
     const panel = document.getElementById(id);
@@ -598,6 +641,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     "searchSharedResults",
     "searchLocal",
     "categoriesHome",
+    "categoriesOverflow",
     "categoriesDetail",
     "name",
     "artist",
@@ -683,6 +727,78 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     );
     assertWorkspaceGeometry(states.categoriesHome, "375 Discover / Categories home", { requireNoRailOverflow: true });
     assert(await page.locator("#remote-discover-categories-panel .category-browser-card").count() > 0, "Categories home is empty");
+    await page.evaluate(() => {
+      const grid = document.querySelector("#remote-discover-categories-panel [data-category-browser-grid]");
+      const fixtureColors = ["#f3d9cf", "#dce8f2", "#e5dfef", "#dcebdc", "#f1e2bf", "#d9e8e5"];
+      for (let index = 0; index < 10; index += 1) {
+        const card = createCategoryBrowseCard({
+          id: `browser-overflow-${index + 1}`,
+          name: `${String(index + 1).padStart(2, "0")} · 滚动测试`,
+          coverUrl: "",
+        });
+        card.classList.add("browser-overflow-fixture");
+        card.setAttribute("aria-hidden", "true");
+        card.disabled = true;
+        card.style.background = fixtureColors[index % fixtureColors.length];
+        grid?.appendChild(card);
+      }
+    });
+    const categoriesOverflow = await requestWorkspaceMetrics(page);
+    const categoryCardGeometry = await page.locator(
+      "#remote-discover-categories-panel .category-browser-card",
+    ).evaluateAll((cards) => {
+      const rects = cards.map((card) => {
+        const rect = card.getBoundingClientRect();
+        return {
+          label: card.textContent.trim(),
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        };
+      });
+      const overlaps = [];
+      for (let first = 0; first < rects.length; first += 1) {
+        for (let second = first + 1; second < rects.length; second += 1) {
+          const a = rects[first];
+          const b = rects[second];
+          if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
+            overlaps.push([a.label, b.label]);
+          }
+        }
+      }
+      return { rects, overlaps };
+    });
+    const overflowScroll = await page.locator(
+      "#remote-discover-categories-panel .category-browser-home",
+    ).evaluate((content) => {
+      const before = content.scrollTop;
+      content.scrollTop = content.scrollHeight;
+      return {
+        before,
+        after: content.scrollTop,
+        clientHeight: content.clientHeight,
+        scrollHeight: content.scrollHeight,
+      };
+    });
+    assert(
+      categoriesOverflow.verticalOwners.length === 1
+        && categoriesOverflow.verticalOwners[0].className.includes("category-browser-home")
+        && overflowScroll.scrollHeight > overflowScroll.clientHeight
+        && overflowScroll.after > overflowScroll.before
+        && categoryCardGeometry.overlaps.length === 0
+        && new Set(categoryCardGeometry.rects.map(({ label }) => label)).size
+          === categoryCardGeometry.rects.length,
+      "an overlong category browser did not keep scrolling inside its content region",
+      { categoriesOverflow, overflowScroll, categoryCardGeometry },
+    );
+    await capture(page, paths.categoriesOverflow);
+    await page.evaluate(() => {
+      document.querySelectorAll(".browser-overflow-fixture").forEach((element) => element.remove());
+      document.querySelector("#remote-discover-categories-panel .category-browser-home").scrollTop = 0;
+    });
 
     const categoryResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/d1/category-browse"
@@ -782,6 +898,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     const uploaderListResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/gatcha/browse"
     ));
+    await page.locator("#remote-request-secondary-back").click();
     await page.locator("#remote-request-sources-tab").click();
     await uploaderListResponse;
     await page.waitForFunction(() => document.querySelectorAll("#sources-follow-grid [data-uid]").length === 1);
@@ -1068,9 +1185,11 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       { scrollBeforeCompact, after: compactMetrics.scrollY },
     );
     assert(
-      compactMetrics.requestCard.height < states.favoritesDetail.requestCard.height,
-      "Request card did not shrink naturally after leaving a result view",
-      { quick: compactMetrics.requestCard.height, results: states.favoritesDetail.requestCard.height },
+      Object.values(states).every((entry) => (
+        Math.abs(entry.requestCard.height - compactMetrics.requestCard.height) <= 1
+      )),
+      "Request card height changed between Quick and browse/result views",
+      Object.fromEntries(Object.entries(states).map(([name, entry]) => [name, entry.requestCard.height])),
     );
     assert(compactMetrics.gatchaVisible, "Gatcha is no longer a separate visible card");
     assert(routeState.addRequests.length === 7, "Not every retained result owner requested successfully", routeState.addRequests);
@@ -1135,15 +1254,21 @@ async function runSecondaryViewport(browser, baseUrl, screenshotPath, scenario) 
       if (textScale > 1) {
         const style = document.createElement("style");
         style.id = "remote-stage2-text-scale";
-        style.textContent = `.remote-request-tab { font-size: ${16 * textScale}px !important; }`;
+        style.textContent = `
+          .remote-request-tab,
+          .remote-search-mode-tab,
+          .remote-discover-mode-tab,
+          .remote-sources-mode-tab,
+          .remote-request-secondary-back { font-size: ${16 * textScale}px !important; }
+        `;
         document.head.appendChild(style);
       }
-      activateRemoteRequestView("sources");
+      activateRemoteRequestView("sources", { expandSecondary: true });
       activateRemoteSourcesMode("favorites");
     }, scenario);
     await page.waitForFunction(() => {
       const viewport = document.querySelector(".remote-request-tabs-viewport")?.getBoundingClientRect();
-      const tab = document.getElementById("remote-request-sources-tab")?.getBoundingClientRect();
+      const tab = document.getElementById("remote-sources-favorites-tab")?.getBoundingClientRect();
       return viewport && tab && tab.left >= viewport.left - 1 && tab.right <= viewport.right + 1;
     });
     await waitForThemeControlsSettled(page);
@@ -1151,8 +1276,8 @@ async function runSecondaryViewport(browser, baseUrl, screenshotPath, scenario) 
     const metrics = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(metrics, `${scenario.width}x${scenario.height} ${scenario.name}`);
     assert(
-      metrics.tabs[3].bounds.left >= metrics.railViewport.left - 1
-        && metrics.tabs[3].bounds.right <= metrics.railViewport.right + 1,
+      metrics.secondaryTabs.at(-1).bounds.left >= metrics.railViewport.left - 1
+        && metrics.secondaryTabs.at(-1).bounds.right <= metrics.railViewport.right + 1,
       `${scenario.name}: final tab was not fully revealed`,
       metrics,
     );

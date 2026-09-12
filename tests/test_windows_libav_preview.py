@@ -207,8 +207,12 @@ class WindowsPreviewTests(unittest.TestCase):
             with patch("platform.machine", return_value=host), self.assertRaisesRegex(RuntimeError, "missing PE header"):
                 require_native_pe(path)
 
-    def test_stage_preserves_vendor_closure_driver_and_provenance_layout(self):
-        self.manifest.update(pe={n: {} for n in [*self.names, preview.COMPANION]}, vc_redist_files=["vcruntime140.dll"])
+    def test_stage_preserves_runtime_closure_and_omits_developer_payload(self):
+        (self.vendor / preview.TEST_COMPANION).write_bytes(b"test-only")
+        self.manifest.update(
+            pe={n: {} for n in [*self.names, preview.COMPANION, preview.TEST_COMPANION]},
+            vc_redist_files=["vcruntime140.dll"],
+        )
         self.write_manifest()
         (self.root / "driver").mkdir()
         for name in ("libav_metadata.exe", "libav-runtime-tests.exe"):
@@ -220,14 +224,20 @@ class WindowsPreviewTests(unittest.TestCase):
         (bundle / "THIRD_PARTY_SOURCES").mkdir(parents=True)
         with patch.object(preview, "pe_info", return_value={"machine": "x64", "imports": []}):
             preview.stage(self.root, bundle)
-        for name in self.names:
+        for name in [*self.names, preview.COMPANION]:
             self.assertEqual((bundle / "_internal/vendor" / name).read_bytes(), b"selected")
-        self.assertTrue((bundle / "preview/libav_metadata.exe").is_file())
-        self.assertTrue((bundle / "preview/vcruntime140.dll").is_file())
+        self.assertEqual(
+            [path.name for path in runtime_files(bundle / "_internal/vendor")],
+            self.names,
+        )
+        self.assertFalse((bundle / "_internal/vendor" / preview.TEST_COMPANION).exists())
+        packaged_manifest = json.loads((bundle / "_internal/vendor" / MANIFEST).read_text())
+        self.assertNotIn("pe", packaged_manifest)
+        self.assertNotIn("driver_pe", packaged_manifest)
+        self.assertFalse((bundle / "preview").exists())
         self.assertTrue((bundle / "THIRD_PARTY_SOURCES/source.asc").is_file())
         self.assertTrue((bundle / "THIRD_PARTY_SOURCES/media-libav/fixtures/synthetic.h264").is_file())
-        self.assertTrue((bundle / "libav-smoke.ps1").is_file())
-        self.assertEqual((bundle / "preview/build/config.log").read_text(), "same build")
+        self.assertFalse((bundle / "libav-smoke.ps1").exists())
 
     def test_smoke_environment_excludes_tool_and_credential_overrides(self):
         class WindowsEnvironment(dict):
@@ -351,18 +361,20 @@ assert any(p.samefile(expected) for p in candidates), candidates
 """, str(library)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_workflow_requires_all_native_targets_without_preview_input(self):
+    def test_workflow_tests_three_latest_platforms_and_bundles_windows_macos_without_preview_input(self):
         text = (ROOT / ".github/workflows/ci-bundle.yml").read_text(encoding="utf-8")
         test_match = re.search(r"^        os: (.+)$", text, re.M)
         bundle_match = re.search(r"^        include: (.+)$", text, re.M)
         self.assertIsNotNone(test_match)
         self.assertIsNotNone(bundle_match)
-        targets = ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm"]
-        self.assertEqual(json.loads(test_match[1]), targets)
+        self.assertEqual(json.loads(test_match[1]), ["ubuntu-latest", "windows-latest", "macos-latest"])
         bundles = json.loads(bundle_match[1])
-        self.assertEqual([entry["os"] for entry in bundles], targets)
+        self.assertEqual([entry["os"] for entry in bundles],
+                         ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"])
         self.assertEqual({(e["slug"], e["arch"]) for e in bundles},
-                         {(os, arch) for os in ("windows", "macos", "linux") for arch in ("x64", "arm64")})
+                         {(os, arch) for os in ("windows", "macos") for arch in ("x64", "arm64")})
+        bundle_job = text.split("\n  bundle:\n", 1)[1].split("\n  mirror-release-r2:\n", 1)[0]
+        self.assertNotIn("runner.os == 'Linux'", bundle_job)
         self.assertNotIn("windows_libav_preview", text)
         self.assertNotIn("BILIKARA_WINDOWS_LIBAV_PREVIEW", text)
         self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 2)
@@ -370,14 +382,24 @@ assert any(p.samefile(expected) for p in candidates), candidates
                               ("Build same-source Windows", "Prepare native driver"),
                               ("Prepare native driver", "Build app bundle"),
                               ("Build same-source POSIX", "Build app bundle"),
+                              ("Build app bundle", "Inject Tauri into Windows"),
                               ("Inject Tauri into Windows", "Archive Windows bundle"),
-                              ("Archive Windows bundle", "Smoke extracted Windows"),
-                              ("Smoke extracted Windows", "Upload native bundle"),
-                              ("Smoke extracted macOS", "Upload native bundle"),
-                              ("Archive and smoke extracted Linux", "Upload native bundle")):
+                              ("Inject Tauri into macOS", "Embed signed backend"),
+                              ("Embed signed backend", "Stage and verify macOS bundles"),
+                              ("Stage and verify macOS bundles", "Archive and verify round-trip macOS bundle"),
+                              ("Archive Windows bundle", "Verify extracted Windows bundle"),
+                              ("Verify extracted Windows bundle", "Upload native bundle")):
             self.assertLess(text.index(before), text.index(after))
         self.assertIn("Expand-Archive -Path $env:BUNDLE_ARCHIVE", text)
-        self.assertIn("--tool-smoke libav-package", text)
+        for build_only_operation in (
+            "--tool-smoke",
+            "& './libav-smoke.ps1'",
+            "BILIKARA_REQUIRE_BACKEND_SMOKE",
+            "BILIKARA_REQUIRE_TAURI_SMOKE",
+            "strip_build_only_validation_payload",
+        ):
+            self.assertNotIn(build_only_operation, bundle_job)
+        self.assertNotIn("Upload native libav diagnostics", text)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required for installed MSVC license collection")
     def test_msvc_license_collection_selects_product_and_requires_records(self):

@@ -18,6 +18,76 @@ ownership descriptions below: Rust AppState is now the sole application-state
 authority, while Python retains transport, persistence I/O, and external-tool
 orchestration.
 
+## v0.8 T2/T7 retention closeout
+
+This bounded recheck uses the corrected legacy inventory as historical
+candidates, not deletion authority. T4/C01, P01, T5 and the pushed T6 work are
+preserved. The older Phase-1 tables below are not the current removal backlog.
+The module map in `AGENTS.md` already records the Rust AppState/CacheRuntime
+owners; its playlist-export freeze remains unchanged.
+
+### Interfaces awaiting a specific retirement decision
+
+All objects in this table are retained in this increment. No retirement has
+been approved. Repository-local absence of callers cannot rule out external
+clients; this limitation applies once to the public routes and fields below.
+
+| Object | Current purpose and consumers | Recommendation | Observable consequence of removal |
+| --- | --- | --- | --- |
+| `POST /api/config/cookie` | `server.py` still accepts an in-process SESSDATA/bili_jct replacement and schedules Gatcha refresh; no current repository caller. Current UI uses BBDown login/QR. | Candidate for a separate explicit retirement; leave callable now. | Old clients get 404 and lose this in-process credential-setting entry; it is not a persisted cookie store. |
+| `POST /api/backup/restore` | Calls `AppContext.restore_backup()` and the Rust-backed store restore; no current UI caller. Startup restore and continue-previous are separate live entries. | Candidate for separate retirement; retain the shared restore implementation regardless. | Manual callers get 404; deleting just the route must not remove startup restore. |
+| `GET /api/app/update/status` | Returns `app_update_snapshot()`; `tests/test_server.py` exercises it. `/api/state` also contains `app_update`. | Keep the lightweight polling interface unless explicitly retired. | Pollers get 404 and would need the larger state response; its route regression becomes obsolete. |
+| `app.releases_url` | `AppContext.snapshot()` publishes `APP_RELEASES_URL`; no repository field reader found. | Keep the public field pending a schema decision. | Snapshot clients lose the releases link field. |
+| `bbdown.cache_bytes`, `bbdown.cached_items` | `CacheManager.status(metrics)` exposes total bytes/count; UI reads `cache_policy.usage_bytes`/`cached_item_count` instead. | Keep public compatibility names pending a schema decision. | Clients reading the old names lose cache usage information. |
+| `cache_policy.clear_on_exit` | `policy_snapshot()` emits `true`; the entire policy is also carried into the diagnostic artifact's `download-policy.json`, even without a field-specific reader. | Keep the published cleanup-policy fact. | Snapshots and diagnostics lose that field; removing the field alone does not change actual cleanup. |
+| `send_presentation_command` | Registered in `src-tauri/src/main.rs` and `build.rs`, generated allow/deny permission definitions and synchronization tests remain. Neither `main.json` nor `controller.json` grants it; `controller.js` does not invoke it. The handler checks Controller origin/role and feeds the command/ack queue. | Keep registration with its current dormant status. Future-interactive intent is unconfirmed, not a reason to enable it. | Coordinated removal changes the command/permission contract and registration tests; the shipped audience UI has no current invocation to lose. |
+| `_py_browse_gatcha_cache`, `_py_browse_gatcha_favlist` | Frozen historical references in `bilibili.py`; no current callers or direct tests found. Public browse functions call Rust `browse_uid`/`browse_favlist` with pagination. | Keep under the existing freeze unless the user specifically releases these two references; do not describe them as active oracles. | Removes historical Python browse semantics, not the live Rust browse path. |
+
+Keep `/api/health`, `/api/player/av-offset` and `/api/history/export` unchanged:
+health is used by packaged backend smoke checks (including
+`windows_preview_smoke.py`), while Tauri readiness uses `bilikara.ready` stdout;
+the latter two routes are used by `scripts/dev_smoke_test.py`. History export
+is an exact alias of `/api/playlist/export`, not a separate renderer.
+
+### Retained references and live compatibility
+
+- `_download_dash_streams_native` and `_download_stream_with_rust` remain
+  historical Python adapters exercised directly by `tests/test_cache.py` and
+  `tests/test_rust_runtime.py`: retry classification, normalization, Hi-Res,
+  guest headers and HTTP-error/log translation still have regression coverage.
+  They are not an availability safety net. Production `enqueue`, `retry_item`
+  and `sync_with_playlist` submit Native jobs to Rust CacheRuntime and return;
+  Python workers retain the external source captured when queued. Direct tests
+  of these adapters do not prove the production Rust retry loop. Retention is
+  for the existing tests, not a new fallback, freeze or migration stage.
+- DownKyi still uses `_resolve_dash_streams`, `_select_dash_video_stream`,
+  `_select_dash_audio_stream`, `_select_preferred_dash_audio` and
+  `_dash_max_quality_id`, followed by `_download_dash_streams_with_aria2c`.
+  These selectors must not be removed with an old Native implementation.
+- Of the eight listed Gatcha references, `_py_preview_gatcha_favlist`,
+  `_py_refresh_gatcha_favlist`, `_py_refresh_gatcha_cache`, `_py_add_gatcha_uid`,
+  `_py_search_gatcha_cache` and `_py_fetch_gatcha_candidate` are directly used by
+  `tests/test_store_and_bilibili.py`. Keep their frozen regression references;
+  these are not all differential tests against the current Rust service. The
+  two browse references have the distinct status in the decision table.
+- Keep the frozen `_py_quality_from_choice_index`, `_py_ytdlp_max_height`,
+  `_py_video_quality_priority`, `_py_select_dash_video_stream`,
+  `_py_select_dash_audio_stream`, `_py_select_preferred_dash_audio`,
+  `_py_dash_stream_urls`, `_py_preferred_audio_urls` and updater
+  `_py_plan_update_download_candidates`: the quality/ranking, media candidate
+  and updater candidate policy/backend suites use them as references, including
+  equivalence checks. Live DownKyi wrappers use the Rust playback capabilities;
+  the retained updater planning compatibility fallbacks remain unchanged.
+- Keep all of `playlist_export.py`, including the four historical candidates
+  `_draw_glow`, `_draw_neon_details`, `_draw_logo`, `_fit_text`, despite no current
+  calls to those four. The renderer and `prewarm_playlist_export_fonts()` remain
+  active together through `server.py` and export tests. The existing whole-file
+  freeze covers these helpers; its historical v0.7 wording is not an expiry.
+
+No named candidate qualified as an unconsumed ordinary private leftover without
+a freeze or useful test role. This closeout changes factual documentation and
+test attribution, not runtime dispatch, public schemas or reference algorithms.
+
 ## Existing native utility domains
 
 | Python module and helper | Category | Inputs → output | Dependencies | Pure | Phase 1 decision |

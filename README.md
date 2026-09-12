@@ -270,12 +270,12 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 ## 技术说明
 
 - 前端使用原生 HTML/CSS/JS，无需前端构建步骤；Node.js 仅用于构建 Tauri 桌面壳
-- Python Host 使用 Python 标准库 HTTP 服务，并继续负责 HTTP、I/O、持久化、下载和运行编排
-- Rust 提供有类型的业务规则核心；新增后端功能与业务规则按 v0.7 的迁移边界在 Rust 侧实现
+- Python Host 使用 Python 标准库 HTTP 服务，保留传输、Rust 快照持久化 I/O 和显式外部工具编排
+- Rust AppState 是唯一可变应用状态所有者；Rust CacheRuntime 执行 Native 缓存任务，新增后端功能与业务规则在 Rust 侧实现
 - 桌面版使用 Tauri v2 / Rust 作为窗口壳，负责启动后端、承载本地 WebView，并在窗口关闭时请求后端退出
-- 当前桌面壳不是纯 Rust 后端：它会启动一个类似 sidecar 的 Python 后端进程，后端仍负责 HTTP API、缓存、下载和状态管理
+- 当前桌面壳仍启动 Python Host 进程来提供 HTTP API；该进程适配 Rust 状态与服务，不另建 Python 状态权威或 Native 下载回退
 - Tauri 开发配置指向 `http://127.0.0.1:8080`，实际启动时会以 `--no-browser --headless --port 0` 拉起后端，并在收到 `bilikara.ready` 事件后跳转到真实本地地址
-- 播放流程以本地缓存和本地媒体播放为主；BBDown 是默认下载源，DownKyi / aria2c 与 Rust Native 是独立的可选下载源
+- 播放流程以本地缓存和本地媒体播放为主；Rust Native 是默认下载源，BBDown 与 DownKyi / aria2c 是显式可选下载源
 - Rust Native 由 `bilikara_runtime` 直接下载、校验并重封装媒体，以临时文件和完整 sample 校验后原子发布，视频输出使用 fast-start MP4
 - 当前原生媒体链路选择 AVC/H.264 视频以及常规 AAC 或可用的 Hi-Res FLAC 音轨；高解析音频处理失败时不会静默回退到外部工具
 - BBDown 与 DownKyi 的分离 MP4/M4A 轨道优先由 Rust MediaBackend 校验；仅当容器或编解码不受支持时才调用绑定的 ffprobe 兼容校验。DownKyi 的 FFmpeg 重封装与 BBDown/DownKyi 完整包扫描仍保留；Rust Native 不会静默回退到 aria2c 或 Python 媒体实现

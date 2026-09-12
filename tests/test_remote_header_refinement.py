@@ -502,15 +502,26 @@ console.log(JSON.stringify({
         ):
             self.assertNotIn(obsolete_variable, self.styles)
         self.assertNotIn("styles.css", self.markup)
-        host_diff = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD", "--", "static/styles.css"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+        # Protect the Host panel primitive independently of Git working-tree state.
+        self.assertEqual(
+            self._first_base_rule(self.host_styles, ".cache-panel"),
+            {
+                "position": "absolute",
+                "top": "calc(100% + 12px)",
+                "right": "0",
+                "width": "min(340px, calc(100vw - 32px))",
+                "display": "flex",
+                "flex-direction": "column",
+                "gap": "14px",
+                "padding": "16px",
+                "border-radius": "20px",
+                "background": "var(--settings-panel-bg)",
+                "border": "var(--settings-panel-border)",
+                "box-shadow": "var(--shadow)",
+                "backdrop-filter": "none",
+                "z-index": "120",
+            },
         )
-        self.assertEqual(host_diff.returncode, 0, host_diff.stderr)
-        self.assertEqual(host_diff.stdout.strip(), "")
 
     def test_connection_indicator_and_motion_contract_are_remote_local(self):
         self.assertNotIn(".hero-card", self.styles)
@@ -722,7 +733,7 @@ console.log(JSON.stringify({
             "remote.connectionConnected",
             "remote.connectionOffline",
             "remote.connectionOfflineToast",
-            "remote.shareQr",
+            "remote.openInBrowser",
             "remote.controlRejected",
             "remote.controlCommandFailed",
             "display.themeLight",

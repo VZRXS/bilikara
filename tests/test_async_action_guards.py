@@ -47,7 +47,10 @@ class AsyncActionGuardsTest(unittest.TestCase):
               },
               contains(name) { return classes.has(name); },
             },
-            style: {},
+            style: {
+              setProperty(name, value) { this[name] = String(value); },
+              removeProperty(name) { delete this[name]; },
+            },
             attributes: {},
             setAttribute(k, v) { this.attributes[k] = String(v); },
             removeAttribute(k) { delete this.attributes[k]; },

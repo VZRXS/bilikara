@@ -61,7 +61,6 @@ _GATCHA_FAVLIST_LAST_REQUEST_AT = 0.0
 _GATCHA_FAVLIST_TITLE_KEYWORDS = ("🎤", "卡拉", "k")
 _GATCHA_POOL_CONFIG_FILE = cfg.DATA_DIR / "gatcha_pool_config.json"
 _GATCHA_POOL_CONFIG_LOCK = threading.RLock()
-_GATCHA_POOL_CONFIG_SCHEMA_VERSION = 1
 GATCHA_RETRY_DELAY_SECONDS = 5
 GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
@@ -385,56 +384,6 @@ def gatcha_uid_snapshot() -> dict:
 
 def _configured_gatcha_uids() -> list[str]:
     return gatcha_uid_snapshot()["uids"]
-
-
-def _default_gatcha_pool_config() -> dict:
-    return {
-        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
-        "uid_weight": 50,
-        "favlist_weight": 50,
-        "excluded_uids": [],
-        "excluded_favlist_folders": [],
-        "updated_at": 0.0,
-    }
-
-
-def _load_gatcha_pool_config() -> dict:
-    if not _GATCHA_POOL_CONFIG_FILE.exists():
-        return _default_gatcha_pool_config()
-    payload = _read_json_file(_GATCHA_POOL_CONFIG_FILE)
-    if not isinstance(payload, dict):
-        return _default_gatcha_pool_config()
-    uid_weight = payload.get("uid_weight")
-    favlist_weight = payload.get("favlist_weight")
-    try:
-        uid_weight = max(0, min(100, int(uid_weight)))
-    except (TypeError, ValueError):
-        uid_weight = 50
-    try:
-        favlist_weight = max(0, min(100, int(favlist_weight)))
-    except (TypeError, ValueError):
-        favlist_weight = 50
-    excluded_uids = payload.get("excluded_uids")
-    if not isinstance(excluded_uids, list):
-        excluded_uids = []
-    excluded_uids = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
-    excluded_favlist_folders = payload.get("excluded_favlist_folders")
-    if not isinstance(excluded_favlist_folders, list):
-        excluded_favlist_folders = []
-    excluded_favlist_folders = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
-    return {
-        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
-        "uid_weight": uid_weight,
-        "favlist_weight": favlist_weight,
-        "excluded_uids": excluded_uids,
-        "excluded_favlist_folders": excluded_favlist_folders,
-        "updated_at": float(payload.get("updated_at") or 0),
-    }
-
-
-def _save_gatcha_pool_config(config: dict) -> None:
-    config["schema_version"] = _GATCHA_POOL_CONFIG_SCHEMA_VERSION
-    _write_json_file(_GATCHA_POOL_CONFIG_FILE, config)
 
 
 def gatcha_pool_config_snapshot() -> dict:
@@ -2901,22 +2850,6 @@ def select_matching_pages(
             tolerance_seconds=tolerance_seconds,
         ),
     )
-
-
-def _is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
-    return _py_is_better_cluster(candidate, current, preferred_page)
-
-
-def _cluster_spread(cluster: list[VideoPage]) -> int:
-    return _py_cluster_spread(cluster)
-
-
-def _cluster_representative_duration(cluster: list[VideoPage]) -> float:
-    return _py_cluster_representative_duration(cluster)
-
-
-def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
-    return _py_preferred_or_first_page(pages, preferred_page)
 
 
 def _variant_id(page: int, label: str, index: int) -> str:

@@ -49,15 +49,16 @@ class RemoteSearchHardeningTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout.strip().splitlines()[-1])
 
-    def test_inline_browse_results_leave_vertical_scroll_to_the_document(self):
+    def test_inline_browse_results_keep_scroll_below_fixed_controls(self):
         result_rule = self.css.split(
             ".remote-search-browser-view .search-results", 1
         )[1].split("}", 1)[0]
         for declaration in (
             "min-height: 0;",
             "max-height: none;",
-            "overflow: visible;",
-            "overscroll-behavior: auto;",
+            "overflow-x: hidden;",
+            "overflow-y: auto;",
+            "overscroll-behavior-y: contain;",
         ):
             self.assertIn(declaration, result_rule)
         for obsolete in (
