@@ -31,6 +31,7 @@ pub(crate) struct NativeSession {
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
+    login_diagnostics: VecDeque<crate::native_host::LoginDiagnostic>,
     media_readers: HashMap<String, usize>,
 }
 
@@ -581,7 +582,21 @@ impl AppState {
     }
 
     pub(crate) fn native_diagnostics(&self) -> Value {
-        json!({"backend":"rust","events":self.native_session.diagnostics})
+        json!({"backend":"rust","events":self.native_session.diagnostics,
+            "bilibili_login":self.native_session.login_diagnostics})
+    }
+    pub(crate) fn native_login_diagnostic(
+        &mut self,
+        diagnostic: crate::native_host::LoginDiagnostic,
+    ) {
+        // Playback can emit many events per second; it must not evict the
+        // evidence for an earlier login failure. Exported to Host diagnostics
+        // only, not the shared Remote snapshot. Bounded for long sessions.
+        let log = &mut self.native_session.login_diagnostics;
+        if log.len() >= 50 {
+            log.pop_front();
+        }
+        log.push_back(diagnostic);
     }
     pub(crate) fn native_release_claim(&mut self) {
         self.native_session.claim = None;

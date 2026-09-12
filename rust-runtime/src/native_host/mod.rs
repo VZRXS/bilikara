@@ -7,6 +7,7 @@ mod diagnostics;
 mod files;
 mod library;
 mod login;
+pub(crate) use login::LoginDiagnostic;
 mod maintenance;
 mod network;
 pub(crate) mod preferences;

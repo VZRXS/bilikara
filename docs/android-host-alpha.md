@@ -316,6 +316,16 @@ Do not silently restore desktop CLI tools as mobile fallbacks.
 
 ### Repeatable native acceptance harnesses
 
+Native diagnostics include `diagnostics.bilibili_login`: the most recent 50
+login observations in the current app process, separate from the high-volume
+playback event buffer. Reproduce a login failure and copy diagnostic Markdown
+before restarting the app. Each observation contains a login generation, request
+stage, elapsed milliseconds, result, optional HTTP/API/poll status and transport
+classification. `transport_hint` is a classification of the underlying error,
+not proof of a network cause. No QR URL/key, credentials, raw request/response
+headers or server messages are retained, and these records are not in Remote
+snapshots. Adding diagnostics does not change login retry or TLS trust policy.
+
 ```text
 cd rust-runtime
 cargo test --locked --features native-host
@@ -323,6 +333,7 @@ cargo build --locked --features native-host --example native_host_alpha
 cd ..
 node tests/live_native_host_alpha.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_android_background.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
+node tests/live_android_controls.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_native_login_persistence.js <native_host_alpha-exe> <new-private-dir>
 node tests/live_native_bilibili_alpha.js <native_host_alpha-exe> <another-new-private-dir> <BV> <chrome-exe>
 ```

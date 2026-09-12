@@ -15,6 +15,82 @@ const MAX_LOGIN_BYTES: u64 = 16 * 1024;
 const GENERATE: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const POLL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
 
+/// Internal observations only, never deserialized from HTTP/UI input. No URL,
+/// QR/key, cookie, response body or arbitrary upstream error text is retained.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LoginDiagnostic {
+    pub at: f64,
+    pub generation: u64,
+    pub stage: &'static str,
+    pub result: &'static str,
+    pub elapsed_ms: u64,
+    pub error_kind: Option<&'static str>,
+    pub transport_hint: Option<&'static str>,
+    pub http_status: Option<u16>,
+    pub api_code: Option<i64>,
+    pub poll_code: Option<i64>,
+}
+
+impl LoginDiagnostic {
+    pub(crate) fn new(generation: u64, stage: &'static str) -> Self {
+        Self {
+            at: now(),
+            generation,
+            stage,
+            result: "ok",
+            elapsed_ms: 0,
+            error_kind: None,
+            transport_hint: None,
+            http_status: None,
+            api_code: None,
+            poll_code: None,
+        }
+    }
+}
+
+fn record(diagnostic: LoginDiagnostic) {
+    let _ = with_app(|app| {
+        app.native_login_diagnostic(diagnostic);
+        Ok(())
+    });
+}
+
+fn transport_error(error: reqwest::Error, diagnostic: &mut LoginDiagnostic) {
+    // Strip the poll URL before inspecting the source chain. Hints are a
+    // classification, not raw error messages, and remain distinct from kind.
+    let error = error.without_url();
+    diagnostic.error_kind = Some(if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else {
+        "request"
+    });
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        let message = cause.to_string().to_ascii_lowercase();
+        let hint = if message.contains("certificate") {
+            Some("tls_certificate")
+        } else if message.contains("tls") || message.contains("ssl") {
+            Some("tls")
+        } else if message.contains("dns") || message.contains("resolve") {
+            Some("dns")
+        } else if message.contains("connection reset") {
+            Some("connection_reset")
+        } else {
+            None
+        };
+        if hint.is_some() {
+            diagnostic.transport_hint = hint;
+        }
+        source = cause.source();
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedLogin {
@@ -190,11 +266,16 @@ pub(super) fn logout(context: &HostContext, identity: &Identity) -> Result<Value
     })
 }
 
-fn get_json(client: &reqwest::blocking::Client, url: &str) -> Result<Value, ApiError> {
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|_| ApiError::new(502, "login_network", "B 站登录请求失败，请检查网络后重试"))?;
+fn get_json(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    diagnostic: &mut LoginDiagnostic,
+) -> Result<Value, ApiError> {
+    let response = client.get(url).send().map_err(|error| {
+        transport_error(error, diagnostic);
+        ApiError::new(502, "login_network", "B 站登录请求失败，请检查网络后重试")
+    })?;
+    diagnostic.http_status = Some(response.status().as_u16());
     if !response.status().is_success() {
         return Err(ApiError::new(
             502,
@@ -212,6 +293,10 @@ fn get_json(client: &reqwest::blocking::Client, url: &str) -> Result<Value, ApiE
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::new(502, "login_json", "B 站登录响应格式错误"))?;
+    diagnostic.api_code = value["code"].as_i64();
+    if diagnostic.stage == "poll" {
+        diagnostic.poll_code = value["data"]["code"].as_i64();
+    }
     if value["code"] != 0 {
         return Err(ApiError::new(
             502,
@@ -220,6 +305,50 @@ fn get_json(client: &reqwest::blocking::Client, url: &str) -> Result<Value, ApiE
         ));
     }
     Ok(value)
+}
+
+fn error_result(error: &ApiError) -> &'static str {
+    match error.code.as_str() {
+        "login_network" => "network_error",
+        "login_http" => "http_error",
+        "login_body" => "body_error",
+        "login_json" => "invalid_json",
+        "login_api" => "api_error",
+        "login_client" => "client_error",
+        "login_qr" => "invalid_qr",
+        "login_cookie" => "missing_cookie",
+        "login_code" => "unknown_poll_code",
+        "login_expired" => "expired",
+        "login_storage" => "storage_error",
+        _ => "internal_error",
+    }
+}
+
+fn observe_json(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    generation: u64,
+    stage: &'static str,
+) -> (Result<Value, ApiError>, LoginDiagnostic) {
+    let started = Instant::now();
+    let mut diagnostic = LoginDiagnostic::new(generation, stage);
+    let result = get_json(client, url, &mut diagnostic);
+    diagnostic.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    if let Err(error) = &result {
+        diagnostic.result = error_result(error);
+    }
+    (result, diagnostic)
+}
+
+fn request_json(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    generation: u64,
+    stage: &'static str,
+) -> Result<Value, ApiError> {
+    let (result, diagnostic) = observe_json(client, url, generation, stage);
+    record(diagnostic);
+    result
 }
 
 fn active(context: &HostContext, generation: u64) -> bool {
@@ -250,7 +379,7 @@ fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
         .cookie_provider(jar.clone())
         .build()
         .map_err(|_| ApiError::new(502, "login_client", "无法初始化 B 站安全连接"))?;
-    let generated = get_json(&client, GENERATE)?;
+    let generated = request_json(&client, GENERATE, generation, "generate")?;
     let qr = generated["data"]["url"]
         .as_str()
         .filter(|value| value.len() <= 4096)
@@ -281,7 +410,7 @@ fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
         if !active(context, generation) {
             return Ok(());
         }
-        let polled = get_json(&client, &format!("{POLL}?{query}"))?;
+        let polled = request_json(&client, &format!("{POLL}?{query}"), generation, "poll")?;
         match polled["data"]["code"].as_i64() {
             Some(86101) => {}
             Some(86090) => update_waiting(
@@ -360,6 +489,10 @@ fn finish(
             save(&context.directory, &cookie)?;
             Ok(cookie)
         });
+        let mut diagnostic = LoginDiagnostic::new(generation, "finish");
+        if let Err(error) = &result {
+            diagnostic.result = error_result(error);
+        }
         let update = match result {
             Ok(cookie) => {
                 session.cookie = cookie;
@@ -378,6 +511,7 @@ fn finish(
         session.login.set_bilibili_login(Some(generation), update);
         session.login_generation = None;
         session.revision += 1;
+        app.native_login_diagnostic(diagnostic);
         Ok(())
     })
 }
@@ -385,6 +519,119 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_response(response: &'static str, delay: Duration) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            thread::sleep(delay);
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (
+            format!("http://{address}/poll?qrcode_key=PRIVATE_KEY"),
+            worker,
+        )
+    }
+
+    #[test]
+    fn login_request_diagnostics_distinguish_http_api_json_and_body_errors_without_secrets() {
+        let client = crate::http_client::builder().no_proxy().build().unwrap();
+        for (response, expected, status, api, poll) in [
+            (
+                "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nPRIVATE_BODY",
+                "http_error",
+                403,
+                None,
+                None,
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nPRIVATE_BAD_JSON",
+                "invalid_json",
+                200,
+                None,
+                None,
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"code\":-412,\"message\":\"PRIVATE_BODY\"}",
+                "api_error",
+                200,
+                Some(-412),
+                None,
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"code\":0,\"data\":{\"code\":86090,\"url\":\"PRIVATE_QR\",\"cookie\":\"SESSDATA=PRIVATE_COOKIE\"}}",
+                "ok",
+                200,
+                Some(0),
+                Some(86090),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{}",
+                "body_error",
+                200,
+                None,
+                None,
+            ),
+        ] {
+            let (url, worker) = mock_response(response, Duration::ZERO);
+            let (result, diagnostic) = observe_json(&client, &url, 7, "poll");
+            worker.join().unwrap();
+            assert_eq!(result.is_ok(), expected == "ok");
+            assert_eq!(diagnostic.result, expected);
+            assert_eq!(diagnostic.http_status, Some(status));
+            assert_eq!(diagnostic.api_code, api);
+            assert_eq!(diagnostic.poll_code, poll);
+            assert_eq!(diagnostic.stage, "poll");
+            assert_eq!(diagnostic.generation, 7);
+            let serialized = serde_json::to_string(&diagnostic).unwrap();
+            for secret in ["PRIVATE", "http://", "qrcode_key", "SESSDATA", "Cookie"] {
+                assert!(!serialized.contains(secret), "{serialized}");
+            }
+        }
+    }
+
+    #[test]
+    fn login_transport_timeout_and_refused_connection_are_not_indistinguishable() {
+        let client = crate::http_client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let (url, worker) = mock_response("HTTP/1.1 200 OK\r\n\r\n{}", Duration::from_millis(250));
+        let (result, diagnostic) = observe_json(&client, &url, 1, "generate");
+        worker.join().unwrap();
+        assert_eq!(result.unwrap_err().code, "login_network");
+        assert_eq!(diagnostic.result, "network_error");
+        assert_eq!(diagnostic.error_kind, Some("timeout"));
+        assert!(diagnostic.elapsed_ms >= 90);
+        assert_eq!(diagnostic.http_status, None);
+        // The listener has gone away; the same endpoint now refuses a connection.
+        // Windows may retry a refused loopback connect for over 100ms, so do
+        // not reuse the deliberately tiny timeout from the first scenario.
+        let connect_client = crate::http_client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let (_, refused) = observe_json(&connect_client, &url, 2, "generate");
+        assert_eq!(refused.error_kind, Some("connect"));
+        assert!(
+            !serde_json::to_string(&refused)
+                .unwrap()
+                .contains("PRIVATE_KEY")
+        );
+    }
+
     #[test]
     fn qr_origin_accepts_both_official_accounts_without_widening_network_trust() {
         for value in [

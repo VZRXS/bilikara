@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn login_diagnostics_are_bounded_not_evicted_by_playback_and_not_in_remote_snapshots() {
+    let (mut app, _) = setup();
+    for generation in 1..=60 {
+        app.native_login_diagnostic(crate::native_host::LoginDiagnostic::new(
+            generation, "generate",
+        ));
+    }
+    for n in 0..200 {
+        app.native_diagnostic(&json!({"event":"timeupdate"}), n as f64);
+    }
+    let diagnostics = app.native_diagnostics();
+    let log = diagnostics["bilibili_login"].as_array().unwrap();
+    assert_eq!(log.len(), 50);
+    assert_eq!(log[0]["generation"], 11);
+    assert_eq!(log[49]["generation"], 60);
+    assert_eq!(diagnostics["events"].as_array().unwrap().len(), 100);
+    for is_host in [false, true] {
+        assert!(
+            !app.native_snapshot(is_host)
+                .unwrap()
+                .to_string()
+                .contains("bilibili_login")
+        );
+    }
+}
+
 fn setup() -> (AppState, Identity) {
     let mut app = AppState::default();
     let seed:AppStateSeed=serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0})).unwrap();
