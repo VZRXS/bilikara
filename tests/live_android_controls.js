@@ -20,7 +20,7 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
       once(server, "exit").then(() => { throw Error("Host exited"); }),
     ])).bootstrap_url;
     browser = await chromium.launch({headless: true, executablePath, args: ["--autoplay-policy=no-user-gesture-required"]});
-    const context = await browser.newContext({viewport: {width: 392, height: 817}, isMobile: true, hasTouch: true});
+    const context = await browser.newContext({viewport: {width: 392, height: 817}, isMobile: true, hasTouch: true, locale: "zh-CN"});
     await context.addInitScript(() => {
       Object.defineProperty(screen.orientation, "type", {configurable: true, get: () => window.testOrientation || "portrait-primary"});
       window.exportRequests = [];

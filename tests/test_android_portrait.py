@@ -10,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AndroidPortraitTest(unittest.TestCase):
+    def test_device_language_is_initialized_once_and_keeps_explicit_choice(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for frontend tests")
+        result = subprocess.run([node, "tests/host_language.cjs"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_native_default_up_sources_match_desktop(self):
         config = ast.parse((ROOT / "bilikara/config.py").read_text(encoding="utf-8"))
         desktop = next(ast.literal_eval(node.value) for node in config.body

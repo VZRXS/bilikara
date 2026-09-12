@@ -275,6 +275,40 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         .unwrap();
     assert!(snapshot["data"].get("remote_access").is_none());
     assert!(snapshot["data"]["bbdown"].get("login").is_none());
+    // Device locale initializes the Host once; Remote peers cannot read/change it.
+    let read_language = |credential: &str| {
+        client
+            .get(format!("{base}/api/ui-language"))
+            .header("cookie", credential)
+            .send()
+            .unwrap()
+    };
+    assert_eq!(read_language(&remote_cookie).status(), 403);
+    assert_eq!(
+        post("/api/ui-language", json!({"language":"en"}), &remote_cookie).status(),
+        403
+    );
+    assert!(read_language(&cookie).json::<Value>().unwrap()["data"]["language"].is_null());
+    for body in [
+        json!({"language":"ja","initialize_only":true}),
+        json!({"language":"en","initialize_only":true}),
+    ] {
+        assert_eq!(
+            post("/api/ui-language", body, &cookie)
+                .json::<Value>()
+                .unwrap()["data"]["language"],
+            "ja",
+            "A later first-run request must not overwrite the saved choice"
+        );
+    }
+    for body in [
+        json!({}),
+        json!({"language":"xx"}),
+        json!({"language":null}),
+        json!({"language":"en","unknown":true}),
+    ] {
+        assert_eq!(post("/api/ui-language", body, &cookie).status(), 400);
+    }
     assert_eq!(
         post(
             "/api/cache-policy",
@@ -314,11 +348,20 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .unwrap();
     assert_eq!(saved["cache"]["max_cache_items"], 4);
     assert_eq!(saved["cache"]["video_quality"], "1080P 高清");
+    assert_eq!(saved["language"], "ja", "Cache updates retain UI language");
     // A failed write cannot publish an in-memory change or destroy the prior file.
     std::fs::create_dir(directory.join("native-preferences.pending")).unwrap();
     assert_eq!(
         post("/api/cache-policy", json!({"max_cache_items":1}), &cookie).status(),
         503
+    );
+    assert_eq!(
+        post("/api/ui-language", json!({"language":"en"}), &cookie).status(),
+        503
+    );
+    assert_eq!(
+        read_language(&cookie).json::<Value>().unwrap()["data"]["language"],
+        "ja"
     );
     std::fs::remove_dir(directory.join("native-preferences.pending")).unwrap();
     let unchanged = client
@@ -332,6 +375,20 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         unchanged["data"]["cache_policy"],
         policy["data"]["cache_policy"]
     );
+    assert_eq!(
+        post("/api/ui-language", json!({"language":"zh"}), &cookie)
+            .json::<Value>()
+            .unwrap()["data"]["language"],
+        "zh"
+    );
+    let saved_language: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("native-preferences.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        saved_language["cache"], saved["cache"],
+        "Language updates retain cache settings"
+    );
+    assert_eq!(saved_language["language"], "zh");
     // Local fixtures: pagination/search/random must not contact D1 or Bilibili.
     let entries: Vec<Value> = (0..221).map(|index| json!({
         "bvid":format!("BV{index:010}"),"title":format!("卡拉 高达 {index}"),"mid":"123",

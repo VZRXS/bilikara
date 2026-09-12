@@ -1173,6 +1173,11 @@ function renderThemeSwitch() {
 
 async function loadTranslations() {
   state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
+  let languageLoadFailed = false;
+  if (window.BilikaraHostLanguage) {
+    try { state.language = await window.BilikaraHostLanguage.load(); }
+    catch { languageLoadFailed = true; }
+  }
   try {
     const response = await fetch("/i18n.json", { cache: "no-store" });
     if (!response.ok) {
@@ -1202,6 +1207,7 @@ async function loadTranslations() {
   applyStaticI18n();
   announceStaticI18n();
   renderLanguageSwitch();
+  if (languageLoadFailed) setAppMessage(t("settings.languageLoadFailed"), true);
 }
 
 function closeOpenMenus({ restoreFocus = false } = {}) {
@@ -19650,12 +19656,22 @@ elements.modeSwitch?.addEventListener("click", async (event) => {
   }
 });
 
-elements.languageSwitch?.addEventListener("click", (event) => {
+const languageSwitchGuard = window.BilikaraExportGuard.createExportGuard(
+  elements.languageSwitch?.querySelectorAll("button[data-language]") || [],
+);
+elements.languageSwitch?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-language]");
   if (!button) {
     return;
   }
-  setLanguage(button.dataset.language);
+  try {
+    await languageSwitchGuard.run(async () => {
+      const language = window.BilikaraHostLanguage
+        ? await window.BilikaraHostLanguage.save(button.dataset.language)
+        : button.dataset.language;
+      setLanguage(language);
+    });
+  } catch { setAppMessage(t("settings.languageSaveFailed"), true); }
 });
 
 elements.themeSwitch?.addEventListener("click", (event) => {

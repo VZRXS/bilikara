@@ -85,6 +85,14 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   Network imports execute outside the AppState lock under one shared task lease;
   refresh runs in the background and reports completion through SSE. Errors
   trigger a shared 60-second library-task cooldown, not a playback interruption.
+- First-launch Android Host language follows the device's preferred supported
+  language: English (`en`), Japanese (`ja`) or Chinese (`zh`, including regional
+  variants). Other languages fall back to English. The initial choice is saved
+  in private native preferences even without a manual selection. Later launches,
+  system-language changes and localhost port changes retain it; Settings can
+  change it explicitly. Existing valid browser language preferences are retained
+  when migrating an older Alpha. Cache-setting changes do not reset the language.
+  Desktop Host and LAN Remote language behavior is unchanged.
 - Shared keyword search, category/name/artist browsing use only the existing
   Cloudflare read-only catalog API (the legacy `/api/lark/search` UI name is kept,
   not a Feishu integration). Identical queries are cached for 60 seconds, at most

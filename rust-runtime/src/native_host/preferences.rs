@@ -85,15 +85,25 @@ impl CachePolicy {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum UiLanguage {
+    Zh,
+    En,
+    Ja,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Saved {
+pub(super) struct Saved {
     schema_version: u32,
-    cache: CachePolicy,
+    pub cache: CachePolicy,
+    #[serde(default)]
+    pub language: Option<UiLanguage>,
 }
 
 fn storage_error() -> ApiError {
-    ApiError::new(503, "preferences_storage", "无法读写下载设置；原设置已保留")
+    ApiError::new(503, "preferences_storage", "无法读写应用设置；原设置已保留")
 }
 
 fn regular(path: &Path) -> Result<(), ApiError> {
@@ -104,12 +114,17 @@ fn regular(path: &Path) -> Result<(), ApiError> {
     }
 }
 
-pub(super) fn load(directory: &Path) -> Result<CachePolicy, ApiError> {
+pub(super) fn load(directory: &Path) -> Result<Saved, ApiError> {
     let path = directory.join("native-preferences.json");
     regular(&path)?;
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CachePolicy::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Saved {
+                schema_version: 1,
+                ..Saved::default()
+            });
+        }
         Err(_) => return Err(storage_error()),
     };
     let mut bytes = Vec::new();
@@ -124,10 +139,14 @@ pub(super) fn load(directory: &Path) -> Result<CachePolicy, ApiError> {
         return Err(storage_error());
     }
     saved.cache.validate().map_err(|_| storage_error())?;
-    Ok(saved.cache)
+    Ok(saved)
 }
 
-fn save(directory: &Path, cache: &CachePolicy) -> Result<(), ApiError> {
+fn save(
+    directory: &Path,
+    cache: &CachePolicy,
+    language: Option<UiLanguage>,
+) -> Result<(), ApiError> {
     let destination = directory.join("native-preferences.json");
     let pending = directory.join("native-preferences.pending");
     regular(&destination)?;
@@ -143,6 +162,7 @@ fn save(directory: &Path, cache: &CachePolicy) -> Result<(), ApiError> {
     let bytes = serde_json::to_vec(&Saved {
         schema_version: 1,
         cache: cache.clone(),
+        language,
     })
     .map_err(|_| storage_error())?;
     file.write_all(&bytes)
@@ -161,11 +181,51 @@ pub(super) fn update(
         app.native_authorize(identity, true)?;
         let next = app.native().cache_policy.updated(body)?;
         if next != app.native().cache_policy {
-            save(&context.directory, &next)?;
+            save(&context.directory, &next, app.native().ui_language)?;
             app.native().cache_policy = next;
             app.native().revision += 1;
         }
         app.native_snapshot(true)
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LanguageChange {
+    language: UiLanguage,
+    #[serde(default)]
+    initialize_only: bool,
+}
+
+pub(super) fn language(
+    context: &HostContext,
+    identity: &Identity,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let change = body
+        .map(|value| {
+            serde_json::from_value::<LanguageChange>(value.clone())
+                .map_err(|_| ApiError::invalid("请选择 zh、en 或 ja"))
+        })
+        .transpose()?;
+    with_app(|app| {
+        app.native_authorize(identity, true)?;
+        let session = app.native();
+        if let Some(change) = change {
+            let next = if change.initialize_only {
+                session.ui_language.or(Some(change.language))
+            } else {
+                Some(change.language)
+            };
+            if next != session.ui_language {
+                // First-run selection and manual changes survive listener-port
+                // changes. Serialize with cache writes so neither loses fields.
+                save(&context.directory, &session.cache_policy, next)?;
+                session.ui_language = next;
+                session.revision += 1;
+            }
+        }
+        Ok(json!({"language":session.ui_language}))
     })
 }
 
@@ -206,13 +266,23 @@ mod tests {
             now()
         ));
         fs::create_dir_all(&directory).unwrap();
-        assert_eq!(load(&directory).unwrap(), CachePolicy::default());
+        assert_eq!(load(&directory).unwrap().cache, CachePolicy::default());
+        assert_eq!(load(&directory).unwrap().language, None);
         let next = CachePolicy::default()
             .updated(&json!({"max_cache_items":4}))
             .unwrap();
-        save(&directory, &CachePolicy::default()).unwrap();
-        save(&directory, &next).unwrap();
-        assert_eq!(load(&directory).unwrap(), next);
+        save(&directory, &CachePolicy::default(), Some(UiLanguage::Ja)).unwrap();
+        save(&directory, &next, Some(UiLanguage::Ja)).unwrap();
+        assert_eq!(load(&directory).unwrap().cache, next);
+        assert_eq!(load(&directory).unwrap().language, Some(UiLanguage::Ja));
+        // Existing Alpha preferences have no language field; retain their cache.
+        fs::write(
+            directory.join("native-preferences.json"),
+            json!({"schema_version":1,"cache":next}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(load(&directory).unwrap().language, None);
+        assert_eq!(load(&directory).unwrap().cache, next);
         fs::write(directory.join("native-preferences.json"), b"invalid").unwrap();
         assert!(load(&directory).is_err());
         assert_eq!(

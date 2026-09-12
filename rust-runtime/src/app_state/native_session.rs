@@ -14,6 +14,7 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub cache_policy: crate::native_host::preferences::CachePolicy,
+    pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
     pub remote_export_ready: bool,

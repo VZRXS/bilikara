@@ -27,6 +27,9 @@ pub(super) fn dispatch(
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
     if method == Method::GET {
+        if path == "/api/ui-language" {
+            return preferences::language(context, identity, None);
+        }
         if path == "/api/playlist/export-data" {
             return exports::snapshot(identity, query);
         }
@@ -57,6 +60,9 @@ pub(super) fn dispatch(
     }
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
+    }
+    if path == "/api/ui-language" {
+        return preferences::language(context, identity, Some(&body));
     }
     if path.starts_with("/api/gatcha/") {
         return library::write(context, identity, path, &body);

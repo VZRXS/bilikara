@@ -18,7 +18,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
   try {
     const bootstrap = JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(server,"exit").then(()=>{throw Error("Host exited");})])).bootstrap_url;
     browser = await chromium.launch({headless:true, executablePath, args:["--autoplay-policy=no-user-gesture-required"]});
-    const context = await browser.newContext({viewport:{width:412,height:850},isMobile:true,hasTouch:true});
+    const context = await browser.newContext({viewport:{width:412,height:850},isMobile:true,hasTouch:true,locale:"zh-CN"});
     // Physical orientation is independent of a keyboard-resized WebView.
     await context.addInitScript(() => {
       Object.defineProperty(screen.orientation,"type",{configurable:true,get:()=>window.testOrientation || "portrait-primary"});
