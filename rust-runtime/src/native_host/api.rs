@@ -5,7 +5,7 @@ use crate::app_state::{
 };
 use crate::native_video::{NativeVideoRequest, fetch_native_video};
 
-fn queue_space(length: usize) -> Result<(), ApiError> {
+pub(super) fn queue_space(length: usize) -> Result<(), ApiError> {
     if length >= 200 {
         return Err(ApiError::new(
             429,
@@ -14,6 +14,18 @@ fn queue_space(length: usize) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+pub(super) fn video_error(error: crate::native_video::NativeVideoError) -> ApiError {
+    let mut api = ApiError::new(
+        if error.binding.is_some() { 409 } else { 400 },
+        &error.code,
+        error.message,
+    );
+    if let Some(binding) = error.binding {
+        api.extra = json!({"binding":binding});
+    }
+    api
 }
 
 pub(super) fn dispatch(
@@ -126,18 +138,8 @@ pub(super) fn dispatch(
             Ok((app.native().cookie.clone(), snapshot.session_generation))
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
-        let item = fetch_native_video(&request, &cookie).map_err(|error| {
-            let mut api = ApiError::new(
-                if error.binding.is_some() { 409 } else { 400 },
-                &error.code,
-                error.message,
-            );
-            if let Some(binding) = error.binding {
-                api.extra = json!({"binding":binding});
-            }
-            api
-        })?;
-        return with_app(|app| {
+        let item = fetch_native_video(&request, &cookie).map_err(video_error)?;
+        let snapshot = with_app(|app| {
             let requester =
                 app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
             let snapshot = app.native_core_snapshot()?;
@@ -168,7 +170,9 @@ pub(super) fn dispatch(
                 return Err(error);
             }
             app.native_snapshot(host)
-        });
+        })?;
+        catalog_append::enqueue(&item);
+        return Ok(snapshot);
     }
     if path == "/api/cache/retry" {
         let (item, cookie) = with_app(|app| {

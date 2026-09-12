@@ -3,6 +3,7 @@
 mod api;
 mod cache;
 mod catalog;
+mod catalog_append;
 mod diagnostics;
 mod exports;
 mod files;
