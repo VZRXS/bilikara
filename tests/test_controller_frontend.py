@@ -168,7 +168,7 @@ class ControllerFrontendTest(unittest.TestCase):
         self.assertIn("!sceneApi", self.source)
         self.assertIn("!renderer", self.source)
         self.assertIn("!sync", self.source)
-        self.assertIn('failClosed(t("controller.tauriRequired"))', self.source)
+        self.assertIn('failClosed(t("controller.tauriRequired"), "controller.tauriRequired")', self.source)
         self.assertIn("elements.exit.disabled = true", self.source)
         self.assertIn('elements.unavailable.classList.remove("hidden")', self.source)
 

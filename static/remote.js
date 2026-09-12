@@ -749,6 +749,9 @@ function applyStaticI18n(root = document) {
   });
   document.documentElement.lang = state.language === "zh" ? "zh-CN" : state.language;
   document.title = t("document.remoteTitle");
+  if (state.translations.languages?.[state.language]) {
+    window.BilikaraRemoteTransport?.localize?.(t, applyStaticI18n);
+  }
 }
 
 function renderLanguageSwitch() {

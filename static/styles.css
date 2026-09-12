@@ -23,6 +23,7 @@
   --shadow: 0 24px 60px rgba(88, 56, 30, 0.14);
   --tool-sheet-shadow: 0 -10px 28px rgba(64, 45, 32, 0.12);
   --action-button-width: 96px;
+  --cache-control-height: 34px;
   --top-controls-width: 628px;
   --status-chip-width: 164px;
   --language-control-width: 184px;
@@ -1808,10 +1809,10 @@ h2 {
 
 .cache-preview-switch,
 .cache-hires-switch {
-  --cache-switch-width: 48px;
-  --cache-switch-height: 30px;
-  --cache-switch-thumb: 24px;
-  --cache-switch-travel: 18px;
+  --cache-switch-width: 54px;
+  --cache-switch-height: var(--cache-control-height);
+  --cache-switch-thumb: 28px;
+  --cache-switch-travel: 20px;
   width: var(--cache-switch-width);
   height: var(--cache-switch-height);
   padding: 3px;
@@ -2047,7 +2048,7 @@ h2 {
 
 .cache-quality-select {
   width: 100%;
-  height: 34px;
+  height: var(--cache-control-height);
   border: none;
   border-radius: 999px;
   padding: 0 30px 0 12px;
@@ -10567,7 +10568,7 @@ body.is-presentation-stage-only .left-column {
 }
 
 .topbar .cache-policy-row {
-  align-items: center;
+  align-items: flex-start;
 }
 
 .service-status-wrap {
@@ -10922,6 +10923,11 @@ body.is-tauri-fullscreen-active .left-column {
 .settings-section-card .cache-advanced-label-row,
 .settings-section-card .cache-panel-label {
   white-space: nowrap;
+}
+
+.settings-section-card .cache-app-update-heading .cache-panel-label {
+  flex-shrink: 1;
+  white-space: normal;
 }
 
 .settings-section-card .cache-panel-actions {

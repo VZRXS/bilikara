@@ -1140,7 +1140,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         ]
         self.assertIn("hideSearchResults()", local_search)
         for values in self.translations["languages"].values():
-            self.assertEqual(values["search.larkNoResultsLong"], values["search.larkNoResults"])
+            self.assertTrue(values["search.larkNoResults"])
+            self.assertNotEqual(values["search.larkPartialNoResults"], values["search.larkNoResults"])
 
         discover_controls = re.search(
             r"\.request-discover-view \.tag-browser-search input,\s*"

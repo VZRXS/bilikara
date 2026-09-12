@@ -182,23 +182,19 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertNotIn("?host=", self.host_js)
         self.assertNotIn("?join=", self.host_js)
 
-    def test_mode_labels_exist_in_every_language(self):
+    def test_current_access_entry_labels_exist_in_every_language(self):
         languages = json.loads(
             (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
         )["languages"]
         required = {
-            "internetRemote.title",
-            "internetRemote.local",
+            "remote.openInBrowser",
             "internetRemote.localEntry",
             "internetRemote.localHint",
             "internetRemote.localScanTitle",
             "internetRemote.localSameNetwork",
             "internetRemote.localNoLanAddress",
             "internetRemote.openOnThisDevice",
-            "internetRemote.localDescription",
             "internetRemote.localEntryDescription",
-            "internetRemote.modeLabel",
-            "internetRemote.internet",
             "internetRemote.internetEntry",
             "internetRemote.description",
             "internetRemote.password",

@@ -245,18 +245,28 @@
     }
   }
 
-  function setError(message = "") {
-    const normalized = String(message || "").trim();
+  function setError(message = "", key = "") {
+    if (key) elements.error.dataset.i18n = key;
+    else delete elements.error.dataset.i18n;
+    const normalized = message === key ? "" : String(message || "").trim();
     elements.error.textContent = normalized;
     elements.error.classList.toggle("hidden", !normalized);
+    if (state.failedClosed) {
+      // The generic status is already shown in the empty stage; avoid overlapping alerts.
+      elements.unavailable.classList.toggle("hidden", Boolean(normalized));
+    }
   }
 
-  function failClosed(message = "") {
+  function failClosed(message = "", key = "") {
     state.failedClosed = true;
     state.session = null;
     elements.exit.disabled = true;
     elements.unavailable.classList.remove("hidden");
-    if (message) setError(message);
+    if (elements.status) {
+      elements.status.dataset.i18n = "controller.unavailable";
+      elements.status.textContent = elements.unavailable.textContent;
+    }
+    if (message) setError(message, key);
   }
 
   function normalizeSession(candidate) {
@@ -286,9 +296,10 @@
       || !session
       || !["activating", "active"].includes(session.phase);
     if (!state.scene?.videoUrl && elements.status) {
-      elements.status.textContent = session?.phase === "active"
-        ? t("controller.noSong")
-        : t("controller.statusActivating");
+      elements.status.dataset.i18n = session?.phase === "active"
+        ? "controller.noSong"
+        : "controller.statusActivating";
+      elements.status.textContent = t(elements.status.dataset.i18n);
     }
   }
 
@@ -296,7 +307,7 @@
     if (state.failedClosed) return null;
     const session = normalizeSession(candidate);
     if (!session) {
-      failClosed(t("controller.invalidState"));
+      failClosed(t("controller.invalidState"), "controller.invalidState");
       return null;
     }
     if (
@@ -304,7 +315,7 @@
       && expectedGeneration > 0
       && session.generation !== expectedGeneration
     ) {
-      failClosed(t("controller.staleWindow"));
+      failClosed(t("controller.staleWindow"), "controller.staleWindow");
       return null;
     }
     state.session = session;
@@ -353,8 +364,11 @@
     if (overlay) elements.frame.appendChild(overlay);
   }
 
-  function showEmpty(message) {
-    if (elements.status) elements.status.textContent = String(message || "");
+  function showEmpty(key) {
+    if (elements.status) {
+      elements.status.dataset.i18n = key;
+      elements.status.textContent = t(key);
+    }
     preserveOverlayAndReplace(elements.empty);
     state.video = null;
   }
@@ -402,7 +416,7 @@
     }
     if (video.paused && !video.ended && video.readyState >= 1) {
       video.play().catch(() => {
-        setError(t("controller.autoplayBlocked"));
+        setError(t("controller.autoplayBlocked"), "controller.autoplayBlocked");
       });
     }
   }
@@ -411,7 +425,7 @@
     document.documentElement.dataset.theme = scene.theme;
     document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
     if (!scene.videoUrl) {
-      showEmpty(t("controller.noSong"));
+      showEmpty("controller.noSong");
       renderOverlay();
       return;
     }
@@ -427,7 +441,7 @@
     video.src = scene.videoUrl;
     video.addEventListener("loadedmetadata", applyClock);
     video.addEventListener("canplay", applyClock);
-    video.addEventListener("error", () => setError(t("controller.outputVideoFailed")));
+    video.addEventListener("error", () => setError(t("controller.outputVideoFailed"), "controller.outputVideoFailed"));
     state.video = video;
     preserveOverlayAndReplace(video);
     renderOverlay();
@@ -483,7 +497,7 @@
       || !Number.isSafeInteger(expectedGeneration)
       || expectedGeneration < 1
     ) {
-      failClosed(t("controller.tauriRequired"));
+      failClosed(t("controller.tauriRequired"), "controller.tauriRequired");
       return;
     }
     if (typeof BroadcastChannel === "function") {

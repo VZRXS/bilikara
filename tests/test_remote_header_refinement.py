@@ -733,7 +733,7 @@ console.log(JSON.stringify({
             "remote.connectionConnected",
             "remote.connectionOffline",
             "remote.connectionOfflineToast",
-            "remote.shareQr",
+            "remote.openInBrowser",
             "remote.controlRejected",
             "remote.controlCommandFailed",
             "display.themeLight",
