@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "bilikara_runtime"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -229,6 +229,7 @@ dependencies = [
  "libc",
  "md5",
  "mp4",
+ "png 0.18.1",
  "qrcode",
  "regex",
  "reqwest",
