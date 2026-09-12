@@ -191,9 +191,21 @@ html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
 }
 html[data-android-layout="portrait"] .av-sync-step-symbol { display: none; }
 html[data-android-layout="portrait"] .app-shell .audio-variant-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 8px 12px;
   font-size: 14px;
+}
+/* Desktop's 38px collapsed row otherwise cuts through the touch targets. */
+html[data-android-layout="portrait"] .audio-variant-bar.is-collapsed .audio-variant-list {
+  max-height: none;
+}
+html[data-android-layout="portrait"] .audio-variant-toggle {
+  width: 44px;
+  height: 44px;
+}
+html[data-android-layout="portrait"] .audio-variant-bar.is-expanded {
+  min-width: 0;
+  max-width: calc(100vw - 24px);
 }
 html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .history-title) {
   font-size: 16px;
@@ -209,6 +221,50 @@ html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .his
 html[data-android-layout="portrait"] .queue-current { padding: 12px; }
 html[data-android-layout="portrait"] .queue-current-main { padding-right: 0; }
 html[data-android-layout="portrait"] .queue-current-requester { font-size: 12px; height: 28px; min-height: 28px; padding: 0 10px; }
+
+/* Give each binding choice readable line length; only the choices scroll. */
+html[data-android-layout="portrait"] #binding-modal { padding: 12px; }
+html[data-android-layout="portrait"] #binding-modal .selection-modal-card {
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100dvh - 24px);
+  padding: 16px;
+  border-radius: 20px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+html[data-android-layout="portrait"] #binding-modal .selection-modal-head h2 { font-size: 20px; }
+html[data-android-layout="portrait"] #binding-modal .selection-modal-head .section-tag { font-size: 10px; }
+html[data-android-layout="portrait"] #binding-modal .selection-modal-grid {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 12px;
+  margin-top: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html[data-android-layout="portrait"] #binding-modal .selection-modal-column { display: block; padding: 10px; overflow: visible; }
+html[data-android-layout="portrait"] #binding-modal .selection-modal-column h3 { font-size: 15px; }
+html[data-android-layout="portrait"] #binding-modal .selection-option-list {
+  grid-auto-rows: max-content;
+  overflow: visible;
+  padding: 0;
+  margin-top: 8px;
+  gap: 6px;
+}
+html[data-android-layout="portrait"] #binding-modal .selection-option {
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  min-height: 44px;
+  border-radius: 12px;
+}
+html[data-android-layout="portrait"] #binding-modal .selection-option input { width: 18px; height: 18px; margin: 0; }
+html[data-android-layout="portrait"] #binding-modal .selection-option-title { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+html[data-android-layout="portrait"] #binding-modal .selection-option-meta { font-size: 11px; margin-top: 2px; }
+html[data-android-layout="portrait"] #binding-modal .selection-modal-actions { padding-top: 12px; margin-top: 12px; }
+html[data-android-layout="portrait"] #binding-modal :is(.selection-modal-actions button, .banner-close) { min-height: 44px; min-width: 44px; }
 
 html[data-android-layout="portrait"] .android-page-tools {
   flex: 0 0 auto;

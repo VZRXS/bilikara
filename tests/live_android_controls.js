@@ -37,6 +37,91 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     const navigate = name => page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
     const cases = {
+      async binding() {
+        await navigate("playback");
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 740});
+          await page.evaluate(() => openBindingModal({}, {pages: [
+            {page: 1, part: "on vocal", duration: 241},
+            {page: 2, part: "off vocal 有和声", duration: 241},
+            {page: 3, part: "off vocal 无和声 — a long translated title", duration: 241},
+          ]}));
+          const metrics = await page.locator("#binding-modal").evaluate(modal => ({
+            columns: getComputedStyle(modal.querySelector(".selection-modal-grid")).gridTemplateColumns.split(" ").length,
+            title: parseFloat(getComputedStyle(modal.querySelector("h2")).fontSize),
+            options: [...modal.querySelectorAll(".selection-option-title")].map(el => ({font: parseFloat(getComputedStyle(el).fontSize), width: el.clientWidth})),
+          }));
+          assert.equal(metrics.columns, 1, "Phone binding groups stack instead of squeezing labels into two columns");
+          assert.ok(metrics.title <= 20);
+          for (const option of metrics.options) assert.ok(option.font >= 13 && option.font <= 14 && option.width > 180, JSON.stringify(option));
+          await page.locator('#binding-audio-options input[value="3"]').check();
+          assert.equal(await page.locator('#binding-video-options input[value="1"]').isChecked(), true);
+          assert.equal(await page.locator('#binding-audio-options input[value="3"]').isChecked(), true);
+          await page.locator("#binding-modal-confirm").click({trial: true});
+          await page.screenshot({path: path.join(directory, `binding-${width}.png`)});
+          await page.locator("#binding-modal-cancel").click();
+        }
+      },
+      async variants() {
+        await navigate("playback");
+        for (const width of [320, 392, 412]) {
+          await page.setViewportSize({width, height: 817});
+          await page.evaluate(() => {
+            renderAudioVariantBar({...state.data.current_item, available_pages: [1, 2, 3],
+              available_parts: ["on vocal", "off vocal 有和声", "off vocal 无和声"]}, "local");
+            syncAudioVariantOverflow();
+          });
+          const metrics = await page.locator(".audio-variant-list").evaluate(list => {
+            const box = el => el.getBoundingClientRect().toJSON();
+            return {list: box(list), buttons: [...list.children].map(box)};
+          });
+          assert.equal(metrics.buttons.length, 3);
+          for (const button of metrics.buttons) {
+            assert.ok(button.y >= metrics.list.y && button.bottom <= metrics.list.bottom + 1, "Part buttons must not be vertically clipped");
+          }
+          await page.locator("#audio-variant-toggle").tap();
+          assert.equal(await page.locator("#audio-variant-toggle").getAttribute("aria-expanded"), "true");
+          const popover = await page.locator("#audio-variant-bar").boundingBox();
+          assert.ok(popover.x >= 0 && popover.x + popover.width <= width, "Expanded parts fit the phone width");
+          for (const button of await page.locator(".audio-variant-button").all()) await button.click({trial: true});
+          await page.keyboard.press("Escape");
+          assert.equal(await page.locator("#audio-variant-toggle").getAttribute("aria-expanded"), "false");
+        }
+      },
+      async bindingMany() {
+        await navigate("playback");
+        for (const [width, height] of [[320, 740], [392, 817], [412, 400]]) {
+          await page.setViewportSize({width, height});
+          await page.evaluate(() => openBindingModal({}, {pages: Array.from({length: 60}, (_, i) => ({
+            page: i + 1, part: `僕らのLIVE 君とのLIFE — HONOKA Mix / とても長いタイトル ${i + 1}`, duration: 333,
+          }))}));
+          const layout = await page.locator("#binding-modal").evaluate(modal => {
+            const box = el => el.getBoundingClientRect().toJSON();
+            return {
+              groups: [...modal.querySelectorAll(".selection-modal-column")].map(box),
+              options: [...modal.querySelectorAll(".selection-option")].map(el => ({
+                row: box(el), title: box(el.querySelector(".selection-option-title")), meta: box(el.querySelector(".selection-option-meta")),
+              })),
+              actions: box(modal.querySelector(".selection-modal-actions")),
+            };
+          });
+          for (const {row, title, meta} of layout.options) {
+            assert.ok(title.top >= row.top && meta.bottom <= row.bottom, `Long labels/durations stay inside their own row: ${JSON.stringify({row, title, meta})}`);
+          }
+          assert.ok(layout.groups[0].bottom <= layout.groups[1].top, "Video and audio groups do not overlap");
+          assert.ok(layout.actions.bottom <= height, "Confirm/cancel stay in the viewport");
+          for (const group of ["video", "audio"]) {
+            const last = page.locator(`#binding-${group}-options input[value="60"]`);
+            await last.scrollIntoViewIfNeeded();
+            await last.check();
+            assert.equal(await last.isChecked(), true, `Last ${group} part is reachable and selectable`);
+          }
+          assert.equal(await page.locator('#binding-video-options input[value="60"]').isChecked(), true);
+          await page.locator("#binding-modal-confirm").click({trial: true});
+          await page.screenshot({path: path.join(directory, `binding-many-${width}.png`)});
+          await page.locator("#binding-modal-cancel").click();
+        }
+      },
       async settings() {
         await navigate("my");
         for (const id of ["cache-settings", "cache-panel"]) {
