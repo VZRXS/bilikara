@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import atexit
-import base64
 from collections import deque
 from email.utils import formatdate
 import hmac
-import io
 import ipaddress
 import json
 import math
@@ -1828,21 +1826,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         )
                     ):
                         raise ValueError("invalid Internet Remote URL")
-                    try:
-                        import qrcode  # type: ignore[import-not-found]
-                    except ImportError as exc:
-                        raise RuntimeError("QR generator is unavailable") from exc
-                    qr_buffer = io.BytesIO()
-                    qr_code = qrcode.QRCode(border=0)
-                    qr_code.add_data(remote_url)
-                    qr_code.make(fit=True)
-                    qr_code.make_image(
-                        fill_color="black", back_color="white"
-                    ).save(qr_buffer, format="PNG")
-                    result = {
-                        "image": "data:image/png;base64,"
-                        + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
-                    }
+                    qr_image = rust_runtime.generate_qr_image(remote_url, border=0)
+                    result = {"image": qr_image.data_url}
                 else:
                     self._write_json(
                         {"ok": False, "error": "not found"},

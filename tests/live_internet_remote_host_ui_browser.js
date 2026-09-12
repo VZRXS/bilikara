@@ -853,6 +853,12 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
           shareMetaFontSize: getComputedStyle(
             document.querySelector("#remote-mini-popover .internet-remote-share-meta"),
           ).fontSize,
+          localScanTitle: document.querySelector(
+            '#remote-mini-popover [data-i18n="internetRemote.localScanTitle"]',
+          ).textContent.trim(),
+          publicScanTitle: document.querySelector(
+            '#remote-mini-popover [data-i18n="internetRemote.publicScanTitle"]',
+          ).textContent.trim(),
           clippedActionLabels: [...publicActions.querySelectorAll("button")].filter((button) => (
             button.scrollWidth > button.clientWidth
           )).map((button) => button.textContent.trim()),
@@ -879,10 +885,15 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
         },
       }[variant.theme];
       const sharedRemoteAlpha = evidence.popupSurfaces.mobileRemote.alpha;
+      const expectedScanTitles = {
+        zh: ["扫码连接", "扫码后输入房间密码"],
+        en: ["Scan to connect", "Scan, then enter password"],
+        ja: ["QRを読み取って接続", "QRを読み取り、パスワードを入力"],
+      }[variant.language];
       assert(
         evidence.backgroundAlpha === sharedRemoteAlpha
           && evidence.popupSurfaces.fullscreenRemote.alpha === sharedRemoteAlpha
-          && sharedRemoteAlpha >= 0.7
+          && sharedRemoteAlpha === 1
           && evidence.restartBackground === expectedThemeColors.restartBackground
           && evidence.restartColor === expectedThemeColors.restartColor
           && evidence.successColor === expectedThemeColors.successColor
@@ -895,7 +906,9 @@ async function runInternetRemoteHostGate(browser, baseUrl, screenshotPath) {
           && evidence.openButtonCount === 0
           && evidence.entryTitleFontSize === "14px"
           && evidence.shareTitleFontSize === "14px"
-          && evidence.shareMetaFontSize === "12px",
+          && evidence.shareMetaFontSize === "12px"
+          && evidence.localScanTitle === expectedScanTitles[0]
+          && evidence.publicScanTitle === expectedScanTitles[1],
         "theme or translated Internet access controls overflowed the popup",
         evidence,
       );

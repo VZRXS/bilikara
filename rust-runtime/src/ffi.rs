@@ -10,6 +10,7 @@ use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, d
 use crate::json_http::{JsonHttpRequest, execute_json_request};
 use crate::media_backend::{MediaError, MediaNormalizeRequest, MediaPathRequest, probe_media};
 use crate::networking::{NetworkAddressRequest, detect_lan_ipv4_addresses};
+use crate::qr_image::{QrImageError, generate_qr_png};
 use crate::status_service::{
     BilibiliLoginFacts, BilibiliLoginStatus, BilibiliLoginUpdate, GachaTaskUpdate,
     RuntimeStatusService,
@@ -17,6 +18,7 @@ use crate::status_service::{
 use crate::update_installer::{
     LaunchUpdateHelperRequest, PrepareUpdateRequest, launch_update_helper, prepare_update,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -98,6 +100,7 @@ struct StatusServiceWireResponse {
     deny_unknown_fields
 )]
 enum RuntimeServiceCommand {
+    QrImage(Value),
     BilibiliDash(BilibiliDashRequest),
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
@@ -114,6 +117,21 @@ enum RuntimeServiceCommand {
         #[serde(default)]
         local_usernames: Vec<String>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QrImageRequest {
+    payload: String,
+    module_scale: u32,
+    border: u32,
+}
+
+fn qr_image_result(request: Value) -> Result<Value, QrImageError> {
+    let request: QrImageRequest =
+        serde_json::from_value(request).map_err(|_| QrImageError::invalid_request())?;
+    let png = generate_qr_png(&request.payload, request.module_scale, request.border)?;
+    Ok(json!({"png_base64": STANDARD.encode(png)}))
 }
 
 #[derive(Serialize)]
@@ -365,6 +383,7 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
         let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
         let command: RuntimeServiceCommand = serde_json::from_str(request_text).ok()?;
         let response = match command {
+            RuntimeServiceCommand::QrImage(request) => service_result(qr_image_result(request)),
             RuntimeServiceCommand::BilibiliDash(request) => {
                 service_result(fetch_dash_playurl(&request))
             }

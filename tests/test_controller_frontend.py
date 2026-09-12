@@ -144,6 +144,24 @@ class ControllerFrontendTest(unittest.TestCase):
         )
         self.assertNotIn("presentation-remote-meta-font-size", self.css)
 
+    def test_output_remote_copy_uses_the_shared_local_and_public_wording(self):
+        self.assertIn(
+            'class="remote-access-copy-title" data-i18n="internetRemote.localScanTitle"',
+            self.html,
+        )
+        self.assertIn(
+            'id="controller-remote-url-hint" data-i18n="internetRemote.localSameNetwork"',
+            self.html,
+        )
+        self.assertIn(
+            'data-i18n="internetRemote.publicScanTitle"',
+            self.html,
+        )
+        self.assertIn(
+            'elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork")',
+            self.source,
+        )
+
     def test_output_fails_closed_without_tauri_or_sync_contract(self):
         self.assertIn('typeof invoke !== "function"', self.source)
         self.assertIn('typeof listen !== "function"', self.source)

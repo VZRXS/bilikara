@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
 import json
 import math
@@ -7,6 +9,7 @@ import os
 import platform
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,39 @@ class RustRuntimeServiceError(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.response = response
+
+
+@dataclass(frozen=True)
+class QrImage:
+    png: bytes
+    data_url: str
+
+
+def generate_qr_image(payload: str, *, border: int) -> QrImage:
+    """One native image request; Python only validates and adapts its PNG payload."""
+    result = _call_runtime_service(
+        "qr_image", {"payload": payload, "module_scale": 10, "border": border}
+    )
+    encoded = result.get("png_base64")
+    try:
+        # The native renderer is bounded to 3344 square, packed monochrome pixels.
+        if not isinstance(encoded, str) or len(encoded) > 2_000_000:
+            raise ValueError
+        png = base64.b64decode(encoded, validate=True)
+        if (
+            len(png) < 67
+            or png[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+            or not 1 <= int.from_bytes(png[16:20], "big") <= 3344
+            or png[16:20] != png[20:24]
+            or png[24:29] != b"\x01\x00\x00\x00\x00"
+            or png[-12:] != b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        ):
+            raise ValueError
+    except (ValueError, binascii.Error) as exc:
+        raise RustRuntimeServiceError(
+            "invalid_response", "Rust QR service returned an invalid PNG", response={}
+        ) from exc
+    return QrImage(png=png, data_url="data:image/png;base64," + encoded)
 
 
 class RustAppStateError(RuntimeError):

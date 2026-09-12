@@ -113,9 +113,30 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         )
         self.assertNotIn(":lang(zh)", self.remote_access_css)
 
+    def test_access_popovers_share_opaque_dark_surfaces_and_translation_keys(self):
+        self.assertIn(
+            ':root:is([data-theme="dark"], [data-theme="blue"]) .remote-access-card',
+            self.remote_access_css,
+        )
+        self.assertIn("background: var(--settings-panel-bg);", self.remote_access_css)
+        self.assertEqual(
+            self.host_html.count('data-i18n="internetRemote.localScanTitle"'),
+            2,
+        )
+        self.assertEqual(
+            self.host_html.count('data-i18n="internetRemote.publicScanTitle"'),
+            2,
+        )
+        languages = json.loads(
+            (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
+        )["languages"]
+        self.assertEqual(languages["zh"]["internetRemote.publicScanTitle"], "扫码后输入房间密码")
+        self.assertEqual(languages["en"]["internetRemote.publicScanTitle"], "Scan, then enter password")
+        self.assertEqual(languages["ja"]["internetRemote.publicScanTitle"], "QRを読み取り、パスワードを入力")
+
     def test_public_and_local_qr_use_complete_images_with_one_shared_quiet_zone(self):
-        self.assertIn("qrcode.QRCode(border=0)", self.server_source)
-        self.assertNotIn("qrcode.make(remote_url)", self.server_source)
+        self.assertIn("rust_runtime.generate_qr_image(remote_url, border=0)", self.server_source)
+        self.assertNotIn("import qrcode", self.server_source)
         qr_rule = next(
             rule
             for rule in self.remote_access_css.split(".remote-access-qr {")[1:]
@@ -237,13 +258,21 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         )
         self.assertEqual(languages["en"]["remote.openInBrowser"], "Open Remote")
         self.assertEqual(
+            languages["en"]["internetRemote.localScanTitle"],
+            "Scan to connect",
+        )
+        self.assertEqual(
             languages["en"]["internetRemote.publicScanTitle"],
-            "Scan + password",
+            "Scan, then enter password",
         )
         self.assertEqual(languages["ja"]["remote.openInBrowser"], "Remote を開く")
         self.assertEqual(
+            languages["ja"]["internetRemote.localScanTitle"],
+            "QRを読み取って接続",
+        )
+        self.assertEqual(
             languages["ja"]["internetRemote.publicScanTitle"],
-            "QR＋パスワード",
+            "QRを読み取り、パスワードを入力",
         )
         render_start = self.host_app_js.index("function renderRemoteAccess")
         render_end = self.host_app_js.index("function renderRemoteQr", render_start)

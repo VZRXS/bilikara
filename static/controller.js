@@ -148,7 +148,7 @@
     if (!url) return;
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
     elements.remoteUrlLink.textContent = url;
-    elements.remoteUrlHint.textContent = t("remote.defaultHint");
+    elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
     if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
     elements.remoteQrImage.dataset.qrUrl = qrUrl;

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from dataclasses import dataclass
@@ -9900,16 +9899,11 @@ class CacheManager:
 
     @staticmethod
     def _write_bbdown_login_qr(qr_url: str, target_path: Path) -> str:
-        try:
-            import qrcode  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError("缺少本地二维码组件，请重新安装或更新 bilikara") from exc
-
+        qr_image = rust_runtime.generate_qr_image(qr_url, border=4)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        qrcode.make(qr_url).save(target_path)
+        target_path.write_bytes(qr_image.png)
         target_path.chmod(0o600)
-        encoded = base64.b64encode(target_path.read_bytes()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
+        return qr_image.data_url
 
     @staticmethod
     def _cookie_text_from_login_jar(cookie_jar: http.cookiejar.CookieJar) -> str:
