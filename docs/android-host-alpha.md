@@ -78,13 +78,15 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   missing defaults while retaining custom sources, cached songs and exclusions;
   subsequent starts do not re-add removed sources. Successful QR login and app startup
   with a saved credential refresh those configured UPs/favorite folders once,
-  using the same lease/cooldown as manual refresh. This does not discover all
+  without taking the manual/global UI lock or consuming its failure cooldown.
+  An internal I/O lease still prevents overlapping scans. This does not discover all
   account followings, append to D1 or import the desktop library. LAN Remote
   shares these APIs. Diagnostics retain bounded trigger/start/result/error-code
   observations and UP/favorite failure counts, never cookies or raw responses.
   Network imports execute outside the AppState lock under one shared task lease;
-  refresh runs in the background and reports completion through SSE. Errors
-  trigger a shared 60-second library-task cooldown, not a playback interruption.
+  refresh runs in the background and reports completion through SSE. Only manual
+  failures trigger a shared 60-second library-task cooldown; automatic failures
+  leave it unchanged and do not disable cached Gacha/browsing/playback.
 - First-launch Android Host language follows the device's preferred supported
   language: English (`en`), Japanese (`ja`) or Chinese (`zh`, including regional
   variants). Other languages fall back to English. The initial choice is saved
@@ -100,11 +102,22 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   Empty search/categories do not hit the network; no prewarm or cloud writes run.
 - History exports support current-session records and all history, as UTF-8 CSV
   or paginated PNG (multiple pages in ZIP). Rust selects/sorts a read-only
-  snapshot; Android renders one bitmap at a time and saves through the system
-  document picker, without storage-wide permissions. The bridge accepts only
-  these export options from the native Host origin; Remote cannot export Host
-  history. Cancel/failure releases the export button. Separate desktop
+  snapshot; Android renders one bitmap at a time. Host saves through the system
+  document picker; registered LAN Remote downloads through the same shared web
+  export controls and HTTP contract. Both paths reuse one Kotlin renderer and
+  serialize bitmap rendering. Remote receives no native bridge, Host token or
+  file-system access. Browser exports are limited to 10,000 rows / 16 MiB metadata,
+  64 MiB output and one in-flight download; private temporary files are removed
+  after completion/failure/disconnect and recovered after a process restart.
+  Cancel/failure releases the export button. Separate desktop
   played-*.json session archives and diagnostic ZIP are not migrated yet.
+- LAN Remote uses the exact shared search/discovery/sources/Gacha/rating/export
+  assets, without the old Alpha-only hiding guards. Ratings use the existing cloud
+  service, deriving the voter from the registered identity and checking the play
+  against the current session. AppState owns bounded admission/deduplication;
+  network calls run outside its lock. Only accepted submissions are remembered;
+  HTTP/transport failures release the guard for manual retry. Rename preserves
+  deduplication. Host diagnostics retain bounded outcome facts, not raw payloads.
 - Unsupported UI is explicitly hidden/disabled: Internet Remote, independent dual display,
   desktop tool/update controls. Do not mistake those gaps for full mobile
   feature parity. Public Remote and Worker code are not modified by this Alpha.
@@ -313,7 +326,7 @@ and debuggable; it is intended for private Alpha testing.
 ## Next slices after device acceptance
 
 1. Device audio/HDMI lifecycle findings and long-session tests.
-2. Remaining Host feature parity: Internet Remote, export and platform integration.
+2. Remaining Host feature parity: Internet Remote, archived-session/diagnostic ZIP export and platform integration.
 3. Background media lifecycle, interruptions and reconnection.
 4. Platform build jobs, signed distribution and a unified desktop/mobile release.
 
@@ -367,6 +380,7 @@ node tests/live_native_host_alpha.js <native_host_alpha-exe> <new-private-dir> <
 node tests/live_android_background.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_android_controls.js <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
 node tests/live_native_login_persistence.js <native_host_alpha-exe> <new-private-dir>
+node tests/live_android_remote_exports.cjs <test-output-dir>
 node tests/live_native_bilibili_alpha.js <native_host_alpha-exe> <another-new-private-dir> <BV> <chrome-exe>
 ```
 
@@ -381,3 +395,53 @@ The fixture test runs the actual Android startup script from `http://tauri.local
 with only native IPC stubbed, then checks the real listener, strict cookies and
 shared player/Remote. Directly navigating to the bootstrap URL is insufficient:
 it misses the cross-site navigation that previously blocked Android startup.
+
+The Android Remote export harness is restricted to the owned
+`codex_bilikara_publish` emulator (`emulator-5580`) with a signed-out Alpha profile.
+It temporarily seeds/restores test history and checks the installed APK's real
+Rust/JNI/Kotlin CSV/PNG/ZIP downloads via visible Remote buttons. Rating UI calls
+are intercepted before submission; backend rating tests inject the service
+transport separately. Neither test writes real ratings or production D1 data.
+
+### Session boundaries, touch users and Remote continuity (September 2026)
+
+A fresh native process with saved session content asks the Host to continue the
+previous session or start a new one, before resuming playback/cache jobs. Starting
+new clears this session's singers, queue and session export, but preserves overall
+history, Bilibili credentials and preferences. Reloading the page or rotating the
+device does not ask again in the same process. Android singer badges now expand
+tap targets for ordering and bottom-right deletion instead of long-press dragging.
+In portrait mode the brand and Remote QR header appear only on Playback.
+
+Native LAN SSE advertises `event_heartbeat` and sends revision-bearing heartbeats.
+Remote reconnects and reads a fresh local snapshot after 12 seconds without a
+matching valid frame; a newer heartbeat cannot conceal a missing state update.
+Healthy connections do not poll. This is capability-gated so older desktop Hosts
+keep their current transport behavior. Host diagnostic Markdown includes a
+bounded `remote_connection` log of stream age, revisions, playback/rendered
+generations and visibility; it excludes names, song titles, credentials and raw
+error messages. Natural song advancement passed before this repair; deliberately
+discarding state/heartbeat events reproduced the frozen-first-song symptom and
+now recovers. The particular device/network cause is not yet confirmed.
+
+Host favorite-folder detail uses the outer content viewport for scrolling. Remote
+UP/favorite/category/name/artist result lists load subsequent pages from their
+own scrolling viewports. The name/artist path also needs the companion **catalog
+Worker** pagination change, saved in
+[`worker-patches/20260912-browse-pagination.patch`](worker-patches/20260912-browse-pagination.patch).
+That Worker is **not deployed** by this change. Apply the patch at the catalog
+Worker project root (the project containing `src/index.ts` and `bilikara-api/src/index.js`),
+run its tests, then follow its deployment workflow separately. It uses existing
+browse projection indexes and a bounded extra-row page probe, not a full count;
+no schema migration is required. Older Workers remain readable but cannot expose
+later name/artist pages without this update.
+
+Offline regression harnesses use 221-song fixtures and make no production D1 or
+Bilibili requests:
+
+```text
+node tests/live_native_session_choice.cjs <native_host_alpha-exe> <new-private-dir> <chrome-exe>
+node tests/live_native_browse_scroll.cjs <native_host_alpha-exe> <new-private-dir> <chrome-exe>
+node tests/live_native_remote_transitions.cjs <native_host_alpha-exe> <new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe>
+node tests/live_native_remote_transitions.cjs <native_host_alpha-exe> <another-new-private-dir> <H264-mp4> <AAC-m4a> <chrome-exe> silent-stream
+```
