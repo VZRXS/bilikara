@@ -105,6 +105,9 @@ pub(super) fn dispatch(
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
     }
+    if path.starts_with("/api/app/update/") {
+        return updates::route(identity, path, &body);
+    }
     if path.starts_with("/api/internet-remote/") {
         return internet::route(context, identity, path, &body);
     }

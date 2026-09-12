@@ -15,6 +15,10 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
         let mut last_cleanup=std::time::Instant::now();
         let mut last_metrics=None::<std::time::Instant>;
         while !context.stop.load(Ordering::Acquire){
+            let _ = with_app(|app| {
+                if app.native().updates.expire(now()) { app.native().revision += 1; }
+                Ok(())
+            });
             if let Err(error)=tick(&context,&mut fingerprint) && error.to_string()!=last_error {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
             }

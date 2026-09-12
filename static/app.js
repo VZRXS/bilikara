@@ -17707,7 +17707,8 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
   try {
     await apiPost("/api/app/update/check", {
       include_preview: includePreview,
-    }, { timeoutMs: appUpdateCheckTimeoutMs });
+      native_environment: await globalThis.BilikaraAndroidPlatform?.environment?.().catch(() => ({})),
+    }, { timeoutMs: globalThis.BilikaraAndroidPlatform ? 30_000 : appUpdateCheckTimeoutMs });
     return true;
   } catch (error) {
     if (!automatic) {
@@ -17722,7 +17723,7 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
 }
 
 function scheduleStartupAppUpdateCheck() {
-  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return false;
+  if (globalThis.document?.documentElement?.dataset?.nativeHost === "true" && !globalThis.BilikaraAndroidPlatform) return false;
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
   }
@@ -17739,6 +17740,18 @@ async function installAppUpdate(includePreview = false) {
     const updateStatus = await apiPost("/api/app/update/install", {
       include_preview: Boolean(includePreview),
     });
+    if (updateStatus.android_package && document.documentElement?.dataset?.nativeHost === "true") {
+      closeConfirm();
+      let result = "failed";
+      try {
+        const outcome = await window.BilikaraAndroidPlatform.installUpdate(updateStatus.android_package);
+        result = outcome.result;
+      } finally {
+        const finished = await apiPost("/api/app/update/finish", {operation:updateStatus.operation,result});
+        setAppMessage(finished.message, result === "failed");
+      }
+      return;
+    }
     closeConfirm();
     renderUpdatePreviewControl();
     const stateValue = String(updateStatus?.state || "");
@@ -17762,6 +17775,10 @@ async function checkAppUpdate(event) {
   }
 
   if (!update?.auto_update_supported) {
+    if (globalThis.document?.documentElement?.dataset?.nativeHost === "true") {
+      setAppMessage(update.message || "当前测试包暂不支持正式签名包覆盖更新。");
+      return;
+    }
     const releaseUrl = safeHttpUrl(update?.release_url);
     if (releaseUrl) {
       openExternalUrl(releaseUrl);

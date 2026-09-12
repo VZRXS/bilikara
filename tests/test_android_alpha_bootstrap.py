@@ -69,7 +69,13 @@ class AndroidAlphaBootstrapTest(unittest.TestCase):
         self.assertIn("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384", build)
         manifest = (TAURI / "gen/android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
         self.assertNotIn("FOREGROUND_SERVICE", manifest)
-        self.assertNotIn("REQUEST_INSTALL_PACKAGES", manifest)
+        self.assertIn('android.permission.REQUEST_INSTALL_PACKAGES', manifest)
+        updater = (TAURI / "gen/android/app/src/main/java/com/bilikara/app/HostUpdate.kt").read_text(encoding="utf-8")
+        for guard in ("BuildConfig.DEBUG", "canRequestPackageInstalls()", "validatePackage(partial)",
+                      "candidate.packageName == activity.packageName", "signers(candidate) == expected",
+                      "nextCode > oldCode", "Intent.ACTION_VIEW", "digestHex(digest.digest()) == expectedHash"):
+            self.assertIn(guard, updater)
+        self.assertNotIn("PackageInstaller.Session", updater)
         self.assertNotIn('android:usesCleartextTraffic="true"', manifest)
         self.assertIn('android:allowBackup="false"', manifest)
         self.assertIn('@xml/network_security_config', manifest)

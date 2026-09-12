@@ -13,10 +13,12 @@ class MainActivity : TauriActivity() {
   }
   private val hostWindowControls = HostWindowControls(this)
   private val hostExports = HostExports(this)
+  private val hostPlatform = HostPlatform(this)
 
   @Keep
   fun installHostWindowControls(webView: WebView, origin: String): Boolean {
     hostExports.install(webView, origin)
+    hostPlatform.install(webView, origin)
     return hostWindowControls.install(webView, origin)
   }
 

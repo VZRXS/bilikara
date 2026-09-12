@@ -11636,7 +11636,7 @@ html[data-native-host="true"] .native-alpha-notice {
 /* These capabilities are explicitly unavailable in the native Android Alpha.
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"] :is(
-  #presentation-settings, #app-update-row,
+  #presentation-settings,
   #application-restart-row, #diagnostic-package-button,
   #developer-mode-trigger, #ffmpeg-status-row
 ) { display: none !important; }

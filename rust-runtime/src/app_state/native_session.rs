@@ -20,6 +20,7 @@ pub(crate) struct NativeSession {
     pub library_refresh_active: bool,
     pub ratings: crate::native_host::ratings::RatingLedger,
     pub remote_export_ready: bool,
+    pub updates: crate::native_host::updates::UpdateState,
     pub catalog_cache: VecDeque<(String, std::time::Instant, Value)>,
     pub catalog_inflight: std::collections::HashSet<String>,
     pub catalog_backoff: Option<std::time::Instant>,
@@ -310,8 +311,8 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":false});
-        value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
+        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true});
+        value["app"] = json!({"version":"0.8.0-preview.0","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
         value["cache_policy"] = session.cache_policy.snapshot();
@@ -326,7 +327,9 @@ impl AppState {
                 .count()
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
-        value["app_update"] = json!({"state":"unsupported","supported":false});
+        if host {
+            value["app_update"] = session.updates.snapshot();
+        }
         value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":"Android Alpha"});
         value["bbdown"]["logged_in"] = json!(!session.cookie.is_empty());
         // The shared status chip aggregates these two fields. No external FFmpeg
