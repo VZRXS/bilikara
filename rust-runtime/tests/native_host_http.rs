@@ -615,6 +615,28 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         post("/api/diagnostics/markdown", json!({}), &remote_cookie).status(),
         403
     );
+    assert_eq!(
+        post("/api/rating/submit", json!({}), &remote_cookie).status(),
+        400
+    );
+    assert_eq!(
+        post(
+            "/api/rating/submit",
+            json!({"play_id":"never-played","bvid":"BV1z84y1p7oS","score":4}),
+            &remote_cookie
+        )
+        .status(),
+        409
+    );
+    assert_eq!(
+        post(
+            "/api/rating/log",
+            json!({"message":"do not retain raw client text"}),
+            &remote_cookie
+        )
+        .status(),
+        200
+    );
     for source in ["played", "history"] {
         let url = format!("{base}/api/playlist/export-data?source={source}");
         assert_eq!(

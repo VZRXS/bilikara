@@ -61,6 +61,15 @@ pub(super) fn dispatch(
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
     }
+    if path == "/api/rating/submit" {
+        return ratings::submit(identity, &body);
+    }
+    if path == "/api/rating/log" {
+        with_app(|app| app.native_requester(identity, ""))?;
+        // Backend-owned outcomes are logged separately; never persist arbitrary
+        // client messages, usernames or capability URLs in diagnostics.
+        return Ok(json!({}));
+    }
     if path == "/api/ui-language" {
         return preferences::language(context, identity, Some(&body));
     }

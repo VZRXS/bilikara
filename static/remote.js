@@ -1903,7 +1903,7 @@ function ratingLog(message) {
   } catch (e) { /* ignore */ }
 }
 
-function submitSongRating(item, score) {
+function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
@@ -1932,17 +1932,34 @@ function submitSongRating(item, score) {
     bvid,
     score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
   };
+  const button = trigger && "disabled" in trigger ? trigger : null;
+  const wasDisabled = button?.disabled;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
     keepalive: true,
+  }).then(async (response) => {
+    const result = await response.json();
+    if (!response.ok || result?.ok === false || result?.success === false || result?.data?.success === false) {
+      throw new Error(result?.error || t("error.requestFailed"));
+    }
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
       renderCurrentRatingButton(state.data?.current_item);
     }
     console.warn("Rating submit failed:", error);
+    setAppMessage(error.message || t("error.requestFailed"), true);
+  }).finally(() => {
+    if (button) {
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
+    }
   });
   return true;
 }
@@ -2278,7 +2295,7 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function closeRatingPrompt({ submit = true, restoreFocus = true } = {}) {
+function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
@@ -2330,7 +2347,7 @@ function closeRatingPrompt({ submit = true, restoreFocus = true } = {}) {
   }
 
   if (shouldSubmit) {
-    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore, trigger);
   }
 }
 
@@ -2522,7 +2539,6 @@ function flushAllPendingAutoRatings() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
-  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const promptItems = ratingPromptItemsForItem(currentItem);
   const currentRateable = isItemRateable(promptItems.current, true);
   const previousRateable = isItemRateable(promptItems.previous, false);
@@ -9379,7 +9395,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
   }
 });
 

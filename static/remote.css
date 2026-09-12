@@ -5749,5 +5749,5 @@ html[data-remote-transport="internet"] #history-export-row {
   display: none !important;
 }
 html[data-native-host="true"] :is(
-  #open-rating-button, #remote-qr-toggle, #remote-qr-content
+  #remote-qr-toggle, #remote-qr-content
 ) { display: none !important; }

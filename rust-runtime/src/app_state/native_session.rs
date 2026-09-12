@@ -17,6 +17,7 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    pub ratings: crate::native_host::ratings::RatingLedger,
     pub remote_export_ready: bool,
     pub catalog_cache: VecDeque<(String, std::time::Instant, Value)>,
     pub catalog_inflight: std::collections::HashSet<String>,
@@ -247,11 +248,22 @@ impl AppState {
     }
 
     pub(crate) fn native_execute(&mut self, command: AppStateRequest) -> Result<Value, ApiError> {
+        let renamed = match &command {
+            AppStateRequest::RenameSessionUser {
+                current_name,
+                new_name,
+                ..
+            } => Some((current_name.clone(), new_name.clone())),
+            _ => None,
+        };
         let response = self.execute(command);
         if let Some(error) = response.error() {
             let mut failure = ApiError::new(409, &error.kind, &error.message);
             failure.extra = error.details.clone().unwrap_or_else(|| json!({}));
             return Err(failure);
+        }
+        if let Some((old, new)) = renamed {
+            self.native().ratings.rename(&old, &new);
         }
         Ok(response.result().cloned().unwrap_or(Value::Null))
     }
@@ -589,6 +601,7 @@ impl AppState {
         json!({"backend":"rust","events":self.native_session.diagnostics,
             "bilibili_login":self.native_session.login_diagnostics,
             "library_refresh":self.native_session.library_diagnostics,
+            "ratings":self.native_session.ratings.events,
             "gatcha_task":self.native_session.login.gacha_snapshot()})
     }
     pub(crate) fn native_library_diagnostic(

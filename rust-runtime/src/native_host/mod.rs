@@ -13,6 +13,7 @@ pub(crate) use login::LoginDiagnostic;
 mod maintenance;
 mod network;
 pub(crate) mod preferences;
+pub(crate) mod ratings;
 
 use crate::app_state::native_session::{Identity, with_app};
 use axum::{
