@@ -307,7 +307,17 @@ html[data-android-layout="portrait"] .android-my-page {
   overflow-y: auto;
 }
 
-.android-my-page h2 { margin: 0 0 24px; font-size: 26px; }
+.android-my-page h2 { margin: 0 0 16px; font-size: 24px; }
+.android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
+.android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
+html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
+html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row > span:first-child { display: none; }
+html[data-android-layout="portrait"] #android-account-slot .bbdown-login-badge { padding: 8px 16px; min-height: 44px; }
+html[data-android-layout="portrait"] #android-account-slot .bbdown-login-panel { padding: 12px 0 0; }
+html[data-android-layout="portrait"] #android-account-slot .bbdown-login-copy { display: none; }
+.android-login-hint { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+.android-my-card.is-logged .android-login-hint { display: none; }
+.android-my-page #android-settings-slot { margin-bottom: 18px; }
 .android-menu-row {
   display: flex;
   align-items: center;
@@ -324,35 +334,59 @@ html[data-android-layout="portrait"] .android-my-page {
   font: inherit;
 }
 
-.android-menu-row strong { display: block; font-size: 18px; }
+.android-menu-row strong { display: block; font-size: 16px; font-weight: 700; }
 .android-menu-row small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.5; }
 
 html[data-android-layout="portrait"] #android-settings-slot #cache-settings {
+  position: static;
+  display: block;
+  height: auto;
+  min-height: 0;
+  min-width: 0;
+  flex: none;
+  z-index: auto;
   width: 100%;
   max-width: none;
   padding: 0;
   border: 0;
   background: none;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 html[data-android-layout="portrait"] #android-settings-slot #cache-settings-toggle { display: none; }
 html[data-android-layout="portrait"] #android-settings-slot #cache-panel {
   position: static;
   inset: auto !important;
-  display: block;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: none;
   max-height: none;
   margin: 0;
-  padding: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
   overflow: visible;
   box-shadow: none;
+  backdrop-filter: none;
   transform: none;
 }
 
 html[data-android-layout="portrait"] #android-settings-slot .cache-panel-row { flex-wrap: wrap; gap: 12px; }
 html[data-android-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
 html[data-android-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
+html[data-android-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; order: -3; border-top: 0; padding-top: 0; }
+html[data-android-layout="portrait"] #android-settings-slot #cache-capacity-row { display: block; order: -2; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-panel-row { flex-direction: row; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-limit-slider { width: 100%; min-height: 32px; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-quality-select { min-height: 40px; }
+html[data-android-layout="portrait"] #android-settings-slot #cache-usage-row { order: -1; border-top: 1px solid var(--line); padding-top: 14px; }
+html[data-android-layout="portrait"] #android-settings-slot .cache-panel-tool-list { display: none; }
+html[data-android-layout="portrait"] .settings-workspace-body { min-height: 0; overflow-y: auto; }
+html[data-android-layout="portrait"] .settings-workspace-body .cache-panel-row { flex-wrap: wrap; gap: 12px; }
+html[data-android-layout="portrait"] .settings-workspace-body .diagnostic-panel-actions { width: 100%; }
+html[data-android-layout="portrait"] #diagnostic-copy-button { min-height: 44px; }
 
 /* The request header must not compete with four mode tabs on one phone row. */
 html[data-android-layout="portrait"] .request-workspace-head {

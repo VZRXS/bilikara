@@ -324,7 +324,7 @@
             <p class="cache-chip-meta" id="cache-chip-meta" data-i18n="service.cacheUsageZero">缓存占用 0 MB</p>
           </button>
           <div class="cache-panel hidden" id="cache-panel">
-            <div class="cache-panel-row">
+            <div class="cache-panel-row" id="cache-usage-row">
               <div>
                 <p class="cache-panel-label" data-i18n="service.currentCacheUsage">当前缓存占用</p>
                 <strong class="cache-panel-value" id="cache-usage-detail"><span class="cache-usage-size">0 MB</span><span class="cache-usage-count">0 首已缓存</span></strong>
@@ -349,7 +349,7 @@
                 </div>
               </div>
             </div>
-            <div class="cache-panel-row cache-panel-row-double">
+            <div class="cache-panel-row cache-panel-row-double" id="cache-capacity-row">
               <div class="cache-double-col" data-i18n-title="service.applyImmediately" title="调整后立即生效">
                 <div class="cache-double-header">
                   <span class="cache-panel-label" data-i18n="service.cacheCount">缓存数量</span>
@@ -366,7 +366,7 @@
                   </div>
                 </div>
               </div>
-              <div class="cache-double-col" data-i18n-title="service.advanceDelayHint" title="切歌过渡界面的显示时长">
+              <div class="cache-double-col" id="advance-delay-field" data-i18n-title="service.advanceDelayHint" title="切歌过渡界面的显示时长">
                 <div class="cache-double-header">
                   <span class="cache-panel-label" data-i18n="service.advanceDelay">切歌延迟</span>
                 </div>
@@ -383,7 +383,7 @@
                 </div>
               </div>
             </div>
-            <div class="cache-panel-row cache-policy-row">
+            <div class="cache-panel-row cache-policy-row" id="cache-quality-row">
               <label class="cache-quality-field" for="cache-quality-select" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.defaultQuality">默认清晰度</span>
                 <select id="cache-quality-select" class="cache-quality-select"></select>
@@ -396,7 +396,7 @@
                 </span>
               </label>
             </div>
-            <div class="cache-panel-row cache-policy-row">
+            <div class="cache-panel-row cache-policy-row" id="cache-source-row">
               <label class="cache-quality-field" for="cache-download-source-select" title="选择下载器（Downkyi需登录哔哩哔哩账号）" data-i18n-title="service.downloadSourceHint">
                 <span class="cache-panel-label" data-i18n="service.downloadSource">下载器</span>
                 <select id="cache-download-source-select" class="cache-quality-select"></select>
@@ -482,8 +482,15 @@
           </div>
           <section class="android-host-only android-my-page" id="android-my-page" aria-labelledby="android-my-title" hidden inert>
             <h2 id="android-my-title" data-i18n="mobile.me">我的</h2>
+            <section class="android-my-card" id="android-account-slot" aria-labelledby="android-account-title">
+              <h3 id="android-account-title" data-i18n="service.bbdownLogin">Bilibili 登录</h3>
+              <p class="android-login-hint" data-i18n="mobile.loginHint">点击“未登录”获取登录二维码。</p>
+            </section>
+            <section class="android-my-card" id="android-settings-slot" aria-labelledby="android-download-settings-title">
+              <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
+            </section>
             <button type="button" class="android-menu-row" id="android-open-settings">
-              <span><strong data-i18n="shell.settings">设置</strong><small data-i18n="mobile.settingsHint">画质、缓存、Bilibili 登录、外观与诊断</small></span>
+              <span><strong data-i18n="shell.settings">设置</strong><small data-i18n="mobile.settingsHint">外观、播放修复、数据清理与复制诊断 .md</small></span>
               <span aria-hidden="true">›</span>
             </button>
           </section>
@@ -775,9 +782,6 @@
           </header>
 
           <div class="settings-workspace-body">
-            <section class="android-host-only settings-section" id="android-settings-slot" aria-labelledby="android-download-settings-title">
-              <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
-            </section>
             <section class="settings-section" aria-labelledby="settings-appearance-title">
               <div class="settings-section-heading">
                 <p class="section-tag" data-i18n="settings.appearanceTag">Appearance</p>

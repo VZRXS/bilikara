@@ -29,6 +29,13 @@ class AndroidPortraitTest(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_account_login_requires_action_and_guards_duplicates(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for frontend tests")
+        result = subprocess.run([node, "tests/android_login_action.cjs"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

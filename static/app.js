@@ -10177,6 +10177,7 @@ function renderBBDownLogin(login) {
     }
   }
 
+  globalThis.BilikaraAndroidHost?.syncAccount?.();
   if (loggedIn) {
     return;
   }
@@ -10188,6 +10189,7 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
+  if (!force && globalThis.BilikaraAndroidHost?.isPortrait?.()) return;
   const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -10199,7 +10201,14 @@ function maybeStartBBDownLogin(login, options = {}) {
 }
 
 async function startBBDownLogin(options = {}) {
+  if (state.bbdownLoginRequesting) return;
   state.bbdownLoginRequesting = true;
+  const controls = [elements.bbdownLoginButton, elements.bbdownLoginRefresh]
+    .filter(Boolean).map(button => ({button, disabled: button.disabled}));
+  for (const {button} of controls) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
   try {
     await apiPostStateSnapshot("/api/bbdown/login/start", {
       force: Boolean(options.force),
@@ -10209,6 +10218,10 @@ async function startBBDownLogin(options = {}) {
     setAppMessage(error.message, true);
   } finally {
     state.bbdownLoginRequesting = false;
+    for (const {button, disabled} of controls) {
+      button.disabled = disabled;
+      button.removeAttribute("aria-busy");
+    }
   }
 }
 

@@ -18,6 +18,18 @@
   const cacheSettings = byId("cache-settings");
   const cacheAnchor = document.createComment("desktop cache settings position");
   cacheSettings.before(cacheAnchor);
+  const loginNodes = ["bbdown-status-row", "bbdown-login-panel"].map(id => {
+    const node = byId(id);
+    const anchor = document.createComment("desktop login position");
+    node.before(anchor);
+    return {node, anchor};
+  });
+  const advancedNodes = ["advance-delay-field", "cache-source-row"].map(id => {
+    const node = byId(id);
+    const anchor = document.createComment("desktop playback setting position");
+    node.before(anchor);
+    return {node, anchor};
+  });
   const pages = new Set(["playback", "queue", "request", "users", "my"]);
   let portrait = false;
   let page = "playback";
@@ -64,7 +76,17 @@
     return "\n\n## Android UI (sanitized)\n\n```json\n" + JSON.stringify(data, null, 2) + "\n```\n";
   }
 
-  function settingsEmbedded() { return portrait && page === "my" && settings; }
+  function settingsEmbedded() { return portrait && page === "my" && !settings; }
+
+  function syncAccount() {
+    if (!portrait) return;
+    const login = state.data?.bbdown?.login;
+    const idle = !login?.state || login.state === "idle";
+    // The account card waits for an explicit tap; merely visiting My must not
+    // create a login request. Active QR/polling continues through shared code.
+    byId("bbdown-login-panel").classList.toggle("hidden", Boolean(login?.logged_in) || idle);
+    byId("android-account-slot").classList.toggle("is-logged", Boolean(login?.logged_in));
+  }
 
   function syncRequestTabs() {
     if (!portrait) return;
@@ -96,7 +118,7 @@
     myPage.inert = !myHome;
     queueTabs.hidden = page !== "queue";
     requestTabs.hidden = page !== "request";
-    settingsBack.hidden = !settingsEmbedded();
+    settingsBack.hidden = !(page === "my" && settings);
     tools.hidden = queueTabs.hidden && requestTabs.hidden && settingsBack.hidden;
     for (const button of dock.querySelectorAll("[data-android-page]")) {
       if (button.dataset.androidPage === page) button.setAttribute("aria-current", "page");
@@ -106,6 +128,7 @@
       button.setAttribute("aria-pressed", String(button.dataset.androidWorkspace === state.activeHostWorkspace));
     }
     syncRequestTabs();
+    syncAccount();
   }
 
   function saveRoute(replace = false) {
@@ -155,10 +178,15 @@
     if (portrait) {
       requestTabs.append(sharedRequestTabs);
       byId("android-settings-slot").append(cacheSettings);
+      for (const {node} of loginNodes) byId("android-account-slot").append(node);
+      for (const {node} of advancedNodes) byId("cache-panel").append(node);
       navigate(page, {openSettings: settings, remember: false});
     } else {
       requestTabsAnchor.after(sharedRequestTabs);
       cacheAnchor.after(cacheSettings);
+      for (const {node, anchor} of loginNodes) anchor.after(node);
+      for (const {node, anchor} of advancedNodes) anchor.after(node);
+      byId("bbdown-login-panel").classList.toggle("hidden", Boolean(state.data?.bbdown?.login?.logged_in));
       state.cacheSettingsOpen = false;
       syncCachePanelVisibility();
       elements.leftColumn.classList.remove("android-stage-away");
@@ -173,7 +201,7 @@
     schedulePersistentStageMeasurement();
   }
 
-  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, syncRequestTabs, diagnosticsMarkdown};
+  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
   const fullscreenRemote = byId("android-fullscreen-remote-button");
   fullscreenRemote.addEventListener("click", () => {
     if (!state.playerFullscreenRemotePinned) retryFailedQr();
