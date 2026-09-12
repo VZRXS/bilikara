@@ -4,7 +4,7 @@
   const details = document.getElementById("bootstrap-details");
   try {
     const invoke = window.__TAURI__?.core?.invoke;
-    if (typeof invoke !== "function") throw new Error("请在 Android Alpha 应用中打开此页面。");
+    if (typeof invoke !== "function") throw new Error("请在 bilikara beta Android 应用中打开此页面。");
     const result = await invoke("android_alpha_status");
     if (result?.schema_version !== 3 || result.stage !== "native-host-alpha" || result.backend !== "rust"
       || !Number.isSafeInteger(result.revision) || result.revision < 0

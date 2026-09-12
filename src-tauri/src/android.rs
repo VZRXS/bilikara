@@ -200,5 +200,5 @@ pub(crate) fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("Android Alpha application failed");
+        .expect("Android Beta application failed");
 }

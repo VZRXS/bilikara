@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "bilikara Android Alpha",
+  "productName": "bilikara beta",
   "build": {
     "devUrl": null
   },
@@ -8,7 +8,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "bilikara Android Alpha",
+        "title": "bilikara beta",
         "url": "android-alpha.html",
         "visible": true
       }

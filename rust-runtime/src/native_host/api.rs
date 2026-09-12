@@ -10,7 +10,7 @@ pub(super) fn queue_space(length: usize) -> Result<(), ApiError> {
         return Err(ApiError::new(
             429,
             "queue_full",
-            "此 Alpha 点歌列表最多 200 首",
+            "此 Beta 点歌列表最多 200 首",
         ));
     }
     Ok(())
@@ -370,7 +370,7 @@ fn unavailable() -> ApiError {
     ApiError::new(
         501,
         "alpha_unavailable",
-        "此功能尚未接入 Android Alpha；本版本先验证点歌、本机播放和局域网 Remote",
+        "此功能暂不在 Android Beta 验收范围内",
     )
 }
 

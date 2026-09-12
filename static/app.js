@@ -37,8 +37,8 @@ let searchDetailController = null;
 
 function openExternalUrl(url) {
   if (document.documentElement?.dataset?.nativeHost === "true") {
-    // Do not navigate the only mobile player WebView away from the Host.
-    setAppMessage("Android Alpha：请在另一台设备打开链接，保持本机播放页面在前台。");
+    // External-link integration is deferred; never navigate the player away.
+    setAppMessage("Android Beta：请在另一台设备打开链接，保持本机播放页面在前台。");
     return;
   }
   if (window.__TAURI__) {

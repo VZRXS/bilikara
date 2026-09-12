@@ -11633,7 +11633,7 @@ html[data-native-host="true"] .native-alpha-notice {
   font-size: 0.85rem;
   line-height: 1.6;
 }
-/* These capabilities are explicitly unavailable in the native Android Alpha.
+/* These desktop-only/deferred capabilities remain unavailable on Android.
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"] :is(
   #presentation-settings,

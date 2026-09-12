@@ -1,5 +1,8 @@
 # Android Host Alpha
 
+Current acceptance scope and APK/signing workflow: [Android Host Beta](android-host-beta.md).
+The notes below retain the Alpha implementation history.
+
 ## Scope and branch
 
 Development starts on `codex/android-host-alpha`, based on desktop commit
