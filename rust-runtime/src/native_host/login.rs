@@ -582,6 +582,8 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             api_slots: Arc::new(Semaphore::new(1)),
             event_slots: Arc::new(Semaphore::new(1)),
+            export_slots: Arc::new(Semaphore::new(1)),
+            export_renderer: std::sync::OnceLock::new(),
             port: 0,
         };
         let generation = with_app(|app| {

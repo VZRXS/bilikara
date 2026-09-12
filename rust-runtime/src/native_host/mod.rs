@@ -4,6 +4,7 @@ mod api;
 mod cache;
 mod catalog;
 mod diagnostics;
+mod exports;
 mod files;
 mod library;
 pub(crate) use library::LibraryDiagnostic;
@@ -40,6 +41,9 @@ pub struct Asset {
     pub mime: String,
 }
 pub type AssetSource = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
+/// Platform rendering only. Receives a validated immutable export specification
+/// and a server-generated private temporary path, never a client-supplied path.
+pub type RemoteExportRenderer = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
 
 #[derive(Debug)]
 pub(crate) struct ApiError {
@@ -84,6 +88,8 @@ pub(crate) struct HostContext {
     stop: Arc<AtomicBool>,
     api_slots: Arc<Semaphore>,
     event_slots: Arc<Semaphore>,
+    export_slots: Arc<Semaphore>,
+    export_renderer: std::sync::OnceLock<RemoteExportRenderer>,
     port: u16,
 }
 
@@ -102,6 +108,16 @@ impl NativeHost {
     }
     pub fn local_port(&self) -> u16 {
         self.context.port
+    }
+    pub fn set_export_renderer(&self, renderer: RemoteExportRenderer) -> Result<(), String> {
+        // The bootstrap may be checked again; the renderer is installed once.
+        self.context.export_renderer.get_or_init(|| renderer);
+        with_app(|app| {
+            app.native().remote_export_ready = true;
+            app.native().revision += 1;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
     }
 }
 impl Drop for NativeHost {
@@ -187,6 +203,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
             json!({"local_url":local,"preferred_url":preferred,"lan_urls":lan_urls,"qr_image":qr});
         Ok(())
     })?;
+    exports::clean_stale(&directory)?;
     let context = Arc::new(HostContext {
         directory,
         cache_root,
@@ -194,6 +211,8 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         stop: Arc::new(AtomicBool::new(false)),
         api_slots: Arc::new(Semaphore::new(32)),
         event_slots: Arc::new(Semaphore::new(12)),
+        export_slots: Arc::new(Semaphore::new(1)),
+        export_renderer: std::sync::OnceLock::new(),
         port,
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -381,6 +400,13 @@ async fn handle_inner(
     let host = with_app(|app| app.native_authorize(&identity, false))?;
     if path == "/api/events" && method == Method::GET {
         return event_stream(context, identity, host).await;
+    }
+    if matches!(
+        path.as_str(),
+        "/api/playlist/export" | "/api/history/export"
+    ) && method == Method::GET
+    {
+        return exports::download(context, identity, query).await;
     }
     if path.starts_with("/media/") && matches!(method, Method::GET | Method::HEAD) {
         if !host {

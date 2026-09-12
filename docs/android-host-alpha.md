@@ -90,8 +90,15 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   not a Feishu integration). Identical queries are cached for 60 seconds, at most
   two uncached queries run concurrently, and failures back off for 30 seconds.
   Empty search/categories do not hit the network; no prewarm or cloud writes run.
+- History exports support current-session records and all history, as UTF-8 CSV
+  or paginated PNG (multiple pages in ZIP). Rust selects/sorts a read-only
+  snapshot; Android renders one bitmap at a time and saves through the system
+  document picker, without storage-wide permissions. The bridge accepts only
+  these export options from the native Host origin; Remote cannot export Host
+  history. Cancel/failure releases the export button. Separate desktop
+  played-*.json session archives and diagnostic ZIP are not migrated yet.
 - Unsupported UI is explicitly hidden/disabled: Internet Remote, independent dual display,
-  desktop tool/update/export controls. Do not mistake those gaps for full mobile
+  desktop tool/update controls. Do not mistake those gaps for full mobile
   feature parity. Public Remote and Worker code are not modified by this Alpha.
 
 ### Install and check on hardware

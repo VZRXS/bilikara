@@ -1,6 +1,6 @@
 //! Android's in-process Rust Host. The shell resolves private storage and serves
 //! the existing bundled Host/Remote assets; it owns no playlist business rules.
-use bilikara_runtime::native_host::{Asset, NativeHost};
+use bilikara_runtime::native_host::{Asset, NativeHost, RemoteExportRenderer};
 use bilikara_runtime::{
     AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
 };
@@ -58,33 +58,74 @@ async fn android_alpha_status(
     window
         .with_webview(move |webview| {
             webview.jni_handle().exec(move |env, activity, view| {
-                let result = (|| {
+                let result: Result<(bool, RemoteExportRenderer), jni::errors::Error> = (|| {
+                    let vm = env.get_java_vm()?;
+                    // Retain the class, not Activity/WebView, for HTTP workers.
+                    let class = env.get_object_class(activity)?;
+                    let class = env.new_global_ref(class)?;
                     let origin = env.new_string(origin)?;
-                    env.call_method(
-                        activity,
-                        "installHostWindowControls",
-                        "(Landroid/webkit/WebView;Ljava/lang/String;)Z",
-                        &[
-                            jni::objects::JValue::Object(view),
-                            jni::objects::JValue::Object(&origin),
-                        ],
-                    )?
-                    .z()
-                })();
+                    let ready = env
+                        .call_method(
+                            activity,
+                            "installHostWindowControls",
+                            "(Landroid/webkit/WebView;Ljava/lang/String;)Z",
+                            &[
+                                jni::objects::JValue::Object(view),
+                                jni::objects::JValue::Object(&origin),
+                            ],
+                        )?
+                        .z()?;
+                    let renderer: RemoteExportRenderer = Arc::new(move |spec, path| {
+                        let mut env = vm
+                            .attach_current_thread()
+                            .map_err(|_| "export_attach".to_owned())?;
+                        let result = env.with_local_frame(8, |env| -> jni::errors::Result<i32> {
+                            let spec = env.new_string(spec)?;
+                            let path = env.new_string(path.to_string_lossy())?;
+                            let class: &jni::objects::JClass<'_> = class.as_obj().into();
+                            env.call_static_method(
+                                class,
+                                "renderRemoteExport",
+                                "(Ljava/lang/String;Ljava/lang/String;)I",
+                                &[
+                                    jni::objects::JValue::Object(&spec),
+                                    jni::objects::JValue::Object(&path),
+                                ],
+                            )?
+                            .i()
+                        });
+                        if result.is_err() {
+                            let _ = env.exception_clear();
+                        }
+                        match result {
+                            Ok(0) => Ok(()),
+                            _ => Err("export_render".into()),
+                        }
+                    });
+                    Ok((ready, renderer))
+                })(
+                );
                 if result.is_err() {
                     let _ = env.exception_clear();
                 }
-                let _ = sender.send(result.unwrap_or(false));
+                let _ = sender.send(result.ok());
             });
         })
         .map_err(|_| "Cannot initialize Android window controls".to_owned())?;
-    let window_controls_ready = tauri::async_runtime::spawn_blocking(move || {
+    let bridge = tauri::async_runtime::spawn_blocking(move || {
         receiver
             .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap_or(false)
+            .ok()
+            .flatten()
     })
     .await
     .map_err(|_| "Cannot initialize Android window controls".to_owned())?;
+    let window_controls_ready = if let Some((ready, renderer)) = bridge {
+        host.set_export_renderer(renderer)?;
+        ready
+    } else {
+        false
+    };
     Ok(AndroidAlphaStatus {
         schema_version: 3,
         stage: "native-host-alpha",

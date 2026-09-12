@@ -5759,6 +5759,6 @@ html[data-native-host="true"] .native-alpha-notice {
 }
 html[data-native-host="true"] :is(
   [data-remote-request-view="search"], [data-remote-request-view="discover"],
-  [data-remote-request-view="sources"], .gatcha-panel, #history-export-row,
+  [data-remote-request-view="sources"], .gatcha-panel,
   #open-rating-button, #remote-qr-toggle, #remote-qr-content
 ) { display: none !important; }

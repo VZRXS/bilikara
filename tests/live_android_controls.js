@@ -23,6 +23,8 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     const context = await browser.newContext({viewport: {width: 392, height: 817}, isMobile: true, hasTouch: true});
     await context.addInitScript(() => {
       Object.defineProperty(screen.orientation, "type", {configurable: true, get: () => window.testOrientation || "portrait-primary"});
+      window.exportRequests = [];
+      window.BilikaraHostExport = {postMessage: value => window.exportRequests.push(JSON.parse(value))};
     });
     await context.route("**/*", route => {
       const url = new URL(route.request().url());
@@ -35,8 +37,33 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(bootstrap);
     await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
-    const navigate = name => page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
+    const navigate = async name => {
+      await page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
+      // The app correctly remembers History within this dock page. Each queue
+      // assertion must explicitly select Queue after the export/history case.
+      if (name === "queue") await page.locator('[data-android-workspace="queue"]').click();
+    };
     const cases = {
+      async historyExport() {
+        await navigate("queue");
+        await page.locator('[data-android-workspace="history"]').click();
+        for (const [format, button, status] of [["csv", "confirm-secondary", "cancelled"], ["image", "confirm-ok", "saved"]]) {
+          await page.locator("#history-export-button").click();
+          await page.waitForFunction(() => state.playedSessionsLoaded);
+          await page.locator("#confirm-source").selectOption("history");
+          await page.locator(`#${button}`).click();
+          await page.waitForFunction(() => window.exportRequests.length > 0);
+          assert.equal(await page.locator(`#${button}`).isDisabled(), true);
+          assert.equal(await page.locator(`#${button}`).getAttribute("aria-busy"), "true");
+          const request = await page.evaluate(() => window.exportRequests.shift());
+          assert.equal(request.format, format);
+          assert.equal(request.source, "history");
+          await page.evaluate(({id, status}) => BilikaraHostExport.onmessage({data: JSON.stringify({id, status})}), {id: request.id, status});
+          await page.waitForFunction(button => !document.getElementById(button).disabled, button);
+          assert.equal(await page.locator(`#${button}`).getAttribute("aria-busy"), null);
+          if (status === "cancelled") await page.locator("#confirm-cancel").click();
+        }
+      },
       async gatchaCard() {
         await navigate("request");
         await page.locator("#android-request-random").click();

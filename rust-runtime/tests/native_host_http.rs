@@ -558,6 +558,72 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         post("/api/diagnostics/markdown", json!({}), &remote_cookie).status(),
         403
     );
+    for source in ["played", "history"] {
+        let url = format!("{base}/api/playlist/export-data?source={source}");
+        assert_eq!(
+            client
+                .get(&url)
+                .header("cookie", &remote_cookie)
+                .send()
+                .unwrap()
+                .status(),
+            403
+        );
+        let exported = client.get(&url).header("cookie", &cookie).send().unwrap();
+        assert_eq!(exported.status(), 200);
+        let payload: Value = exported.json().unwrap();
+        assert_eq!(payload["data"]["source"], source);
+        assert!(payload["data"]["rows"].is_array());
+        assert!(
+            !payload
+                .to_string()
+                .contains(cookie.split('=').nth(1).unwrap())
+        );
+    }
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/playlist/export-data?source=../host-state.json"
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .unwrap()
+            .status(),
+        400
+    );
+    for source in ["played", "history"] {
+        let url = format!("{base}/api/playlist/export-data?source={source}");
+        assert_eq!(
+            client
+                .get(&url)
+                .header("cookie", &remote_cookie)
+                .send()
+                .unwrap()
+                .status(),
+            403
+        );
+        let exported = client.get(&url).header("cookie", &cookie).send().unwrap();
+        assert_eq!(exported.status(), 200);
+        let payload: Value = exported.json().unwrap();
+        assert_eq!(payload["data"]["source"], source);
+        assert!(payload["data"]["rows"].is_array());
+        assert!(
+            !payload
+                .to_string()
+                .contains(cookie.split('=').nth(1).unwrap())
+        );
+    }
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/playlist/export-data?source=../host-state.json"
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .unwrap()
+            .status(),
+        400
+    );
     let diagnostic: Value = post("/api/diagnostics/markdown", json!({}), &cookie)
         .json()
         .unwrap();
@@ -565,6 +631,119 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     assert!(markdown.contains("rust-native"));
     assert!(!markdown.contains(cookie.split('=').nth(1).unwrap()));
     assert!(!markdown.contains("bilibili-login.json"));
+    // Browser export uses the native renderer callback, not a Host IPC bridge.
+    // Inject only the platform renderer here; use real auth/projection/HTTP.
+    let mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let renderer_mode = mode.clone();
+    host.set_export_renderer(Arc::new(move |spec, path| {
+        let data: Value = serde_json::from_str(spec).unwrap();
+        assert!(data["data"]["rows"].is_array());
+        assert_eq!(data["data"]["schema_version"], 1);
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("remote-export-")
+        );
+        std::fs::write(path, b"\xef\xbb\xbfCSV fixture").unwrap();
+        match renderer_mode.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => return Err("injected renderer failure".into()),
+            2 => std::thread::sleep(Duration::from_millis(500)),
+            _ => {}
+        }
+        Ok(())
+    }))
+    .unwrap();
+    let export_url = format!("{base}/api/playlist/export?format=csv&source=history&page_size=50");
+    assert_eq!(client.get(&export_url).send().unwrap().status(), 403);
+    assert_eq!(
+        client
+            .get(&export_url)
+            .header("cookie", &remote_cookie)
+            .header("origin", "https://evil.test")
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/playlist/export?format=csv&source=../host-state.json"
+            ))
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+            .status(),
+        400
+    );
+    let exported = client
+        .get(&export_url)
+        .header("cookie", &remote_cookie)
+        .send()
+        .unwrap();
+    assert_eq!(exported.status(), 200);
+    assert_eq!(
+        exported.headers()["content-type"],
+        "text/csv; charset=utf-8"
+    );
+    assert_eq!(exported.headers()["cache-control"], "no-store");
+    assert!(
+        exported.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .ends_with(".csv\"")
+    );
+    assert_eq!(
+        exported.bytes().unwrap().as_ref(),
+        b"\xef\xbb\xbfCSV fixture"
+    );
+    mode.store(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        client
+            .get(&export_url)
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+            .status(),
+        503
+    );
+    mode.store(2, std::sync::atomic::Ordering::SeqCst);
+    let parallel_client = client.clone();
+    let parallel_url = export_url.clone();
+    let parallel_cookie = remote_cookie.clone();
+    let download = std::thread::spawn(move || {
+        parallel_client
+            .get(parallel_url)
+            .header("cookie", parallel_cookie)
+            .send()
+            .unwrap()
+            .bytes()
+            .unwrap()
+    });
+    let scratch = directory.join("remote-exports");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::fs::read_dir(&scratch).unwrap().count() == 0 && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        client
+            .get(&export_url)
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+            .status(),
+        429
+    );
+    download.join().unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        std::fs::read_dir(&scratch).unwrap().count(),
+        0,
+        "Completed and failed renders leave no private files"
+    );
     drop(host);
     std::thread::sleep(Duration::from_millis(500));
     execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });

@@ -450,6 +450,7 @@ html[data-native-host="true"] #gatcha-candidate-card .search-result-cover img { 
 html[data-native-host="true"] #gatcha-candidate-card .search-result-meta { padding: 0 8px; gap: 4px; }
 html[data-native-host="true"] #gatcha-candidate-card .search-result-title { font-size: 14px; line-height: 1.35; }
 html[data-native-host="true"] #gatcha-candidate-card .search-result-url { font-size: 11px; }
+html[data-native-host="true"][data-native-export-ready="true"] #history-export-button { display: inline-flex !important; }
 .android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
 .android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
 html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }

@@ -17394,6 +17394,10 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
+  if (document.documentElement?.dataset?.nativeHost === "true") {
+    if (!window.BilikaraAndroidExport) throw new Error("Android 系统保存功能不可用，请更新系统 WebView 后重试");
+    return window.BilikaraAndroidExport.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize);
+  }
   const params = new URLSearchParams({
     format: normalizedFormat,
     source: normalizedSource,

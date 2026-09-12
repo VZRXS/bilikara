@@ -19,6 +19,13 @@ class AndroidPortraitTest(unittest.TestCase):
         self.assertEqual(native, desktop)
         self.assertEqual(len(native), len(set(native)))
 
+    def test_system_export_bridge_lifecycle(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for frontend tests")
+        result = subprocess.run([node, "tests/android_export_bridge.cjs"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_shared_host_includes_five_translated_mobile_pages(self):
         host = (ROOT / "static/index.html").read_text(encoding="utf-8")
         remote = (ROOT / "static/remote.html").read_text(encoding="utf-8")

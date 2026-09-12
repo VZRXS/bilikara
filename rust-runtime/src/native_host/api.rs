@@ -27,6 +27,9 @@ pub(super) fn dispatch(
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
     if method == Method::GET {
+        if path == "/api/playlist/export-data" {
+            return exports::snapshot(identity, query);
+        }
         if matches!(
             path,
             "/api/lark/search" | "/api/d1/browse" | "/api/d1/category-browse"
@@ -40,6 +43,9 @@ pub(super) fn dispatch(
             "/api/state" => app.native_snapshot(host),
             "/api/remote-identity" => app.native_identity(identity),
             "/api/diagnostics/native" if host => Ok(app.native_diagnostics()),
+            // Native history is persisted in AppState; separate desktop
+            // played-*.json archives are not created by this Alpha.
+            "/api/played-sessions" => Ok(json!([])),
             _ => Err(unavailable()),
         });
     }

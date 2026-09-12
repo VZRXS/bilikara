@@ -7,11 +7,18 @@ import androidx.activity.enableEdgeToEdge
 import androidx.annotation.Keep
 
 class MainActivity : TauriActivity() {
+  companion object {
+    @JvmStatic @Keep
+    fun renderRemoteExport(spec: String, destination: String): Int = PlaylistExport.renderRemote(spec, destination)
+  }
   private val hostWindowControls = HostWindowControls(this)
+  private val hostExports = HostExports(this)
 
   @Keep
-  fun installHostWindowControls(webView: WebView, origin: String): Boolean =
-    hostWindowControls.install(webView, origin)
+  fun installHostWindowControls(webView: WebView, origin: String): Boolean {
+    hostExports.install(webView, origin)
+    return hostWindowControls.install(webView, origin)
+  }
 
   // Same-document Host page history supports the system Back gesture.
   override val handleBackNavigation: Boolean = true
