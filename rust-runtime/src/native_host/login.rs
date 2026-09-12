@@ -14,6 +14,8 @@ const COOKIE_FILE: &str = "bilibili-login.json";
 const MAX_LOGIN_BYTES: u64 = 16 * 1024;
 const GENERATE: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const POLL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
+const QR_LIFETIME: Duration = Duration::from_secs(180);
+const SCAN_MESSAGE: &str = "请使用哔哩哔哩 App 扫码，或截图后从扫一扫相册中选择";
 
 /// Internal observations only, never deserialized from HTTP/UI input. No URL,
 /// QR/key, cookie, response body or arbitrary upstream error text is retained.
@@ -369,6 +371,65 @@ fn valid_qr_url(value: &str) -> bool {
     })
 }
 
+fn poll_until_confirmed(
+    mut request: impl FnMut() -> Result<Value, ApiError>,
+    mut update: impl FnMut(&str) -> Result<(), ApiError>,
+    mut wait: impl FnMut(Duration) -> bool,
+) -> Result<bool, ApiError> {
+    let mut delay = Duration::from_secs(2);
+    let mut reconnecting = false;
+    while wait(delay) {
+        let response = request();
+        // Cancellation/deadline also applies to responses arriving in flight.
+        if !wait(Duration::ZERO) {
+            return Ok(false);
+        }
+        let polled = match response {
+            Err(error) if error.code == "login_network" => {
+                if !reconnecting {
+                    update("网络连接暂时中断，正在自动重试；无需重新扫码")?;
+                }
+                reconnecting = true;
+                delay = (delay * 2).min(Duration::from_secs(8));
+                continue;
+            }
+            result => result?, // HTTP/API rejection and malformed data remain terminal.
+        };
+        delay = Duration::from_secs(2);
+        match polled["data"]["code"].as_i64() {
+            Some(86101) if reconnecting => update(SCAN_MESSAGE)?,
+            Some(86101) => {}
+            Some(86090) => update("扫码成功，请在哔哩哔哩 App 中确认")?,
+            Some(86038) => break,
+            Some(0) => return Ok(true),
+            _ => {
+                return Err(ApiError::new(
+                    502,
+                    "login_code",
+                    "B 站登录返回未知状态，请重新扫码",
+                ));
+            }
+        }
+        reconnecting = false;
+    }
+    Ok(false)
+}
+
+fn wait_for_poll(delay: Duration, deadline: Instant, mut is_active: impl FnMut() -> bool) -> bool {
+    let wake_at = (Instant::now() + delay).min(deadline);
+    loop {
+        let now = Instant::now();
+        if now >= deadline || !is_active() {
+            return false;
+        }
+        if now >= wake_at {
+            return true;
+        }
+        // Do not keep an obsolete login generation sleeping through backoff.
+        thread::sleep((wake_at - now).min(Duration::from_millis(100)));
+    }
+}
+
 fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
     let jar = Arc::new(Jar::default());
     let client = crate::http_client::builder()
@@ -393,51 +454,29 @@ fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
         .as_str()
         .filter(|value| !value.is_empty() && value.len() <= 256)
         .ok_or_else(|| ApiError::new(502, "login_qr", "B 站二维码标识缺失"))?;
+    let deadline = Instant::now() + QR_LIFETIME;
     let image = qr_image(qr)?;
-    update_waiting(
-        context,
-        generation,
-        &image,
-        "请使用哔哩哔哩 App 扫码，或截图后从扫一扫相册中选择",
-    )?;
+    update_waiting(context, generation, &image, SCAN_MESSAGE)?;
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("qrcode_key", key)
         .append_pair("source", "main-fe-header")
         .finish();
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(180) && active(context, generation) {
-        thread::sleep(Duration::from_secs(2));
-        if !active(context, generation) {
-            return Ok(());
-        }
-        let polled = request_json(&client, &format!("{POLL}?{query}"), generation, "poll")?;
-        match polled["data"]["code"].as_i64() {
-            Some(86101) => {}
-            Some(86090) => update_waiting(
-                context,
-                generation,
-                &image,
-                "扫码成功，请在哔哩哔哩 App 中确认",
-            )?,
-            Some(86038) => break,
-            Some(0) => {
-                let scope = url::Url::parse("https://api.bilibili.com/").expect("cookie scope");
-                let cookie = jar
-                    .cookies(&scope)
-                    .and_then(|header| header.to_str().ok().and_then(canonical_cookie))
-                    .ok_or_else(|| {
-                        ApiError::new(502, "login_cookie", "B 站登录响应缺少有效凭证，请重新扫码")
-                    })?;
-                return finish(context, generation, Ok(cookie));
-            }
-            _ => {
-                return Err(ApiError::new(
-                    502,
-                    "login_code",
-                    "B 站登录返回未知状态，请重新扫码",
-                ));
-            }
-        }
+    // Reuse this QR/key and cookie jar; retries never generate another login.
+    let poll_url = format!("{POLL}?{query}");
+    let confirmed = poll_until_confirmed(
+        || request_json(&client, &poll_url, generation, "poll"),
+        |message| update_waiting(context, generation, &image, message),
+        |delay| wait_for_poll(delay, deadline, || active(context, generation)),
+    )?;
+    if confirmed {
+        let scope = url::Url::parse("https://api.bilibili.com/").expect("cookie scope");
+        let cookie = jar
+            .cookies(&scope)
+            .and_then(|header| header.to_str().ok().and_then(canonical_cookie))
+            .ok_or_else(|| {
+                ApiError::new(502, "login_cookie", "B 站登录响应缺少有效凭证，请重新扫码")
+            })?;
+        return finish(context, generation, Ok(cookie));
     }
     if active(context, generation) {
         return Err(ApiError::new(
@@ -519,6 +558,215 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network_failure() -> ApiError {
+        ApiError::new(502, "login_network", "test transport failure")
+    }
+
+    #[test]
+    fn qr_poll_backs_off_with_a_cap_and_resets_after_recovery() {
+        let mut responses = [
+            Err(network_failure()),
+            Err(network_failure()),
+            Err(network_failure()),
+            Ok(json!({"data":{"code":86101}})),
+            Err(network_failure()),
+            Ok(json!({"data":{"code":86090}})),
+            Ok(json!({"data":{"code":0}})),
+        ]
+        .into_iter();
+        let mut delays = Vec::new();
+        let mut messages = Vec::new();
+        assert!(
+            poll_until_confirmed(
+                || responses.next().expect("No extra requests"),
+                |message| {
+                    messages.push(message.to_owned());
+                    Ok(())
+                },
+                |delay| {
+                    if !delay.is_zero() {
+                        delays.push(delay.as_secs());
+                    }
+                    true
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(delays, [2, 4, 8, 8, 2, 4, 2]);
+        assert_eq!(
+            messages.len(),
+            4,
+            "Consecutive network failures do not churn QR state"
+        );
+        assert_eq!(messages[1], SCAN_MESSAGE);
+        assert_eq!(messages[0], messages[2]);
+        assert!(responses.next().is_none());
+    }
+
+    #[test]
+    fn qr_poll_persistent_network_failure_ends_at_original_deadline() {
+        let mut elapsed = Duration::ZERO;
+        let mut requests = 0;
+        let mut updates = 0;
+        assert!(
+            !poll_until_confirmed(
+                || {
+                    requests += 1;
+                    Err(network_failure())
+                },
+                |_| {
+                    updates += 1;
+                    Ok(())
+                },
+                |delay| {
+                    elapsed = (elapsed + delay).min(QR_LIFETIME);
+                    elapsed < QR_LIFETIME
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(elapsed, QR_LIFETIME);
+        assert!(
+            (20..=25).contains(&requests),
+            "No busy loop or unbounded retries"
+        );
+        assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn qr_poll_discards_late_success_and_error_after_cancellation_or_expiry() {
+        use std::cell::Cell;
+        for response in [Ok(json!({"data":{"code":0}})), Err(network_failure())] {
+            let active = Cell::new(true);
+            let mut response = Some(response);
+            assert!(
+                !poll_until_confirmed(
+                    || {
+                        active.set(false); // Deadline / logout / new generation while HTTP is in flight.
+                        response.take().expect("No later polls")
+                    },
+                    |_| panic!("Obsolete request must not change login state"),
+                    |_| active.get(),
+                )
+                .unwrap()
+            );
+        }
+        assert!(
+            !poll_until_confirmed(
+                || panic!("Cancelled login must not make a request"),
+                |_| panic!("Cancelled login must not change state"),
+                |_| false,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn qr_poll_does_not_retry_upstream_rejections_invalid_data_or_expired_qr() {
+        for code in ["login_http", "login_api", "login_json", "login_body"] {
+            let mut requests = 0;
+            let error = poll_until_confirmed(
+                || {
+                    requests += 1;
+                    Err(ApiError::new(502, code, "test rejection"))
+                },
+                |_| panic!("No retry state for terminal errors"),
+                |_| true,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(requests, 1);
+        }
+        assert!(
+            !poll_until_confirmed(
+                || Ok(json!({"data":{"code":86038}})),
+                |_| panic!("Expired QR must not be retried"),
+                |_| true,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            poll_until_confirmed(|| Ok(json!({"data":{"code":123}})), |_| Ok(()), |_| true)
+                .unwrap_err()
+                .code,
+            "login_code"
+        );
+    }
+
+    #[test]
+    fn qr_poll_wait_checks_cancellation_during_backoff_and_does_not_extend_deadline() {
+        let now = Instant::now();
+        assert!(!wait_for_poll(Duration::from_secs(8), now, || true));
+        assert!(!wait_for_poll(Duration::ZERO, now + QR_LIFETIME, || false));
+        let mut checks = 0;
+        assert!(!wait_for_poll(
+            Duration::from_secs(8),
+            now + QR_LIFETIME,
+            || {
+                checks += 1;
+                checks < 2
+            }
+        ));
+        assert_eq!(checks, 2);
+        assert!(
+            now.elapsed() < Duration::from_secs(5),
+            "Cancellation must not wait through 8s backoff"
+        );
+        assert!(!wait_for_poll(
+            Duration::from_secs(8),
+            Instant::now() + Duration::from_millis(1),
+            || true
+        ));
+    }
+
+    #[test]
+    fn qr_poll_recovers_after_the_reported_four_waiting_polls_then_network_failure() {
+        let client = crate::http_client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut step = 0;
+        let mut observations = Vec::new();
+        let result = poll_until_confirmed(
+            || {
+                let response = match step {
+                    0..=3 => {
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"code\":0,\"data\":{\"code\":86101}}"
+                    }
+                    4 => "", // A real transport failure, not an HTTP/API rejection.
+                    5 => {
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"code\":0,\"data\":{\"code\":86090}}"
+                    }
+                    6 => {
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"code\":0,\"data\":{\"code\":0}}"
+                    }
+                    _ => panic!("Unexpected extra poll"),
+                };
+                step += 1;
+                let (url, worker) = mock_response(response, Duration::ZERO);
+                let (result, diagnostic) = observe_json(&client, &url, 1, "poll");
+                worker.join().unwrap();
+                observations.push(diagnostic);
+                result
+            },
+            |_| Ok(()),
+            |_| true,
+        );
+        assert!(
+            result.unwrap(),
+            "Transient connection failure must not discard a valid QR"
+        );
+        assert_eq!(step, 7);
+        assert_eq!(observations[4].result, "network_error");
+        assert_eq!(observations[5].poll_code, Some(86090));
+        assert!(
+            !serde_json::to_string(&observations)
+                .unwrap()
+                .contains("PRIVATE_KEY")
+        );
+    }
 
     fn mock_response(response: &'static str, delay: Duration) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

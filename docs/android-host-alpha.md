@@ -324,7 +324,18 @@ stage, elapsed milliseconds, result, optional HTTP/API/poll status and transport
 classification. `transport_hint` is a classification of the underlying error,
 not proof of a network cause. No QR URL/key, credentials, raw request/response
 headers or server messages are retained, and these records are not in Remote
-snapshots. Adding diagnostics does not change login retry or TLS trust policy.
+snapshots. TLS certificate validation and exact QR-origin checks remain enabled.
+
+An interrupted QR **poll** now keeps the same QR, key and cookie jar, displays a
+reconnecting message and retries after 4s, then at most every 8s. A successful
+poll restores the ordinary 2s interval. The original 180s QR lifetime is never
+extended; expiry, logout, a replaced login generation and app shutdown stop
+polling, including ignoring late responses. HTTP/API rejection, malformed data
+and missing credentials remain explicit failures, not automatic login success.
+`network_error` followed by successful `poll` observations in the same generation
+identifies recovery; no QR/key/cookie is recorded. This addresses the supplied
+trace (four successful waiting polls followed by a DNS-classified connect error)
+without assuming the underlying mobile network fault can be reproduced on a PC.
 
 ```text
 cd rust-runtime
