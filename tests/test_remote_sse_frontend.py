@@ -196,6 +196,8 @@ const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const eventStreamRetryJitterRatio = 0.2;
 const stateFallbackRefreshMs = 1000;
+const nativeEventStreamDeadlineMs = 12000;
+const document = {{visibilityState: "visible"}};
 let nowMs = 0;
 Date.now = () => nowMs;
 Math.random = () => 0;
@@ -203,6 +205,7 @@ let nextTimerId = 1;
 const timers = new Map();
 const requests = [];
 const stateGetSnapshots = [];
+const connectionDiagnostics = [];
 const stateGetFailures = [];
 const connectionPhases = [];
 const appMessages = [];
@@ -337,7 +340,11 @@ function render() {{
   renderedQueueLengths.push(Array.isArray(state.data?.playlist) ? state.data.playlist.length : 0);
   renderCurrentItem(state.data?.current_item, "local");
 }}
-async function fetch(url) {{
+async function fetch(url, options = {{}}) {{
+  if (url === "/api/remote/connection-diagnostic") {{
+    connectionDiagnostics.push(JSON.parse(options.body));
+    return {{ok:true}};
+  }}
   requests.push({{ url, at: nowMs }});
   if (stateGetFailures.length) {{
     stateGetFailures.shift();
@@ -430,6 +437,51 @@ function snapshot(revision, cacheStatus, progress = 0, queueSize = 0) {{
         self.assertIn("failed", result["renderedCacheStatuses"])
         self.assertIn(90, result["renderedCacheProgress"])
         self.assertIn(1, result["renderedQueueLengths"])
+
+    def test_native_heartbeat_detects_silent_loss_without_polling_healthy_stream(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  const firstState={...snapshot(1,"ready",100),capabilities:{event_heartbeat:true}};
+  stateGetSnapshots.push(firstState);
+  await fetchState();
+  connectStateStream();
+  const source=FakeEventSource.instances[0];
+  await source.emit("state",firstState);
+  await advanceTime(10000);
+  await source.emit("heartbeat",{state_revision:1});
+  await advanceTime(10000);
+  const healthyGets=requests.length;
+  // The next state was lost; a newer heartbeat must NOT conceal that loss.
+  await source.emit("heartbeat",{state_revision:2});
+  await source.emit("state","invalid JSON");
+  const second={...firstState,state_revision:2,playback_generation:2,
+    current_item:{...firstState.current_item,id:"song-b",display_title:"Song B"}};
+  stateGetSnapshots.push(second);
+  window.EventSource=class extends FakeEventSource {
+    constructor(url) { super(url); queueMicrotask(()=>this.emit("state",second)); }
+  };
+  await advanceTime(2100);
+  await advanceTime(1000);
+  const recovered=FakeEventSource.instances.at(-1);
+  await recovered.emit("state",second);
+  await source.emit("state",{...firstState,state_revision:100});
+  await advanceTime(50);
+  process.stdout.write(JSON.stringify({healthyGets,gets:requests.length,
+    item:state.data.current_item.id,title:elements.currentTitle.textContent,
+    healthy:state.eventStreamHealthy,closed:source.closeCalls,
+    diagnostics:connectionDiagnostics.map(entry=>entry.event)}));
+})().catch(error=>{process.stderr.write(String(error));process.exit(1);});
+"""
+        )
+        self.assertEqual(result["healthyGets"], 1)
+        self.assertEqual(result["gets"], 2)
+        self.assertEqual(result["item"], "song-b")
+        self.assertEqual(result["title"], "Song B")
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["closed"], 1)
+        self.assertIn("invalid_state", result["diagnostics"])
+        self.assertIn("stale", result["diagnostics"])
 
     def test_event_source_unsupported_uses_one_bounded_fallback_timer(self):
         result = self.run_state_transport_node(

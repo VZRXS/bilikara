@@ -214,6 +214,11 @@ pub(super) fn dispatch(
                 return Ok(json!({}));
             }
             "/api/client/disconnect" => return Ok(json!({})),
+            "/api/remote/connection-diagnostic" => {
+                app.native_requester(identity, "")?;
+                app.native_remote_connection_diagnostic(&body, now);
+                return Ok(json!({}));
+            }
             "/api/client/media-capabilities" => {
                 app.native_authorize(identity, true)?;
                 return Ok(json!({"profile":"avc-aac-720p","hevc_available":false}));

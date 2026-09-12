@@ -7,6 +7,7 @@ const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const eventStreamRetryJitterRatio = 0.2;
 const stateFallbackRefreshMs = 1000;
+const nativeEventStreamDeadlineMs = 12000;
 const remoteConnectionOfflineGraceMs = 3000;
 const larkSearchTableCount = 5;
 const expandedSearchEagerCoverCount = 6;
@@ -2985,7 +2986,13 @@ function scheduleRender() {
   }
   state.renderDebounceTimer = setTimeout(() => {
     state.renderDebounceTimer = null;
-    render();
+    try {
+      render();
+      state.remoteLastRenderedGeneration = state.data?.playback_generation;
+    } catch (error) {
+      reportNativeRemoteConnection("render_error");
+      throw error;
+    }
   }, 50);
 }
 
@@ -3050,6 +3057,8 @@ function clearEventStreamReconnectTimer() {
 }
 
 function closeEventStream() {
+  window.clearTimeout(state.eventStreamWatchdog);
+  state.eventStreamWatchdog = null;
   clearEventStreamReconnectTimer();
   state.eventStreamHealthy = false;
   if (!state.eventSource) {
@@ -3057,6 +3066,35 @@ function closeEventStream() {
   }
   state.eventSource.close();
   state.eventSource = null;
+}
+
+function reportNativeRemoteConnection(event, receivedRevision = null) {
+  if (!state.data?.capabilities?.event_heartbeat) return;
+  // Fixed measurements only, no title/user, cookie, invite or arbitrary error.
+  fetch("/api/remote/connection-diagnostic", {
+    method: "POST", headers: {...clientHeaders(), "Content-Type":"application/json"},
+    body: JSON.stringify({event, revision:currentStateRevision(), received_revision:receivedRevision,
+      playback_generation:state.data?.playback_generation,
+      rendered_generation:state.remoteLastRenderedGeneration,
+      stream_state:state.eventSource?.readyState ?? 2,
+      age_ms:Math.max(0, Date.now() - (state.eventStreamLastFrameAt || Date.now())),
+      visible:document.visibilityState === "visible"}),
+  }).catch(() => {});
+}
+
+function armNativeEventStreamWatchdog(source) {
+  if (!state.data?.capabilities?.event_heartbeat) return;
+  state.eventStreamLastFrameAt = Date.now();
+  window.clearTimeout(state.eventStreamWatchdog);
+  state.eventStreamWatchdog = window.setTimeout(() => {
+    if (state.eventSource !== source) return;
+    reportNativeRemoteConnection("stale");
+    closeEventStream();
+    setRemoteConnectionPhase("reconnecting");
+    // Read-only local Host snapshot; never trigger a media/library refresh.
+    refreshCacheStatusOnly();
+    scheduleEventStreamReconnect();
+  }, nativeEventStreamDeadlineMs);
 }
 
 function eventStreamReconnectDelayMs(baseDelayMs, randomValue = Math.random()) {
@@ -3136,9 +3174,12 @@ function connectStateStream() {
       const confirmsCurrentState = eventStreamStateIsCurrent(snapshot);
       applyStateSnapshot(snapshot);
       if (!confirmsCurrentState) {
+        reportNativeRemoteConnection("out_of_order", Number(snapshot.state_revision));
         return;
       }
+      if (!state.eventStreamHealthy) reportNativeRemoteConnection("connected");
       state.eventStreamHealthy = true;
+      armNativeEventStreamWatchdog(source);
       state.eventStreamRetryMs = eventStreamInitialRetryMs;
       clearStateFallbackTimer();
       clearRemoteConnectionOfflineTimer();
@@ -3148,8 +3189,18 @@ function connectStateStream() {
         setRemoteConnectionPhase("connected");
       }
     } catch {
+      reportNativeRemoteConnection("invalid_state");
       // Ignore malformed events and wait for the next valid snapshot.
     }
+  });
+
+  source.addEventListener("heartbeat", (event) => {
+    if (state.eventSource !== source || !state.eventStreamHealthy) return;
+    try {
+      const revision = JSON.parse(event.data).state_revision;
+      if (revision === currentStateRevision()) armNativeEventStreamWatchdog(source);
+      // A missing state frame must not be hidden by a newer heartbeat.
+    } catch { /* Invalid heartbeats cannot extend the liveness deadline. */ }
   });
 
   source.addEventListener("error", () => {

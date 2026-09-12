@@ -35,6 +35,7 @@ pub(crate) struct NativeSession {
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
+    remote_connection_diagnostics: VecDeque<Value>,
     login_diagnostics: VecDeque<crate::native_host::LoginDiagnostic>,
     library_diagnostics: VecDeque<crate::native_host::LibraryDiagnostic>,
     media_readers: HashMap<String, usize>,
@@ -301,7 +302,7 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":false});
+        value["capabilities"] = json!({"native_android_alpha":true,"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":false,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":false});
         value["app"] = json!({"version":"0.8.0-android-alpha","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
@@ -606,10 +607,53 @@ impl AppState {
 
     pub(crate) fn native_diagnostics(&self) -> Value {
         json!({"backend":"rust","events":self.native_session.diagnostics,
+            "remote_connection":self.native_session.remote_connection_diagnostics,
             "bilibili_login":self.native_session.login_diagnostics,
             "library_refresh":self.native_session.library_diagnostics,
             "ratings":self.native_session.ratings.events,
             "gatcha_task":self.native_session.login.gacha_snapshot()})
+    }
+
+    pub(crate) fn native_remote_connection_diagnostic(&mut self, body: &Value, now: f64) {
+        let Some(
+            event @ ("connected" | "stale" | "out_of_order" | "invalid_state" | "render_error"),
+        ) = body["event"].as_str()
+        else {
+            return;
+        };
+        let Ok(snapshot) = self.native_core_snapshot() else {
+            return;
+        };
+        let mut safe = json!({"at":now,"event":event,
+            "host_revision":snapshot.revision + self.native_session.revision,
+            "host_playback_generation":snapshot.playback_generation});
+        for key in [
+            "revision",
+            "received_revision",
+            "playback_generation",
+            "rendered_generation",
+            "stream_state",
+            "age_ms",
+        ] {
+            if let Some(value) = body[key].as_u64() {
+                safe[key] = json!(value);
+            }
+        }
+        if let Some(visible) = body["visible"].as_bool() {
+            safe["visible"] = json!(visible);
+        }
+        let log = &mut self.native_session.remote_connection_diagnostics;
+        // Rejected frames may arrive frequently. Retain bounded evidence apart
+        // from media events without letting repeated errors evict everything.
+        if log.back().is_some_and(|last| {
+            last["event"] == event && now - last["at"].as_f64().unwrap_or(0.0) < 5.0
+        }) {
+            return;
+        }
+        if log.len() >= 60 {
+            log.pop_front();
+        }
+        log.push_back(safe);
     }
     pub(crate) fn native_library_diagnostic(
         &mut self,

@@ -515,7 +515,12 @@ async fn event_stream(
             let Ok(Ok(value)) = value else { break };
             let revision = value["state_revision"].as_u64();
             let frame = if revision == last_revision {
-                ": keepalive\n\n".into()
+                // Named heartbeat reaches EventSource listeners; an SSE
+                // comment alone cannot detect a silently stalled connection.
+                format!(
+                    "event: heartbeat\ndata: {{\"state_revision\":{}}}\n\n",
+                    revision.unwrap_or(0)
+                )
             } else {
                 last_revision = revision;
                 format!("event: state\ndata: {value}\n\n")
@@ -531,7 +536,10 @@ async fn event_stream(
         }
     });
     Ok((
-        [("content-type", "text/event-stream")],
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache, no-transform"),
+        ],
         Body::from_stream(tokio_util::io::ReaderStream::new(reader)),
     )
         .into_response())
