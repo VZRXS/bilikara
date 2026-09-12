@@ -445,9 +445,115 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
 
+  android-bundle:
+    name: Android ARM64 APK
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android tools
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Setup repository Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-linux-android
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust-runtime -> target
+            ./src-tauri -> target
+          shared-key: android-apk
+
+      - name: Resolve APK and require signing for tags
+        id: android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: node scripts/android_release.mjs
+
+      - name: Validate native Host and Android packaging contract
+        run: |
+          cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked
+          node --test tests/android_release.test.mjs
+          npm ci
+
+      - name: Build APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
+          RELEASE_APK: ${{ steps.android.outputs.release }}
+        run: |
+          chmod +x src-tauri/gen/android/gradlew
+          if [ "$RELEASE_APK" = "true" ]; then
+            npm exec -- tauri android build --apk --target aarch64 --ci
+          else
+            npm run android:build:debug
+          fi
+
+      - name: Stage and verify APK
+        env:
+          APK_NAME: ${{ steps.android.outputs.apk }}
+          RELEASE_APK: ${{ steps.android.outputs.release }}
+        run: |
+          variant=debug
+          if [ "$RELEASE_APK" = "true" ]; then variant=release; fi
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*${variant}.apk")
+          test "${#apks[@]}" = 1
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "${apks[0]}"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
+          cp "${apks[0]}" "$APK_NAME"
+
+      - name: Upload APK test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.android.outputs.apk }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload signed APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ steps.android.outputs.apk }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-preview.') }}
+
+      - name: Remove temporary signing file
+        if: always()
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
+            rm -f -- "$ANDROID_KEYSTORE_PATH"
+          fi
+
   mirror-release-r2:
     name: Mirror Release To R2
-    needs: bundle
+    needs: [bundle, android-bundle]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     env:
@@ -524,6 +630,11 @@ jobs:
             --cache-control "public, max-age=31536000, immutable" \
             --only-show-errors
           aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          aws s3 cp release-metadata/releases.json "s3://${R2_BUCKET}/bilikara/releases/releases.json" \
             --endpoint-url "$endpoint" \
             --content-type "application/json; charset=utf-8" \
             --cache-control "public, max-age=300" \

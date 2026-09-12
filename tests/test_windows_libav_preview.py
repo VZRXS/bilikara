@@ -373,11 +373,13 @@ assert any(p.samefile(expected) for p in candidates), candidates
                          ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"])
         self.assertEqual({(e["slug"], e["arch"]) for e in bundles},
                          {(os, arch) for os in ("windows", "macos") for arch in ("x64", "arm64")})
-        bundle_job = text.split("\n  bundle:\n", 1)[1].split("\n  mirror-release-r2:\n", 1)[0]
+        bundle_job = text.split("\n  bundle:\n", 1)[1].split("\n  android-bundle:\n", 1)[0]
         self.assertNotIn("runner.os == 'Linux'", bundle_job)
         self.assertNotIn("windows_libav_preview", text)
         self.assertNotIn("BILIKARA_WINDOWS_LIBAV_PREVIEW", text)
-        self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 2)
+        self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 3)
+        self.assertIn("needs: [bundle, android-bundle]", text)
+        self.assertIn("Upload signed APK to GitHub Release", text)
         for before, after in (("Setup native MSVC", "Build same-source Windows"),
                               ("Build same-source Windows", "Prepare native driver"),
                               ("Prepare native driver", "Build app bundle"),

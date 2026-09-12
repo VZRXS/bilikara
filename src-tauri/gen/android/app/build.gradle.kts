@@ -22,8 +22,20 @@ android {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = System.getenv("BILIKARA_ANDROID_VERSION_CODE")?.toInt()
+            ?: tauriProperties.getProperty("tauri.android.versionCode", "8000").toInt()
+        versionName = System.getenv("BILIKARA_ANDROID_VERSION_NAME") ?: "0.8.0-preview.0"
+    }
+    // No signing material lives in the repository. A tag build must supply all
+    // four secrets; manual/PR builds remain clearly marked .alpha test packages.
+    val signingPath = System.getenv("ANDROID_KEYSTORE_PATH")
+    if (!signingPath.isNullOrBlank()) {
+        signingConfigs.create("release") {
+            storeFile = file(signingPath)
+            storePassword = requireNotNull(System.getenv("ANDROID_KEYSTORE_PASSWORD"))
+            keyAlias = requireNotNull(System.getenv("ANDROID_KEY_ALIAS"))
+            keyPassword = requireNotNull(System.getenv("ANDROID_KEY_PASSWORD"))
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -38,6 +50,7 @@ android {
             // this does not change Rust behavior or disable WebView debugging.
         }
         getByName("release") {
+            if (!signingPath.isNullOrBlank()) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
