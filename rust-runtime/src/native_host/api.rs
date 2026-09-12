@@ -263,7 +263,8 @@ pub(super) fn dispatch(
             "/api/playlist/reorder" => {
                 command["command"] = json!("move_item_to_index");
                 command["item_id"] = json!(text(&body, "item_id")?);
-                command["target_index"] = body["target_index"].clone();
+                command["target_index"] =
+                    body.get("index").unwrap_or(&body["target_index"]).clone();
             }
             "/api/playlist/resort" => command["command"] = json!("resort_playlist_by_cycle"),
             "/api/playlist/clear" => command["command"] = json!("clear_playlist"),
