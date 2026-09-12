@@ -6524,6 +6524,7 @@ function openBindingSheet(intent, payload) {
   state.bindingIntent = {
     ...intent,
     binding: payload,
+    focusElement: intent?.focusElement || document.activeElement,
   };
   elements.bindingSheetVideoOptions.innerHTML = "";
   elements.bindingSheetAudioOptions.innerHTML = "";
@@ -6541,17 +6542,21 @@ function openBindingSheet(intent, payload) {
   elements.bindingSheet.classList.remove("hidden");
   elements.bindingSheet.setAttribute("aria-hidden", "false");
   requestAnimationFrame(() => {
+    if (!state.bindingSheetOpen) return;
     elements.bindingSheet.classList.add("is-open");
+    elements.bindingSheetClose?.focus({ preventScroll: true });
   });
 }
 
 function closeBindingSheet() {
+  const opener = state.bindingIntent?.focusElement;
   state.bindingSheetOpen = false;
   state.bindingIntent = null;
   state.bindingAccordion.video = false;
   state.bindingAccordion.audio = false;
   elements.bindingSheet.classList.remove("is-open");
   elements.bindingSheet.setAttribute("aria-hidden", "true");
+  if (opener?.isConnected) opener.focus({ preventScroll: true });
   window.setTimeout(() => {
     if (state.bindingSheetOpen) {
       return;
@@ -6753,6 +6758,11 @@ function renderPoolConfigSheet() {
   if (elements.poolConfigSheetSave) {
     const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
     elements.poolConfigSheetSave.disabled = state.poolConfigSaving || !detailLoaded;
+    if (state.poolConfigSaving) {
+      elements.poolConfigSheetSave.setAttribute("aria-busy", "true");
+    } else {
+      elements.poolConfigSheetSave.removeAttribute("aria-busy");
+    }
     elements.poolConfigSheetSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
   }
 }
@@ -6853,6 +6863,7 @@ async function submitPoolConfigSheet() {
     poolConfigSetMessage(error.message, true);
   } finally {
     state.poolConfigSaving = false;
+    elements.poolConfigSheetSave?.removeAttribute("aria-busy");
     if (state.poolConfigSheetOpen) {
       renderPoolConfigSheet();
     }
@@ -9730,6 +9741,10 @@ document.addEventListener("keydown", (event) => {
         event,
         state.ratingPromptElement.querySelector(".rating-close"),
       );
+      return;
+    }
+    if (state.bindingSheetOpen) {
+      trapFocusWithin(elements.bindingSheet, event, elements.bindingSheetClose);
       return;
     }
     if (playbackSheetIsOpen()) {

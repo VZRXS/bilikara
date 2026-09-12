@@ -518,6 +518,10 @@ p {
   color: var(--accent);
 }
 
+.pool-config-list-head h3 {
+  font-size: 15px;
+}
+
 .pool-config-weight-row strong {
   color: var(--ink);
   font-size: 14px;
@@ -4205,9 +4209,8 @@ select:disabled {
 }
 
 .queue-current-next {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
   width: fit-content;
   height: 32px;
   min-width: 0;
@@ -4248,7 +4251,7 @@ select:disabled {
 .song-item {
   position: relative;
   display: grid;
-  grid-template-columns: var(--queue-badge-column-width) minmax(0, 1fr) auto;
+  grid-template-columns: var(--queue-badge-column-width) minmax(0, 1fr);
   gap: 12px;
   align-items: stretch;
   min-height: 96px;
@@ -4517,7 +4520,7 @@ select:disabled {
 
 .history-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: stretch;
   padding: 10px 14px;
@@ -5452,7 +5455,7 @@ select:disabled {
   }
 
   .song-item {
-    grid-template-columns: 62px minmax(0, 1fr) auto;
+    grid-template-columns: 62px minmax(0, 1fr);
     min-height: 112px;
   }
 
@@ -8146,12 +8149,8 @@ body {
 }
 
 .work-rail-button:focus-visible {
-  outline: 3px solid rgba(208, 90, 63, 0.4);
-  outline-offset: 1px;
-}
-
-.work-rail-button[aria-selected="true"]:focus-visible {
-  outline: none;
+  outline: var(--accent-focus-outline);
+  outline-offset: 2px;
 }
 
 .layout,
@@ -10062,8 +10061,7 @@ body.is-presentation-stage-only .left-column {
 .host-peer-head .toolbar-button,
 .host-peer-head .next-button,
 .host-workspace-region .queue-card-head .toolbar-button,
-.host-workspace-region .queue-card-head .next-button,
-.selection-modal-head .banner-close {
+.host-workspace-region .queue-card-head .next-button {
   min-height: var(--host-peer-action-height);
   height: var(--host-peer-action-height);
   padding-block: 0;
@@ -10071,20 +10069,14 @@ body.is-presentation-stage-only .left-column {
   line-height: 1;
 }
 
-.selection-modal-head .banner-close {
-  width: var(--host-peer-action-height);
-  min-width: var(--host-peer-action-height);
-  padding-inline: 0;
-  font: 400 20px/0 sans-serif;
-  padding-block: 0 2px;
-}
-
 .critical-banner-region .backup-actions .banner-action,
 .critical-banner-region .backup-actions .banner-close,
 .selection-modal-actions .toolbar-button,
 .selection-modal-actions .next-button,
 .confirm-actions .toolbar-button,
-.confirm-actions .next-button {
+.confirm-actions .next-button,
+.rating-actions .next-button,
+.song-detail-actions .next-button {
   min-height: var(--host-peer-action-height);
   height: var(--host-peer-action-height);
   padding-block: 0;
@@ -10105,7 +10097,11 @@ body.is-presentation-stage-only .left-column {
 .selection-modal-actions .toolbar-button,
 .selection-modal-actions .next-button,
 .confirm-actions .toolbar-button,
-.confirm-actions .next-button {
+.confirm-actions .next-button,
+.rating-actions .next-button,
+.song-detail-actions .next-button,
+.compact-form button[type="submit"],
+.session-user-form button {
   transition:
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
     background 180ms ease,
@@ -10116,7 +10112,11 @@ body.is-presentation-stage-only .left-column {
 .selection-modal-actions .toolbar-button:hover,
 .selection-modal-actions .next-button:hover,
 .confirm-actions .toolbar-button:hover,
-.confirm-actions .next-button:hover {
+.confirm-actions .next-button:hover,
+.rating-actions .next-button:hover,
+.song-detail-actions .next-button:hover,
+.compact-form button[type="submit"]:hover,
+.session-user-form button:hover {
   transform: translateY(-1px);
 }
 
@@ -11614,4 +11614,76 @@ body.is-presentation-control-host .presentation-host-controls {
     grid-template-columns: auto minmax(88px, 1fr) 44px;
     gap: 6px;
   }
+}
+
+/* Task submits share the existing readable accent pair in each theme. */
+.selection-modal-actions .next-button:not(:disabled),
+.confirm-actions .next-button:not(:disabled),
+.rating-actions .next-button:not(:disabled),
+.song-detail-actions .next-button:not(:disabled),
+.compact-form button[type="submit"]:not(:disabled),
+.session-user-form button:not(:disabled) {
+  background: var(--accent-deep);
+  color: var(--on-accent);
+}
+
+:root[data-theme="blue"] .selection-modal-actions .next-button:not(:disabled),
+:root[data-theme="blue"] .confirm-actions .next-button:not(:disabled),
+:root[data-theme="blue"] .rating-actions .next-button:not(:disabled),
+:root[data-theme="blue"] .song-detail-actions .next-button:not(:disabled),
+:root[data-theme="blue"] .compact-form button[type="submit"]:not(:disabled),
+:root[data-theme="blue"] .session-user-form button:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.song-badge-error {
+  display: none;
+  width: 24px;
+  height: 24px;
+}
+
+.song-progress-badge.failed .song-index-label {
+  display: none;
+}
+
+.song-progress-badge.failed .song-badge-error {
+  display: block;
+  color: var(--red);
+}
+
+/* Metadata and row actions share flow so long requester labels cannot cover controls. */
+.queue-current-meta,
+.song-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-current-main {
+  padding-right: 0;
+}
+
+.queue-current-requester,
+.song-requester,
+.history-requester {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 24px;
+}
+
+.queue-current-requester,
+.song-requester {
+  line-height: 32px;
+}
+
+.song-meta-row .song-actions-wrap,
+.history-meta-row .history-actions-wrap {
+  flex-shrink: 0;
+  align-self: center;
+  margin-bottom: 0;
 }

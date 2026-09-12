@@ -28,19 +28,6 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
         self.assertIn('apiPost("/api/admin-blacklist/restore"', source)
         self.assertIn('apiPost("/api/admin-video/delete"', source)
 
-    def test_blacklist_translations_exist_in_all_languages(self):
-        payload = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))
-        required = {
-            "search.blacklistBrowse",
-            "search.blacklistTitle",
-            "search.blacklistRelease",
-            "search.blacklistReleaseRestore",
-        }
-
-        for locale in ("zh", "en", "ja"):
-            with self.subTest(locale=locale):
-                self.assertTrue(required.issubset(payload["languages"][locale]))
-
     def test_developer_mode_exposes_maintenance_workflow_triggers(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

@@ -525,7 +525,7 @@ console.log(JSON.stringify({ sequence }));
         self.assertIn('state.openRowMenuTrigger = toggle', self.source)
         self.assertIn('trigger.focus({ preventScroll: true })', self.source)
 
-    def test_clear_copy_and_new_accessibility_labels_exist_in_every_language(self):
+    def test_clear_confirm_warns_that_the_playing_song_survives_in_every_language(self):
         expected_clear_phrases = {
             "zh": "当前正在播放的歌曲不会受影响",
             "en": "currently playing song will not be affected",
@@ -534,15 +534,6 @@ console.log(JSON.stringify({ sequence }));
         for language, translations in self.i18n.items():
             with self.subTest(language=language):
                 self.assertIn(expected_clear_phrases[language], translations["list.clearConfirm"])
-                for key in (
-                    "shell.history",
-                    "list.scrollLabel",
-                    "history.scrollLabel",
-                    "list.movedPosition",
-                    "common.moveUp",
-                    "common.moveDown",
-                ):
-                    self.assertTrue(translations[key])
 
 
 if __name__ == "__main__":

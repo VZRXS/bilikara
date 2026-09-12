@@ -2935,6 +2935,9 @@ pub(crate) fn mark_presentation_controller_ready(
     complete_activation_if_ready(&app, &state, generation, should_finalize)
 }
 
+// Registered legacy Controller -> Host channel. Neither shipped window
+// capability grants it, and the audience Controller does not invoke it.
+// Registration is retained; this does not promise future interactive controls.
 #[tauri::command]
 pub(crate) fn send_presentation_command(
     app: tauri::AppHandle,

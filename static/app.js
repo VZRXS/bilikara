@@ -16196,6 +16196,7 @@ function openBindingModal(intent, payload) {
     );
   });
   elements.bindingModal.classList.remove("hidden");
+  elements.bindingModalClose?.focus({ preventScroll: true });
 }
 
 function closeGatchaFavlistModal({ restoreFocus = true } = {}) {
@@ -19733,6 +19734,22 @@ elements.confirmSecondary?.addEventListener("click", async () => {
   if (intent.type === "export-history") {
     await exportHistory("csv", selectedConfirmHistoryExportSource(intent), selectedConfirmHistoryExportPageSize(intent));
     return;
+  }
+});
+
+elements.bindingModal?.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = [...elements.bindingModal.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first?.focus();
   }
 });
 

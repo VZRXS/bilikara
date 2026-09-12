@@ -4575,6 +4575,11 @@ class CacheManager:
         audio_tracks: list[dict],
         cache_attempt_token: int,
     ) -> dict[str, Path]:
+        """Historical Python Native adapter retained for direct regression tests.
+
+        Production enqueue/retry/sync submit Native jobs to Rust CacheRuntime.
+        This adapter is not an availability fallback or its production retry loop.
+        """
         item_id = item.id
         cookie = effective_bilibili_cookie()
         selected_pages = self._selected_pages_for_item(item)
@@ -5454,6 +5459,10 @@ class CacheManager:
         stream_metadata: dict[str, object] | None = None,
         mark_done: bool = True,
     ) -> Path:
+        """Transfer helper for the historical Native adapter and direct tests.
+
+        Production Native transfers run inside Rust CacheRuntime, not here.
+        """
         download_urls = [str(url).strip() for url in urls if str(url).strip()]
         if not download_urls:
             raise DownloadCommandError(f"{stage_label}: no download URL is available")

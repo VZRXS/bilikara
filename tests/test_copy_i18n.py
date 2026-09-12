@@ -27,14 +27,14 @@ class CopyBindings(HTMLParser):
 class CopyI18nTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.languages = json.loads((STATIC / "i18n.json").read_text())["languages"]
+        cls.languages = json.loads((STATIC / "i18n.json").read_text(encoding="utf-8"))["languages"]
 
     def test_current_static_and_literal_runtime_bindings_resolve(self):
         keys = set()
         for path in STATIC.glob("*"):
             if path.suffix not in (".html", ".js"):
                 continue
-            source = path.read_text()
+            source = path.read_text(encoding="utf-8")
             parser = CopyBindings()
             parser.feed(source)
             keys.update(key for key in parser.keys if key and "${" not in key)

@@ -48,7 +48,7 @@
 
   --btn-secondary-bg: rgba(255, 255, 255, 0.82);
   --btn-border: none;
-  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-bg: var(--accent-deep);
   --remote-primary-button-color: var(--on-accent);
   --remote-primary-button-disabled-bg: var(--accent);
   --remote-primary-button-disabled-color: var(--on-accent);
@@ -1057,7 +1057,7 @@ h1 {
   gap: 7px;
   min-width: 0;
   font-size: 22px;
-  line-height: 1.25;
+  line-height: 1.15;
 }
 
 .panel-title {
@@ -1532,6 +1532,7 @@ h1 {
 
 #remote-key-shift-panel .remote-step-button,
 #remote-key-shift-panel .remote-reset-button {
+  border-radius: 14px;
   width: 100%;
   min-width: 0;
   padding-inline: 8px;
@@ -2032,13 +2033,6 @@ button[data-control-action="next-track"] {
   padding: 0 14px;
   font-size: var(--remote-peer-action-font-size);
   line-height: 1;
-}
-
-.pool-config-head-actions .binding-sheet-close {
-  width: var(--remote-peer-action-height);
-  min-width: var(--remote-peer-action-height);
-  height: var(--remote-peer-action-height);
-  min-height: var(--remote-peer-action-height);
 }
 
 .binding-accordion {
@@ -3473,6 +3467,7 @@ select:disabled {
 }
 
 .history-item {
+  min-width: 0;
   display: block;
   padding: 14px;
   border-radius: 18px;
@@ -3504,9 +3499,9 @@ select:disabled {
 
 .history-meta {
   margin-top: 4px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
 }
 
@@ -3798,6 +3793,10 @@ body.remote-identity-modal-open {
 
 .remote-identity-form .message.is-error {
   color: var(--danger-btn-color);
+}
+
+:root[data-theme="blue"] .remote-identity-form .message.is-error {
+  color: var(--accent);
 }
 
 .remote-identity-actions {
@@ -5040,9 +5039,10 @@ body.playback-sheet-scroll-locked {
   --muted: #b5a89e;
   --accent: #e06c53;
   --accent-deep: #b24733;
+  --green: #5fca9d;
   --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
-  --danger-btn-color: var(--accent-deep);
+  --danger-btn-color: var(--accent);
   --danger-btn-bg: rgba(177, 69, 69, 0.18);
   --danger-btn-hover-bg: rgba(177, 69, 69, 0.24);
   --toast-error-border: rgba(177, 69, 69, 0.26);
@@ -5095,7 +5095,7 @@ body.playback-sheet-scroll-locked {
 
   --btn-secondary-bg: rgba(48, 41, 37, 0.82);
   --btn-border: 1px solid rgba(246, 241, 235, 0.1);
-  --remote-primary-button-bg: var(--accent);
+  --remote-primary-button-bg: var(--accent-deep);
   --remote-primary-button-color: var(--on-accent);
   --remote-primary-button-disabled-bg: var(--accent);
   --remote-primary-button-disabled-color: var(--on-accent);
@@ -5700,7 +5700,7 @@ html[data-remote-transport="internet-pending"] body {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: color-mix(in srgb, var(--page-bg, #fff7ed) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(12px);
 }
 
@@ -5715,7 +5715,7 @@ html[data-remote-transport="internet-pending"] body {
   padding: 24px;
   border: 1px solid var(--line, #ead8ca);
   border-radius: 24px;
-  background: var(--panel-bg, #fff);
+  background: var(--modal-card-bg);
   box-shadow: 0 24px 70px rgb(35 24 16 / 18%);
 }
 
