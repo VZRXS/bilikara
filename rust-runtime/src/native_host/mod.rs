@@ -7,6 +7,7 @@ mod catalog_append;
 mod diagnostics;
 mod exports;
 mod files;
+mod internet;
 mod library;
 pub(crate) use library::LibraryDiagnostic;
 mod login;

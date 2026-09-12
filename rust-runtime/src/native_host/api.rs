@@ -39,6 +39,9 @@ pub(super) fn dispatch(
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
     if method == Method::GET {
+        if path == "/api/internet-remote/state" {
+            return internet::route(context, identity, path, &body);
+        }
         if path == "/api/ui-language" {
             return preferences::language(context, identity, None);
         }
@@ -101,6 +104,9 @@ pub(super) fn dispatch(
     }
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
+    }
+    if path.starts_with("/api/internet-remote/") {
+        return internet::route(context, identity, path, &body);
     }
     if path == "/api/rating/submit" {
         return ratings::submit(identity, &body);

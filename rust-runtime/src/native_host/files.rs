@@ -54,13 +54,9 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
     if matches!(relative, "index.html" | "remote.html") {
         let html = String::from_utf8(asset.bytes).map_err(|_| ApiError::invalid("页面编码无效"))?;
         // This marker comes from the native server, not from query parameters.
-        // Reuse the shared UI without exposing desktop IPC or starting signaling.
+        // Reuse the shared UI and signaling; no desktop IPC is exposed.
         asset.bytes = html
             .replacen("<html ", "<html data-native-host=\"true\" ", 1)
-            .replace(
-                "<script src=\"/internet-remote-host.js\" defer></script>",
-                "",
-            )
             .into_bytes();
     }
     let length = asset.bytes.len();
@@ -76,7 +72,7 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
         .headers_mut()
         .insert("content-length", length.to_string().parse().unwrap());
     // No inline scripts, remote scripts, embedding, or generic network proxy.
-    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hdslb.com https://*.bilibili.com; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
+    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hdslb.com https://*.bilibili.com; media-src 'self' blob:; connect-src 'self' https://rtc.kevinx96.icu wss://rtc.kevinx96.icu; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
     Ok(response)
 }
 
