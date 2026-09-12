@@ -14,6 +14,7 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub cache_policy: crate::native_host::preferences::CachePolicy,
+    pub cache_usage_bytes: u64,
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
@@ -314,6 +315,16 @@ impl AppState {
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
         value["cache_policy"] = session.cache_policy.snapshot();
+        value["cache_policy"]["usage_bytes"] = json!(session.cache_usage_bytes);
+        // Count committed songs, not the staging/artifacts top-level directories.
+        value["cache_policy"]["cached_item_count"] = json!(
+            snapshot
+                .current_item
+                .iter()
+                .chain(snapshot.playlist.iter())
+                .filter(|item| item.cache_status == "ready" && !item.artifact_set_id.is_empty())
+                .count()
+        );
         value["gatcha"] = json!(session.login.gacha_snapshot());
         value["app_update"] = json!({"state":"unsupported","supported":false});
         value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":"Android Alpha"});

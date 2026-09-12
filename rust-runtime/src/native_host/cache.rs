@@ -13,6 +13,7 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
         let mut fingerprint=String::new();
         let mut last_error=String::new();
         let mut last_cleanup=std::time::Instant::now();
+        let mut last_metrics=None::<std::time::Instant>;
         while !context.stop.load(Ordering::Acquire){
             if let Err(error)=tick(&context,&mut fingerprint) && error.to_string()!=last_error {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
@@ -24,11 +25,51 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
                 maintenance::trim_log(&context.directory);
                 last_cleanup=std::time::Instant::now();
             }
+            if last_metrics.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+                if let Ok(bytes) = usage_bytes(&context.cache_root) {
+                    let _ = with_app(|app| {
+                        if app.native().cache_usage_bytes != bytes {
+                            app.native().cache_usage_bytes = bytes;
+                            app.native().revision += 1;
+                        }
+                        Ok(())
+                    });
+                }
+                last_metrics=Some(std::time::Instant::now());
+            }
             thread::sleep(Duration::from_millis(200));
         }
         let _=execute_cache_runtime(CacheRuntimeCommand::Shutdown{});
     }).map_err(|_|ApiError::new(503,"cache_start","无法启动媒体缓存服务"))?;
     Ok(())
+}
+
+// Operational metadata sampling off the AppState lock, at most once per 2s.
+// Include partial/stale downloads in disk usage, never follow links outside the
+// private media directory, and bound malformed directory trees.
+fn usage_bytes(root: &Path) -> std::io::Result<u64> {
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut total = 0_u64;
+    let mut entries_seen = 0;
+    while let Some((directory, depth)) = pending.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            entries_seen += 1;
+            if entries_seen > 100_000 {
+                return Err(std::io::Error::other("cache metrics entry limit exceeded"));
+            }
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            } else if metadata.is_dir() && depth < 8 {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    Ok(total)
 }
 
 fn cache_error(error: crate::CacheRuntimeError) -> ApiError {

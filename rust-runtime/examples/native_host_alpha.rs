@@ -13,9 +13,13 @@ fn execute(value: Value) -> bilikara_runtime::AppStateResponse {
     result
 }
 
-fn fixture(directory: &Path, video: &Path, audio: &Path) {
+fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
     execute(json!({"schema_version":1,"command":"add_session_user","name":"Alice","now":2.0}));
-    for (index, id) in ["fixture-first", "fixture-second"].iter().enumerate() {
+    for (index, id) in ["fixture-first", "fixture-second", "fixture-third"]
+        .iter()
+        .take(count)
+        .enumerate()
+    {
         let item = json!({"id":id,"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"video_page":1,
             "title":format!("Native Alpha fixture {}",index+1),"part_title":"Original","display_title":format!("Native Alpha fixture {}",index+1),"cover_url":"","embed_url":"",
             "selected_pages":[1,2],"selected_cids":[2,3],"selected_durations":[90,90],"selected_parts":["Original","Instrumental"],
@@ -53,8 +57,8 @@ fn fixture(directory: &Path, video: &Path, audio: &Path) {
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     assert!(
-        arguments.len() == 2 || arguments.len() == 4,
-        "Usage: native_host_alpha PRIVATE_DIR STATIC_DIR [FIXTURE_VIDEO FIXTURE_AUDIO]"
+        [2, 4, 5].contains(&arguments.len()),
+        "Usage: native_host_alpha PRIVATE_DIR STATIC_DIR [FIXTURE_VIDEO FIXTURE_AUDIO [COUNT]]"
     );
     let directory = Path::new(&arguments[0]);
     let assets = Path::new(&arguments[1]).canonicalize().unwrap();
@@ -63,11 +67,15 @@ fn main() {
     )
     .unwrap();
     assert!(initialize_native_host(directory, seed).error().is_none());
-    if arguments.len() == 4 {
+    if arguments.len() >= 4 {
         fixture(
             directory,
             Path::new(&arguments[2]),
             Path::new(&arguments[3]),
+            arguments
+                .get(4)
+                .map(|value| value.parse::<usize>().unwrap().clamp(2, 3))
+                .unwrap_or(2),
         );
     }
     let host = NativeHost::start(
