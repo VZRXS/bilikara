@@ -1182,7 +1182,6 @@ function activateRemoteRequestView(
   view,
   { focusTab = false, expandSecondary = false, focusSecondary = false } = {},
 ) {
-  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && view !== "quick") return false;
   const nextView = normalizeRemoteRequestView(view, "");
   if (!nextView) {
     return false;

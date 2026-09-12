@@ -67,11 +67,48 @@ async function run() {
     await page.waitForFunction(()=>state.data?.cache_policy?.video_quality==="1080P 高清");
     const invite=await page.evaluate(()=>state.data.remote_access.local_url);
     const remoteContext=await browser.newContext({viewport:{width:412,height:850},isMobile:true,hasTouch:true});
-    await remoteContext.route("**/*", route=>new URL(route.request().url()).hostname==="127.0.0.1" ? route.continue() : route.abort());
+    await remoteContext.route("**/*", route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/lark/search") return route.fulfill({json:{ok:true,data:{items:[items[220]]}}});
+      if (url.pathname.startsWith("/api/d1/")) return route.fulfill({json:{ok:true,data:{items:[items[220]],tags:[],has_more:false,next_offset:1}}});
+      return url.hostname === "127.0.0.1" ? route.continue() : route.abort();
+    });
     const remote=await remoteContext.newPage();
     remote.on("pageerror",e=>errors.push(e.message));
     await remote.goto(invite);
     await remote.waitForFunction(()=>state.data?.capabilities?.gatcha===true);
+    await remote.locator("#remote-identity-input").fill("Remote fixture");
+    await remote.locator("#remote-identity-submit").click();
+    await remote.waitForFunction(()=>state.remoteIdentity?.registered === true);
+    // Click the shared UI: direct API/function tests missed the old Alpha CSS
+    // hiding tabs and the early return that refused all non-quick navigation.
+    const primaryTabs = async () => {
+      const back = remote.locator("#remote-request-secondary-back");
+      if (await back.isVisible()) await back.click();
+    };
+    assert.equal(await remote.locator("#remote-request-search-tab").isVisible(), true);
+    await remote.locator("#remote-request-search-tab").click();
+    assert.equal(await remote.locator("#remote-request-search-panel").isVisible(), true);
+    await remote.locator("#lark-search-query").fill("高达");
+    await remote.locator("#lark-search-button").click();
+    await remote.waitForFunction(()=>document.querySelector("#lark-search-results")?.textContent.includes("高达 220"));
+    await remote.locator("#remote-search-local-tab").click();
+    await remote.locator("#search-query").fill("高达 220");
+    await remote.locator("#search-button").click();
+    await remote.waitForFunction(()=>document.querySelector("#search-results")?.textContent.includes("高达 220"));
+    await primaryTabs();
+    await remote.locator("#remote-request-discover-tab").click();
+    assert.equal(await remote.locator("#remote-request-discover-panel").isVisible(), true);
+    await primaryTabs();
+    await remote.locator("#remote-request-sources-tab").click();
+    await remote.locator('#sources-follow-grid [data-uid="123"]').click();
+    await remote.waitForFunction(()=>state.followBrowseData?.items?.length===100);
+    assert.equal(await remote.locator("#sources-follow-results").isVisible(), true);
+    assert.equal(await remote.locator(".gatcha-panel").isVisible(), true);
+    await remote.locator("#gatcha-button").click();
+    await remote.waitForFunction(()=>Boolean(state.gatchaCandidate?.bvid));
+    assert.equal(await remote.locator("#gatcha-result-view").isVisible(), true);
+    await remote.screenshot({path:path.join(directory,"library-remote.png")});
     // Exercise the actual shared Remote paging functions and Rust router; UI
     // scrolling uses this same append path. No fake API result on these routes.
     await remote.evaluate(()=>loadFollowBrowse({uid:"123",query:""}));
