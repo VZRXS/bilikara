@@ -22,10 +22,10 @@ async function attachNative() {
   const socket=new WebSocket(target.webSocketDebuggerUrl), pending=new Map();let sequence=0;
   socket.onmessage=e=>{const message=JSON.parse(e.data),p=pending.get(message.id);if(p){pending.delete(message.id);message.error?p.reject(message.error):p.resolve(message.result);}};
   await once(socket,'open');
-  const evaluate=async fn=>{
+  const evaluate=async (fn,timeoutMs=15000)=>{
     const expression=typeof fn==='function'?`(${fn.toString()})()`:fn;
     const result=await new Promise((resolve,reject)=>{
-      const id=++sequence,timer=setTimeout(()=>reject(Error('WebView evaluation timed out')),15000);
+      const id=++sequence,timer=setTimeout(()=>reject(Error('WebView evaluation timed out')),timeoutMs);
       pending.set(id,{resolve:r=>{clearTimeout(timer);resolve(r);},reject:e=>{clearTimeout(timer);reject(e);}});
       socket.send(JSON.stringify({id,method:'Runtime.evaluate',params:{expression,returnByValue:true,awaitPromise:true,userGesture:true}}));
     });
@@ -69,11 +69,29 @@ const installState = value => {
     const host = nativeBrowser;
     await host.waitForFunction(()=>typeof state!=='undefined' && state.data?.capabilities?.playlist_export);
     await host.waitForFunction(()=>Boolean(window.BilikaraAndroidHost));
+    const environment=await host.evaluate(()=>BilikaraAndroidPlatform.environment());
+    assert.ok(environment.sdk>=24 && environment.version_code>0);
+    assert.equal(environment.version_name,'0.8.0-preview.0');
+    assert.equal(environment.debug_build,true);
+    assert.ok(environment.webview_package && environment.webview_version);
+    // Debug packages must reject a release install before any network transfer.
+    assert.equal(await host.evaluate(async()=>{
+      try {await BilikaraAndroidPlatform.installUpdate({});return false;}catch(error){return /测试签名/.test(error.message);}
+    }),true);
     if(await host.evaluate(()=>state.data.session_flags?.startup_choice_pending)) {
       await host.evaluate(()=>document.querySelector('[data-session-choice="continue"]').click());
       await host.waitForFunction(()=>!state.data.session_flags.startup_choice_pending);
     }
     assert.equal(await host.evaluate(()=>state.data.history.length),51);
+    const diagnostic=await host.evaluate(async()=>{
+      const response=await diagnosticResponse('/api/diagnostics/markdown');
+      const result=await response.json();return result.data.markdown;
+    },35000);
+    assert.match(diagnostic,/Generated: `\d{4}-\d{2}-\d{2}T/);
+    assert.ok(diagnostic.includes('Android ') && diagnostic.includes(environment.webview_version));
+    for(const target of ['bilibili','github','r2_mirror'])assert.ok(diagnostic.includes(target));
+    assert.ok(!diagnostic.includes('Generated: ``'));
+    fs.writeFileSync(path.join(dir,'native-diagnostic.md'),diagnostic);
     const access = await host.evaluate(()=>({origin:location.origin,invite:state.data.remote_access.local_url}));
     forwardPort = new URL(access.origin).port;
     run('forward','tcp:'+forwardPort,'tcp:'+forwardPort);

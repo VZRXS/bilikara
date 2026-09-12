@@ -17507,6 +17507,7 @@ async function diagnosticResponse(path) {
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       browser: diagnosticBrowserInfo(),
+      native_environment: await globalThis.BilikaraAndroidPlatform?.environment?.().catch(() => ({})),
       export_diagnostics: exportDiagnostics,
       internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
     }),

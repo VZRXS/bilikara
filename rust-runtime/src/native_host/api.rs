@@ -127,7 +127,7 @@ pub(super) fn dispatch(
         return library::write(context, identity, path, &body);
     }
     if path == "/api/diagnostics/markdown" {
-        return diagnostics::markdown(context, identity);
+        return diagnostics::markdown(context, identity, &body);
     }
     if path == "/api/bbdown/login/start" {
         return login::begin(context.clone(), identity);
