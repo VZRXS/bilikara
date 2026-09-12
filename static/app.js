@@ -569,6 +569,7 @@ const elements = {
   presentationHostNext: document.getElementById("presentation-host-next"),
   playerFullscreenControl: document.getElementById("player-fullscreen-control"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
+  androidFullscreenRemoteButton: document.getElementById("android-fullscreen-remote-button"),
   playerFullscreenLabel: document.getElementById("player-fullscreen-label"),
   playerFullscreenRemotePopover: document.getElementById("player-fullscreen-remote-popover"),
   playerFullscreenRemoteQrImage: document.getElementById("player-fullscreen-remote-qr-image"),
@@ -3234,6 +3235,7 @@ function renderPlayerFullscreenButton() {
 
 function setPlayerFullscreenRemotePinned(pinned) {
   state.playerFullscreenRemotePinned = Boolean(pinned) && isPlayerPanelFullscreen();
+  elements.androidFullscreenRemoteButton?.setAttribute("aria-expanded", String(state.playerFullscreenRemotePinned));
   elements.playerFullscreenControl?.classList.toggle(
     "is-qr-pinned",
     state.playerFullscreenRemotePinned,
@@ -9675,6 +9677,10 @@ function renderRemoteAccess(remoteAccess) {
     internetQrImage,
     internetPassword,
     internetConnectedCount,
+    // Native QR is provided independently of the URL; missing -> ready must
+    // redraw even when the LAN address has not changed.
+    nativeQrImage: document.documentElement?.dataset?.nativeHost === "true"
+      ? String(remoteAccess?.qr_image || "") : "",
   });
   if (signature === state.remoteAccessRenderSignature) {
     return;
@@ -9747,6 +9753,9 @@ function renderRemoteQr(url, targets = []) {
   if (!normalizedUrl) {
     targets.forEach(({ image, placeholder, emptyMessage = t("remote.noAddress") }) => {
       if (image) {
+        image.onload = null;
+        image.onerror = null;
+        image.dataset.qrState = "no-address";
         image.classList.add("hidden");
         image.removeAttribute("src");
         delete image.dataset.qrUrl;
@@ -9769,6 +9778,10 @@ function renderRemoteQr(url, targets = []) {
       ? String(state.data?.remote_access?.qr_image || "")
       : `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
     if (nativeHost && !qrUrl.startsWith("data:image/svg+xml;base64,")) {
+      image.onload = null;
+      image.onerror = null;
+      delete image.dataset.qrUrl;
+      image.dataset.qrState = qrUrl ? "invalid-source" : "missing-source";
       image.removeAttribute("src");
       image.classList.add("hidden");
       placeholder.textContent = t("remote.qrFailed");
@@ -9780,14 +9793,20 @@ function renderRemoteQr(url, targets = []) {
     }
 
     image.dataset.qrUrl = qrUrl;
+    image.dataset.qrState = "loading";
     image.classList.add("hidden");
     placeholder.textContent = t("remote.qrLoading");
     placeholder.classList.remove("hidden");
     image.onload = () => {
+      if (image.dataset.qrUrl !== qrUrl) return;
+      image.dataset.qrState = "loaded";
       placeholder.classList.add("hidden");
       image.classList.remove("hidden");
     };
     image.onerror = () => {
+      if (image.dataset.qrUrl !== qrUrl) return;
+      image.dataset.qrState = "failed";
+      image.dataset.qrFailures = String((Number(image.dataset.qrFailures) || 0) + 1);
       image.classList.add("hidden");
       placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
@@ -17446,7 +17465,7 @@ async function generateDiagnosticsMarkdown() {
   const response = await diagnosticResponse("/api/diagnostics/markdown");
   const payload = await response.json();
   return typeof payload?.data?.markdown === "string"
-    ? payload.data.markdown
+    ? payload.data.markdown + (globalThis.BilikaraAndroidHost?.diagnosticsMarkdown?.() || "")
     : "";
 }
 
@@ -19474,6 +19493,7 @@ elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
 elements.playerFullscreenButton?.addEventListener("click", async (event) => {
   if (
     isPlayerPanelFullscreen()
+    && !globalThis.BilikaraAndroidHost
     && playerFullscreenActivationUsesTouch(event)
     && !state.playerFullscreenRemotePinned
   ) {

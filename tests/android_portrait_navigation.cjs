@@ -32,7 +32,7 @@ function setup(native = true, orientationType = "portrait-primary") {
   const calls=[];
   const window={screen:{orientation},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},
-    document:{documentElement:root,getElementById:get,createComment:()=>new Node("anchor")},
+    document:{documentElement:root,getElementById:get,createComment:()=>new Node("anchor"),addEventListener:()=>{}},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     renderHostWorkspaceSelection:()=>window.BilikaraAndroidHost?.syncVisibility(),
     activateHostWorkspace:(name,{inputOrigin}={})=>{state.activeHostWorkspace=name;calls.push(name);window.BilikaraAndroidHost?.workspaceActivated(name,inputOrigin);window.BilikaraAndroidHost?.syncVisibility();},

@@ -21,6 +21,45 @@
   let settings = false;
   let queueView = "queue";
   let requestView = "request";
+  let blockedImages = 0;
+  const qrIds = ["remote-qr-image", "remote-popover-qr-image", "remote-mini-qr-image", "player-fullscreen-remote-qr-image"];
+
+  function retryFailedQr() {
+    let retry = false;
+    for (const id of qrIds) {
+      const image = byId(id);
+      if (!image || !["failed", "missing-source", "invalid-source"].includes(image.dataset.qrState)) continue;
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
+      delete image.dataset.qrUrl;
+      retry = true;
+    }
+    if (retry) {
+      state.remoteAccessRenderSignature = "";
+      renderRemoteAccess(state.data?.remote_access);
+    }
+  }
+
+  function diagnosticsMarkdown() {
+    // Fixed fields only: never capture URLs, QR data, credentials, arbitrary
+    // error text or a securitypolicyviolation's blockedURI.
+    const source = String(state.data?.remote_access?.qr_image || "");
+    const safeStates = new Set(["no-address", "missing-source", "invalid-source", "loading", "loaded", "failed"]);
+    const data = {
+      layout: portrait ? "portrait" : "landscape", page,
+      native_window_controls: Boolean(window.BilikaraHostWindow),
+      viewport: {width: window.innerWidth, height: window.innerHeight},
+      qr_source: !source ? "missing" : source.startsWith("data:image/svg+xml;base64,") ? "inline-svg" : "invalid",
+      qr_source_chars: source.length, image_policy_blocks: blockedImages,
+      qr_images: qrIds.map(id => {
+        const image = byId(id);
+        return {surface:id, state:safeStates.has(image?.dataset.qrState) ? image.dataset.qrState : "unknown",
+          decoded:Boolean(image?.complete && image.naturalWidth > 0), failures:Number(image?.dataset.qrFailures) || 0};
+      }),
+    };
+    return "\n\n## Android UI (sanitized)\n\n```json\n" + JSON.stringify(data, null, 2) + "\n```\n";
+  }
 
   function settingsEmbedded() { return portrait && page === "my" && settings; }
 
@@ -115,7 +154,27 @@
     schedulePersistentStageMeasurement();
   }
 
-  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded};
+  window.BilikaraAndroidHost = {isPortrait: () => portrait, syncVisibility, workspaceActivated, settingsEmbedded, diagnosticsMarkdown};
+  const fullscreenRemote = byId("android-fullscreen-remote-button");
+  fullscreenRemote.addEventListener("click", () => {
+    if (!state.playerFullscreenRemotePinned) retryFailedQr();
+    setPlayerFullscreenRemotePinned(!state.playerFullscreenRemotePinned);
+    fullscreenRemote.setAttribute("aria-expanded", String(state.playerFullscreenRemotePinned));
+  });
+  document.addEventListener("bilikara:remote-access-menu", event => {
+    if (event.detail?.expanded) retryFailedQr();
+  });
+  document.addEventListener("securitypolicyviolation", event => {
+    if (event.effectiveDirective === "img-src") blockedImages++;
+  });
+  document.addEventListener("fullscreenchange", () => {
+    const active = isPlayerPanelFullscreen();
+    if (!active) fullscreenRemote.setAttribute("aria-expanded", "false");
+    // WebView does not implement screen.orientation.lock(). The scoped native
+    // bridge only controls this window, leaving the shared media DOM untouched.
+    if (window.BilikaraHostWindow) window.BilikaraHostWindow.postMessage(active ? "enter" : "exit");
+    else if (active) setAppMessage(t("mobile.fullscreenOrientationUnavailable"), true);
+  });
   dock.addEventListener("click", (event) => {
     const button = event.target.closest("[data-android-page]");
     if (button) navigate(button.dataset.androidPage);

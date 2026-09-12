@@ -1,5 +1,30 @@
 /* Native Android portrait shell; desktop and landscape keep styles.css. */
 .android-host-only { display: none; }
+.android-fullscreen-remote-button { display: none; }
+
+/* Two distinct hit targets on Android; desktop keeps its hover affordance. */
+html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) .fullscreen-action-control {
+  display: flex;
+  gap: 8px;
+}
+html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(#player-fullscreen-button, .android-fullscreen-remote-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 10px;
+}
+html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(.fullscreen-phone-icon, .fullscreen-action-divider, .fullscreen-exit-hover-label) {
+  display: none;
+}
+html[data-native-host="true"] .android-fullscreen-remote-button svg { width: 22px; height: 22px; }
+html[data-native-host="true"] .fullscreen-action-control:not(.is-qr-pinned) .fullscreen-remote-popover {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
 
 html[data-android-layout="portrait"] {
   --mobile-dock-height: 68px;

@@ -24,12 +24,14 @@ struct AndroidAlphaStatus {
     host_api_ready: bool,
     persistence_ready: bool,
     playback_ready: bool,
+    window_controls_ready: bool,
     bootstrap_url: String,
 }
 
 #[tauri::command]
-fn android_alpha_status(
+async fn android_alpha_status(
     bootstrap: tauri::State<'_, AndroidBootstrap>,
+    window: tauri::WebviewWindow,
 ) -> Result<AndroidAlphaStatus, String> {
     if let Some(error) = &bootstrap.error {
         return Err(error.clone());
@@ -45,6 +47,44 @@ fn android_alpha_status(
         .host
         .as_ref()
         .ok_or_else(|| "Native Host listener is unavailable".to_owned())?;
+    let bootstrap_url = host.bootstrap_url().to_owned();
+    let origin = tauri::Url::parse(&bootstrap_url)
+        .map_err(|_| "Native Host origin is invalid".to_owned())?
+        .origin()
+        .ascii_serialization();
+    // Install the origin-scoped window bridge before the bootstrap navigates.
+    // The local-only IPC capability remains unchanged: no Remote gets IPC.
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, view| {
+                let result = (|| {
+                    let origin = env.new_string(origin)?;
+                    env.call_method(
+                        activity,
+                        "installHostWindowControls",
+                        "(Landroid/webkit/WebView;Ljava/lang/String;)Z",
+                        &[
+                            jni::objects::JValue::Object(view),
+                            jni::objects::JValue::Object(&origin),
+                        ],
+                    )?
+                    .z()
+                })();
+                if result.is_err() {
+                    let _ = env.exception_clear();
+                }
+                let _ = sender.send(result.unwrap_or(false));
+            });
+        })
+        .map_err(|_| "Cannot initialize Android window controls".to_owned())?;
+    let window_controls_ready = tauri::async_runtime::spawn_blocking(move || {
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|_| "Cannot initialize Android window controls".to_owned())?;
     Ok(AndroidAlphaStatus {
         schema_version: 3,
         stage: "native-host-alpha",
@@ -53,7 +93,8 @@ fn android_alpha_status(
         host_api_ready: true,
         persistence_ready: true,
         playback_ready: true,
-        bootstrap_url: host.bootstrap_url().to_owned(),
+        window_controls_ready,
+        bootstrap_url,
     })
 }
 
