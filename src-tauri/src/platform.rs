@@ -1,5 +1,25 @@
 use std::path::Path;
 
+/// Keep GTK's native caption actions and window-manager gestures, with a plain
+/// header surface that joins the Host toolbar rather than repeating its brand.
+#[cfg(target_os = "linux")]
+pub(crate) fn configure_linux_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use gtk::prelude::*;
+    let gtk_window = window.gtk_window().map_err(|error| error.to_string())?;
+    if gtk_window.is_realized() {
+        return Err("window was already realized; retaining its system decorations".into());
+    }
+    let header = gtk::HeaderBar::new();
+    header.set_widget_name("bilikara-native-titlebar");
+    header.set_show_close_button(true);
+    header.set_has_subtitle(false);
+    header.set_title(None);
+    header.set_decoration_layout(Some(":minimize,maximize,close"));
+    gtk_window.set_titlebar(Some(&header));
+    header.show();
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Retained};
 #[cfg(target_os = "macos")]

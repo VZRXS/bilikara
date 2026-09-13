@@ -1,13 +1,12 @@
+@import url("./accent-palette.css");
+
 :root {
   --bg: #f4efe6;
   --panel: rgba(255, 252, 247, 0.92);
   --line: rgba(67, 53, 41, 0.1);
   --ink: #201915;
   --muted: #73655a;
-  --accent: #ca5b3c;
-  --accent-deep: #8f311d;
   --on-accent: #ffffff;
-  --accent-soft: rgba(202, 91, 60, 0.12);
   --green: #2d7c61;
   --red: #b14545;
   --danger-btn-color: var(--accent-deep);
@@ -48,7 +47,7 @@
 
   --btn-secondary-bg: rgba(255, 255, 255, 0.82);
   --btn-border: none;
-  --remote-primary-button-bg: var(--accent-deep);
+  --remote-primary-button-bg: var(--accent);
   --remote-primary-button-color: var(--on-accent);
   --remote-primary-button-disabled-bg: var(--accent);
   --remote-primary-button-disabled-color: var(--on-accent);
@@ -885,6 +884,7 @@ h1 {
 }
 
 .remote-request-tabs-viewport {
+  --remote-tab-label-offset: 0.14em;
   width: 100%;
   max-width: 100%;
   margin-bottom: 14px;
@@ -909,8 +909,8 @@ h1 {
 .remote-request-secondary-nav {
   display: grid;
   box-sizing: border-box;
-  width: 100%;
-  grid-template-columns: max-content minmax(0, 1fr);
+  width: max-content;
+  grid-template-columns: max-content minmax(max-content, 1fr);
   min-width: 100%;
   gap: 0;
   padding: 0 4px;
@@ -936,6 +936,7 @@ h1 {
   color: var(--remote-segmented-control-idle-color);
   font-size: var(--remote-segmented-control-font-size);
   font-weight: 700;
+  line-height: 1.3;
   cursor: pointer;
 }
 
@@ -949,6 +950,12 @@ h1 {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+  /* Follow the optically centered label without moving the button surface. */
+  transform: translateY(calc(var(--remote-tab-label-offset) - 0.18em));
+}
+
+.remote-request-secondary-back > span {
+  transform: translateY(var(--remote-tab-label-offset));
 }
 
 .remote-request-secondary-slot {
@@ -966,16 +973,17 @@ h1 {
   margin: 0;
   padding: 0;
   background: transparent;
-  animation: remote-request-secondary-enter 180ms ease-out both;
+  display: flex;
+  animation: remote-request-secondary-enter 240ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes remote-request-secondary-enter {
   from {
-    opacity: 0;
+    transform: translateX(12px);
   }
 
   to {
-    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -2482,6 +2490,7 @@ select:disabled {
 .remote-search-mode-tab,
 .remote-discover-mode-tab,
 .remote-sources-mode-tab {
+  flex: 1 0 auto;
   min-width: max-content;
   padding-inline: 10px;
   white-space: nowrap;
@@ -2497,24 +2506,52 @@ select:disabled {
   box-shadow: var(--remote-segmented-control-active-shadow);
 }
 
-.remote-request-tab[aria-selected="true"],
-.remote-search-mode-tab[aria-selected="true"],
-.remote-discover-mode-tab[aria-selected="true"],
-.remote-sources-mode-tab[aria-selected="true"] {
-  animation: remote-tab-select 200ms cubic-bezier(0.16, 1, 0.3, 1);
+.remote-request-tabs,
+.remote-search-mode-tabs,
+.remote-discover-mode-tabs,
+.remote-sources-mode-tabs {
+  position: relative;
+  isolation: isolate;
 }
 
-@keyframes remote-tab-select {
-  0% {
-    filter: saturate(0.78) brightness(0.97);
-  }
+:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab) {
+  position: relative;
+  /* Keep total padding and the sliding surface fixed; only lower the text. */
+  padding-block: calc(8px + var(--remote-tab-label-offset, 0.14em)) calc(8px - var(--remote-tab-label-offset, 0.14em));
+  transition: color 180ms ease;
+}
 
-  62% {
-    filter: saturate(1.08) brightness(1.02);
-  }
+:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"] {
+  background: transparent;
+  box-shadow: none;
+}
 
-  100% {
-    filter: none;
+:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background: var(--remote-segmented-control-active-bg);
+  box-shadow: var(--remote-segmented-control-active-shadow);
+  transform-origin: left center;
+  animation: remote-tab-slide 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes remote-tab-slide {
+  from {
+    transform: translateX(var(--remote-tab-slide-x, 0px)) scaleX(var(--remote-tab-slide-scale, 1));
+  }
+  to {
+    transform: translateX(0) scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-request-secondary-slot > :is(.remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs),
+  :is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"]::before {
+    animation: none;
   }
 }
 
@@ -2635,11 +2672,6 @@ select:disabled {
   border-radius: 18px;
   background: var(--item-bg);
   border: var(--item-border);
-}
-
-.request-panel .search-result-item.is-selected {
-  outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
-  outline-offset: 1px;
 }
 
 .search-result-item>div,
@@ -3480,8 +3512,8 @@ select:disabled {
 
 
 .category-browser-tab.active {
-  border-color: rgba(143, 49, 29, 0.32);
-  box-shadow: 0 0 0 1px rgba(208, 90, 63, 0.18), 0 0 20px rgba(208, 90, 63, 0.18);
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 
@@ -5119,10 +5151,7 @@ body.playback-sheet-scroll-locked {
   --line: rgba(246, 241, 235, 0.15);
   --ink: #f6f1eb;
   --muted: #b5a89e;
-  --accent: #e06c53;
-  --accent-deep: #b24733;
   --green: #5fca9d;
-  --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
   --danger-btn-color: var(--accent);
   --danger-btn-bg: rgba(177, 69, 69, 0.18);
@@ -5177,7 +5206,7 @@ body.playback-sheet-scroll-locked {
 
   --btn-secondary-bg: rgba(48, 41, 37, 0.82);
   --btn-border: 1px solid rgba(246, 241, 235, 0.1);
-  --remote-primary-button-bg: var(--accent-deep);
+  --remote-primary-button-bg: var(--accent);
   --remote-primary-button-color: var(--on-accent);
   --remote-primary-button-disabled-bg: var(--accent);
   --remote-primary-button-disabled-color: var(--on-accent);
@@ -5251,9 +5280,6 @@ body.playback-sheet-scroll-locked {
   --line: rgba(148, 202, 233, 0.18);
   --ink: #e5f6ff;
   --muted: #93a9bd;
-  --accent: #38bdf8;
-  --accent-deep: #0284c7;
-  --accent-soft: rgba(56, 189, 248, 0.16);
   --green: #34d399;
   --red: #fb7185;
   --shadow: 0 18px 48px rgba(2, 8, 23, 0.58);
@@ -5389,9 +5415,6 @@ body.playback-sheet-scroll-locked {
   --line: rgba(255, 255, 255, 0.1);
   --ink: #f0f4f8;
   --muted: #8b9bb4;
-  --accent: #00d2ff;
-  --accent-deep: #3a7bd5;
-  --accent-soft: rgba(0, 210, 255, 0.12);
   --green: #00ffa3;
   --red: #ff3366;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);

@@ -8,6 +8,8 @@ fn main() {
     let app_manifest = tauri_build::AppManifest::new().commands(&[
         "android_alpha_status",
         "set_window_fullscreen",
+        "set_window_maximize_region",
+        "set_window_chrome_theme",
         "restart_application",
         "get_presentation_displays",
         "get_presentation_session",

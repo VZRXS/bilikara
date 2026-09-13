@@ -13,6 +13,7 @@ $destinationRoot = if ([System.IO.Path]::IsPathRooted($Destination)) {
     [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
 }
 $files = @(
+    "accent-palette.css",
     "export-download.js",
     "export-guard.js",
     "i18n.json",

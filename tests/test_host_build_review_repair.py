@@ -29,6 +29,19 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             encoding="utf-8"
         )
 
+    def test_host_and_remote_share_one_theme_accent_palette(self):
+        palette = (ROOT / "static" / "accent-palette.css").read_text(encoding="utf-8")
+        for styles in (self.styles, self.remote_styles):
+            self.assertTrue(styles.startswith('@import url("./accent-palette.css");'))
+            self.assertNotRegex(styles, r"--accent(?:-deep|-soft|-soft-hover)?\s*:")
+        for selector, accent in (
+            (":root", "#d05a3f"),
+            (':root[data-theme="dark"]', "#e06c53"),
+            (':root[data-theme="blue"]', "#00d2ff"),
+        ):
+            rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", palette).group(1)
+            self.assertIn(f"--accent: {accent};", rule)
+
     def test_right_dock_has_six_direct_icon_and_label_destinations(self):
         expected = ["queue", "history", "request", "random", "users", "settings"]
         self.assertEqual(
@@ -1055,7 +1068,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
 
     def test_titlebar_double_click_uses_the_whole_noninteractive_surface(self):
         chrome = self.script[
-            self.script.index("function initializeWindowChrome") :
+            self.script.index("function renderWindowMaximizeState") :
             self.script.index("function initializeHostShell")
         ]
         self.assertIn('elements.topbar?.addEventListener("dblclick"', chrome)
@@ -1084,10 +1097,11 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             r"(?m)^\.session-user-list \.session-user-empty\s*\{([^}]*)\}",
             self.styles,
         )
-        self.assertTrue(session_empty)
-        self.assertIn("text-align: left", session_empty[-1])
-        self.assertIn("background: var(--btn-secondary-bg)", session_empty[-1])
-        self.assertIn("color: var(--muted)", session_empty[-1])
+        self.assertEqual(len(session_empty), 1)
+        self.assertIn('class="request-session-user-notice session-user-empty" role="status"', self.script)
+        self.assertNotIn('class="queue-empty session-user-empty"', self.script)
+        self.assertNotIn("background:", session_empty[0])
+        self.assertNotIn("color:", session_empty[0])
         self.assertEqual(
             self.translations["languages"]["zh"]["list.emptyHint"],
             "请前往“点歌”界面点歌。",
@@ -1179,7 +1193,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertTrue(windows["shadow"])
 
         chrome = self.script[
-            self.script.index("function initializeWindowChrome") :
+            self.script.index("function renderWindowMaximizeState") :
             self.script.index("function initializeHostShell")
         ]
         self.assertIn("appWindow.isMaximized", chrome)

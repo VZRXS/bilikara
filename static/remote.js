@@ -954,27 +954,16 @@ function syncRemoteRequestPanelSizeTier() {
   let tier = "standard";
   if (state.remoteRequestView === "quick") {
     tier = "compact";
+  } else if (["discover", "sources"].includes(state.remoteRequestView)) {
+    // Keep the browsing workspace steady through category/owner/folder navigation.
+    tier = "browse-deep";
   } else {
     const activePanel = Array.from(elements.remoteRequestViewPanels || [])
       .find((panel) => !panel.hidden && !panel.inert);
     const visibleResults = Array.from(activePanel?.querySelectorAll?.(".search-result-item") || [])
       .filter((item) => !item.closest("[hidden], .hidden"));
     if (visibleResults.length) {
-      const deepBrowse = (
-        state.remoteRequestView === "discover"
-        && (
-          (state.remoteDiscoverMode === "categories" && Boolean(state.categoryBrowseSelectedId))
-          || (["name", "artist"].includes(state.remoteDiscoverMode)
-            && Boolean(d1BrowseModeState(state.remoteDiscoverMode).tag))
-        )
-      ) || (
-        state.remoteRequestView === "sources"
-        && (
-          (state.remoteSourcesMode === "uids" && Boolean(state.followBrowseSelectedUid))
-          || (state.remoteSourcesMode === "favorites" && Boolean(state.favlistBrowseSelectedFolderId))
-        )
-      );
-      tier = deepBrowse ? "browse-deep" : "browse";
+      tier = "browse";
     }
   }
   if (elements.requestPanel.dataset.requestSize !== tier) {
@@ -982,9 +971,24 @@ function syncRemoteRequestPanelSizeTier() {
   }
 }
 
+// Measure only when the selected live tab changes. The decoration moves; controls
+// and labels keep their geometry, focus and native horizontal scrolling.
+function prepareRemoteTabSlide(buttons, selected) {
+  if (!selected?.getBoundingClientRect) return;
+  const previous = Array.from(buttons || []).find((button) => button.getAttribute("aria-selected") === "true");
+  if (selected === previous) return;
+  const from = previous?.getBoundingClientRect();
+  const to = selected.getBoundingClientRect();
+  const visible = from?.width > 0 && to.width > 0;
+  selected.style.setProperty("--remote-tab-slide-x", `${visible ? from.left - to.left : 0}px`);
+  selected.style.setProperty("--remote-tab-slide-scale", String(visible ? from.width / to.width : 1));
+}
+
 function syncRemoteSearchModeSelection() {
   const activeMode = normalizeRemoteSearchMode(state.remoteSearchMode);
   state.remoteSearchMode = activeMode;
+  prepareRemoteTabSlide(elements.remoteSearchModeButtons, Array.from(elements.remoteSearchModeButtons || [])
+    .find((button) => button.dataset.remoteSearchMode === activeMode));
   elements.remoteSearchModeButtons?.forEach((button) => {
     const mode = normalizeRemoteSearchMode(button.dataset.remoteSearchMode, "");
     const selected = mode === activeMode;
@@ -1002,6 +1006,8 @@ function syncRemoteSearchModeSelection() {
 function syncRemoteDiscoverModeSelection() {
   const activeMode = normalizeRemoteDiscoverMode(state.remoteDiscoverMode);
   state.remoteDiscoverMode = activeMode;
+  prepareRemoteTabSlide(elements.remoteDiscoverModeButtons, Array.from(elements.remoteDiscoverModeButtons || [])
+    .find((button) => button.dataset.remoteDiscoverMode === activeMode));
   elements.remoteDiscoverModeButtons?.forEach((button) => {
     const mode = normalizeRemoteDiscoverMode(button.dataset.remoteDiscoverMode, "");
     const selected = mode === activeMode;
@@ -1024,6 +1030,8 @@ function syncRemoteDiscoverModeSelection() {
 function syncRemoteSourcesModeSelection() {
   const activeMode = normalizeRemoteSourcesMode(state.remoteSourcesMode);
   state.remoteSourcesMode = activeMode;
+  prepareRemoteTabSlide(elements.remoteSourcesModeButtons, Array.from(elements.remoteSourcesModeButtons || [])
+    .find((button) => button.dataset.remoteSourcesMode === activeMode));
   elements.remoteSourcesModeButtons?.forEach((button) => {
     const mode = normalizeRemoteSourcesMode(button.dataset.remoteSourcesMode, "");
     const selected = mode === activeMode;
@@ -1140,7 +1148,7 @@ function syncRemoteRequestTabPresentation() {
     return;
   }
   const activeView = normalizeRemoteRequestView(state.remoteRequestView);
-  const expanded = state.remoteRequestTabsExpanded && activeView !== "quick";
+  const expanded = activeView !== "quick";
   const activeTablist = expanded ? remoteRequestSecondaryTablist(activeView) : null;
   const activeHome = expanded ? remoteRequestSecondaryHome(activeView) : null;
   const canExpand = Boolean(activeTablist && activeHome && elements.remoteRequestSecondarySlot);
@@ -1176,19 +1184,14 @@ function syncRemoteRequestTabPresentation() {
 }
 
 function collapseRemoteRequestSecondaryNavigation({ focus = true } = {}) {
-  const activeView = normalizeRemoteRequestView(state.remoteRequestView);
-  state.remoteRequestTabsExpanded = false;
-  syncRemoteRequestTabPresentation();
-  if (focus) {
-    Array.from(elements.remoteRequestViewButtons || [])
-      .find((button) => button.dataset.remoteRequestView === activeView)
-      ?.focus({ preventScroll: true });
-  }
+  activateRemoteRequestView("quick", { focusTab: focus });
 }
 
 function syncRemoteRequestViewSelection() {
   const activeView = normalizeRemoteRequestView(state.remoteRequestView);
   state.remoteRequestView = activeView;
+  prepareRemoteTabSlide(elements.remoteRequestViewButtons, Array.from(elements.remoteRequestViewButtons || [])
+    .find((button) => button.dataset.remoteRequestView === activeView));
   if (elements.remoteShell) {
     elements.remoteShell.dataset.remoteRequestView = activeView;
   }
@@ -1216,7 +1219,7 @@ function syncRemoteRequestViewSelection() {
 
 function activateRemoteRequestView(
   view,
-  { focusTab = false, expandSecondary = false, focusSecondary = false } = {},
+  { focusTab = false, focusSecondary = false } = {},
 ) {
   const nextView = normalizeRemoteRequestView(view, "");
   if (!nextView) {
@@ -1227,7 +1230,6 @@ function activateRemoteRequestView(
     closeRequestDetailForNavigation();
   }
   state.remoteRequestView = nextView;
-  state.remoteRequestTabsExpanded = nextView !== "quick" && Boolean(expandSecondary);
   syncRemoteRequestViewSelection();
   if (nextView === "sources") {
     ensureActiveRemoteSourcesLoaded();
@@ -8522,7 +8524,6 @@ function disconnectClient() {
 elements.remoteRequestViewButtons?.forEach((button) => {
   button.addEventListener("click", () => {
     activateRemoteRequestView(button.dataset.remoteRequestView, {
-      expandSecondary: button.dataset.remoteRequestView !== "quick",
       focusSecondary: button.dataset.remoteRequestView !== "quick",
     });
   });

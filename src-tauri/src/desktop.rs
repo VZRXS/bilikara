@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use crate::platform;
 use crate::{
     backend_download, backend_process, desktop_diagnostics, presentation, window_lifecycle,
@@ -32,6 +32,8 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            crate::window_chrome::set_window_maximize_region,
+            crate::window_chrome::set_window_chrome_theme,
             window_lifecycle::set_window_fullscreen,
             window_lifecycle::restart_application,
             backend_download::save_backend_download,
@@ -62,6 +64,10 @@ pub(crate) fn run() {
                 return Ok(());
             };
             window_lifecycle::initialize_main_window_geometry(app, &window);
+            #[cfg(target_os = "linux")]
+            if let Err(error) = platform::configure_linux_main_window(&window) {
+                eprintln!("Native Linux header bar unavailable: {error}");
+            }
             #[cfg(target_os = "windows")]
             if let Err(error) = platform::configure_windows_main_window(&window) {
                 if let Some(startup_log) = startup_log.as_ref() {

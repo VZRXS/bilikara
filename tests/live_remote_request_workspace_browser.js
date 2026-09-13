@@ -66,7 +66,7 @@ async function waitForThemeControlsSettled(page) {
     );
     const tabsSettled = activeTabs.every((tab) => {
       const style = getComputedStyle(tab);
-      return style.backgroundColor === segmentedTarget.backgroundColor
+      return getComputedStyle(tab, "::before").backgroundColor === segmentedTarget.backgroundColor
         && style.color === segmentedTarget.color;
     });
     const peerActionsSettled = peerActions.every((action) => {
@@ -306,6 +306,11 @@ async function prepareRemotePage(page, baseUrl, routeState) {
 }
 
 async function requestWorkspaceMetrics(page) {
+  // Layout acceptance measures settled controls; the sliding decoration is
+  // sampled separately at explicit animation times below.
+  await page.locator(".remote-request-tabs-viewport").evaluate((rail) => Promise.all(
+    rail.getAnimations({ subtree: true }).map((motion) => motion.finished.catch(() => {})),
+  ));
   return page.evaluate(() => {
     const rect = (element) => {
       if (!element) return null;
@@ -339,7 +344,8 @@ async function requestWorkspaceMetrics(page) {
       if (!element) return null;
       const style = getComputedStyle(element);
       return {
-        backgroundColor: style.backgroundColor,
+        backgroundColor: element.matches('[role="tab"][aria-selected="true"]')
+          ? getComputedStyle(element, "::before").backgroundColor : style.backgroundColor,
         borderColor: style.borderColor,
         borderRadius: style.borderRadius,
         borderStyle: style.borderStyle,
@@ -348,6 +354,8 @@ async function requestWorkspaceMetrics(page) {
         fontFamily: style.fontFamily,
         fontSize: style.fontSize,
         fontWeight: style.fontWeight,
+        paddingTop: parseFloat(style.paddingTop),
+        paddingBottom: parseFloat(style.paddingBottom),
         height: style.height,
       };
     };
@@ -508,6 +516,12 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
     metrics,
   );
   assert(metrics.tabs.length === 4, `${label}: top rail does not contain four stable tabs`, metrics.tabs);
+  const visibleTabs = metrics.primaryTabsVisible ? metrics.tabs : metrics.secondaryTabs;
+  assert(visibleTabs.every((tab) => Math.abs(tab.paddingTop + tab.paddingBottom - 16) <= 0.1
+    && Math.abs((tab.paddingTop - tab.paddingBottom) / 2 - parseFloat(tab.fontSize) * 0.14) <= 0.1),
+    `${label}: label optical centering must preserve total padding in every locale and text size`, visibleTabs);
+  assert(visibleTabs.every((tab, index) => !index || tab.bounds.left >= visibleTabs[index - 1].bounds.right - 0.5),
+    `${label}: localized tab boxes must never overlap`, visibleTabs);
   assert(
     metrics.primaryTabsVisible
       ? metrics.tabs.every((tab) => tab.bounds.height >= 44 && tab.lines === 1 && tab.textFits)
@@ -592,6 +606,17 @@ async function bringRequestCardIntoView(page) {
 async function activateAndCapture(page, selector, screenshot, activePanelId) {
   if (!await page.locator(selector).isVisible() && await page.locator("#remote-request-secondary-back").isVisible()) {
     await page.locator("#remote-request-secondary-back").click();
+    const returned = await page.evaluate(() => ({
+      view: state.remoteRequestView,
+      focus: document.activeElement.id,
+      quickVisible: !document.querySelector("#remote-request-quick-panel").hidden,
+      secondaryHidden: document.querySelector("#remote-request-secondary-nav").hidden,
+      visibleSecondaryHomes: Array.from(document.querySelectorAll(".remote-request-secondary-home"))
+        .filter((node) => node.getClientRects().length > 0).length,
+    }));
+    assert(returned.view === "quick" && returned.focus === "remote-request-quick-tab"
+      && returned.quickVisible && returned.secondaryHidden && returned.visibleSecondaryHomes === 0,
+    "Top-level Back must return to Quick without revealing a second tab row", returned);
   }
   await page.locator(selector).click();
   await page.waitForFunction((id) => {
@@ -674,6 +699,18 @@ async function requestFirstResult(page, containerSelector, routeState, label, sc
   }
   await page.waitForFunction(() => !state.submitting);
   await page.waitForFunction(() => document.querySelector(".remote-shell > .song-detail-view")?.classList.contains("hidden"));
+  const returnedRowStyle = await row.evaluate((element) => {
+    const normal = getComputedStyle(element);
+    const before = { border: normal.borderColor, shadow: normal.boxShadow, outline: normal.outlineStyle };
+    const selected = element.classList.contains("is-selected");
+    element.classList.remove("is-selected");
+    const after = getComputedStyle(element);
+    const same = before.border === after.borderColor && before.shadow === after.boxShadow
+      && before.outline === after.outlineStyle;
+    element.classList.toggle("is-selected", selected);
+    return same;
+  });
+  assert(returnedRowStyle, `${label}: returning from song detail must not add a selection border`);
   assert(
     routeState.addRequests.length === before + 1
       && routeState.addRequests.at(-1)?.url === expectedUrl,
@@ -770,17 +807,52 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         centerDelta: buttonRect && iconRect
           ? Math.abs((buttonRect.top + buttonRect.height / 2) - (iconRect.top + iconRect.height / 2))
           : Infinity,
-        animationName: getComputedStyle(document.querySelector("#remote-search-shared-tab")).animationName,
-        animationTiming: getComputedStyle(document.querySelector("#remote-search-shared-tab")).animationTimingFunction,
+        opticalOffset: parseFloat(getComputedStyle(button).fontSize) * 0.04,
+        labelOffset: parseFloat(getComputedStyle(button).fontSize) * 0.14,
+        textCenterDelta: Math.abs(button.querySelector("span").getBoundingClientRect().top
+          + button.querySelector("span").getBoundingClientRect().height / 2 - buttonRect.top - buttonRect.height / 2),
+        animationName: getComputedStyle(document.querySelector("#remote-search-shared-tab"), "::before").animationName,
+        animationTiming: getComputedStyle(document.querySelector("#remote-search-shared-tab"), "::before").animationTimingFunction,
       };
     });
     assert(
-      secondaryBackIconGeometry.centerDelta <= 1
-        && secondaryBackIconGeometry.animationName === "remote-tab-select"
+      Math.abs(secondaryBackIconGeometry.centerDelta - secondaryBackIconGeometry.opticalOffset) <= 0.1
+        && Math.abs(secondaryBackIconGeometry.textCenterDelta - secondaryBackIconGeometry.labelOffset) <= 0.1
+        && secondaryBackIconGeometry.animationName === "remote-tab-slide"
         && secondaryBackIconGeometry.animationTiming.includes("0.16"),
       "Secondary Back icon or non-linear tab selection motion lost its geometry contract",
       secondaryBackIconGeometry,
     );
+    const slideEvidence = await page.evaluate(() => {
+      activateRemoteSearchMode("local");
+      const tab = document.querySelector("#remote-search-local-tab");
+      const motion = tab.getAnimations({ subtree: true }).find((entry) => entry.animationName === "remote-tab-slide");
+      motion.pause();
+      const sample = (time) => {
+        motion.currentTime = time;
+        const style = getComputedStyle(tab, "::before");
+        return { x: new DOMMatrix(style.transform).m41, opacity: style.opacity };
+      };
+      const start = sample(0);
+      const middle = sample(100);
+      const end = sample(240);
+      const easing = getComputedStyle(tab, "::before").animationTimingFunction;
+      motion.currentTime = 60;
+      return { start, middle, end, easing };
+    });
+    if (screenshotPath) await page.locator(".remote-request-tabs-viewport").screenshot({ path: suffixedPath(screenshotPath, "-tab-slide-mid") });
+    await page.evaluate(() => {
+      document.querySelector("#remote-search-local-tab").getAnimations({ subtree: true }).forEach((motion) => motion.finish());
+      activateRemoteSearchMode("shared");
+    });
+    assert(Math.abs(slideEvidence.start.x) > 10 && Math.abs(slideEvidence.middle.x) < Math.abs(slideEvidence.start.x)
+      && Math.abs(slideEvidence.middle.x) > 0 && Math.abs(slideEvidence.end.x) < 0.1
+      && [slideEvidence.start, slideEvidence.middle, slideEvidence.end].every((frame) => frame.opacity === "1")
+      && slideEvidence.easing.includes("0.16"), "Tab highlight must slide spatially without fading", slideEvidence);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert(await page.locator("#remote-search-shared-tab").evaluate((tab) => getComputedStyle(tab, "::before").animationName === "none"),
+      "Reduced motion must disable the sliding highlight");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
 
     const sharedResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/catalog/search"
@@ -925,6 +997,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       const peerRect = peer?.getBoundingClientRect();
       return {
         first: rail?.firstElementChild === back,
+        selectedShadow: getComputedStyle(rail.querySelector(".active")).boxShadow,
         className: back?.className || "",
         back: backRect ? { width: backRect.width, height: backRect.height } : null,
         peer: peerRect ? { width: peerRect.width, height: peerRect.height } : null,
@@ -935,6 +1008,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     assert(
       categoryBackGeometry.first
+        && categoryBackGeometry.selectedShadow === "none"
         && categoryBackGeometry.separateNavRows === 0
         && categoryBackGeometry.className === "secondary-button tag-browser-back"
         && categoryBackGeometry.back.width < categoryBackGeometry.peer.width
@@ -944,6 +1018,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       categoryBackGeometry,
     );
     await capture(page, paths.categoriesDetail);
+    if (screenshotPath) await page.locator("#remote-discover-categories-panel [data-category-browser-tabs]")
+      .screenshot({ path: suffixedPath(screenshotPath, "-category-rail") });
     await requestFirstResult(page, "#remote-discover-categories-panel", routeState, "Categories");
     await page.locator("#remote-discover-categories-panel [data-category-browse-back]").click();
     await page.waitForFunction(() => (
@@ -1266,6 +1342,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       languageMetrics.enDark.peerHeaderActions,
     );
     await capture(page, paths.railEnglishDark);
+    if (screenshotPath) await page.locator(".remote-request-tabs-viewport")
+      .screenshot({ path: suffixedPath(screenshotPath, "-english-tabs") });
     await page.evaluate(() => {
       setLanguage("ja");
       applyTheme("blue");
@@ -1291,6 +1369,16 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       languageMetrics.jaBlue.peerHeaderActions,
     );
     await capture(page, paths.railJapaneseBlue);
+    if (screenshotPath) await page.locator(".remote-request-tabs-viewport")
+      .screenshot({ path: suffixedPath(screenshotPath, "-japanese-tabs") });
+    for (const [metrics, background] of [
+      [states.searchSharedResults, "rgb(208, 90, 63)"],
+      [languageMetrics.enDark, "rgb(224, 108, 83)"],
+      [languageMetrics.jaBlue, "rgb(0, 210, 255)"],
+    ]) {
+      assert(metrics.formControls.primaryButton.backgroundColor === background,
+        "Remote primary actions must use the shared theme accent", metrics.formControls.primaryButton);
+    }
     const selectedAfterLanguage = await page.evaluate(() => ({
       top: state.remoteRequestView,
       search: state.remoteSearchMode,
@@ -1317,14 +1405,12 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       "Switching to Quick programmatically scrolled the document",
       { scrollBeforeCompact, after: compactMetrics.scrollY },
     );
-    const standardStates = [
-      states.searchSharedEmpty,
+    const standardStates = [states.searchSharedEmpty];
+    const browseStates = [states.searchSharedResults, states.searchLocal];
+    const deepBrowseStates = [
       states.categoriesHome,
       states.uploaderList,
       states.favoritesList,
-    ];
-    const browseStates = [states.searchSharedResults, states.searchLocal];
-    const deepBrowseStates = [
       states.categoriesDetail,
       states.name,
       states.artist,
@@ -1345,7 +1431,11 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       Object.fromEntries(Object.entries({ ...states, compactMetrics })
         .map(([name, entry]) => [name, { size: entry.requestSize, height: entry.requestCard.height }])),
     );
-    const browseCapacityStates = [states.categoriesHome, ...browseStates, ...deepBrowseStates];
+    // Entry grids share the song-browser height even when their tiles are shorter.
+    const browseCapacityStates = [states.searchSharedResults, states.searchLocal,
+      states.categoriesDetail, states.name, states.artist, states.uploaderDetail, states.favoritesDetail];
+    assert(deepBrowseStates.every((entry) => Math.abs(entry.requestCard.height - states.categoriesDetail.requestCard.height) <= 1),
+      "Browse entry grids must keep the same card height as their song lists", deepBrowseStates.map((entry) => entry.requestCard));
     assert(
       browseCapacityStates.every((entry) => (
         entry.browse?.visibleRowCapacity >= 2
@@ -1382,7 +1472,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       languageMetrics,
       retainedNodes,
       focus: { detachedUploaderReturn: restoredFocus },
-      navigation: { secondaryBackIconGeometry, categoryBackGeometry },
+      navigation: { secondaryBackIconGeometry, categoryBackGeometry, slideEvidence },
       detailGeometry: sharedDetailGeometry,
       network: {
         totalApiRequests: routeState.apiRequests.length,
@@ -1444,7 +1534,7 @@ async function runSecondaryViewport(browser, baseUrl, screenshotPath, scenario) 
         `;
         document.head.appendChild(style);
       }
-      activateRemoteRequestView("sources", { expandSecondary: true });
+      activateRemoteRequestView("sources");
       activateRemoteSourcesMode("favorites");
     }, scenario);
     await page.waitForFunction(() => {

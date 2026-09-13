@@ -174,6 +174,8 @@ const state = {
   remoteQrPinned: false,
   playerFullscreenRemotePinned: false,
   playerFullscreenLastPointerType: "",
+  playerFullscreenTransitioning: false,
+  playerFullscreenRevision: 0,
   presentationSettingsOpen: false,
   presentationDisplayRefreshTimer: null,
   presentationDisplayRefreshPending: false,
@@ -1157,6 +1159,18 @@ function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", nextTheme);
   writeLocalPreference(storageKeys.theme, nextTheme);
   renderThemeSwitch();
+  syncNativeWindowTheme();
+}
+
+function syncNativeWindowTheme() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") return;
+  const style = getComputedStyle(document.documentElement);
+  void invoke("set_window_chrome_theme", {
+    theme: state.theme,
+    background: style.getPropertyValue("--bg-middle").trim(),
+    foreground: style.getPropertyValue("--ink").trim(),
+  }).catch(() => {});
 }
 
 function normalizeTheme(theme) {
@@ -1342,7 +1356,7 @@ function isAudiencePlayerSurface() {
 }
 
 function supportsPlayerFullscreen() {
-  if (isTauriWebKitRuntime()) {
+  if (typeof tauriInvoke() === "function") {
     return Boolean(elements.playerPanel);
   }
   return Boolean(
@@ -1359,7 +1373,7 @@ function supportsPlayerFullscreen() {
 }
 
 function canTogglePlayerFullscreen() {
-  if (presentationCompositionActive()) {
+  if (state.playerFullscreenTransitioning || presentationCompositionActive()) {
     return false;
   }
   return state.presentationSession.phase === "inactive"
@@ -3292,44 +3306,60 @@ async function togglePlayerFullscreen() {
   if (!canTogglePlayerFullscreen()) {
     return;
   }
-  if (presentationCompositionActive()) {
-    await toggleLocalPresentation();
-    return;
-  }
-  if (isPlayerPanelFullscreen()) {
-    setPlayerFullscreenRemotePinned(false);
-    const exitFullscreenPromise = exitDocumentFullscreen();
-    const tauriFullscreenPromise = setTauriWindowFullscreen(false);
-    elements.playerPanel?.classList.remove("is-tauri-fullscreen");
-    document.body?.classList.remove("is-tauri-fullscreen-active");
-    await exitFullscreenPromise;
-    await tauriFullscreenPromise;
-    renderPlayerFullscreenButton();
-    return;
-  }
-  if (!state.data?.current_item) {
-    return;
-  }
-  const activeFullscreen = fullscreenElement();
-  if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
-    await exitDocumentFullscreen();
-    await setTauriWindowFullscreen(false);
-    elements.playerPanel?.classList.remove("is-tauri-fullscreen");
-    document.body?.classList.remove("is-tauri-fullscreen-active");
-  }
-  const elementFullscreenPromise = requestElementFullscreen(elements.playerPanel);
-  const tauriFullscreenPromise = setTauriWindowFullscreen(true);
-  const elementFullscreenStarted = await elementFullscreenPromise;
-  const tauriFullscreenStarted = await tauriFullscreenPromise;
-  if (!elementFullscreenStarted) {
-    if (isTauriWebKitRuntime() && tauriFullscreenStarted) {
-      elements.playerPanel?.classList.add("is-tauri-fullscreen");
-      document.body?.classList.add("is-tauri-fullscreen-active");
-    } else if (tauriFullscreenStarted) {
-      await setTauriWindowFullscreen(false);
-    }
-  }
+  const entering = !isPlayerPanelFullscreen();
+  state.playerFullscreenTransitioning = true;
+  state.playerFullscreenRevision += 1;
   renderPlayerFullscreenButton();
+  try {
+    let changed;
+    if (typeof tauriInvoke() === "function") {
+      // Desktop has one native fullscreen owner, just like dual-screen output.
+      // DOM fullscreen also drives the WebView2 window and must not race it.
+      changed = await setTauriWindowFullscreen(entering);
+      if (changed) {
+        elements.playerPanel?.classList.toggle("is-tauri-fullscreen", entering);
+        document.body?.classList.toggle("is-tauri-fullscreen-active", entering);
+      }
+    } else if (!entering) {
+      changed = await exitDocumentFullscreen();
+    } else {
+      const activeFullscreen = fullscreenElement();
+      if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
+        await exitDocumentFullscreen();
+      }
+      changed = await requestElementFullscreen(elements.playerPanel);
+    }
+    if (!changed) setAppMessage(t("player.fullscreenFailed"), true);
+    if (changed && !entering) handleFullscreenChange();
+  } catch {
+    setAppMessage(t("player.fullscreenFailed"), true);
+  } finally {
+    state.playerFullscreenTransitioning = false;
+    renderPlayerFullscreenButton();
+  }
+}
+
+async function syncNativePlayerFullscreen(appWindow) {
+  if (state.playerFullscreenTransitioning
+      || !elements.playerPanel?.classList.contains("is-tauri-fullscreen")
+      || typeof appWindow?.isFullscreen !== "function") return;
+  const revision = state.playerFullscreenRevision;
+  try {
+    const active = await appWindow.isFullscreen();
+    if (!active && !state.playerFullscreenTransitioning && revision === state.playerFullscreenRevision) {
+      elements.playerPanel.classList.remove("is-tauri-fullscreen");
+      document.body?.classList.remove("is-tauri-fullscreen-active");
+      handleFullscreenChange();
+    }
+  } catch {
+    // A failed native read is not evidence that the OS left fullscreen.
+  }
+}
+
+function handleNativePlayerFullscreenEscape(event) {
+  if (event.key !== "Escape" || !elements.playerPanel?.classList.contains("is-tauri-fullscreen")) return;
+  event.preventDefault();
+  void togglePlayerFullscreen();
 }
 
 function clearPlayerFrameClickTimer(session = state.hostPlaybackSession) {
@@ -5101,6 +5131,73 @@ function initializePersistentStageFitting() {
   scheduleQueueScrollOwnershipSync();
 }
 
+function renderWindowMaximizeState(maximized) {
+  document.body.classList.toggle("is-tauri-maximized", maximized);
+  const button = elements.windowMaximize;
+  if (!button) return;
+  const key = maximized ? "window.restore" : "window.maximize";
+  button.dataset.i18nTitle = key;
+  button.dataset.i18nAriaLabel = key;
+  setElementTitle(button, t(key));
+  setElementAttribute(button, "aria-label", t(key));
+  button.querySelector(".window-maximize-icon")?.toggleAttribute("hidden", maximized);
+  button.querySelector(".window-restore-icon")?.toggleAttribute("hidden", !maximized);
+}
+
+function initializeNativeMaximizeRegion(appWindow) {
+  const invoke = tauriInvoke();
+  const button = elements.windowMaximize;
+  if (typeof invoke !== "function" || !button || typeof appWindow.listen !== "function") return;
+  let frame = null;
+  let sent = "";
+  let pending = false;
+  let dirty = false;
+  const update = async () => {
+    frame = null;
+    if (pending) { dirty = true; return; }
+    const rect = button.getBoundingClientRect();
+    const scale = window.devicePixelRatio || 1;
+    const visible = rect.width > 0 && rect.height > 0 && !button.disabled
+      && !elements.windowControls.hidden && !isPlayerPanelFullscreen()
+      && !presentationCompositionActive();
+    const region = visible ? {
+      x: Math.round(rect.left * scale), y: Math.round(rect.top * scale),
+      width: Math.round(rect.width * scale), height: Math.round(rect.height * scale),
+    } : null;
+    const signature = JSON.stringify(region);
+    if (sent === signature) return;
+    pending = true;
+    try {
+      await invoke("set_window_maximize_region", { region });
+      sent = signature;
+    } catch {
+      // Keep the accessible DOM button working if native integration is absent.
+      button.classList.remove("is-native-hovered");
+    } finally {
+      pending = false;
+      if (dirty) { dirty = false; schedule(); }
+    }
+  };
+  const schedule = () => {
+    if (frame === null) frame = window.requestAnimationFrame(update);
+  };
+  appWindow.listen("bilikara:maximize-hover", ({ payload }) => {
+    button.classList.toggle("is-native-hovered", payload === true);
+  }).then(() => {
+    // Install the native surface only after its hover listener is ready.
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(schedule);
+      observer.observe(elements.windowControls);
+      observer.observe(elements.topbar);
+    }
+    window.addEventListener("resize", () => { sent = ""; schedule(); });
+    window.addEventListener("focus", schedule);
+    document.addEventListener("bilikara:i18n", schedule);
+    document.fonts?.ready.then(schedule);
+    schedule();
+  }).catch(() => {});
+}
+
 function initializeWindowChrome() {
   if (document.documentElement?.dataset?.nativeHost === "true") return;
   const tauriWindowApi = window.__TAURI__?.window;
@@ -5117,13 +5214,15 @@ function initializeWindowChrome() {
   if (!appWindow) {
     return;
   }
+  let frameStateRequest = 0;
   const syncWindowFrameState = () => {
     if (platform !== "windows" || typeof appWindow.isMaximized !== "function") {
       return Promise.resolve();
     }
+    const request = ++frameStateRequest;
     return appWindow.isMaximized()
       .then((maximized) => {
-        document.body.classList.toggle("is-tauri-maximized", Boolean(maximized));
+        if (request === frameStateRequest) renderWindowMaximizeState(Boolean(maximized));
       })
       .catch(() => {});
   };
@@ -5132,6 +5231,7 @@ function initializeWindowChrome() {
     .catch(() => {});
   const handleWindowGeometryChange = () => {
     syncWindowFrameState();
+    void syncNativePlayerFullscreen(appWindow);
     schedulePresentationDisplayRefreshFromWindowEvent();
   };
   const resizeListener = appWindow.onResized?.(handleWindowGeometryChange);
@@ -5143,6 +5243,7 @@ function initializeWindowChrome() {
   window.addEventListener("focus", schedulePresentationDisplayRefreshFromWindowEvent);
   if (platform === "windows") {
     elements.windowControls.hidden = false;
+    initializeNativeMaximizeRegion(appWindow);
     elements.windowMinimize?.addEventListener("click", () => appWindow.minimize().catch(() => {}));
     elements.windowMaximize?.addEventListener("click", toggleWindowMaximize);
     elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
@@ -9297,7 +9398,7 @@ function renderSessionUsers(sessionUsers) {
   elements.sessionUserList.classList.toggle("is-empty", !users.length);
 
   if (!users.length) {
-    elements.sessionUserList.innerHTML = `<div class="queue-empty session-user-empty">${htmlT("session.empty")}</div>`;
+    elements.sessionUserList.innerHTML = `<div class="request-session-user-notice session-user-empty" role="status">${htmlT("session.empty")}</div>`;
     return;
   }
 
@@ -20468,7 +20569,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (closeOpenMenus({ restoreFocus: true })) {
     event.preventDefault();
+    return;
   }
+  handleNativePlayerFullscreenEscape(event);
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -20498,9 +20601,6 @@ function handleFullscreenChange() {
     } else {
       hidePlayerDelayOverlay();
     }
-  }
-  if (state.presentationSession.phase === "inactive") {
-    setTauriWindowFullscreen(isFullscreen).catch(() => {});
   }
   renderPlayerFullscreenButton();
 }
@@ -21329,6 +21429,9 @@ async function startPolling() {
     }
   }
   await restartHostPlaybackAfterBootstrap();
+  // The native backend/origin and initial page theme are both settled now.
+  // Do this once at bootstrap, not on polling or progress snapshots.
+  syncNativeWindowTheme();
   window.setInterval(async () => {
     try {
       await fetchState();

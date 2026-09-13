@@ -141,10 +141,12 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
 
     def test_request_tabs_use_bounded_non_linear_motion(self):
         self.assertIn(
-            "animation: remote-tab-select 200ms cubic-bezier(0.16, 1, 0.3, 1)",
+            "animation: remote-tab-slide 240ms cubic-bezier(0.16, 1, 0.3, 1)",
             self.styles,
         )
-        self.assertIn("@keyframes remote-tab-select", self.styles)
+        self.assertIn("@keyframes remote-tab-slide", self.styles)
+        self.assertIn("function prepareRemoteTabSlide", self.script)
+        self.assertIn("scaleX(var(--remote-tab-slide-scale, 1))", self.styles)
         reduced_motion = re.search(
             r"@media \(prefers-reduced-motion: reduce\)\s*\{(.*?)\n\}\n\n\.remote-menu-panel",
             self.styles,
@@ -359,7 +361,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         )
         self.assertIsNotNone(secondary_nav_rule)
         self.assertIn(
-            "grid-template-columns: max-content minmax(0, 1fr)",
+            "grid-template-columns: max-content minmax(max-content, 1fr)",
             secondary_nav_rule.group(1),
         )
         result_rule = re.search(
@@ -576,7 +578,8 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
 
     def test_browse_height_and_pagination_follow_visible_content_scroller(self):
         self.assertIn("function syncRemoteRequestPanelSizeTier()", self.script)
-        self.assertIn('tier = deepBrowse ? "browse-deep" : "browse";', self.script)
+        self.assertIn('["discover", "sources"].includes(state.remoteRequestView)', self.script)
+        self.assertIn('tier = "browse-deep";', self.script)
         self.assertIn("resultsContainer.scrollHeight", self.script)
         self.assertIn("- resultsContainer.scrollTop", self.script)
         self.assertIn("- resultsContainer.clientHeight", self.script)

@@ -5909,11 +5909,11 @@ console.log(JSON.stringify({ startState: state.localPlaybackStartState, shouldBe
         self.assertEqual(result["startState"], "needs-user-gesture")
         self.assertFalse(result["shouldBePlaying"])
 
-    def test_tauri_webkit_fullscreen_fallback(self):
+    def test_tauri_webkit_fullscreen_uses_native_capability(self):
         result = self.run_node(
             """
 Object.defineProperty(globalThis, "navigator", { value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)" }, configurable: true, writable: true });
-global.window.__TAURI__ = { window: {}, core: {} };
+global.window.__TAURI__ = { window: {}, core: { invoke: async () => {} } };
 let classAdded = false;
 let bodyClassAdded = false;
 elements.playerPanel = {
@@ -5938,6 +5938,7 @@ const supportsFS = supportsPlayerFullscreen();
 console.log(JSON.stringify({ isTauriWK, supportsFS }));
 """,
             self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke()"),
+            self._slice("function tauriInvoke()", "function syncApplicationRestartAvailability()"),
         )
         self.assertTrue(result["isTauriWK"])
         self.assertTrue(result["supportsFS"])

@@ -1,3 +1,5 @@
+@import url("./accent-palette.css");
+
 :root {
   --bg: #f3e8d7;
   --bg-deep: #e4ccb0;
@@ -7,8 +9,6 @@
   --muted: #6d6258;
   --panel: rgba(255, 251, 245, 0.82);
   --line: rgba(87, 63, 43, 0.12);
-  --accent: #d05a3f;
-  --accent-deep: #a33621;
   --update-available-dot: var(--accent);
   --on-accent: #ffffff;
   --green: #2b7b60;
@@ -104,8 +104,6 @@
   --variant-pending-color: var(--accent-deep);
   --service-summary-color: var(--accent-deep);
 
-  --accent-soft: rgba(208, 90, 63, 0.12);
-  --accent-soft-hover: rgba(208, 90, 63, 0.18);
   --cache-retry-bg: rgba(208, 90, 63, 0.12);
   --cache-retry-hover-bg: rgba(208, 90, 63, 0.18);
   --switch-checked-bg: rgba(208, 90, 63, 0.78);
@@ -3574,15 +3572,7 @@ select:disabled {
 .session-user-list .session-user-empty {
   box-sizing: border-box;
   width: 100%;
-  height: var(--session-user-row-height);
   min-height: var(--session-user-row-height);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 16px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .session-user-badge {
@@ -6699,11 +6689,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   cursor: pointer;
 }
 
-:is(.request-workspace, .search-card-surface) .search-result-item.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
 :is(.request-workspace, .search-card-surface) .search-result-cover {
   position: relative;
   display: grid;
@@ -7204,10 +7189,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --muted: #b5a89e;
   --panel: rgba(30, 26, 23, 0.85);
   --line: rgba(246, 241, 235, 0.15);
-  --accent: #e06c53;
-  --accent-deep: #b24733;
   --green: #5fca9d;
-  --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
   --tool-sheet-shadow: 0 -10px 28px rgba(0, 0, 0, 0.26);
   --danger-btn-color: var(--red);
@@ -7310,8 +7292,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --rating-tab-active-bg: rgba(224, 108, 83, 0.2);
   --rating-tab-active-color: var(--ink);
 
-  --accent-soft: rgba(224, 108, 83, 0.15);
-  --accent-soft-hover: rgba(224, 108, 83, 0.22);
   --switch-checked-bg: rgba(224, 108, 83, 0.78);
   --switch-checked-border: rgba(224, 108, 83, 0.2);
   --switch-checked-shadow: inset 0 0 0 1px rgba(224, 108, 83, 0.2), 0 8px 18px rgba(224, 108, 83, 0.12);
@@ -7391,9 +7371,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --muted: #93a9bd;
   --panel: rgba(8, 18, 32, 0.86);
   --line: rgba(148, 202, 233, 0.18);
-  --accent: #38bdf8;
-  --accent-deep: #0284c7;
-  --accent-soft: rgba(56, 189, 248, 0.16);
   --green: #34d399;
   --red: #fb7185;
   --shadow: 0 24px 70px rgba(2, 8, 23, 0.58);
@@ -7466,8 +7443,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --theme-switch-button-border: 1px solid rgba(148, 202, 233, 0.18);
   --theme-preview-active-border: var(--on-accent);
 
-  --accent-soft: rgba(56, 189, 248, 0.16);
-  --accent-soft-hover: rgba(56, 189, 248, 0.24);
   --switch-checked-bg: rgba(56, 189, 248, 0.78);
   --switch-checked-border: rgba(56, 189, 248, 0.2);
   --switch-checked-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.2), 0 8px 18px rgba(56, 189, 248, 0.12);
@@ -7588,9 +7563,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --muted: #8b9bb4;
   --panel: rgba(17, 25, 40, 0.85);
   --line: rgba(255, 255, 255, 0.1);
-  --accent: #00d2ff;
-  --accent-deep: #3a7bd5;
-  --accent-soft: rgba(0, 210, 255, 0.12);
   --green: #00ffa3;
   --red: #ff3366;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
@@ -7654,7 +7626,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --rating-tab-active-bg: rgba(0, 210, 255, 0.18);
   --rating-tab-active-color: var(--ink);
 
-  --accent-soft-hover: rgba(0, 210, 255, 0.2);
   --switch-checked-bg: rgba(0, 210, 255, 0.78);
   --switch-checked-border: rgba(0, 210, 255, 0.2);
   --switch-checked-shadow: inset 0 0 0 1px rgba(0, 210, 255, 0.2), 0 8px 18px rgba(0, 210, 255, 0.12);
@@ -9136,6 +9107,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
 }
 
 .window-control-button {
+  position: relative;
   width: 46px;
   min-width: 46px;
   height: 100%;
@@ -9154,6 +9126,33 @@ body[data-tauri-platform="macos"] .window-drag-region {
   stroke-width: 1;
 }
 
+.window-control-button svg[hidden] {
+  display: none;
+}
+
+.window-control-button.is-native-hovered {
+  z-index: var(--host-layer-tooltip);
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+
+/* The native hit area consumes pointer hover; keep its localized hint in the
+   same web surface as the other integrated controls, without a second button. */
+.window-control-button.is-native-hovered::after {
+  content: attr(title);
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--settings-panel-bg);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .window-control-button:hover {
   background: color-mix(in srgb, var(--ink) 9%, transparent);
 }
@@ -9169,6 +9168,10 @@ body[data-tauri-platform="macos"] .app-shell {
 
 body[data-tauri-platform="macos"] .topbar {
   padding-left: 72px;
+}
+
+body[data-tauri-platform="linux"] .app-shell {
+  background: var(--bg-middle);
 }
 
 .shell-body {
@@ -9652,12 +9655,6 @@ body[data-tauri-platform="macos"] .topbar {
 
 :root:is([data-theme="dark"], [data-theme="blue"]) .bbdown-login-qr {
   background: transparent;
-}
-
-.session-user-empty {
-  height: auto;
-  min-height: 52px;
-  white-space: normal;
 }
 
 .request-workspace-head,
@@ -10708,10 +10705,10 @@ body[data-tauri-platform="windows"].is-presentation-stage-only .app-shell {
   box-shadow: none;
 }
 
-/* Player fullscreen must win over the later persistent-Stage card geometry.
-   WebKit/Tauri may fall back to a window-fullscreen class instead of promoting
-   the element into the Fullscreen API top layer, so also remove every ancestor
-   inset and clipping surface for that path. */
+/* Player fullscreen must win over persistent Stage card layout.
+   Desktop fullscreen uses the native window plus this player layout, not the
+   DOM Fullscreen API top layer. Remove ancestor insets/clipping so the player
+   fills that window; browser fullscreen keeps its existing top-layer path. */
 body.is-tauri-fullscreen-active .app-shell {
   width: 100%;
   height: 100dvh;
@@ -11088,24 +11085,6 @@ body.is-tauri-fullscreen-active .left-column {
 
 .session-user-list.is-empty {
   padding-inline: 0;
-}
-
-.session-user-list .session-user-empty {
-  min-height: var(--session-user-row-height);
-  height: var(--session-user-row-height);
-  padding: 0 12px;
-  display: grid;
-  align-items: center;
-  box-sizing: border-box;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--btn-secondary-bg);
-  color: var(--muted);
-  font-weight: 400;
-  text-align: left;
-  line-height: 1.5;
-  white-space: normal;
-  overflow: visible;
 }
 
 .source-action-message {
@@ -11688,14 +11667,14 @@ html[data-native-host="true"] :is(
   }
 }
 
-/* Task submits share the existing readable accent pair in each theme. */
+/* Task submits share the theme accent with the main request action. */
 .selection-modal-actions .next-button:not(:disabled),
 .confirm-actions .next-button:not(:disabled),
 .rating-actions .next-button:not(:disabled),
 .song-detail-actions .next-button:not(:disabled),
 .compact-form button[type="submit"]:not(:disabled),
 .session-user-form button:not(:disabled) {
-  background: var(--accent-deep);
+  background: var(--accent);
   color: var(--on-accent);
 }
 

@@ -1,0 +1,21 @@
+/* Shared Host/Remote emphasis palette; deep is reserved for text and local states. */
+:root {
+  --accent: #d05a3f;
+  --accent-deep: #a33621;
+  --accent-soft: rgba(208, 90, 63, 0.12);
+  --accent-soft-hover: rgba(208, 90, 63, 0.18);
+}
+
+:root[data-theme="dark"] {
+  --accent: #e06c53;
+  --accent-deep: #b24733;
+  --accent-soft: rgba(224, 108, 83, 0.15);
+  --accent-soft-hover: rgba(224, 108, 83, 0.22);
+}
+
+:root[data-theme="blue"] {
+  --accent: #00d2ff;
+  --accent-deep: #3a7bd5;
+  --accent-soft: rgba(0, 210, 255, 0.12);
+  --accent-soft-hover: rgba(0, 210, 255, 0.2);
+}

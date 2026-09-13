@@ -5174,6 +5174,41 @@ async function run() {
     await fullscreenAction.dispatchEvent("click", { detail: 1, bubbles: true });
     await shellPage.waitForFunction(() => !document.fullscreenElement);
 
+    // This verifies the desktop bridge contract, not OS-level fullscreen in Chromium.
+    const desktopFullscreenBridgeEvidence = await shellPage.evaluate(async () => {
+      const previousTauri = window.__TAURI__;
+      const panel = elements.playerPanel;
+      const previousRequest = panel.requestFullscreen;
+      const calls = [];
+      let domCalls = 0;
+      window.__TAURI__ = { core: { invoke: async (command, args) => {
+        if (command !== "set_window_fullscreen") throw new Error(`Unexpected bridge command: ${command}`);
+        calls.push(args.fullscreen);
+      } } };
+      panel.requestFullscreen = () => { domCalls++; throw new Error("Desktop must not enter DOM fullscreen"); };
+      try {
+        await togglePlayerFullscreen();
+        const nativeLayout = panel.classList.contains("is-tauri-fullscreen")
+          && document.body.classList.contains("is-tauri-fullscreen-active");
+        const noDomFullscreen = !document.fullscreenElement;
+        const rect = panel.getBoundingClientRect();
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        return { calls, domCalls, nativeLayout, noDomFullscreen,
+          fillsViewport: Math.abs(rect.width - innerWidth) <= 1 && Math.abs(rect.height - innerHeight) <= 1,
+          exited: !isPlayerPanelFullscreen() };
+      } finally {
+        panel.requestFullscreen = previousRequest;
+        if (previousTauri === undefined) delete window.__TAURI__;
+        else window.__TAURI__ = previousTauri;
+      }
+    });
+    assert(JSON.stringify(desktopFullscreenBridgeEvidence.calls) === "[true,false]"
+      && desktopFullscreenBridgeEvidence.domCalls === 0 && desktopFullscreenBridgeEvidence.nativeLayout
+      && desktopFullscreenBridgeEvidence.noDomFullscreen && desktopFullscreenBridgeEvidence.fillsViewport
+      && desktopFullscreenBridgeEvidence.exited,
+    "Desktop fullscreen must use one native request per action and Escape must restore the Host", desktopFullscreenBridgeEvidence);
+
     const webKitFullscreenEvidence = await shellPage.evaluate(async () => {
       const previousPlatform = document.body.dataset.tauriPlatform || "";
       document.body.dataset.tauriPlatform = "macos";
@@ -7998,6 +8033,38 @@ async function run() {
     if (usersEmptyScreenshotPath) {
       await page.screenshot({ path: usersEmptyScreenshotPath, fullPage: false });
     }
+    const prerequisiteStyles = await page.evaluate(() => {
+      const originalTheme = state.theme;
+      const originalLanguage = state.language;
+      const results = [];
+      for (const language of ["zh", "en", "ja"]) {
+        setLanguage(language);
+        for (const theme of ["light", "dark", "blue"]) {
+          applyTheme(theme);
+          const users = elements.sessionUserList.querySelector(".session-user-empty");
+          const reference = getComputedStyle(elements.requestSessionUserNotice);
+          const fields = ["color", "backgroundColor", "borderTopWidth", "fontWeight", "fontSize", "lineHeight"];
+          const peers = [users, elements.gatchaSessionUserNotice];
+          results.push({
+            language, theme,
+            stylesMatch: peers.every((node) => fields.every((key) => getComputedStyle(node)[key] === reference[key])),
+            textMatches: users.textContent === t("session.empty"),
+            visible: users.getBoundingClientRect().height > 0,
+            textFits: users.scrollHeight <= users.clientHeight + 1,
+            background: reference.backgroundColor,
+            border: reference.borderTopWidth,
+            weight: reference.fontWeight,
+          });
+        }
+      }
+      applyTheme(originalTheme);
+      setLanguage(originalLanguage);
+      return results;
+    });
+    assert(prerequisiteStyles.every((entry) => entry.stylesMatch && entry.textMatches
+      && entry.visible && entry.textFits && entry.background === "rgba(0, 0, 0, 0)"
+      && entry.border === "0px" && entry.weight === "700"),
+    "Session Users, Request and Gatcha must share the unboxed accent prerequisite in every locale/theme", prerequisiteStyles);
     const populatedUsersRailEvidence = await page.evaluate(() => {
       state.data = { ...(state.data || {}), session_users: ["User"] };
       renderSessionUsers(["User"]);
@@ -10036,6 +10103,69 @@ async function run() {
       titlebarAfterControl === 1,
       "double-clicking an interactive toolbar action toggled maximize",
     );
+    // Browser proof of the integrated labels/icons and region bridge, not an
+    // assertion that Chromium emulates the Windows system Snap Layout popup.
+    await titlebarPage.keyboard.press("Escape");
+    for (const [locale, maximize, restore, minimize, close] of [
+      ["zh", "最大化", "还原", "最小化", "关闭"],
+      ["en", "Maximize", "Restore", "Minimize", "Close"],
+      ["ja", "最大化", "元に戻す", "最小化", "閉じる"],
+    ]) {
+      await titlebarPage.evaluate(language => setLanguage(language), locale);
+      assert(await titlebarPage.locator("#window-maximize").getAttribute("title") === restore,
+        "maximized caption did not localize its Restore hint", { locale });
+      assert(await titlebarPage.locator(".window-restore-icon").isVisible()
+        && !(await titlebarPage.locator(".window-maximize-icon").isVisible()),
+        "maximized caption did not show only its stable Restore SVG", { locale });
+      assert(await titlebarPage.locator("#window-minimize").getAttribute("title") === minimize
+        && await titlebarPage.locator("#window-close").getAttribute("title") === close,
+        "window button hints did not follow the selected locale", { locale });
+      const before = await titlebarPage.evaluate(() => window.__titlebarToggleCount);
+      await titlebarPage.locator("#window-maximize").click();
+      await titlebarPage.waitForFunction(() => !window.__titlebarMaximized);
+      assert(await titlebarPage.locator("#window-maximize").getAttribute("title") === maximize
+        && await titlebarPage.locator(".window-maximize-icon").isVisible(),
+        "restored caption still displayed Restore", { locale });
+      await titlebarPage.locator("#window-maximize").focus();
+      await titlebarPage.keyboard.press("Enter");
+      await titlebarPage.waitForFunction(() => window.__titlebarMaximized);
+      assert(await titlebarPage.evaluate(() => window.__titlebarToggleCount) === before + 2,
+        "caption pointer/keyboard activation dispatched twice", { locale });
+      await titlebarPage.evaluate(language => {
+        applyTheme(language === "en" ? "dark" : "light");
+        elements.windowMaximize.classList.add("is-native-hovered");
+        window.getSelection()?.removeAllRanges();
+      }, locale);
+      await titlebarPage.screenshot({ path: suffixedPath(screenshotPath, `-caption-${locale}`), fullPage: false });
+      await titlebarPage.evaluate(() => elements.windowMaximize.classList.remove("is-native-hovered"));
+    }
+    const nativeRegionEvidence = await titlebarPage.evaluate(async () => {
+      const calls = [];
+      const previousCore = window.__TAURI__.core;
+      window.__TAURI__.core = { invoke: async (command, args) => {
+        if (command === "set_window_maximize_region") calls.push(args.region);
+      } };
+      let hover;
+      initializeNativeMaximizeRegion({ listen: async (name, handler) => { hover = handler; } });
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const rect = elements.windowMaximize.getBoundingClientRect();
+      const region = calls.at(-1);
+      hover({ payload: true });
+      const hovered = elements.windowMaximize.classList.contains("is-native-hovered");
+      hover({ payload: false });
+      const count = calls.length;
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const idle = count === calls.length;
+      elements.windowControls.hidden = true;
+      dispatchEvent(new Event("resize"));
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const detached = calls.at(-1) === null;
+      window.__TAURI__.core = previousCore;
+      return { region, expectedX: Math.round(rect.left * devicePixelRatio), hovered, idle, detached };
+    });
+    assert(nativeRegionEvidence.region?.x === nativeRegionEvidence.expectedX
+      && nativeRegionEvidence.hovered && nativeRegionEvidence.idle && nativeRegionEvidence.detached,
+      "native caption region drifted, churned or remained active when hidden", nativeRegionEvidence);
     assert(titlebarPageErrors.length === 0, "unexpected Windows-frame page errors", titlebarPageErrors);
     assert(
       titlebarConsoleErrors.length === 0,
