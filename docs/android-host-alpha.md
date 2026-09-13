@@ -1,9 +1,9 @@
 # Android Host Alpha
 
-> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> Shared catalog: the verified public `gid=0` source is now implemented as
 > a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
 > removal exclusions are enforced; external deletion/blacklist synchronization
-> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+> remains unverified. See [the catalog service contract](shared-catalog.md).
 
 Current acceptance scope and APK/signing workflow: [Android Host Beta](android-host-beta.md).
 The notes below retain the Alpha implementation history.
@@ -112,7 +112,7 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   Authorization/validation failures remain errors; expired data is never served.
   Empty search/categories do not hit the network. Search never writes results
   back to D1. Eligible search outages use the verified read-only Sheets snapshot;
-  browse remains D1-only. See [cache and coverage limits](catalog-rust-local-migration.md).
+  browse remains D1-only. See [cache and coverage limits](shared-catalog.md).
 - History exports support current-session records and all history, as UTF-8 CSV
   or paginated PNG (multiple pages in ZIP). Rust selects/sorts a read-only
   snapshot; Android renders one bitmap at a time. Host saves through the system

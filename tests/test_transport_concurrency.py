@@ -344,7 +344,7 @@ class PlayerControlConsumptionTest(unittest.TestCase):
         node = shutil.which("node")
         if not node:
             self.skipTest("node unavailable")
-        source = (Path(__file__).resolve().parents[1] / "static/app.js").read_text()
+        source = (Path(__file__).resolve().parents[1] / "static/app.js").read_text(encoding="utf-8")
         source = source[source.index("function applyRemotePlayerControl("):source.index("function observedHostPlayerStatus(")]
         harness = r"""
 const assert = require("node:assert/strict");
@@ -369,7 +369,7 @@ const apiPost = () => { calls++; return new Promise((resolve, reject) => {resolv
   assert.equal(state.playerControlAckInFlight.size, 0);
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
-        result = subprocess.run([node, "-e", source + harness], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([node, "-e", source + harness], capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

@@ -1,9 +1,9 @@
 # Mobile Host and Shared Rust Architecture
 
-> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> Shared catalog: the verified public `gid=0` source is now implemented as
 > a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
 > removal exclusions are enforced; external deletion/blacklist synchronization
-> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+> remains unverified. See [the catalog service contract](shared-catalog.md).
 
 ## Product Model
 1. Android and iOS will eventually provide the complete Host functionality.
@@ -124,7 +124,7 @@ The detailed release sequencing, downloader scope, and casting foundation are
 maintained in [the version roadmap](version-roadmap.md).
 
 The catalog follow-up moves the complete active Python catalog module's policy
-into the [shared Rust catalog service](catalog-rust-local-migration.md). Direct
+into the [shared Rust catalog service](shared-catalog.md). Direct
 Feishu is removed. D1 remains primary; eligible search outages use the verified
 public Sheets snapshot. External removal synchronization remains a documented
 coverage limitation; mutations never use Sheets.

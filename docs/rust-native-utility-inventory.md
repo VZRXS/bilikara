@@ -1,9 +1,9 @@
 # Native utility migration inventory
 
-> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> Shared catalog: the verified public `gid=0` source is now implemented as
 > a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
 > removal exclusions are enforced; external deletion/blacklist synchronization
-> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+> remains unverified. See [the catalog service contract](shared-catalog.md).
 
 This inventory defines the boundary of Phase 1, the native utility layer. It
 was produced by reviewing every Python module in `bilikara/`, including
@@ -130,75 +130,14 @@ CSV retains UTF-8 BOM, CRLF records, minimal quoting, embedded newlines and cust
 time headers. Local time uses chrono's platform local timezone, including DST.
 Prewarm and rendering share the same loaded fonts, shaped fonts and glyph cache.
 
-Catalog follow-up (uncommitted, independent review deferred): the active
+Shared catalog: the active
 `lark_pool_client.py` implementation has been removed. `shared_catalog.py` is a
 thin native adapter; Rust owns D1 query/normalization/cache and the former
 module's review/admin/rating/maintenance request policy. Native Host and both
 Internet adapters share that service. Direct Feishu is retired. **The verified
 Sheets source is a read-only fallback with bounded snapshot caching. External
-blacklist/deletion synchronization remains unverified.** See [catalog local migration report](catalog-rust-local-migration.md)
-for new validation, scope and remaining responsibilities. P03/P05/UI below remain intact.
-
-Historical integration checkpoint (PR109 local replay and confirmed concurrency fixes, 2026-09-13):
-
-User-authorized replay is complete on `work/v0.8.0`: UI `f3b9903` → `61a6d05`,
-P05 `2f5a02b` → `8ba65a8`, P03 `210a574` → `4395abe`, directly after immutable
-PR merge `17252bf`. PR and its ancestors were not rewritten. Original commits,
-working diff and untracked files were backed up and restored without stash.
-Subsequently authorized local checkpoints: build lock `0543b56`, concurrency fix
-`4d1fd99`, native HTTP fixture `8b6a5bb`, and the documentation checkpoint containing
-this ledger. No push; independent review remains deferred.
-
-| Scope | Implementation | Local validation | Independent review | Push in this task |
-| --- | --- | --- | --- | --- |
-| P05 DASH/DownKyi slice | Replayed `8ba65a8`, exact patch retained with PR Android TLS builder | Combined default Rust/Python gate; prior focused evidence retained | Deferred | No |
-| P03 complete desktop export | Replayed `4395abe`, canonical Rust renderer retained; Tauri lock now includes its dependencies | Combined export/FFI/HTTP/CSV/PNG/ZIP/QR tests; prior before/after visual evidence retained | Deferred | No |
-| Latest Remote UI | Replayed `61a6d05`, PR pagination + local request layout preserved | Request-workspace and room UI browser gates pass | Deferred | No |
-| Confirmed concurrency fixes | Committed `4d1fd99`: shared Rust FIFO/head ACK + intent-preserving AV action; Python single-slot authority removed | Focused Python 383; real loopback WebRTC/browser 8/8; native session 10/10; full Python 1618 with 15 existing skips | Deferred | No |
-| S1–S3/M1–M6, completed T/P01 | Existing accepted/completed scopes preserved | No new device acceptance inferred | Prior status unchanged | No |
-| Other P scopes / D0 | Not started by this task | None claimed | Unknown / prior status unchanged | No |
-
-Commit cleanup reran all 13 deterministic concurrency regressions, Rust formatting,
-JS/Python syntax and diff checks: PASS. The complete integration gate and real
-loopback RTC evidence below were reused, not rerun for committing unchanged code.
-
-Combined gate: core 218, runtime default 201 + 15 ignored, Tauri 77 and Python
-1618 with 15 skips pass. Cargo fmt/clippy/release checks pass. Added native-host
-unit coverage: 249 pass + 15 ignored; native HTTP integration requires the local
-rejecting connectivity proxy in `tests/run_native_host_http.py` and passes there.
-Unfixtured native diagnostics timed out in external probes at 5s and 10s; the
-5s assertion harness remains unchanged. Do not call that external path validated.
-npm ci/build (Linux deb/rpm/AppImage) and diff checks pass. Exact gate commands, logs and file list live in
-[PR109 integration/concurrency report](pr109-integration-concurrency.md).
-
-PR native catalog/login/video/HTTP modules are now present and native-feature
-compiled; they have not replaced the corresponding desktop Python production
-paths. Android's separate export renderer remains an explicit contract-overlap
-item, as does the combined R2 mirror's Android-signing dependency. No Android
-export unification, signing change or new catalog migration was performed.
-Phone/Wi-Fi/cellular/NAT and platform packaging evidence remain pending.
-
-Prior P05+P03 combined gate (reused, not rerun during PR109 preparation): Core 217 tests, Runtime 171 passed + 15 existing ignored, Tauri
-77 tests, Python 1577 tests with 15 existing conditional skips; all Cargo
-fmt/clippy/test/release checks, compilation, npm ci/build and diff checks pass.
-The first Python run exposed five pre-existing Remote test-slice dependency
-failures. Loading the actual missing UI helper preserved every assertion. A
-subsequent run exposed P05's global dispatcher mock intercepting a background
-cache poll; scoping the fixture to the tested thread preserved every assertion.
-The final Python integration rerun passed. These were test-harness corrections,
-not production UI/P05 reimplementations. Windows/macOS packaging remains a
-separate authorized Actions step; no such run occurred here.
-
-P03 removes Python CSV/render/font/encoding responsibilities. Retained adapters
-and remaining P05 WBI, T2/T7 references/public interfaces and D0 boundaries are
-listed above/below. Other remaining Python groups retain their existing audit
-IDs; the complete external P-ID mapping was unavailable in the local handoff,
-so this ledger does not invent IDs or completion claims for login, Local Remote
-identity, HTTP/SSE, updater and external-tool workers.
-
-Evidence and exact commands: `/tmp/bilikara-p03-export/P03-HANDOFF.md`,
-`validation-summary.json`, `comparison.json`; current original handoff updated
-at `/tmp/bilikara-t4-python-remnants/HANDOFF.md`. Historical audit text remains.
+blacklist/deletion synchronization remains unverified.** See [catalog service contract](shared-catalog.md)
+for provider behavior, cache policy and retained responsibilities.
 
 ## P05: DASH / DownKyi service reuse slice
 
@@ -315,8 +254,8 @@ Python retains configured endpoint/timeout/keyword transport, entry signatures,
 native result validation and best-effort enqueue/error adapters. There is no
 Python catalog parser or semantic fallback. The monthly runner and local rating
 identity ledger are unchanged in scope. The verified Sheets read-only fallback
-uses that same Rust service and AppState snapshot cache. Exact current evidence and removed
-test-to-contract mapping are in the [catalog report](catalog-rust-local-migration.md).
+uses that same Rust service and AppState snapshot cache. Provider behavior and
+coverage limits are documented in the [catalog service contract](shared-catalog.md).
 
 ### `bilikara/playlist_export.py`
 

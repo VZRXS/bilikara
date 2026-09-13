@@ -420,7 +420,7 @@ class CatalogFixtureTest(unittest.TestCase):
     def test_no_direct_feishu_implementation_or_credentials_remain(self):
         self.assertFalse(Path("bilikara/lark_pool_client.py").exists())
         for path in [*Path("bilikara").glob("*.py"),*Path("rust-runtime/src/shared_catalog").glob("*.rs")]:
-            source=path.read_text()
+            source=path.read_text(encoding="utf-8")
             for retired in ["open.feishu.cn", "BILIKARA_LARK_APP_SECRET", "tenant_access_token/internal"]:
                 self.assertNotIn(retired,source,path)
 

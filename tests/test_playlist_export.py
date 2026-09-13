@@ -101,9 +101,10 @@ class PlaylistExportTest(unittest.TestCase):
             ("America/New_York", "2024-06-10 02:13:20"),
         ]
         for zone, expected in cases:
-            code = "from bilikara.playlist_export import playlist_csv_bytes; print(playlist_csv_bytes([{'requested_at':1718000000}]).decode('utf-8-sig'))"
-            result = subprocess.run([sys.executable, "-c", code], env={**os.environ, "TZ": zone}, capture_output=True, text=True, check=True)
-            self.assertIn(expected, result.stdout)
+            code = "import sys; from bilikara.playlist_export import playlist_csv_bytes; sys.stdout.buffer.write(playlist_csv_bytes([{'requested_at':1718000000}]))"
+            result = subprocess.run([sys.executable, "-c", code], env={**os.environ, "TZ": zone, "PYTHONIOENCODING": "cp1252"}, capture_output=True, check=True)
+            self.assertTrue(result.stdout.startswith(b"\xef\xbb\xbf"))
+            self.assertIn(expected, result.stdout.decode("utf-8-sig"))
 
     def test_configured_bundle_root_and_cwd_independence(self):
         original_cwd = Path.cwd()
