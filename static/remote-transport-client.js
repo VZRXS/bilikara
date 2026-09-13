@@ -786,9 +786,7 @@
         if (body.is_muted !== undefined) response = await request("player.set_muted", { is_muted: Boolean(body.is_muted) });
         else response = await request("state.get", { since_revision: null }, "bulk");
       } else if (method === "POST" && url.pathname === "/api/player/av-delay-action") {
-        const current = Number(state.remoteState?.player_settings?.effective_av_delay_ms || 0);
-        const effective = body.type === "adjust" ? current + Number(body.delta_ms || 0) : body.type === "reset_local" ? 0 : Number(body.effective_delay_ms ?? current);
-        response = await request("player.set_av_delay", { effective_delay_ms: Math.max(-5000, Math.min(5000, Math.round(effective))) });
+        response = await request("player.av_delay_action", body);
         return jsonResponse({ ok: true, data: localState(response.data).player_settings.av_delay });
       } else if (method === "POST" && url.pathname === "/api/player/audio-variant") {
         response = await request("player.set_audio_variant", {

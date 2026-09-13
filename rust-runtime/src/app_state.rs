@@ -5,8 +5,9 @@ use crate::internet_remote::{
 use bilikara_rust::{
     AvDelayAction, AvDelayState, DuplicateActiveItem, DuplicateHistoryEntry,
     PlaylistDuplicateRequest, PlaylistIdentity, PlaylistOrderItem, PlaylistOrderOperation,
-    PlaylistOrderRequest, PlaylistSlotType, RemoteLane, RemotePlaylistPositionV1, RemoteProfile,
-    RemoteRequestV1, decide_av_delay, decide_playlist_duplicate, plan_playlist_order,
+    PlaylistOrderRequest, PlaylistSlotType, RemoteAvDelayActionV1, RemoteLane,
+    RemotePlaylistPositionV1, RemoteProfile, RemoteRequestV1, decide_av_delay,
+    decide_playlist_duplicate, plan_playlist_order,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -15,6 +16,8 @@ use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
 mod native_persistence;
+mod player_control;
+pub use player_control::PlayerControlInput;
 #[cfg(feature = "native-host")]
 pub(crate) mod native_session;
 use crate::native_host_storage::NativeHostStorage;
@@ -370,6 +373,18 @@ pub enum AppStateRequest {
     Snapshot {
         schema_version: u32,
     },
+    IssuePlayerControl {
+        schema_version: u32,
+        control: PlayerControlInput,
+        now: f64,
+    },
+    AckPlayerControl {
+        schema_version: u32,
+        seq: u64,
+    },
+    PlayerControlSnapshot {
+        schema_version: u32,
+    },
     AddItem {
         schema_version: u32,
         item: PlaylistItem,
@@ -661,6 +676,9 @@ impl AppStateRequest {
         match self {
             Self::Initialize { schema_version, .. }
             | Self::Snapshot { schema_version }
+            | Self::IssuePlayerControl { schema_version, .. }
+            | Self::AckPlayerControl { schema_version, .. }
+            | Self::PlayerControlSnapshot { schema_version }
             | Self::AddItem { schema_version, .. }
             | Self::UpdateItem { schema_version, .. }
             | Self::RemoveItem { schema_version, .. }
@@ -716,7 +734,8 @@ impl AppStateRequest {
 
     fn now(&self) -> Option<f64> {
         match self {
-            Self::AddItem { now, .. }
+            Self::IssuePlayerControl { now, .. }
+            | Self::AddItem { now, .. }
             | Self::UpdateItem { now, .. }
             | Self::RemoveItem { now, .. }
             | Self::ClearPlaylist { now, .. }
@@ -759,6 +778,8 @@ impl AppStateRequest {
             | Self::CompleteInternetRemotePlaylistAdd { now, .. } => Some(*now),
             Self::Initialize { .. }
             | Self::Snapshot { .. }
+            | Self::AckPlayerControl { .. }
+            | Self::PlayerControlSnapshot { .. }
             | Self::RestartPlaybackProgram { .. }
             | Self::QueryDuplicate { .. }
             | Self::BeginCacheAttempt { .. }
@@ -956,6 +977,7 @@ pub struct AppState {
     next_artifact_set_id: u64,
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
     internet_remote_peers: InternetRemotePeers,
+    player_controls: player_control::PlayerControls,
     #[cfg(feature = "native-host")]
     native_session: native_session::NativeSession,
 }
@@ -1001,6 +1023,7 @@ impl Default for AppState {
             next_artifact_set_id: 0,
             identity_namespace,
             internet_remote_peers: InternetRemotePeers::default(),
+            player_controls: player_control::PlayerControls::default(),
             #[cfg(feature = "native-host")]
             native_session: native_session::NativeSession::default(),
         }
@@ -3639,6 +3662,9 @@ fn apply_mutation(
         ),
         AppStateRequest::Initialize { .. }
         | AppStateRequest::Snapshot { .. }
+        | AppStateRequest::IssuePlayerControl { .. }
+        | AppStateRequest::AckPlayerControl { .. }
+        | AppStateRequest::PlayerControlSnapshot { .. }
         | AppStateRequest::BeginCacheAttempt { .. }
         | AppStateRequest::AuthorizeCachePublication { .. }
         | AppStateRequest::OpenInternetRemotePeer { .. }
@@ -4137,6 +4163,24 @@ impl AppState {
                 None,
                 None,
             ),
+            RemoteRequestV1::PlayerAvDelayAction(action) => (
+                AppStateRequest::ApplyAvDelay {
+                    schema_version: SCHEMA_VERSION,
+                    action: match action {
+                        RemoteAvDelayActionV1::Adjust { delta_ms } => {
+                            AvDelayCommand::Adjust { delta_ms }
+                        }
+                        RemoteAvDelayActionV1::SetEffective { effective_delay_ms } => {
+                            AvDelayCommand::SetEffective { effective_delay_ms }
+                        }
+                        RemoteAvDelayActionV1::ResetLocal {} => AvDelayCommand::ResetLocal,
+                        RemoteAvDelayActionV1::ToggleLock {} => AvDelayCommand::ToggleLock,
+                    },
+                    now,
+                },
+                None,
+                None,
+            ),
             RemoteRequestV1::SessionSetIdentity { name } => {
                 let normalized = normalize_session_user_name(&name);
                 if data.session_users.contains(&normalized) {
@@ -4331,6 +4375,7 @@ impl AppState {
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
                         self.internet_remote_peers.clear();
+                        self.player_controls.clear();
                         AppStateResponse::Success(Box::new(AppStateSuccess {
                             schema_version: SCHEMA_VERSION,
                             status: "completed",
@@ -4365,6 +4410,11 @@ impl AppState {
                     effects: PersistenceEffects::default(),
                     result: json!({"snapshot": true}),
                 }))
+            }
+            request @ (AppStateRequest::IssuePlayerControl { .. }
+            | AppStateRequest::AckPlayerControl { .. }
+            | AppStateRequest::PlayerControlSnapshot { .. }) => {
+                self.execute_player_control(request)
             }
             AppStateRequest::OpenInternetRemotePeer {
                 peer_id,
@@ -4632,6 +4682,7 @@ impl AppState {
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
                 self.internet_remote_peers.clear();
+                self.player_controls.clear();
                 #[cfg(feature = "native-host")]
                 {
                     self.native_session = native_session::NativeSession::default();
@@ -4728,8 +4779,12 @@ impl AppState {
                     }
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
+                    let clears_controls = current.playback_generation != next.playback_generation;
                     if let Err(error) = self.persist_native(&next) {
                         return storage_error_response(error);
+                    }
+                    if clears_controls {
+                        self.player_controls.clear();
                     }
                     self.data = Some(next);
                     self.next_item_incarnation_id = next_item_incarnation_id;
@@ -5324,6 +5379,90 @@ mod tests {
                 now,
             }),
         )
+    }
+
+    #[test]
+    fn internet_remote_av_delay_actions_use_latest_state_and_preserve_global_lock() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-one";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.into(),
+            epoch: epoch.into(),
+            profile: RemoteProfile::Controller,
+        }));
+        success(state.execute(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::Adjust { delta_ms: 50 },
+            now: 11.0,
+        }));
+        let adjusted = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "player.av_delay_action",
+            json!({"type":"adjust","delta_ms":50}),
+            12.0,
+        );
+        assert_eq!(
+            adjusted.result["data"]["player_settings"]["effective_av_delay_ms"],
+            100
+        );
+        let locked = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "player.av_delay_action",
+            json!({"type":"toggle_lock"}),
+            13.0,
+        );
+        assert_eq!(
+            locked.result["data"]["player_settings"]["av_delay_locked"],
+            true
+        );
+        remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            3,
+            "player.av_delay_action",
+            json!({"type":"adjust","delta_ms":50}),
+            14.0,
+        );
+        let reset = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            4,
+            "player.av_delay_action",
+            json!({"type":"reset_local"}),
+            15.0,
+        );
+        assert_eq!(
+            reset.result["data"]["player_settings"]["effective_av_delay_ms"],
+            100
+        );
+        assert_eq!(
+            reset.result["data"]["player_settings"]["av_delay_locked"],
+            true
+        );
+        let absolute = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            5,
+            "player.set_av_delay",
+            json!({"effective_delay_ms":-200}),
+            16.0,
+        );
+        assert_eq!(
+            absolute.result["data"]["player_settings"]["effective_av_delay_ms"],
+            -200
+        );
     }
 
     #[test]

@@ -99,6 +99,34 @@ non-negative integral target in seconds and share the same click-time playback
 target checks; the Host remains responsible for clamping that target to the
 active media duration.
 
+Player delivery uses the shared Rust AppState FIFO extracted from PR109's
+native session, with its existing capacity of 16. Desktop HTTP/Runtime FFI and
+native Host use the same queue implementation. Generation and item are checked
+again when a delayed Host effect is enqueued; a stale effect fails explicitly
+with `stale_command` (409), and a full queue returns `player_busy` (429).
+A successful dispatch reply is sent only after that Host effect succeeds.
+Playback-generation changes clear the old queue. Initialization clears pending
+commands but preserves the process-lifetime sequence, preventing late ACKs from
+naming replacement commands. Internet room teardown leaves LAN delivery usable.
+
+Only the local Host can acknowledge player delivery (native Host retains its
+Host-token check). ACK removes exactly the matching head, never a future
+high-water mark. Repeated state snapshots retry a failed ACK without replaying
+the playback action, with one ACK request per sequence in flight. Delivery ACK
+means the Host consumed the command; it is not a seek-settled or playback-success
+receipt. Media/session ownership and generation checks still govern application.
+
+AV-delay actions use `player.av_delay_action` with the same closed action body
+as the LAN control: `adjust` with an integer `delta_ms`, `set_effective` with
+`effective_delay_ms`, `reset_local`, or `toggle_lock`. The dispatcher applies the
+action under the AppState lock using the existing AV-delay policy. A Remote
+must not calculate an absolute setting from its potentially stale snapshot.
+The existing `player.set_av_delay` request remains an absolute setting for older
+clients; its last-writer behavior differs from additive adjustments. Both
+operations require the existing player-settings capability. Unknown actions or
+extra fields are rejected, and an unavailable action is not retried as an
+absolute mutation.
+
 An initial `playlist.add` leaves `selected_video_page` absent and
 `selected_audio_pages` empty so the Host can apply the normal automatic binding
 policy. If manual binding is required, the Host returns a bounded, sanitized

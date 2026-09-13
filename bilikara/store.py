@@ -1177,6 +1177,37 @@ class PlaylistStore:
                 command, include_now=include_now, **fields
             )["result"]
 
+    @staticmethod
+    def _validated_player_control(result: dict[str, Any], *, required: bool) -> dict[str, Any] | None:
+        if "command" not in result:
+            raise RuntimeError("Rust AppState omitted the player control command")
+        command = result["command"]
+        if command is None and not required:
+            return None
+        if (
+            not isinstance(command, dict)
+            or type(command.get("seq")) is not int
+            or not 1 <= command["seq"] <= MAX_SAFE_JSON_INTEGER
+            or not isinstance(command.get("action"), str)
+        ):
+            raise RuntimeError("Rust AppState returned an invalid player control command")
+        return command
+
+    def issue_player_control(self, **control: Any) -> dict[str, Any]:
+        result = self._request("issue_player_control", control=control)
+        return self._validated_player_control(result, required=True)
+
+    def ack_player_control(self, seq: int) -> bool:
+        result = self._request("ack_player_control", include_now=False, seq=seq)
+        acknowledged = result.get("acknowledged")
+        if not isinstance(acknowledged, bool):
+            raise RuntimeError("Rust AppState returned an invalid player control ACK")
+        return acknowledged
+
+    def player_control_command_snapshot(self) -> dict[str, Any] | None:
+        result = self._request("player_control_snapshot", include_now=False)
+        return self._validated_player_control(result, required=False)
+
     def open_internet_remote_peer(
         self, peer_id: str, epoch: str, profile: str = "controller"
     ) -> dict[str, Any]:

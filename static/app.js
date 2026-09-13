@@ -15076,7 +15076,12 @@ function renderPlayer(currentItem, playbackMode) {
 
 function applyRemotePlayerControl(command, currentItem, playbackMode) {
   const seq = Number(command?.seq || 0);
-  if (!Number.isInteger(seq) || seq <= state.lastAppliedPlayerControlSeq) {
+  if (!Number.isSafeInteger(seq) || seq < 1) {
+    return;
+  }
+  if (seq <= state.lastAppliedPlayerControlSeq) {
+    // The prior response may have been lost. Retry only its ACK, never its action.
+    ackRemotePlayerControl(seq);
     return;
   }
 
@@ -15214,10 +15219,15 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
 }
 
 async function ackRemotePlayerControl(seq) {
+  const pending = state.playerControlAckInFlight ??= new Set();
+  if (pending.has(seq)) return;
+  pending.add(seq);
   try {
     await apiPost("/api/player/control-ack", { seq });
   } catch {
-    // Ignore ack failures and let the next polling cycle recover.
+    // The repeated head in the next state update retries only the ACK.
+  } finally {
+    pending.delete(seq);
   }
 }
 

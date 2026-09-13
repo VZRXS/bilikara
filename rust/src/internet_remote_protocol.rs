@@ -178,6 +178,17 @@ pub enum RemoteCatalogBrowseKindV1 {
     Artist,
 }
 
+/// Preserve the caller's action until it reaches the authoritative state lock.
+/// In particular, an adjustment must never be derived from a Remote snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemoteAvDelayActionV1 {
+    Adjust { delta_ms: i32 },
+    SetEffective { effective_delay_ms: i32 },
+    ResetLocal {},
+    ToggleLock {},
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "body")]
 pub enum RemoteRequestV1 {
@@ -324,6 +335,8 @@ pub enum RemoteRequestV1 {
     },
     #[serde(rename = "player.set_av_delay")]
     PlayerSetAvDelay { effective_delay_ms: i32 },
+    #[serde(rename = "player.av_delay_action")]
+    PlayerAvDelayAction(RemoteAvDelayActionV1),
     #[serde(rename = "session.set_identity")]
     SessionSetIdentity { name: String },
     #[serde(rename = "rating.submit")]
@@ -373,6 +386,7 @@ impl RemoteRequestV1 {
             Self::PlayerSetKeyShift { .. } => RemoteOperation::PlayerSetKeyShift,
             Self::PlayerSetAudioVariant { .. } => RemoteOperation::PlayerSetAudioVariant,
             Self::PlayerSetAvDelay { .. } => RemoteOperation::PlayerSetAvDelay,
+            Self::PlayerAvDelayAction(_) => RemoteOperation::PlayerSetAvDelay,
             Self::SessionSetIdentity { .. } => RemoteOperation::SessionSetIdentity,
             Self::RatingSubmit { .. } => RemoteOperation::RatingSubmit,
             Self::CacheRetry { .. } => RemoteOperation::CacheRetry,
@@ -899,6 +913,12 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::PlayerSetAvDelay { effective_delay_ms } => {
             (-MAX_AV_DELAY_MS..=MAX_AV_DELAY_MS).contains(effective_delay_ms)
         }
+        RemoteRequestV1::PlayerAvDelayAction(action) => match action {
+            RemoteAvDelayActionV1::SetEffective { effective_delay_ms } => {
+                (-MAX_AV_DELAY_MS..=MAX_AV_DELAY_MS).contains(effective_delay_ms)
+            }
+            _ => true,
+        },
         RemoteRequestV1::SessionSetIdentity { name } => {
             valid_text(name, MAX_SESSION_NAME_BYTES, MAX_SESSION_NAME_CHARS)
         }
@@ -1183,6 +1203,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 effective_delay_ms: body.effective_delay_ms,
             }
         }
+        "player.av_delay_action" => RemoteRequestV1::PlayerAvDelayAction(body(value)?),
         "session.set_identity" => {
             let body: IdentityBody = body(value)?;
             RemoteRequestV1::SessionSetIdentity { name: body.name }
@@ -1371,6 +1392,49 @@ mod tests {
             last_sequence: None,
             profile,
         }
+    }
+
+    #[test]
+    fn av_delay_actions_preserve_intent_and_settings_authorization() {
+        for payload in [
+            json!({"type": "adjust", "delta_ms": 50}),
+            json!({"type": "set_effective", "effective_delay_ms": -200}),
+            json!({"type": "reset_local"}),
+            json!({"type": "toggle_lock"}),
+        ] {
+            let wire = request("player.av_delay_action", payload.clone());
+            let decoded =
+                decode_remote_request_v1(&wire, context(RemoteProfile::Controller)).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap()["body"], payload);
+            assert_eq!(
+                decode_remote_request_v1(&wire, context(RemoteProfile::Viewer)),
+                Err(RemoteProtocolError::CapabilityDenied)
+            );
+        }
+        for payload in [
+            json!({"type": "adjust", "delta_ms": true}),
+            json!({"type": "adjust", "delta_ms": 1.5}),
+            json!({"type": "adjust", "delta_ms": 50, "effective_delay_ms": 0}),
+            json!({"type": "adjust"}),
+            json!({"type": "set_persistent", "effective_delay_ms": 50}),
+            json!({"type": "reset_local", "delta_ms": 50}),
+        ] {
+            assert_eq!(
+                decode_remote_request_v1(
+                    &request("player.av_delay_action", payload),
+                    context(RemoteProfile::Controller)
+                ),
+                Err(RemoteProtocolError::InvalidRequestBody)
+            );
+        }
+        // Existing clients retain an explicitly absolute setting operation.
+        assert!(
+            decode_remote_request_v1(
+                &request("player.set_av_delay", json!({"effective_delay_ms": 50})),
+                context(RemoteProfile::Controller)
+            )
+            .is_ok()
+        );
     }
 
     #[test]

@@ -204,6 +204,68 @@ fn rapid_controls_are_queued_and_future_ack_cannot_drop_them() {
 }
 
 #[test]
+fn native_and_ffi_controls_share_one_fifo_and_host_only_ack() {
+    let (mut app, host) = setup();
+    let (snapshot, _) = ready(&mut app);
+    let generation = snapshot.playback_generation;
+    app.native_control(
+        &host,
+        &json!({"item_id":"first","playback_generation":generation,
+        "action":"seek-relative","delta_seconds":7}),
+        4.0,
+    )
+    .unwrap();
+    app.native_execute(AppStateRequest::IssuePlayerControl {
+        schema_version: 1,
+        control: PlayerControlInput {
+            action: "seek-relative".into(),
+            playback_generation: generation,
+            item_id: "first".into(),
+            delta_seconds: 11.0,
+            target_seconds: None,
+        },
+        now: 4.0,
+    })
+    .unwrap();
+    let remote = Identity {
+        token: "unknown".into(),
+        loopback: false,
+        client: "remote".into(),
+    };
+    assert_eq!(
+        app.native_ack(&remote, &json!({"seq":1}))
+            .unwrap_err()
+            .status,
+        403
+    );
+    assert_eq!(
+        app.native_control(&remote, &json!({}), 5.0)
+            .unwrap_err()
+            .status,
+        403
+    );
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["player_control_command"]["delta_seconds"],
+        7.0
+    );
+    app.native_execute(AppStateRequest::AckPlayerControl {
+        schema_version: 1,
+        seq: 1,
+    })
+    .unwrap();
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["player_control_command"]["delta_seconds"],
+        11.0
+    );
+    app.native_ack(&host, &json!({"seq":2})).unwrap();
+    assert!(
+        app.native_execute(AppStateRequest::PlayerControlSnapshot { schema_version: 1 })
+            .unwrap()["command"]
+            .is_null()
+    );
+}
+
+#[test]
 fn cache_retirement_waits_for_queue_player_and_all_media_readers() {
     let (mut app, host) = setup();
     let (snapshot, claim) = ready(&mut app);

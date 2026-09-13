@@ -475,10 +475,6 @@ class AppContext:
         self._owner_enrichment: threading.Thread | None = None
         self._cloudflare_prewarm: threading.Thread | None = None
         self._playlist_export_prewarm: threading.Thread | None = None
-        self._player_control_lock = threading.RLock()
-        self._player_control_seq = 0
-        self._player_control_ack_seq = 0
-        self._player_control_command: dict[str, object] | None = None
         self._player_status_lock = threading.RLock()
         self._player_status: dict[str, object] | None = None
         self._player_diagnostic_lock = threading.RLock()
@@ -930,33 +926,22 @@ class AppContext:
         delta_seconds: int = 0,
         target_seconds: float | None = None,
     ) -> dict[str, object]:
-        with self._player_control_lock:
-            self._player_control_seq += 1
-            self._player_control_command = {
-                "seq": self._player_control_seq,
-                "action": action,
-                "playback_generation": playback_generation,
-                "item_id": item_id,
-                "delta_seconds": delta_seconds,
-                "target_seconds": target_seconds,
-                "issued_at": time.time(),
-            }
-            command = dict(self._player_control_command)
+        command = self.store.issue_player_control(
+            action=action,
+            playback_generation=playback_generation,
+            item_id=item_id,
+            delta_seconds=delta_seconds,
+            target_seconds=target_seconds,
+        )
         self._notify_state_changed()
         return command
 
     def ack_player_control(self, seq: int) -> None:
-        with self._player_control_lock:
-            self._player_control_ack_seq = max(self._player_control_ack_seq, int(seq))
-        self._notify_state_changed()
+        if self.store.ack_player_control(seq):
+            self._notify_state_changed()
 
     def player_control_command_snapshot(self) -> dict[str, object] | None:
-        with self._player_control_lock:
-            if not self._player_control_command:
-                return None
-            if int(self._player_control_command.get("seq") or 0) <= self._player_control_ack_seq:
-                return None
-            return dict(self._player_control_command)
+        return self.store.player_control_command_snapshot()
 
     def update_player_status(
         self,
@@ -1125,18 +1110,12 @@ class AppContext:
                 self._rating_submission_keys.clear()
                 self._rating_submission_key_order.clear()
         self.auto_restored_backup = False
-        with self._player_control_lock:
-            self._player_control_ack_seq = self._player_control_seq
-            self._player_control_command = None
         with self._player_status_lock:
             self._player_status = None
         self._notify_state_changed()
 
     def reset_player_state(self) -> None:
         self.store.reset_player_state()
-        with self._player_control_lock:
-            self._player_control_ack_seq = self._player_control_seq
-            self._player_control_command = None
         with self._player_status_lock:
             self._player_status = None
         self._notify_state_changed()
@@ -2508,9 +2487,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/control-ack":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
                 seq = body.get("seq")
-                if not isinstance(seq, int):
-                    raise ValueError("seq must be an integer")
+                if isinstance(seq, bool) or not isinstance(seq, int) or not 0 <= seq <= MAX_SAFE_JSON_INTEGER:
+                    raise ValueError("seq must be a non-negative safe integer")
                 CONTEXT.ack_player_control(seq)
                 self._write_json({"ok": True})
                 return
@@ -2800,8 +2782,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         except InternetRemoteDispatchError as exc:
             self._write_json(
                 {"ok": False, "error": str(exc), "code": exc.kind},
-                status=HTTPStatus.BAD_REQUEST,
+                status={
+                    "player_busy": HTTPStatus.TOO_MANY_REQUESTS,
+                    "stale_command": HTTPStatus.CONFLICT,
+                }.get(exc.kind, HTTPStatus.BAD_REQUEST),
             )
+        except PlaylistStoreCommandError as exc:
+            status = {
+                "player_busy": HTTPStatus.TOO_MANY_REQUESTS,
+                "stale_command": HTTPStatus.CONFLICT,
+            }.get(exc.kind, HTTPStatus.BAD_REQUEST)
+            self._write_json({"ok": False, "error": str(exc), "code": exc.kind}, status=status)
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001

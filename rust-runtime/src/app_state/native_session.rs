@@ -32,8 +32,6 @@ pub(crate) struct NativeSession {
     pub remote_access: Value,
     pub revision: u64,
     devices: HashMap<String, Device>,
-    command_sequence: u64,
-    controls: VecDeque<Value>,
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
@@ -274,7 +272,12 @@ impl AppState {
         };
         let response = self.execute(command);
         if let Some(error) = response.error() {
-            let mut failure = ApiError::new(409, &error.kind, &error.message);
+            let status = match error.kind.as_str() {
+                "player_busy" => 429,
+                "invalid_player_control" => 400,
+                _ => 409,
+            };
+            let mut failure = ApiError::new(status, &error.kind, &error.message);
             failure.extra = error.details.clone().unwrap_or_else(|| json!({}));
             return Err(failure);
         }
@@ -289,7 +292,12 @@ impl AppState {
         let mut value = serde_json::to_value(&snapshot)
             .map_err(|_| ApiError::invalid("无法序列化 Host 状态"))?;
         let session = &self.native_session;
-        value["state_revision"] = json!(snapshot.revision.saturating_add(session.revision));
+        value["state_revision"] = json!(
+            snapshot
+                .revision
+                .saturating_add(session.revision)
+                .saturating_add(self.player_controls.revision)
+        );
         value["remote_session_id"] = json!(format!("native-{}", snapshot.session_generation));
         value["player_status"] = session
             .observation
@@ -302,12 +310,7 @@ impl AppState {
             .cloned()
             .unwrap_or(Value::Null);
         value["player_control_command"] = if host {
-            session
-                .controls
-                .iter()
-                .find(|control| control["playback_generation"] == snapshot.playback_generation)
-                .cloned()
-                .unwrap_or(Value::Null)
+            self.player_control_head().unwrap_or(Value::Null)
         } else {
             Value::Null
         };
@@ -481,29 +484,7 @@ impl AppState {
         self.native_authorize(identity, false)?;
         let generation = positive(body, "playback_generation")?;
         let item_id = text(body, "item_id")?;
-        let snapshot = self.native_core_snapshot()?;
-        if generation != snapshot.playback_generation
-            || snapshot.current_item.as_ref().map(|i| i.id.as_str()) != Some(&item_id)
-        {
-            return Err(ApiError::new(
-                409,
-                "stale_command",
-                "歌曲已切换，请重试当前操作",
-            ));
-        }
         let action = text(body, "action")?;
-        if ![
-            "toggle-play",
-            "play",
-            "pause",
-            "seek-relative",
-            "seek-absolute",
-            "next-track",
-        ]
-        .contains(&action.as_str())
-        {
-            return Err(ApiError::invalid("无效的播放操作"));
-        }
         let delta = if action == "seek-relative" {
             number(body, "delta_seconds")?
         } else {
@@ -514,35 +495,27 @@ impl AppState {
         } else {
             None
         };
-        if delta.abs() > 300.0 || target.is_some_and(|v| v < 0.0) {
-            return Err(ApiError::invalid("跳转范围无效"));
-        }
-        let session = &mut self.native_session;
-        session
-            .controls
-            .retain(|c| c["playback_generation"] == generation);
-        if session.controls.len() >= 16 {
-            return Err(ApiError::new(
-                429,
-                "player_busy",
-                "播放器仍在处理操作，请稍后再试",
-            ));
-        }
-        session.command_sequence += 1;
-        session.controls.push_back(json!({"seq":session.command_sequence,"action":action,"playback_generation":generation,"item_id":item_id,"delta_seconds":delta,"target_seconds":target,"issued_at":now}));
-        session.revision += 1;
+        self.native_execute(AppStateRequest::IssuePlayerControl {
+            schema_version: 1,
+            control: PlayerControlInput {
+                action,
+                playback_generation: generation,
+                item_id,
+                delta_seconds: delta,
+                target_seconds: target,
+            },
+            now,
+        })?;
         Ok(())
     }
 
     pub(crate) fn native_ack(&mut self, identity: &Identity, body: &Value) -> Result<(), ApiError> {
         self.native_authorize(identity, true)?;
         let seq = positive(body, "seq")?;
-        let session = &mut self.native_session;
-        // Acknowledge exactly the head, not a caller-provided future high-water mark.
-        if session.controls.front().is_some_and(|c| c["seq"] == seq) {
-            session.controls.pop_front();
-            session.revision += 1;
-        }
+        self.native_execute(AppStateRequest::AckPlayerControl {
+            schema_version: 1,
+            seq,
+        })?;
         Ok(())
     }
 
