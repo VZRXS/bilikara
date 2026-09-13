@@ -1781,7 +1781,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         with patch("bilikara.server.CONTEXT", context), patch(
             "bilikara.server.fetch_video_item",
             return_value=item,
-        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+        ), patch("bilikara.server.append_catalog_entries_in_background") as append_entries:
             handler._handle_add(
                 {
                     "url": item.original_url,
@@ -1866,7 +1866,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
             "bilikara.server.fetch_video_item",
             return_value=item,
         ), patch(
-            "bilikara.server.append_lark_pool_entries_in_background",
+            "bilikara.server.append_catalog_entries_in_background",
             side_effect=AssertionError("rejected add must not be indexed"),
         ):
             with self.assertRaises(server_module.DuplicateSessionRequestError) as raised:
@@ -1911,7 +1911,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         with patch("bilikara.server.CONTEXT", context), patch(
             "bilikara.server.fetch_video_item",
             return_value=item,
-        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+        ), patch("bilikara.server.append_catalog_entries_in_background") as append_entries:
             handler._handle_add({"url": item.original_url})
 
         entry = append_entries.call_args.args[0][0]
@@ -1982,7 +1982,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
             patch("bilikara.server.CONTEXT", context),
             patch("bilikara.server.fetch_video_item", return_value=item),
             patch(
-                "bilikara.server.append_lark_pool_entries_in_background",
+                "bilikara.server.append_catalog_entries_in_background",
                 side_effect=RuntimeError("scheduler failed"),
             ),
             patch("builtins.print") as mock_print,
@@ -1991,7 +1991,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         self.assertEqual(len(added), 1)
         self.assertEqual(writes, [({"ok": True, "data": {"playlist": [item.bvid]}}, None)])
         mock_print.assert_called_once_with(
-            "[bilikara:lark] background append scheduling failed: scheduler failed",
+            "[bilikara:catalog] background append scheduling failed: scheduler failed",
             file=server_module.sys.stderr,
             flush=True,
         )

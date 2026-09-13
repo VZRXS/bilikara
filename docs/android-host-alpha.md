@@ -1,5 +1,10 @@
 # Android Host Alpha
 
+> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
+> removal exclusions are enforced; external deletion/blacklist synchronization
+> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+
 Current acceptance scope and APK/signing workflow: [Android Host Beta](android-host-beta.md).
 The notes below retain the Alpha implementation history.
 
@@ -98,11 +103,16 @@ historical slices below. It uses the same `index.html` / `app.js` and `remote.ht
   change it explicitly. Existing valid browser language preferences are retained
   when migrating an older Alpha. Cache-setting changes do not reset the language.
   Desktop Host and LAN Remote language behavior is unchanged.
-- Shared keyword search, category/name/artist browsing use only the existing
-  Cloudflare read-only catalog API (the legacy `/api/lark/search` UI name is kept,
-  not a Feishu integration). Identical queries are cached for 60 seconds, at most
-  two uncached queries run concurrently, and failures back off for 30 seconds.
-  Empty search/categories do not hit the network; no prewarm or cloud writes run.
+- Shared keyword search and category/name/artist browsing use the existing
+  Cloudflare API through the same Rust catalog service as Python Host and
+  Internet Remote. In-repo callers use `/api/catalog/search`; `/api/lark/search`
+  remains a thin deployed-client alias. The retired `table` selector returns 410.
+  Identical queries are cached for 60 seconds (48 entries), at most two uncached
+  queries run concurrently, and eligible outages back off for 30 seconds.
+  Authorization/validation failures remain errors; expired data is never served.
+  Empty search/categories do not hit the network. Search never writes results
+  back to D1. Eligible search outages use the verified read-only Sheets snapshot;
+  browse remains D1-only. See [cache and coverage limits](catalog-rust-local-migration.md).
 - History exports support current-session records and all history, as UTF-8 CSV
   or paginated PNG (multiple pages in ZIP). Rust selects/sorts a read-only
   snapshot; Android renders one bitmap at a time. Host saves through the system

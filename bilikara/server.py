@@ -48,12 +48,10 @@ from .bilibili import (
     search_gatcha_cache,
     update_gatcha_pool_config,
 )
-from .lark_pool_client import (
-    LarkPoolError,
-    append_lark_pool_entries_in_background,
+from .shared_catalog import (
+    CatalogError,
+    append_catalog_entries_in_background,
     approve_cloudflare_review_items,
-    browse_d1_category_pool,
-    browse_d1_pool,
     delete_cloudflare_mid_entries,
     delete_cloudflare_pool_entry,
     delete_cloudflare_video_entry,
@@ -63,8 +61,7 @@ from .lark_pool_client import (
     reject_cloudflare_review_item,
     reset_cloudflare_video_tags,
     restore_cloudflare_blacklist_item,
-    search_lark_pool,
-    search_lark_pool_table,
+    read_catalog,
     submit_cloudflare_song_rating,
     trigger_cloudflare_maintenance_job,
     verify_cloudflare_bilikara_secret,
@@ -1482,74 +1479,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
-        if route == "/api/lark/search":
-            route_query = parse_qs(urlparse(self.path).query)
-            query = route_query.get("q", [""])[0]
-            table_index = route_query.get("table", [""])[0]
+        if route in {"/api/catalog/search", "/api/lark/search", "/api/d1/browse", "/api/d1/category-browse"}:
             try:
-                limit = max(1, min(100, int(route_query.get("limit", ["80"])[0] or "80")))
-            except (TypeError, ValueError):
-                limit = 80
-            try:
-                if table_index:
-                    results = search_lark_pool_table(query, int(table_index), limit=limit)
-                else:
-                    results = search_lark_pool(query, limit=limit)
-                results = annotate_gatcha_local_status(results)
-                self._write_json({"ok": True, "data": {"items": results}})
-            except Exception as e:
-                self._write_json({"ok": False, "error": str(e)})
-            return
-        if route == "/api/d1/browse":
-            route_query = parse_qs(urlparse(self.path).query)
-            kind = route_query.get("kind", route_query.get("type", ["name"]))[0]
-            letter = route_query.get("letter", [""])[0]
-            search_query = route_query.get("q", [""])[0]
-            tag = route_query.get("tag", [""])[0]
-            locale = route_query.get("locale", [""])[0]
-            try:
-                limit = max(1, min(500, int(route_query.get("limit", ["100"])[0] or "100")))
-            except (TypeError, ValueError):
-                limit = 100
-            try:
-                offset = max(0, min(100000, int(route_query.get("offset", ["0"])[0] or "0")))
-                results = browse_d1_pool(kind, letter=letter, query=search_query, tag=tag, locale=locale, limit=limit, offset=offset)
-                if isinstance(results.get("items"), list):
-                    results["items"] = annotate_gatcha_local_status(results["items"])
+                results = read_catalog(route, urlparse(self.path).query)
+                results["items"] = annotate_gatcha_local_status(results["items"])
                 self._write_json({"ok": True, "data": results})
-            except Exception as e:
-                self._write_json({"ok": False, "error": str(e)})
-            return
-        if route == "/api/d1/category-browse":
-            route_query = parse_qs(urlparse(self.path).query)
-            tags = route_query.get("tag", [])
-            tags.extend(
-                tag
-                for packed in route_query.get("tags", [])
-                for tag in str(packed or "").split(",")
-            )
-            tag45s = route_query.get("tag45", [])
-            tag45s.extend(
-                tag
-                for packed in route_query.get("tag45s", [])
-                for tag in str(packed or "").split(",")
-            )
-            search_query = route_query.get("q", [""])[0]
-            try:
-                limit = max(1, min(100, int(route_query.get("limit", ["100"])[0] or "100")))
-            except (TypeError, ValueError):
-                limit = 100
-            try:
-                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
-            except (TypeError, ValueError):
-                offset = 0
-            try:
-                results = browse_d1_category_pool(tags, tag45s=tag45s, query=search_query, limit=limit, offset=offset)
-                if isinstance(results.get("items"), list):
-                    results["items"] = annotate_gatcha_local_status(results["items"])
-                self._write_json({"ok": True, "data": results})
-            except Exception as e:
-                self._write_json({"ok": False, "error": str(e)})
+            except CatalogError as exc:
+                self._write_json({"ok": False, "error": str(exc), "code": exc.code}, status=exc.status_code)
             return
         if route == "/api/gatcha/browse":
             route_query = parse_qs(urlparse(self.path).query)
@@ -2087,7 +2023,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     limit = 20
                 try:
                     result = pending_cloudflare_review_items(bilikara_secret, limit=limit)
-                except LarkPoolError as exc:
+                except CatalogError as exc:
                     self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
                     return
                 self._write_json({"ok": True, "data": result})
@@ -2106,7 +2042,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     limit = 20
                 try:
                     result = approve_cloudflare_review_items(bvids, bilikara_secret, limit=limit)
-                except LarkPoolError as exc:
+                except CatalogError as exc:
                     self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
                     return
                 self._write_json({"ok": True, "data": result})
@@ -2782,7 +2718,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         except InternetRemoteDispatchError as exc:
             self._write_json(
                 {"ok": False, "error": str(exc), "code": exc.kind},
-                status={
+                status=exc.status_code or {
                     "player_busy": HTTPStatus.TOO_MANY_REQUESTS,
                     "stale_command": HTTPStatus.CONFLICT,
                 }.get(exc.kind, HTTPStatus.BAD_REQUEST),
@@ -2857,7 +2793,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 active_duplicate,
             ) from exc
         try:
-            append_lark_pool_entries_in_background(
+            append_catalog_entries_in_background(
                 [
                     {
                         "mid": str(item.owner_mid or ""),
@@ -2873,7 +2809,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             error = " ".join(str(exc).split())[:300] or type(exc).__name__
             print(
-                f"[bilikara:lark] background append scheduling failed: {error}",
+                f"[bilikara:catalog] background append scheduling failed: {error}",
                 file=sys.stderr,
                 flush=True,
             )

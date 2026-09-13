@@ -509,7 +509,7 @@ class RustRuntimeAdapterTest(unittest.TestCase):
         "native Rust runtime is optional outside the release gate",
     )
     def test_native_cloudflare_enqueue_accepts_before_loopback_delivery(self):
-        from bilikara import lark_pool_client
+        from bilikara import shared_catalog
 
         received = threading.Event()
         release_response = threading.Event()
@@ -547,8 +547,8 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             self.assertEqual(empty, {"accepted": False, "count": 0})
             # No adapter/library mock: this exercises the actual loaded C ABI.
             self.assertIsInstance(rust_runtime._runtime_lib, ctypes.CDLL)
-            with patch.object(lark_pool_client, "_CLOUDFLARE_API_URL", base_url):
-                accepted = lark_pool_client.append_lark_pool_entries_in_background([
+            with patch.object(shared_catalog, "_CLOUDFLARE_API_URL", base_url):
+                accepted = shared_catalog.append_catalog_entries_in_background([
                     {"bvid": "BV1xx411c7mD", "title": " fixture ",
                      "mid": "", "owner_mid": "42", "owner_name": "", "author": "ignored"},
                     {"bvid": "BV1xx411c7mD", "title": "duplicate"},

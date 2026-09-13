@@ -2,9 +2,7 @@
 //! lock, and success is acknowledged only after the existing service accepts it.
 use super::*;
 use crate::app_state::AppState;
-use crate::cloudflare_service::{
-    CloudflareOperation, CloudflareServiceRequest, execute_cloudflare,
-};
+use crate::cloudflare_service::{CloudflareServiceRequest, execute_cloudflare};
 use std::collections::VecDeque;
 
 #[derive(Default)]
@@ -150,24 +148,22 @@ fn prepare(
 
 fn send(
     submission: &Submission,
-    transport: impl FnOnce(
+    transport: impl Fn(
         &CloudflareServiceRequest,
     ) -> Result<Value, crate::cloudflare_service::CloudflareServiceError>,
 ) -> Result<(), ApiError> {
-    let result = transport(&CloudflareServiceRequest {
-        schema_version: 1,
-        base_url: "https://api.kevinx96.icu".into(),
-        user_agent: crate::native_video::USER_AGENT.into(),
-        timeout_ms: 10_000,
-        operation: CloudflareOperation::Request {
-            method: "POST".into(),
-            path: "/rate-song".into(),
-            payload: Some(submission.payload.clone()),
-            authorization: String::new(),
+    let result = crate::shared_catalog::execute_with(
+        &crate::shared_catalog::CatalogRequest {
+            operation: crate::shared_catalog::CatalogOperation::Mutate {
+                action: crate::shared_catalog::CatalogAction::RateSong,
+                params: submission.payload.clone(),
+            },
+            ..crate::shared_catalog::CatalogRequest::for_host()
         },
-    });
+        &transport,
+    );
     match result {
-        Ok(value) if value["payload"]["success"] == true => Ok(()),
+        Ok(value) if value["success"] == true => Ok(()),
         // Never expose upstream response previews, cookies or arbitrary text.
         _ => Err(ApiError::new(
             503,
@@ -213,6 +209,7 @@ pub(super) fn submit(identity: &Identity, body: &Value) -> Result<Value, ApiErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloudflare_service::CloudflareOperation;
     #[test]
     fn ratings_validate_identity_play_and_score_and_release_failed_reservations() {
         let mut app = AppState::default();

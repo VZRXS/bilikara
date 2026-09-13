@@ -633,7 +633,10 @@
         response = await request("state.get", { since_revision: null }, "bulk");
         return jsonResponse({ ok: true, data: localState(response.data) });
       }
-      if (method === "GET" && url.pathname === "/api/lark/search") {
+      if (method === "GET" && (url.pathname === "/api/catalog/search" || url.pathname === "/api/lark/search")) {
+        if (url.searchParams.has("table")) {
+          return jsonResponse({ ok: false, code: "catalog_table_retired", error: "Feishu table selection has been retired" }, 410);
+        }
         response = await request("catalog.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)) }, "bulk");
         return jsonResponse({ ok: true, data: { items: (response.data?.items || []).map(publicSearchItem) } });
       }

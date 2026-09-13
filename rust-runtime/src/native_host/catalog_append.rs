@@ -9,7 +9,7 @@ use crate::cloudflare_service::{
 fn request(item: &PlaylistItem) -> CloudflareServiceRequest {
     CloudflareServiceRequest {
         schema_version: 1,
-        base_url: "https://api.kevinx96.icu".into(),
+        base_url: crate::shared_catalog::CatalogRequest::for_host().base_url,
         user_agent: crate::native_video::USER_AGENT.into(),
         timeout_ms: 10_000,
         operation: CloudflareOperation::EnqueueAppend {

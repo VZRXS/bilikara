@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from .models import PlaylistItem
 from . import rust_backend, rust_runtime
 import bilikara.config as cfg  
-from .lark_pool_client import append_lark_pool_entries_in_background
+from .shared_catalog import append_catalog_entries_in_background
 
 VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNORECASE)
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
@@ -1386,7 +1386,7 @@ def _py_refresh_gatcha_favlist(
         if on_done is not None:
             on_done()
     if entries:
-        _append_lark_pool_entries_async(entries)
+        _append_catalog_entries_async(entries)
     return result or {}
 
 
@@ -1945,7 +1945,7 @@ def refresh_gatcha_cache_in_background(
                 # existing remote-pool synchronization path.
                 favlist_entries = _local_gatcha_favlist_candidates()
                 if favlist_entries:
-                    _append_lark_pool_entries_async(favlist_entries)
+                    _append_catalog_entries_async(favlist_entries)
                 return
 
             cache_payload = refresh_gatcha_cache()
@@ -1973,7 +1973,7 @@ def refresh_gatcha_cache_in_background(
         if cache_payload is not None and task_status != "failed":
             entries = _gatcha_refresh_added_entries(cache_payload)
             if entries:
-                _append_lark_pool_entries_async(entries)
+                _append_catalog_entries_async(entries)
 
     threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
     return True
@@ -2052,7 +2052,7 @@ def _py_add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_
         if on_done is not None:
             on_done()
     if entries:
-        _append_lark_pool_entries_async(entries)
+        _append_catalog_entries_async(entries)
 
     return {
         "uid": mid,
@@ -2096,7 +2096,7 @@ def add_gatcha_uid(
         if on_done is not None:
             on_done()
     if entries:
-        _append_lark_pool_entries_async(entries)
+        _append_catalog_entries_async(entries)
     return result
 
 
@@ -2144,7 +2144,7 @@ def refresh_gatcha_favlist(
         if on_done is not None:
             on_done()
     if entries:
-        _append_lark_pool_entries_async(entries)
+        _append_catalog_entries_async(entries)
     return result
 
 
@@ -2248,9 +2248,9 @@ def _gatcha_refresh_added_entries(cache_payload: dict) -> list[dict]:
     )
 
 
-def _append_lark_pool_entries_async(entries: list[dict]) -> None:
+def _append_catalog_entries_async(entries: list[dict]) -> None:
     try:
-        append_lark_pool_entries_in_background(entries)
+        append_catalog_entries_in_background(entries)
     except Exception:
         pass
 

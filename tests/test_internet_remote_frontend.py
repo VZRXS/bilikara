@@ -432,7 +432,7 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_internet_adapter_is_an_explicit_api_allowlist(self):
         self.assertIn('url.pathname === "/api/playlist/reorder"', self.remote_transport)
         self.assertIn('url.pathname === "/api/player/control"', self.remote_transport)
-        self.assertIn('url.pathname === "/api/lark/search"', self.remote_transport)
+        self.assertIn('url.pathname === "/api/catalog/search"', self.remote_transport)
         self.assertIn('url.pathname === "/api/gatcha/search"', self.remote_transport)
         self.assertIn("internet_remote_unavailable", self.remote_transport)
         self.assertIn("url.origin !== global.location.origin", self.remote_transport)

@@ -39,7 +39,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
         const [w,h]=url.pathname.includes("portrait") ? [600,1000] : [1920,1080];
         return route.fulfill({contentType:"image/svg+xml",body:`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 600 340"><rect width="600" height="340" fill="#648a99"/><path d="M0 340L180 110L330 290L430 170L600 340" fill="#b7cbb9"/><circle cx="470" cy="80" r="35" fill="#f4d391"/><text x="30" y="65" font-size="32" fill="white">OFFLINE COVER</text></svg>`});
       }
-      if(url.pathname.startsWith("/api/d1/") || ["/api/lark/search","/api/gatcha/search"].includes(url.pathname)) return route.fulfill({json:{ok:true,data:{items:catalogItems,tags:[],has_more:false,next_offset:30}}});
+      if(url.pathname.startsWith("/api/d1/") || ["/api/catalog/search","/api/gatcha/search"].includes(url.pathname)) return route.fulfill({json:{ok:true,data:{items:catalogItems,tags:[],has_more:false,next_offset:30}}});
       if(url.pathname==="/api/bbdown/login/start") {
         loginRequests++;
         return route.fulfill({status:503,json:{ok:false,error:"Offline login fixture"}});

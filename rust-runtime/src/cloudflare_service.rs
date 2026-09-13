@@ -1,6 +1,7 @@
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::io::Read;
 use std::sync::OnceLock;
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::thread;
@@ -163,6 +164,17 @@ fn append_entries(
         return Ok(json!({"attempted": 0, "added": 0}));
     }
     let attempted = records.len();
+    // Invalidate on start and completion, including failures and queued appends.
+    // An earlier in-flight read cannot republish pre-mutation data.
+    struct Invalidate;
+    impl Drop for Invalidate {
+        fn drop(&mut self) {
+            let _ = crate::shared_catalog::invalidate();
+        }
+    }
+    crate::shared_catalog::invalidate()
+        .map_err(|_| failure("state_unavailable", "Catalog state unavailable"))?;
+    let _invalidate = Invalidate;
     let payload = request_json(
         base_url,
         user_agent,
@@ -172,7 +184,12 @@ fn append_entries(
         Some(&json!({"records": records})),
         "",
     )?;
-    let mut result = payload.as_object().cloned().unwrap_or_default();
+    let mut result = payload.as_object().cloned().ok_or_else(|| {
+        failure(
+            "invalid_response",
+            "Cloudflare append returned an invalid response",
+        )
+    })?;
     result
         .entry("attempted".to_owned())
         .or_insert_with(|| json!(attempted));
@@ -200,6 +217,7 @@ fn request_json(
         return Err(failure("invalid_request", "unsupported HTTP method"));
     }
     let client = crate::http_client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(timeout_ms.clamp(100, 300_000)))
         .build()
         .map_err(transport_failure)?;
@@ -216,7 +234,23 @@ fn request_json(
     }
     let response = builder.send().map_err(transport_failure)?;
     let status = response.status();
-    let body = response.text().map_err(transport_failure)?;
+    let limit = if status.is_success() {
+        32 * 1024 * 1024
+    } else {
+        4096
+    };
+    let mut bytes = Vec::new();
+    response
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| failure("transport", "Cloudflare response read failed"))?;
+    if status.is_success() && bytes.len() as u64 > limit {
+        return Err(failure(
+            "response_too_large",
+            "Cloudflare response exceeds limit",
+        ));
+    }
+    let body = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         return Err(CloudflareServiceError {
             kind: "http_status".to_owned(),
@@ -225,7 +259,7 @@ fn request_json(
             body_preview: Some(body.chars().take(4096).collect()),
         });
     }
-    serde_json::from_str(&body).map_err(|_| CloudflareServiceError {
+    serde_json::from_slice(&bytes).map_err(|_| CloudflareServiceError {
         kind: "invalid_json".to_owned(),
         message: "response body is not valid JSON".to_owned(),
         status_code: Some(status.as_u16()),
@@ -248,7 +282,7 @@ fn normalize_entries(entries: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-fn normalize_entry(entry: &Map<String, Value>) -> Option<Value> {
+pub(crate) fn normalize_entry(entry: &Map<String, Value>) -> Option<Value> {
     let bvid = text(entry, &["bvid"]);
     let title = text(entry, &["title"]);
     if !valid_bvid(&bvid) || title.is_empty() || title == "已失效视频" {

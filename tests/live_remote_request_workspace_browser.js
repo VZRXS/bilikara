@@ -147,7 +147,7 @@ async function installWorkspaceRoutes(context, routeState) {
       body: JSON.stringify({ ok: true, data: routeState.snapshot }),
     });
   });
-  await context.route("**/api/lark/search?**", (route) => {
+  await context.route("**/api/catalog/search?**", (route) => {
     routeState.sharedSearchRequests.push(route.request().url());
     const query = new URL(route.request().url()).searchParams.get("q") || "";
     return route.fulfill({
@@ -783,7 +783,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     );
 
     const sharedResponse = page.waitForResponse((response) => (
-      new URL(response.url()).pathname === "/api/lark/search"
+      new URL(response.url()).pathname === "/api/catalog/search"
     ));
     await page.locator("#lark-search-query").fill("workspace-results");
     await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());

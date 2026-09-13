@@ -99,7 +99,7 @@ Source facts
   retained I/O orchestration. Tauri owns windows, presentation and restart.
 * The current search faces are local Gatcha metadata (/api/gatcha/search),
   configured-UID browsing (/api/gatcha/browse), and shared catalog search
-  (/api/lark/search). Expanded search also exposes favorites, category,
+  (/api/catalog/search; /api/lark/search remains an alias). Expanded search also exposes favorites, category,
   name/artist browse, and secret-gated review/blacklist tools.
 * The current local Gatcha search joins configured UID video metadata and
   fetched favorite-list metadata. It does not index data/cache media files.
@@ -118,7 +118,7 @@ Legend used in the inventory
            N transient by design.
   Owners: AppState = Rust runtime authoritative state; GRepo = Rust runtime
           Gatcha repository; Host = Python HTTP/I/O adapter; UI = app.js/DOM;
-          Tauri = desktop shell; Ext = Bilibili/Cloudflare/Feishu/GitHub.
+          Tauri = desktop shell; Ext = Bilibili/Cloudflare/GitHub. Sheets provides the verified read-only catalog search fallback.
 
 2.1 Exact current Host function map
 
@@ -146,7 +146,7 @@ F15 | Request by URL/BV/av at tail or immediately next | direct request form und
 F16 | Bind video page and one/more audio pages when ambiguous | part-binding modal | M | Host page resolution, UI draft, playlist add | D+T | W/H | modal page options | R | task modal launched from Quick Request/search detail | modal must not cover another popover
 F17 | Attribute a request to someone | requester selector shared by add flows | H | AppState session_users; UI selection | A+V | C/S | none | Y | Request header/default requester; action flows reuse it | selection validity changes when user removed
 F18 | Search cached source metadata | default local search face | H | GRepo via /api/gatcha/search | V/P | W/H | current results/body or expanded results | Y | Request / Discover > Search > Local library | fixed label: logical UID/favorite metadata, not physical media; no cursor contract
-F19 | Search shared karaoke catalog | Lark/Cloudflare face and hitbox | H | Host/Ext via /api/lark/search, max 80, local-status annotation | V | W/H | current results/body or expanded results | Y | Request / Discover > Search > Shared catalog | no stable pagination/cursor/freshness contract
+F19 | Search shared karaoke catalog | Shared catalog face and hitbox | H | Host/shared Rust via /api/catalog/search, max 80, local-status annotation | V | W/H | current results/body or expanded results | Y | Request / Discover > Search > Shared catalog | no stable pagination/cursor/freshness contract
 F20 | Open a result, inspect metadata/metrics and request tail/next | expanded Search and song-detail layer | H | UI cached result + Host add/open-url | V+T | W/F | search results; detail when needed | Y selected result; R layer | Request results + contextual song-detail inspector | detail freshness is source-dependent
 F21 | Browse configured UID owners and search their cached videos | “follow browse” face, owner grid and item view | M | GRepo /api/gatcha/browse | P+V | W/H | owner grid or item results | Y | Request / Discover > Sources > Added UIDs > Videos | “Followed” is not proven live-following semantics
 F22 | Add a UID source and pull its videos | Add UID in search and Gatcha faces; preview/confirm | M | GRepo /api/gatcha/uids/preview, add | P+D+T | C/H | source content | Y draft | Request / Discover > Sources primary action | one canonical UI; Random only links here
@@ -385,7 +385,9 @@ Not ready for implementation without a product/backend decision
 S1  Whether “Followed users” should ever mean a live account-following list.
     Today the source proves only added/configured UIDs.
 S2  Shared search pagination/cursor, ordering and freshness. Current contract is
-    at most 80 combined Cloudflare/Feishu results; no client cursor exists.
+    at most 80 normalized results by default; no client cursor exists. The
+    verified Sheets read fallback uses a 60-second snapshot cache. External
+    deletion/blacklist synchronization remains unverified; see the catalog report.
 S3  A physical media-cache search or local JSON import has no Host API/index
     contract and is absent from v0.8 IA until separately specified.
 S4  Whether favorites are public-UID collections, authenticated-account

@@ -36,7 +36,7 @@ async function run() {
     page.on("pageerror",e=>errors.push(e.message));
     await context.route("**/*", async route => {
       const url = new URL(route.request().url());
-      if (url.pathname === "/api/lark/search") return route.fulfill({json:{ok:true,data:{items:[items[220]]}}});
+      if (url.pathname === "/api/catalog/search") return route.fulfill({json:{ok:true,data:{items:[items[220]]}}});
       if (url.pathname.startsWith("/api/d1/")) return route.fulfill({json:{ok:true,data:{items:[items[220]],tags:[],has_more:false,next_offset:1}}});
       if (url.hostname !== "127.0.0.1") return route.abort();
       return route.continue();
@@ -69,7 +69,7 @@ async function run() {
     const remoteContext=await browser.newContext({viewport:{width:412,height:850},isMobile:true,hasTouch:true});
     await remoteContext.route("**/*", route => {
       const url = new URL(route.request().url());
-      if (url.pathname === "/api/lark/search") return route.fulfill({json:{ok:true,data:{items:[items[220]]}}});
+      if (url.pathname === "/api/catalog/search") return route.fulfill({json:{ok:true,data:{items:[items[220]]}}});
       if (url.pathname.startsWith("/api/d1/")) return route.fulfill({json:{ok:true,data:{items:[items[220]],tags:[],has_more:false,next_offset:1}}});
       return url.hostname === "127.0.0.1" ? route.continue() : route.abort();
     });

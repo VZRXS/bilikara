@@ -181,7 +181,7 @@ async function main() {
       };
       await host.route(pattern, handler);
       let searchDone = false;
-      const search = remote.evaluate(async () => (await fetch("/api/lark/search?q=synthetic")).json()).then((r) => { searchDone = true; return r; });
+      const search = remote.evaluate(async () => (await fetch("/api/catalog/search?q=synthetic")).json()).then((r) => { searchDone = true; return r; });
       await entered.promise;
       try {
         const response = await send("/api/player/key-shift", { key_shift: 2 });

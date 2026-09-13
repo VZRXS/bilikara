@@ -1,5 +1,15 @@
 # PR109 本地整合与并发修复（2026-09-13）
 
+> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
+> removal exclusions are enforced; external deletion/blacklist synchronization
+> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+
+> Catalog follow-up: [shared Rust catalog local migration](catalog-rust-local-migration.md)
+> supersedes the catalog/Feishu status recorded at this checkpoint. P03/P05/UI
+> and the independent batch-review status below are preserved. Historical
+> missing-source findings below are superseded by the verified-source follow-up.
+
 用户已授权把本地提交移动到 PR 提交之后。`work/v0.8.0` 已完成重放，固定基座为
 `17252bf546b0d3fb62efd3305f07bc1905d33b8e`；该 PR merge 和之前所有提交未改写。
 没有另建分支、stash、push、部署、Actions 或签名操作。新增修复/回归已按后续授权保存为本地提交，独立评审 deferred。
@@ -267,3 +277,27 @@ C01 append 调度已归 Rust；共享 catalog 查询/飞书回退/维护尚在 P
 native_persistence/native_video 是候选，不记为桌面已迁移。T2/T7 冻结参考/公共接口保留决定不变；
 build_bundle、测试/构建脚本单列，不充当业务迁移进度。D0 未实现。
 已有 ledger 仅能确认 P01/P03/P05、C01、T2/T7 等 ID；其他 P-ID 完整映射原交接缺失，保持 unknown，不杜撰编号。
+
+---
+
+> **独立评审页脚（2026-09-13，评审者追加，未修改上方原文）**
+> 本文档记录的 “独立评审 deferred / 未独立评审” 状态到此关闭。
+> 结论见 [批次独立评审记录](batch-review-2026-09-13.md)：
+> **BILIKARA_LOCAL_BATCH_REVIEW_CHANGES_REQUIRED**。
+> P05、P03、UI、LAN/公网并发与命令投递为 PASS；
+> PR #109 实际整合为 CHANGES_REQUIRED，原因是本文已记为待决策的
+> `mirror-release-r2: needs: [bundle, android-bundle]` 确认会让桌面 R2 镜像
+> 受实验性 Android 正式签名阻塞（F2）。PR109 的 Android/Kotlin/native_host 主体
+> 未在本轮评审范围内，不因此获得通过结论。设备与跨网验收仍待。
+
+---
+
+> **独立复审页脚（2026-09-13，评审者追加）**
+> 上方评审页脚的 `CHANGES_REQUIRED` 由本节取代。
+> F2 已由用户决策确认：Android 构建失败**应当**阻止桌面产物上传到 R2，
+> 因此 `mirror-release-r2: needs: [bundle, android-bundle]` 是有意的发布策略，
+> 缺陷认定撤回，工作流无需修改；本文原先记录的「平台发布解耦待决定」到此有了结论。
+> 批次结论为 `BILIKARA_LOCAL_BATCH_REVIEW_PASS`，范围仍限于本轮评审的
+> 共享 media/cache/state/persistence/auth 与 build/release 边界，
+> **不**构成对 PR109 全量内容的通过结论；Android 签名 secret 正确性、
+> `android-bundle` 在 tag 上的实际结果与设备/跨网验收均未执行。

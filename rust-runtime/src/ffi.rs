@@ -106,6 +106,7 @@ enum RuntimeServiceCommand {
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
     Cloudflare(CloudflareServiceRequest),
+    SharedCatalog(crate::shared_catalog::CatalogRequest),
     GatchaRepository(GatchaRepositoryRequest),
     JsonHttp(JsonHttpRequest),
     NetworkAddresses(NetworkAddressRequest),
@@ -396,6 +397,9 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
             }
             RuntimeServiceCommand::CacheRuntime(request) => {
                 service_result(execute_cache_runtime(request))
+            }
+            RuntimeServiceCommand::SharedCatalog(request) => {
+                service_result(crate::shared_catalog::execute_catalog(&request))
             }
             RuntimeServiceCommand::Cloudflare(request) => {
                 service_result(execute_cloudflare(&request))

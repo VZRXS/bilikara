@@ -1,5 +1,10 @@
 # Internet Remote v1 protocol boundary
 
+> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
+> removal exclusions are enforced; external deletion/blacklist synchronization
+> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+
 Status: implemented as an opt-in preview. The Host toolbar keeps Local Remote
 as the default and exposes a separate Local / Internet switch. Internet mode
 creates a signaling room lasting one to twenty-four hours (twelve hours by
@@ -226,3 +231,12 @@ QR URL accepted by the loopback QR generator. Deploying the main
 
 No later slice may expose the current LAN server, add arbitrary URL/HTTP proxy
 operations, or reuse the LAN route table as the Internet capability model.
+
+Catalog queries now use the shared Rust catalog service through Python FFI or
+the native Host adapter. Both transports retain their existing public field
+projection and permissions. D1 emptiness is success, service/auth failures remain
+distinct, and no mutation uses a fallback. `/api/catalog/search` is the in-repo
+HTTP path; `/api/lark/search` remains an alias and `table` selection is retired
+with 410. Eligible search outages use the verified public Sheets snapshot;
+external exclusion synchronization remains unverified. See the
+[catalog migration status](catalog-rust-local-migration.md).

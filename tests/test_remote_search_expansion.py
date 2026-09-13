@@ -86,7 +86,7 @@ function renderLarkSearchResults(items) {{
 
 const requests = [];
 const resolvers = new Map();
-function searchLarkPool(query) {{
+function searchCatalog(query) {{
   requests.push(query);
   return new Promise((resolve, reject) => resolvers.set(query, {{ resolve, reject }}));
 }}

@@ -168,7 +168,7 @@ fn effect(
             )?;
             return Ok(reply);
         }
-        "catalog_search" => catalog::read("/api/lark/search", &query(&effect, &page_fields))?,
+        "catalog_search" => catalog::read("/api/catalog/search", &query(&effect, &page_fields))?,
         "catalog_browse" => catalog::read(
             "/api/d1/browse",
             &query(
@@ -200,7 +200,7 @@ fn effect(
         "catalog_song_detail" => {
             let id = text(&effect, "catalog_item_id")?;
             let (bvid, page) = catalog_parts(&id)?;
-            let data = catalog::read("/api/lark/search", &format!("q={bvid}&limit=20"))?;
+            let data = catalog::read("/api/catalog/search", &format!("q={bvid}&limit=20"))?;
             let mut item = data["items"]
                 .as_array()
                 .into_iter()

@@ -53,7 +53,10 @@ pub(super) fn dispatch(
         }
         if matches!(
             path,
-            "/api/lark/search" | "/api/d1/browse" | "/api/d1/category-browse"
+            "/api/catalog/search"
+                | "/api/lark/search"
+                | "/api/d1/browse"
+                | "/api/d1/category-browse"
         ) {
             return catalog::read(path, query);
         }

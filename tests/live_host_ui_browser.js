@@ -205,7 +205,7 @@ async function run() {
       body: JSON.stringify({ ok: true }),
     });
   });
-  await page.route("**/api/lark/search?**", (route) => {
+  await page.route("**/api/catalog/search?**", (route) => {
     larkSearchRequests.push(route.request().url());
     const query = new URL(route.request().url()).searchParams.get("q") || "";
     const items = query === "zero-results" ? [] : Array.from({ length: 36 }, (_, index) => ({

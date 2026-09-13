@@ -25,11 +25,12 @@ from .bilibili import (
     search_gatcha_cache,
     update_gatcha_pool_config,
 )
-from .lark_pool_client import (
-    append_lark_pool_entries_in_background,
+from .shared_catalog import (
+    CatalogError,
+    append_catalog_entries_in_background,
     browse_d1_category_pool,
     browse_d1_pool,
-    search_lark_pool,
+    search_catalog,
     submit_cloudflare_song_rating,
 )
 from .store import PlaylistStoreCommandError
@@ -39,8 +40,9 @@ CATALOG_ID_RE = re.compile(r"^(BV[0-9A-Za-z]{10})(?:_p([1-9][0-9]{0,8}))?$")
 
 
 class InternetRemoteDispatchError(ValueError):
-    def __init__(self, kind: str, message: str) -> None:
+    def __init__(self, kind: str, message: str, *, status_code: int | None = None) -> None:
         self.kind = kind
+        self.status_code = status_code
         super().__init__(message)
 
 
@@ -163,6 +165,8 @@ def dispatch(context: Any, peer_id: str, lane: str, message: str) -> dict[str, A
             context,
             _run_host_effect(context, peer_id, response),
         )
+    except CatalogError as exc:
+        raise InternetRemoteDispatchError(exc.code, str(exc), status_code=exc.status_code) from exc
     except PlaylistStoreCommandError as exc:
         raise InternetRemoteDispatchError(exc.kind, str(exc)) from exc
 
@@ -213,7 +217,7 @@ def _run_host_effect(
         return public_response
     if kind == "catalog_search":
         items = annotate_gatcha_local_status(
-            search_lark_pool(str(effect["query"]), limit=int(effect["limit"]))
+            search_catalog(str(effect["query"]), limit=int(effect["limit"]))
         )
         public_response["data"] = {
             "items": [_public_catalog_item(item) for item in items]
@@ -401,7 +405,7 @@ def _fetch_catalog_item(
 
 def _catalog_detail(catalog_id: str) -> dict[str, Any]:
     bvid, page = _catalog_parts(catalog_id)
-    candidates = search_lark_pool(bvid, limit=20)
+    candidates = search_catalog(bvid, limit=20)
     for candidate in candidates:
         if str(candidate.get("bvid") or "") == bvid:
             public = _public_catalog_item(candidate)
@@ -723,7 +727,7 @@ def _public_catalog_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _append_catalog_item(item: Any) -> None:
     try:
-        append_lark_pool_entries_in_background(
+        append_catalog_entries_in_background(
             [
                 {
                     "mid": str(item.owner_mid or ""),

@@ -978,6 +978,7 @@ pub struct AppState {
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
     internet_remote_peers: InternetRemotePeers,
     player_controls: player_control::PlayerControls,
+    catalog: crate::shared_catalog::CatalogState,
     #[cfg(feature = "native-host")]
     native_session: native_session::NativeSession,
 }
@@ -1024,6 +1025,7 @@ impl Default for AppState {
             identity_namespace,
             internet_remote_peers: InternetRemotePeers::default(),
             player_controls: player_control::PlayerControls::default(),
+            catalog: crate::shared_catalog::CatalogState::default(),
             #[cfg(feature = "native-host")]
             native_session: native_session::NativeSession::default(),
         }
@@ -5109,6 +5111,26 @@ pub fn execute_app_state_json(request_json: &str) -> String {
     serde_json::to_string(&response).unwrap_or_else(|_| {
         "{\"schema_version\":1,\"status\":\"internal_error\",\"error\":{\"kind\":\"serialization_failed\",\"message\":\"failed to serialize AppState response\"}}".to_owned()
     })
+}
+
+/// Catalog cache bookkeeping only. All HTTP, JSON interpretation and parsing
+/// happen after this closure has released the process-wide AppState mutex.
+pub(crate) fn with_catalog<T>(
+    action: impl FnOnce(
+        &mut crate::shared_catalog::CatalogState,
+    ) -> Result<T, crate::shared_catalog::CatalogError>,
+) -> Result<T, crate::shared_catalog::CatalogError> {
+    let mut app = APP_STATE
+        .get_or_init(|| Mutex::new(AppState::default()))
+        .lock()
+        .map_err(|_| {
+            crate::shared_catalog::CatalogError::new(
+                503,
+                "state_unavailable",
+                "Rust state lock unavailable",
+            )
+        })?;
+    action(&mut app.catalog)
 }
 
 #[cfg(test)]

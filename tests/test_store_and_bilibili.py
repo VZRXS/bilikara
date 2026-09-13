@@ -2420,7 +2420,7 @@ class BilibiliParserTest(unittest.TestCase):
                 "_local_gatcha_favlist_candidates",
                 return_value=[favlist_entry],
             ),
-            patch.object(bilibili_module, "_append_lark_pool_entries_async") as append_lark,
+            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):
             self.assertTrue(
@@ -2502,7 +2502,7 @@ class BilibiliParserTest(unittest.TestCase):
         with (
             patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
             patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_lark_pool_entries_async") as append_lark,
+            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):
             self.assertTrue(
@@ -2542,7 +2542,7 @@ class BilibiliParserTest(unittest.TestCase):
         with (
             patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
             patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_lark_pool_entries_async") as append_lark,
+            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):
             self.assertTrue(
@@ -2580,7 +2580,7 @@ class BilibiliParserTest(unittest.TestCase):
         with (
             patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
             patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_lark_pool_entries_async") as append_lark,
+            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):
             self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(use_global_lock=False))

@@ -1,5 +1,10 @@
 # Native utility migration inventory
 
+> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
+> removal exclusions are enforced; external deletion/blacklist synchronization
+> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+
 This inventory defines the boundary of Phase 1, the native utility layer. It
 was produced by reviewing every Python module in `bilikara/`, including
 module-level functions, static methods, regex helpers, parsers, normalizers,
@@ -125,7 +130,16 @@ CSV retains UTF-8 BOM, CRLF records, minimal quoting, embedded newlines and cust
 time headers. Local time uses chrono's platform local timezone, including DST.
 Prewarm and rendering share the same loaded fonts, shaped fonts and glyph cache.
 
-Current progress ledger (PR109 local replay and confirmed concurrency fixes, 2026-09-13):
+Catalog follow-up (uncommitted, independent review deferred): the active
+`lark_pool_client.py` implementation has been removed. `shared_catalog.py` is a
+thin native adapter; Rust owns D1 query/normalization/cache and the former
+module's review/admin/rating/maintenance request policy. Native Host and both
+Internet adapters share that service. Direct Feishu is retired. **The verified
+Sheets source is a read-only fallback with bounded snapshot caching. External
+blacklist/deletion synchronization remains unverified.** See [catalog local migration report](catalog-rust-local-migration.md)
+for new validation, scope and remaining responsibilities. P03/P05/UI below remain intact.
+
+Historical integration checkpoint (PR109 local replay and confirmed concurrency fixes, 2026-09-13):
 
 User-authorized replay is complete on `work/v0.8.0`: UI `f3b9903` → `61a6d05`,
 P05 `2f5a02b` → `8ba65a8`, P03 `210a574` → `4395abe`, directly after immutable
@@ -290,15 +304,19 @@ No other helper is approved for Phase 1. The tables below document why.
 | `_browser_label`, `_json_code_block`, `_json_bytes`, `_connectivity_result` | scalar/dict formatting | yes | Defer: trivial Python adapters; FFI offers no benefit. |
 | All artifact, snapshot, probe, config/log collection helpers | filesystem/network/system state | no | Outside Phase 1. |
 
-### `bilikara/lark_pool_client.py`
+### `bilikara/shared_catalog.py` (replaces the retired `lark_pool_client.py`)
 
-| Helpers reviewed | Category / dependencies | Pure | Decision and reason |
-| --- | --- | --- | --- |
-| `_records_url`, `_fields_url` | URL composition | yes | Defer: two trivial f-strings coupled to the Lark HTTP client. |
-| `_field_text`, `_record_to_item`, `_cloudflare_search_item(s)`, `_cloudflare_browse_tags`, `normalize_pool_entry`, `_normalize_pool_entries` | heterogeneous API object adaptation | mostly | Defer: Python dictionary/list handling dominates. |
-| `_gatcha_keyword_matched`, `_is_pending_review_record` | domain classification | yes | Defer/exclude: content and review policy rather than syntax normalization. |
-| `_require_success`, payload/table helpers | API schema and state policy | mixed | Defer to later protocol/business phases. |
-| All request, search, cache, admin, mutation, and background helpers | network, mutable cache, persistence, scheduling | no | Outside Phase 1. |
+The former active module's Feishu credentials/token/probing/search code is
+removed. Its D1 read, normalization, review selection/approval, admin validation,
+rating submission and module-level maintenance dispatch now execute in
+`rust-runtime/src/shared_catalog/`. HTTP and append reuse `cloudflare_service`;
+query cache/inflight/backoff moved from NativeSession into shared AppState.
+Python retains configured endpoint/timeout/keyword transport, entry signatures,
+native result validation and best-effort enqueue/error adapters. There is no
+Python catalog parser or semantic fallback. The monthly runner and local rating
+identity ledger are unchanged in scope. The verified Sheets read-only fallback
+uses that same Rust service and AppState snapshot cache. Exact current evidence and removed
+test-to-contract mapping are in the [catalog report](catalog-rust-local-migration.md).
 
 ### `bilikara/playlist_export.py`
 

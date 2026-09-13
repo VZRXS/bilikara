@@ -1,5 +1,10 @@
 # Mobile Host and Shared Rust Architecture
 
+> Catalog follow-up: the verified public `gid=0` source is now implemented as
+> a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
+> removal exclusions are enforced; external deletion/blacklist synchronization
+> remains unverified. See [the catalog report](catalog-rust-local-migration.md).
+
 ## Product Model
 1. Android and iOS will eventually provide the complete Host functionality.
 2. Mobile Host must work without a computer.
@@ -101,8 +106,8 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
   configuration and cookie facts, commits external-worker cache events through
   AppState, persists Rust snapshots, and adapts the temporary C ABI.
 - Frozen Python implementations remain only for explicit compatibility paths:
-  external BBDown/yt-dlp/aria2c/FFmpeg modes, emergency diagnostics, direct
-  Feishu fallback, legacy Gacha schema rebuild, and runtime-unavailable update
+  external BBDown/yt-dlp/aria2c/FFmpeg modes, emergency diagnostics,
+  legacy Gacha schema rebuild, and runtime-unavailable update
   fallback. These are retained I/O or historical compatibility paths, not a
   Python application core. Normal operations do not recompute Rust-owned state
   in Python.
@@ -117,3 +122,9 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
 
 The detailed release sequencing, downloader scope, and casting foundation are
 maintained in [the version roadmap](version-roadmap.md).
+
+The catalog follow-up moves the complete active Python catalog module's policy
+into the [shared Rust catalog service](catalog-rust-local-migration.md). Direct
+Feishu is removed. D1 remains primary; eligible search outages use the verified
+public Sheets snapshot. External removal synchronization remains a documented
+coverage limitation; mutations never use Sheets.

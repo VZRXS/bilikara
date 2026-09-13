@@ -27,7 +27,6 @@ const fullscreenRequestToastMs = 4200;
 const fullscreenRequestToastFadeMs = 500;
 const localAdvanceOverlayFadeMs = 500;
 const localAdvanceOverlayMaxRows = 5;
-const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
@@ -5899,12 +5898,12 @@ async function searchGatchaCache(query) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
-async function searchLarkPool(query) {
+async function searchCatalog(query) {
   const normalizedQuery = String(query || "").trim();
   const params = new URLSearchParams();
   params.set("q", normalizedQuery);
   params.set("limit", "80");
-  const response = await fetch(`/api/lark/search?${params.toString()}`, {
+  const response = await fetch(`/api/catalog/search?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -5915,22 +5914,6 @@ async function searchLarkPool(query) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
-async function searchLarkPoolTable(query, tableIndex) {
-  const normalizedQuery = String(query || "").trim();
-  const params = new URLSearchParams();
-  params.set("q", normalizedQuery);
-  params.set("table", String(tableIndex));
-  params.set("limit", "80");
-  const response = await fetch(`/api/lark/search?${params.toString()}`, {
-    cache: "no-store",
-    headers: clientHeaders(),
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
-  }
-  return Array.isArray(payload.data?.items) ? payload.data.items : [];
-}
 
 async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
   const params = new URLSearchParams();
@@ -6783,7 +6766,7 @@ function searchResultStatusLabel(item) {
   }
 
   const source = String(item?.source || "").trim();
-  if (source === "bilikara" || source === "cloudflare") {
+  if (source === "bilikara" || source === "cloudflare" || source === "sheets") {
     return "";
   }
   if (source === "favlist") {
@@ -18694,7 +18677,7 @@ async function handleLarkSearchSubmit(event) {
   }
   setLarkSearchMessage(t("search.larkSearching"));
   try {
-    const poolItems = await searchLarkPool(query);
+    const poolItems = await searchCatalog(query);
     if (state.larkSearchSeq !== searchSeq) {
       return;
     }

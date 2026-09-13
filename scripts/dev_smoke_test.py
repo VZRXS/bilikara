@@ -216,7 +216,7 @@ class SmokeRunner:
                 "downloadHistoryExport",
                 "previewGatchaUid",
                 "/api/gatcha/favlist/preview",
-                "/api/lark/search",
+                "/api/catalog/search",
                 "/api/gatcha/refresh",
                 "/api/gatcha/favlist",
                 "/api/app/update",

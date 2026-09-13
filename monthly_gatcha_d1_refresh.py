@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import bilikara.bilibili as bilibili
-import bilikara.lark_pool_client as pool_client
+import bilikara.shared_catalog as pool_client
 from bilikara.config import DATA_DIR
 
 

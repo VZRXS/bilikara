@@ -60,7 +60,7 @@ class DesktopFixture:
         for module in (server, internet_remote):
             for name in ("gatcha_task_snapshot", "gatcha_pool_config_snapshot"):
                 self.stack.enter_context(patch.object(module, name, return_value={}))
-            self.stack.enter_context(patch.object(module, "append_lark_pool_entries_in_background"))
+            self.stack.enter_context(patch.object(module, "append_catalog_entries_in_background"))
         self.stack.enter_context(patch.object(server, "gatcha_favlist_updated_at", return_value={}))
         self.context = server.AppContext()
         self.stack.enter_context(patch.object(server, "CONTEXT", self.context))
@@ -276,7 +276,7 @@ class TransportConcurrencyTest(unittest.TestCase):
             if not release.wait(8):
                 raise RuntimeError("search barrier was not released")
             return []
-        with patch.object(internet_remote, "search_lark_pool", side_effect=search), ThreadPoolExecutor(max_workers=1) as executor:
+        with patch.object(internet_remote, "search_catalog", side_effect=search), ThreadPoolExecutor(max_workers=1) as executor:
             pending = executor.submit(self.f.remote, "catalog.search", {"query": "synthetic", "limit": 5}, "bulk")
             try:
                 self.assertTrue(entered.wait(5))

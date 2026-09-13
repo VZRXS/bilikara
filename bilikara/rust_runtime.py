@@ -292,6 +292,7 @@ def runtime_status() -> dict[str, Any]:
             "bilibili_service": _runtime_lib is not None,
             "cache_runtime": _runtime_lib is not None,
             "cloudflare_service": _runtime_lib is not None,
+            "shared_catalog": _runtime_lib is not None,
             "gatcha_repository": _runtime_lib is not None,
             "http_download": _runtime_lib is not None,
             "media_backend": _runtime_lib is not None,
@@ -649,6 +650,17 @@ def gatcha_repository_request(
             "Rust Gacha repository returned an invalid response",
             response={},
         )
+    return result
+
+
+def shared_catalog_request(operation: str, *, base_url: str, user_agent: str, timeout: float = 12.0, **fields: Any) -> dict[str, Any]:
+    result = _call_runtime_service("shared_catalog", {
+        "schema_version":1, "base_url":str(base_url).rstrip("/"),
+        "user_agent":str(user_agent), "timeout_ms":max(100, int(float(timeout)*1000)),
+        "operation":operation, **fields,
+    })
+    if not isinstance(result, dict):
+        raise RustRuntimeServiceError("invalid_response", "Rust catalog returned an invalid response", response={})
     return result
 
 

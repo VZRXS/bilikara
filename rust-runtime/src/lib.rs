@@ -20,6 +20,7 @@ mod native_video;
 mod networking;
 pub mod playlist_export;
 mod qr_image;
+pub mod shared_catalog;
 mod status_service;
 mod update_installer;
 
