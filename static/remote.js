@@ -7,6 +7,7 @@ const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const eventStreamRetryJitterRatio = 0.2;
 const stateFallbackRefreshMs = 1000;
+const nativeEventStreamDeadlineMs = 12000;
 const remoteConnectionOfflineGraceMs = 3000;
 const larkSearchTableCount = 5;
 const expandedSearchEagerCoverCount = 6;
@@ -1445,6 +1446,8 @@ function setRemoteSettingsSectionOpen(open) {
 }
 
 function renderRemoteAccess(remoteAccess) {
+  // The native Host owns invitation distribution; a Remote has no Host invite.
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const preferredUrl = String(remoteAccess?.preferred_url || "");
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
   const localUrl = String(remoteAccess?.local_url || "");
@@ -1901,7 +1904,7 @@ function ratingLog(message) {
   } catch (e) { /* ignore */ }
 }
 
-function submitSongRating(item, score) {
+function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
@@ -1930,17 +1933,34 @@ function submitSongRating(item, score) {
     bvid,
     score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
   };
+  const button = trigger && "disabled" in trigger ? trigger : null;
+  const wasDisabled = button?.disabled;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
     keepalive: true,
+  }).then(async (response) => {
+    const result = await response.json();
+    if (!response.ok || result?.ok === false || result?.success === false || result?.data?.success === false) {
+      throw new Error(result?.error || t("error.requestFailed"));
+    }
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
       renderCurrentRatingButton(state.data?.current_item);
     }
     console.warn("Rating submit failed:", error);
+    setAppMessage(error.message || t("error.requestFailed"), true);
+  }).finally(() => {
+    if (button) {
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
+    }
   });
   return true;
 }
@@ -2276,7 +2296,7 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function closeRatingPrompt({ submit = true, restoreFocus = true } = {}) {
+function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
@@ -2328,7 +2348,7 @@ function closeRatingPrompt({ submit = true, restoreFocus = true } = {}) {
   }
 
   if (shouldSubmit) {
-    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore, trigger);
   }
 }
 
@@ -2966,7 +2986,13 @@ function scheduleRender() {
   }
   state.renderDebounceTimer = setTimeout(() => {
     state.renderDebounceTimer = null;
-    render();
+    try {
+      render();
+      state.remoteLastRenderedGeneration = state.data?.playback_generation;
+    } catch (error) {
+      reportNativeRemoteConnection("render_error");
+      throw error;
+    }
   }, 50);
 }
 
@@ -3031,6 +3057,8 @@ function clearEventStreamReconnectTimer() {
 }
 
 function closeEventStream() {
+  window.clearTimeout(state.eventStreamWatchdog);
+  state.eventStreamWatchdog = null;
   clearEventStreamReconnectTimer();
   state.eventStreamHealthy = false;
   if (!state.eventSource) {
@@ -3038,6 +3066,35 @@ function closeEventStream() {
   }
   state.eventSource.close();
   state.eventSource = null;
+}
+
+function reportNativeRemoteConnection(event, receivedRevision = null) {
+  if (!state.data?.capabilities?.event_heartbeat) return;
+  // Fixed measurements only, no title/user, cookie, invite or arbitrary error.
+  fetch("/api/remote/connection-diagnostic", {
+    method: "POST", headers: {...clientHeaders(), "Content-Type":"application/json"},
+    body: JSON.stringify({event, revision:currentStateRevision(), received_revision:receivedRevision,
+      playback_generation:state.data?.playback_generation,
+      rendered_generation:state.remoteLastRenderedGeneration,
+      stream_state:state.eventSource?.readyState ?? 2,
+      age_ms:Math.max(0, Date.now() - (state.eventStreamLastFrameAt || Date.now())),
+      visible:document.visibilityState === "visible"}),
+  }).catch(() => {});
+}
+
+function armNativeEventStreamWatchdog(source) {
+  if (!state.data?.capabilities?.event_heartbeat) return;
+  state.eventStreamLastFrameAt = Date.now();
+  window.clearTimeout(state.eventStreamWatchdog);
+  state.eventStreamWatchdog = window.setTimeout(() => {
+    if (state.eventSource !== source) return;
+    reportNativeRemoteConnection("stale");
+    closeEventStream();
+    setRemoteConnectionPhase("reconnecting");
+    // Read-only local Host snapshot; never trigger a media/library refresh.
+    refreshCacheStatusOnly();
+    scheduleEventStreamReconnect();
+  }, nativeEventStreamDeadlineMs);
 }
 
 function eventStreamReconnectDelayMs(baseDelayMs, randomValue = Math.random()) {
@@ -3117,9 +3174,12 @@ function connectStateStream() {
       const confirmsCurrentState = eventStreamStateIsCurrent(snapshot);
       applyStateSnapshot(snapshot);
       if (!confirmsCurrentState) {
+        reportNativeRemoteConnection("out_of_order", Number(snapshot.state_revision));
         return;
       }
+      if (!state.eventStreamHealthy) reportNativeRemoteConnection("connected");
       state.eventStreamHealthy = true;
+      armNativeEventStreamWatchdog(source);
       state.eventStreamRetryMs = eventStreamInitialRetryMs;
       clearStateFallbackTimer();
       clearRemoteConnectionOfflineTimer();
@@ -3129,8 +3189,18 @@ function connectStateStream() {
         setRemoteConnectionPhase("connected");
       }
     } catch {
+      reportNativeRemoteConnection("invalid_state");
       // Ignore malformed events and wait for the next valid snapshot.
     }
+  });
+
+  source.addEventListener("heartbeat", (event) => {
+    if (state.eventSource !== source || !state.eventStreamHealthy) return;
+    try {
+      const revision = JSON.parse(event.data).state_revision;
+      if (revision === currentStateRevision()) armNativeEventStreamWatchdog(source);
+      // A missing state frame must not be hidden by a newer heartbeat.
+    } catch { /* Invalid heartbeats cannot extend the liveness deadline. */ }
   });
 
   source.addEventListener("error", () => {
@@ -3192,9 +3262,10 @@ async function searchLarkPoolTable(query, tableIndex) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
-async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100, offset = 0 } = {}) {
   const params = new URLSearchParams();
   params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("offset", String(offset));
   params.set("limit", String(limit));
   const normalizedLetter = String(letter || "").trim().toUpperCase();
   const normalizedQuery = String(query || "").trim();
@@ -4172,7 +4243,9 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   }
   if (results) {
     if (mode.tag) {
+      const scrollTop = results.scrollTop;
       renderSearchResultItems(results, items, t("search.larkNoResults"));
+      results.scrollTop = scrollTop;
     } else {
       results.innerHTML = "";
       results.classList.add("hidden");
@@ -4182,6 +4255,10 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     let text = "";
     if (mode.tag && !mode.loading) {
       text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+      if (typeof mode.data?.has_more === "boolean") {
+        text = paginatedBrowseStatus(items, {loading:mode.loading,hasMore:mode.data.has_more,
+          loadingText:t("search.browseLoading"),emptyText:t("search.larkNoResults")});
+      }
     } else if (!mode.tag && tags.length) {
       text = t("search.browseTagsFound", { count: tags.length });
     }
@@ -4190,15 +4267,20 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   }
 }
 
-async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "" } = {}) {
+async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", query = "", tag = "", locale = "", append = false } = {}) {
   const normalizedKind = kind === "artist" ? "artist" : "name";
   const mode = d1BrowseModeState(normalizedKind);
+  if (append && (mode.loading || !mode.tag || !mode.data?.has_more)) return;
+  const offset = append ? Number(mode.data.next_offset) : 0;
   const searchSeq = mode.seq + 1;
   mode.seq = searchSeq;
-  mode.letter = String(letter || "").trim().toUpperCase();
-  mode.query = String(query || "").trim();
-  mode.tag = String(tag || "").trim();
-  mode.locale = String(locale || "").trim();
+  if (!append) {
+    mode.letter = String(letter || "").trim().toUpperCase();
+    mode.query = String(query || "").trim();
+    mode.tag = String(tag || "").trim();
+    mode.locale = String(locale || "").trim();
+    mode.data = null;
+  }
   mode.loading = true;
   mode.error = "";
   renderD1BrowseView(normalizedKind);
@@ -4210,11 +4292,16 @@ async function loadD1Browse({ kind = state.remoteDiscoverMode, letter = "", quer
       tag: mode.tag,
       locale: mode.locale,
       limit: mode.tag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      offset,
     });
     if (mode.seq !== searchSeq) {
       return;
     }
-    mode.data = data || {};
+    const items = mergeBrowseItems(append ? mode.data?.items : [], data?.items);
+    mode.data = {...data, items};
+    if (typeof data?.has_more === "boolean") {
+      mode.data.has_more = data.has_more && Number.isSafeInteger(data.next_offset) && data.next_offset > offset && Boolean(data.items?.length);
+    }
   } catch (error) {
     if (mode.seq === searchSeq) {
       mode.error = error.message;
@@ -4407,12 +4494,11 @@ function shouldAutoLoadNextBrowsePage(resultsContainer, { active, loading, hasMo
   if (!active || loading || !hasMore || !resultsContainer) {
     return false;
   }
-  const bounds = resultsContainer.getBoundingClientRect?.();
-  return Boolean(
-    bounds
-    && bounds.bottom <= window.innerHeight + browseAutoLoadThresholdPx
-    && bounds.bottom >= 0
-  );
+  // Browse now owns an inner scrolling viewport. Its outer rectangle never
+  // approaches the window edge as the user scrolls through its song cards.
+  if (!resultsContainer.getClientRects().length) return false;
+  return resultsContainer.scrollHeight - resultsContainer.clientHeight
+    - resultsContainer.scrollTop <= browseAutoLoadThresholdPx;
 }
 
 function maybeLoadMoreCategoryBrowse(resultsContainer) {
@@ -8727,23 +8813,31 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
   }
 });
 
-window.addEventListener("scroll", () => {
+window.addEventListener("scroll", (event) => {
+  if (state.remoteRequestView === "discover" && ["name","artist"].includes(state.remoteDiscoverMode)) {
+    const kind = state.remoteDiscoverMode;
+    const mode = d1BrowseModeState(kind);
+    const results = d1BrowsePanel(kind)?.querySelector("[data-d1-browse-results]");
+    if (event.target === results && shouldAutoLoadNextBrowsePage(results,
+      {active:Boolean(mode.tag),loading:mode.loading,hasMore:mode.data?.has_more})) {
+      loadD1Browse({kind,append:true});
+    }
+  }
   if (
     state.remoteRequestView === "discover"
     && state.remoteDiscoverMode === "categories"
     && state.categoryBrowseSelectedId
   ) {
-    maybeLoadMoreCategoryBrowse(
-      elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]"),
-    );
+    const results = elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]");
+    if (event.target === results) maybeLoadMoreCategoryBrowse(results);
   }
   if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "uids") {
-    maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
+    if (event.target === elements.sourcesFollowResults) maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
   }
   if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "favorites") {
-    maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
+    if (event.target === elements.favlistSongResults) maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
   }
-}, { passive: true });
+}, { passive: true, capture: true });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
   canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
@@ -9376,7 +9470,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
   }
 });
 

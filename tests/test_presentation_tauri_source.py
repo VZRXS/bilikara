@@ -13,7 +13,7 @@ class PresentationTauriSourceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.tauri = ROOT / "src-tauri"
-        cls.main = (cls.tauri / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.main = (cls.tauri / "src" / "desktop.rs").read_text(encoding="utf-8")
         cls.backend = (cls.tauri / "src" / "backend_process.rs").read_text(
             encoding="utf-8"
         )

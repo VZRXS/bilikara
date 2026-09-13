@@ -95,6 +95,16 @@ class BackgroundAppendTest(unittest.TestCase):
 
 
 class LarkPoolClientTest(unittest.TestCase):
+    def test_browse_passes_pagination_without_recomputing_worker_policy(self):
+        for page in ({"items": [], "tags": []}, {"items": [], "tags": [], "offset":100,"next_offset":200,"has_more":True}):
+            with patch.object(lark_pool, "_cloudflare_json", return_value=page) as request:
+                result = lark_pool.browse_d1_pool("artist", tag="Singer", offset=100)
+            self.assertIn("offset=100", request.call_args.args[1])
+            for key in ("offset", "next_offset", "has_more"):
+                self.assertEqual(key in result, key in page)
+                if key in page:
+                    self.assertEqual(result[key], page[key])
+
     def test_lark_http_transport_delegates_to_rust_runtime(self):
         with patch.object(
             lark_pool.rust_runtime,

@@ -438,6 +438,151 @@ console.log(JSON.stringify({ action, videoTime: video.currentTime, audioTime: au
         self.assertEqual(result["videoSeekWrites"], 0)
         self.assertEqual(result["audioSeekWrites"], 1)
 
+    def test_android_recovery_events_do_not_seek_one_audio_packet_ahead(self):
+        events = """
+function registerRecovery(video, audio) {
+  const session = state.hostPlaybackSession;
+  const synchronizeStartupPlayer = () => false;
+""" + self.video_recovery_event_source + "\n}"
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const video = new FakeMedia(8.661754), audio = new FakeMedia(8.683087);
+mountedVideo = video; mountedAudio = audio; effectiveOffsetSeconds = 0;
+video.paused = false; audio.paused = false;
+registerRecovery(video, audio);
+// Replay repeated starvation/recovery events, not just a single sync call.
+// Each recovery sees audio one 48-kHz AAC packet ahead (21.333 ms).
+for (let i = 0; i < 32; i++) {
+  nowMs += 70;
+  video.readyState = 1; video.dispatchMediaEvent("waiting");
+  video._time += 0.07; audio._time = video._time + 0.021333;
+  video.readyState = 4; video.dispatchMediaEvent("canplay");
+  audio.dispatchMediaEvent("canplay");
+  await Promise.resolve();
+}
+console.log(JSON.stringify({ seeks: audio.seekWrites, audioPaused: audio.paused,
+  videoPaused: video.paused, videoTime: video.currentTime, actions }));
+""",
+            self.sync_source,
+            events,
+        )
+        self.assertEqual(result["seeks"], 0, result)
+        self.assertFalse(result["audioPaused"])
+        self.assertFalse(result["videoPaused"])
+        self.assertGreater(result["videoTime"], 10)
+
+    def test_android_forced_audio_ahead_correction_respects_cooldown(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const video = new FakeMedia(10), audio = new FakeMedia(10.6);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+const first = syncSplitPlayer(video, audio, 0, true);
+audio._time = 10.6; nowMs += 50;
+const second = syncSplitPlayer(video, audio, 0, true);
+const seeksDuringCooldown = audio.seekWrites;
+nowMs += 750;
+const third = syncSplitPlayer(video, audio, 0, true);
+console.log(JSON.stringify({ first, second, third, seeksDuringCooldown, seeks: audio.seekWrites }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["first"], "audio-drift-correction")
+        self.assertEqual(result["second"], "none")
+        self.assertEqual(result["seeksDuringCooldown"], 1)
+        self.assertEqual(result["third"], "audio-drift-correction")
+        self.assertEqual(result["seeks"], 2)
+
+    def test_audio_correction_diagnostic_preserves_pre_seek_drift(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10), audio = new FakeMedia(10.6);
+mountedVideo = video; mountedAudio = audio; effectiveOffsetSeconds = 0;
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, true);
+const payload = diagnosticPosts.at(-1).payload;
+console.log(JSON.stringify(payload));
+""",
+            self.sync_source,
+            self.diagnostic_source,
+        )
+        self.assertEqual(result["event"], "sync-audio-drift-correction")
+        self.assertAlmostEqual(result["drift_before_correction_seconds"], -0.6)
+        self.assertEqual(result["correction_target_audio_time"], 10)
+        self.assertTrue(result["sync_force_correction"])
+        self.assertEqual(result["drift_seconds"], 0)
+
+    def test_android_seek_output_clock_recovers_without_reseeking_audio(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) AppleWebKit/537.36 Chrome/133.0.0.0" },
+  configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const frames = new Map(); let nextFrame = 0;
+window.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+window.cancelAnimationFrame = id => frames.delete(id);
+const video = new FakeMedia(10);
+class OutputClockAudio extends FakeMedia {
+  get currentTime() { return this._time; }
+  set currentTime(value) {
+    super.currentTime = value;
+    this.seeking = true; this.readyState = 1;
+    this.seekCompletesAt = nowMs + 10;
+    this.clockResumesAt = nowMs + 310;
+  }
+}
+const audio = new OutputClockAudio(9.8);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+// Exercise the real seek entry, settle and periodic controller together.
+// seeked/canplay become true 300 ms BEFORE the audio output clock resumes.
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 30 });
+const samples = [];
+for (let tick = 1; tick <= 600; tick++) {
+  nowMs += 10;
+  if (audio.seeking && nowMs >= audio.seekCompletesAt) {
+    audio.seeking = false; audio.readyState = 4;
+  }
+  if (!video.paused) video._time += 0.01;
+  if (!audio.paused && !audio.seeking && nowMs >= audio.clockResumesAt) audio._time += 0.01;
+  if (state.hostPlaybackSession.seekSettling) settleSplitPlayerSeek(video, audio);
+  if (tick % 12 === 0) syncSplitPlayer(video, audio, 0.2, false);
+  const pending = [...frames.values()]; frames.clear();
+  for (const callback of pending) callback();
+  await Promise.resolve(); await Promise.resolve();
+  if (tick >= 200) samples.push(video.currentTime - audio.currentTime - 0.2);
+}
+console.log(JSON.stringify({
+  audioSeekWrites: audio.seekWrites, videoSeekWrites: video.seekWrites,
+  maxSettledDrift: Math.max(...samples.map(Math.abs)),
+  videoTime: video.currentTime, audioTime: audio.currentTime,
+  videoPaused: video.paused, audioPaused: audio.paused,
+  audioPauseCalls: audio.pauseCalls, pendingFrames: frames.size,
+}));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+        )
+        self.assertEqual(result["audioSeekWrites"], 1, result)
+        self.assertEqual(result["videoSeekWrites"], 1, result)
+        self.assertLessEqual(result["maxSettledDrift"], 0.045, result)
+        self.assertGreater(result["audioTime"], 34)
+        self.assertFalse(result["videoPaused"])
+        self.assertFalse(result["audioPaused"])
+        self.assertEqual(result["audioPauseCalls"], 1)
+        self.assertEqual(result["pendingFrames"], 0)
+
     def test_small_acceptable_drift_writes_neither_timeline(self):
         result = self.run_node(
             """
@@ -454,6 +599,199 @@ console.log(JSON.stringify({ action, videoTime: video.currentTime, audioTime: au
         self.assertEqual(result["audioTime"], 29.85)
         self.assertEqual(result["videoSeekWrites"], 0)
         self.assertEqual(result["audioSeekWrites"], 0)
+
+    def run_android_clock_node(self, body: str, *sources: str) -> dict:
+        return self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) AppleWebKit/537.36 Chrome/133.0.0.0" },
+  configurable: true,
+});
+global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+const frames = new Map(); let nextFrame = 0;
+window.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+window.cancelAnimationFrame = id => frames.delete(id);
+const video = new FakeMedia(30), audio = new FakeMedia(29.5);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+""" + body,
+            self.sync_source,
+            *sources,
+        )
+
+    def test_android_clock_catchup_preserves_offset_and_requested_rate(self):
+        result = self.run_android_clock_node(
+            """
+const results = [];
+for (const offset of [-0.4, 0, 0.4]) {
+  for (const rate of [0.75, 1, 1.5]) {
+    effectiveOffsetSeconds = offset;
+    state.localPlayerRequestedRate = rate;
+    video._time = 30; audio._time = 30 - offset - 0.35;
+    video.paused = false; audio.paused = false;
+    syncSplitPlayer(video, audio, offset, false);
+    const held = video.paused;
+    for (let i = 0; i < 200; i++) {
+      nowMs += 10;
+      if (!video.paused) video._time += 0.01 * video.playbackRate;
+      if (!audio.paused) audio._time += 0.01 * audio.playbackRate;
+      const callbacks = [...frames.values()]; frames.clear();
+      for (const callback of callbacks) callback();
+      if (i % 12 === 0) syncSplitPlayer(video, audio, offset, false);
+      await Promise.resolve();
+    }
+    results.push({ held, drift: video.currentTime - audio.currentTime - offset,
+      videoRate: video.playbackRate, audioRate: audio.playbackRate,
+      playing: !video.paused && !audio.paused, frames: frames.size });
+  }
+}
+console.log(JSON.stringify({ results, videoSeeks: video.seekWrites, audioSeeks: audio.seekWrites }));
+"""
+        )
+        self.assertEqual(result["videoSeeks"], 0)
+        self.assertEqual(result["audioSeeks"], 0)
+        for row in result["results"]:
+            self.assertTrue(row["held"], row)
+            self.assertTrue(row["playing"], row)
+            self.assertLessEqual(abs(row["drift"]), 0.045, row)
+            self.assertEqual(row["videoRate"], row["audioRate"], row)
+            self.assertEqual(row["frames"], 0, row)
+
+    def test_android_clock_recovery_cannot_undo_pause_or_new_seek(self):
+        result = self.run_android_clock_node(
+            """
+syncSplitPlayer(video, audio, 0.2, false);
+const oldPauseFrame = [...frames.values()][0];
+setSplitPlaybackIntent(video, audio, false);
+oldPauseFrame();
+const paused = { video: video.paused, audio: audio.paused, frames: frames.size };
+state.localShouldBePlaying = true; video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0.2, false);
+const oldSeekFrame = [...frames.values()][0];
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: false, targetTime: 50 });
+oldSeekFrame();
+settleSplitPlayerSeek(video, audio, true);
+console.log(JSON.stringify({ paused, videoTime: video.currentTime, audioTime: audio.currentTime,
+  videoPaused: video.paused, audioPaused: audio.paused,
+  recovering: state.hostPlaybackSession.audioClockRecovering, frames: frames.size }));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+        )
+        self.assertEqual(result["paused"], {"video": True, "audio": True, "frames": 0})
+        self.assertEqual(result["videoTime"], 50)
+        self.assertEqual(result["audioTime"], 49.8)
+        self.assertTrue(result["videoPaused"])
+        self.assertTrue(result["audioPaused"])
+        self.assertFalse(result["recovering"])
+        self.assertEqual(result["frames"], 0)
+
+    def test_android_clock_recovery_retires_with_session_and_ignores_old_frame(self):
+        result = self.run_android_clock_node(
+            """
+syncSplitPlayer(video, audio, 0.2, false);
+const oldSession = state.hostPlaybackSession;
+const oldFrame = [...frames.values()][0];
+clearLocalPlayerSyncTimer(oldSession);
+state.hostPlaybackSession = { ...oldSession, audioClockRecoveryFrame: 999, audioClockRecovering: true };
+oldFrame();
+console.log(JSON.stringify({ oldFrame: oldSession.audioClockRecoveryFrame,
+  oldRecovering: oldSession.audioClockRecovering,
+  newFrame: state.hostPlaybackSession.audioClockRecoveryFrame,
+  newRecovering: state.hostPlaybackSession.audioClockRecovering,
+  videoPlayCalls: video.playCalls, audioPlayCalls: audio.playCalls }));
+""",
+            self.lifecycle_source,
+        )
+        self.assertEqual(result, {"oldFrame": None, "oldRecovering": False,
+                                  "newFrame": 999, "newRecovering": True,
+                                  "videoPlayCalls": 0, "audioPlayCalls": 0})
+
+    def test_android_audio_seek_holds_video_until_audio_recovers(self):
+        result = self.run_android_clock_node(
+            """
+audio.seeking = true; audio.readyState = 1;
+const waiting = syncSplitPlayer(video, audio, 0.2, false);
+const held = video.paused;
+audio.seeking = false; audio.readyState = 4;
+const recovery = syncSplitPlayer(video, audio, 0.2, true);
+console.log(JSON.stringify({ waiting, held, recovery, audioSeeks: audio.seekWrites,
+  videoSeeks: video.seekWrites, audioPaused: audio.paused, frames: frames.size }));
+"""
+        )
+        self.assertEqual(result, {"waiting": "wait-for-audio", "held": True,
+                                  "recovery": "wait-for-audio-clock", "audioSeeks": 0,
+                                  "videoSeeks": 0, "audioPaused": False, "frames": 1})
+
+    def test_seek_supersedes_inflight_play_attempt_without_startup_failure(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10), audio = new FakeMedia(9.8);
+mountedVideo = video; mountedAudio = audio;
+state.localPlaybackStartState = "pending";
+let rejectFirstPlay;
+video.play = function () {
+  this.paused = false; this.playCalls += 1;
+  if (this.playCalls === 1) return new Promise((resolve, reject) => { rejectFirstPlay = reject; });
+  return Promise.resolve();
+};
+startSplitPlaybackPair(video, audio, { userGesture: true });
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 45 });
+// Chromium rejects the old pending play when the seek transaction pauses it.
+rejectFirstPlay(Object.assign(new Error('interrupted by pause'), { name: 'AbortError' }));
+for (let i = 0; i < 8; i++) await Promise.resolve();
+const settled = settleSplitPlayerSeek(video, audio, true);
+for (let i = 0; i < 8; i++) await Promise.resolve();
+console.log(JSON.stringify({ settled, phase: state.hostPlaybackSession.phase,
+  shouldPlay: state.localShouldBePlaying, videoPaused: video.paused, audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls, audioPlayCalls: audio.playCalls,
+  videoTime: video.currentTime, audioTime: audio.currentTime }));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+        )
+        self.assertEqual(result, {"settled": True, "phase": "playing", "shouldPlay": True,
+                                  "videoPaused": False, "audioPaused": False,
+                                  "videoPlayCalls": 2, "audioPlayCalls": 2,
+                                  "videoTime": 45, "audioTime": 44.8})
+
+    def test_audio_variant_click_preserves_intent_during_internal_video_hold(self):
+        listener = self._slice(
+            'elements.audioVariantBar.addEventListener("click",',
+            'elements.audioVariantToggle?.addEventListener',
+        )
+        result = self.run_node(
+            """
+const captures = [];
+for (const intent of [true, false]) {
+  const video = new FakeMedia(30), audio = new FakeMedia(29.5);
+  mountedVideo = video; mountedAudio = audio;
+  state.hostPlaybackSession.video = video;
+  state.hostPlaybackSession.audio = audio;
+  state.hostPlaybackSession.logicalPlayIntent = intent;
+  state.localShouldBePlaying = intent;
+  state.data.current_item = { id: 'item', item_incarnation_id: 'incarnation', selected_audio_variant_id: 'vocal' };
+  const button = { dataset: { itemId: 'item', bound: 'true', variantId: 'instrumental' } };
+  await variantClick({ target: { closest: () => button } });
+  captures.push(state.pendingPlaybackRestore.wasPlaying);
+}
+console.log(JSON.stringify({ captures }));
+""",
+            """
+let variantClick;
+elements.audioVariantBar = { addEventListener(name, fn) { variantClick = fn; } };
+const audioVariantSwitchDebounceMs = 350;
+function audioVariantSwitchLocked() { return false; }
+function selectedAudioVariantForItem() { return { id: 'vocal' }; }
+function renderAudioVariantBar() {}
+function frontendPlaybackMode() { return 'local'; }
+function render() {}
+function scheduleAudioVariantSwitchUnlock() {}
+async function apiPostExactStateCommand() { return { commandApplied: true }; }
+""" + listener,
+        )
+        self.assertEqual(result["captures"], [True, False])
 
     def test_effective_offset_echo_performs_exactly_one_audio_resync(self):
         result = self.run_node(

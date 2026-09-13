@@ -642,7 +642,9 @@
         return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
       }
       if (method === "GET" && url.pathname === "/api/d1/browse") {
+        const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
         response = await request("catalog.browse", {
+          ...(offset ? {offset} : {}),
           kind: url.searchParams.get("kind") === "artist" ? "artist" : "name",
           letter: url.searchParams.get("letter") || "",
           query: url.searchParams.get("q") || "",

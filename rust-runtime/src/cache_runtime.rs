@@ -1432,7 +1432,9 @@ fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntime
                 DownloadErrorKind::DestinationExists => "destination_exists",
                 DownloadErrorKind::Network => "network",
                 DownloadErrorKind::HttpStatus => "http_status",
-                DownloadErrorKind::Io => "io",
+                // This is a local write/flush/publication error, not media
+                // input I/O. Starting another track download cannot fix it.
+                DownloadErrorKind::Io => "storage",
                 DownloadErrorKind::LengthMismatch => "length_mismatch",
                 DownloadErrorKind::EmptyBody => "empty_body",
                 DownloadErrorKind::Cancelled => "cancelled",
@@ -1467,6 +1469,7 @@ fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
             | "risk_control"
             | "selection"
             | "source_missing"
+            | "storage"
             | "destination_exists"
             | "unavailable"
             | "unsupported"
@@ -2054,7 +2057,7 @@ fn duration_tolerance(expected: f64) -> f64 {
     3.0_f64.max(expected * 0.02)
 }
 
-fn variant_id(page: u32, label: &str, index: usize) -> String {
+pub(crate) fn variant_id(page: u32, label: &str, index: usize) -> String {
     let mut normalized = String::new();
     let mut separator = false;
     for character in label.to_ascii_lowercase().chars() {
@@ -3131,6 +3134,48 @@ mod tests {
     }
 
     #[test]
+    fn native_host_media_candidates_keep_the_desktop_compatible_web_headers() {
+        let root = std::env::temp_dir().join("bilikara-native-web-profile");
+        let mut native_job = job(&root);
+        native_job.user_agent = crate::native_video::USER_AGENT.to_owned();
+        let stream = BilibiliStream {
+            url: "https://media.example/audio.m4s".into(),
+            backup_urls: vec!["https://backup.example/audio.m4s".into()],
+            codec_id: None,
+            codec_name: None,
+            codecs: Some("mp4a.40.2".into()),
+            mime_type: Some("audio/mp4".into()),
+            width: None,
+            height: None,
+            quality_id: Some(30280),
+            bandwidth: Some(207072),
+            order: None,
+        };
+        let request = download_request(&native_job, &stream, root.join("audio.m4s")).unwrap();
+        assert_eq!(request.candidates.len(), 2);
+        for candidate in request.candidates {
+            let header = |name: &str| {
+                candidate
+                    .headers
+                    .iter()
+                    .find(|header| header.name.eq_ignore_ascii_case(name))
+                    .map(|header| header.value.as_str())
+            };
+            assert_eq!(
+                header("user-agent"),
+                Some(concat!(
+                    "Mozilla/5.0 (X11; Linux x86_64) ",
+                    "AppleWebKit/537.36 (KHTML, like Gecko) ",
+                    "Chrome/123.0.0.0 Safari/537.36"
+                ))
+            );
+            assert_eq!(header("referer"), Some("https://www.bilibili.com/"));
+            assert_eq!(header("origin"), Some("https://www.bilibili.com"));
+            assert_eq!(header("cookie"), None);
+        }
+    }
+
+    #[test]
     fn guest_quality_uses_best_available_lower_avc_stream() {
         let root = std::env::temp_dir().join("bilikara-cache-runtime-guest-quality");
         let mut guest_job = job(&root);
@@ -3151,6 +3196,45 @@ mod tests {
         let selected = select_video(&[stream(32, 500_000), stream(64, 1_000_000)], &guest_job)
             .expect("guest stream selection");
         assert_eq!(selected.quality_id, Some(64));
+    }
+
+    #[test]
+    fn download_storage_failure_stops_track_retries() {
+        let track = TrackSpec {
+            key: "audio-p1".to_owned(),
+            label: "audio P1".to_owned(),
+            order: 0,
+            page: CachePageSpec {
+                page: 1,
+                cid: 456,
+                duration_seconds: Some(120.0),
+                label: "P1".to_owned(),
+            },
+            kind: ExpectedMediaKind::Audio,
+        };
+        let error = cache_download_error(
+            &track,
+            DownloadError {
+                kind: DownloadErrorKind::Io,
+                message:
+                    "failed to publish completed download (io_kind=PermissionDenied, os_error=13)"
+                        .to_owned(),
+                candidate_index: Some(0),
+                http_status: None,
+            },
+        );
+        assert_eq!(error.kind, "storage");
+        assert!(error.message.contains("os_error=13"));
+        assert!(is_terminal_track_error(&error));
+        // Keep the existing media-input I/O taxonomy independent of failed
+        // writes/publishes in the downloader; do not change backend fallback.
+        assert!(!is_terminal_track_error(&CacheRuntimeError::new(
+            "io",
+            "media read failed"
+        )));
+        assert!(!is_terminal_track_error(&CacheRuntimeError::new(
+            "network", "reset"
+        )));
     }
 
     #[test]

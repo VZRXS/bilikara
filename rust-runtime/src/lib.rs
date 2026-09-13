@@ -5,12 +5,18 @@ mod cloudflare_service;
 mod diagnostics;
 pub mod experimental_libav;
 mod ffi;
+mod file_publication;
 mod gatcha_repository;
+mod http_client;
 mod http_downloader;
 mod internet_remote;
 mod json_http;
 mod media_backend;
 mod media_routing;
+#[cfg(feature = "native-host")]
+pub mod native_host;
+mod native_host_storage;
+mod native_video;
 mod networking;
 mod qr_image;
 mod status_service;
@@ -20,7 +26,7 @@ pub use app_state::{
     AppSnapshot, AppState, AppStateRequest, AppStateResponse, AppStateSeed, BackupSeed, CacheEvent,
     HistoryEntry, PersistenceEffects, PersistenceSnapshot, PlayerSettingsSeed, PlaylistItem,
     PlaylistItemPatch, SessionArchiveSeed, SessionPlayedEntry, execute_app_state,
-    execute_app_state_json,
+    execute_app_state_json, initialize_app_state_once, initialize_native_host,
 };
 pub use bilibili_service::{
     BilibiliDashRequest, BilibiliDashResult, BilibiliServiceError, BilibiliStream,
@@ -44,6 +50,7 @@ pub use media_backend::{
     ExpectedMediaKind, MediaError, MediaErrorKind, MediaNormalizeRequest, MediaNormalizeResult,
     MediaPathRequest, MediaProbe, normalize_media, probe_media,
 };
+pub use native_video::{NativeVideoError, NativeVideoRequest, fetch_native_video};
 pub use networking::{
     InterfaceAddress, NetworkAddressRequest, NetworkAddressResult, detect_lan_ipv4_addresses,
     rank_lan_ipv4_candidates,

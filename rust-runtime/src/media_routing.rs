@@ -1,8 +1,10 @@
 //! Application media routing. The optional backend is a capability, independent
 //! of mandatory AppState. No source selection, cache ownership, or retry loop.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use crate::MediaProbe;
 use crate::experimental_libav::{CopyProfile, ProbeError};
 use crate::media_backend::{self, MediaNormalizeRequest, MediaNormalizeResult, MediaPathRequest};
-use crate::{ExpectedMediaKind, MediaError, MediaErrorKind, MediaProbe};
+use crate::{ExpectedMediaKind, MediaError, MediaErrorKind};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -197,7 +199,7 @@ pub(crate) struct CliStream {
 fn finish_cli(
     q: &InspectRequest,
     e: &CliEvidence,
-    flag: &AtomicBool,
+    _flag: &AtomicBool,
 ) -> Result<Inspection, RouteError> {
     let d = diagnostic(q.operation.name(), Backend::Ffprobe, Some(e.reason));
     let expected = match q.expected_kind {
@@ -223,7 +225,7 @@ fn finish_cli(
     if q.operation == Operation::Validate
         && matches!(e.container.as_str(), "mp4" | "mov,mp4,m4a,3gp,3g2,mj2")
     {
-        validate_mp4(&q.source, e.streams[0].codec.as_deref(), flag)
+        validate_mp4(&q.source, e.streams[0].codec.as_deref(), _flag)
             .map_err(|e| failed(e.into(), d.clone()))?;
     }
     Ok(Inspection::Completed {

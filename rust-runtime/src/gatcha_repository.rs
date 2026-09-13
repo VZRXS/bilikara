@@ -299,6 +299,58 @@ fn execute_gatcha_operation(
     }
 }
 
+/// One-time Native Alpha migration. Never reset source choices on each login.
+/// The marker is separate because ordinary UID/profile writes normalize their
+/// own schema. Commit UIDs first: an interrupted marker write is safe to retry.
+#[cfg(feature = "native-host")]
+pub(crate) fn initialize_native_uids(
+    paths: &GatchaPaths,
+    defaults: &[String],
+) -> Result<(), GatchaRepositoryError> {
+    let _guard = repository_guard()?;
+    let marker = paths
+        .uid_file
+        .with_file_name("native-library-defaults.json");
+    let read = |path: &Path| -> Result<Option<Value>, GatchaRepositoryError> {
+        match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|_| error("library_storage", "曲库来源配置损坏，原文件已保留")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(error("library_storage", "无法读取曲库来源配置")),
+        }
+    };
+    if let Some(version) = read(&marker)? {
+        if version["schema_version"] != 1 {
+            return Err(error("library_storage", "不支持的默认曲库版本"));
+        }
+        if paths.uid_file.exists() {
+            return Ok(());
+        }
+    }
+    let mut payload = read(&paths.uid_file)?
+        .unwrap_or_else(|| json!({"schema_version":UID_SCHEMA_VERSION,"uids":[],"profiles":{}}));
+    let Some(existing) = payload.get("uids").and_then(Value::as_array) else {
+        return Err(error("library_storage", "曲库来源配置无效，原文件已保留"));
+    };
+    // Older refreshes persisted the UID snapshot without a schema_version.
+    if (!payload["schema_version"].is_null() && payload["schema_version"] != UID_SCHEMA_VERSION)
+        || !existing
+            .iter()
+            .all(|uid| uid.as_str().and_then(normalize_uid).is_some())
+        || !payload["profiles"].is_object()
+    {
+        return Err(error("library_storage", "曲库来源配置无效，原文件已保留"));
+    }
+    let mut uids = normalized_uids_from_value(payload.get("uids"));
+    uids.extend_from_slice(defaults);
+    payload["schema_version"] = json!(UID_SCHEMA_VERSION);
+    payload["uids"] = json!(normalized_uids(&uids));
+    payload["updated_at"] = json!(unix_timestamp());
+    atomic_write_json(&paths.uid_file, &payload)?;
+    atomic_write_json(&marker, &json!({"schema_version":1}))
+}
+
 fn uid_snapshot(path: &Path, default_uids: &[String]) -> Result<Value, GatchaRepositoryError> {
     let mut payload = read_object(path).unwrap_or_else(|| {
         Map::from_iter([
@@ -1779,7 +1831,7 @@ fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&Stri
                 .unwrap_or_default(),
         ),
     );
-    for key in ["bvid", "title", "url"] {
+    for key in ["bvid", "title", "url", "owner_name", "owner_url"] {
         payload.insert(
             key.to_owned(),
             Value::String(first_text(entry, &[key]).unwrap_or_default()),
@@ -1792,6 +1844,31 @@ fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&Stri
         }
     }
     Value::Object(payload)
+}
+
+#[cfg(test)]
+mod candidate_card_tests {
+    use super::*;
+
+    #[test]
+    fn random_candidates_keep_cover_duration_plays_and_uploader_metadata() {
+        let entry = json!({"bvid":"BV1z84y1p7oS","title":"Test song","url":"https://www.bilibili.com/video/BV1z84y1p7oS",
+            "owner_name":"Test UP","owner_url":"https://space.bilibili.com/42","cover_url":"https://i0.hdslb.com/test.jpg",
+            "played_count":"1234","preserved_1":"241","cookie":"never export"});
+        for source in ["cache", "favlist"] {
+            let candidate = candidate_payload(entry.as_object().unwrap(), source, None);
+            for key in [
+                "owner_name",
+                "owner_url",
+                "cover_url",
+                "played_count",
+                "preserved_1",
+            ] {
+                assert_eq!(candidate[key], entry[key]);
+            }
+            assert!(candidate.get("cookie").is_none());
+        }
+    }
 }
 
 fn entry_payload(entry: &Map<String, Value>) -> Value {

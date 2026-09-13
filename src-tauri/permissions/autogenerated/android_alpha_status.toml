@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-android-alpha-status"
+description = "Enables the android_alpha_status command without any pre-configured scope."
+commands.allow = ["android_alpha_status"]
+
+[[permission]]
+identifier = "deny-android-alpha-status"
+description = "Denies the android_alpha_status command without any pre-configured scope."
+commands.deny = ["android_alpha_status"]

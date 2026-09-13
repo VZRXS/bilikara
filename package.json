@@ -8,6 +8,9 @@
   "scripts": {
     "build:rust": "cd rust && cargo build --release --locked && cd ../rust-runtime && cargo build --release --locked",
     "tauri": "tauri",
+    "android:init": "tauri android init --ci --skip-targets-install",
+    "android:dev": "tauri android dev",
+    "android:build:debug": "tauri android build --debug --apk --target aarch64 --ci",
     "dev": "tauri dev",
     "dev:rust": "npm run build:rust && tauri dev",
     "build": "npm run build:rust && tauri build -- --locked"

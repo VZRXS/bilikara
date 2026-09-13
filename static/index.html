@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/song-detail.css" />
   <link rel="stylesheet" href="/remote-access.css" />
+  <link rel="stylesheet" href="/android-host.css" />
 </head>
 
 <body>
@@ -323,7 +324,7 @@
             <p class="cache-chip-meta" id="cache-chip-meta" data-i18n="service.cacheUsageZero">缓存占用 0 MB</p>
           </button>
           <div class="cache-panel hidden" id="cache-panel">
-            <div class="cache-panel-row">
+            <div class="cache-panel-row" id="cache-usage-row">
               <div>
                 <p class="cache-panel-label" data-i18n="service.currentCacheUsage">当前缓存占用</p>
                 <strong class="cache-panel-value" id="cache-usage-detail"><span class="cache-usage-size">0 MB</span><span class="cache-usage-count">0 首已缓存</span></strong>
@@ -348,7 +349,7 @@
                 </div>
               </div>
             </div>
-            <div class="cache-panel-row cache-panel-row-double">
+            <div class="cache-panel-row cache-panel-row-double" id="cache-capacity-row">
               <div class="cache-double-col" data-i18n-title="service.applyImmediately" title="调整后立即生效">
                 <div class="cache-double-header">
                   <span class="cache-panel-label" data-i18n="service.cacheCount">缓存数量</span>
@@ -365,7 +366,7 @@
                   </div>
                 </div>
               </div>
-              <div class="cache-double-col" data-i18n-title="service.advanceDelayHint" title="切歌过渡界面的显示时长">
+              <div class="cache-double-col" id="advance-delay-field" data-i18n-title="service.advanceDelayHint" title="切歌过渡界面的显示时长">
                 <div class="cache-double-header">
                   <span class="cache-panel-label" data-i18n="service.advanceDelay">切歌延迟</span>
                 </div>
@@ -382,7 +383,7 @@
                 </div>
               </div>
             </div>
-            <div class="cache-panel-row cache-policy-row">
+            <div class="cache-panel-row cache-policy-row" id="cache-quality-row">
               <label class="cache-quality-field" for="cache-quality-select" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.defaultQuality">默认清晰度</span>
                 <select id="cache-quality-select" class="cache-quality-select"></select>
@@ -395,7 +396,7 @@
                 </span>
               </label>
             </div>
-            <div class="cache-panel-row cache-policy-row">
+            <div class="cache-panel-row cache-policy-row" id="cache-source-row">
               <label class="cache-quality-field" for="cache-download-source-select" title="选择下载器（Downkyi需登录哔哩哔哩账号）" data-i18n-title="service.downloadSourceHint">
                 <span class="cache-panel-label" data-i18n="service.downloadSource">下载器</span>
                 <select id="cache-download-source-select" class="cache-quality-select"></select>
@@ -469,6 +470,31 @@
     <div class="shell-body">
       <main class="layout">
         <section class="host-content-region">
+          <div class="android-host-only android-page-tools" id="android-page-tools" hidden>
+            <div id="android-queue-tabs" class="android-page-tabs" hidden>
+              <button type="button" data-android-workspace="queue" data-i18n="mobile.queue">播放队列</button>
+              <button type="button" data-android-workspace="history" data-i18n="shell.history">历史</button>
+            </div>
+            <div id="android-request-tabs" hidden></div>
+            <button type="button" class="android-settings-back" id="android-settings-back" hidden>
+              <span aria-hidden="true">←</span> <span data-i18n="mobile.backToMe">返回我的</span>
+            </button>
+          </div>
+          <section class="android-host-only android-my-page" id="android-my-page" aria-labelledby="android-my-title" hidden inert>
+            <h2 id="android-my-title" data-i18n="mobile.me">我的</h2>
+            <section class="android-my-card" id="android-account-slot" aria-labelledby="android-account-title">
+              <h3 id="android-account-title" data-i18n="service.bbdownLogin">Bilibili 登录</h3>
+              <p class="android-login-hint" data-i18n="mobile.loginHint">点击“未登录”获取登录二维码。</p>
+              <p class="android-login-persistence" data-i18n="mobile.loginPersistence">登录仅保存在本机，重启或清理歌曲缓存不会退出。凭证失效后，请退出登录并重新扫码。</p>
+            </section>
+            <section class="android-my-card" id="android-settings-slot" aria-labelledby="android-download-settings-title">
+              <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
+            </section>
+            <button type="button" class="android-menu-row" id="android-open-settings">
+              <span><strong data-i18n="shell.settings">设置</strong><small data-i18n="mobile.settingsHint">外观、播放修复、数据清理与复制诊断 .md</small></span>
+              <span aria-hidden="true">›</span>
+            </button>
+          </section>
           <section class="left-column" aria-label="Stage" data-i18n-aria-label="shell.stage">
         <section class="player-panel">
           <div class="panel-head host-peer-head">
@@ -480,6 +506,13 @@
             </div>
             <div class="stage-actions">
               <div class="fullscreen-action-control" id="player-fullscreen-control">
+                <button type="button" id="android-fullscreen-remote-button" class="toolbar-button android-fullscreen-remote-button"
+                  aria-expanded="false" aria-controls="player-fullscreen-remote-popover"
+                  aria-label="手机点歌" data-i18n-aria-label="remote.openInBrowser">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><path d="M10 5h4M11 18.5h2"></path>
+                  </svg>
+                </button>
                 <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false"
                   disabled>
                   <svg class="fullscreen-enter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -934,6 +967,9 @@
                 aria-selected="false" tabindex="-1" data-i18n="request.discoverTab">发现</button>
               <button type="button" role="tab" data-request-view="sources" aria-controls="request-sources-panel"
                 aria-selected="false" tabindex="-1" data-i18n="request.sourcesTab">来源</button>
+              <button type="button" role="tab" class="android-host-only" id="android-request-random"
+                data-android-workspace="random" aria-controls="gatcha-panel" aria-selected="false"
+                tabindex="-1" data-i18n="shell.random">试试运气</button>
             </nav>
           </header>
 
@@ -943,6 +979,7 @@
           <div class="request-workspace-body">
             <section class="request-subview request-quick-view" id="request-quick-panel" role="tabpanel"
               data-request-panel="quick" aria-labelledby="workspace-request-heading" hidden inert>
+              <p class="native-alpha-notice">bilikara beta：支持搜索、分类、关注／收藏夹浏览、随机点歌及历史导出。导入来源前请在“我的”中登录 Bilibili。默认 720P、3 首缓存，可调整。手机点歌可使用局域网或公网房间。投屏请用系统镜像模式，并保持本机前台；独立双屏暂不开放。</p>
               <div class="request-subview-copy">
                 <p class="section-tag" data-i18n="request.tag">Song Request</p>
                 <h3 data-i18n="request.quickTab">快速点歌</h3>
@@ -1247,6 +1284,7 @@
                     <div class="gatcha-result-copy">
                       <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
                       <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+                      <div id="gatcha-candidate-card" class="search-card-surface" hidden></div>
                     </div>
                   </section>
 
@@ -1414,6 +1452,23 @@
       </main>
     </div>
 
+    <nav class="android-host-only android-host-dock" id="android-host-dock" aria-label="主要页面" data-i18n-aria-label="mobile.navigation" hidden>
+      <button type="button" data-android-page="playback" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/><path d="M4 5v14"/></svg><span data-i18n="mobile.playback">播放</span>
+      </button>
+      <button type="button" data-android-page="queue">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h8M3 6h.01M3 12h.01M3 18h.01"/></svg><span data-i18n="mobile.queue">播放队列</span>
+      </button>
+      <button type="button" data-android-page="request">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg><span data-i18n="shell.request">点歌</span>
+      </button>
+      <button type="button" data-android-page="users">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 4a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></svg><span data-i18n="shell.users">本场用户</span>
+      </button>
+      <button type="button" data-android-page="my">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="mobile.me">我的</span>
+      </button>
+    </nav>
   </div>
   <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
 
@@ -1715,6 +1770,15 @@
     </div>
   </div>
 
+  <dialog id="android-session-choice" aria-labelledby="android-session-choice-title">
+    <h2 id="android-session-choice-title" data-i18n="mobile.sessionChoiceTitle">开始本场卡拉 OK</h2>
+    <p data-i18n="mobile.sessionChoiceHint">继续上一场会保留本场用户、队列和本场歌单。开启新一场会清空这些内容，但保留历史记录、登录和设置。</p>
+    <p id="android-session-choice-error" role="alert"></p>
+    <div class="android-session-choice-actions">
+      <button type="button" class="toolbar-button" data-session-choice="continue" data-i18n="backup.continuePreviousSession">继续上一场</button>
+      <button type="button" class="next-button" data-session-choice="new" data-i18n="mobile.newSession">开启新一场</button>
+    </div>
+  </dialog>
   <script src="/jungle.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/export-download.js" defer></script>
@@ -1725,7 +1789,12 @@
   <script src="/presentation-sync.js" defer></script>
   <script src="/internet-remote-transport.js" defer></script>
   <script src="/internet-remote-host.js" defer></script>
+  <script src="/host-language.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/android-platform.js" defer></script>
+  <script src="/android-export.js" defer></script>
+  <script src="/android-playback.js" defer></script>
+  <script src="/android-host.js" defer></script>
 </body>
 
 </html>

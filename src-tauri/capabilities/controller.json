@@ -1,6 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "controller",
+  "platforms": ["windows", "linux", "macOS"],
   "description": "Allow the trusted backend-origin audience output window to read its presentation session and exit dual-screen mode.",
   "windows": [
     "controller"

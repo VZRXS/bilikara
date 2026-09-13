@@ -1,5 +1,4 @@
 use reqwest::Method;
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
@@ -200,7 +199,7 @@ fn request_json(
     if method != Method::GET && method != Method::POST {
         return Err(failure("invalid_request", "unsupported HTTP method"));
     }
-    let client = Client::builder()
+    let client = crate::http_client::builder()
         .timeout(Duration::from_millis(timeout_ms.clamp(100, 300_000)))
         .build()
         .map_err(transport_failure)?;

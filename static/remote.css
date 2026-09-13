@@ -5748,3 +5748,6 @@ html[data-remote-transport="internet-pending"] body {
 html[data-remote-transport="internet"] #history-export-row {
   display: none !important;
 }
+html[data-native-host="true"] :is(
+  #remote-qr-toggle, #remote-qr-content
+) { display: none !important; }

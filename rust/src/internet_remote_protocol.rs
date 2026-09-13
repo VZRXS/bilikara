@@ -195,6 +195,8 @@ pub enum RemoteRequestV1 {
         tag: String,
         locale: String,
         limit: u16,
+        #[serde(default)]
+        offset: u32,
     },
     #[serde(rename = "catalog.category_browse")]
     CatalogCategoryBrowse {
@@ -451,6 +453,8 @@ struct CatalogBrowseBody {
     tag: String,
     locale: String,
     limit: u16,
+    #[serde(default)]
+    offset: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -751,9 +755,11 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
             tag,
             locale,
             limit,
+            offset,
             ..
         } => {
             valid_optional_text(letter, 8, 2)
+                && *offset <= 100_000
                 && valid_optional_text(query, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
                 && valid_optional_text(tag, MAX_BROWSE_FILTER_BYTES, MAX_BROWSE_FILTER_CHARS)
                 && valid_optional_text(locale, 32, 16)
@@ -978,6 +984,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 tag: body.tag,
                 locale: body.locale,
                 limit: body.limit,
+                offset: body.offset,
             }
         }
         "catalog.category_browse" => {

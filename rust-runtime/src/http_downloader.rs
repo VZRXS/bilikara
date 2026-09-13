@@ -148,7 +148,7 @@ where
         ));
     }
 
-    let client = Client::builder()
+    let client = crate::http_client::builder()
         .connect_timeout(Duration::from_millis(request.connect_timeout_ms))
         .timeout(Duration::from_millis(request.request_timeout_ms))
         .build()
@@ -195,7 +195,20 @@ where
                     &mut continue_download,
                 ) {
                     Ok(result) => return Ok(result),
-                    Err(error) if error.kind == DownloadErrorKind::Cancelled => return Err(error),
+                    // Another CDN or another transfer cannot fix a local file
+                    // failure. Preserve that error instead of downloading the
+                    // entire body again and possibly masking it as a network error.
+                    Err(error)
+                        if matches!(
+                            error.kind,
+                            DownloadErrorKind::Cancelled
+                                | DownloadErrorKind::Io
+                                | DownloadErrorKind::DestinationExists
+                                | DownloadErrorKind::InvalidRequest
+                        ) =>
+                    {
+                        return Err(error);
+                    }
                     Err(error) => last_error = error,
                 }
             }
@@ -803,23 +816,33 @@ fn publish_download(
     workers_used: usize,
     host_rewritten: bool,
 ) -> Result<DownloadResult, DownloadError> {
-    output.sync_all().map_err(|_| {
-        DownloadError::new(DownloadErrorKind::Io, "failed to flush temporary download")
-            .for_candidate(candidate_index)
+    output.sync_all().map_err(|error| {
+        DownloadError::new(
+            DownloadErrorKind::Io,
+            crate::file_publication::io_failure_message(
+                "failed to flush temporary download",
+                &error,
+            ),
+        )
+        .for_candidate(candidate_index)
     })?;
     drop(output);
-    fs::hard_link(temp_path, destination).map_err(|_| {
-        let (kind, message) = if destination.exists() {
-            (
-                DownloadErrorKind::DestinationExists,
-                "download destination appeared during transfer",
-            )
-        } else {
-            (
-                DownloadErrorKind::Io,
-                "failed to publish completed download",
-            )
-        };
+    crate::file_publication::publish_no_replace(temp_path, destination).map_err(|error| {
+        let (kind, message) =
+            if error.kind() == std::io::ErrorKind::AlreadyExists || destination.exists() {
+                (
+                    DownloadErrorKind::DestinationExists,
+                    "download destination appeared during transfer".to_owned(),
+                )
+            } else {
+                (
+                    DownloadErrorKind::Io,
+                    crate::file_publication::io_failure_message(
+                        "failed to publish completed download",
+                        &error,
+                    ),
+                )
+            };
         DownloadError::new(kind, message).for_candidate(candidate_index)
     })?;
     let _ = fs::remove_file(temp_path);
@@ -1248,6 +1271,43 @@ mod tests {
             b"keep"
         );
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn local_publication_failure_does_not_redownload_other_candidates() {
+        let (base, requests, server) = serve(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nvideo",
+        ]);
+        let root = test_dir("publication-io");
+        let destination = root.join("track.m4s");
+        let mut input = request(
+            destination.clone(),
+            vec![candidate(base.clone()), candidate(base)],
+        );
+        input.attempts_per_candidate = 2;
+        let error = download_to_path(&input, |progress| {
+            if progress.downloaded_bytes > 0 {
+                // Simulate the OS losing the completed temporary file before
+                // publication, through the real transfer/publication boundary.
+                for entry in fs::read_dir(&root).unwrap() {
+                    fs::remove_file(entry.unwrap().path()).unwrap();
+                }
+            }
+            true
+        })
+        .expect_err("a local filesystem failure must stop this transfer");
+        server.join().unwrap();
+        assert_eq!(error.kind, DownloadErrorKind::Io);
+        assert_eq!(error.candidate_index, Some(0));
+        assert!(
+            error
+                .message
+                .starts_with("failed to publish completed download")
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

@@ -1,6 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "main",
+  "platforms": ["windows", "linux", "macOS"],
   "description": "Allow the local Bilikara Host to use native exports and coordinate local presentation mode.",
   "windows": [
     "main"

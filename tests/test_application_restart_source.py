@@ -17,7 +17,7 @@ class ApplicationRestartSourceTest(unittest.TestCase):
         cls.i18n = json.loads(
             (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
         )
-        cls.main_rs = (ROOT / "src-tauri" / "src" / "main.rs").read_text(
+        cls.main_rs = (ROOT / "src-tauri" / "src" / "desktop.rs").read_text(
             encoding="utf-8"
         )
         cls.lifecycle_rs = (

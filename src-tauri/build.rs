@@ -1,5 +1,12 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        // NDK r27 and older do not default to 16 KB ELF alignment. Keep both
+        // linker page sizes explicit; this has no effect on desktop builds.
+        println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");
+        println!("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384");
+    }
     let app_manifest = tauri_build::AppManifest::new().commands(&[
+        "android_alpha_status",
         "set_window_fullscreen",
         "restart_application",
         "get_presentation_displays",

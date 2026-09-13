@@ -12,7 +12,7 @@ class DesktopGeometrySourceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.tauri = ROOT / "src-tauri"
-        cls.main = (cls.tauri / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.main = (cls.tauri / "src" / "desktop.rs").read_text(encoding="utf-8")
         cls.platform = (cls.tauri / "src" / "platform.rs").read_text(
             encoding="utf-8"
         )

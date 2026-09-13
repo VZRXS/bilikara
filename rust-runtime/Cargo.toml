@@ -7,8 +7,19 @@ rust-version = "1.88"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[example]]
+name = "native_host_alpha"
+required-features = ["native-host"]
+
+[features]
+native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "qrcode/svg", "dep:time", "reqwest/cookies"]
+
 [dependencies]
 base64 = "0.22"
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util"] }
+tokio-util = { version = "0.7", optional = true, features = ["io"] }
+time = { version = "0.3", optional = true }
 bilikara_rust = { path = "../rust" }
 fs2 = "0.4"
 getrandom = "0.3"
@@ -24,6 +35,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Pipes"] }

@@ -36,6 +36,11 @@ const searchResultItemByElement = new WeakMap();
 let searchDetailController = null;
 
 function openExternalUrl(url) {
+  if (document.documentElement?.dataset?.nativeHost === "true") {
+    // External-link integration is deferred; never navigate the player away.
+    setAppMessage("Android Beta：请在另一台设备打开链接，保持本机播放页面在前台。");
+    return;
+  }
   if (window.__TAURI__) {
     apiPost("/api/app/open-url", { url }).catch((err) => {
       console.error("Failed to open URL via backend:", err);
@@ -564,6 +569,7 @@ const elements = {
   presentationHostNext: document.getElementById("presentation-host-next"),
   playerFullscreenControl: document.getElementById("player-fullscreen-control"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
+  androidFullscreenRemoteButton: document.getElementById("android-fullscreen-remote-button"),
   playerFullscreenLabel: document.getElementById("player-fullscreen-label"),
   playerFullscreenRemotePopover: document.getElementById("player-fullscreen-remote-popover"),
   playerFullscreenRemoteQrImage: document.getElementById("player-fullscreen-remote-qr-image"),
@@ -776,6 +782,7 @@ const elements = {
   gatchaErrorView: document.getElementById("gatcha-error-view"),
   gatchaStateViews: document.querySelectorAll("[data-gatcha-view]"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
+  gatchaCandidateCard: document.getElementById("gatcha-candidate-card"),
   searchForm: document.getElementById("search-form"),
   searchQuery: document.getElementById("search-query"),
   searchButton: document.getElementById("search-button"),
@@ -1166,6 +1173,11 @@ function renderThemeSwitch() {
 
 async function loadTranslations() {
   state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
+  let languageLoadFailed = false;
+  if (window.BilikaraHostLanguage) {
+    try { state.language = await window.BilikaraHostLanguage.load(); }
+    catch { languageLoadFailed = true; }
+  }
   try {
     const response = await fetch("/i18n.json", { cache: "no-store" });
     if (!response.ok) {
@@ -1195,6 +1207,7 @@ async function loadTranslations() {
   applyStaticI18n();
   announceStaticI18n();
   renderLanguageSwitch();
+  if (languageLoadFailed) setAppMessage(t("settings.languageLoadFailed"), true);
 }
 
 function closeOpenMenus({ restoreFocus = false } = {}) {
@@ -1295,6 +1308,24 @@ function isTauriWebKitRuntime() {
   return Boolean(window.__TAURI__) && isWebKitPlaybackRuntime();
 }
 
+function isAndroidNativePlaybackRuntime() {
+  return typeof document !== "undefined"
+    && document.documentElement?.dataset?.nativeHost === "true"
+    && typeof navigator !== "undefined"
+    && /Android/i.test(navigator.userAgent || "");
+}
+
+function clearAndroidAudioClockRecovery(session = state.hostPlaybackSession) {
+  if (!session) {
+    return;
+  }
+  if (session.audioClockRecoveryFrame != null) {
+    window.cancelAnimationFrame(session.audioClockRecoveryFrame);
+    session.audioClockRecoveryFrame = null;
+  }
+  session.audioClockRecovering = false;
+}
+
 function clearWebKitAudioStarvationTimer(session = state.hostPlaybackSession) {
   if (!session?.audioStarvationTimer) {
     return;
@@ -1339,6 +1370,7 @@ function canTogglePlayerFullscreen() {
 }
 
 function tauriInvoke() {
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
   return window.__TAURI__?.core?.invoke || null;
 }
 
@@ -3062,6 +3094,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
 }
 
 function tauriEventListen() {
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
   return window.__TAURI__?.event?.listen || null;
 }
 
@@ -3209,6 +3242,7 @@ function renderPlayerFullscreenButton() {
 
 function setPlayerFullscreenRemotePinned(pinned) {
   state.playerFullscreenRemotePinned = Boolean(pinned) && isPlayerPanelFullscreen();
+  elements.androidFullscreenRemoteButton?.setAttribute("aria-expanded", String(state.playerFullscreenRemotePinned));
   elements.playerFullscreenControl?.classList.toggle(
     "is-qr-pinned",
     state.playerFullscreenRemotePinned,
@@ -3882,6 +3916,7 @@ function syncRequestSubviewSelection() {
     syncSourcesModeSelection();
   }
   syncRequestSessionUserNoticePlacement();
+  globalThis.BilikaraAndroidHost?.syncRequestTabs?.();
 }
 
 function closeRequestDetailForNavigation() {
@@ -4110,6 +4145,7 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
   if (typeof scheduleQueueScrollOwnershipSync === "function") {
     scheduleQueueScrollOwnershipSync();
   }
+  globalThis.BilikaraAndroidHost?.syncVisibility();
   if (
     previousNarrowToolLayout
     && previousNarrowToolLayout !== nextNarrowToolLayout
@@ -4269,6 +4305,11 @@ function syncNarrowToolLayout() {
   if (!elements.appShell) {
     return "wide";
   }
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+    elements.appShell.dataset.narrowToolLayout = "portrait";
+    elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
+    return "portrait";
+  }
   if (!narrowHostViewport()) {
     elements.appShell.dataset.narrowToolLayout = "wide";
     elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
@@ -4380,6 +4421,7 @@ function syncNarrowToolLayout() {
 }
 
 function hostNarrowToolSheetUsesOverlay() {
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) return false;
   return narrowHostViewport()
     && elements.appShell?.dataset.narrowToolLayout !== "resident";
 }
@@ -4468,6 +4510,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     });
   }
   restoreHostWorkspaceScrollPosition(nextWorkspace);
+  globalThis.BilikaraAndroidHost?.workspaceActivated(nextWorkspace, inputOrigin);
 
   const trigger = hostWorkspaceButton(nextWorkspace);
   if (inputOrigin === "pointer") {
@@ -4864,6 +4907,21 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+    const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
+    elements.appShell.dataset.stageMode = "portrait";
+    elements.appShell.dataset.stageControlsLayout = "inline";
+    elements.appShell.dataset.stageControlDensity = "compact";
+    elements.playerPanel.style.removeProperty("--stage-frame-inline-size");
+    elements.playerPanel.style.removeProperty("--stage-frame-block-size");
+    elements.currentTitle?.classList.remove("is-two-line", "is-scrolling");
+    if (changed || !state.stageControlTrayOpen) {
+      clearStageControlTrayPosition();
+      setStageControlTrayOpen(true, {moveFocus: false});
+    }
+    syncAudioVariantOverflow();
+    return "portrait";
+  }
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
   const titleNode = elements.currentTitle;
   const titleTextNode = elements.currentTitleText || titleNode;
@@ -5050,6 +5108,7 @@ function initializePersistentStageFitting() {
 }
 
 function initializeWindowChrome() {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const tauriWindowApi = window.__TAURI__?.window;
   const appWindow = tauriWindowApi?.getCurrentWindow?.();
   const userAgent = String(navigator.userAgent || "");
@@ -5115,7 +5174,7 @@ function initializeHostShell() {
   state.focusedHostWorkspace = "queue";
   state.hostWorkspaceOverlayOpen = false;
   state.requestSubview = "search";
-  state.focusedRequestSubview = "search";
+  state.focusedRequestSubview = state.requestSubview;
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
   renderHostWorkspaceSelection();
@@ -5562,6 +5621,7 @@ function setRatingOptOut(enabled) {
 }
 
 function openRatingPrompt(item) {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
   if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
@@ -8684,6 +8744,22 @@ function renderGatchaWorkspace() {
   if (elements.gatchaCandidateTitle) {
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate?.title || t("gatcha.titleLoading");
   }
+  if (document.documentElement?.dataset?.nativeHost === "true" && elements.gatchaCandidateCard) {
+    const container = elements.gatchaCandidateCard;
+    const candidate = state.gatchaCandidate;
+    container.hidden = !candidate;
+    elements.gatchaCandidateTitle.hidden = Boolean(candidate);
+    // Reuse search's safe metadata renderer, without a second add button or
+    // reloading the same cover on each playback/SSE state update.
+    if (!candidate) container.replaceChildren();
+    else if (searchResultItemByElement.get(container.firstElementChild) !== candidate
+      || container.lang !== document.documentElement.lang) {
+      container.lang = document.documentElement.lang;
+      container.replaceChildren(createSearchResultItem(candidate, {
+        showPrimaryAction: false, showDeveloperActions: false,
+      }));
+    }
+  }
   if (elements.gatchaMessage) {
     elements.gatchaMessage.textContent = state.gatchaMessage || "";
     elements.gatchaMessage.classList.toggle("is-error", Boolean(state.gatchaMessageIsError));
@@ -9120,6 +9196,7 @@ function disconnectClient() {
 }
 
 function render() {
+  if (window.BilikaraAndroidHost?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
     return;
@@ -9248,6 +9325,7 @@ function renderSessionUsers(sessionUsers) {
 
     elements.sessionUserList.appendChild(item);
   });
+  window.BilikaraAndroidHost?.syncSessionUsers();
 }
 
 
@@ -9375,6 +9453,7 @@ function syncTopControlPopoverPositions() {
     if (!trigger || !popup) {
       return;
     }
+    if (popup === elements.cachePanel && globalThis.BilikaraAndroidHost?.isPortrait()) return;
     if (!compact) {
       for (const property of ["left", "right", "top"]) {
         popup.style[property] = "";
@@ -9624,6 +9703,10 @@ function renderRemoteAccess(remoteAccess) {
     internetQrImage,
     internetPassword,
     internetConnectedCount,
+    // Native QR is provided independently of the URL; missing -> ready must
+    // redraw even when the LAN address has not changed.
+    nativeQrImage: document.documentElement?.dataset?.nativeHost === "true"
+      ? String(remoteAccess?.qr_image || "") : "",
   });
   if (signature === state.remoteAccessRenderSignature) {
     return;
@@ -9696,6 +9779,9 @@ function renderRemoteQr(url, targets = []) {
   if (!normalizedUrl) {
     targets.forEach(({ image, placeholder, emptyMessage = t("remote.noAddress") }) => {
       if (image) {
+        image.onload = null;
+        image.onerror = null;
+        image.dataset.qrState = "no-address";
         image.classList.add("hidden");
         image.removeAttribute("src");
         delete image.dataset.qrUrl;
@@ -9713,20 +9799,40 @@ function renderRemoteQr(url, targets = []) {
       return;
     }
 
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    const nativeHost = document.documentElement?.dataset?.nativeHost === "true";
+    const qrUrl = nativeHost
+      ? String(state.data?.remote_access?.qr_image || "")
+      : `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    if (nativeHost && !qrUrl.startsWith("data:image/svg+xml;base64,")) {
+      image.onload = null;
+      image.onerror = null;
+      delete image.dataset.qrUrl;
+      image.dataset.qrState = qrUrl ? "invalid-source" : "missing-source";
+      image.removeAttribute("src");
+      image.classList.add("hidden");
+      placeholder.textContent = t("remote.qrFailed");
+      placeholder.classList.remove("hidden");
+      return;
+    }
     if (image.dataset.qrUrl === qrUrl) {
       return;
     }
 
     image.dataset.qrUrl = qrUrl;
+    image.dataset.qrState = "loading";
     image.classList.add("hidden");
     placeholder.textContent = t("remote.qrLoading");
     placeholder.classList.remove("hidden");
     image.onload = () => {
+      if (image.dataset.qrUrl !== qrUrl) return;
+      image.dataset.qrState = "loaded";
       placeholder.classList.add("hidden");
       image.classList.remove("hidden");
     };
     image.onerror = () => {
+      if (image.dataset.qrUrl !== qrUrl) return;
+      image.dataset.qrState = "failed";
+      image.dataset.qrFailures = String((Number(image.dataset.qrFailures) || 0) + 1);
       image.classList.add("hidden");
       placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
@@ -10096,6 +10202,7 @@ function renderBBDownLogin(login) {
     }
   }
 
+  globalThis.BilikaraAndroidHost?.syncAccount?.();
   if (loggedIn) {
     return;
   }
@@ -10107,6 +10214,7 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
+  if (!force && globalThis.BilikaraAndroidHost?.isPortrait?.()) return;
   const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -10118,7 +10226,14 @@ function maybeStartBBDownLogin(login, options = {}) {
 }
 
 async function startBBDownLogin(options = {}) {
+  if (state.bbdownLoginRequesting) return;
   state.bbdownLoginRequesting = true;
+  const controls = [elements.bbdownLoginButton, elements.bbdownLoginRefresh]
+    .filter(Boolean).map(button => ({button, disabled: button.disabled}));
+  for (const {button} of controls) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
   try {
     await apiPostStateSnapshot("/api/bbdown/login/start", {
       force: Boolean(options.force),
@@ -10128,6 +10243,10 @@ async function startBBDownLogin(options = {}) {
     setAppMessage(error.message, true);
   } finally {
     state.bbdownLoginRequesting = false;
+    for (const {button, disabled} of controls) {
+      button.disabled = disabled;
+      button.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -10627,6 +10746,11 @@ function scheduleAcceptedHostPlaybackProgramReconciliation(
       state.data?.current_item ?? null,
       frontendPlaybackMode(state.data?.playback_mode),
     );
+    // A snapshot render may precede this microtask's media mount. Only consume
+    // its transition once the matching session can actually own the countdown.
+    if (typeof flushPendingSongTransitionOverlay === "function") {
+      flushPendingSongTransitionOverlay();
+    }
   });
   return true;
 }
@@ -10657,6 +10781,7 @@ async function apiPostExactStateCommand(url, payload = {}, options = {}) {
 }
 
 function syncCachePanelVisibility(options = {}) {
+  if (globalThis.BilikaraAndroidHost?.settingsEmbedded()) state.cacheSettingsOpen = true;
   const expanded = String(state.cacheSettingsOpen);
   if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
@@ -11108,6 +11233,7 @@ function clearLocalPlayerSyncTimer(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
+  clearAndroidAudioClockRecovery(session);
   if (session.syncTimer) {
     window.clearInterval(session.syncTimer);
     session.syncTimer = null;
@@ -11181,6 +11307,7 @@ function takeLocalPlayerSeekCompletion(session) {
 }
 
 function clearLocalPlayerSeekState(session = state.hostPlaybackSession) {
+  clearAndroidAudioClockRecovery(session);
   const completion = takeLocalPlayerSeekCompletion(session);
   if (typeof completion === "function") {
     try {
@@ -11552,6 +11679,11 @@ function flushPendingSongTransitionOverlay() {
   if (!selectedVideoUrlForItem(currentItem) || !selectedAudioUrlForItem(currentItem)) {
     return;
   }
+  const session = state.hostPlaybackSession;
+  if (!isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.video?.dataset?.playerItemId !== currentItemId) {
+    return;
+  }
   const generation = state.pendingSongTransitionGeneration;
   state.pendingSongTransitionOverlayData = null;
   state.pendingSongTransitionGeneration = 0;
@@ -11761,6 +11893,21 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
 
   clearLocalPlayerSeekState(session);
 
+  if (session.readyCommitted && ["starting", "start-retry-wait"].includes(session.phase)) {
+    // This seek deliberately pauses the pair, which can reject an outstanding
+    // play(). Retire that attempt BEFORE pausing so its AbortError cannot fail
+    // the current seek or a later resume. The settled seek owns the next start.
+    state.localPlaybackStartGeneration = Number(state.localPlaybackStartGeneration || 0) + 1;
+    clearSplitPlaybackStartupWatchdog(session);
+    if (session.webkitRetryTimer) {
+      window.clearTimeout(session.webkitRetryTimer);
+      session.webkitRetryTimer = null;
+    }
+    state.localPlaybackStartPromisesSettled = false;
+    state.localWebKitStartRetryDone = false;
+    setHostPlaybackSessionPhase(session, "ready-paused");
+  }
+
   const resumeAfterSeek = Boolean(
     options.resumeAfterSeek
     && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId),
@@ -11927,6 +12074,8 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
     local_should_be_playing: state.localShouldBePlaying,
     local_audio_playback_blocked: state.localAudioPlaybackBlocked,
     local_video_playback_blocked: state.localVideoPlaybackBlocked,
+    local_video_held_for_audio: state.localVideoHeldForAudio,
+    local_video_deferred_recovery: state.localVideoDeferredRecovery,
     is_webkit_runtime: isWebKitPlaybackRuntime(),
     is_tauri_runtime: Boolean(window.__TAURI__),
     is_tauri_webkit_runtime: isTauriWebKitRuntime(),
@@ -11954,6 +12103,7 @@ function reportMediaDiagnostic(
   audio = null,
   action = "none",
   playRejection = null,
+  syncDecision = null,
 ) {
   if (
     !media
@@ -11987,6 +12137,7 @@ function reportMediaDiagnostic(
     play_rejection_name: playRejection ? String(playRejection.name || "Error") : "",
     url_basename: mediaUrlBasename(media),
     ...(video && audio ? splitSyncSnapshot(video, audio, currentAvOffsetSeconds(), action) : {}),
+    ...syncDecision,
   };
   console.info("[player-media]", payload);
   apiPost("/api/player/diagnostic", payload).catch(() => {});
@@ -11997,7 +12148,7 @@ function reportSplitStartupDiagnostic(itemId, video, audio, eventName) {
   reportMediaDiagnostic(itemId, "split", audio, eventName, video, audio, eventName);
 }
 
-function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false) {
+function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false, syncDecision = null) {
   if (!isActiveSplitPlayer(video, audio)) {
     return false;
   }
@@ -12010,7 +12161,7 @@ function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false) 
   }
   state.localPlayerSyncLastAction = action;
   state.localPlayerSyncLastDiagnosticAt = now;
-  reportMediaDiagnostic(itemId, "split", audio, `sync-${action}`, video, audio, action);
+  reportMediaDiagnostic(itemId, "split", audio, `sync-${action}`, video, audio, action, null, syncDecision);
   return true;
 }
 
@@ -12068,6 +12219,26 @@ function holdVideoForAudio(video) {
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
+}
+
+function scheduleAndroidAudioClockRecovery(video, audio) {
+  const session = state.hostPlaybackSession;
+  if (session.audioClockRecoveryFrame != null) {
+    return;
+  }
+  // The normal 120 ms tick is too coarse to release a held video in sync.
+  // Use frame cadence only while catching up, never a fixed audio delay.
+  const frame = window.requestAnimationFrame(() => {
+    if (
+      session.audioClockRecoveryFrame !== frame
+      || !isCurrentHostPlaybackSession(session, video, audio)
+    ) {
+      return;
+    }
+    session.audioClockRecoveryFrame = null;
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+  });
+  session.audioClockRecoveryFrame = frame;
 }
 
 function splitPlaybackStartOverlay() {
@@ -12287,6 +12458,7 @@ function requestSplitPlaybackStart(
   audio,
   { source = "", userGesture = false } = {},
 ) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return true;
   if (
     !splitPlaybackPairNeedsStart(video, audio)
     || shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
@@ -12376,10 +12548,14 @@ function setSplitPlaybackIntent(
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
   }
+  if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay)) return true;
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
   session.logicalPlayIntent = nextIntent;
+  if (!nextIntent) {
+    clearAndroidAudioClockRecovery(session);
+  }
   if (!session.readyCommitted) {
     state.localShouldBePlaying = shouldHoldCurrentItemForTransition(itemId)
       ? false
@@ -12767,6 +12943,7 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
 }
 
 function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const session = state.hostPlaybackSession;
   if (
     !video
@@ -13086,6 +13263,7 @@ function playMediaBestEffort(
   media,
   { internalVideo = false, video = null, audio = null, mediaKind = "media" } = {},
 ) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const guardPendingPlay = isWebKitPlaybackRuntime();
   if (
     !media
@@ -13139,10 +13317,12 @@ function seekVideoForNavigation(video, targetTime) {
 }
 
 function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
+  if (window.BilikaraAndroidPlayback?.blockStart()) return "pause";
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return "none";
   }
   if (audio.ended) {
+    clearAndroidAudioClockRecovery();
     return "none";
   }
 
@@ -13155,13 +13335,19 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     video.playbackRate = requestedRate;
   }
 
-  const reportAction = (action, force = false) => {
-    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force);
+  const reportAction = (action, force = false, correction = null) => {
+    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force, {
+      sync_force_correction: Boolean(forceCorrection),
+      ...correction,
+    });
     return action;
   };
   const isWebKit = isWebKitPlaybackRuntime();
 
+  const isAndroid = isAndroidNativePlaybackRuntime();
+
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
+    clearAndroidAudioClockRecovery();
     state.localShouldBePlaying = false;
     if (!audio.paused) {
       audio.pause();
@@ -13187,6 +13373,9 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
   if (audio.seeking) {
+    if (isAndroid && state.localShouldBePlaying) {
+      holdVideoForAudio(video);
+    }
     return reportAction("wait-for-audio");
   }
 
@@ -13204,6 +13393,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   }
 
   if (!state.localShouldBePlaying) {
+    clearAndroidAudioClockRecovery();
     if (!audio.paused) {
       audio.pause();
     }
@@ -13259,25 +13449,66 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const drift = audioTime - targetAudioTime;
   const absoluteDrift = Math.abs(drift);
 
+  const session = state.hostPlaybackSession;
+  if (isAndroid) {
+    const catchUpThreshold = session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
+      ? localPlayerForceSyncEpsilonSeconds
+      : localPlayerDriftToleranceSeconds;
+    if (drift < -catchUpThreshold) {
+      // seeked/canplay only establish decoder readiness. Android's separate
+      // audio output clock can still stall after seek/play while video runs.
+      // Seeking audio again restarts that stall. Let audio catch the held
+      // video instead, preserving both the audio timeline and the AV offset.
+      session.audioClockRecovering = true;
+      holdVideoForAudio(video);
+      playMediaBestEffort(audio, { video, audio, mediaKind: "audio" });
+      if (absoluteDrift < localPlayerHardSyncThresholdSeconds) {
+        scheduleAndroidAudioClockRecovery(video, audio);
+      }
+      return reportAction("wait-for-audio-clock");
+    }
+    if (session.audioClockRecovering) {
+      clearAndroidAudioClockRecovery(session);
+      state.localVideoDeferredRecovery = false;
+      state.localVideoHeldForAudio = false;
+      playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
+      return reportAction("audio-clock-aligned", true);
+    }
+  }
+
   const recovering = state.localVideoDeferredRecovery || state.localVideoHeldForAudio;
   const recoveringFromWebKitVideoStarvation = isWebKit && state.localVideoDeferredRecovery;
   const now = Date.now();
-  const seekThreshold = isWebKit
-    ? localPlayerHardSyncThresholdSeconds
-    : forceCorrection
-      ? localPlayerForceSyncEpsilonSeconds
-      : recovering
-        ? localPlayerDriftToleranceSeconds
-        : absoluteDrift >= localPlayerHardSyncThresholdSeconds
-          ? localPlayerHardSyncThresholdSeconds
-          : localPlayerModerateSyncThresholdSeconds;
-  const seekAllowed = (!isWebKit && forceCorrection)
+  // Android recovery/playing events are not explicit user seeks. A single
+  // audio packet can appear ahead while video resumes. Do not lower the
+  // threshold to 15 ms or bypass cooldown: that seeks audio again, queues
+  // waiting/canplay, and can feed the same recovery loop indefinitely.
+  // Manual seek and AV-offset changes have their own immediate positioning.
+  const seekThreshold = isAndroid
+    ? localPlayerModerateSyncThresholdSeconds
+    : isWebKit
+      ? localPlayerHardSyncThresholdSeconds
+      : forceCorrection
+        ? localPlayerForceSyncEpsilonSeconds
+        : recovering
+          ? localPlayerDriftToleranceSeconds
+          : absoluteDrift >= localPlayerHardSyncThresholdSeconds
+            ? localPlayerHardSyncThresholdSeconds
+            : localPlayerModerateSyncThresholdSeconds;
+  const seekAllowed = (!isWebKit && !isAndroid && forceCorrection)
     || now - state.localPlayerSyncLastSeekAt >= localPlayerSyncSeekCooldownMs;
   let action = "none";
+  let correction = null;
   if (!recoveringFromWebKitVideoStarvation && absoluteDrift >= seekThreshold && seekAllowed) {
     if (setMediaCurrentTime(audio, targetAudioTime)) {
       state.localPlayerSyncLastSeekAt = now;
       action = "audio-drift-correction";
+      correction = {
+        // Same sign as drift_seconds (video minus offset-adjusted audio).
+        // The post-seek snapshot alone misleadingly reports zero drift.
+        drift_before_correction_seconds: -drift,
+        correction_target_audio_time: targetAudioTime,
+      };
     }
   }
 
@@ -13295,7 +13526,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   if (action === "none" && recovering) {
     action = "resume";
   }
-  return reportAction(action, action === "audio-drift-correction");
+  return reportAction(action, action === "audio-drift-correction", correction);
 }
 
 function syncMountedLocalPlayer(forceCorrection = false) {
@@ -13443,6 +13674,7 @@ function renderKeyShiftControls(playbackMode) {
   if (elements.keyShiftResetButton) {
     elements.keyShiftResetButton.disabled = keyShift === 0;
   }
+  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
 }
 
 async function setLocalPlayerKeyShift(keyShift) {
@@ -13984,6 +14216,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
     elements.avOffsetInput.value = String(offsetMs);
   }
+  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
 }
 
 function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback) {
@@ -14043,6 +14276,8 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
     startupWatchdogTimer: null,
     webkitRetryTimer: null,
     audioStarvationTimer: null,
+    audioClockRecoveryFrame: null,
+    audioClockRecovering: false,
     hiddenPauseTimer: null,
     frameClickTimer: null,
     seekSettling: false,
@@ -14586,6 +14821,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "play", () => {
+    if (window.BilikaraAndroidPlayback?.blockStart()) return;
     if (video.dataset.bilikaraInternalPlay === "true") {
       delete video.dataset.bilikaraInternalPlay;
       return;
@@ -14614,6 +14850,7 @@ function renderPlayer(currentItem, playbackMode) {
       delete video.dataset.bilikaraInternalPause;
       return;
     }
+    if (window.BilikaraAndroidPlayback?.blockStart()) return;
     if (session.seekResumePending) {
       return;
     }
@@ -15558,6 +15795,11 @@ function cacheSizeLabelForItem(item) {
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return formatCompactBytes(size);
+  }
+  // Native Host can publish a ready artifact without optional byte-size data.
+  // Readiness comes from AppState, not from whether that metadata is present.
+  if (item.cache_status === "ready") {
+    return t("status.ready");
   }
   if (item.cache_status === "failed") {
     return t("status.failed");
@@ -17022,9 +17264,10 @@ async function fetchPlayedSessions() {
       historyOpt.dataset.i18n = "history.allSource";
       elements.confirmSource.appendChild(historyOpt);
 
-      // 3. 历史场次 (限制显示最近 10 场)
+      // Native archives are bounded by AppState; keep every saved session selectable.
       const rawSessions = res.data;
-      const displaySessions = rawSessions.slice(0, 10);
+      const displaySessions = document.documentElement?.dataset?.nativeHost === "true"
+        ? rawSessions : rawSessions.slice(0, 10);
 
       // Helper to parse filename as fallback if backend returns old model
       const parseSessionId = (id) => {
@@ -17056,6 +17299,11 @@ async function fetchPlayedSessions() {
       // Group displaySessions by year and month
       const groups = [];
       displaySessions.forEach(session => {
+        if (Number.isFinite(session.started_at) && session.started_at > 0) {
+          const date = new Date(session.started_at * 1000);
+          session = { ...session, year: date.getFullYear(), month: date.getMonth() + 1,
+            day: date.getDate(), hour: date.getHours(), minute: date.getMinutes() };
+        }
         const parsed = (session.year > 0 && session.month > 0)
           ? session
           : (parseSessionId(session.id) || { year: 0, month: 0, day: 0, hour: 0, minute: 0 });
@@ -17160,6 +17408,10 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
+  if (document.documentElement?.dataset?.nativeHost === "true") {
+    if (!window.BilikaraAndroidExport) throw new Error("Android 系统保存功能不可用，请更新系统 WebView 后重试");
+    return window.BilikaraAndroidExport.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize);
+  }
   const params = new URLSearchParams({
     format: normalizedFormat,
     source: normalizedSource,
@@ -17255,6 +17507,7 @@ async function diagnosticResponse(path) {
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       browser: diagnosticBrowserInfo(),
+      native_environment: await globalThis.BilikaraAndroidPlatform?.environment?.().catch(() => ({})),
       export_diagnostics: exportDiagnostics,
       internet_remote_diagnostics: internetRemoteDiagnosticsSnapshot(),
     }),
@@ -17276,7 +17529,7 @@ async function generateDiagnosticsMarkdown() {
   const response = await diagnosticResponse("/api/diagnostics/markdown");
   const payload = await response.json();
   return typeof payload?.data?.markdown === "string"
-    ? payload.data.markdown
+    ? payload.data.markdown + (globalThis.BilikaraAndroidHost?.diagnosticsMarkdown?.() || "")
     : "";
 }
 
@@ -17455,7 +17708,8 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
   try {
     await apiPost("/api/app/update/check", {
       include_preview: includePreview,
-    }, { timeoutMs: appUpdateCheckTimeoutMs });
+      native_environment: await globalThis.BilikaraAndroidPlatform?.environment?.().catch(() => ({})),
+    }, { timeoutMs: globalThis.BilikaraAndroidPlatform ? 30_000 : appUpdateCheckTimeoutMs });
     return true;
   } catch (error) {
     if (!automatic) {
@@ -17470,6 +17724,7 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
 }
 
 function scheduleStartupAppUpdateCheck() {
+  if (globalThis.document?.documentElement?.dataset?.nativeHost === "true" && !globalThis.BilikaraAndroidPlatform) return false;
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
   }
@@ -17486,6 +17741,18 @@ async function installAppUpdate(includePreview = false) {
     const updateStatus = await apiPost("/api/app/update/install", {
       include_preview: Boolean(includePreview),
     });
+    if (updateStatus.android_package && document.documentElement?.dataset?.nativeHost === "true") {
+      closeConfirm();
+      let result = "failed";
+      try {
+        const outcome = await window.BilikaraAndroidPlatform.installUpdate(updateStatus.android_package);
+        result = outcome.result;
+      } finally {
+        const finished = await apiPost("/api/app/update/finish", {operation:updateStatus.operation,result});
+        setAppMessage(finished.message, result === "failed");
+      }
+      return;
+    }
     closeConfirm();
     renderUpdatePreviewControl();
     const stateValue = String(updateStatus?.state || "");
@@ -17509,6 +17776,10 @@ async function checkAppUpdate(event) {
   }
 
   if (!update?.auto_update_supported) {
+    if (globalThis.document?.documentElement?.dataset?.nativeHost === "true") {
+      setAppMessage(update.message || "当前测试包暂不支持正式签名包覆盖更新。");
+      return;
+    }
     const releaseUrl = safeHttpUrl(update?.release_url);
     if (releaseUrl) {
       openExternalUrl(releaseUrl);
@@ -19303,6 +19574,7 @@ elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
 elements.playerFullscreenButton?.addEventListener("click", async (event) => {
   if (
     isPlayerPanelFullscreen()
+    && !globalThis.BilikaraAndroidHost
     && playerFullscreenActivationUsesTouch(event)
     && !state.playerFullscreenRemotePinned
   ) {
@@ -19410,12 +19682,22 @@ elements.modeSwitch?.addEventListener("click", async (event) => {
   }
 });
 
-elements.languageSwitch?.addEventListener("click", (event) => {
+const languageSwitchGuard = window.BilikaraExportGuard.createExportGuard(
+  elements.languageSwitch?.querySelectorAll("button[data-language]") || [],
+);
+elements.languageSwitch?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-language]");
   if (!button) {
     return;
   }
-  setLanguage(button.dataset.language);
+  try {
+    await languageSwitchGuard.run(async () => {
+      const language = window.BilikaraHostLanguage
+        ? await window.BilikaraHostLanguage.save(button.dataset.language)
+        : button.dataset.language;
+      setLanguage(language);
+    });
+  } catch { setAppMessage(t("settings.languageSaveFailed"), true); }
 });
 
 elements.themeSwitch?.addEventListener("click", (event) => {
@@ -19585,7 +19867,8 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     itemIncarnationId: currentItem.item_incarnation_id,
     variantId: nextVariantId,
     currentTime: video ? Number(video.currentTime || 0) : 0,
-    wasPlaying: video ? !video.paused : true,
+    // Buffering/clock recovery can hold video without changing play intent.
+    wasPlaying: Boolean(playbackSession.logicalPlayIntent),
   };
   state.pendingPlaybackRestore = pendingRestore;
   try {
@@ -20183,6 +20466,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  if (window.BilikaraAndroidPlayback?.visibilityChanged()) return;
   if (
     !state.localShouldBePlaying
     || shouldHoldCurrentItemForTransition(state.data?.current_item)

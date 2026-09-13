@@ -222,7 +222,7 @@ class TauriClipboardCapabilityTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.root = Path(__file__).resolve().parents[1]
         cls.cargo = (cls.root / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
-        cls.main = (cls.root / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.main = (cls.root / "src-tauri" / "src" / "desktop.rs").read_text(encoding="utf-8")
         cls.capability = json.loads(
             (cls.root / "src-tauri" / "capabilities" / "main.json").read_text(encoding="utf-8")
         )

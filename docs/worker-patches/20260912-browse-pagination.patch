@@ -1,0 +1,114 @@
+diff --git a/bilikara-api/src/index.js b/bilikara-api/src/index.js
+index e354780..5e40d2b 100644
+--- a/bilikara-api/src/index.js
++++ b/bilikara-api/src/index.js
+@@ -728,12 +728,12 @@ function browseTagPayload(rows, { kind, letter, query, limit }) {
+ }
+ __name(browseTagPayload, "browseTagPayload");
+ __name2(browseTagPayload, "browseTagPayload");
+-async function browseItems(env, { kind, tag, locale, query, limit }) {
++async function browseItems(env, { kind, tag, locale, query, limit, offset }) {
+   const normalizedTag = normalizeText(tag);
+   const normalizedTagKey = normalizeBrowseIndexKey(normalizedTag);
+   const normalizedQuery = normalizeText(query);
+   const maxItems = Math.max(1, Number(limit) || 80);
+-  if (!normalizedTagKey) return [];
++  if (!normalizedTagKey) return {items: [], has_more: false, next_offset: offset};
+   const queryFilter = normalizedQuery ? `
+     AND (
+       instr(lower(v.title), lower(?)) > 0
+@@ -752,22 +752,22 @@ async function browseItems(env, { kind, tag, locale, query, limit }) {
+       FROM browse_terms AS t
+       JOIN browse_term_videos AS tv ON tv.term_id = t.term_id
+       JOIN videos AS v ON v.bvid = tv.bvid
+-      WHERE t.kind = ?
+-        AND (
+-          t.normalized_name = ?
+-          OR EXISTS (
+-            SELECT 1
+-            FROM browse_term_aliases AS a
+-            WHERE a.term_id = t.term_id AND a.normalized_alias = ?
+-          )
+-        )
++      WHERE t.term_id IN (
++        SELECT term_id FROM browse_terms WHERE kind = ? AND normalized_name = ?
++        UNION
++        SELECT a.term_id FROM browse_term_aliases AS a
++        JOIN browse_terms AS named ON named.term_id = a.term_id
++        WHERE a.normalized_alias = ? AND named.kind = ?
++      )
+         ${queryFilter}
+       GROUP BY v.bvid
+       ORDER BY v.rowid ASC
+-      LIMIT ?
++      LIMIT ? OFFSET ?
+     `
+-  ).bind(kind, normalizedTagKey, normalizedTagKey, ...queryBindings, maxItems).all();
+-  return results || [];
++  ).bind(kind, normalizedTagKey, normalizedTagKey, kind, ...queryBindings, maxItems + 1, offset).all();
++  const page = results || [];
++  const items = page.slice(0, maxItems);
++  return {items, has_more: page.length > maxItems, next_offset: offset + items.length};
+ }
+ __name(browseItems, "browseItems");
+ __name2(browseItems, "browseItems");
+@@ -1153,9 +1153,13 @@ async function handleBrowse(request, env) {
+   const tag = normalizeText(url.searchParams.get("tag"));
+   const locale = normalizeBrowseLocale(url.searchParams.get("locale"));
+   const limit = clampLimit(url.searchParams.get("limit"), tag ? 80 : 200, 500);
++  const offset = Number(url.searchParams.get("offset") || "0");
++  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) {
++    return jsonResponse({error: "offset must be an integer between 0 and 100000"}, {status: 400});
++  }
+   if (tag) {
+-    const items = await browseItems(env, { kind, tag, locale, query, limit });
+-    return jsonResponse({ kind, letter, query, tag, locale, tags: [], items });
++    const page = await browseItems(env, { kind, tag, locale, query, limit, offset });
++    return jsonResponse({ kind, letter, query, tag, locale, tags: [], offset, limit, ...page });
+   }
+   const rows = await browseTagRows(env, kind);
+   const tags = browseTagPayload(rows, { kind, letter, query, limit });
+diff --git a/test/browse-pagination.spec.ts b/test/browse-pagination.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/test/browse-pagination.spec.ts
+@@ -0,0 +1,39 @@
++import { createExecutionContext, env } from "cloudflare:test";
++import { beforeEach, expect, it } from "vitest";
++import worker from "../src/index";
++import { createProjectionSchema } from "./helpers/browse-schema";
++
++beforeEach(async () => {
++  await createProjectionSchema();
++  await env.bilikara_db.prepare("INSERT INTO browse_terms(kind,display_name,normalized_name,locale) VALUES('name','作品','作品','ja'),('name','作品','作品','zh'),('artist','歌手','歌手','ja')").run();
++  await env.bilikara_db.prepare("INSERT INTO browse_term_aliases(term_id,alias_name,normalized_alias) VALUES(1,'Alias','alias'),(2,'Alias','alias'),(3,'Singer','singer')").run();
++  const rows=Array.from({length:221},(_,n)=>({bvid:`BV${String(n).padStart(10,"0")}`,title:`Song ${n}`}));
++  await env.bilikara_db.prepare("INSERT INTO videos(bvid,title) SELECT json_extract(value,'$.bvid'),json_extract(value,'$.title') FROM json_each(?)").bind(JSON.stringify(rows)).run();
++  await env.bilikara_db.prepare("INSERT INTO browse_term_videos(term_id,bvid,source_field) SELECT term_id,bvid,'tag_1' FROM browse_terms CROSS JOIN videos").run();
++});
++async function browse(params:string) {
++  const response=await worker.fetch(new Request(`https://local.test/browse?${params}`),env,createExecutionContext());
++  expect(response.status).toBe(200);
++  return response.json() as Promise<any>;
++}
++it.each([['name','Alias'],['artist','Singer']])('pages %s aliases without duplicate videos or a full count',async(kind,tag)=>{
++  const all:string[]=[];
++  for(const offset of [0,100,200]) {
++    const page=await browse(`kind=${kind}&tag=${tag}&offset=${offset}&limit=100`);
++    expect(page.items).toHaveLength(Math.min(100,221-offset));
++    expect(page.has_more).toBe(offset<200);
++    expect(page.next_offset).toBe(Math.min(offset+100,221));
++    all.push(...page.items.map((item:any)=>item.bvid));
++  }
++  expect(new Set(all).size).toBe(221);
++  expect(all).toEqual(Array.from({length:221},(_,n)=>`BV${String(n).padStart(10,"0")}`));
++  expect((await browse(`kind=${kind}&tag=${tag}&offset=221&limit=100`)).items).toEqual([]);
++});
++it('keeps legacy clients, filtered pages and invalid offsets bounded',async()=>{
++  expect((await browse('tag=Alias&limit=450')).items).toHaveLength(221);
++  expect((await browse('tag=Alias&q=Song%20220&limit=100')).items).toHaveLength(1);
++  for(const offset of ['-1','NaN','1.5','Infinity','100001']) {
++    const response=await worker.fetch(new Request(`https://local.test/browse?tag=Alias&offset=${offset}`),env,createExecutionContext());
++    expect(response.status).toBe(400);
++  }
++});

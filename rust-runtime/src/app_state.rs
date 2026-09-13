@@ -14,6 +14,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
+mod native_persistence;
+#[cfg(feature = "native-host")]
+pub(crate) mod native_session;
+use crate::native_host_storage::NativeHostStorage;
+use native_persistence::storage_error_response;
+
 const SCHEMA_VERSION: u32 = 1;
 const MAX_ITEMS: usize = 10_000;
 const MAX_SESSION_USERS: usize = 32;
@@ -263,6 +269,9 @@ pub struct AppStateSeed {
     pub session_played_file: String,
     #[serde(default)]
     pub session_played: Vec<SessionPlayedEntry>,
+    /// Native Host's closed sessions; absent in legacy desktop seeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_archives: Vec<SessionArchiveSeed>,
     #[serde(default)]
     pub previous_session: Option<SessionArchiveSeed>,
     #[serde(default)]
@@ -527,6 +536,12 @@ pub enum AppStateRequest {
         new_session: SessionArchiveSeed,
         now: f64,
     },
+    ResolveNativeSession {
+        schema_version: u32,
+        continue_previous: bool,
+        new_session: SessionArchiveSeed,
+        now: f64,
+    },
     ResetRuntime {
         schema_version: u32,
         new_session: SessionArchiveSeed,
@@ -675,6 +690,7 @@ impl AppStateRequest {
             | Self::DiscardBackup { schema_version, .. }
             | Self::ContinuePreviousSession { schema_version, .. }
             | Self::BeginSession { schema_version, .. }
+            | Self::ResolveNativeSession { schema_version, .. }
             | Self::ResetRuntime { schema_version, .. }
             | Self::ResetPlayer { schema_version, .. }
             | Self::RestartPlaybackProgram { schema_version }
@@ -729,6 +745,7 @@ impl AppStateRequest {
             | Self::DiscardBackup { now, .. }
             | Self::ContinuePreviousSession { now, .. }
             | Self::BeginSession { now, .. }
+            | Self::ResolveNativeSession { now, .. }
             | Self::ResetRuntime { now, .. }
             | Self::ResetPlayer { now, .. }
             | Self::ApplyPlayerStatusObservation { now, .. }
@@ -882,9 +899,34 @@ pub enum AppStateResponse {
     Failure(AppStateFailure),
 }
 
+impl AppStateResponse {
+    pub fn result(&self) -> Option<&Value> {
+        match self {
+            Self::Success(success) => Some(&success.result),
+            Self::Failure(_) => None,
+        }
+    }
+    /// Borrow the authoritative projection without JSON or the compatibility ABI.
+    /// Keep the response intact so transport adapters can still persist its effects.
+    pub fn snapshot(&self) -> Option<&AppSnapshot> {
+        match self {
+            Self::Success(success) => success.snapshot.as_ref(),
+            Self::Failure(_) => None,
+        }
+    }
+
+    pub fn error(&self) -> Option<&AppStateError> {
+        match self {
+            Self::Success(_) => None,
+            Self::Failure(failure) => Some(&failure.error),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
     revision: u64,
+    native_session_choice_pending: bool,
     session_generation: u64,
     playback_generation: u64,
     playback_mode: String,
@@ -898,6 +940,7 @@ struct AppStateData {
     session_started_at: f64,
     session_played_file: String,
     session_played: Vec<SessionPlayedEntry>,
+    session_archives: Vec<SessionArchiveSeed>,
     previous_session: Option<SessionArchiveSeed>,
     backup: Option<BackupSeed>,
     updated_at: f64,
@@ -907,11 +950,14 @@ struct AppStateData {
 #[derive(Debug)]
 pub struct AppState {
     data: Option<AppStateData>,
+    native_storage: Option<NativeHostStorage>,
     next_cache_attempt_token: u64,
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
     identity_namespace: Result<[u8; IDENTITY_NAMESPACE_BYTES], String>,
     internet_remote_peers: InternetRemotePeers,
+    #[cfg(feature = "native-host")]
+    native_session: native_session::NativeSession,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -949,11 +995,14 @@ impl Default for AppState {
             });
         Self {
             data: None,
+            native_storage: None,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
             identity_namespace,
             internet_remote_peers: InternetRemotePeers::default(),
+            #[cfg(feature = "native-host")]
+            native_session: native_session::NativeSession::default(),
         }
     }
 }
@@ -1678,6 +1727,22 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
     for entry in &seed.session_played {
         validate_session_played_entry(entry)?;
     }
+    if seed.session_archives.len() > 1000 {
+        return Err(rejected(
+            "too_many_sessions",
+            "session archive limit reached",
+        ));
+    }
+    let mut archive_names = HashSet::new();
+    for archive in &seed.session_archives {
+        validate_archive(archive)?;
+        if !archive_names.insert(&archive.file_name) {
+            return Err(rejected(
+                "invalid_session_archive",
+                "duplicate session archive identity",
+            ));
+        }
+    }
     validate_session_users(&seed.session_users)?;
     if let Some(previous) = &seed.previous_session {
         validate_archive(previous)?;
@@ -1703,6 +1768,7 @@ impl AppStateData {
         validate_seed(&seed)?;
         Ok(Self {
             revision: 1,
+            native_session_choice_pending: false,
             session_generation: 1,
             playback_generation: 1,
             playback_mode: seed.playback_mode,
@@ -1716,6 +1782,7 @@ impl AppStateData {
             session_started_at: seed.session_started_at,
             session_played_file: seed.session_played_file,
             session_played: seed.session_played,
+            session_archives: seed.session_archives,
             previous_session: seed
                 .previous_session
                 .filter(|entry| !entry.items.is_empty()),
@@ -3268,12 +3335,60 @@ fn apply_mutation(
             result.effects.delete_backup = true;
             Ok(result)
         }
+        AppStateRequest::ResolveNativeSession {
+            continue_previous,
+            new_session,
+            ..
+        } => {
+            if !data.native_session_choice_pending {
+                return Ok(MutationResult::unchanged(mutation_value(false)));
+            }
+            validate_archive(&new_session)?;
+            if !continue_previous {
+                if new_session.file_name == data.session_played_file
+                    || data.session_archives.iter().any(|archive| {
+                        archive.file_name == new_session.file_name
+                            || archive.file_name == data.session_played_file
+                    })
+                {
+                    return Err(rejected(
+                        "duplicate_session",
+                        "session archive identity must be unique",
+                    ));
+                }
+                if !data.session_played.is_empty() {
+                    if data.session_archives.len() >= 1000 {
+                        return Err(rejected(
+                            "too_many_sessions",
+                            "session archive limit reached; existing records were preserved",
+                        ));
+                    }
+                    data.session_archives.push(SessionArchiveSeed {
+                        file_name: data.session_played_file.clone(),
+                        session_started_at: data.session_started_at,
+                        items: data.session_played.clone(),
+                    });
+                }
+                reset_current_identity(data);
+                data.session_history.clear();
+                data.session_users.clear();
+                replace_session_archive(data, &new_session);
+                data.previous_session = None;
+                data.backup = None;
+                increment_session_generation(data)?;
+            }
+            data.native_session_choice_pending = false;
+            let mut result = MutationResult::changed(mutation_value(true), false);
+            result.effects.delete_backup = !continue_previous;
+            Ok(result)
+        }
         AppStateRequest::ResetRuntime { new_session, .. } => {
             validate_archive(&new_session)?;
             data.playback_mode = "local".to_owned();
             data.player_settings = PlayerSettingsSeed::default();
             reset_current_identity(data);
             data.history.clear();
+            data.session_archives.clear();
             data.session_history.clear();
             data.session_users.clear();
             replace_session_archive(data, &new_session);
@@ -3539,6 +3654,22 @@ fn apply_mutation(
 }
 
 impl AppState {
+    fn initialize_once(&mut self, seed: AppStateSeed) -> AppStateResponse {
+        // Activity recreation must not reset an existing queue, playback generation,
+        // cache attempt, or authenticated Remote peer. The check and initialization
+        // execute under the same authoritative lock in the process-wide entry point.
+        if self.data.is_some() {
+            self.execute(AppStateRequest::Snapshot {
+                schema_version: SCHEMA_VERSION,
+            })
+        } else {
+            self.execute(AppStateRequest::Initialize {
+                schema_version: SCHEMA_VERSION,
+                state: Box::new(seed),
+            })
+        }
+    }
+
     fn execute_internet_remote_message(
         &mut self,
         peer_id: String,
@@ -3610,6 +3741,7 @@ impl AppState {
                 tag,
                 locale,
                 limit,
+                offset,
             } => {
                 return internet_remote_reply(
                     data,
@@ -3618,6 +3750,7 @@ impl AppState {
                     Some(json!({
                         "kind": "catalog_browse",
                         "browse_kind": kind,
+                        "offset": offset,
                         "letter": letter,
                         "query": query,
                         "tag": tag,
@@ -4174,6 +4307,12 @@ impl AppState {
         }
         match request {
             AppStateRequest::Initialize { state, .. } => {
+                if self.native_storage.is_some() && self.data.is_some() {
+                    return invalid_request_response(
+                        "native_storage_conflict",
+                        "Use native initialization to reopen persisted AppState without replacing it",
+                    );
+                }
                 let namespace = match &self.identity_namespace {
                     Ok(namespace) => *namespace,
                     Err(message) => return internal_error_response(message),
@@ -4186,6 +4325,9 @@ impl AppState {
                             Err(error) => return execute_error_response(error),
                         };
                         let persistence = data.persistence_snapshot();
+                        if let Err(error) = self.persist_native(&data) {
+                            return storage_error_response(error);
+                        }
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
                         self.internet_remote_peers.clear();
@@ -4488,7 +4630,12 @@ impl AppState {
             }
             AppStateRequest::Shutdown { .. } => {
                 let was_initialized = self.data.take().is_some();
+                self.native_storage = None;
                 self.internet_remote_peers.clear();
+                #[cfg(feature = "native-host")]
+                {
+                    self.native_session = native_session::NativeSession::default();
+                }
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
@@ -4519,6 +4666,10 @@ impl AppState {
                     AppStateRequest::RestoreBackup { .. }
                         | AppStateRequest::DiscardBackup { .. }
                         | AppStateRequest::BeginSession { .. }
+                        | AppStateRequest::ResolveNativeSession {
+                            continue_previous: false,
+                            ..
+                        }
                         | AppStateRequest::ResetRuntime { .. }
                 );
                 let mutation = match apply_mutation(
@@ -4577,6 +4728,9 @@ impl AppState {
                     }
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
+                    if let Err(error) = self.persist_native(&next) {
+                        return storage_error_response(error);
+                    }
                     self.data = Some(next);
                     self.next_item_incarnation_id = next_item_incarnation_id;
                     AppStateResponse::Success(Box::new(AppStateSuccess {
@@ -4813,6 +4967,28 @@ pub fn execute_app_state(request: AppStateRequest) -> AppStateResponse {
     state.execute(request)
 }
 
+/// Bootstrap an in-process Host without replacing already initialized AppState.
+/// The caller owns seed loading and persistence of the returned effects. This is
+/// additive: the existing explicit Initialize command retains its reset semantics.
+pub fn initialize_app_state_once(seed: AppStateSeed) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_once(seed)
+}
+
+/// Bootstrap a native Host using a private, versioned checkpoint. Every durable
+/// mutation (including runtime-originated cache updates) is saved under the same
+/// AppState lock before it is published. The desktop adapter remains opt-out.
+pub fn initialize_native_host(directory: &Path, initial: AppStateSeed) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_native(directory, initial)
+}
+
 pub(crate) fn begin_cache_attempt_for_runtime(
     item_id: &str,
     expected_item_incarnation_id: &str,
@@ -4982,6 +5158,7 @@ mod tests {
             session_started_at: 10.0,
             session_played_file: "played-current.json".to_owned(),
             session_played: Vec::new(),
+            session_archives: Vec::new(),
             previous_session: None,
             backup: None,
             updated_at: 10.0,
@@ -4995,6 +5172,38 @@ mod tests {
         }))
         .snapshot
         .expect("initialize snapshot")
+    }
+
+    #[test]
+    fn native_bootstrap_preserves_existing_state_and_does_not_request_rewrites() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.playlist = vec![item("retained", "BV1z84y1p7oS", "Alice")];
+        let first = state.initialize_once(initial);
+        let first_snapshot = first.snapshot().expect("initialized").clone();
+        assert_eq!(first_snapshot.playlist.len(), 1);
+        assert!(first.error().is_none());
+
+        let mut replacement = seed();
+        replacement.session_users = vec!["Must not replace".to_owned()];
+        replacement.updated_at = 100.0;
+        let second = state.initialize_once(replacement);
+        assert_eq!(second.snapshot(), Some(&first_snapshot));
+        let second = success(second);
+        assert!(!second.committed);
+        assert_eq!(second.effects, PersistenceEffects::default());
+    }
+
+    #[test]
+    fn native_bootstrap_rejects_invalid_seed_without_poisoning_retry() {
+        let mut state = AppState::default();
+        let mut invalid = seed();
+        invalid.session_started_at = f64::NAN;
+        let failure = state.initialize_once(invalid);
+        assert!(failure.snapshot().is_none());
+        assert!(failure.error().is_some());
+        assert!(state.data.is_none());
+        assert!(state.initialize_once(seed()).snapshot().is_some());
     }
 
     fn success(response: AppStateResponse) -> AppStateSuccess {
