@@ -63,21 +63,7 @@ GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
 GATCHA_TASK_BUSY_MESSAGE = "拉取任务执行中，请等待任务结束"
 MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或输入 Cookie"
-_COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
-_COOKIE_PREFERRED_ORDER = (
-    "SESSDATA",
-    "bili_jct",
-    "DedeUserID",
-    "DedeUserID__ckMd5",
-    "sid",
-    "buvid3",
-    "buvid4",
-    "b_nut",
-    "bili_ticket",
-    "bili_ticket_expires",
-    "CURRENT_FNVAL",
-    "CURRENT_QUALITY",
-)
+
 
 
 def _rust_gatcha_repository(operation: str, **fields: object) -> dict:
@@ -109,83 +95,17 @@ def _rust_gatcha_network(operation: str, **fields: object) -> dict:
     )
 
 
-def _cookie_pair_name(name: object) -> str:
-    normalized = str(name or "").strip()
-    if normalized.lower() == "sessdata":
-        return "SESSDATA"
-    if normalized.lower() == "bili_jct":
-        return "bili_jct"
-    return normalized
-
-
-def _collect_cookie_pairs(payload: object, pairs: dict[str, str]) -> None:
-    if isinstance(payload, dict):
-        lower_keys = {str(key).lower(): key for key in payload}
-        if "name" in lower_keys and "value" in lower_keys:
-            name = _cookie_pair_name(payload.get(lower_keys["name"]))
-            value = str(payload.get(lower_keys["value"]) or "").strip()
-            if name and value:
-                pairs[name] = value
-        for key, value in payload.items():
-            name = _cookie_pair_name(key)
-            if name and isinstance(value, (str, int, float)) and name.lower() in {
-                preferred.lower() for preferred in _COOKIE_PREFERRED_ORDER
-            }:
-                normalized_value = str(value or "").strip()
-                if normalized_value:
-                    pairs[name] = normalized_value
-            _collect_cookie_pairs(value, pairs)
-        return
-
-    if isinstance(payload, list):
-        for item in payload:
-            _collect_cookie_pairs(item, pairs)
-        return
-
-    if isinstance(payload, str):
-        for match in re.finditer(r"([A-Za-z0-9_]+)=([^;\s]+)", payload):
-            name = _cookie_pair_name(match.group(1))
-            value = match.group(2).strip()
-            if name and value:
-                pairs[name] = value
-
-
-def _format_cookie_pairs(pairs: dict[str, str]) -> str:
-    normalized_keys = {key.lower() for key in pairs}
-    if not _COOKIE_REQUIRED_KEYS.issubset(normalized_keys):
-        return ""
-
-    ordered_names: list[str] = []
-    for preferred in _COOKIE_PREFERRED_ORDER:
-        for key in pairs:
-            if key.lower() == preferred.lower() and key not in ordered_names:
-                ordered_names.append(key)
-                break
-    ordered_names.extend(sorted(key for key in pairs if key not in ordered_names))
-    return "; ".join(f"{name}={pairs[name]}" for name in ordered_names)
-
-
 def cookie_from_bbdown_data(data_path: Path | None = None) -> str:
+    """Existing downloader entry point; BBDown text/JSON policy belongs to Rust."""
     data_path = data_path or (cfg.BB_DOWN_DIR / "BBDown.data")
-    if not data_path.exists():
-        return ""
-
-    try:
-        raw_text = data_path.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return ""
-
-    pairs: dict[str, str] = {}
-    try:
-        payload = json.loads(raw_text)
-    except json.JSONDecodeError:
-        payload = raw_text
-    _collect_cookie_pairs(payload, pairs)
-    return _format_cookie_pairs(pairs)
+    return rust_runtime.desktop_login("read_cookie", data_path=str(data_path))["cookie"]
 
 
 def effective_bilibili_cookie() -> str:
-    return cookie_from_bbdown_data() or str(cfg.COOKIE or "").strip()
+    return rust_runtime.desktop_login(
+        "read_cookie", data_path=str(cfg.BB_DOWN_DIR / "BBDown.data"),
+        configured_cookie=str(cfg.COOKIE or ""),
+    )["cookie"]
 
 
 def _normalize_gatcha_uid(raw_mid: object) -> str:

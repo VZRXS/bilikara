@@ -90,7 +90,7 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             with self.subTest(cookie_source=expected):
                 library = FakeServiceLibrary({"schema_version": 1, "status": "completed", "result": result})
                 with patch.object(rust_runtime, "_runtime_lib", library), patch.object(
-                    bilibili, "cookie_from_bbdown_data", return_value=bbdown_cookie
+                    bilibili, "effective_bilibili_cookie", return_value=expected
                 ), patch.object(bilibili.cfg, "COOKIE", config_cookie), patch.dict(
                     bilibili.BILIBILI_HEADERS,
                     {"User-Agent": "fixture-agent", "Referer": "https://www.bilibili.com/video/BVfixture", "Cookie": "stale"},

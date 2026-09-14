@@ -191,6 +191,31 @@ retain their public signatures as credential/options/error/DTO adapters. Runtime
 unavailability fails explicitly. Existing frozen binding references remain for
 compatibility tests; they are not the live video implementation.
 
+## Desktop QR login
+
+`login_service.rs` owns the shared Bilibili QR HTTP/cookie-jar flow, QR validation,
+poll interpretation, bounded transport retries, deadline and sanitized diagnostics.
+Both `native_host/login.rs` and `desktop_login.rs` consume this implementation.
+Desktop uses the existing Runtime status/generation owner and additive
+`desktop_login` FFI service; it does not start a native HTTP Host.
+
+Desktop retains PNG QR payloads and private `BBDown.data` plain-text credentials.
+Rust accepts legacy BBDown text/JSON, prefers readable file credentials over
+configured `COOKIE`, and retains case-insensitive cookie names and `b_nut`.
+New login cookies must apply to the Bilibili API origin. Native retains its SVG
+payload and `bilibili-login.json` checkpoint. Normal polling runs every two seconds,
+transport backoff is capped at eight seconds, and QR attempts expire after
+180 seconds.
+
+Credential publication and login generations are serialized under the existing
+Runtime status lock. Cancel, replacement, logout and shutdown invalidate late
+results; success is available only after an atomic, validated credential commit.
+Network requests, QR encoding and waits run outside that lock. Python retains
+request/result/path/configuration and diagnostic adapters. The existing desktop
+lock guards single-delivery success notification and its refresh callback;
+only native attempts use the native library refresh. Logout removes BBDown
+credentials without changing separately configured `COOKIE`.
+
 ## Existing native utility domains
 
 | Python module and helper | Category | Inputs → output | Dependencies | Pure | Phase 1 decision |
@@ -216,7 +241,7 @@ No other helper is approved for Phase 1. The tables below document why.
 
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
-| `_cookie_pair_name`, `_collect_cookie_pairs`, `_format_cookie_pairs` | cookie normalization; recursive heterogeneous dict/list adaptation | core pieces yes | Defer. They primarily adapt BBDown JSON/Python containers, so serialization and FFI cost exceed the string work. `cookie_from_bbdown_data` also reads the filesystem. |
+| `_cookie_pair_name`, `_collect_cookie_pairs`, `_format_cookie_pairs` | cookie normalization; recursive heterogeneous dict/list adaptation | core pieces yes | Implemented by the shared desktop login service; the private Python helpers were removed. Runtime owns legacy BBDown text/JSON interpretation and file-first configured precedence; `cookie_from_bbdown_data` is now a private-credential FFI result adapter. The earlier Phase-1 deferral remains historical. |
 | `_normalize_gatcha_uid`, `_normalize_gatcha_uid_list` | UID/space-URL syntax; project exceptions and list adaptation | core yes | Defer. Valuable parsing exists, but this is coupled to Chinese domain errors and Python list handling; migrate only with a future Bilibili identifier API design. |
 | `_normalize_gatcha_profile(s)`, `_empty_*_payload`, `_is_legacy_gatcha_cache_payload` | dictionary/schema normalization | mostly | Defer: persistent-data adapters/schema policy, not a native string domain. |
 | `_favlist_folder_uid`, `_favlist_folder_key`, `_favlist_browser_id`, `_split_favlist_browser_id`, `_gatcha_favlist_media_id`, `_gatcha_entry_dedupe_key` | identifiers composed from dictionaries | mostly | Defer: tiny Python operations or dictionary adapters; a custom FFI format would be more fragile than the implementation. |

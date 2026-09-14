@@ -820,6 +820,58 @@ def reset_gatcha_status_service() -> dict[str, Any]:
     )
 
 
+def desktop_login(command: str, **fields: Any) -> dict[str, Any]:
+    """Private desktop request/result adapter; Rust owns all login policy."""
+    result = _call_runtime_service("desktop_login", {"command": command, **fields})
+    if not isinstance(result, dict):
+        raise RustStatusServiceError("Invalid desktop login result")
+    if command == "start":
+        generation = result.get("generation")
+        if "generation" not in result or (
+            generation is not None and (type(generation) is not int or generation <= 0)
+        ):
+            raise RustStatusServiceError("Invalid desktop login generation")
+    elif command == "snapshot":
+        if (type(result.get("logged_in")) is not bool
+                or result.get("state") not in {"idle", "starting", "waiting", "logged_in", "failed"}
+                or any(not isinstance(result.get(key), str) for key in ("message", "data_path", "qr_image"))):
+            raise RustStatusServiceError("Invalid desktop login snapshot")
+    elif command == "read_cookie":
+        if not isinstance(result.get("cookie"), str):
+            raise RustStatusServiceError("Invalid desktop credential result")
+    elif command == "take_success":
+        if type(result.get("notify")) is not bool:
+            raise RustStatusServiceError("Invalid desktop login notification")
+    elif command in {"cancel", "logout"}:
+        if result.get("reset") is not True:
+            raise RustStatusServiceError("Invalid desktop login reset")
+    elif command == "run":
+        rows = result.get("diagnostics")
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise RustStatusServiceError("Invalid desktop login diagnostics")
+        diagnostic_fields = {
+            "at", "generation", "stage", "result", "elapsed_ms", "error_kind",
+            "transport_hint", "http_status", "api_code", "poll_code",
+        }
+        for row in rows:
+            if (not isinstance(row, dict) or set(row) != diagnostic_fields
+                    or row["generation"] != fields.get("generation")
+                    or row["stage"] not in ("generate", "poll", "finish")
+                    or row["result"] not in (
+                        "ok", "network_error", "http_error", "body_error", "invalid_json",
+                        "api_error", "client_error", "invalid_qr", "missing_cookie",
+                        "unknown_poll_code", "expired", "storage_error", "internal_error",
+                    )
+                    or row["error_kind"] not in (None, "timeout", "connect", "body", "decode", "request")
+                    or row["transport_hint"] not in (None, "tls_certificate", "tls", "dns", "connection_reset")
+                    or type(row["at"]) not in {int, float}
+                    or type(row["elapsed_ms"]) is not int
+                    or any(row[key] is not None and type(row[key]) is not int
+                           for key in ("http_status", "api_code", "poll_code"))):
+                raise RustStatusServiceError("Invalid desktop login diagnostics")
+    return result
+
+
 def begin_bilibili_login(*, message: str) -> int:
     result = _call_status_service(
         {"command": "bilibili_begin", "message": str(message)}

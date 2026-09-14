@@ -2,6 +2,7 @@ mod app_state;
 mod bilibili_service;
 mod cache_runtime;
 mod cloudflare_service;
+mod desktop_login;
 mod diagnostics;
 pub mod experimental_libav;
 mod ffi;
@@ -11,6 +12,7 @@ mod http_client;
 mod http_downloader;
 mod internet_remote;
 mod json_http;
+mod login_service;
 mod media_backend;
 mod media_routing;
 #[cfg(feature = "native-host")]

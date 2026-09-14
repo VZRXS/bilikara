@@ -2968,7 +2968,8 @@ class BilibiliParserTest(unittest.TestCase):
 
     @patch("bilikara.rust_runtime._call_runtime_service", return_value=[])
     def test_fetch_dash_playurl_rejects_non_dict_payload(self, _service):
-        with self.assertRaisesRegex(BilibiliError, "invalid response") as raised:
+        # Isolate the DASH result under test from the separate credential ABI.
+        with patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""), self.assertRaisesRegex(BilibiliError, "invalid response") as raised:
             fetch_dash_playurl("BV1xx411c7mD", 456)
         self.assertEqual(raised.exception.kind, "invalid_response")
         self.assertIsInstance(raised.exception.__cause__, rust_runtime.RustRuntimeServiceError)

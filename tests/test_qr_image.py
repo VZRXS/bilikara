@@ -9,6 +9,8 @@ import base64
 import io
 import os
 import stat
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,7 +20,7 @@ from unittest.mock import Mock, patch
 from PIL import Image, ImageOps
 
 from bilikara import rust_runtime, server
-from bilikara.cache import CacheManager
+from login_service_fixture import LoginFixture
 
 try:
     import zxingcpp
@@ -133,48 +135,62 @@ class QrImageTest(unittest.TestCase):
         self.assertNotIn("🎤", body["error"])
 
     def test_login_file_data_url_permissions_and_cleanup(self):
-        with TemporaryDirectory() as root:
+        # P02 moved the login file writer into Rust; retain the independent QR
+        # decode, payload, permission and cleanup assertions at its real boundary.
+        with TemporaryDirectory() as root, LoginFixture() as fixture:
             directory = Path(root) / "bbdown"
-            with patch("bilikara.cache.BB_DOWN_DIR", directory):
-                path = CacheManager._bbdown_qr_image_path()
-                self.assertEqual(path, directory / "qrcode.png")
-                for payload in [LOGIN_URL, UNICODE_URL]:
-                    data_url = CacheManager._write_bbdown_login_qr(payload, path)
-                    self.assertEqual(path.read_bytes(), base64.b64decode(data_url.split(",", 1)[1]))
+            data_path = str(directory / "BBDown.data")
+            path = directory / "qrcode.png"
+            for payload in [LOGIN_URL, "https://passport.bilibili.com/scan?name=カラオケ🎤"]:
+                fixture.generate_body = {"code": 0, "data": {"url": payload, "qrcode_key": "synthetic"}}
+                release = threading.Event()
+                fixture.before_poll = lambda: release.wait(10)
+                generation = rust_runtime.desktop_login("start", data_path=data_path, force=True)["generation"]
+                worker = threading.Thread(target=rust_runtime.desktop_login, args=("run",), kwargs={
+                    "data_path": data_path, "generation": generation,
+                })
+                worker.start()
+                try:
+                    deadline = time.monotonic() + 8
+                    while True:
+                        status = rust_runtime.desktop_login("snapshot", data_path=data_path)
+                        if status["state"] == "waiting":
+                            break
+                        self.assertLess(time.monotonic(), deadline, status["state"])
+                        time.sleep(.01)
+                    self.assertEqual(path.read_bytes(), base64.b64decode(status["qr_image"].split(",", 1)[1]))
                     self.decode(path.read_bytes(), payload)
                     if os.name != "nt":
                         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-                manager = CacheManager.__new__(CacheManager)
-                manager._remove_bbdown_qr_image()
+                finally:
+                    rust_runtime.desktop_login("cancel", data_path=data_path)
+                    release.set()
+                    worker.join(16)
+                self.assertFalse(worker.is_alive())
                 self.assertFalse(path.exists())
-                manager._remove_bbdown_qr_image()
+                rust_runtime.desktop_login("cancel", data_path=data_path)
 
     def test_native_unavailable_and_failed_never_fall_back(self):
         # Python qrcode cannot be imported even if installed in a developer env.
-        with TemporaryDirectory() as root, patch.dict("sys.modules", {"qrcode": None}):
-            path = Path(root) / "qrcode.png"
-            self.assertTrue(CacheManager._write_bbdown_login_qr(LOGIN_URL, path))
-            previous = path.read_bytes()
+        with patch.dict("sys.modules", {"qrcode": None}):
+            self.assertTrue(rust_runtime.generate_qr_image(LOGIN_URL, border=4).png)
             with patch.object(rust_runtime, "_runtime_lib", None):
                 with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
-                    CacheManager._write_bbdown_login_qr(LOGIN_URL, path)
+                    rust_runtime.generate_qr_image(LOGIN_URL, border=4)
                 self.assertEqual(post_qr(REMOTE_URL)[0], 500)
             with patch.object(rust_runtime, "_call_runtime_service", side_effect=rust_runtime.RustRuntimeServiceError(
                 "encoding_failed", "QR image encoding failed", response={}
             )):
                 with self.assertRaises(rust_runtime.RustRuntimeServiceError):
-                    CacheManager._write_bbdown_login_qr(LOGIN_URL, path)
+                    rust_runtime.generate_qr_image(LOGIN_URL, border=4)
                 self.assertEqual(post_qr(REMOTE_URL)[0], 500)
-            self.assertEqual(path.read_bytes(), previous)
 
-    def test_malformed_native_images_are_rejected_before_file_write(self):
+    def test_malformed_native_images_are_rejected_before_consumption(self):
         for encoded in [None, "", "not base64", base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()]:
-            with TemporaryDirectory() as root, patch.object(rust_runtime, "_call_runtime_service", return_value={"png_base64": encoded}):
-                path = Path(root) / "qrcode.png"
+            with patch.object(rust_runtime, "_call_runtime_service", return_value={"png_base64": encoded}):
                 with self.assertRaises(rust_runtime.RustRuntimeServiceError) as caught:
-                    CacheManager._write_bbdown_login_qr(LOGIN_URL, path)
+                    rust_runtime.generate_qr_image(LOGIN_URL, border=4)
                 self.assertEqual(caught.exception.kind, "invalid_response")
-                self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

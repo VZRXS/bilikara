@@ -104,6 +104,7 @@ enum RuntimeServiceCommand {
     PlaylistExport(Value),
     BilibiliDash(BilibiliDashRequest),
     Video(crate::native_video::VideoServiceRequest),
+    DesktopLogin(crate::desktop_login::LoginCommand),
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
     Cloudflare(CloudflareServiceRequest),
@@ -148,6 +149,13 @@ struct RuntimeServiceWireResponse {
 }
 
 static STATUS_SERVICE: OnceLock<Mutex<RuntimeStatusService>> = OnceLock::new();
+
+pub(crate) fn status_service() -> std::sync::MutexGuard<'static, RuntimeStatusService> {
+    STATUS_SERVICE
+        .get_or_init(|| Mutex::new(RuntimeStatusService::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bilikara_runtime_abi_version() -> u32 {
@@ -390,6 +398,9 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
                 service_result(crate::playlist_export::execute_export_wire(request))
             }
             RuntimeServiceCommand::QrImage(request) => service_result(qr_image_result(request)),
+            RuntimeServiceCommand::DesktopLogin(request) => {
+                service_result(crate::desktop_login::execute(request))
+            }
             RuntimeServiceCommand::Video(request) => {
                 service_result(crate::native_video::execute_video(&request))
             }

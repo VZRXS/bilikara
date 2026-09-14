@@ -130,6 +130,8 @@ pub struct RuntimeStatusService {
     gacha_busy_message: String,
     bilibili_login: BilibiliLoginState,
     bilibili_generation: u64,
+    bilibili_worker: Option<u64>,
+    bilibili_success: Option<u64>,
 }
 
 impl RuntimeStatusService {
@@ -196,7 +198,45 @@ impl RuntimeStatusService {
         self.gacha_busy_message.clear();
     }
 
+    pub fn active_bilibili_generation(&self) -> Option<u64> {
+        matches!(
+            self.bilibili_login.state,
+            BilibiliLoginStatus::Starting | BilibiliLoginStatus::Waiting
+        )
+        .then_some(self.bilibili_generation)
+    }
+
+    pub fn claim_bilibili_worker(&mut self, generation: u64) -> bool {
+        if self.active_bilibili_generation() != Some(generation) || self.bilibili_worker.is_some() {
+            return false;
+        }
+        self.bilibili_worker = Some(generation);
+        true
+    }
+
+    pub fn complete_bilibili_login(&mut self, generation: u64, update: BilibiliLoginUpdate) {
+        if self.active_bilibili_generation() == Some(generation) {
+            self.bilibili_success =
+                (update.state == BilibiliLoginStatus::LoggedIn).then_some(generation);
+            self.set_bilibili_login(Some(generation), update);
+            self.bilibili_worker = None;
+        }
+    }
+
+    pub fn take_bilibili_success(&mut self, generation: u64) -> bool {
+        if self.bilibili_generation != generation
+            || self.bilibili_success != Some(generation)
+            || self.bilibili_login.state != BilibiliLoginStatus::LoggedIn
+        {
+            return false;
+        }
+        self.bilibili_success = None;
+        true
+    }
+
     pub fn begin_bilibili_login(&mut self, message: String) -> u64 {
+        self.bilibili_worker = None;
+        self.bilibili_success = None;
         self.bilibili_generation = self.bilibili_generation.wrapping_add(1).max(1);
         self.bilibili_login = BilibiliLoginState {
             state: BilibiliLoginStatus::Starting,
@@ -223,6 +263,8 @@ impl RuntimeStatusService {
     }
 
     pub fn reset_bilibili_login(&mut self) {
+        self.bilibili_worker = None;
+        self.bilibili_success = None;
         self.bilibili_generation = self.bilibili_generation.wrapping_add(1).max(1);
         self.bilibili_login = BilibiliLoginState::default();
     }
