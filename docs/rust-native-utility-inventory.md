@@ -170,6 +170,27 @@ protected Python references/tests still consume them. Gatcha/maintenance WBI
 and complete login integration remain outside this slice. S1–S3/M1–M6 and T
 closeout remain closed; no protected reference or public API is retired here.
 
+## Desktop video service
+
+`rust-runtime/src/native_video.rs` provides the shared `reference`, `owner` and
+`item` operations through the Runtime `video` service. Desktop and native callers
+reuse the Bilibili HTTP client, canonical audio binding and cache variant IDs.
+Resolution, metadata requests and item assembly run outside the AppState lock;
+queue admission remains with the existing callers.
+
+The service accepts BV/av identifiers and ordinary Bilibili URLs. Short links
+follow at most ten redirects to approved Bilibili hosts, without userinfo or
+custom ports. Credential-bearing metadata requests do not follow redirects.
+Responses are limited to 4 MiB and requests have bounded timeouts. Page selection,
+manual-binding payloads, query preservation and item fields follow the desktop
+contract. Native callers adapt display/error fields without a second assembly
+implementation. Invalid page query values return a domain input error.
+
+Python's `fetch_video_item`, `fetch_owner_info` and `resolve_video_reference`
+retain their public signatures as credential/options/error/DTO adapters. Runtime
+unavailability fails explicitly. Existing frozen binding references remain for
+compatibility tests; they are not the live video implementation.
+
 ## Existing native utility domains
 
 | Python module and helper | Category | Inputs → output | Dependencies | Pure | Phase 1 decision |
@@ -203,10 +224,10 @@ No other helper is approved for Phase 1. The tables below document why.
 | `_extract_gatcha_entries`, `_extract_gatcha_favlist_entries`, profile/folder summary helpers | API payload parsing | yes after input exists | Defer: large Python dictionaries and Bilibili response schema, not syntax-only parsing. |
 | `_dedupe_gatcha_entries`, `_merge_incremental_gatcha_entries`, `_merge_gatcha_entry_data` | dedupe/merge/selection | yes | Defer: state merge and preference policy. |
 | `_selected_gatcha_favlist_folder_ids`, `_is_public_gatcha_favlist_folder`, `_is_expired_gatcha_entry` | validation/classification of Python values | yes | Defer: trivial adapters or domain policy; FFI adds no value. |
-| `resolve_video_reference` | video identifier and URL parsing plus short-link HTTP resolution | no | Defer: the existing function performs a network request. Splitting its pure syntax half now risks changing public error and redirect behavior. |
-| `parse_video_pages`, `_normalize_selected_pages` | heterogeneous API/list parsing | yes | Defer: Python object adaptation dominates. |
+| `resolve_video_reference` | video identifier and URL parsing plus short-link HTTP resolution | no | Resolution executes in the Rust Runtime video service, and the Python function is a credential/DTO wrapper only. |
+| `parse_video_pages`, `_normalize_selected_pages` | heterogeneous API/list parsing | yes | Both Python helpers were removed from the active item path; page interpretation and selection normalization execute in Rust. |
 | `select_matching_pages`, `_is_better_cluster`, `_cluster_*`, `_preferred_or_first_page` | ranking and selection | yes | Migrated after Phase 1 as the typed `media_page_selection` business-rule domain; Python adaptation and complete fallback remain. Locally stabilized, with cross-platform confirmation required in the PR to `dev`. |
-| `_variant_id` | normalized track identifier | yes | Remains Python. It is duplicated in cache/download planning and was intentionally neither consolidated nor migrated with audio binding. |
+| `_variant_id` | normalized track identifier | yes | The `bilibili.py` copy was removed and the item path now calls the existing `cache_runtime::variant_id`. The separate `cache.py` and `store.py` helpers below are untouched and still have their own consumers. |
 | `_part_keyword_match`, `_is_auto_dual_audio_pair`, `_auto_dual_audio_video_page`, `_requires_manual_binding` | media binding classification/policy | yes | Migrated after the media-page gate passed as the typed `audio_binding` business-rule domain. Independent `_py_*` references and legacy helpers remain; Python applies the result. |
 | `get_mixin_key`, `enc_wbi` | request signing | yes | Defer to a later network/protocol phase; tightly coupled to request authentication. |
 | All `_request_*`, `_fetch_*`, refresh, persistence, cache, browse, and background helpers | HTTP, filesystem, locks, state, scheduling | no | Outside Phase 1. |

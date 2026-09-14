@@ -125,6 +125,37 @@ impl BilibiliHttpClient {
         referer: &str,
         timeout_ms: u64,
     ) -> Result<Self, BilibiliServiceError> {
+        Self::with_redirect_policy(
+            cookie,
+            user_agent,
+            referer,
+            timeout_ms,
+            reqwest::redirect::Policy::default(),
+        )
+    }
+
+    pub(crate) fn for_video(
+        cookie: &str,
+        user_agent: &str,
+        referer: &str,
+        timeout_ms: u64,
+    ) -> Result<Self, BilibiliServiceError> {
+        Self::with_redirect_policy(
+            cookie,
+            user_agent,
+            referer,
+            timeout_ms.clamp(100, 30_000),
+            reqwest::redirect::Policy::none(),
+        )
+    }
+
+    fn with_redirect_policy(
+        cookie: &str,
+        user_agent: &str,
+        referer: &str,
+        timeout_ms: u64,
+        policy: reqwest::redirect::Policy,
+    ) -> Result<Self, BilibiliServiceError> {
         let request = BilibiliDashRequest {
             schema_version: 1,
             bvid: String::new(),
@@ -138,11 +169,88 @@ impl BilibiliHttpClient {
             timeout_ms,
         };
         let client = crate::http_client::builder()
+            .redirect(policy)
             .timeout(Duration::from_millis(timeout_ms.max(100)))
             .default_headers(request_headers(&request)?)
             .build()
             .map_err(|error| service_error("client", error.to_string(), None))?;
         Ok(Self { client })
+    }
+
+    // Video input resolution must never grant public Remote arbitrary URL I/O.
+    pub(crate) fn resolve_video_short_url(
+        &self,
+        input: &str,
+    ) -> Result<String, BilibiliServiceError> {
+        let mut current = url::Url::parse(input)
+            .map_err(|_| service_error("invalid_request", "invalid video URL", None))?;
+        for _ in 0..10 {
+            let host = current.host_str().unwrap_or("");
+            if !matches!(current.scheme(), "http" | "https")
+                || current.port().is_some()
+                || !current.username().is_empty()
+                || current.password().is_some()
+                || !(matches!(host, "b23.tv" | "bili2233.cn" | "bilibili.com")
+                    || host.ends_with(".bilibili.com"))
+            {
+                return Err(service_error(
+                    "invalid_request",
+                    "短链接重定向目标不是受支持的 B 站地址",
+                    None,
+                ));
+            }
+            let response = self
+                .client
+                .get(current.clone())
+                .send()
+                .map_err(|e| service_error("network", e.without_url().to_string(), None))?;
+            if response.status().is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        service_error("invalid_response", "短链接缺少重定向地址", None)
+                    })?;
+                current = current
+                    .join(location)
+                    .map_err(|_| service_error("invalid_response", "短链接重定向地址无效", None))?;
+            } else if response.status().is_success() {
+                return Ok(current.to_string());
+            } else {
+                return Err(http_status_error(response.status().as_u16()));
+            }
+        }
+        Err(service_error("network", "短链接重定向次数过多", None))
+    }
+
+    pub(crate) fn get_video_json(&self, url: &str) -> Result<Value, BilibiliServiceError> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = 4 * 1024 * 1024;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| service_error("network", e.without_url().to_string(), None))?;
+        if !response.status().is_success() {
+            return Err(http_status_error(response.status().as_u16()));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| service_error("network", "视频信息读取失败", None))?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err(service_error(
+                "invalid_response",
+                "视频信息超过大小限制",
+                None,
+            ));
+        }
+        let payload = serde_json::from_slice(&bytes)
+            .map_err(|_| service_error("invalid_response", "B 站接口响应格式异常", None))?;
+        ensure_api_success(&payload, "获取视频信息失败")?;
+        Ok(payload)
     }
 
     pub(crate) fn get_json(&self, url: &str) -> Result<Value, BilibiliServiceError> {

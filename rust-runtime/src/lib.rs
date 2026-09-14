@@ -52,7 +52,10 @@ pub use media_backend::{
     ExpectedMediaKind, MediaError, MediaErrorKind, MediaNormalizeRequest, MediaNormalizeResult,
     MediaPathRequest, MediaProbe, normalize_media, probe_media,
 };
-pub use native_video::{NativeVideoError, NativeVideoRequest, fetch_native_video};
+pub use native_video::{
+    NativeVideoError, NativeVideoRequest, VideoOperation, VideoServiceError, VideoServiceRequest,
+    execute_video, fetch_native_video,
+};
 pub use networking::{
     InterfaceAddress, NetworkAddressRequest, NetworkAddressResult, detect_lan_ipv4_addresses,
     rank_lan_ipv4_candidates,

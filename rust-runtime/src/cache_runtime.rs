@@ -2060,7 +2060,7 @@ fn duration_tolerance(expected: f64) -> f64 {
 pub(crate) fn variant_id(page: u32, label: &str, index: usize) -> String {
     let mut normalized = String::new();
     let mut separator = false;
-    for character in label.to_ascii_lowercase().chars() {
+    for character in label.to_lowercase().chars() {
         if character.is_ascii_lowercase() || character.is_ascii_digit() {
             if separator && !normalized.is_empty() {
                 normalized.push('_');

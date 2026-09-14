@@ -103,6 +103,7 @@ enum RuntimeServiceCommand {
     QrImage(Value),
     PlaylistExport(Value),
     BilibiliDash(BilibiliDashRequest),
+    Video(crate::native_video::VideoServiceRequest),
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
     Cloudflare(CloudflareServiceRequest),
@@ -389,6 +390,9 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
                 service_result(crate::playlist_export::execute_export_wire(request))
             }
             RuntimeServiceCommand::QrImage(request) => service_result(qr_image_result(request)),
+            RuntimeServiceCommand::Video(request) => {
+                service_result(crate::native_video::execute_video(&request))
+            }
             RuntimeServiceCommand::BilibiliDash(request) => {
                 service_result(fetch_dash_playurl(&request))
             }

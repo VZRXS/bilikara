@@ -1,4 +1,5 @@
 import io
+from video_service_fixture import video_fixture
 import json
 import sys
 import threading
@@ -1295,17 +1296,13 @@ class BilibiliParserTest(unittest.TestCase):
         sent_request = request.call_args.args[0]
         self.assertNotIn("Cookie", sent_request.headers)
 
-    def test_short_video_url_resolution_delegates_to_rust_runtime(self):
-        with patch.object(
-            bilibili_module.rust_runtime,
-            "resolve_bilibili_redirect",
-            return_value="https://www.bilibili.com/video/BV1xx411c7mD?p=2",
-        ) as resolve:
-            reference = bilibili_module.resolve_video_reference("https://b23.tv/example")
-
+    @video_fixture
+    def test_short_video_url_resolution_delegates_to_rust_runtime(self, fixture):
+        fixture.redirects["/example"] = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
+        reference = bilibili_module.resolve_video_reference("https://b23.tv/example")
         self.assertEqual(reference.bvid, "BV1xx411c7mD")
         self.assertEqual(reference.page, 2)
-        resolve.assert_called_once()
+        self.assertEqual([path for path, _ in fixture.requests], ["/example", "/video/BV1xx411c7mD?p=2"])
 
     def test_cached_avatar_annotation_prefers_owner_name_for_collaboration(self):
         profiles_by_uid = {
@@ -2588,7 +2585,7 @@ class BilibiliParserTest(unittest.TestCase):
         uploaded_entries = append_lark.call_args.args[0]
         self.assertEqual([entry["bvid"] for entry in uploaded_entries], ["BVDEFAULT", "BVUSER"])
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2626,7 +2623,7 @@ class BilibiliParserTest(unittest.TestCase):
             mock_request_json.call_args.args[0],
         )
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_requires_manual_binding_when_durations_differ(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2652,7 +2649,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(raised.exception.preferred_page, 2)
         self.assertEqual([page.page for page in raised.exception.pages], [1, 2])
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_skips_manual_binding_when_one_dual_audio_keyword_matches(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2676,7 +2673,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_audio_variant_id, "p2_track_2")
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_defaults_to_p1_when_vocal_pair_is_not_resolved(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2704,7 +2701,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_audio_variant_id, "p1_main_track")
         self.assertEqual(item.display_title, "example video - main track")
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2728,7 +2725,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(raised.exception.preferred_page, 2)
         self.assertEqual([page.page for page in raised.exception.pages], [1, 2, 3])
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_accepts_manual_binding_selection(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2760,7 +2757,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.available_pages, [1, 2, 3])
         self.assertEqual(item.selected_audio_variant_id, "p1_p1_main")
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_single_page_preserves_model_fields(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2791,7 +2788,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertIn("page=1", item.embed_url)
         self.assertTrue(item.resolved_url.endswith("?p=1"))
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_rejects_invalid_manual_page_references(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
@@ -2822,8 +2819,8 @@ class BilibiliParserTest(unittest.TestCase):
                 selected_audio_pages=[1, 9],
             )
 
-    @patch("bilikara.bilibili.request_json")
-    def test_fetch_video_item_calculates_audio_binding_once(self, mock_request_json):
+    @video_fixture
+    def test_fetch_video_item_uses_shared_binding_without_python_execution(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
             "data": {
@@ -2863,11 +2860,11 @@ class BilibiliParserTest(unittest.TestCase):
         ):
             item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
 
-        decide.assert_called_once()
+        decide.assert_not_called()
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.video_page, 1)
 
-    @patch("bilikara.bilibili.request_json")
+    @video_fixture
     def test_fetch_video_item_native_binding_matches_frozen_reference(self, mock_request_json):
         if not bilibili_module.rust_backend._CAPABILITIES.get(
             "decide_audio_binding", False

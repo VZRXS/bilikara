@@ -528,6 +528,52 @@ def build_diagnostic_artifact(request: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def video_service_request(operation: str, url: str, *, cookie: str, user_agent: str,
+                          referer: str, **options: Any) -> dict[str, Any]:
+    """Whole video operation; no Python metadata or binding implementation."""
+    try:
+        result = _call_runtime_service("video", {
+            "operation": operation, "url": url, "cookie": cookie,
+            "user_agent": user_agent, "referer": referer, "timeout_ms": 15_000,
+            **options,
+        })
+    except RustRuntimeServiceError as exc:
+        if exc.kind == "manual_binding_required":
+            binding = (exc.response.get("error") or {}).get("binding")
+            if (not isinstance(binding, dict)
+                    or not isinstance(binding.get("title"), str)
+                    or type(binding.get("preferred_page")) is not int
+                    or not isinstance(binding.get("pages"), list)
+                    or not binding["pages"]
+                    or any(not isinstance(page, dict) or set(page) != {"page", "cid", "duration", "part"}
+                           or any(type(page[key]) is not int for key in ("page", "cid", "duration"))
+                           or not isinstance(page["part"], str) for page in binding["pages"])):
+                raise RustRuntimeServiceError("invalid_response", "Rust video service returned invalid binding data", response={}) from exc
+        raise
+    required = {
+        "reference": {"original_url": str, "resolved_url": str, "bvid": str, "aid": int, "page": int},
+        "owner": {"owner_mid": int, "owner_name": str, "owner_url": str},
+        "item": {"id": str, "original_url": str, "resolved_url": str, "bvid": str,
+                 "aid": int, "cid": int, "page": int, "title": str, "part_title": str,
+                 "display_title": str, "cover_url": str, "embed_url": str,
+                 "selected_audio_variant_id": str, "video_page": int, "manual_selection": bool,
+                 "owner_mid": int, "owner_name": str, "owner_url": str},
+    }.get(operation, {})
+    valid = bool(required) and all(type(result.get(key)) is kind for key, kind in required.items())
+    if operation == "item":
+        for prefix in ("selected", "available"):
+            values = [result.get(f"{prefix}_{suffix}") for suffix in ("pages", "cids", "durations", "parts")]
+            valid = valid and all(isinstance(v, list) and v for v in values)
+            if valid:
+                valid = len({len(v) for v in values}) == 1 and all(
+                    type(value) is (str if index == 3 else int)
+                    for index, array in enumerate(values) for value in array
+                )
+    if not valid:
+        raise RustRuntimeServiceError("invalid_response", "Rust video service returned invalid data", response={})
+    return result
+
+
 def fetch_bilibili_dash_playurl(
     *,
     bvid: str,

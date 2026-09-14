@@ -8,7 +8,6 @@ import threading
 import re
 import urllib.parse
 import urllib.request
-import uuid
 import re
 import random
 import hashlib
@@ -20,14 +19,12 @@ from . import rust_backend, rust_runtime
 import bilikara.config as cfg  
 from .shared_catalog import append_catalog_entries_in_background
 
-VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNORECASE)
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
 AV_RE = re.compile(r"^(av\d+)$", re.IGNORECASE)
 SPACE_UID_RE = re.compile(
     r"^(?:https?://)?space\.bilibili\.com/(?P<uid>\d+)(?:[/?#].*)?$",
     re.IGNORECASE,
 )
-SHORT_HOSTS = {"b23.tv", "bili2233.cn"}
 DURATION_TOLERANCE_SECONDS = 3
 WBI_MIXIN_TABLE = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -2643,81 +2640,31 @@ def request_json(url: str) -> dict:
     return payload
 
 
-def _py_resolve_short_url(url: str) -> str:
-    request = urllib.request.Request(url, headers=BILIBILI_HEADERS, method="GET")
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return response.geturl()
+def _video_service(operation: str, raw_input: str, **options: object) -> dict:
+    headers = dict(BILIBILI_HEADERS or {})
+    try:
+        return rust_runtime.video_service_request(
+            operation, raw_input,
+            cookie=effective_bilibili_cookie(),
+            user_agent=str(headers.get("User-Agent") or ""),
+            referer=str(headers.get("Referer") or ""),
+            **options,
+        )
+    except rust_runtime.RustRuntimeServiceError as exc:
+        error = exc.response.get("error") or {}
+        binding = error.get("binding")
+        if exc.kind == "manual_binding_required" and isinstance(binding, dict):
+            raise ManualBindingRequiredError(
+                title=binding["title"],
+                pages=[VideoPage(**page) for page in binding["pages"]],
+                preferred_page=binding["preferred_page"],
+            ) from exc
+        raise BilibiliError(str(exc)) from exc
 
 
 def resolve_video_reference(raw_input: str) -> VideoReference:
-    cleaned = raw_input.strip()
-    if not cleaned:
-        raise BilibiliError("请输入 B 站视频链接")
-
-    if BV_RE.match(cleaned):
-        cleaned = f"https://www.bilibili.com/video/{cleaned}"
-    elif AV_RE.match(cleaned):
-        cleaned = f"https://www.bilibili.com/video/{cleaned}"
-    elif not cleaned.startswith(("http://", "https://")):
-        cleaned = f"https://{cleaned}"
-
-    resolved_url = cleaned
-    parsed = urllib.parse.urlparse(cleaned)
-    if parsed.netloc.lower() in SHORT_HOSTS:
-        try:
-            resolved_url = rust_runtime.resolve_bilibili_redirect(
-                cleaned,
-                cookie=effective_bilibili_cookie(),
-                user_agent=str(BILIBILI_HEADERS.get("User-Agent") or ""),
-                referer=str(BILIBILI_HEADERS.get("Referer") or ""),
-            )
-        except rust_runtime.RustRuntimeUnavailableError:
-            resolved_url = _py_resolve_short_url(cleaned)
-        except rust_runtime.RustRuntimeServiceError as exc:
-            raise BilibiliError(str(exc)) from exc
-
-    parsed = urllib.parse.urlparse(resolved_url)
-    match = VIDEO_PATH_RE.search(parsed.path)
-    if not match:
-        raise BilibiliError("当前仅支持普通 B 站视频 URL 或 BV/av 号")
-
-    raw_vid = match.group("vid")
-    query = urllib.parse.parse_qs(parsed.query)
-    page = int(query.get("p", ["1"])[0] or "1")
-    if raw_vid.lower().startswith("bv"):
-        return VideoReference(
-            original_url=cleaned,
-            resolved_url=resolved_url,
-            bvid=raw_vid,
-            page=max(page, 1),
-        )
-    return VideoReference(
-        original_url=cleaned,
-        resolved_url=resolved_url,
-        aid=int(raw_vid[2:]),
-        page=max(page, 1),
-    )
-
-
-def parse_video_pages(data: dict) -> list[VideoPage]:
-    raw_pages = data.get("pages") or []
-    pages: list[VideoPage] = []
-    for index, payload in enumerate(raw_pages, start=1):
-        if not isinstance(payload, dict):
-            continue
-        page_number = int(payload.get("page") or index)
-        cid = int(payload.get("cid") or 0)
-        if cid <= 0:
-            continue
-        duration = int(payload.get("duration") or 0)
-        part = str(payload.get("part") or f"P{page_number}").strip() or f"P{page_number}"
-        pages.append(VideoPage(page=page_number, cid=cid, duration=duration, part=part))
-        
-    valid_pages = [p for p in pages if p.duration >= 10]
-    if valid_pages and len(valid_pages) < len(pages):
-        return valid_pages
-        
-    return pages
+    """Compatibility DTO adapter; input resolution executes only in Rust."""
+    return VideoReference(**_video_service("reference", raw_input))
 
 
 def _py_cluster_spread(cluster: list[VideoPage]) -> int:
@@ -2850,12 +2797,6 @@ def select_matching_pages(
             tolerance_seconds=tolerance_seconds,
         ),
     )
-
-
-def _variant_id(page: int, label: str, index: int) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-    suffix = normalized or f"track_{index + 1}"
-    return f"p{max(int(page), 1)}_{suffix}"
 
 
 def _py_part_keyword_match(part: str) -> bool:
@@ -3015,28 +2956,9 @@ def decide_audio_binding(
     )
 
 
-def _normalize_selected_pages(raw_pages: object) -> list[int]:
-    if not isinstance(raw_pages, list):
-        return []
-    normalized: list[int] = []
-    for value in raw_pages:
-        try:
-            page = int(value)
-        except (TypeError, ValueError):
-            continue
-        if page > 0 and page not in normalized:
-            normalized.append(page)
-    return normalized
-
-
 def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
-    reference = resolve_video_reference(raw_input)
-    data = _fetch_view_data(reference)
-    owner = data.get("owner") or {}
-    owner_mid = int(owner.get("mid") or 0)
-    owner_name = str(owner.get("name") or "").strip()
-    owner_url = f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
-    return owner_mid, owner_name, owner_url
+    result = _video_service("owner", raw_input)
+    return result["owner_mid"], result["owner_name"], result["owner_url"]
 
 
 def fetch_video_item(
@@ -3045,142 +2967,13 @@ def fetch_video_item(
     selected_video_page: int | None = None,
     selected_audio_pages: list[int] | None = None,
 ) -> PlaylistItem:
-    reference = resolve_video_reference(raw_input)
-    data = _fetch_view_data(reference)
-    pages = parse_video_pages(data)
-    if not pages:
-        raise BilibiliError("视频没有可播放的分 P 信息")
-
-    preferred_page = min(reference.page, len(pages))
-    binding_decision = decide_audio_binding(pages)
-    if binding_decision is None:
-        raise BilibiliError("视频没有可播放的分 P 信息")
-    manual_selection = binding_decision.mode == "manual_required"
-    if manual_selection and selected_video_page is None and not selected_audio_pages:
-        raise ManualBindingRequiredError(
-            title=str(data.get("title") or "").strip(),
-            pages=pages,
-            preferred_page=preferred_page,
-        )
-
-    available_page_numbers = [page.page for page in pages]
-    available_pages_by_number = {page.page: page for page in pages}
-    normalized_audio_pages = _normalize_selected_pages(selected_audio_pages)
-    auto_video_page = None
-    if manual_selection:
-        video_page = int(selected_video_page or preferred_page)
-        if video_page not in available_pages_by_number:
-            raise BilibiliError("选择的视频分P无效")
-        if not normalized_audio_pages:
-            normalized_audio_pages = [video_page]
-        invalid_audio_pages = [page for page in normalized_audio_pages if page not in available_pages_by_number]
-        if invalid_audio_pages:
-            raise BilibiliError("选择的音频分P无效")
-        selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
-    else:
-        selected_pages = [pages[index] for index in binding_decision.selected_indices]
-        if binding_decision.automatic_video_index is not None:
-            auto_video_page = pages[binding_decision.automatic_video_index].page
-        if selected_video_page is not None or normalized_audio_pages:
-            raise BilibiliError("当前视频不需要手动绑定分P")
-
-    selected_page_numbers = [page.page for page in selected_pages]
-    if not selected_page_numbers:
-        raise BilibiliError("至少需要选择一个音频分P")
-    if manual_selection:
-        video_page = int(selected_video_page or selected_page_numbers[0])
-    else:
-        video_page = auto_video_page or (preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0])
-    video_page_info = available_pages_by_number[video_page]
-    aid = int(data["aid"])
-    bvid = str(data["bvid"])
-    title = str(data.get("title") or "").strip()
-    part_title = video_page_info.part
-    display_title = f"{title} - {part_title}"
-    owner = data.get("owner") or {}
-    owner_mid = int(owner.get("mid") or 0)
-    owner_name = str(owner.get("name") or "").strip()
-    owner_url = f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
-    embed_query = urllib.parse.urlencode(
-        {
-            "aid": aid,
-            "bvid": bvid,
-            "cid": video_page_info.cid,
-            "page": video_page,
-            "high_quality": 1,
-            "danmaku": 0,
-            "autoplay": 1,
-            "isOutside": "true",
-        }
-    )
-    embed_url = f"https://player.bilibili.com/player.html?{embed_query}"
-
-    resolved_url_with_page = urllib.parse.urlunparse(
-        urllib.parse.urlparse(reference.resolved_url)._replace(
-            query=urllib.parse.urlencode(
-                [
-                    (key, value)
-                    for key, value in urllib.parse.parse_qsl(
-                        urllib.parse.urlparse(reference.resolved_url).query,
-                        keep_blank_values=True,
-                    )
-                    if key != "p"
-                ] + [("p", str(video_page))]
-            )
-        )
-    )
-
-    default_audio_page = video_page if video_page in selected_page_numbers else selected_page_numbers[0]
-    default_audio_index = selected_page_numbers.index(default_audio_page)
-    default_audio_part = selected_pages[default_audio_index].part
-
-    return PlaylistItem(
-        id=uuid.uuid4().hex[:12],
-        original_url=reference.original_url,
-        resolved_url=resolved_url_with_page,
-        bvid=bvid,
-        aid=aid,
-        cid=video_page_info.cid,
-        page=video_page,
-        title=title,
-        part_title=part_title,
-        display_title=display_title,
-        cover_url=str(data.get("pic") or ""),
-        embed_url=embed_url,
-        selected_pages=selected_page_numbers,
-        selected_cids=[page.cid for page in selected_pages],
-        selected_durations=[page.duration for page in selected_pages],
-        selected_parts=[page.part for page in selected_pages],
-        available_pages=available_page_numbers,
-        available_cids=[page.cid for page in pages],
-        available_durations=[page.duration for page in pages],
-        available_parts=[page.part for page in pages],
-        selected_audio_variant_id=_variant_id(default_audio_page, default_audio_part, default_audio_index),
-        video_page=video_page,
-        manual_selection=manual_selection,
-        owner_mid=owner_mid,
-        owner_name=owner_name,
-        owner_url=owner_url,
-    )
+    return PlaylistItem.from_dict(_video_service(
+        "item", raw_input,
+        selected_video_page=selected_video_page,
+        selected_audio_pages=selected_audio_pages,
+    ))
 
 
-def _fetch_view_data(reference: VideoReference) -> dict:
-    if reference.bvid:
-        api_url = (
-            "https://api.bilibili.com/x/web-interface/wbi/view?"
-            f"bvid={urllib.parse.quote(reference.bvid)}"
-        )
-    else:
-        api_url = (
-            "https://api.bilibili.com/x/web-interface/wbi/view?"
-            f"aid={reference.aid}"
-        )
-
-    payload = request_json(api_url)
-    if payload.get("code") != 0:
-        message = payload.get("message") or "获取视频信息失败"
-        raise BilibiliError(message)
-    return payload["data"]
 def get_mixin_key(orig: str) -> str:
     return ''.join([orig[i] for i in WBI_MIXIN_TABLE])[:32]
 
