@@ -264,16 +264,16 @@ console.log(JSON.stringify({ sequence }));
             )
         ]
         self.assertIn('role="tablist"', request_workspace)
-        search_tab = request_workspace[
-            request_workspace.index('data-request-view="search"') : request_workspace.index(
-                "</button>", request_workspace.index('data-request-view="search"')
+        quick_tab = request_workspace[
+            request_workspace.index('data-request-view="quick"') : request_workspace.index(
+                "</button>", request_workspace.index('data-request-view="quick"')
             )
         ]
-        self.assertIn('aria-selected="true"', search_tab)
-        self.assertIn('tabindex="0"', search_tab)
-        self.assertIn('data-request-panel="search"', request_workspace)
-        self.assertNotIn('data-request-panel="search" hidden', request_workspace)
-        for panel in ("quick", "discover", "sources"):
+        self.assertIn('aria-selected="true"', quick_tab)
+        self.assertIn('tabindex="0"', quick_tab)
+        self.assertIn('data-request-panel="quick"', request_workspace)
+        self.assertNotIn('data-request-panel="quick" hidden', request_workspace)
+        for panel in ("search", "discover", "sources"):
             panel_markup = request_workspace[
                 request_workspace.index(f'data-request-panel="{panel}"') : request_workspace.index(
                     ">", request_workspace.index(f'data-request-panel="{panel}"')

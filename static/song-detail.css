@@ -50,6 +50,25 @@
   right: -14px;
 }
 
+/* Shared SVG close mark: no font metrics or optical padding compensation. */
+:is(.banner-close, .binding-sheet-close, .rating-close, .song-detail-close):has(> .close-icon) {
+  display: inline-grid;
+  place-items: center;
+}
+.close-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
 .request-workspace .song-detail-close,
 .selection-modal .song-detail-close,
 .remote-shell > .song-detail-view .song-detail-close {
@@ -59,7 +78,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 0 2px 1px;
+  padding: 0;
   border: 0;
   border-radius: 50%;
   background: var(--rating-close-bg);
@@ -338,7 +357,7 @@
   }
 
   .remote-shell > .song-detail-view .song-detail-close {
-    padding-bottom: 3px;
+    padding: 0;
   }
 
   .song-detail-hero {

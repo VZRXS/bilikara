@@ -309,10 +309,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.assertIn('aria-modal="true"', dialog)
 
         close_buttons = re.findall(
-            r'<button[^>]+class="binding-sheet-close"[^>]*>×</button>',
+            r'<button[^>]+class="binding-sheet-close"[^>]*><svg class="close-icon"[^>]*><path[^>]+/></svg></button>',
             self.remote_markup,
         )
-        self.assertEqual(len(close_buttons), 4)
+        self.assertEqual(len(close_buttons), 5)
         self.assertTrue(
             all(
                 'data-i18n-aria-label="common.close"' in button
@@ -1091,7 +1091,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.styles.index(".message-surface,") :
             self.styles.index(".message-inline:empty,")
         ]
-        self.assertIn("text-align: left", message_surfaces)
+        self.assertIn("text-align: center", message_surfaces)
+        self.assertIn("border: 0", message_surfaces)
         self.assertIn("background: var(--btn-secondary-bg)", message_surfaces)
         session_empty = re.findall(
             r"(?m)^\.session-user-list \.session-user-empty\s*\{([^}]*)\}",

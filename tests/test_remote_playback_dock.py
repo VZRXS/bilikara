@@ -707,7 +707,10 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
         self.assertIn('!event.target.closest("#playback-metadata-popover")', event_source)
         self.assertIn("closePlaybackMetadataPopover({ restoreFocus: true })", event_source)
         escape_source = self.script[
-            self.script.index('document.addEventListener("keydown"') :
+            self.script.index(
+                'document.addEventListener("keydown"',
+                self.script.index('elements.playbackSheetSummaryCopy?.addEventListener("click"'),
+            ) :
             self.script.index('window.addEventListener("resize", scheduleRemoteContextualTooltipPositionSync)')
         ]
         self.assertLess(

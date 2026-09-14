@@ -12,6 +12,9 @@ on:
       - static/export-guard.js
       - static/i18n.json
       - static/internet-remote-transport.js
+      - static/qrcode-generator.js
+      - static/qrcode-generator.LICENSE
+      - static/remote-access.css
       - static/remote-queue.css
       - static/remote-queue.js
       - static/remote-transport-client.js
@@ -68,6 +71,7 @@ jobs:
           node --check static/internet-remote-host.js
           node --check static/internet-remote-transport.js
           node --check static/remote-transport-client.js
+          node --check static/qrcode-generator.js
           node --check static/remote.js
           node --check static/remote-queue.js
           node --check static/song-detail.js

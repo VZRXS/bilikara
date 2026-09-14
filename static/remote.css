@@ -116,7 +116,7 @@
   --remote-focus-border-color: rgba(202, 91, 60, 0.42);
   --remote-focus-ring-shadow: 0 0 0 4px rgba(202, 91, 60, 0.1);
   --remote-menu-trigger-bg: var(--chip-bg);
-  --remote-menu-trigger-border: var(--chip-border);
+  --remote-menu-trigger-border: var(--top-control-border);
   --remote-menu-trigger-color: var(--ink);
   --remote-menu-trigger-hover-bg: var(--btn-secondary-bg);
   --remote-menu-trigger-hover-border: var(--remote-focus-border-color);
@@ -367,11 +367,11 @@ h1 {
 
 /* Host keeps the top-bar control at its neutral surface while its panel is open. */
 .remote-menu-toggle[aria-expanded="true"] {
-  border-color: transparent;
+  border: var(--remote-menu-trigger-border);
   background: var(--remote-menu-trigger-bg);
 }
 
-.remote-menu-toggle:focus-visible {
+:root:not([data-remote-input-modality="pointer"]) .remote-menu-toggle:focus-visible {
   outline: 2px solid var(--remote-focus-border-color);
   outline-offset: 2px;
   box-shadow: var(--remote-focus-ring-shadow);
@@ -471,8 +471,10 @@ h1 {
   .remote-request-tab[aria-selected="true"],
   .remote-search-mode-tab[aria-selected="true"],
   .remote-discover-mode-tab[aria-selected="true"],
-  .remote-sources-mode-tab[aria-selected="true"] {
+  .remote-sources-mode-tab[aria-selected="true"],
+  .toggle-button {
     animation: none;
+    transition: none;
   }
 }
 
@@ -486,7 +488,8 @@ h1 {
   top: calc(100% + 12px);
   right: 0;
   width: min(340px, calc(100vw - 32px));
-  max-height: min(620px, calc(100dvh - 76px));
+  max-height: var(--remote-menu-available-height, calc(100dvh - 76px));
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: auto;
@@ -501,6 +504,31 @@ h1 {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   z-index: 120;
+}
+
+.remote-menu-panel > * { flex-shrink: 0; }
+.remote-menu-panel .remote-tooltip-bubble:not(.is-visible) { display: none; }
+.remote-menu-panel:has(.remote-share-card.is-dual) { width: min(390px, calc(100vw - 32px)); }
+.remote-menu-panel .remote-share-card {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 0 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  grid-template-columns: minmax(0, 1fr);
+}
+.remote-share-card.is-dual { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.remote-share-card:not(.is-dual) .remote-access-entry { padding: 0; border: 0; justify-items: center; }
+.remote-share-card .remote-access-qr { width: 160px; height: 160px; max-width: 100%; padding: 0; justify-self: center; }
+.remote-share-card .remote-popover-url-link { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.remote-share-card .remote-access-entry[hidden] { display: none; }
+.remote-share-card .remote-access-entry p { margin: 0; font-size: 12px; line-height: 1.5; }
+.remote-share-card .remote-share-password { overflow-wrap: anywhere; }
+.remote-share-card .remote-share-password strong { color: var(--ink); margin-left: 6px; }
+@media (max-width: 380px) {
+  .remote-menu-panel .remote-share-card.is-dual { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .remote-share-card.is-dual .remote-access-entry { padding: 0; border: 0; justify-items: center; }
 }
 
 :root[data-theme="dark"] .remote-menu-panel {
@@ -884,7 +912,6 @@ h1 {
 }
 
 .remote-request-tabs-viewport {
-  --remote-tab-label-offset: 0.14em;
   width: 100%;
   max-width: 100%;
   margin-bottom: 14px;
@@ -950,12 +977,6 @@ h1 {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  /* Follow the optically centered label without moving the button surface. */
-  transform: translateY(calc(var(--remote-tab-label-offset) - 0.18em));
-}
-
-.remote-request-secondary-back > span {
-  transform: translateY(var(--remote-tab-label-offset));
 }
 
 .remote-request-secondary-slot {
@@ -974,17 +995,6 @@ h1 {
   padding: 0;
   background: transparent;
   display: flex;
-  animation: remote-request-secondary-enter 240ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes remote-request-secondary-enter {
-  from {
-    transform: translateX(12px);
-  }
-
-  to {
-    transform: translateX(0);
-  }
 }
 
 .remote-request-view,
@@ -1565,7 +1575,7 @@ h1 {
   }
 }
 
-#remote-av-sync-panel .remote-lock-button:focus-visible {
+:root:not([data-remote-input-modality="pointer"]) #remote-av-sync-panel .remote-lock-button:focus-visible {
   outline: var(--av-lock-focus-outline);
   outline-offset: 2px;
   box-shadow: var(--av-lock-focus-shadow);
@@ -2067,8 +2077,10 @@ button[data-control-action="next-track"] {
   padding: 12px 14px;
   border-radius: 18px;
   background: var(--item-bg);
-  border: var(--item-border);
+  border: 0;
   color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .pool-config-head-actions {
@@ -2506,55 +2518,6 @@ select:disabled {
   box-shadow: var(--remote-segmented-control-active-shadow);
 }
 
-.remote-request-tabs,
-.remote-search-mode-tabs,
-.remote-discover-mode-tabs,
-.remote-sources-mode-tabs {
-  position: relative;
-  isolation: isolate;
-}
-
-:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab) {
-  position: relative;
-  /* Keep total padding and the sliding surface fixed; only lower the text. */
-  padding-block: calc(8px + var(--remote-tab-label-offset, 0.14em)) calc(8px - var(--remote-tab-label-offset, 0.14em));
-  transition: color 180ms ease;
-}
-
-:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"] {
-  background: transparent;
-  box-shadow: none;
-}
-
-:is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"]::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  border-radius: inherit;
-  background: var(--remote-segmented-control-active-bg);
-  box-shadow: var(--remote-segmented-control-active-shadow);
-  transform-origin: left center;
-  animation: remote-tab-slide 240ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes remote-tab-slide {
-  from {
-    transform: translateX(var(--remote-tab-slide-x, 0px)) scaleX(var(--remote-tab-slide-scale, 1));
-  }
-  to {
-    transform: translateX(0) scaleX(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .remote-request-secondary-slot > :is(.remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs),
-  :is(.remote-request-tab, .remote-search-mode-tab, .remote-discover-mode-tab, .remote-sources-mode-tab)[aria-selected="true"]::before {
-    animation: none;
-  }
-}
-
 .remote-request-tab:focus-visible,
 .remote-search-mode-tab:focus-visible,
 .remote-discover-mode-tab:focus-visible,
@@ -2569,8 +2532,42 @@ select:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 8px;
-  margin: -4px 0 14px;
+  margin: 0;
 }
+.history-export-row[hidden] { display: none; }
+
+/* Native modal semantics; visual tokens match the existing Remote sheets. */
+.history-export-dialog {
+  width: min(560px, calc(100% - 32px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  margin: auto;
+  padding: 20px;
+  border: var(--modal-card-border);
+  border-radius: 20px;
+  background: var(--modal-card-bg);
+  color: var(--ink);
+  box-shadow: var(--rating-card-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.history-export-dialog::backdrop {
+  background: var(--modal-backdrop-bg);
+  backdrop-filter: blur(var(--modal-backdrop-blur));
+}
+.history-export-dialog .history-export-field { display: grid; min-width: 0; gap: 8px; }
+.history-export-dialog .history-export-field label { color: var(--ink); font-size: 14px; font-weight: 700; }
+.history-export-dialog .history-export-row { margin-top: 18px; gap: 18px; }
+.history-export-dialog .remote-tooltip-bubble:not(.is-visible) { display: none; }
+.history-export-dialog .remote-tooltip-bubble[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  overflow: visible;
+}
+.history-export-dialog [role="status"] { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 14px 0; }
+.history-export-dialog [role="status"]:empty { display: none; }
+.history-export-dialog .history-export-actions { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
+.history-export-dialog .history-export-actions > button { flex: 1 1 120px; }
 
 
 .history-export-source,
@@ -3659,8 +3656,13 @@ select:disabled {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.68);
   color: var(--muted);
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.5;
 }
+
+.queue-empty p { margin: 0; }
+.queue-empty p + p { margin-top: 8px; }
+.search-empty { font-size: 13px; line-height: 1.5; }
 
 @media (max-width: 520px) {
   .remote-shell {
@@ -3682,7 +3684,7 @@ select:disabled {
   }
 
   .remote-menu-panel {
-    max-height: min(620px, calc(100dvh - 68px));
+    max-height: var(--remote-menu-available-height, calc(100dvh - 68px));
   }
 
   .action-row {
@@ -4006,7 +4008,7 @@ body.remote-identity-modal-open {
   cursor: pointer;
   transition: background 0.2s ease;
   line-height: 0;
-  padding: 0 0 2px 1px;
+  padding: 0;
 }
 
 .rating-close {
@@ -5586,6 +5588,10 @@ body.playback-sheet-scroll-locked {
   color: var(--ink);
 }
 
+:root:is([data-theme="dark"], [data-theme="blue"]) :is(.search-empty, .queue-empty) {
+  color: var(--muted);
+}
+
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-search-browser-view .search-result-cover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .category-browser-card-name,
 :root:is([data-theme="dark"], [data-theme="blue"]) .category-browser-tab-name {
@@ -5735,7 +5741,7 @@ body.playback-sheet-scroll-locked {
   min-height: var(--remote-close-control-size);
   display: inline-grid;
   place-items: center;
-  padding: 0 0 2px 1px;
+  padding: 0;
   border: 0;
   border-radius: 50%;
   background: var(--rating-close-bg);
@@ -5772,6 +5778,12 @@ body.playback-sheet-scroll-locked {
 .rating-close:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
   outline-offset: 2px;
+}
+
+/* Pointer/touch actions must not inherit a keyboard ring through modal autofocus.
+   Keep actual borders (notably the header menu) and keyboard focus cues intact. */
+:root[data-remote-input-modality="pointer"] body :is(button, [role="button"]):is(:focus, :focus-visible) {
+  outline: none;
 }
 
 /* Disabled and busy controls transform neutralization */
@@ -5850,9 +5862,6 @@ html[data-remote-transport="internet-pending"] body {
   color: var(--danger, #b42318);
 }
 
-html[data-remote-transport="internet"] #history-export-row {
-  display: none !important;
-}
 html[data-native-host="true"] :is(
   #remote-qr-toggle, #remote-qr-content
 ) { display: none !important; }

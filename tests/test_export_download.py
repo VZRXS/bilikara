@@ -662,6 +662,9 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             next_marker,
         )
         invocation = 'exportHistory("csv", "played", 200)' if frontend == "host" else 'exportHistory("csv")'
+        message_adapter = "" if frontend == "host" else self.function_source(
+            self.sources[frontend], "function setHistoryExportMessage", "function openHistoryExportDialog",
+        )
         return self.run_node(
             """
             const helper = require(process.argv[2]);
@@ -676,6 +679,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             };
             const historyExportGuard = createExportGuard([button]);
             const messages = [];
+            const elements = { historyExportStatus: { textContent: "" } };
             async function downloadHistoryExport() {
               if (process.argv[3] === "string") throw "native string failure";
               throw { code: "plain object" };
@@ -688,7 +692,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             function closeConfirm() {}
             function setAppMessage(message, isError) { messages.push({ message, isError: Boolean(isError) }); }
             function t(key) { return key; }
-            """ + function_source + """
+            """ + message_adapter + function_source + """
             """ + invocation + """.then(() => {
               process.stdout.write(JSON.stringify({
                 messages,

@@ -66,7 +66,7 @@ async function waitForThemeControlsSettled(page) {
     );
     const tabsSettled = activeTabs.every((tab) => {
       const style = getComputedStyle(tab);
-      return getComputedStyle(tab, "::before").backgroundColor === segmentedTarget.backgroundColor
+      return style.backgroundColor === segmentedTarget.backgroundColor
         && style.color === segmentedTarget.color;
     });
     const peerActionsSettled = peerActions.every((action) => {
@@ -344,8 +344,7 @@ async function requestWorkspaceMetrics(page) {
       if (!element) return null;
       const style = getComputedStyle(element);
       return {
-        backgroundColor: element.matches('[role="tab"][aria-selected="true"]')
-          ? getComputedStyle(element, "::before").backgroundColor : style.backgroundColor,
+        backgroundColor: style.backgroundColor,
         borderColor: style.borderColor,
         borderRadius: style.borderRadius,
         borderStyle: style.borderStyle,
@@ -518,8 +517,8 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
   assert(metrics.tabs.length === 4, `${label}: top rail does not contain four stable tabs`, metrics.tabs);
   const visibleTabs = metrics.primaryTabsVisible ? metrics.tabs : metrics.secondaryTabs;
   assert(visibleTabs.every((tab) => Math.abs(tab.paddingTop + tab.paddingBottom - 16) <= 0.1
-    && Math.abs((tab.paddingTop - tab.paddingBottom) / 2 - parseFloat(tab.fontSize) * 0.14) <= 0.1),
-    `${label}: label optical centering must preserve total padding in every locale and text size`, visibleTabs);
+    && Math.abs(tab.paddingTop - tab.paddingBottom) <= 0.1),
+    `${label}: labels must share Queue tabs' symmetric padding in every locale and text size`, visibleTabs);
   assert(visibleTabs.every((tab, index) => !index || tab.bounds.left >= visibleTabs[index - 1].bounds.right - 0.5),
     `${label}: localized tab boxes must never overlap`, visibleTabs);
   assert(
@@ -648,10 +647,17 @@ async function requestFirstResult(page, containerSelector, routeState, label, sc
     };
     const root = document.querySelector(".remote-shell > .song-detail-view:not(.hidden)");
     const card = root?.querySelector(".song-detail-card");
+    const close = root?.querySelector(".song-detail-close");
+    const closeBox = close?.getBoundingClientRect();
+    const closeIcon = close?.querySelector("svg")?.getBoundingClientRect();
     const dock = document.querySelector("#playback-dock:not(.hidden)");
     return {
       root: bounds(root),
       card: bounds(card),
+      closeCentered: Boolean(closeIcon && getComputedStyle(close).padding === "0px"
+        && Math.abs(closeIcon.x + closeIcon.width / 2 - closeBox.x - closeBox.width / 2) < 0.1
+        && Math.abs(closeIcon.y + closeIcon.height / 2 - closeBox.y - closeBox.height / 2) < 0.1),
+      closePointerOutline: close ? getComputedStyle(close).outlineStyle : null,
       dock: bounds(dock),
       parentId: root?.parentElement?.id || "",
       insideRequestCard: Boolean(document.querySelector(".request-panel")?.contains(root)),
@@ -660,7 +666,9 @@ async function requestFirstResult(page, containerSelector, routeState, label, sc
     };
   });
   assert(
-    detailGeometry.parentId === "remote-shell"
+    detailGeometry.closeCentered
+      && detailGeometry.closePointerOutline === "none"
+      && detailGeometry.parentId === "remote-shell"
       && !detailGeometry.insideRequestCard
       && Math.abs(detailGeometry.root.left) <= 1
       && Math.abs(detailGeometry.root.top) <= 1
@@ -807,8 +815,6 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         centerDelta: buttonRect && iconRect
           ? Math.abs((buttonRect.top + buttonRect.height / 2) - (iconRect.top + iconRect.height / 2))
           : Infinity,
-        opticalOffset: parseFloat(getComputedStyle(button).fontSize) * 0.04,
-        labelOffset: parseFloat(getComputedStyle(button).fontSize) * 0.14,
         textCenterDelta: Math.abs(button.querySelector("span").getBoundingClientRect().top
           + button.querySelector("span").getBoundingClientRect().height / 2 - buttonRect.top - buttonRect.height / 2),
         animationName: getComputedStyle(document.querySelector("#remote-search-shared-tab"), "::before").animationName,
@@ -816,42 +822,29 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       };
     });
     assert(
-      Math.abs(secondaryBackIconGeometry.centerDelta - secondaryBackIconGeometry.opticalOffset) <= 0.1
-        && Math.abs(secondaryBackIconGeometry.textCenterDelta - secondaryBackIconGeometry.labelOffset) <= 0.1
-        && secondaryBackIconGeometry.animationName === "remote-tab-slide"
-        && secondaryBackIconGeometry.animationTiming.includes("0.16"),
-      "Secondary Back icon or non-linear tab selection motion lost its geometry contract",
+      secondaryBackIconGeometry.centerDelta <= 0.1
+        && secondaryBackIconGeometry.textCenterDelta <= 0.1
+        && secondaryBackIconGeometry.animationName === "none",
+      "Secondary Back label/icon must be centered without a translating highlight",
       secondaryBackIconGeometry,
     );
-    const slideEvidence = await page.evaluate(() => {
+    const transitionEvidence = await page.evaluate(() => {
       activateRemoteSearchMode("local");
       const tab = document.querySelector("#remote-search-local-tab");
-      const motion = tab.getAnimations({ subtree: true }).find((entry) => entry.animationName === "remote-tab-slide");
-      motion.pause();
-      const sample = (time) => {
-        motion.currentTime = time;
-        const style = getComputedStyle(tab, "::before");
-        return { x: new DOMMatrix(style.transform).m41, opacity: style.opacity };
-      };
-      const start = sample(0);
-      const middle = sample(100);
-      const end = sample(240);
-      const easing = getComputedStyle(tab, "::before").animationTimingFunction;
-      motion.currentTime = 60;
-      return { start, middle, end, easing };
+      const style = getComputedStyle(tab);
+      const queue = getComputedStyle(document.querySelector("#queue-view-button"));
+      return { transform: style.transform, transition: style.transition,
+        queueTransition: queue.transition, animation: style.animationName };
     });
-    if (screenshotPath) await page.locator(".remote-request-tabs-viewport").screenshot({ path: suffixedPath(screenshotPath, "-tab-slide-mid") });
     await page.evaluate(() => {
-      document.querySelector("#remote-search-local-tab").getAnimations({ subtree: true }).forEach((motion) => motion.finish());
       activateRemoteSearchMode("shared");
     });
-    assert(Math.abs(slideEvidence.start.x) > 10 && Math.abs(slideEvidence.middle.x) < Math.abs(slideEvidence.start.x)
-      && Math.abs(slideEvidence.middle.x) > 0 && Math.abs(slideEvidence.end.x) < 0.1
-      && [slideEvidence.start, slideEvidence.middle, slideEvidence.end].every((frame) => frame.opacity === "1")
-      && slideEvidence.easing.includes("0.16"), "Tab highlight must slide spatially without fading", slideEvidence);
+    assert(transitionEvidence.transform === "none" && transitionEvidence.animation === "none"
+      && transitionEvidence.transition === transitionEvidence.queueTransition,
+    "Request and Queue must use the same non-geometric transition", transitionEvidence);
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert(await page.locator("#remote-search-shared-tab").evaluate((tab) => getComputedStyle(tab, "::before").animationName === "none"),
-      "Reduced motion must disable the sliding highlight");
+      "Reduced motion must not introduce selection animation");
     await page.emulateMedia({ reducedMotion: "no-preference" });
 
     const sharedResponse = page.waitForResponse((response) => (
@@ -1472,7 +1465,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       languageMetrics,
       retainedNodes,
       focus: { detachedUploaderReturn: restoredFocus },
-      navigation: { secondaryBackIconGeometry, categoryBackGeometry, slideEvidence },
+      navigation: { secondaryBackIconGeometry, categoryBackGeometry, transitionEvidence },
       detailGeometry: sharedDetailGeometry,
       network: {
         totalApiRequests: routeState.apiRequests.length,
@@ -1590,4 +1583,4 @@ async function runRemoteRequestWorkspaceGate(browser, baseUrl, screenshotPath) {
   return { passed: true, primary, secondary };
 }
 
-module.exports = { runRemoteRequestWorkspaceGate };
+module.exports = { runRemoteRequestWorkspaceGate, workspaceRouteState, installWorkspaceRoutes, prepareRemotePage };

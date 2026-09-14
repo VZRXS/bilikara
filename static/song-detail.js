@@ -183,7 +183,7 @@
     root.innerHTML = `
       <div class="song-detail-surface">
         <article class="song-detail-card" role="document">
-          <button type="button" class="song-detail-close" data-song-detail-close aria-label="${translate("common.close")}">×</button>
+          <button type="button" class="song-detail-close" data-song-detail-close aria-label="${translate("common.close")}"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
           <div class="song-detail-hero">
             <div class="song-detail-cover" data-song-detail-cover>
               <span class="song-detail-cover-fallback">Bili</span>

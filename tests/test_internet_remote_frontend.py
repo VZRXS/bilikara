@@ -824,12 +824,57 @@ console.log(JSON.stringify({{ sent, reconnects }}));
             "i18n.json",
             "internet-remote-transport.js",
             "remote-transport-client.js",
+            "qrcode-generator.js",
+            "qrcode-generator.LICENSE",
+            "remote-access.css",
         ):
             with self.subTest(asset=asset):
                 self.assertIn(f'"{asset}"', self.asset_sync)
         self.assertIn('Join-Path $staticRoot "pic"', self.asset_sync)
         self.assertIn('$ErrorActionPreference = "Stop"', self.asset_sync)
         self.assertIn("[System.IO.Path]::IsPathRooted($Destination)", self.asset_sync)
+
+    def test_remote_invitation_is_authorized_unexpired_and_preserves_fragment(self):
+        start = self.remote_transport.index("  function invitation()")
+        end = self.remote_transport.index("  const invitationRemainingMs", start)
+        source = self.remote_transport[start:end]
+        script = """
+const assert = require("node:assert/strict");
+const global = { location: { origin: "https://example.invalid" } };
+const roomId = "A".repeat(27), joinToken = "B".repeat(43);
+const state = { authorized: false, password: "synthetic-password" };
+const fragment = new URLSearchParams({ expires: String(Date.now() + 60000) });
+""" + source + """
+assert.equal(invitation(), null);
+state.authorized = true;
+const shared = invitation();
+const url = new URL(shared.url);
+assert.equal(url.pathname, "/remote.html");
+const params = new URLSearchParams(url.hash.slice(1));
+assert.equal(params.get("room"), roomId);
+assert.equal(params.get("join"), joinToken);
+assert.equal(params.get("expires"), fragment.get("expires"));
+assert.equal(params.has("password"), false);
+assert.equal(shared.password, state.password);
+fragment.set("expires", String(Date.now() - 1));
+assert.equal(invitation(), null);
+fragment.set("expires", "invalid");
+assert.equal(invitation(), null);
+fragment.set("expires", String(Date.now() + 60000));
+state.password = "";
+assert.equal(invitation(), null);
+"""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        qr_start = self.remote_js.index("function renderRemoteQr(")
+        qr_end = self.remote_js.index("function setFormMessage", qr_start)
+        qr_source = self.remote_js[qr_start:qr_end]
+        self.assertNotIn("qrserver.com", qr_source)
+        self.assertIn("window.qrcode(0", qr_source)
+        self.assertIn("data:image/svg+xml", qr_source)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,16 @@ test("only tag APKs use the installable release name", () => {
   const release = buildMetadata({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v0.8.0-preview.1" });
   assert.equal(release.apk, "bilikara-v0.8.0-preview.1-android-arm64.apk");
 });
+test("Android SDK bootstrap excludes the unavailable legacy tools package", () => {
+  const workflow = fs.readFileSync(new URL("../.github/workflows/ci-bundle.yml", import.meta.url), "utf8");
+  const setup = workflow.match(/- name: Setup Android SDK\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+  assert.ok(setup, "Android SDK setup step must exist");
+  assert.match(setup, /uses: android-actions\/setup-android@v3/);
+  const packages = setup.match(/^\s+packages:\s*([^\n]+)$/m)?.[1];
+  assert.ok(packages, "Override setup-android's legacy tools default explicitly");
+  assert.deepEqual(packages.trim().split(/\s+/), ["platform-tools"]);
+  assert.match(workflow, /sdkmanager "platforms;android-36" "build-tools;36\.0\.0" "ndk;27\.0\.12077973"/);
+});
 test("mirror waits for APK and publishes the release index; tag build fails closed without signing", () => {
   const workflow = fs.readFileSync(new URL("../.github/workflows/ci-bundle.yml", import.meta.url), "utf8");
   assert.match(workflow, /needs: \[bundle, android-bundle\]/);

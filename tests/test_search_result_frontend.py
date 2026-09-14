@@ -985,7 +985,8 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertIn("container: elements.remoteShell", remote_js)
         detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
         self.assertIn('root.className = "song-detail-view hidden";', detail_js)
-        self.assertIn(">×</button>", detail_js)
+        self.assertIn('<svg class="close-icon" viewBox="0 0 24 24"', detail_js)
+        self.assertNotIn(">×</button>", detail_js)
         self.assertIn(".song-detail-view.closing .song-detail-card", detail_css)
         self.assertNotIn("#search-modal", detail_css)
         self.assertNotIn("remote-search-modal", detail_css)
@@ -1023,7 +1024,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertIn("background: var(--rating-close-bg);", shared_remote_close_rule)
         self.assertGreaterEqual(remote_css.count("background: var(--rating-close-hover-bg);"), 2)
 
-    def test_mobile_remote_song_detail_close_has_only_minimal_optical_correction(self):
+    def test_mobile_remote_song_detail_close_is_svg_without_optical_correction(self):
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
         mobile_css = detail_css.split("@media (max-width: 680px) {", 1)[1].split(
             "@media (prefers-reduced-motion: reduce)", 1
@@ -1036,14 +1037,16 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         )[0]
 
         self.assertNotIn("font-size", generic_close_rule)
-        self.assertIn("padding-bottom: 3px;", close_rule)
+        self.assertIn("padding: 0;", close_rule)
+        self.assertNotIn("padding-bottom", close_rule)
         self.assertNotIn("padding-left", close_rule)
         self.assertNotIn("padding-right", close_rule)
         self.assertNotIn("transform", close_rule)
         self.assertNotIn(".selection-modal .song-detail-close", mobile_css)
         self.assertNotIn("translateY", mobile_css)
-        self.assertIn(">×</button>", detail_js := (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8"))
-        self.assertNotIn("<svg", detail_js)
+        detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        self.assertNotIn(">×</button>", detail_js)
+        self.assertIn('<svg class="close-icon" viewBox="0 0 24 24"', detail_js)
 
 
 if __name__ == "__main__":

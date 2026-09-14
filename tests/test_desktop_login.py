@@ -79,14 +79,14 @@ class DesktopLoginTest(unittest.TestCase):
             "logged_in": True, "state": "logged_in", "message": "BBDown 已登录",
             "data_path": str(self.data), "qr_image": "",
         })
-        self.assertEqual(bilibili.cookie_from_bbdown_data(self.data), self.data.read_text())
-        self.assertIn("b_nut=synthetic-nut", self.data.read_text())
+        self.assertEqual(bilibili.cookie_from_bbdown_data(self.data), self.data.read_text(encoding="utf-8"))
+        self.assertIn("b_nut=synthetic-nut", self.data.read_text(encoding="utf-8"))
         self.assertFalse((self.root / "bilibili-login.json").exists())
         self.assertFalse((self.root / "qrcode.png").exists())
         self.assertFalse((self.root / ".BBDown.data.login.tmp").exists())
         if os.name != "nt":
             self.assertEqual(self.data.stat().st_mode & 0o777, 0o600)
-        logs = (self.manager.log_dir / "bilibili-login.log").read_text()
+        logs = (self.manager.log_dir / "bilibili-login.log").read_text(encoding="utf-8")
         for forbidden in ("synthetic", "https://", "SESSDATA", "qrcode_key"):
             self.assertNotIn(forbidden, logs)
         self.manager.logout_bbdown()
@@ -110,7 +110,7 @@ class DesktopLoginTest(unittest.TestCase):
 
     def test_rejections_and_missing_or_wrong_scope_cookies_never_publish_success(self):
         for scenario in ("generate_http", "generate_api", "generate_json", "poll_api", "unknown", "ticket", "host_only"):
-            with self.subTest(scenario=scenario), LoginFixture() as fixture:
+            with LoginFixture() as fixture, self.subTest(scenario=scenario):
                 if scenario == "generate_http": fixture.generate_status = 403
                 if scenario == "generate_api": fixture.generate_body = {"code": -1, "message": "synthetic-secret"}
                 if scenario == "generate_json": fixture.generate_body = b"synthetic-bad-json"
@@ -123,7 +123,7 @@ class DesktopLoginTest(unittest.TestCase):
                 self.assertEqual(self.manager.bbdown_login_status()["state"], "failed")
                 self.assertFalse(self.data.exists())
                 self.assertEqual(self.hooks, [])
-        logs = (self.manager.log_dir / "bilibili-login.log").read_text()
+        logs = (self.manager.log_dir / "bilibili-login.log").read_text(encoding="utf-8")
         self.assertIn('"stage":"generate"', logs)
         self.assertIn('"stage":"poll"', logs)
         self.assertNotIn("synthetic", logs)
@@ -131,7 +131,7 @@ class DesktopLoginTest(unittest.TestCase):
     def test_inflight_cancel_regenerate_logout_and_shutdown_discard_late_success(self):
         for stage in ("generate", "poll"):
             for action in ("cancel", "regenerate", "logout", "shutdown"):
-                with self.subTest(stage=stage, action=action), LoginFixture() as fixture:
+                with LoginFixture() as fixture, self.subTest(stage=stage, action=action):
                     self.manager.stop_event.clear()
                     arrived, release = threading.Event(), threading.Event()
                     setattr(fixture, f"before_{stage}", lambda: (arrived.set(), release.wait(10)))
@@ -211,13 +211,13 @@ class DesktopLoginTest(unittest.TestCase):
     def test_failed_poll_does_not_report_existing_valid_file_as_success(self):
         with LoginFixture() as fixture:
             fixture.codes = [1]
-            fixture.before_poll = lambda: self.data.write_text("SESSDATA=existing; bili_jct=existing")
+            fixture.before_poll = lambda: self.data.write_text("SESSDATA=existing; bili_jct=existing", encoding="utf-8")
             generation = self.request("start", force=False)["generation"]
             self.manager._bbdown_login_worker(generation)
         self.assertFalse(self.manager.bbdown_login_status()["logged_in"])
         self.assertEqual(self.manager.bbdown_login_status()["state"], "failed")
         self.assertEqual(self.hooks, [])
-        self.assertEqual(self.data.read_text(), "SESSDATA=existing; bili_jct=existing")
+        self.assertEqual(self.data.read_text(encoding="utf-8"), "SESSDATA=existing; bili_jct=existing")
 
     def test_existing_desktop_routes_start_regenerate_logout_payloads(self):
         from types import SimpleNamespace
@@ -232,7 +232,8 @@ class DesktopLoginTest(unittest.TestCase):
         original_thread = threading.Thread
         def capture_thread(*args, **kwargs):
             worker = original_thread(*args, **kwargs)
-            workers.append(worker)
+            if kwargs.get("target") == self.manager._bbdown_login_worker:
+                workers.append(worker)
             return worker
         def request(path, body):
             handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -251,6 +252,11 @@ class DesktopLoginTest(unittest.TestCase):
             self.addCleanup(release.set)
             fixture.before_generate = lambda: release.wait(10)
             with patch("bilikara.cache.threading.Thread", side_effect=capture_thread):
+                # ThreadingHTTPServer and other callers share the threading module.
+                # An unrelated thread must not count as another login attempt.
+                unrelated = threading.Thread(target=lambda: None)
+                unrelated.start()
+                self.join(unrelated)
                 self.assertEqual(request("/api/bbdown/login/start", {})["state"], "starting")
                 self.assertEqual(request("/api/bbdown/login/start", {})["state"], "starting")
                 self.assertEqual(len(workers), 1)
@@ -264,18 +270,18 @@ class DesktopLoginTest(unittest.TestCase):
         self.assertEqual(self.hooks, [])
 
     def test_credential_write_failure_preserves_file_and_no_notification(self):
-        self.data.write_text("ticket=synthetic")
+        self.data.write_text("ticket=synthetic", encoding="utf-8")
         with LoginFixture() as fixture:
             fixture.before_poll = lambda: (self.root / ".BBDown.data.login.tmp").mkdir()
             generation = self.request("start", force=False)["generation"]
             self.manager._bbdown_login_worker(generation)
-        self.assertEqual(self.data.read_text(), "ticket=synthetic")
+        self.assertEqual(self.data.read_text(encoding="utf-8"), "ticket=synthetic")
         self.assertEqual(self.manager.bbdown_login_status()["state"], "failed")
         self.assertEqual(self.hooks, [])
 
     def test_completion_before_hook_is_invalidated_by_logout_or_replacement(self):
         for action in ("logout", "replacement", "cancel"):
-            with self.subTest(action=action), LoginFixture():
+            with LoginFixture(), self.subTest(action=action):
                 self.request("logout")
                 generation = self.request("start", force=True)["generation"]
                 # Execute through FFI, leaving the committed event unconsumed.
@@ -298,10 +304,10 @@ class DesktopLoginTest(unittest.TestCase):
         with patch("bilikara.bilibili.cfg.COOKIE", " configured=retained "):
             self.assertEqual(bilibili.effective_bilibili_cookie(), "configured=retained")
             for value in values:
-                self.data.write_text(value)
+                self.data.write_text(value, encoding="utf-8")
                 self.assertEqual(bilibili.cookie_from_bbdown_data(self.data), "SESSDATA=synthetic; bili_jct=csrf")
                 self.assertEqual(bilibili.effective_bilibili_cookie(), "SESSDATA=synthetic; bili_jct=csrf")
-            self.data.write_text("ticket=synthetic")
+            self.data.write_text("ticket=synthetic", encoding="utf-8")
             self.assertEqual(bilibili.cookie_from_bbdown_data(self.data), "")
             self.assertEqual(bilibili.effective_bilibili_cookie(), "configured=retained")
 
@@ -329,6 +335,21 @@ class DesktopLoginTest(unittest.TestCase):
                     rust_runtime.desktop_login(command, generation=1)
         self.assertFalse(self.data.exists())
         self.assertEqual(self.hooks, [])
+
+    def test_unavailable_tls_fixture_skips_the_whole_case(self):
+        for method in (
+            "test_rejections_and_missing_or_wrong_scope_cookies_never_publish_success",
+            "test_inflight_cancel_regenerate_logout_and_shutdown_discard_late_success",
+            "test_completion_before_hook_is_invalidated_by_logout_or_replacement",
+        ):
+            with self.subTest(method=method):
+                case = type(self)(method)
+                result = unittest.TestResult()
+                with patch.object(LoginFixture, "__enter__", side_effect=unittest.SkipTest("TLS trust unavailable")):
+                    case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(result.failures, [])
+                self.assertEqual(result.skipped, [(case, "TLS trust unavailable")])
 
     def test_unavailable_runtime_has_no_python_login_fallback(self):
         with patch.object(rust_runtime, "_runtime_lib", None):

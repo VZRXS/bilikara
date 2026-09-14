@@ -202,6 +202,7 @@
     state.disconnectedTimer = null;
     stopHeartbeat();
     state.authorized = false;
+    global.dispatchEvent(new Event("remote-invitation-changed"));
     if (wasAuthorized) {
       state.readyPromise = null;
       state.readyResolve = null;
@@ -327,6 +328,7 @@
     }
     if (message.type === "auth.ok") {
       state.authorized = true;
+      global.dispatchEvent(new Event("remote-invitation-changed"));
       state.reconnectAttempts = 0;
       request("session.set_identity", { name: state.identity }).then((response) => {
         const next = response?.data?.state;
@@ -874,6 +876,7 @@
     stopHeartbeat();
     if (state.authorized) {
       state.authorized = false;
+      global.dispatchEvent(new Event("remote-invitation-changed"));
       state.readyPromise = null;
       state.readyResolve = null;
     }
@@ -911,8 +914,23 @@
   document.documentElement.dataset.remoteTransport = "internet-pending";
   global.fetch = fetchInternet;
   global.EventSource = InternetStateSource;
+  // Read-only sharing of the invitation already supplied to this client.
+  // Never include the password in the URL or send invitation data to a QR service.
+  function invitation() {
+    const expires = Number(fragment.get("expires"));
+    if (!state.authorized || !state.password || !Number.isFinite(expires)
+      || expires <= Date.now()) return null;
+    const url = new URL("/remote.html", global.location.origin);
+    url.hash = new URLSearchParams({ room: roomId, join: joinToken, expires: String(expires) }).toString();
+    return { url: url.href, password: state.password };
+  }
+  const invitationRemainingMs = Number(fragment.get("expires")) - Date.now();
+  if (invitationRemainingMs > 0 && invitationRemainingMs <= 2_147_483_647) {
+    setTimeout(() => global.dispatchEvent(new Event("remote-invitation-changed")), invitationRemainingMs);
+  }
   global.BilikaraRemoteTransport = Object.freeze({
     mode: "internet",
+    invitation,
     ready,
     localize,
     fetch: fetchInternet,

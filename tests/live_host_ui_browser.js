@@ -3,6 +3,7 @@
 const { chromium } = require("playwright");
 const { runRemoteRequestWorkspaceGate } = require("./live_remote_request_workspace_browser");
 const { runInternetRemoteHostGate } = require("./live_internet_remote_host_ui_browser");
+const { runRemoteUiPolishGate } = require("./live_remote_ui_polish_browser");
 
 const [baseUrl, executablePath, screenshotPath, runMode] = process.argv.slice(2);
 
@@ -20,6 +21,10 @@ function suffixedPath(path, suffix) {
 
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
+  if (runMode === "ui-polish") {
+    try { return await runRemoteUiPolishGate(browser, baseUrl, screenshotPath); }
+    finally { await browser.close(); }
+  }
   let remoteRequestWorkspace = null;
   let internetRemoteHost;
   try {
@@ -2243,11 +2248,11 @@ async function run() {
       emptyQueueEvidence.currentOnly.currentVisible
         && emptyQueueEvidence.currentOnly.emptyText.length > 0
         && emptyQueueEvidence.currentOnly.hint === "可以继续前往“点歌”界面点下一首。"
-        && emptyQueueEvidence.currentOnly.align === "left"
+        && emptyQueueEvidence.currentOnly.align === "center"
         && emptyQueueEvidence.noCurrent.currentHidden
         && emptyQueueEvidence.noCurrent.emptyText.length > 0
         && emptyQueueEvidence.noCurrent.hint === "请前往“点歌”界面点歌。"
-        && emptyQueueEvidence.noCurrent.align === "left"
+        && emptyQueueEvidence.noCurrent.align === "center"
         && emptyQueueEvidence.currentOnly.emptyText !== emptyQueueEvidence.noCurrent.emptyText,
       "current-only and no-current Queue states were not distinct and honest",
       emptyQueueEvidence,
@@ -5763,7 +5768,9 @@ async function run() {
     await disabledAutoPage.close();
 
     await page.locator("#work-rail-request").click();
-    assert(await page.locator("#request-search-panel").isVisible(), "Request rail did not expose the existing Search panel");
+    assert(await page.locator("#request-quick-panel").isVisible(), "First Request visit must expose Quick");
+    await page.locator('[data-request-view="search"]').click();
+    assert(await page.locator("#request-search-panel").isVisible(), "Search selection did not expose its panel");
     await page.evaluate(() => {
       document.querySelector("#lark-search-query").value = "host ui";
       document.querySelector("#lark-search-form").dispatchEvent(new Event("submit", {

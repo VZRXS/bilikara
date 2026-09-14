@@ -274,8 +274,8 @@ const state = {
   gatchaMessageIsError: false,
   gatchaRequestBusy: false,
   gatchaScrollTop: 0,
-  requestSubview: "search",
-  focusedRequestSubview: "search",
+  requestSubview: "quick",
+  focusedRequestSubview: "quick",
   searchMode: "shared",
   focusedSearchMode: "shared",
   discoverMode: "categories",
@@ -3632,7 +3632,7 @@ function hydrateLocalPreferences() {
   applyTheme(state.theme);
 }
 
-function normalizeRequestSubview(value, fallback = "search") {
+function normalizeRequestSubview(value, fallback = "quick") {
   const candidate = String(value || "").trim().toLowerCase();
   return ["quick", "search", "discover", "sources"].includes(candidate)
     ? candidate
@@ -3968,6 +3968,7 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
     closeRequestDetailForNavigation();
   }
   state.requestSubview = nextSubview;
+  try { window.sessionStorage?.setItem("bilikara.host.requestView", nextSubview); } catch { /* Optional view memory. */ }
   state.focusedRequestSubview = nextSubview;
   syncRequestSubviewSelection();
   if (nextSubview === "sources") {
@@ -5268,7 +5269,10 @@ function initializeHostShell() {
   state.activeHostWorkspace = "queue";
   state.focusedHostWorkspace = "queue";
   state.hostWorkspaceOverlayOpen = false;
-  state.requestSubview = "search";
+  state.requestSubview = "quick";
+  try {
+    state.requestSubview = normalizeRequestSubview(window.sessionStorage?.getItem("bilikara.host.requestView"));
+  } catch { /* A new page session starts with Quick if storage is unavailable. */ }
   state.focusedRequestSubview = state.requestSubview;
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
@@ -5755,7 +5759,7 @@ function openRatingPrompt(item) {
   closeButton.className = "rating-close";
   closeButton.dataset.ratingClose = "";
   closeButton.setAttribute("aria-label", t("rating.closeLabel"));
-  closeButton.textContent = "\u00d7";
+  closeButton.innerHTML = '<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>';
 
   const content = document.createElement("div");
   content.dataset.ratingContent = "";
@@ -9460,7 +9464,8 @@ function positionContextualTooltip(info) {
   }
   const viewportInset = 8;
   const tooltipGap = 7;
-  const boundaryRect = info.closest(".host-workspace-region")?.getBoundingClientRect();
+  const boundaryRect = tooltip.hasAttribute("popover") ? null
+    : info.closest(".confirm-popover, .host-workspace-region")?.getBoundingClientRect();
   const boundaryLeft = Math.max(viewportInset, boundaryRect?.left ?? viewportInset);
   const boundaryRight = Math.min(
     window.innerWidth - viewportInset,
@@ -9584,6 +9589,7 @@ function resetContextualTooltipPosition(info) {
   if (!tooltip) {
     return;
   }
+  if (typeof tooltip.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
   for (const property of ["left", "right", "top", "bottom", "width", "--contextual-tooltip-arrow-left"]) {
     tooltip.style.removeProperty(property);
   }
@@ -9605,6 +9611,11 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   info.classList.add("is-visible");
   info.classList.toggle("is-pinned", pinned);
   info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
+  const tooltip = info.querySelector(".cache-advanced-tooltip");
+  if (info.closest(".confirm-popover") && typeof tooltip?.showPopover === "function") {
+    tooltip.setAttribute("popover", "manual");
+    if (!tooltip.matches(":popover-open")) tooltip.showPopover();
+  }
   positionContextualTooltip(info);
   return true;
 }
@@ -16160,7 +16171,7 @@ function updateBackupDismissButton() {
   const showCloseGlyph = state.backupBannerDismissed || state.backupDismissHover;
   elements.dismissBackupButton.classList.toggle("is-close-glyph", showCloseGlyph);
   if (showCloseGlyph) {
-    elements.dismissBackupButton.textContent = "×";
+    elements.dismissBackupButton.innerHTML = '<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>';
     return;
   }
   const remainingSeconds = Math.max(1, Math.ceil(state.backupBannerRemainingMs / 1000));
@@ -16183,6 +16194,7 @@ function openConfirm(intent) {
 }
 
 function closeConfirm({ restoreFocus = true } = {}) {
+  closeCacheAdvancedInfo();
   const focusElement = state.confirmIntent?.focusElement;
   state.confirmIntent = null;
   state.confirmPopoverRenderSignature = "";
@@ -16307,21 +16319,23 @@ function renderConfirmPopover() {
       elements.confirmPageSize.value = String(selectedConfirmHistoryExportPageSize(intent));
     }
   }
-  elements.confirmPageSizeNote?.classList.toggle("hidden", !hasPageSizeSelect);
+  const sourceField = document.getElementById("confirm-source-field");
+  const pageSizeField = document.getElementById("confirm-page-size-field");
+  sourceField?.classList.toggle("hidden", !hasSourceSelect);
+  pageSizeField?.classList.toggle("hidden", !hasPageSizeSelect);
   const shouldGroupExportControls = hasSourceSelect && hasPageSizeSelect && elements.confirmSource && elements.confirmPageSize;
   if (shouldGroupExportControls) {
     let controls = elements.confirmPopover.querySelector(".confirm-export-controls");
     if (!controls) {
       controls = document.createElement("div");
       controls.className = "confirm-export-controls";
-      elements.confirmSource.before(controls);
+      sourceField.before(controls);
     }
-    controls.append(elements.confirmSource, elements.confirmPageSize);
+    controls.append(sourceField, pageSizeField);
   } else {
     const controls = elements.confirmPopover.querySelector(".confirm-export-controls");
     if (controls) {
-      controls.before(elements.confirmSource);
-      elements.confirmSource.after(elements.confirmPageSize);
+      controls.before(sourceField, pageSizeField);
       controls.remove();
     }
   }
@@ -19666,7 +19680,7 @@ elements.historyExportButton?.addEventListener("click", (event) => {
     pageSize: 200,
     sourceSelect: true,
     pageSizeSelect: true,
-    message: t("history.exportPromptWithPageSize"),
+    hideMessage: true,
     primaryLabel: t("history.exportImage"),
     secondaryLabel: t("history.exportCsv"),
     x: point.x,

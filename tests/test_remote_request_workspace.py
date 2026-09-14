@@ -139,14 +139,11 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         ]
         self.assertNotIn('class="tag-browser-nav"', category_template)
 
-    def test_request_tabs_use_bounded_non_linear_motion(self):
-        self.assertIn(
-            "animation: remote-tab-slide 240ms cubic-bezier(0.16, 1, 0.3, 1)",
-            self.styles,
-        )
-        self.assertIn("@keyframes remote-tab-slide", self.styles)
-        self.assertIn("function prepareRemoteTabSlide", self.script)
-        self.assertIn("scaleX(var(--remote-tab-slide-scale, 1))", self.styles)
+    def test_request_tabs_share_queue_transition_without_layout_measurement(self):
+        self.assertIn("transition: background 0.18s ease, color 0.18s ease", self.styles)
+        self.assertNotIn("remote-tab-slide", self.styles)
+        self.assertNotIn("prepareRemoteTabSlide", self.script)
+        self.assertNotIn("remote-tab-label-offset", self.styles)
         reduced_motion = re.search(
             r"@media \(prefers-reduced-motion: reduce\)\s*\{(.*?)\n\}\n\n\.remote-menu-panel",
             self.styles,
@@ -155,6 +152,32 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(reduced_motion)
         self.assertIn('.remote-request-tab[aria-selected="true"]', reduced_motion.group(1))
         self.assertIn("animation: none", reduced_motion.group(1))
+
+    def test_quick_is_single_line_and_view_memory_is_session_only(self):
+        field = re.search(r'<input\s+id="url-input".*?/>', self.markup, re.DOTALL)
+        self.assertIsNotNone(field)
+        self.assertIn('type="text"', field.group(0))
+        self.assertIn('sessionStorage?.setItem("bilikara.remote.requestView", nextView)', self.script)
+        self.assertIn('sessionStorage?.getItem("bilikara.remote.requestView")', self.script)
+        self.assertNotIn('localStorage?.setItem("bilikara.remote.requestView"', self.script)
+
+    def test_history_export_uses_modal_and_preserves_download_authority(self):
+        self.assertIn('<dialog id="history-export-dialog"', self.markup)
+        self.assertIn('aria-labelledby="history-export-title"', self.markup)
+        self.assertIn('dialog.showModal()', self.script)
+        self.assertIn('elements.resortPlaylistButton?.classList.toggle("hidden", isHistoryView)', self.script)
+        self.assertIn('elements.historyExportButton?.classList.toggle("hidden", !isHistoryView)', self.script)
+        self.assertIn('historyExportGuard.run', self.script)
+        download = self.script[self.script.index('async function downloadHistoryExport'):self.script.index('elements.openRatingButton?.addEventListener')]
+        self.assertLess(download.index('mode === "internet"'), download.index('downloadBrowserFile'))
+        self.assertIn('history.exportLanOnly', download)
+        self.assertIn('headers: clientHeaders()', download)
+
+    def test_empty_queue_uses_host_text_keys(self):
+        empty = self.script[self.script.index('function createQueueEmptyNode'):self.script.index('function renderQueue(')]
+        for key in ('list.emptyTitle', 'list.emptyHint', 'list.emptyWithCurrentTitle', 'list.emptyWithCurrentHint'):
+            self.assertIn(key, empty)
+        self.assertNotIn('remote.queueEmpty', empty)
 
     def test_quick_request_actions_match_host_primary_secondary_layout(self):
         action_row = re.search(

@@ -1,5 +1,6 @@
 /* Shared Host/Remote emphasis palette; deep is reserved for text and local states. */
 :root {
+  --top-control-border: 1px solid rgba(87, 63, 43, 0.12);
   --accent: #d05a3f;
   --accent-deep: #a33621;
   --accent-soft: rgba(208, 90, 63, 0.12);
@@ -7,6 +8,7 @@
 }
 
 :root[data-theme="dark"] {
+  --top-control-border: 1px solid rgba(246, 241, 235, 0.15);
   --accent: #e06c53;
   --accent-deep: #b24733;
   --accent-soft: rgba(224, 108, 83, 0.15);
@@ -14,6 +16,7 @@
 }
 
 :root[data-theme="blue"] {
+  --top-control-border: 1px solid rgba(255, 255, 255, 0.1);
   --accent: #00d2ff;
   --accent-deep: #3a7bd5;
   --accent-soft: rgba(0, 210, 255, 0.12);

@@ -1,4 +1,14 @@
 const audioVariantSwitchDebounceMs = 350;
+// Modal autofocus can inherit :focus-visible from an input or keyboard action.
+// Track explicit pointer use without blurring controls or disrupting focus traps.
+document.addEventListener("pointerdown", () => {
+  document.documentElement.dataset.remoteInputModality = "pointer";
+}, true);
+document.addEventListener("keydown", (event) => {
+  if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+    document.documentElement.dataset.remoteInputModality = "keyboard";
+  }
+}, true);
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
 const avDelayRequestTimeoutMs = 8000;
@@ -552,6 +562,10 @@ const elements = {
   listCount: document.getElementById("list-count"),
   queueViewButton: document.getElementById("queue-view-button"),
   historyViewButton: document.getElementById("history-view-button"),
+  historyExportButton: document.getElementById("history-export-button"),
+  historyExportDialog: document.getElementById("history-export-dialog"),
+  historyExportClose: document.getElementById("history-export-close"),
+  historyExportStatus: document.getElementById("history-export-status"),
   historyExportRow: document.getElementById("history-export-row"),
   historyExportSource: document.getElementById("history-export-source"),
   historyExportPageSize: document.getElementById("history-export-page-size"),
@@ -971,24 +985,9 @@ function syncRemoteRequestPanelSizeTier() {
   }
 }
 
-// Measure only when the selected live tab changes. The decoration moves; controls
-// and labels keep their geometry, focus and native horizontal scrolling.
-function prepareRemoteTabSlide(buttons, selected) {
-  if (!selected?.getBoundingClientRect) return;
-  const previous = Array.from(buttons || []).find((button) => button.getAttribute("aria-selected") === "true");
-  if (selected === previous) return;
-  const from = previous?.getBoundingClientRect();
-  const to = selected.getBoundingClientRect();
-  const visible = from?.width > 0 && to.width > 0;
-  selected.style.setProperty("--remote-tab-slide-x", `${visible ? from.left - to.left : 0}px`);
-  selected.style.setProperty("--remote-tab-slide-scale", String(visible ? from.width / to.width : 1));
-}
-
 function syncRemoteSearchModeSelection() {
   const activeMode = normalizeRemoteSearchMode(state.remoteSearchMode);
   state.remoteSearchMode = activeMode;
-  prepareRemoteTabSlide(elements.remoteSearchModeButtons, Array.from(elements.remoteSearchModeButtons || [])
-    .find((button) => button.dataset.remoteSearchMode === activeMode));
   elements.remoteSearchModeButtons?.forEach((button) => {
     const mode = normalizeRemoteSearchMode(button.dataset.remoteSearchMode, "");
     const selected = mode === activeMode;
@@ -1006,8 +1005,6 @@ function syncRemoteSearchModeSelection() {
 function syncRemoteDiscoverModeSelection() {
   const activeMode = normalizeRemoteDiscoverMode(state.remoteDiscoverMode);
   state.remoteDiscoverMode = activeMode;
-  prepareRemoteTabSlide(elements.remoteDiscoverModeButtons, Array.from(elements.remoteDiscoverModeButtons || [])
-    .find((button) => button.dataset.remoteDiscoverMode === activeMode));
   elements.remoteDiscoverModeButtons?.forEach((button) => {
     const mode = normalizeRemoteDiscoverMode(button.dataset.remoteDiscoverMode, "");
     const selected = mode === activeMode;
@@ -1030,8 +1027,6 @@ function syncRemoteDiscoverModeSelection() {
 function syncRemoteSourcesModeSelection() {
   const activeMode = normalizeRemoteSourcesMode(state.remoteSourcesMode);
   state.remoteSourcesMode = activeMode;
-  prepareRemoteTabSlide(elements.remoteSourcesModeButtons, Array.from(elements.remoteSourcesModeButtons || [])
-    .find((button) => button.dataset.remoteSourcesMode === activeMode));
   elements.remoteSourcesModeButtons?.forEach((button) => {
     const mode = normalizeRemoteSourcesMode(button.dataset.remoteSourcesMode, "");
     const selected = mode === activeMode;
@@ -1190,8 +1185,6 @@ function collapseRemoteRequestSecondaryNavigation({ focus = true } = {}) {
 function syncRemoteRequestViewSelection() {
   const activeView = normalizeRemoteRequestView(state.remoteRequestView);
   state.remoteRequestView = activeView;
-  prepareRemoteTabSlide(elements.remoteRequestViewButtons, Array.from(elements.remoteRequestViewButtons || [])
-    .find((button) => button.dataset.remoteRequestView === activeView));
   if (elements.remoteShell) {
     elements.remoteShell.dataset.remoteRequestView = activeView;
   }
@@ -1230,6 +1223,7 @@ function activateRemoteRequestView(
     closeRequestDetailForNavigation();
   }
   state.remoteRequestView = nextView;
+  try { window.sessionStorage?.setItem("bilikara.remote.requestView", nextView); } catch { /* Optional view memory. */ }
   syncRemoteRequestViewSelection();
   if (nextView === "sources") {
     ensureActiveRemoteSourcesLoaded();
@@ -1365,6 +1359,9 @@ function handleRemoteSourcesModeTabKeydown(event) {
 }
 
 function hydrateLocalPreferences() {
+  try {
+    state.remoteRequestView = normalizeRemoteRequestView(window.sessionStorage?.getItem("bilikara.remote.requestView"));
+  } catch { /* New page sessions default to Quick. */ }
   // Hydrate and apply theme
   state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
   applyTheme(state.theme);
@@ -1456,6 +1453,10 @@ function setRemoteMenuOpen(open, { restoreFocus = false } = {}) {
   state.remoteMenuOpen = nextOpen;
   elements.remoteMenuPanel?.classList.toggle("hidden", !nextOpen);
   elements.remoteMenuToggle?.setAttribute("aria-expanded", String(nextOpen));
+  if (nextOpen) {
+    renderRemoteAccess(state.data?.remote_access);
+    syncRemoteMenuBounds();
+  }
   if (!nextOpen) {
     setRemoteQrSectionOpen(false);
     setRemoteSettingsSectionOpen(false);
@@ -1473,6 +1474,7 @@ function setRemoteQrSectionOpen(open) {
   elements.remoteQrContent?.classList.toggle("hidden", !state.remoteQrSectionOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrSectionOpen));
   elements.remoteQrToggle?.classList.toggle("is-expanded", state.remoteQrSectionOpen);
+  syncRemoteMenuBounds();
 }
 
 function setRemoteSettingsSectionOpen(open) {
@@ -1480,75 +1482,98 @@ function setRemoteSettingsSectionOpen(open) {
   elements.remoteSettingsContent?.classList.toggle("hidden", !state.remoteSettingsSectionOpen);
   elements.remoteSettingsToggle?.setAttribute("aria-expanded", String(state.remoteSettingsSectionOpen));
   elements.remoteSettingsToggle?.classList.toggle("is-expanded", state.remoteSettingsSectionOpen);
+  syncRemoteMenuBounds();
 }
 
-function renderRemoteAccess(remoteAccess) {
-  // The native Host owns invitation distribution; a Remote has no Host invite.
-  if (document.documentElement?.dataset?.nativeHost === "true") return;
-  const preferredUrl = String(remoteAccess?.preferred_url || "");
-  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
-  const localUrl = String(remoteAccess?.local_url || "");
-  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
-  const displayHint = lanUrls.length > 1
-    ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
-    : lanUrls.length === 1
-      ? t("remote.defaultHint")
-      : t("remote.noLanHint");
-  const signature = JSON.stringify({ language: state.language, displayUrl, displayHint });
-  if (signature === state.remoteAccessRenderSignature) {
-    return;
-  }
-  state.remoteAccessRenderSignature = signature;
+function syncRemoteMenuBounds() {
+  const panel = elements.remoteMenuPanel;
+  if (!state.remoteMenuOpen || !panel) return;
+  const viewport = window.visualViewport;
+  const bottom = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight);
+  const top = panel.getBoundingClientRect().top;
+  panel.style.setProperty("--remote-menu-available-height", `max(0px, calc(${Math.max(0, bottom - top - 12)}px - env(safe-area-inset-bottom)))`);
+}
 
+window.addEventListener("resize", syncRemoteMenuBounds);
+window.addEventListener("scroll", syncRemoteMenuBounds, { passive: true });
+window.visualViewport?.addEventListener("resize", syncRemoteMenuBounds);
+window.visualViewport?.addEventListener("scroll", syncRemoteMenuBounds);
+window.addEventListener("remote-invitation-changed", () => renderRemoteAccess(state.data?.remote_access));
+
+function renderRemoteAccess(remoteAccess) {
+  if (document.documentElement?.dataset?.nativeHost === "true") return;
+  const internet = window.BilikaraRemoteTransport?.mode === "internet";
+  const invitation = internet ? window.BilikaraRemoteTransport.invitation?.() : null;
+  // A public Remote snapshot has no LAN address. Never invent one from its origin.
+  const candidates = [remoteAccess?.preferred_url, ...(remoteAccess?.lan_urls || []), remoteAccess?.local_url];
+  const localUrl = candidates.find((value) => {
+    try {
+      const url = new URL(value);
+      return /^https?:$/.test(url.protocol) && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    } catch { return false; }
+  }) || (!internet ? `${window.location.origin}/remote` : "");
+  const signature = JSON.stringify({ language: state.language, localUrl, invitation });
+  if (signature === state.remoteAccessRenderSignature) return;
+  state.remoteAccessRenderSignature = signature;
+  const card = elements.remoteQrContent;
+  const local = document.getElementById("remote-share-local");
+  const publicEntry = document.getElementById("remote-share-public");
+  local.hidden = !localUrl;
+  publicEntry.hidden = !internet;
+  card.classList.toggle("is-dual", Boolean(localUrl && internet));
   if (elements.remotePopoverUrlLink) {
-    elements.remotePopoverUrlLink.href = displayUrl;
-    elements.remotePopoverUrlLink.textContent = displayUrl;
+    elements.remotePopoverUrlLink.href = localUrl;
+    elements.remotePopoverUrlLink.textContent = localUrl;
   }
-  if (elements.remotePopoverUrlHint) {
-    elements.remotePopoverUrlHint.textContent = displayHint;
-  }
-  renderRemoteQr(displayUrl, [
-    { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
-  ]);
+  elements.remotePopoverUrlHint.textContent = t("internetRemote.localSameNetwork");
+  renderRemoteQr(localUrl, [{ image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder }]);
+  const password = document.getElementById("remote-share-password");
+  password.textContent = invitation?.password || "";
+  password.parentElement.hidden = !invitation;
+  renderRemoteQr(invitation?.url || "", [{
+    image: document.getElementById("remote-public-qr-image"),
+    placeholder: document.getElementById("remote-public-qr-placeholder"),
+    emptyMessage: t("remote.shareUnavailable"),
+  }]);
+  syncRemoteMenuBounds();
 }
 
 function renderRemoteQr(url, targets = []) {
   const normalizedUrl = String(url || "").trim();
-  if (!normalizedUrl) {
-    targets.forEach(({ image, placeholder }) => {
-      image?.classList.add("hidden");
-      if (placeholder) {
-        placeholder.textContent = t("remote.noAddress");
-        placeholder.classList.remove("hidden");
-      }
-    });
-    return;
-  }
-
-  targets.forEach(({ image, placeholder, size = 220 }) => {
-    if (!image || !placeholder) {
-      return;
-    }
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
-    if (image.dataset.qrUrl === qrUrl) {
-      return;
-    }
-
-    image.dataset.qrUrl = qrUrl;
+  for (const { image, placeholder, emptyMessage } of targets) {
+    if (!image || !placeholder) continue;
+    image.onload = null;
+    image.onerror = null;
     image.classList.add("hidden");
-    placeholder.textContent = t("remote.qrLoading");
     placeholder.classList.remove("hidden");
-    image.onload = () => {
-      placeholder.classList.add("hidden");
-      image.classList.remove("hidden");
-    };
-    image.onerror = () => {
-      image.classList.add("hidden");
+    if (!normalizedUrl) {
+      image.removeAttribute("src");
+      placeholder.textContent = emptyMessage || t("remote.noAddress");
+      continue;
+    }
+    try {
+      const code = window.qrcode(0, "M");
+      // Invitations and normalized URLs are ASCII; Unicode URLs are percent encoded.
+      code.addData(new URL(normalizedUrl).href, "Byte");
+      code.make();
+      const count = code.getModuleCount();
+      let path = "";
+      for (let row = 0; row < count; row += 1) {
+        for (let col = 0; col < count; col += 1) {
+          if (code.isDark(row, col)) path += `M${col},${row}h1v1h-1z`;
+        }
+      }
+      // A fixed narrow white inset for both entries, with no cropped modules.
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect width="160" height="160" fill="white"/><path d="${path}" fill="black" transform="translate(8 8) scale(${144 / count})" /></svg>`;
+      image.onload = () => { placeholder.classList.add("hidden"); image.classList.remove("hidden"); syncRemoteMenuBounds(); };
+      image.onerror = () => { placeholder.textContent = t("remote.qrFailed"); };
+      placeholder.textContent = t("remote.qrLoading");
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    } catch {
+      image.removeAttribute("src");
       placeholder.textContent = t("remote.qrFailed");
-      placeholder.classList.remove("hidden");
-    };
-    image.src = qrUrl;
-  });
+    }
+  }
 }
 
 function setFormMessage(message, isError = false) {
@@ -2405,6 +2430,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   }
   if (
     remoteIdentityModalIsOpen()
+    || elements.historyExportDialog?.open
     || state.bindingSheetOpen
     || state.gatchaFavlistSheetOpen
     || state.poolConfigSheetOpen
@@ -2453,7 +2479,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   closeButton.className = "rating-close";
   closeButton.dataset.ratingClose = "";
   closeButton.setAttribute("aria-label", t("rating.closeLabel"));
-  closeButton.textContent = "\u00d7";
+  closeButton.innerHTML = '<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>';
 
   const content = document.createElement("div");
   content.dataset.ratingContent = "";
@@ -2691,6 +2717,9 @@ function selectedHistoryExportPageSize() {
 }
 
 async function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
+  if (window.BilikaraRemoteTransport?.mode === "internet") {
+    throw new Error(t("history.exportLanOnly"));
+  }
   const normalizedFormat = String(format || "").trim().toLowerCase();
   const normalizedSource = source;
   const requestedPageSize = Number.parseInt(String(pageSize || "200"), 10);
@@ -2725,25 +2754,86 @@ elements.openRatingButton?.addEventListener("click", () => {
   }
 });
 
+function setHistoryExportMessage(message, isError = false) {
+  if (elements.historyExportStatus) elements.historyExportStatus.textContent = message;
+  setAppMessage(message, isError);
+}
+
+function openHistoryExportDialog() {
+  const dialog = elements.historyExportDialog;
+  if (!dialog || dialog.open) return;
+  retireTransientPlaybackModalForModal();
+  setRemoteMenuOpen(false);
+  const unavailable = window.BilikaraRemoteTransport?.mode === "internet";
+  elements.historyExportRow.hidden = unavailable;
+  elements.historyExportStatus.textContent = unavailable ? t("history.exportLanOnly") : "";
+  historyExportRestoreFocus = true;
+  dialog.showModal();
+  lockPlaybackSheetDocumentScroll();
+  elements.historyExportClose.focus({ preventScroll: true });
+  if (!unavailable) void loadHistoryExportSessions();
+}
+
+let historyExportSessionsRequest = 0;
+let historyExportRestoreFocus = true;
+async function loadHistoryExportSessions() {
+  const request = ++historyExportSessionsRequest;
+  const select = elements.historyExportSource;
+  try {
+    const response = await fetch("/api/played-sessions", { headers: clientHeaders() });
+    const result = await response.json();
+    if (!response.ok || !result.ok || !Array.isArray(result.data)) throw new Error(t("error.requestFailed"));
+    if (request !== historyExportSessionsRequest || !elements.historyExportDialog.open) return;
+    // Same recent-session choices as desktop Host; values come from Host.
+    const selected = select.value;
+    select.querySelectorAll("optgroup").forEach((group) => group.remove());
+    const group = document.createElement("optgroup");
+    group.label = t("history.otherSessions");
+    for (const session of result.data.slice(0, 10)) {
+      if (!/^played-[^/\\]+\.json$/.test(String(session.id || ""))) continue;
+      const option = document.createElement("option");
+      option.value = session.id;
+      option.textContent = Number.isFinite(session.started_at) && session.started_at > 0
+        ? new Date(session.started_at * 1000).toLocaleString(state.language === "zh" ? "zh-CN" : state.language)
+        : session.id;
+      group.appendChild(option);
+    }
+    if (group.children.length) select.appendChild(group);
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  } catch {
+    if (request === historyExportSessionsRequest && elements.historyExportDialog.open) {
+      elements.historyExportStatus.textContent = t("history.sessionsLoadFailed");
+    }
+  }
+}
+
+function closeHistoryExportDialog({ restoreFocus = true } = {}) {
+  closeRemoteContextualInfo();
+  historyExportRestoreFocus = restoreFocus;
+  historyExportSessionsRequest += 1;
+  elements.historyExportDialog?.close();
+}
+
 async function exportHistory(format) {
   return historyExportGuard.run(async () => {
     const source = selectedHistoryExportSource();
     const pageSize = selectedHistoryExportPageSize();
-    const sourceLabel = source === "played" ? t("history.playedSource") : t("history.allSource");
-    setAppMessage(format === "csv"
+    const sourceLabel = elements.historyExportSource?.selectedOptions?.[0]?.textContent
+      || (source === "played" ? t("history.playedSource") : t("history.allSource"));
+    setHistoryExportMessage(format === "csv"
       ? t("remote.exportingCsv", { source: sourceLabel })
       : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
     try {
       const saved = await downloadHistoryExport(format, source, pageSize);
       if (!saved) {
-        setAppMessage("");
+        setHistoryExportMessage("");
         return;
       }
-      setAppMessage(format === "csv"
+      setHistoryExportMessage(format === "csv"
         ? t("history.csvDownloadStarted", { source: sourceLabel })
         : t("history.imageDownloadStarted", { source: sourceLabel }));
     } catch (error) {
-      setAppMessage(
+      setHistoryExportMessage(
         window.BilikaraExportDownload.normalizedErrorMessage(error, t("history.exportFailed")),
         true,
       );
@@ -7623,7 +7713,8 @@ function renderListHeader(playlist, history) {
   elements.queueViewButton.setAttribute("aria-selected", String(!isHistoryView));
   elements.historyViewButton.classList.toggle("active", isHistoryView);
   elements.historyViewButton.setAttribute("aria-selected", String(isHistoryView));
-  elements.historyExportRow?.classList.toggle("hidden", !isHistoryView);
+  elements.resortPlaylistButton?.classList.toggle("hidden", isHistoryView);
+  elements.historyExportButton?.classList.toggle("hidden", !isHistoryView);
   setTextContent(elements.queueViewButton, "list.title");
   setTextContent(elements.historyViewButton, "history.title");
 }
@@ -7644,10 +7735,17 @@ function queueRenderSignatureForItem(item, index) {
   };
 }
 
-function createQueueEmptyNode(message) {
+function createQueueEmptyNode() {
   const node = document.createElement("div");
   node.className = "queue-empty";
-  node.textContent = message;
+  const keys = state.data?.current_item
+    ? ["list.emptyWithCurrentTitle", "list.emptyWithCurrentHint"]
+    : ["list.emptyTitle", "list.emptyHint"];
+  for (const key of keys) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = t(key);
+    node.appendChild(paragraph);
+  }
   return node;
 }
 
@@ -7655,6 +7753,7 @@ function renderQueue(playlist) {
   const items = Array.isArray(playlist) ? playlist : [];
   const signature = JSON.stringify({
     language: state.language,
+    hasCurrentItem: Boolean(state.data?.current_item),
     playlist: items.map(queueRenderSignatureForItem),
   });
   if (signature === state.queueRenderSignature) {
@@ -7665,7 +7764,7 @@ function renderQueue(playlist) {
 
   elements.queueList.replaceChildren();
   if (!items.length) {
-    elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
+    elements.queueList.appendChild(createQueueEmptyNode());
     return;
   }
 
@@ -9050,11 +9149,16 @@ function mountRemoteContextualTooltip(wrap) {
     tooltip.classList.add("is-portaled");
   }
   tooltip?.classList.add("is-visible");
+  if (wrap?.closest?.(".history-export-dialog") && typeof tooltip?.showPopover === "function") {
+    tooltip.setAttribute("popover", "manual");
+    if (!tooltip.matches(":popover-open")) tooltip.showPopover();
+  }
   return tooltip;
 }
 
 function hideRemoteContextualInfo(wrap) {
   const tooltip = remoteContextualTooltipForWrap(wrap);
+  if (typeof tooltip?.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
   wrap?.classList.remove("is-visible", "is-pinned");
   wrap?.querySelector?.(".remote-info-button")?.setAttribute("aria-expanded", "false");
   tooltip?.classList.remove("is-visible");
@@ -9085,8 +9189,8 @@ function positionRemoteContextualTooltip(wrap) {
   }
   const viewportInset = 8;
   const tooltipGap = 7;
-  const containerRect = wrap.closest(
-    ".playback-sheet-panel, .binding-sheet-panel, .remote-menu-panel",
+  const containerRect = tooltip.hasAttribute("popover") ? null : wrap.closest(
+    ".playback-sheet-panel, .binding-sheet-panel, .remote-menu-panel, .history-export-dialog",
   )?.getBoundingClientRect();
   const boundaryLeft = Math.max(viewportInset, (containerRect?.left ?? viewportInset) + (containerRect ? 8 : 0));
   const boundaryRight = Math.min(
@@ -9829,6 +9933,21 @@ elements.currentCacheState?.addEventListener("click", async (event) => {
   }
 });
 
+elements.historyExportButton?.addEventListener("click", openHistoryExportDialog);
+elements.historyExportClose?.addEventListener("click", closeHistoryExportDialog);
+elements.historyExportDialog?.addEventListener("close", () => {
+  if (elements.historyExportDialog.open) return;
+  unlockPlaybackSheetDocumentScroll();
+  if (historyExportRestoreFocus) elements.historyExportButton?.focus({ preventScroll: true });
+});
+elements.historyExportDialog?.addEventListener("click", (event) => {
+  if (event.target !== elements.historyExportDialog) return;
+  const rect = elements.historyExportDialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+    closeHistoryExportDialog();
+  }
+});
+
 elements.historyExportImageButton?.addEventListener("click", async () => {
   await exportHistory("image");
 });
@@ -9873,6 +9992,18 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (elements.historyExportDialog?.open) {
+    if (event.key === "Tab") {
+      trapFocusWithin(elements.historyExportDialog, event, elements.historyExportClose);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeHistoryExportDialog();
+    }
+    return;
+  }
   if (event.key === "Tab") {
     if (state.ratingPromptElement) {
       trapFocusWithin(
@@ -9982,7 +10113,8 @@ function syncRemoteShellInert() {
 
 function anotherRemoteModalIsOpen() {
   return Boolean(
-    state.ratingPromptElement
+    elements.historyExportDialog?.open
+    || state.ratingPromptElement
     || remoteIdentityModalIsOpen()
     || state.bindingSheetOpen
     || state.gatchaFavlistSheetOpen
@@ -10036,6 +10168,7 @@ function trapFocusWithin(root, event, preferredElement = null) {
   )].filter((element) => (
     !element.hidden
     && !element.classList.contains("hidden")
+    && !element.closest?.("[hidden], .hidden, [inert]")
     && element.getAttribute("aria-hidden") !== "true"
   ));
   if (!focusable.length) {
@@ -10157,6 +10290,7 @@ function retirePlaybackSheetForModal() {
 }
 
 function retireTransientPlaybackModalForModal() {
+  if (elements.historyExportDialog?.open) closeHistoryExportDialog({ restoreFocus: false });
   const retiredPlaybackSheet = retirePlaybackSheetForModal();
   if (state.ratingPromptElement) {
     closeRatingPrompt({ submit: true, restoreFocus: false });

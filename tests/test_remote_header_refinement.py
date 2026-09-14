@@ -22,6 +22,45 @@ class _RemoteMarkupParser(HTMLParser):
 
 
 class RemoteHeaderRefinementTest(unittest.TestCase):
+    def test_pointer_focus_suppression_keeps_keyboard_navigation_and_menu_border(self):
+        if not self.node:
+            self.skipTest("Node.js is required")
+        source = self.script.split("const playerSettingsEchoSuppressMs", 1)[0]
+        program = """
+const assert = require('node:assert/strict');
+const handlers = {};
+const document = {
+  documentElement: { dataset: {} },
+  addEventListener(type, handler, capture) {
+    assert.equal(capture, true);
+    handlers[type] = handler;
+  },
+};
+""" + source + """
+handlers.pointerdown({ pointerType: 'mouse' });
+assert.equal(document.documentElement.dataset.remoteInputModality, 'pointer');
+handlers.keydown({ key: 'Tab' });
+assert.equal(document.documentElement.dataset.remoteInputModality, 'keyboard');
+handlers.pointerdown({ pointerType: 'touch' });
+assert.equal(document.documentElement.dataset.remoteInputModality, 'pointer');
+handlers.keydown({ key: 'l', ctrlKey: true });
+assert.equal(document.documentElement.dataset.remoteInputModality, 'pointer');
+handlers.keydown({ key: 'Enter' });
+assert.equal(document.documentElement.dataset.remoteInputModality, 'keyboard');
+"""
+        subprocess.run([self.node, "-e", program], check=True, capture_output=True, text=True)
+        rule = self._first_base_rule(
+            self.styles,
+            ':root[data-remote-input-modality="pointer"] body :is(button, [role="button"]):is(:focus, :focus-visible)',
+        )
+        self.assertEqual(rule, {"outline": "none"})
+        self.assertIn(".binding-sheet-close:focus-visible,", self.styles)
+        for selector in (".remote-menu-toggle", "#remote-av-sync-panel .remote-lock-button"):
+            self.assertIn(
+                ':root:not([data-remote-input-modality="pointer"]) ' + selector + ':focus-visible {',
+                self.styles,
+            )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.node = shutil.which("node")
@@ -73,7 +112,7 @@ class RemoteHeaderRefinementTest(unittest.TestCase):
         if not self.node:
             self.skipTest("node is unavailable")
         start = self.script.index("function remoteConnectionStatusKey")
-        end = self.script.index("function renderRemoteAccess", start)
+        end = self.script.index("function syncRemoteMenuBounds", start)
         menu_source = self.script[start:end]
         script = f"""
 const state = {{
@@ -122,6 +161,9 @@ function t(key, replacements = {{}}) {{
     : key;
 }}
 function setTextContent(target, key) {{ target.textContent = key; }}
+// Layout and invitation rendering are covered by the browser regression.
+function syncRemoteMenuBounds() {{}}
+function renderRemoteAccess() {{}}
 {menu_source}
 {body}
 """
@@ -549,7 +591,7 @@ console.log(JSON.stringify({
         self.assertIn("var(--remote-menu-trigger-border)", trigger_rule)
         self.assertIn("var(--remote-menu-trigger-color)", trigger_rule)
         self.assertIn("var(--chip-bg)", self.styles)
-        self.assertIn("var(--chip-border)", self.styles)
+        self.assertIn("--remote-menu-trigger-border: var(--top-control-border)", self.styles)
         identity_action = self._first_base_rule(
             self.styles, ".remote-identity-row .secondary-button"
         )
@@ -579,7 +621,8 @@ console.log(JSON.stringify({
             self.styles,
         ).group(1)
 
-        self.assertIn("border-color: transparent", expanded_trigger_rule)
+        self.assertIn("border: var(--remote-menu-trigger-border)", expanded_trigger_rule)
+        self.assertNotIn("border-color: transparent", expanded_trigger_rule)
         self.assertIn(".remote-menu-section-toggle", self.styles)
         self.assertIn(".remote-menu-section-toggle-chevron", self.styles)
         self.assertIn(".remote-menu-panel .remote-tooltip-bubble", self.styles)
@@ -587,7 +630,8 @@ console.log(JSON.stringify({
             r"\.remote-menu-status-info \.remote-info-button\s*\{([^}]*)\}", self.styles
         ).group(1)
         self.assertIn("opacity: 1", status_opacity_rule)
-        self.assertIn("max-height: min(620px, calc(100dvh - 68px));", self.styles)
+        self.assertIn("max-height: var(--remote-menu-available-height, calc(100dvh - 68px));", self.styles)
+        self.assertNotIn("max-height: min(620px", self.styles)
         self.assert_declaration_parity(
             ".cache-panel-label",
             ".remote-menu-setting-label",

@@ -10,6 +10,7 @@
     <title data-i18n="document.remoteTitle">bilikara remote</title>
     <link rel="icon" href="/pic/icon.png" />
     <link rel="stylesheet" href="/remote.css" />
+    <link rel="stylesheet" href="/remote-access.css" />
     <link rel="stylesheet" href="/song-detail.css" />
     <link rel="stylesheet" href="/remote-queue.css" />
   </head>
@@ -93,14 +94,25 @@
                 </span>
                 <span class="remote-menu-section-toggle-chevron" aria-hidden="true"></span>
               </button>
-              <div id="remote-qr-content" class="remote-menu-qr-content hidden">
-                <div class="remote-qr-popover-image-wrap">
+              <div id="remote-qr-content" class="remote-access-card remote-share-card hidden">
+                <section id="remote-share-local" class="remote-access-entry remote-access-entry--local">
+                <h3 class="remote-access-title" data-i18n="internetRemote.localEntry">本地入口</h3>
+                <div class="remote-access-qr">
                   <img id="remote-popover-qr-image" class="remote-popover-qr-image hidden" alt="手机点歌二维码" data-i18n-alt="remote.qrAlt" />
                   <div id="remote-popover-qr-placeholder" class="remote-popover-qr-placeholder" data-i18n="remote.qrLoading">正在生成二维码...</div>
                 </div>
-                <p class="remote-popover-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
                 <a id="remote-popover-url-link" class="remote-popover-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
                 <p id="remote-popover-url-hint" class="remote-popover-url-hint" data-i18n="remote.defaultHint">访问设备需与 Host 在同一网络。</p>
+                </section>
+                <section id="remote-share-public" class="remote-access-entry remote-access-entry--public" hidden>
+                  <h3 class="remote-access-title" data-i18n="internetRemote.internetEntry">公网入口</h3>
+                  <div class="remote-access-qr">
+                    <img id="remote-public-qr-image" class="hidden" data-i18n-alt="internetRemote.publicQrAlt" alt="公网手机点歌二维码" />
+                    <div id="remote-public-qr-placeholder" class="remote-access-qr-placeholder"></div>
+                  </div>
+                  <p data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
+                  <p class="remote-share-password" hidden><span data-i18n="internetRemote.currentPassword">当前房间密码</span><strong id="remote-share-password"></strong></p>
+                </section>
               </div>
             </section>
 
@@ -213,14 +225,14 @@
               </p>
               <button type="button" id="remote-identity-rename" class="secondary-button" data-i18n="remoteIdentity.rename">重命名</button>
             </div>
-            <textarea
+            <input
               id="url-input"
               name="url"
-              rows="2"
+              type="text"
               placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
               data-i18n-placeholder="request.urlPlaceholder"
               autocomplete="off"
-            ></textarea>
+            />
             <div class="action-row request-action-row">
               <button type="submit" class="primary-button" data-i18n="request.submit">点歌</button>
               <button type="button" id="add-next-button" class="secondary-button" data-i18n="request.next">顶歌到下一首</button>
@@ -419,6 +431,7 @@
             </h2>
           </div>
           <button type="button" id="resort-playlist-button" class="secondary-button queue-header-action" data-i18n="request.resort">重新排序</button>
+          <button type="button" id="history-export-button" class="secondary-button queue-header-action hidden" data-i18n="history.export" aria-haspopup="dialog" aria-controls="history-export-dialog">导出</button>
         </div>
 
         <div class="view-toggle" role="tablist" aria-label="切换点歌列表和历史记录" data-i18n-aria-label="remote.queueViewToggle">
@@ -443,11 +456,34 @@
             <span data-i18n="history.title">历史记录</span>
           </button>
         </div>
-        <div id="history-export-row" class="history-export-row hidden">
+        <dialog id="history-export-dialog" class="history-export-dialog" aria-labelledby="history-export-title">
+          <div class="binding-sheet-head">
+            <div class="binding-sheet-heading"><div class="binding-sheet-title-row"><h2 id="history-export-title" data-i18n="history.exportTitle">导出歌单</h2></div></div>
+            <button type="button" id="history-export-close" class="binding-sheet-close" aria-label="关闭" data-i18n-aria-label="common.close" autofocus><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+          </div>
+          <p id="history-export-status" role="status" aria-live="polite"></p>
+        <div id="history-export-row" class="history-export-row">
+          <div class="history-export-field">
+          <div class="binding-sheet-title-row remote-contextual-info-region">
+            <label for="history-export-source" data-i18n="history.exportRange">导出范围</label>
+            <span class="info-trigger-wrap">
+              <button type="button" class="remote-info-button" aria-expanded="false" aria-describedby="history-export-source-info" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+              <span id="history-export-source-info" class="remote-tooltip-bubble" role="tooltip" data-i18n="history.exportRangeHint">本场记录为本次启动后已播放的歌曲，历史记录为累积点歌历史</span>
+            </span>
+          </div>
           <select id="history-export-source" class="history-export-source" aria-label="导出范围" data-i18n-aria-label="history.exportRange">
             <option value="played" data-i18n="history.playedSource">导出本场</option>
             <option value="history" data-i18n="history.allSource">全部历史</option>
           </select>
+          </div>
+          <div class="history-export-field">
+          <div class="binding-sheet-title-row remote-contextual-info-region">
+            <label for="history-export-page-size" data-i18n="history.exportPageSizeLabel">图片每页歌曲数</label>
+            <span class="info-trigger-wrap">
+              <button type="button" class="remote-info-button" aria-expanded="false" aria-describedby="history-export-page-info" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+              <span id="history-export-page-info" class="remote-tooltip-bubble" role="tooltip" data-i18n="history.exportPageSizeNote">仅影响图片分页，CSV会导出完整列表</span>
+            </span>
+          </div>
           <select id="history-export-page-size" class="history-export-page-size" aria-label="图片每页歌曲数" data-i18n-aria-label="history.exportPageSizeLabel">
             <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
             <option value="150" data-i18n="history.exportPageSize150">图片每页 150 首</option>
@@ -456,10 +492,13 @@
             <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
             <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
           </select>
-          <p class="history-export-note" data-i18n="history.exportPageSizeNote">仅影响图片分页；CSV 会导出完整列表。</p>
+          </div>
+          <div class="history-export-actions">
           <button type="button" id="history-export-image-button" class="primary-button" data-i18n="history.exportImage">导出图片</button>
           <button type="button" id="history-export-csv-button" class="ghost-button" data-i18n="history.exportCsv">导出 CSV</button>
+          </div>
         </div>
+        </dialog>
 
         <div id="queue-list" class="list"></div>
         <div id="history-list" class="list hidden"></div>
@@ -515,7 +554,7 @@
               </div>
             </div>
             <button type="button" id="binding-sheet-close" class="binding-sheet-close"
-              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+              aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
           </div>
           <section class="binding-sheet-section binding-accordion" id="binding-video-section">
             <button
@@ -564,7 +603,7 @@
               <h2 id="gatcha-favlist-sheet-title" data-i18n="favlist.title">选择收藏夹</h2>
             </div>
             <button type="button" id="gatcha-favlist-sheet-close" class="binding-sheet-close"
-              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+              aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
           </div>
           <p id="gatcha-favlist-sheet-text" class="muted" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
           <section class="binding-sheet-section">
@@ -589,7 +628,7 @@
             <div class="pool-config-head-actions">
               <button type="button" id="gatcha-pool-config-sheet-reset" class="ghost-button" data-i18n="common.reset">重置</button>
               <button type="button" id="gatcha-pool-config-sheet-close" class="binding-sheet-close"
-                aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+                aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
             </div>
           </div>
           <section class="binding-sheet-section pool-config-section">
@@ -638,7 +677,7 @@
               <h2 id="reorder-confirm-sheet-title" data-i18n="remote.queueOrderTitle">确认调整顺序</h2>
             </div>
             <button type="button" id="reorder-confirm-sheet-close" class="binding-sheet-close"
-              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+              aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
           </div>
           <p id="reorder-confirm-sheet-text" class="muted reorder-confirm-text"></p>
           <div class="binding-sheet-actions">
@@ -1055,6 +1094,7 @@
     <script src="/export-guard.js" defer></script>
     <script src="/export-download.js" defer></script>
     <script src="/song-detail.js" defer></script>
+    <script src="/qrcode-generator.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

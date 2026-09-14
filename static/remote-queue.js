@@ -26,11 +26,11 @@
     elements.queueList.replaceChildren();
     if (!playlist.length) {
       if (typeof createQueueEmptyNode === "function" && typeof t === "function") {
-        elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
+        elements.queueList.appendChild(createQueueEmptyNode());
       } else {
         const emptyNode = document.createElement("div");
         emptyNode.className = "queue-empty";
-        emptyNode.textContent = "remote.queueEmpty";
+        emptyNode.textContent = typeof t === "function" ? t("list.emptyTitle") : "list.emptyTitle";
         elements.queueList.appendChild(emptyNode);
       }
       return;

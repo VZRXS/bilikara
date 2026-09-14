@@ -620,6 +620,17 @@ p {
   margin-top: 2px;
 }
 
+.export-field { min-width: 0; display: grid; gap: 8px; }
+.export-field.hidden { display: none; }
+.export-field label { font-size: 13px; font-weight: 700; }
+.confirm-popover .cache-advanced-info:not(.is-visible) .cache-advanced-tooltip { display: none; }
+.confirm-popover .cache-advanced-tooltip[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  overflow: visible;
+}
+
 .confirm-export-controls .confirm-source,
 .confirm-export-controls .confirm-page-size {
   margin-top: 0;
@@ -772,7 +783,7 @@ p {
 
 .banner-close {
   font: 400 20px/0 sans-serif;
-  padding: 0 0 2px 1px;
+  padding: 0;
   transform-origin: center;
   transition:
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -818,7 +829,7 @@ p {
 }
 
 #dismiss-backup-button.is-close-glyph {
-  padding: 0 0 2px 1px;
+  padding: 0;
   font: 400 20px/0 sans-serif;
 }
 
@@ -6943,7 +6954,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  padding: 0 0 2px 1px;
+  padding: 0;
   background: var(--rating-close-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
@@ -9029,7 +9040,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
   min-height: 40px;
   flex: 0 0 auto !important;
   padding: 0;
-  border: 1px solid var(--line);
+  border: var(--top-control-border);
   border-radius: 11px;
   background: var(--panel);
   box-shadow: none;
@@ -9612,13 +9623,13 @@ body[data-tauri-platform="linux"] .app-shell {
   min-height: 0;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 10px;
   background: var(--btn-secondary-bg);
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
-  text-align: left;
+  text-align: center;
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
@@ -10102,7 +10113,7 @@ body.is-presentation-stage-only .left-column {
 }
 
 .critical-banner-region .backup-actions .banner-close.is-close-glyph {
-  padding: 0 0 2px 1px;
+  padding: 0;
 }
 
 .selection-modal-actions .toolbar-button,

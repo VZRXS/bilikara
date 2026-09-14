@@ -47,7 +47,7 @@
             data-i18n-aria-label="remote.openInBrowser" aria-label="手机浏览器打开">
             <div class="remote-card remote-mini-popover-card remote-access-card">
               <button type="button" class="banner-close remote-mini-popover-close" id="remote-mini-popover-close"
-                data-i18n-aria-label="common.close" aria-label="关闭">×</button>
+                data-i18n-aria-label="common.close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
               <section class="remote-access-entry remote-access-entry--local">
               <div class="internet-remote-status-summary cache-contextual-info-region remote-access-heading">
                 <strong class="internet-remote-entry-title remote-access-title" id="internet-remote-summary"
@@ -463,7 +463,7 @@
           <button type="button" id="backup-action-button" class="banner-action"
             data-i18n="backup.clear">清空备份</button>
           <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭"
-            data-i18n-aria-label="common.close">×</button>
+            data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
         </div>
       </section>
     </div>
@@ -690,7 +690,7 @@
             <div class="stage-control-tray-head">
               <strong id="stage-control-tray-title" data-i18n="player.controls">播放控制</strong>
               <button type="button" id="stage-controls-close" class="banner-close" aria-label="关闭"
-                data-i18n-aria-label="common.close">×</button>
+                data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
             </div>
             <div class="stage-extended-controls" id="stage-extended-controls">
           <section class="av-sync-panel" id="av-sync-panel">
@@ -961,9 +961,9 @@
             <nav class="request-subview-tabs" role="tablist" aria-label="点歌视图"
               data-i18n-aria-label="request.viewSelector">
               <button type="button" role="tab" data-request-view="quick" aria-controls="request-quick-panel"
-                aria-selected="false" tabindex="-1" data-i18n="request.quickTab">快速点歌</button>
+                aria-selected="true" tabindex="0" data-i18n="request.quickTab">快速点歌</button>
               <button type="button" role="tab" data-request-view="search" aria-controls="request-search-panel"
-                aria-selected="true" tabindex="0" data-i18n="request.searchTab">搜索</button>
+                aria-selected="false" tabindex="-1" data-i18n="request.searchTab">搜索</button>
               <button type="button" role="tab" data-request-view="discover" aria-controls="request-discover-panel"
                 aria-selected="false" tabindex="-1" data-i18n="request.discoverTab">发现</button>
               <button type="button" role="tab" data-request-view="sources" aria-controls="request-sources-panel"
@@ -979,7 +979,7 @@
 
           <div class="request-workspace-body">
             <section class="request-subview request-quick-view" id="request-quick-panel" role="tabpanel"
-              data-request-panel="quick" aria-labelledby="workspace-request-heading" hidden inert>
+              data-request-panel="quick" aria-labelledby="workspace-request-heading">
               <p class="native-alpha-notice">bilikara beta：支持搜索、分类、关注／收藏夹浏览、随机点歌及历史导出。导入来源前请在“我的”中登录 Bilibili。默认 720P、3 首缓存，可调整。手机点歌可使用局域网或公网房间。投屏请用系统镜像模式，并保持本机前台；独立双屏暂不开放。</p>
               <div class="request-subview-copy">
                 <p class="section-tag" data-i18n="request.tag">Song Request</p>
@@ -999,7 +999,7 @@
             </section>
 
             <section class="request-subview request-search-view" id="request-search-panel" role="tabpanel"
-              data-request-panel="search" aria-labelledby="workspace-request-heading">
+              data-request-panel="search" aria-labelledby="workspace-request-heading" hidden inert>
               <header class="request-mode-head">
                 <div class="request-mode-tabs" role="tablist" aria-label="搜索范围"
                   data-i18n-aria-label="search.modeSelector">
@@ -1575,11 +1575,28 @@
 
   <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
     <p class="confirm-text" id="confirm-text" data-i18n="confirm.default">确定执行这个操作吗？</p>
+    <div id="confirm-source-field" class="export-field hidden">
+    <div class="cache-advanced-label-row cache-contextual-info-region">
+      <label for="confirm-source" data-i18n="history.exportRange">导出范围</label>
+      <span class="cache-advanced-info">
+        <button type="button" class="cache-advanced-info-button" aria-expanded="false" aria-describedby="confirm-source-info" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+        <span id="confirm-source-info" class="cache-advanced-tooltip" role="tooltip" data-i18n="history.exportRangeHint">本场记录为本次启动后已播放的歌曲，历史记录为累积点歌历史</span>
+      </span>
+    </div>
     <select id="confirm-source" class="confirm-source hidden" aria-label="导出范围"
       data-i18n-aria-label="history.exportRange">
       <option value="played" data-i18n="history.playedSource">本场记录</option>
       <option value="history" data-i18n="history.allSource">全部历史</option>
     </select>
+    </div>
+    <div id="confirm-page-size-field" class="export-field hidden">
+    <div class="cache-advanced-label-row cache-contextual-info-region">
+      <label for="confirm-page-size" data-i18n="history.exportPageSizeLabel">图片每页歌曲数</label>
+      <span class="cache-advanced-info">
+        <button type="button" class="cache-advanced-info-button" aria-expanded="false" aria-describedby="confirm-page-size-note" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+        <span id="confirm-page-size-note" class="cache-advanced-tooltip" role="tooltip" data-i18n="history.exportPageSizeNote">仅影响图片分页，CSV会导出完整列表</span>
+      </span>
+    </div>
     <select id="confirm-page-size" class="confirm-page-size hidden" aria-label="图片每页歌曲数"
       data-i18n-aria-label="history.exportPageSizeLabel">
       <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
@@ -1589,8 +1606,7 @@
       <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
       <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
     </select>
-    <p id="confirm-page-size-note" class="confirm-page-size-note hidden" data-i18n="history.exportPageSizeNote">
-      仅影响图片分页；CSV 会导出完整列表。</p>
+    </div>
     <div class="confirm-actions">
       <button type="button" id="confirm-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
       <button type="button" id="confirm-secondary" class="toolbar-button hidden" data-i18n="history.exportCsv">导出
@@ -1617,7 +1633,7 @@
           </div>
         </div>
         <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭"
-          data-i18n-aria-label="common.close">×</button>
+          data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <div class="selection-modal-grid">
         <section class="selection-modal-column">
@@ -1645,7 +1661,7 @@
           <h2 data-i18n="favlist.title">选择收藏夹</h2>
         </div>
         <button type="button" id="gatcha-favlist-modal-close" class="banner-close" aria-label="关闭"
-          data-i18n-aria-label="common.close">×</button>
+          data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <p class="selection-modal-text" id="gatcha-favlist-modal-text" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
       <div class="selection-modal-grid selection-modal-grid-single">
@@ -1675,7 +1691,7 @@
           <button type="button" id="gatcha-pool-config-modal-reset" class="toolbar-button ghost"
             data-i18n="common.reset">重置</button>
           <button type="button" id="gatcha-pool-config-modal-close" class="banner-close" aria-label="关闭"
-            data-i18n-aria-label="common.close">×</button>
+            data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
         </div>
       </div>
       <div class="pool-config-weight-row">
@@ -1729,7 +1745,7 @@
           <p class="section-tag">Access</p>
           <h2>访问验证</h2>
         </div>
-        <button type="button" id="bilikara-secret-close" class="banner-close" aria-label="关闭">×</button>
+        <button type="button" id="bilikara-secret-close" class="banner-close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <form id="bilikara-secret-form" class="bilikara-secret-form">
         <label class="input-group" for="bilikara-secret-input">
@@ -1753,7 +1769,7 @@
           <p class="section-tag">Tools</p>
           <h2 id="developer-tag-reset-title">重置标签字段</h2>
         </div>
-        <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭">×</button>
+        <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <p class="selection-modal-text" id="developer-tag-reset-text"></p>
       <div class="developer-tag-reset-fields" id="developer-tag-reset-fields"></div>
