@@ -10009,7 +10009,6 @@ async function run() {
     await titlebarPage.locator("#cache-settings-toggle").click();
     const ultraServiceEvidence = await titlebarPage.evaluate(() => {
       syncToolIndicator(elements.serviceStatusIndicator, "ready");
-      syncToolIndicator(elements.bbdownPanelStatusIndicator, "ready");
       syncToolIndicator(elements.ffmpegPanelStatusIndicator, "ready");
       const panel = document.querySelector("#cache-panel");
       const panelRect = panel.getBoundingClientRect();
@@ -10047,9 +10046,9 @@ async function run() {
         && ultraServiceEvidence.serviceWrap.height === 18
         && ultraServiceEvidence.serviceMark.width === 18
         && ultraServiceEvidence.serviceMark.height === 18
-        && ultraServiceEvidence.serviceMarkText === "✓"
+        && ultraServiceEvidence.serviceMarkText === ""
         && ultraServiceEvidence.serviceMarkFontSize === 12
-        && ultraServiceEvidence.rowMarks.every((mark) => mark.text === "✓"
+        && ultraServiceEvidence.rowMarks.every((mark) => mark.text === ""
           && mark.width === ultraServiceEvidence.serviceMark.width
           && mark.height === ultraServiceEvidence.serviceMark.height
           && mark.background === ultraServiceEvidence.serviceMarkBackground)

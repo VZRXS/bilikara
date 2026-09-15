@@ -913,7 +913,10 @@ pub(crate) fn set_window_fullscreen(
     }
     window
         .set_fullscreen(fullscreen)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "windows")]
+    let _ = crate::platform::sync_windows_main_window_frame(&window.as_ref().window());
+    Ok(())
 }
 
 pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
@@ -922,6 +925,10 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             tauri::WindowEvent::Moved(_)
             | tauri::WindowEvent::Resized(_)
             | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                #[cfg(target_os = "windows")]
+                if matches!(event, tauri::WindowEvent::Resized(_)) {
+                    let _ = crate::platform::sync_windows_main_window_frame(window);
+                }
                 refresh_cached_main_window_geometry(window);
             }
             tauri::WindowEvent::CloseRequested { .. } => {

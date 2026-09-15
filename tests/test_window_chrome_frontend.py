@@ -22,6 +22,9 @@ class WindowChromeTest(unittest.TestCase):
         self.assertIn('.window-restore-icon', render)
         self.assertIn('toggleAttribute("hidden"', render)
         self.assertNotIn("textContent", render)
+        self.assertIn('nativeWindows ? "" : t(key)', render)
+        self.assertNotIn('.window-control-button.is-native-hovered::after',
+                         (ROOT / "static/styles.css").read_text(encoding="utf-8"))
         self.assertIn("request === frameStateRequest", script)
 
     def test_native_region_is_local_authorized_and_keeps_pointer_actions_native(self):
@@ -29,13 +32,16 @@ class WindowChromeTest(unittest.TestCase):
         script = (ROOT / "static/app.js").read_text(encoding="utf-8")
         self.assertIn('authorize_window(&window, &backend, &["main"])', native)
         self.assertIn("region.is_some_and", native)
-        self.assertIn("WM_NCHITTEST => return HTMAXBUTTON", native)
-        self.assertIn("SC_RESTORE", native)
-        self.assertIn("SC_MAXIMIZE", native)
+        self.assertIn("return HTMAXBUTTON as LRESULT", native)
+        self.assertIn("SendMessageW(parent, message, wp, lp)", native)
+        self.assertIn("DwmDefWindowProc(hwnd", native)
         self.assertIn("WM_NCDESTROY", native)
         self.assertIn("Box::from_raw", native)
         self.assertIn("WM_DPICHANGED", native)
-        self.assertIn("PostMessageW", native)
+        self.assertIn("DefSubclassProc(hwnd, message, wp, lp)", native)
+        self.assertIn("SetCapture(hwnd)", native)
+        self.assertIn("WM_LBUTTONUP | WM_NCLBUTTONUP", native)
+        self.assertIn("PostMessageW(parent, WM_SYSCOMMAND", native)
         self.assertNotIn('eval(', native)
         self.assertIn("window.devicePixelRatio", script)
         region = script[script.index("function initializeNativeMaximizeRegion"):script.index("function initializeWindowChrome")]

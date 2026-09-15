@@ -92,7 +92,10 @@ class InternetRemoteDeploymentTest(unittest.TestCase):
         allowlist = re.search(r"\$files = @\((.*?)\)", sync, re.DOTALL)
         self.assertIsNotNone(allowlist)
         assets = set(re.findall(r'"([^"]+)"', allowlist.group(1)))
-        self.assertTrue(self.resources.scripts <= assets)
+        # Check stylesheets too, even on hosts without PowerShell. Pictures
+        # are copied by the separate directory-copy step below the allowlist.
+        required = {asset for asset in self.resources.resources if not asset.startswith("pic/")}
+        self.assertTrue(required <= assets, f"Missing assets: {sorted(required - assets)}")
         expected = {f"static/{asset}" for asset in assets} | {
             "static/pic/*", "scripts/sync_internet_remote_assets.ps1"
         }

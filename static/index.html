@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/song-detail.css" />
   <link rel="stylesheet" href="/remote-access.css" />
   <link rel="stylesheet" href="/android-host.css" />
+  <link rel="stylesheet" href="/status-indicators.css" />
 </head>
 
 <body>
@@ -205,10 +206,9 @@
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="1.8" y="4.5" width="12.5" height="9.5" rx="1.5"></rect>
-                <path d="M5.5 17h4.8M7.9 14v3"></path>
-                <rect x="10" y="8" width="12.2" height="9" rx="1.5"></rect>
-                <path d="M14 20h4.5M16.2 17v3"></path>
+                <path d="M3 8V4h18v14h-8"></path>
+                <path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5"></path>
+                <circle cx="3" cy="21" r="1" fill="currentColor" stroke="none"></circle>
               </svg>
               <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
               <span class="presentation-state-dot" id="presentation-state-dot" aria-hidden="true"></span>
@@ -333,13 +333,11 @@
                 <p class="cache-panel-hint" data-i18n="service.autoClearHint">关闭服务后会自动清空</p>
                 <div class="cache-panel-tool-list">
                   <p id="bbdown-status-row">
-                    <span>BBDown / Bilibili</span>
+                    <span>Bilibili</span>
                     <button type="button" class="bbdown-login-badge is-unknown" id="bbdown-login-button">
                       <span class="bbdown-login-label" data-i18n="service.notLoggedIn">未登录</span>
                       <span class="bbdown-login-hover-label" data-i18n="service.logout">退出</span>
                     </button>
-                    <span class="tool-status-indicator is-loading cache-panel-tool-indicator"
-                      id="bbdown-panel-status-indicator" aria-hidden="true"></span>
                   </p>
                   <p id="ffmpeg-status-row">
                     <span>FFmpeg</span>
@@ -441,14 +439,14 @@
       </div>
       <div class="window-controls" id="window-controls" hidden aria-label="窗口控制" data-i18n-aria-label="window.controls">
         <button type="button" class="window-control-button" id="window-minimize" aria-label="最小化" title="最小化" data-i18n-aria-label="window.minimize" data-i18n-title="window.minimize">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" /></svg>
+          <span class="window-caption-glyph" aria-hidden="true">&#xE921;</span>
         </button>
         <button type="button" class="window-control-button" id="window-maximize" aria-label="最大化" title="最大化" data-i18n-aria-label="window.maximize" data-i18n-title="window.maximize">
-          <svg class="window-maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
-          <svg class="window-restore-icon" viewBox="0 0 12 12" aria-hidden="true" hidden><path d="M4.5 2.5v-1h6v6h-1"/><rect x="1.5" y="4.5" width="6" height="6" /></svg>
+          <span class="window-caption-glyph window-maximize-icon" aria-hidden="true">&#xE922;</span>
+          <span class="window-caption-glyph window-restore-icon" aria-hidden="true" hidden>&#xE923;</span>
         </button>
         <button type="button" class="window-control-button window-close-button" id="window-close" aria-label="关闭" title="关闭" data-i18n-aria-label="window.close" data-i18n-title="window.close">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
+          <span class="window-caption-glyph" aria-hidden="true">&#xE8BB;</span>
         </button>
       </div>
     </header>
@@ -723,7 +721,16 @@
               <button type="button" class="toolbar-button ghost av-sync-reset-button" id="av-offset-reset-button"
                 data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
               <button type="button" class="toolbar-button ghost av-sync-lock-button" id="av-delay-lock-button"
-                data-av-delay-lock disabled aria-label="Lock AV delay">🔓</button>
+                data-av-delay-lock disabled aria-label="Lock AV delay">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="unlocked">
+                      <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
+                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 6.7-1.4"></path>
+                    </svg>
+                    <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="locked">
+                      <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
+                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"></path>
+                    </svg>
+                  </button>
             </div>
           </section>
           <section class="volume-panel" id="volume-panel">
@@ -732,7 +739,16 @@
             </div>
             <div class="volume-controls">
               <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button"
-                aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">🔊</button>
+                aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-volume-icon="unmuted">
+                      <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"></path>
+                      <path d="M15 9a4 4 0 0 1 0 6M17.5 6.5a7.5 7.5 0 0 1 0 11"></path>
+                    </svg>
+                    <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-volume-icon="muted">
+                      <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"></path>
+                      <path d="m16 9 5 6m0-6-5 6"></path>
+                    </svg>
+                  </button>
               <input id="volume-slider" class="volume-slider" type="range" min="0" max="100" step="1" value="100" />
               <strong class="volume-value" id="volume-value">100%</strong>
             </div>

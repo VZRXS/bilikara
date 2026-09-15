@@ -977,7 +977,7 @@ function syncRemoteRequestPanelSizeTier() {
     const visibleResults = Array.from(activePanel?.querySelectorAll?.(".search-result-item") || [])
       .filter((item) => !item.closest("[hidden], .hidden"));
     if (visibleResults.length) {
-      tier = "browse";
+      tier = "browse-deep";
     }
   }
   if (elements.requestPanel.dataset.requestSize !== tier) {
@@ -1147,6 +1147,30 @@ function syncRemoteRequestTabPresentation() {
   const activeTablist = expanded ? remoteRequestSecondaryTablist(activeView) : null;
   const activeHome = expanded ? remoteRequestSecondaryHome(activeView) : null;
   const canExpand = Boolean(activeTablist && activeHome && elements.remoteRequestSecondarySlot);
+
+  const navigation = elements.remoteRequestPrimaryTabs.parentElement;
+  const previousView = navigation.dataset.activeView;
+  const changing = previousView !== undefined && previousView !== activeView;
+  if (changing && !prefersReducedMotion()) {
+    const old = state.remoteRequestTabsExpanded
+      ? elements.remoteRequestSecondaryNav : elements.remoteRequestPrimaryTabs;
+    const ghost = old.cloneNode(true);
+    ghost.removeAttribute("id");
+    ghost.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
+    ghost.inert = true;
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.classList.add("remote-tabs-departing");
+    navigation.append(ghost);
+    const fade = ghost.animate?.([{ opacity: 1 }, { opacity: 0 }], { duration: 180 });
+    if (fade) fade.finished.then(() => ghost.remove(), () => ghost.remove());
+    else ghost.remove();
+  }
+  navigation.dataset.activeView = activeView;
+  const incoming = expanded && canExpand
+    ? elements.remoteRequestSecondaryNav : elements.remoteRequestPrimaryTabs;
+  if (changing && !prefersReducedMotion()) {
+    incoming.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 180 });
+  }
 
   state.remoteRequestTabsExpanded = expanded && canExpand;
   if (!state.remoteRequestTabsExpanded) {
@@ -1400,10 +1424,10 @@ function syncRemoteConnectionIndicatorNode(indicator, phase) {
   indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
   if (normalizedPhase === "connected") {
     indicator.classList.add("is-ready");
-    indicator.textContent = "✓";
+    indicator.textContent = "";
   } else if (normalizedPhase === "offline") {
     indicator.classList.add("is-failed");
-    indicator.textContent = "×";
+    indicator.textContent = "";
   } else {
     indicator.classList.add("is-loading");
     indicator.textContent = "";
@@ -1565,10 +1589,16 @@ function renderRemoteQr(url, targets = []) {
       }
       // A fixed narrow white inset for both entries, with no cropped modules.
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect width="160" height="160" fill="white"/><path d="${path}" fill="black" transform="translate(8 8) scale(${144 / count})" /></svg>`;
-      image.onload = () => { placeholder.classList.add("hidden"); image.classList.remove("hidden"); syncRemoteMenuBounds(); };
-      image.onerror = () => { placeholder.textContent = t("remote.qrFailed"); };
-      placeholder.textContent = t("remote.qrLoading");
-      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      // Inline SVG works with the public Worker's strict img-src CSP (no
+      // data: images). Only numeric modules from the local encoder enter SVG.
+      const documentSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
+      const qr = document.importNode(documentSvg.documentElement, true);
+      qr.setAttribute("width", "160");
+      qr.setAttribute("height", "160");
+      qr.setAttribute("aria-hidden", "true");
+      image.removeAttribute("src");
+      placeholder.replaceChildren(qr);
+      syncRemoteMenuBounds();
     } catch {
       image.removeAttribute("src");
       placeholder.textContent = t("remote.qrFailed");
@@ -1783,7 +1813,24 @@ function renderRemoteIdentity() {
   if (elements.remoteIdentityRename) {
     elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving;
   }
-  elements.remoteIdentityModal?.classList.toggle("hidden", !modalOpen);
+  const identityModal = elements.remoteIdentityModal;
+  if (identityModal && modalOpen) {
+    identityModal.classList.remove("hidden", "closing");
+    identityModal.inert = false;
+  } else if (identityModal && !identityModal.classList.contains("hidden") && !identityModal.classList.contains("closing")) {
+    const finish = () => {
+      if (!identityModal.classList.contains("closing")) return;
+      identityModal.classList.add("hidden");
+      identityModal.classList.remove("closing");
+      syncRemoteShellInert();
+    };
+    identityModal.inert = true;
+    identityModal.classList.add("closing");
+    const animation = prefersReducedMotion() ? null : identityModal.querySelector(".remote-identity-card")?.getAnimations()
+      .find((entry) => entry.animationName === "scale-to-center-card");
+    if (animation) animation.finished.then(finish, finish);
+    else finish();
+  }
   document.body.classList.toggle("remote-identity-modal-open", modalOpen);
   if (modalOpen) {
     retireTransientPlaybackModalForModal();
@@ -2382,7 +2429,7 @@ function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null 
   state.ratingPromptBvid = "";
   state.ratingPromptPreviousFocus = null;
   state.ratingPromptReturnFocusToDock = false;
-  unlockPlaybackSheetDocumentScroll();
+  if (!playbackSheetIsOpen()) unlockPlaybackSheetDocumentScroll();
   syncRemoteShellInert();
 
   setTimeout(() => {
@@ -2441,7 +2488,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
 
   closeRatingPrompt({ submit: true, restoreFocus: false });
   const previousFocus = document.activeElement;
-  const returnFocusToDock = retirePlaybackSheetForModal();
+  const returnFocusToDock = false; // Rating overlays the existing playback sheet.
 
   const defaultTab = currentRateable ? "current" : "previous";
   const activeItem = promptItems[defaultTab];
@@ -2811,7 +2858,17 @@ function closeHistoryExportDialog({ restoreFocus = true } = {}) {
   closeRemoteContextualInfo();
   historyExportRestoreFocus = restoreFocus;
   historyExportSessionsRequest += 1;
-  elements.historyExportDialog?.close();
+  const dialog = elements.historyExportDialog;
+  if (!dialog?.open || dialog.classList.contains("closing")) return;
+  const finish = () => {
+    dialog.classList.remove("closing");
+    dialog.close();
+  };
+  if (prefersReducedMotion()) { finish(); return; }
+  dialog.classList.add("closing");
+  const animation = dialog.getAnimations().find((entry) => entry.animationName === "scale-to-center-card");
+  if (animation) animation.finished.then(finish, finish);
+  else finish();
 }
 
 async function exportHistory(format) {
@@ -3776,89 +3833,11 @@ function createSearchResultUrlLine(item) {
 }
 
 function renderSearchResults(items) {
-  elements.searchResults.innerHTML = "";
-  elements.searchResults.classList.remove("hidden");
-
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "search-empty";
-    empty.textContent = t("search.empty");
-    elements.searchResults.appendChild(empty);
-    syncRemoteRequestPanelSizeTier();
-    return;
-  }
-
-  items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-    searchResultItemByElement.set(row, item);
-    row.dataset.url = String(item.url || "");
-    applyRequestResultSelection(row, item, "local");
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "primary-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    elements.searchResults.appendChild(row);
-  });
-  syncRemoteRequestPanelSizeTier();
+  renderSearchResultItems(elements.searchResults, items, t("search.empty"));
 }
 
 function renderLarkSearchResults(items) {
-  if (!elements.larkSearchResults) {
-    return;
-  }
-  elements.larkSearchResults.innerHTML = "";
-  elements.larkSearchResults.classList.remove("hidden");
-
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "search-empty";
-    empty.textContent = t("search.larkNoResults");
-    elements.larkSearchResults.appendChild(empty);
-    syncRemoteRequestPanelSizeTier();
-    return;
-  }
-
-  items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-    searchResultItemByElement.set(row, item);
-    row.dataset.url = String(item.url || "");
-    applyRequestResultSelection(row, item, "shared");
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "primary-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    elements.larkSearchResults.appendChild(row);
-  });
-  syncRemoteRequestPanelSizeTier();
+  renderSearchResultItems(elements.larkSearchResults, items, t("search.larkNoResults"));
 }
 
 function setSourcesFollowBrowseMessage(message, isError = false) {
@@ -10104,6 +10083,9 @@ function syncRemoteShellInert() {
     elements.playbackSheet
     && !elements.playbackSheet.classList.contains("hidden"),
   );
+  if (elements.playbackSheet && state.playbackSheetOpen) {
+    elements.playbackSheet.inert = Boolean(state.ratingPromptElement || remoteIdentityModalIsOpen());
+  }
   elements.remoteShell.inert = Boolean(
     playbackSheetOwnsPage
     || state.ratingPromptElement
@@ -10144,6 +10126,9 @@ function lockPlaybackSheetDocumentScroll() {
 }
 
 function unlockPlaybackSheetDocumentScroll() {
+  if (state.playbackSheetOpen || state.ratingPromptElement || elements.historyExportDialog?.open) {
+    return;
+  }
   const lock = state.playbackSheetScrollLock;
   if (!lock) {
     return;

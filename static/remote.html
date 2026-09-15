@@ -13,7 +13,8 @@
     <link rel="stylesheet" href="/remote-access.css" />
     <link rel="stylesheet" href="/song-detail.css" />
     <link rel="stylesheet" href="/remote-queue.css" />
-  </head>
+    <link rel="stylesheet" href="/status-indicators.css" />
+</head>
   <body>
     <main class="remote-shell" id="remote-shell">
       <header class="remote-header" id="remote-header">
@@ -254,7 +255,7 @@
             </div>
           </div>
 
-          <section id="remote-search-shared-panel" class="remote-search-mode-panel" role="tabpanel"
+          <section id="remote-search-shared-panel" class="remote-search-mode-panel remote-search-browser-view" role="tabpanel"
             data-remote-search-panel="shared" aria-labelledby="remote-search-shared-tab" aria-hidden="false">
             <form id="lark-search-form" class="request-form search-form">
               <input
@@ -270,7 +271,7 @@
             <div id="lark-search-results" class="search-results hidden"></div>
           </section>
 
-          <section id="remote-search-local-panel" class="remote-search-mode-panel" role="tabpanel"
+          <section id="remote-search-local-panel" class="remote-search-mode-panel remote-search-browser-view" role="tabpanel"
             data-remote-search-panel="local" aria-labelledby="remote-search-local-tab" aria-hidden="true" hidden inert>
             <form id="search-form" class="request-form search-form">
               <input

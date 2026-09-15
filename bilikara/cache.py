@@ -1311,6 +1311,7 @@ class CacheManager:
     def status(self, metrics: dict[str, Any] | None = None) -> dict:
         cache_metrics = metrics or self.cache_metrics()
         login_status = self.bbdown_login_status()
+        native_runtime_ready = bool(rust_runtime.runtime_status()["loaded"])
         with self.lock:
             return {
                 "state": self.binary_state,
@@ -1320,6 +1321,7 @@ class CacheManager:
                 "max_cache_items": self.max_cache_items,
                 "cache_bytes": cache_metrics["total_bytes"],
                 "cached_items": cache_metrics["item_count"],
+                "native_runtime_ready": native_runtime_ready,
                 "logged_in": login_status["logged_in"],
                 "login": login_status,
                 "media_capabilities": self.media_capabilities_snapshot(),

@@ -177,9 +177,13 @@ class AvDelayFrontendTest(unittest.TestCase):
                 script = f"""
 const currentSettings = {{ av_delay: {{ effective_delay_ms: 0, locked: {str(locked).lower()},
   has_local_adjustment: {str(has_local).lower()}, lock_button_enabled: {str(enabled).lower()} }} }};
+const icons = ['locked', 'unlocked'].map(value => ({{
+  dataset: {{ avLockIcon: value }}, hidden: false, getAttribute() {{ return value; }},
+  classList: {{ toggle(_name, hidden) {{ icons.find(icon => icon.dataset.avLockIcon === value).hidden = hidden; }} }}
+}}));
 function element() {{ return {{ disabled: false, value: '', textContent: '', title: '', dataset: {{}},
   attributes: {{}}, setAttribute(k, v) {{ this.attributes[k] = String(v); }},
-  classList: {{ toggle() {{}} }}, querySelectorAll() {{ return []; }} }}; }}
+  classList: {{ toggle() {{}} }}, querySelectorAll(selector) {{ return selector === "[data-av-lock-icon]" ? icons : []; }} }}; }}
 const elements = {{ {lock_key}: element(), {reset_key}: element(), {input_key}: element(), {panel_key}: element() }};
 const state = {{ {busy_key}: false }};
 const document = {{ activeElement: null }};
@@ -188,7 +192,7 @@ function t(key) {{ return key; }}
 {function_source}
 {call}
 console.log(JSON.stringify({{ disabled: elements.{lock_key}.disabled,
-  iconCodePoints: Array.from(elements.{lock_key}.textContent, (character) => character.codePointAt(0)),
+  visibleIcons: icons.filter(icon => !icon.hidden).map(icon => icon.dataset.avLockIcon),
   pressed: elements.{lock_key}.attributes['aria-pressed'],
   hasLocal: elements.{lock_key}.dataset.hasLocal }}));
 """
@@ -198,10 +202,7 @@ console.log(JSON.stringify({{ disabled: elements.{lock_key}.disabled,
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 result = json.loads(completed.stdout)
                 self.assertEqual(result["disabled"], not enabled)
-                if source is self.remote_js:
-                    self.assertEqual(result["iconCodePoints"], [])
-                else:
-                    self.assertEqual(result["iconCodePoints"], [0x1F512 if locked else 0x1F513])
+                self.assertEqual(result["visibleIcons"], ["locked" if locked else "unlocked"])
                 self.assertEqual(result["pressed"], str(locked).lower())
                 self.assertEqual(result["hasLocal"], str(has_local).lower())
 

@@ -1,0 +1,66 @@
+/* Shared status vocabulary: ready/active green, warning yellow, waiting gray,
+   failed/error red. Ready/error/warning use symbols; waiting keeps concentric disks. */
+:root {
+  --status-ready-color: #2b7b60;
+  --status-warning-color: #f1c21b;
+  --status-wait-color: #6d6258;
+  --status-error-color: #b14545;
+}
+:root[data-theme="dark"], :root[data-theme="blue"] {
+  --status-ready-color: #5fca9d;
+  --status-warning-color: #f1c21b;
+  --status-wait-color: #b5a89e;
+  --status-error-color: #ef7878;
+}
+.tool-status-indicator, .presentation-state-dot {
+  --status-color: var(--status-wait-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 50%;
+  color: var(--status-color);
+  background: color-mix(in srgb, var(--status-color) 14%, transparent);
+  box-shadow: none;
+}
+.tool-status-indicator::after, .presentation-state-dot::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: none;
+}
+/* Specificity also overrides historical toolbar and pending-state rules. */
+.tool-status-indicator:is(.is-ready, .is-failed, .is-warning, .is-loading, .is-pending),
+.presentation-state-dot:is(.is-active, .is-error, .is-connecting),
+.service-status-wrap .tool-status-indicator.is-ready,
+.cache-panel-tool-indicator.is-ready {
+  color: var(--status-color);
+  background: color-mix(in srgb, var(--status-color) 14%, transparent);
+  box-shadow: none;
+}
+.tool-status-indicator.is-ready, .presentation-state-dot.is-active { --status-color: var(--status-ready-color); }
+.tool-status-indicator.is-warning { --status-color: var(--status-warning-color); }
+.tool-status-indicator.is-failed, .presentation-state-dot.is-error { --status-color: var(--status-error-color); }
+.tool-status-indicator.is-loading::after,
+.tool-status-indicator.is-pending::after { width: 8px; height: 8px; background: currentColor; animation: none; }
+
+
+.tool-status-indicator:is(.is-ready, .is-failed, .is-warning)::after,
+.presentation-state-dot:is(.is-active, .is-error)::after {
+  width: auto;
+  height: auto;
+  flex: none;
+  background: none;
+  border-radius: 0;
+  font: 700 14px/1 var(--font-sans, sans-serif);
+}
+.tool-status-indicator.is-ready::after, .presentation-state-dot.is-active::after { content: "✓"; }
+.tool-status-indicator.is-failed::after, .presentation-state-dot.is-error::after { content: "×"; }
+.tool-status-indicator.is-warning { color: #c49a00; }
+:root:is([data-theme="dark"], [data-theme="blue"]) .tool-status-indicator.is-warning { color: var(--status-warning-color); }
+.tool-status-indicator.is-warning::after { content: "!"; }

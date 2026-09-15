@@ -28,7 +28,8 @@ $files = @(
     "remote.html",
     "remote.js",
     "song-detail.css",
-    "song-detail.js"
+    "song-detail.js",
+    "status-indicators.css"
 )
 
 New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null

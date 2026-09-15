@@ -23,6 +23,7 @@ on:
       - static/remote.js
       - static/song-detail.css
       - static/song-detail.js
+      - static/status-indicators.css
       - static/pic/*
   pull_request:
     branches: [dev, work/v0.8.0]

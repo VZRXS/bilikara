@@ -32,13 +32,39 @@ use tauri::Manager;
 /// its radius cannot diverge from the non-client frame while resizing.
 #[cfg(target_os = "windows")]
 pub(crate) fn configure_windows_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    sync_windows_main_window_frame(&window.as_ref().window())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn sync_windows_main_window_frame(window: &tauri::Window) -> Result<(), String> {
     use std::ffi::c_void;
     use windows_sys::Win32::Graphics::Dwm::{
-        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
+        DwmSetWindowAttribute,
     };
 
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
-    let preference: i32 = DWMWCP_ROUND;
+    let fullscreen = window.is_fullscreen().map_err(|error| error.to_string())?;
+    let square = fullscreen || window.is_maximized().map_err(|error| error.to_string())?;
+    window
+        .set_shadow(!fullscreen)
+        .map_err(|error| error.to_string())?;
+    let preference: i32 = if square {
+        DWMWCP_DONOTROUND
+    } else {
+        DWMWCP_ROUND
+    };
+    // DWMWA_COLOR_NONE/DEFAULT. Unsupported DWM attributes on Windows 10
+    // leave that OS's normal frame behavior intact.
+    let border: u32 = if fullscreen { 0xfffffffe } else { 0xffffffff };
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0,
+            DWMWA_BORDER_COLOR as u32,
+            (&border as *const u32).cast::<c_void>(),
+            std::mem::size_of_val(&border) as u32,
+        );
+    }
     let result = unsafe {
         DwmSetWindowAttribute(
             hwnd.0,

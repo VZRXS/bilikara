@@ -477,6 +477,37 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
         self.assertIn("window.scrollTo(0, lock.scrollY)", sheet_source)
         self.assertIn("if (immediate || prefersReducedMotion())", sheet_source)
 
+    def test_scroll_lock_waits_for_the_last_modal_owner(self):
+        source = self.script[self.script.index("function unlockPlaybackSheetDocumentScroll()"):
+                             self.script.index("function trapFocusWithin(")]
+        script = """
+const assert = require('node:assert/strict');
+const state = {};
+const elements = { historyExportDialog: { open: false } };
+let scrolls = 0;
+const window = { scrollTo() { scrolls++; } };
+const document = { body: { style: {}, classList: { remove() {} } } };
+""" + source + """
+for (const owner of ['sheet', 'rating', 'export']) {
+  const lock = { scrollY: 12 };
+  state.playbackSheetScrollLock = lock;
+  state.playbackSheetOpen = owner === 'sheet';
+  state.ratingPromptElement = owner === 'rating' ? {} : null;
+  elements.historyExportDialog.open = owner === 'export';
+  const previousScrolls = scrolls;
+  unlockPlaybackSheetDocumentScroll();
+  assert.equal(state.playbackSheetScrollLock, lock);
+  assert.equal(scrolls, previousScrolls);
+  state.playbackSheetOpen = false;
+  state.ratingPromptElement = null;
+  elements.historyExportDialog.open = false;
+  unlockPlaybackSheetDocumentScroll();
+  assert.equal(state.playbackSheetScrollLock, null);
+  assert.equal(scrolls, previousScrolls + 1);
+}
+"""
+        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
     def test_other_true_modals_retire_playback_ownership_first(self):
         modal_openers = (
             ("function openBindingSheet", "function closeBindingSheet"),
@@ -499,7 +530,9 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
             self.script.index("function openRatingPrompt") :
             self.script.index("function currentPlaybackClockSeconds")
         ]
-        self.assertIn("const returnFocusToDock = retirePlaybackSheetForModal();", rating_open)
+        self.assertNotIn("retirePlaybackSheetForModal()", rating_open)
+        self.assertIn("if (!playbackSheetIsOpen()) unlockPlaybackSheetDocumentScroll();", self.script)
+        self.assertIn("elements.playbackSheet.inert = Boolean(state.ratingPromptElement", self.script)
         escape_owner = self.script[
             self.script.index('document.addEventListener("keydown", (event) => {') :
             self.script.index('document.addEventListener("visibilitychange"')

@@ -343,8 +343,8 @@ console.log(JSON.stringify({ initial, connected, reconnecting, offline: {
         self.assertEqual(result["connected"], {
             "triggerPhase": "connected",
             "statusPhase": "connected",
-            "triggerGlyph": "✓",
-            "statusGlyph": "✓",
+            "triggerGlyph": "",
+            "statusGlyph": "",
             "visibleStatusText": "remote.connectionConnected",
             "statusText": "remote.connectionConnected",
             "statusLabel": "menu:remote.connectionConnected",
@@ -358,8 +358,8 @@ console.log(JSON.stringify({ initial, connected, reconnecting, offline: {
             "statusText": "remote.connectionReconnecting",
             "statusLabel": "menu:remote.connectionReconnecting",
         })
-        self.assertEqual(result["offline"]["triggerGlyph"], "×")
-        self.assertEqual(result["offline"]["statusGlyph"], "×")
+        self.assertEqual(result["offline"]["triggerGlyph"], "")
+        self.assertEqual(result["offline"]["statusGlyph"], "")
         self.assertEqual(result["offline"]["visibleStatusText"], "remote.connectionOffline")
         self.assertEqual(result["offline"]["statusText"], "remote.connectionOffline")
         self.assertEqual(result["offline"]["statusLabel"], "menu:remote.connectionOffline")
@@ -652,8 +652,8 @@ console.log(JSON.stringify({
         self.assertIn(".tool-status-indicator.is-ready", self.styles)
         self.assertIn(".tool-status-indicator.is-loading", self.styles)
         self.assertIn(".tool-status-indicator.is-failed", self.styles)
-        self.assertIn('indicator.textContent = "✓"', self.script)
-        self.assertIn('indicator.textContent = "×"', self.script)
+        self.assertIn('indicator.textContent = ""', self.script)
+        self.assertNotIn('indicator.textContent = "×"', self.script)
         self.assertIn("low-cost-indicator-blink 3.2s", self.styles)
         reduced_motion = re.search(
             r"@media \(prefers-reduced-motion: reduce\)\s*\{(.*?)\n\}",

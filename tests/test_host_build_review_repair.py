@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HostBuildReviewRepairTest(unittest.TestCase):
+    def test_runtime_settings_account_and_disabled_cli_presentation(self):
+        subprocess.run(
+            ["node", "tests/runtime_settings_status.cjs"], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        )
+
     @classmethod
     def setUpClass(cls):
         cls.markup = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -1217,7 +1224,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.styles,
         ).group(1)
         self.assertIn("background: var(--tool-ready-bg)", shared_ready)
-        self.assertIn('setTextContent(indicator, "✓")', self.script)
+        self.assertNotIn('setTextContent(indicator, "✓")', self.script)
+        shared = (ROOT / "static/status-indicators.css").read_text(encoding="utf-8")
+        self.assertIn(".tool-status-indicator::after, .presentation-state-dot::after", shared)
+        self.assertIn(".tool-status-indicator.is-warning", shared)
 
     def test_latest_shell_review_uses_shared_tabs_controls_scrollbars_and_responsive_detail(self):
         active_variant = re.findall(
@@ -1240,7 +1250,9 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         final_cache_panel = re.findall(
             r"(?m)^\.topbar \.cache-panel\s*\{([^}]*)\}", self.styles
         )[-1]
-        self.assertIn("padding-right: 12px", final_cache_panel)
+        self.assertIn("padding-right: max(0px, calc(16px - var(--cache-panel-scrollbar-width, 0px)))", final_cache_panel)
+        self.assertIn("scrollbar-gutter: auto", final_cache_panel)
+        self.assertNotIn("padding-left", final_cache_panel)
 
     def test_design_records_corrected_contract_and_scroll_owner_table(self):
         for phrase in (

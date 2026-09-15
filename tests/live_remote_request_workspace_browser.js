@@ -1413,13 +1413,12 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     assert(
       compactMetrics.requestSize === "compact"
         && standardStates.every((entry) => entry.requestSize === "standard")
-        && browseStates.every((entry) => entry.requestSize === "browse")
+        && browseStates.every((entry) => entry.requestSize === "browse-deep")
         && deepBrowseStates.every((entry) => entry.requestSize === "browse-deep")
         && compactMetrics.requestCard.height < Math.min(...standardStates.map((entry) => entry.requestCard.height))
         && Math.max(...standardStates.map((entry) => entry.requestCard.height))
           < Math.min(...browseStates.map((entry) => entry.requestCard.height))
-        && Math.max(...browseStates.map((entry) => entry.requestCard.height))
-          < Math.min(...deepBrowseStates.map((entry) => entry.requestCard.height)),
+        && browseStates.every((entry) => Math.abs(entry.requestCard.height - deepBrowseStates[0].requestCard.height) <= 1),
       "Request card did not adapt from compact to standard and browse content tiers",
       Object.fromEntries(Object.entries({ ...states, compactMetrics })
         .map(([name, entry]) => [name, { size: entry.requestSize, height: entry.requestCard.height }])),

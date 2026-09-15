@@ -874,7 +874,8 @@ assert.equal(invitation(), null);
         qr_source = self.remote_js[qr_start:qr_end]
         self.assertNotIn("qrserver.com", qr_source)
         self.assertIn("window.qrcode(0", qr_source)
-        self.assertIn("data:image/svg+xml", qr_source)
+        self.assertIn("placeholder.replaceChildren(qr)", qr_source)
+        self.assertNotIn("data:image", qr_source)
 
 
 if __name__ == "__main__":

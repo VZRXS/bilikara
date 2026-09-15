@@ -351,7 +351,10 @@ p {
   position: fixed;
   left: 0;
   top: 0;
-  width: min(260px, calc(100vw - 24px));
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  white-space: normal;
+  overflow-wrap: anywhere;
   max-height: calc(100dvh - 24px);
   padding: 14px;
   overflow-y: auto;
@@ -624,7 +627,7 @@ p {
 .export-field.hidden { display: none; }
 .export-field label { font-size: 13px; font-weight: 700; }
 .confirm-popover .cache-advanced-info:not(.is-visible) .cache-advanced-tooltip { display: none; }
-.confirm-popover .cache-advanced-tooltip[popover] {
+.cache-advanced-tooltip[popover] {
   position: fixed;
   inset: auto;
   margin: 0;
@@ -1822,10 +1825,10 @@ h2 {
 
 .cache-preview-switch,
 .cache-hires-switch {
-  --cache-switch-width: 54px;
-  --cache-switch-height: var(--cache-control-height);
-  --cache-switch-thumb: 28px;
-  --cache-switch-travel: 20px;
+  --cache-switch-width: 48px;
+  --cache-switch-height: 30px;
+  --cache-switch-thumb: 24px;
+  --cache-switch-travel: 18px;
   width: var(--cache-switch-width);
   height: var(--cache-switch-height);
   padding: 3px;
@@ -9104,7 +9107,6 @@ body[data-tauri-platform="macos"] .window-drag-region {
   width: 10px;
   height: 10px;
   flex: none;
-  background: transparent;
 }
 
 .window-controls {
@@ -9144,24 +9146,6 @@ body[data-tauri-platform="macos"] .window-drag-region {
 .window-control-button.is-native-hovered {
   z-index: var(--host-layer-tooltip);
   background: color-mix(in srgb, var(--ink) 9%, transparent);
-}
-
-/* The native hit area consumes pointer hover; keep its localized hint in the
-   same web surface as the other integrated controls, without a second button. */
-.window-control-button.is-native-hovered::after {
-  content: attr(title);
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--settings-panel-bg);
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  pointer-events: none;
 }
 
 .window-control-button:hover {
@@ -10542,7 +10526,8 @@ body.is-presentation-stage-only .left-column {
   width: 340px;
   max-width: calc(100vw - 24px);
   right: 0;
-  padding-right: 12px;
+  padding-right: max(0px, calc(16px - var(--cache-panel-scrollbar-width, 0px)));
+  scrollbar-gutter: auto;
   box-sizing: border-box;
 }
 
@@ -11128,7 +11113,10 @@ body.is-tauri-fullscreen-active .left-column {
   top: 0;
   bottom: auto;
   z-index: var(--host-layer-tooltip);
-  width: min(260px, calc(100vw - 24px));
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  white-space: normal;
+  overflow-wrap: anywhere;
   background: var(--settings-panel-bg);
   opacity: 0;
   transform: translateY(3px);
@@ -11749,3 +11737,19 @@ html[data-native-host="true"] :is(
   align-self: center;
   margin-bottom: 0;
 }
+
+/* Use the installed Windows caption font, including Win10's fallback font. */
+.window-control-button { display: inline-flex; align-items: center; justify-content: center; }
+.window-caption-glyph {
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1;
+}
+.window-caption-glyph[hidden] { display: none; }
+.av-sync-lock-button, .volume-mute-button { display: inline-flex; align-items: center; justify-content: center; }
+.av-sync-lock-button svg, .volume-mute-button svg { width: 20px; height: 20px; flex: 0 0 auto; }
+.av-sync-lock-button svg.hidden, .volume-mute-button svg.hidden { display: none; }
+
+body[data-window-focused="false"] .window-control-button { color: color-mix(in srgb, var(--ink) 45%, transparent); }
+body[data-window-focused="false"] .window-close-button:hover { color: #fff; }

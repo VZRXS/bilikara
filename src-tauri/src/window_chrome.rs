@@ -122,20 +122,44 @@ pub(crate) async fn set_window_maximize_region(
     Err("native maximize hit testing is Windows-only".into())
 }
 
+// Window-local pointer gesture; never application state. Capture release may
+// arrive as a client message, and capture loss must cancel a pending click.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct CaptionClick {
+    pressed: bool,
+}
+
+#[cfg(any(windows, test))]
+impl CaptionClick {
+    fn press(&mut self) {
+        self.pressed = true;
+    }
+    fn cancel(&mut self) {
+        self.pressed = false;
+    }
+    fn release(&mut self, inside: bool) -> bool {
+        std::mem::take(&mut self.pressed) && inside
+    }
+}
+
 #[cfg(windows)]
 mod native {
-    use super::MaximizeRegion;
+    use super::{CaptionClick, MaximizeRegion};
     use std::ptr::null_mut;
     use tauri::Emitter;
     use windows_sys::{
         Win32::{
             Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-            Graphics::Gdi::ValidateRect,
+            Graphics::{Dwm::DwmDefWindowProc, Gdi::ValidateRect},
             UI::{
                 Input::KeyboardAndMouse::{
-                    TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
+                    ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
+                    TrackMouseEvent,
                 },
-                Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+                Shell::{
+                    DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
+                },
                 WindowsAndMessaging::*,
             },
         },
@@ -149,7 +173,7 @@ mod native {
         window: tauri::WebviewWindow,
         parent: HWND,
         hovered: bool,
-        pressed: bool,
+        click: CaptionClick,
     }
 
     // All HWND operations and Box ownership transfers below run on the window
@@ -198,7 +222,7 @@ mod native {
                     window: window.clone(),
                     parent: hwnd,
                     hovered: false,
-                    pressed: false,
+                    click: CaptionClick::default(),
                 }));
                 if SetWindowSubclass(child, Some(button_proc), SUBCLASS, state as usize) == 0 {
                     drop(Box::from_raw(state));
@@ -242,10 +266,44 @@ mod native {
     ) -> LRESULT {
         // SAFETY: Comctl32 calls this on the owning window thread, with live HWNDs.
         unsafe {
-            if matches!(message, WM_SIZE | WM_DPICHANGED) {
-                let child = GetPropW(hwnd, PROPERTY) as HWND;
-                if !child.is_null() {
+            let child = GetPropW(hwnd, PROPERTY) as HWND;
+            let mut data = 0usize;
+            if !child.is_null()
+                && GetWindowSubclass(child, Some(button_proc), SUBCLASS, &mut data) != 0
+            {
+                if message == WM_NCHITTEST && IsWindowVisible(child) != 0 {
+                    let mut rect: RECT = std::mem::zeroed();
+                    let point = POINT {
+                        x: lp as i16 as i32,
+                        y: (lp >> 16) as i16 as i32,
+                    };
+                    if GetWindowRect(child, &mut rect) != 0
+                        && point.x >= rect.left
+                        && point.x < rect.right
+                        && point.y >= rect.top
+                        && point.y < rect.bottom
+                    {
+                        // The top-level HWND owns caption semantics. Windows 11
+                        // can show Snap Layouts; earlier versions keep OS behavior.
+                        return HTMAXBUTTON as LRESULT;
+                    }
+                }
+                if message == WM_NCLBUTTONDOWN && wp == HTMAXBUTTON as usize {
+                    return SendMessageW(child, message, wp, lp);
+                }
+                if matches!(message, WM_SIZE | WM_DPICHANGED) {
                     ShowWindow(child, SW_HIDE);
+                }
+            }
+            // Let DWM and the standard top-level procedure implement native
+            // hover and tooltips/Snap. The child handles captured click/release.
+            if matches!(
+                message,
+                WM_NCMOUSEMOVE | WM_NCMOUSELEAVE | WM_NCLBUTTONDOWN | WM_NCLBUTTONUP
+            ) {
+                let mut result = 0;
+                if DwmDefWindowProc(hwnd, message, wp, lp, &mut result) != 0 {
+                    return result;
                 }
             }
             if message == WM_NCDESTROY {
@@ -278,13 +336,12 @@ mod native {
                 let _ = state.window.emit("bilikara:maximize-hover", false);
                 return DefSubclassProc(hwnd, message, wp, lp);
             }
-            let state = &mut *pointer;
             match message {
                 WM_NCHITTEST => return HTMAXBUTTON as LRESULT,
                 WM_NCMOUSEMOVE => {
-                    if !state.hovered {
-                        state.hovered = true;
-                        let _ = state.window.emit("bilikara:maximize-hover", true);
+                    if !(*pointer).hovered {
+                        (*pointer).hovered = true;
+                        let _ = (*pointer).window.emit("bilikara:maximize-hover", true);
                         let mut tracking = TRACKMOUSEEVENT {
                             cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                             dwFlags: TME_LEAVE | TME_NONCLIENT,
@@ -293,41 +350,45 @@ mod native {
                         };
                         TrackMouseEvent(&mut tracking);
                     }
+                    // DWM needs the top-level hover for Windows 11 Snap. The
+                    // child owns leave tracking: tracking the parent flickers
+                    // because the cursor is actually over this child HWND.
+                    let parent = (*pointer).parent;
+                    return SendMessageW(parent, message, wp, lp);
                 }
-                WM_NCMOUSELEAVE | WM_CANCELMODE => {
-                    state.hovered = false;
-                    state.pressed = false;
-                    let _ = state.window.emit("bilikara:maximize-hover", false);
+                WM_NCMOUSELEAVE | WM_CANCELMODE | WM_CAPTURECHANGED => {
+                    (*pointer).hovered = false;
+                    if message != WM_NCMOUSELEAVE {
+                        (*pointer).click.cancel();
+                    }
+                    let _ = (*pointer).window.emit("bilikara:maximize-hover", false);
                 }
-                WM_SHOWWINDOW if wp == 0 => {
-                    state.hovered = false;
-                    state.pressed = false;
-                    let _ = state.window.emit("bilikara:maximize-hover", false);
-                }
-                WM_NCLBUTTONDOWN if wp == HTMAXBUTTON as usize => {
-                    state.pressed = true;
+                WM_NCLBUTTONDOWN => {
+                    (*pointer).click.press();
+                    SetCapture(hwnd);
                     return 0;
                 }
-                WM_NCLBUTTONUP if wp == HTMAXBUTTON as usize => {
-                    let pressed = std::mem::take(&mut state.pressed);
-                    let mut bounds: RECT = std::mem::zeroed();
-                    let point = POINT {
-                        x: lp as i16 as i32,
-                        y: (lp >> 16) as i16 as i32,
-                    };
-                    if pressed
-                        && GetWindowRect(hwnd, &mut bounds) != 0
-                        && point.x >= bounds.left
-                        && point.x < bounds.right
-                        && point.y >= bounds.top
-                        && point.y < bounds.bottom
-                    {
-                        let command = if IsZoomed(state.parent) != 0 {
+                WM_LBUTTONUP | WM_NCLBUTTONUP => {
+                    // Capture converts non-client release into WM_LBUTTONUP.
+                    // Copy state before releasing capture (synchronous reentry).
+                    let parent = (*pointer).parent;
+                    let mut point: POINT = std::mem::zeroed();
+                    let mut rect: RECT = std::mem::zeroed();
+                    let inside = GetCursorPos(&mut point) != 0
+                        && GetWindowRect(hwnd, &mut rect) != 0
+                        && point.x >= rect.left
+                        && point.x < rect.right
+                        && point.y >= rect.top
+                        && point.y < rect.bottom;
+                    let clicked = (*pointer).click.release(inside);
+                    ReleaseCapture();
+                    if clicked {
+                        let command = if IsZoomed(parent) != 0 {
                             SC_RESTORE
                         } else {
                             SC_MAXIMIZE
                         };
-                        PostMessageW(state.parent, WM_SYSCOMMAND, command as usize, 0);
+                        PostMessageW(parent, WM_SYSCOMMAND, command as usize, 0);
                     }
                     return 0;
                 }
@@ -346,6 +407,21 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn caption_click_requires_press_and_inside_release_and_cancels_on_capture_loss() {
+        let mut click = CaptionClick::default();
+        assert!(!click.release(true));
+        click.press();
+        assert!(!click.release(false));
+        assert!(!click.release(true));
+        click.press();
+        click.cancel();
+        assert!(!click.release(true));
+        click.press();
+        assert!(click.release(true));
+        assert!(!click.release(true));
+    }
+
     #[test]
     fn chrome_colors_cannot_inject_css() {
         assert!(is_css_hex("#f8f0e4"));

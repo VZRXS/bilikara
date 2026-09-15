@@ -531,7 +531,6 @@ const elements = {
   bbdownLoginMessage: document.getElementById("bbdown-login-message"),
   bbdownLoginRefresh: document.getElementById("bbdown-login-refresh"),
   ffmpegStatusRow: document.getElementById("ffmpeg-status-row"),
-  bbdownPanelStatusIndicator: document.getElementById("bbdown-panel-status-indicator"),
   ffmpegPanelStatusIndicator: document.getElementById("ffmpeg-panel-status-indicator"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
@@ -3245,7 +3244,7 @@ function renderPlayerFullscreenButton() {
   setTextContent(elements.playerFullscreenLabel, label);
   setElementAttribute(button, "aria-pressed", String(active));
   setElementAttribute(button, "aria-label", active ? t("player.fullscreenRemoteExit") : title);
-  setElementTitle(button, title);
+  setElementTitle(button, active ? "" : title);
   syncPlayerFullscreenExpandedWidth();
   if (!active) {
     setPlayerFullscreenRemotePinned(false);
@@ -5137,9 +5136,11 @@ function renderWindowMaximizeState(maximized) {
   const button = elements.windowMaximize;
   if (!button) return;
   const key = maximized ? "window.restore" : "window.maximize";
-  button.dataset.i18nTitle = key;
+  const nativeWindows = document.body.dataset.tauriPlatform === "windows";
+  if (nativeWindows) delete button.dataset.i18nTitle;
+  else button.dataset.i18nTitle = key;
   button.dataset.i18nAriaLabel = key;
-  setElementTitle(button, t(key));
+  setElementTitle(button, nativeWindows ? "" : t(key));
   setElementAttribute(button, "aria-label", t(key));
   button.querySelector(".window-maximize-icon")?.toggleAttribute("hidden", maximized);
   button.querySelector(".window-restore-icon")?.toggleAttribute("hidden", !maximized);
@@ -5244,6 +5245,15 @@ function initializeWindowChrome() {
   window.addEventListener("focus", schedulePresentationDisplayRefreshFromWindowEvent);
   if (platform === "windows") {
     elements.windowControls.hidden = false;
+    let focusChanged = false;
+    const focusListener = appWindow.onFocusChanged?.(({ payload }) => {
+      focusChanged = true;
+      document.body.dataset.windowFocused = String(Boolean(payload));
+    });
+    focusListener?.catch?.(() => {});
+    appWindow.isFocused?.().then((focused) => {
+      if (!focusChanged) document.body.dataset.windowFocused = String(Boolean(focused));
+    }).catch(() => {});
     initializeNativeMaximizeRegion(appWindow);
     elements.windowMinimize?.addEventListener("click", () => appWindow.minimize().catch(() => {}));
     elements.windowMaximize?.addEventListener("click", toggleWindowMaximize);
@@ -5331,7 +5341,7 @@ function localizedBBDownLoginMessage(message) {
   if (!raw) {
     return "";
   }
-  if (raw === "请使用哔哩哔哩 App 扫码登录" || raw.includes("扫码登录")) {
+  if (raw === "请使用哔哩哔哩 App 扫码登录" || raw.includes("扫码登录") || raw.startsWith("请使用哔哩哔哩 App 扫码")) {
     return t("service.scanWithBilibiliApp");
   }
   if (raw === "正在启动 BBDown 登录" || raw.includes("启动 BBDown 登录")) {
@@ -9477,8 +9487,9 @@ function positionContextualTooltip(info) {
     boundaryRect?.bottom ?? (window.innerHeight - viewportInset),
   );
   const buttonRect = button.getBoundingClientRect();
-  const width = Math.min(260, Math.max(0, boundaryRight - boundaryLeft));
-  tooltip.style.width = `${Math.round(width)}px`;
+  tooltip.style.width = "max-content";
+  tooltip.style.maxWidth = `${Math.round(Math.max(0, boundaryRight - boundaryLeft))}px`;
+  const width = tooltip.getBoundingClientRect().width;
   tooltip.style.left = "0px";
   tooltip.style.top = "0px";
   tooltip.style.bottom = "auto";
@@ -9549,6 +9560,13 @@ function syncTopControlPopoverPositions() {
       return;
     }
     if (popup === elements.cachePanel && globalThis.BilikaraAndroidHost?.isPortrait()) return;
+    if (popup === elements.cachePanel && popup.offsetWidth > 0) {
+      const style = window.getComputedStyle(popup);
+      const borders = (parseFloat(style.borderLeftWidth) || 0)
+        + (parseFloat(style.borderRightWidth) || 0);
+      const scrollbarWidth = Math.max(0, popup.offsetWidth - popup.clientWidth - borders);
+      popup.style.setProperty("--cache-panel-scrollbar-width", `${scrollbarWidth}px`);
+    }
     if (!compact) {
       for (const property of ["left", "right", "top"]) {
         popup.style[property] = "";
@@ -9590,7 +9608,7 @@ function resetContextualTooltipPosition(info) {
     return;
   }
   if (typeof tooltip.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
-  for (const property of ["left", "right", "top", "bottom", "width", "--contextual-tooltip-arrow-left"]) {
+  for (const property of ["left", "right", "top", "bottom", "width", "max-width", "--contextual-tooltip-arrow-left"]) {
     tooltip.style.removeProperty(property);
   }
   delete tooltip.dataset.tooltipDirection;
@@ -9612,7 +9630,7 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
   info.classList.toggle("is-pinned", pinned);
   info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
   const tooltip = info.querySelector(".cache-advanced-tooltip");
-  if (info.closest(".confirm-popover") && typeof tooltip?.showPopover === "function") {
+  if (typeof tooltip?.showPopover === "function") {
     tooltip.setAttribute("popover", "manual");
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
   }
@@ -10006,17 +10024,29 @@ function renderListHeader(playlist, history) {
 }
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
-  const serviceState = aggregateToolStatusState(bbdown, ffmpeg);
+  const login = bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) };
+  const showFFmpeg = ffmpeg?.state !== "disabled";
+  const native = (cachePolicy?.download_source || bbdown?.download_source) === "native";
+  const nativeReady = bbdown?.native_runtime_ready ?? bbdown?.ready;
+  const downloadState = native
+    ? (nativeReady === true ? "ready" : nativeReady === false ? "failed" : "idle")
+    : bbdown?.state;
+  const serviceState = aggregateToolStatusState(
+    { state: downloadState }, showFFmpeg ? ffmpeg : { state: "ready" },
+    // Login is optional for ordinary playback. QR expiry is never a runtime failure.
+    { state: login.logged_in ? "ready" : "warning" },
+  );
   const currentQuality = String(cachePolicy?.video_quality || "1080P 高码率");
   const playbackModeText = formatQualityLabel(currentQuality);
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
-  const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
+  const bbdownTitle = `Bilibili ${localizedBBDownLoginMessage(login.message) || t(login.logged_in ? "service.loggedIn" : "service.notLoggedIn")}`;
   const ffmpegTitle = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
   const signature = JSON.stringify({
     serviceState,
     playbackModeText,
-    bbdownState: bbdown?.state,
+    downloadState,
+    showFFmpeg,
     ffmpegState: ffmpeg?.state,
     bbdownTitle,
     ffmpegTitle,
@@ -10030,7 +10060,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
     syncToolIndicator(elements.serviceStatusIndicator, serviceState);
     setTextContent(elements.playbackModeSummary, playbackModeText);
     setTextContent(elements.playbackModeCurrent, playbackModeText);
-    syncToolIndicator(elements.bbdownPanelStatusIndicator, bbdown?.state);
+    setClassToggle(elements.ffmpegStatusRow, "hidden", !showFFmpeg);
     syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
     renderBBDownLogin(bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) });
     if (elements.bbdownStatusRow && elements.bbdownStatusRow.title !== bbdownTitle) {
@@ -10320,7 +10350,7 @@ function maybeStartBBDownLogin(login, options = {}) {
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
   }
-  if (!force && loginState !== "idle") {
+  if (!force && loginState !== "idle" && !options.reopen) {
     return;
   }
   startBBDownLogin({ force });
@@ -10360,27 +10390,27 @@ function syncToolIndicator(indicator, state) {
     return;
   }
   indicator.dataset.toolState = normalizedState;
-  indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
+  indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending", "is-warning");
   setTextContent(indicator, "");
   if (normalizedState === "ready") {
     indicator.classList.add("is-ready");
-    setTextContent(indicator, "✓");
-  } else if (normalizedState === "failed") {
+  } else if (normalizedState === "failed" || normalizedState === "error") {
     indicator.classList.add("is-failed");
-    setTextContent(indicator, "×");
+  } else if (normalizedState === "warning") {
+    indicator.classList.add("is-warning");
   } else if (normalizedState === "checking" || normalizedState === "installing" || normalizedState === "loading") {
     indicator.classList.add("is-loading");
   } else {
     indicator.classList.add("is-pending");
-    setTextContent(indicator, "·");
   }
 }
 
-function aggregateToolStatusState(bbdown, ffmpeg) {
-  const states = [bbdown?.state, ffmpeg?.state].map((value) => String(value || "idle"));
-  if (states.includes("failed")) {
+function aggregateToolStatusState(...services) {
+  const states = services.map(service => String(service?.state || "idle"));
+  if (states.includes("failed") || states.includes("error")) {
     return "failed";
   }
+  if (states.includes("warning")) return "warning";
   if (states.every((stateValue) => stateValue === "ready")) {
     return "ready";
   }
@@ -10890,6 +10920,7 @@ function syncCachePanelVisibility(options = {}) {
   setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
+    reopen: Boolean(options.reopen),
   });
   if (state.cacheSettingsOpen && typeof scheduleTopControlPopoverPositionSync === "function") {
     scheduleTopControlPopoverPositionSync();
@@ -13708,10 +13739,6 @@ function volumePercentText() {
   return `${Math.round(state.localPlayerVolume * 100)}%`;
 }
 
-function muteIcon(isMuted) {
-  return isMuted ? "🔇" : "🔊";
-}
-
 function setRangeFillPercent(input, percent) {
   if (!input) {
     return;
@@ -13732,13 +13759,11 @@ function renderVolumeControls(playbackMode) {
   const volumePercent = Math.round(state.localPlayerVolume * 100);
   const label = volumePercentText();
   const muteLabel = state.localPlayerMuted ? t("player.unmute") : t("player.mute");
-  const muteButtonText = muteIcon(state.localPlayerMuted);
   const signature = JSON.stringify({
     isLocalMode,
     volumePercent,
     label,
     muteLabel,
-    muteButtonText,
     muted: state.localPlayerMuted,
   });
 
@@ -13753,7 +13778,9 @@ function renderVolumeControls(playbackMode) {
   }
   setRangeFillPercent(elements.volumeSlider, volumePercent);
   setTextContent(elements.volumeValue, label);
-  setTextContent(elements.volumeMuteButton, muteButtonText);
+  elements.volumeMuteButton.querySelectorAll("[data-volume-icon]").forEach((icon) => {
+    icon.classList.toggle("hidden", icon.dataset.volumeIcon !== (state.localPlayerMuted ? "muted" : "unmuted"));
+  });
   elements.volumeMuteButton.setAttribute("aria-label", muteLabel);
   elements.volumeMuteButton.setAttribute("title", muteLabel);
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
@@ -14303,7 +14330,9 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   if (elements.avDelayLockButton) {
     const locked = Boolean(delayState.locked);
     const hasLocal = Boolean(delayState.has_local_adjustment);
-    elements.avDelayLockButton.textContent = locked ? "🔒" : "🔓";
+    elements.avDelayLockButton.querySelectorAll("[data-av-lock-icon]").forEach((icon) => {
+      icon.classList.toggle("hidden", icon.dataset.avLockIcon !== (locked ? "locked" : "unlocked"));
+    });
     elements.avDelayLockButton.disabled = state.avOffsetSaving || !Boolean(delayState.lock_button_enabled);
     elements.avDelayLockButton.dataset.locked = String(locked);
     elements.avDelayLockButton.dataset.hasLocal = String(hasLocal);
@@ -19237,7 +19266,7 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
     state.presentationSettingsOpen = false;
     syncPresentationPanelVisibility();
   }
-  syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+  syncCachePanelVisibility({ reopen: state.cacheSettingsOpen });
 });
 
 document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
