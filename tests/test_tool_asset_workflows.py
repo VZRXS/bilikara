@@ -98,7 +98,7 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertNotIn("diagnostics-${{ steps.bundle-name.outputs.artifact_name }}", self.bundle_workflow)
         self.assertNotIn("dist/libav-build-records", self.bundle_workflow)
         self.assertLess(self.bundle_workflow.index("Resolve bundle archive name"),
-                        self.bundle_workflow.index("Build same-source Windows"))
+                        self.bundle_workflow.index("Build Windows libav"))
         bash = shutil.which("bash")
         if os.name == "nt":
             git_bash = Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe"
@@ -193,11 +193,15 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertTrue(payload["recipe_revision"])
 
     def test_normal_bundle_embeds_required_media_tools(self):
-        self.assertIn("Build same-source Windows FFmpeg and companion", self.bundle_workflow)
+        self.assertIn("Build Windows libav libraries and companion", self.bundle_workflow)
         self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
+        for script in ("build-windows.sh", "build-posix.sh"):
+            self.assertIn("--disable-programs", (ROOT / "media-libav" / script).read_text())
+        self.assertIn("check_no_media_cli_bundle.py", self.bundle_workflow)
+        self.assertNotIn("ilammy/msvc-dev-cmd", self.bundle_workflow)
         self.assertNotIn("for ($attempt", self.bundle_workflow)
         self.assertNotIn("Start-Sleep", self.bundle_workflow)
-        self.assertIn("Build same-source POSIX FFmpeg and companion", self.bundle_workflow)
+        self.assertIn("Build POSIX libav libraries and companion", self.bundle_workflow)
         self.assertIn("Prepare pinned BBDown vendor", self.bundle_workflow)
         self.assertIn("scripts/prepare_bbdown_vendor.py", self.bundle_workflow)
         self.assertIn(
@@ -211,9 +215,9 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertNotIn("Verify clean BBDown runtime restore on Windows", self.bundle_workflow)
         self.assertIn("Locked aria2c metadata-only checks", self.bundle_workflow)
         self.assertNotIn("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1", self.bundle_workflow)
-        self.assertIn("Packaged portable FFmpeg checks", self.bundle_workflow)
-        self.assertIn("Running extracted portable FFmpeg checks", self.bundle_workflow)
-        for tool in ("BBDown", "ffmpeg", "ffprobe"):
+        self.assertNotIn("Packaged portable FFmpeg checks", self.bundle_workflow)
+        self.assertNotIn("Running extracted portable FFmpeg checks", self.bundle_workflow)
+        for tool in ("BBDown", "bilikara_media_libav.dll"):
             self.assertIn(tool, self.bundle_workflow)
         self.assertIn("bilikara_runtime.dll", self.bundle_workflow)
         self.assertIn("libbilikara_runtime.dylib", self.bundle_workflow)

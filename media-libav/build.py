@@ -1,5 +1,6 @@
 """Explicit companion build. No pkg-config or system FFmpeg discovery."""
 import argparse
+import ctypes
 import json
 import os
 import platform
@@ -20,11 +21,34 @@ def main():
     prefix = args.prefix.resolve(strict=True)
     out = args.out.resolve()
     source = Path(__file__).resolve().parent
-    env = dict(os.environ, LD_LIBRARY_PATH=str(prefix / "lib"))
-    facts = json.loads(subprocess.check_output([
-        str(prefix / "bin" / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")), "-v", "quiet", "-show_program_version",
-        "-show_library_versions", "-of", "json",
-    ], env=env))
+    # Read the selected shared libraries directly: building the companion must
+    # not require ffprobe or any other FFmpeg program.
+    directory = prefix / ("bin" if sys.platform == "win32" else "lib")
+    dll_directory = os.add_dll_directory(str(directory)) if sys.platform == "win32" else None
+    libraries = {}
+    try:
+        for name in ("avutil", "avcodec", "avformat"):
+            pattern = f"{name}-*.dll" if sys.platform == "win32" else (
+                f"lib{name}.*.dylib" if sys.platform == "darwin" else f"lib{name}.so.*")
+            candidates = {path.resolve() for path in directory.glob(pattern)}
+            if len(candidates) != 1:
+                parser.error(f"Expected one selected {name} library")
+            library = ctypes.CDLL(str(candidates.pop()))
+            getattr(library, name + "_version").restype = ctypes.c_uint
+            libraries[name] = library
+        libraries["avutil"].av_version_info.restype = ctypes.c_char_p
+        libraries["avformat"].avformat_configuration.restype = ctypes.c_char_p
+        facts = {
+            "program_version": {
+                "version": libraries["avutil"].av_version_info().decode(),
+                "configuration": libraries["avformat"].avformat_configuration().decode(),
+            },
+            "library_versions": [{"name": "lib" + name, "version": getattr(library, name + "_version")()}
+                                 for name, library in libraries.items()],
+        }
+    finally:
+        if dll_directory is not None:
+            dll_directory.close()
     program = facts["program_version"]
     expected = {"libavformat": 4129125, "libavcodec": 4129125, "libavutil": 3998053}
     actual = {v["name"]: v["version"] for v in facts["library_versions"]}

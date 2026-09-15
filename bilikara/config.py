@@ -57,6 +57,11 @@ def _resource_root() -> Path:
 
 
 def _frozen_runtime_home() -> Path:
+    from .media_cli import DISABLED
+    if DISABLED:
+        if sys.platform == "darwin":
+            return Path("~/Library/Application Support/bilikara-no-media-cli").expanduser()
+        return Path(sys.executable).resolve().parent / "runtime-no-media-cli"
     if sys.platform == "darwin":
         return Path("~/Library/Application Support/bilikara").expanduser()
     return Path(sys.executable).resolve().parent / "runtime"

@@ -181,7 +181,9 @@ class WindowsPreviewTests(unittest.TestCase):
         with patch.object(preview, "pe_info", side_effect=info):
             data = preview.collect(self.root, redist, system)
             self.assertIn("swresample-7.dll", data["runtime_files"])
-            self.assertNotIn(preview.COMPANION, data["runtime_files"])
+            self.assertIn(preview.COMPANION, data["runtime_files"])
+            self.assertNotIn("ffmpeg.exe", data["runtime_files"])
+            self.assertNotIn("ffprobe.exe", data["runtime_files"])
             self.assertEqual((self.vendor / "vcruntime140.dll").read_bytes(), b"vc-redist")
             imports["avcodec-63.dll"].append("avcodec-OLD.dll")
             (system / "avcodec-OLD.dll").write_bytes(b"foreign")
@@ -380,10 +382,10 @@ assert any(p.samefile(expected) for p in candidates), candidates
         self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 3)
         self.assertIn("needs: [bundle, android-bundle]", text)
         self.assertIn("Upload signed APK to GitHub Release", text)
-        for before, after in (("Setup native MSVC", "Build same-source Windows"),
-                              ("Build same-source Windows", "Prepare native driver"),
+        for before, after in (("Setup native MSVC", "Build Windows libav"),
+                              ("Build Windows libav", "Prepare native driver"),
                               ("Prepare native driver", "Build app bundle"),
-                              ("Build same-source POSIX", "Build app bundle"),
+                              ("Build POSIX libav", "Build app bundle"),
                               ("Build app bundle", "Inject Tauri into Windows"),
                               ("Inject Tauri into Windows", "Archive Windows bundle"),
                               ("Inject Tauri into macOS", "Embed signed backend"),

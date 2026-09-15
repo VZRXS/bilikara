@@ -8,6 +8,9 @@ bilikara for macOS
 Bilikara-Desktop.app
 
 压缩包中的 bilikara.app 是后端／浏览器模式入口，通常不需要单独运行。
+为减小体积，它是指向 Bilikara-Desktop.app 内嵌后端的相对符号链接。
+请完整解压后使用；安装桌面版时只需移动 Bilikara-Desktop.app。
+若需要单独保留浏览器模式，请复制桌面应用内 Contents/Frameworks/bilikara-backend.app 的实际应用，而非只移动外层链接。
 
 
 【首次启动被 macOS 阻止时】

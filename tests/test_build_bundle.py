@@ -156,7 +156,7 @@ class BuildBundleTest(unittest.TestCase):
 
         self.assertEqual(resolved, ffprobe)
 
-    def test_bundled_binary_args_rejects_missing_ffprobe(self):
+    def test_bundled_binary_args_does_not_require_or_include_ffprobe(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         bbdown = Path("/usr/bin/BBDown")
         data_separator = ";" if build_bundle.platform.system() == "Windows" else ":"
@@ -167,8 +167,8 @@ class BuildBundleTest(unittest.TestCase):
         with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
-            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
-                build_bundle._bundled_binary_args(data_separator)
+            args = build_bundle._bundled_binary_args(data_separator)
+            self.assertEqual(args, ["--add-binary", f"{bbdown.resolve()}{data_separator}vendor"])
 
     def test_bundled_binary_args_includes_all_required_tools(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
@@ -186,10 +186,6 @@ class BuildBundleTest(unittest.TestCase):
             args,
             [
                 "--add-binary",
-                f"{ffmpeg.resolve()}{data_separator}vendor",
-                "--add-binary",
-                f"{ffprobe.resolve()}{data_separator}vendor",
-                "--add-binary",
                 f"{bbdown.resolve()}{data_separator}vendor",
             ],
         )
@@ -202,7 +198,7 @@ class BuildBundleTest(unittest.TestCase):
             return_value=(0, "configuration: --enable-nonfree\n"),
         ):
             with self.assertRaisesRegex(RuntimeError, "enable-nonfree"):
-                build_bundle._bundled_binary_args(":", validate=True)
+                build_bundle._validate_ffmpeg_redistribution_metadata({"ffmpeg": ffmpeg})
 
     def test_bundled_binary_args_requires_bbdown(self):
         ffmpeg = Path("/usr/bin/ffmpeg")

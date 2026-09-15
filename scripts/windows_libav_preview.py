@@ -34,7 +34,7 @@ def pe_info(path: Path) -> dict:
 def collect(prefix: Path, redist: Path, system: Path) -> dict:
     """Walk actual PE imports; only selected build, VC redist and Windows OS."""
     bindir = prefix / "bin"
-    roots = ["ffmpeg.exe", "ffprobe.exe", COMPANION, TEST_COMPANION]
+    roots = [COMPANION, TEST_COMPANION]
     local = {p.name.lower(): p for p in bindir.glob("*.dll")}
     runtime = {p.name.lower(): p for p in redist.glob("*.dll")}
     drivers = list((prefix / "driver").glob("*.exe"))
@@ -68,7 +68,7 @@ def collect(prefix: Path, redist: Path, system: Path) -> dict:
     # CLI restore excludes the optional companion/test DLLs, but includes the
     # complete CLI dependency closure. All libav DLLs stay alongside the shim.
     cli = set()
-    pending_names = ["ffmpeg.exe", "ffprobe.exe"]
+    pending_names = [COMPANION]
     while pending_names:
         name = pending_names.pop()
         if name in cli:
@@ -81,7 +81,7 @@ def collect(prefix: Path, redist: Path, system: Path) -> dict:
         if not any(n == "ucrtbase.dll" or n.startswith("api-ms-win-crt-") for n in facts[name]["imports"]):
             raise RuntimeError(f"Expected shared UCRT imports: {name}")
     driver_facts = {p.name.lower(): facts.pop(p.name.lower()) for p in drivers}
-    data = {"schema_version": 1, "version": "9.0.1", "target": TARGET,
+    data = {"schema_version": 1, "kind": "libav", "version": "9.0.1", "target": TARGET,
             "build_run": os.environ.get("GITHUB_RUN_ID", "local-helper-test"),
             "build_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
             "runtime_files": sorted(cli), "pe": facts,
@@ -102,7 +102,7 @@ def stage(prefix: Path, bundle: Path) -> None:
         shutil.copy2(prefix / "bin" / name, vendor / name)
     runtime_manifest = {
         key: manifest[key]
-        for key in ("schema_version", "version", "target", "runtime_files", "build_run", "build_attempt")
+        for key in ("schema_version", "kind", "version", "target", "runtime_files", "build_run", "build_attempt")
         if key in manifest
     }
     (vendor / MANIFEST).write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")

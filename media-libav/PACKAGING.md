@@ -2,8 +2,11 @@
 
 Windows, macOS and Linux x64/ARM64 bundles use FFmpeg 9.0.1 and the companion
 built from the same signed source on a native runner. The normal media route
-negotiates libav at the operation boundary. FFmpeg/ffprobe CLI compatibility
-and `BILIKARA_MEDIA_BACKEND=legacy` remain available.
+negotiates libav at the operation boundary. Desktop builds disable FFmpeg
+programs (`--disable-programs`) and ship only the companion/library closure.
+FFmpeg/ffprobe execution remains disabled in the frozen experiment; BBDown,
+yt-dlp and aria2c are allowed. Legacy CLI source helpers remain for compatibility
+tests but do not supply a packaged media fallback.
 
 Set an absolute `BILIKARA_LIBAV_PREFIX`, then run `build-posix.sh` or, in the
 native MSVC environment, `build-windows.sh` and `prepare-windows.ps1`.
@@ -18,7 +21,8 @@ branch name (for example, `bilikara-windows-x64-work-v0.8.0.zip`). Tagged archiv
 retain the `bilikara-v0.8.0-windows-x64.zip` format.
 Application ZIPs are uploaded directly with `archive: false`, without an outer
 artifact ZIP. The platform test jobs own native-media behavioral validation;
-bundle jobs build, stage, structurally verify, sign, archive and upload only.
+bundle jobs build, stage, structurally verify, sign, archive and run a frozen
+backend smoke check before upload.
 They do not publish separate diagnostics artifacts.
 
 Every bundle includes source and license records. Build-only native test drivers,
@@ -29,7 +33,7 @@ The mandatory Rust libraries do not link to libav at process startup.
 
 CI extracts each archive into a new path containing spaces and Unicode and
 performs structural, architecture and signing checks. Native-media tests cover
-default and legacy routing, CLI restoration, same-build comparisons, native
+default routing and retained legacy helper behavior, same-build comparisons, native
 cache routing, cancellation and publication collisions before bundle
 publication. The source-tree diagnostic drivers and fault companion remain
 test-only and are never loaded by normal application calls.

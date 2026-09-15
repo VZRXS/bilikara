@@ -77,7 +77,7 @@ def system_import(name: str) -> bool:
 
 def collect_posix(prefix: Path) -> None:
     bindir = prefix / "bin"
-    roots = ["ffmpeg", "ffprobe", COMPANIONS[platform.system()],
+    roots = [COMPANIONS[platform.system()],
              COMPANIONS[platform.system()].replace("libav.", "libav_test.")]
     facts = {}
     pending = list(roots)
@@ -114,7 +114,7 @@ def collect_posix(prefix: Path) -> None:
                     (platform.system() == "Darwin" and dep != "@loader_path/" + Path(dep).name)):
                 raise RuntimeError("Private libav closure is not relocatable")
     cli = set()
-    pending = ["ffmpeg", "ffprobe"]
+    pending = [COMPANIONS[platform.system()]]
     while pending:
         name = pending.pop()
         if name not in cli:
@@ -124,7 +124,7 @@ def collect_posix(prefix: Path) -> None:
     for info in drivers.values():
         if any(not system_import(dep) for dep in info["imports"]):
             raise RuntimeError("Developer driver acquired a non-system import")
-    data = {"schema_version": 1, "version": "9.0.1", "target": native_target(),
+    data = {"schema_version": 1, "kind": "libav", "version": "9.0.1", "target": native_target(),
             "runtime_files": sorted(cli), "binaries": facts, "drivers": drivers,
             "build_run": os.environ.get("GITHUB_RUN_ID", "local"),
             "build_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "1")}
@@ -153,7 +153,7 @@ def stage(prefix: Path, bundle: Path) -> None:
     manifest_path = vendor / "ffmpeg-runtime.json"
     runtime_manifest = {
         key: manifest[key]
-        for key in ("schema_version", "version", "target", "runtime_files", "build_run", "build_attempt")
+        for key in ("schema_version", "kind", "version", "target", "runtime_files", "build_run", "build_attempt")
         if key in manifest
     }
     if platform.system() == "Darwin":

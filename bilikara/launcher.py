@@ -20,6 +20,11 @@ def startup_logging_enabled() -> bool:
 
 def _fallback_app_home() -> Path:
     if getattr(sys, "frozen", False):
+        from .media_cli import DISABLED
+        if DISABLED:
+            if sys.platform == "darwin":
+                return Path("~/Library/Application Support/bilikara-no-media-cli").expanduser()
+            return Path(sys.executable).resolve().parent / "runtime-no-media-cli"
         if sys.platform == "darwin":
             return Path("~/Library/Application Support/bilikara").expanduser()
         return Path(sys.executable).resolve().parent / "runtime"
@@ -149,7 +154,7 @@ def run_with_startup_logging() -> None:
     parser.add_argument("--https-smoke", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--tool-smoke",
-        choices=("native", "bbdown", "aria2c", "ffmpeg", "windows-libav-preview", "libav-package", "media-routing"),
+        choices=("native", "bbdown", "aria2c", "ffmpeg", "windows-libav-preview", "libav-package", "media-routing", "no-media-cli"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()

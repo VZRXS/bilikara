@@ -6,6 +6,9 @@ from pathlib import Path
 
 def packaged_tool_smoke_json(tool: str) -> str:
     normalized = str(tool or "").strip().lower()
+    if normalized == "no-media-cli":
+        from .media_cli_smoke import run
+        return run()
     if normalized == "media-routing":
         from .media_smoke import run
         return run()

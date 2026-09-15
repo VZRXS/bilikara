@@ -1404,6 +1404,8 @@ def _validate_inspection(result, *, source, expected_kind, operation):
 
 def media_compatibility_tool(name: str, existing: Path | None) -> Path | None:
     """Same-package path facts for existing Host subprocess effects."""
+    from .media_cli import require_media_cli
+    require_media_cli()
     if not _media_companion_provisioned:
         return existing
     if _media_tool_directory is None:

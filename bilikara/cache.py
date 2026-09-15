@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from . import media_cli
+
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from dataclasses import dataclass
@@ -1328,6 +1330,8 @@ class CacheManager:
             }
 
     def ffmpeg_status(self) -> dict[str, Any]:
+        if media_cli.DISABLED:
+            return {"state": "disabled", "version": "", "message": media_cli.MESSAGE, "path": ""}
         with self.lock:
             return {
                 "state": self.ffmpeg_state,
@@ -3149,7 +3153,7 @@ class CacheManager:
                 self._safe_rmtree(item_dir)
                 return False
             try:
-                ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
+                ffmpeg_path = Path() if media_cli.DISABLED else self._ensure_ffmpeg(force_refresh=False)
             except Exception as exc:  # noqa: BLE001
                 self._append_log_line(
                     log_path,
@@ -3823,6 +3827,8 @@ class CacheManager:
 
     @staticmethod
     def _is_terminal_track_failure(exc: BaseException) -> bool:
+        if isinstance(exc, media_cli.MediaCliDisabledError):
+            return True
         terminal_kinds = {
             "access_forbidden",
             "authentication",
@@ -4001,8 +4007,7 @@ class CacheManager:
             *self._bbdown_stream_preference_args(stream_kind),
             "--work-dir",
             self._tool_arg_path(target_dir),
-            "--ffmpeg-path",
-            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+            *([] if media_cli.DISABLED else ["--ffmpeg-path", self._bbdown_ffmpeg_path_arg(ffmpeg_path)]),
             "--file-pattern",
             f"{stream_kind}-p{page}",
             "--skip-mux",
@@ -4042,8 +4047,7 @@ class CacheManager:
             "100K",
             "--concurrent-fragments",
             "1",
-            "--ffmpeg-location",
-            self._tool_arg_path(ffmpeg_path),
+            *([] if media_cli.DISABLED else ["--ffmpeg-location", self._tool_arg_path(ffmpeg_path)]),
             "-f",
             self._ytdlp_format_selector(stream_kind),
             "-o",
@@ -5787,6 +5791,7 @@ class CacheManager:
         progress_from_output: bool = False,
         mark_done_on_exit: bool = True,
     ) -> None:
+        media_cli.require_media_cli(command[0])
         safe_command = self._redacted_command_for_log(command)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         if not silent:
@@ -5797,6 +5802,7 @@ class CacheManager:
         classified_http_status: int | None = None
         monitor_stop = threading.Event()
 
+        media_cli.require_media_cli(command[0])
         process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             command,
             shell=False,
@@ -6211,6 +6217,14 @@ class CacheManager:
     ) -> None:
         if not media_path.exists() or media_path.stat().st_size <= 0:
             raise DownloadCommandError(f"缓存规范化失败: {label} 原始文件不可用")
+        if media_cli.DISABLED:
+            normalized_path = media_path.with_name(f".{media_path.stem}.normalized-{uuid.uuid4().hex}{media_path.suffix}")
+            try:
+                rust_runtime.normalize_media(source=media_path, destination=normalized_path, expected_kind=stream_kind)
+                normalized_path.replace(media_path)
+            finally:
+                normalized_path.unlink(missing_ok=True)
+            return
         # Duration discovery is metadata-only. Preserve the source media
         # contract at this explicit legacy transform boundary before it can
         # turn malformed input into a parseable candidate. Timestamp policy
@@ -6250,6 +6264,7 @@ class CacheManager:
             f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
         )
         try:
+            media_cli.require_media_cli()
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 command,
                 shell=False,
@@ -6556,6 +6571,7 @@ class CacheManager:
             log_path,
             f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
         )
+        media_cli.require_media_cli()
         process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             command,
             shell=False,
@@ -7003,6 +7019,7 @@ class CacheManager:
             f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
         )
         try:
+            media_cli.require_media_cli()
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 command,
                 shell=False,
@@ -7130,6 +7147,8 @@ class CacheManager:
 
     @classmethod
     def _ffprobe_path_for_ffmpeg(cls, ffmpeg_path: Path) -> Path | None:
+        if media_cli.DISABLED:
+            return None
         from .ffmpeg_vendor import runtime_files
         for vendor in (VENDOR_DIR, INTERNAL_VENDOR_DIR):
             if runtime_files(vendor) is not None:
@@ -7738,6 +7757,7 @@ class CacheManager:
         return self._ensure_bbdown(force_refresh=force_refresh)
 
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
+        media_cli.require_media_cli("BBDown")
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else None
             override_exists = bool(override and override.exists())
@@ -7977,6 +7997,7 @@ class CacheManager:
             temporary_path.unlink(missing_ok=True)
 
     def _ensure_ytdlp(self) -> Path:
+        media_cli.require_media_cli("yt-dlp")
         with self.binary_prepare_lock:
             override = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else None
             if override and override.exists():
@@ -8014,6 +8035,7 @@ class CacheManager:
             return binary_path
 
     def _ensure_aria2c(self) -> Path:
+        media_cli.require_media_cli("aria2c")
         with self.binary_prepare_lock:
             override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
             if override and override.exists():
@@ -8220,6 +8242,7 @@ class CacheManager:
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=str(ARIA2C_DIR)) as tmpdir:
             try:
+                media_cli.require_media_cli("aria2c")
                 subprocess.run(
                     ["apt-get", "download", "aria2", "libaria2-0", "libssh2-1", "libc-ares2"],
                     cwd=tmpdir,
@@ -8230,6 +8253,7 @@ class CacheManager:
                 )
             except (subprocess.CalledProcessError, subprocess.SubprocessError):
                 try:
+                    media_cli.require_media_cli("aria2c")
                     subprocess.run(
                         ["apt-get", "download", "aria2", "libaria2-0"],
                         cwd=tmpdir,
@@ -8240,6 +8264,7 @@ class CacheManager:
                     )
                 except (subprocess.CalledProcessError, subprocess.SubprocessError):
                     try:
+                        media_cli.require_media_cli("aria2c")
                         subprocess.run(
                             ["apt-get", "download", "aria2"],
                             cwd=tmpdir,
@@ -8262,6 +8287,7 @@ class CacheManager:
             extract_dir.mkdir(parents=True, exist_ok=True)
             for deb_file in deb_files:
                 try:
+                    media_cli.require_media_cli("aria2c")
                     subprocess.run(
                         ["dpkg-deb", "-x", str(deb_file), str(extract_dir)],
                         check=True,
@@ -8308,6 +8334,7 @@ class CacheManager:
         brew = str(brew_path or self._brew_executable() or "brew")
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         try:
+            media_cli.require_media_cli("aria2c")
             subprocess.run(
                 [brew, "fetch", "--bottle", "aria2"],
                 check=True,
@@ -8317,6 +8344,7 @@ class CacheManager:
             )
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
+                media_cli.require_media_cli("aria2c")
                 subprocess.run(
                     [brew, "fetch", "aria2"],
                     check=True,
@@ -8331,6 +8359,7 @@ class CacheManager:
                 )
 
         try:
+            media_cli.require_media_cli("aria2c")
             res = subprocess.run(
                 [brew, "--cache", "--bottle", "aria2"],
                 check=True,
@@ -8341,6 +8370,7 @@ class CacheManager:
             cache_path_str = res.stdout.strip()
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
+                media_cli.require_media_cli("aria2c")
                 res = subprocess.run(
                     [brew, "--cache", "aria2"],
                     check=True,
@@ -8362,6 +8392,7 @@ class CacheManager:
 
         if not cache_file_path.exists():
             try:
+                media_cli.require_media_cli("aria2c")
                 res = subprocess.run(
                     [brew, "--cache"],
                     check=True,
@@ -8868,6 +8899,7 @@ class CacheManager:
     @staticmethod
     def _read_aria2c_version(binary_path: Path) -> str:
         try:
+            media_cli.require_media_cli("aria2c")
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 [str(binary_path), "--version"],
                 shell=False,
@@ -9086,6 +9118,7 @@ class CacheManager:
         return f"/media/{relative_path.replace(os.sep, '/')}"
 
     def _ensure_ffmpeg(self, force_refresh: bool = False) -> Path:
+        media_cli.require_media_cli()
         with self.ffmpeg_prepare_lock:
             from .ffmpeg_vendor import MANIFEST, runtime_files
             packaged_files = None
@@ -9189,9 +9222,12 @@ class CacheManager:
 
     @staticmethod
     def _read_tool_version(binary_path: Path, tool_name: str) -> str:
+        if media_cli.DISABLED:
+            return ""
         if not binary_path.exists():
             return ""
         try:
+            media_cli.require_media_cli(tool_name)
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 [str(binary_path), "-version"],
                 shell=False,
@@ -9230,6 +9266,7 @@ class CacheManager:
         if not binary_path.exists():
             return ""
         try:
+            media_cli.require_media_cli("yt-dlp")
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 [str(binary_path), "--version"],
                 shell=False,
@@ -9251,6 +9288,7 @@ class CacheManager:
         if not binary_path.exists():
             return ""
         try:
+            media_cli.require_media_cli("BBDown")
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 [str(binary_path), "--help"],
                 shell=False,

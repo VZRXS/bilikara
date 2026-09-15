@@ -19,9 +19,13 @@ test("only tag APKs use the installable release name", () => {
 });
 test("Android SDK bootstrap excludes the unavailable legacy tools package", () => {
   const workflow = fs.readFileSync(new URL("../.github/workflows/ci-bundle.yml", import.meta.url), "utf8");
+  const job = workflow.match(/\n  android-bundle:\n([\s\S]*?)(?=\n  [\w-]+:|$)/)?.[1];
+  assert.ok(job, "Android APK job must exist");
+  assert.match(job, /^    needs: test$/m);
+  assert.doesNotMatch(job, /^    if:/m, "Android must build after tests on every CI branch");
   const setup = workflow.match(/- name: Setup Android SDK\n([\s\S]*?)(?=\n      - name:)/)?.[1];
   assert.ok(setup, "Android SDK setup step must exist");
-  assert.match(setup, /uses: android-actions\/setup-android@v3/);
+  assert.match(setup, /uses: android-actions\/setup-android@v4/);
   const packages = setup.match(/^\s+packages:\s*([^\n]+)$/m)?.[1];
   assert.ok(packages, "Override setup-android's legacy tools default explicitly");
   assert.deepEqual(packages.trim().split(/\s+/), ["platform-tools"]);

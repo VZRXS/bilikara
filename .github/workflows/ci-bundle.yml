@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -29,11 +32,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
 
       - name: Install dependencies
         run: |
@@ -123,6 +129,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Resolve bundle archive name
         id: bundle-name
@@ -148,7 +156,9 @@ jobs:
 
       - name: Select native libav build prefix
         shell: bash
-        run: echo "BILIKARA_LIBAV_PREFIX=$RUNNER_TEMP/bilikara-libav" >> "$GITHUB_ENV"
+        run: |
+          echo "BILIKARA_LIBAV_PREFIX=$RUNNER_TEMP/bilikara-libav" >> "$GITHUB_ENV"
+          echo "BILIKARA_LIBAV_CACHE=$RUNNER_TEMP/bilikara-libav-cache" >> "$GITHUB_ENV"
 
       - name: Install macOS source verification tools
         if: runner.os == 'macOS'
@@ -201,9 +211,24 @@ jobs:
 
       - name: Setup native MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: ./scripts/setup_msvc.ps1 -Arch '${{ matrix.arch }}'
+
+      - name: Resolve libav cache identity
+        id: libav-cache-key
+        shell: bash
+        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+
+      - name: Restore verified libav libraries
+        id: libav-cache
+        uses: actions/cache/restore@v5
         with:
-          arch: ${{ matrix.arch }}
+          path: ${{ env.BILIKARA_LIBAV_CACHE }}
+          key: ${{ steps.libav-cache-key.outputs.key }}
+
+      - name: Select libav cache result
+        shell: bash
+        run: echo "BILIKARA_LIBAV_CACHE_HIT=${{ steps.libav-cache.outputs.cache-hit }}" >> "$GITHUB_ENV"
 
       - name: Setup MSVC build shell
         if: runner.os == 'Windows'
@@ -213,7 +238,7 @@ jobs:
           path-type: inherit
           install: make diffutils pkgconf perl nasm curl gnupg
 
-      - name: Build same-source Windows FFmpeg and companion
+      - name: Build Windows libav libraries and companion
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: bash media-libav/build-windows.sh
@@ -223,9 +248,16 @@ jobs:
         shell: pwsh
         run: ./media-libav/prepare-windows.ps1
 
-      - name: Build same-source POSIX FFmpeg and companion
+      - name: Build POSIX libav libraries and companion
         if: runner.os == 'macOS'
         run: bash media-libav/build-posix.sh
+
+      - name: Save verified libav libraries
+        if: steps.libav-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.BILIKARA_LIBAV_CACHE }}
+          key: ${{ steps.libav-cache-key.outputs.key }}
 
       - name: Build app bundle
         run: python build_bundle.py
@@ -242,7 +274,7 @@ jobs:
               throw "Packaged Rust library was not found: $library"
             }
           }
-          foreach ($tool in @('BBDown.exe', 'ffmpeg.exe', 'ffprobe.exe')) {
+          foreach ($tool in @('BBDown.exe')) {
             $vendor = $files | Where-Object { $_.Name -eq $tool -and $_.FullName -match '[\\/]vendor[\\/]' } | Select-Object -First 1
             if (-not $vendor) {
               throw "Packaged vendor tool was not found: $tool"
@@ -263,19 +295,14 @@ jobs:
           test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_rust.dylib
           test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_runtime.dylib
           bbdown_vendor="$(find dist/bilikara.app -type f -name BBDown -path '*/vendor/*' -print -quit)"
-          ffmpeg_vendor="$(find dist/bilikara.app -type f -name ffmpeg -path '*/vendor/*' -print -quit)"
-          ffprobe_vendor="$(find dist/bilikara.app -type f -name ffprobe -path '*/vendor/*' -print -quit)"
           test -n "$bbdown_vendor"
-          test -n "$ffmpeg_vendor"
-          test -n "$ffprobe_vendor"
           "$bbdown_vendor" --help
-          "$ffmpeg_vendor" -version
-          "$ffprobe_vendor" -version
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
 
       - name: Build Tauri App on Windows
         if: runner.os == 'Windows'
@@ -310,8 +337,9 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p dist_release
-          ditto dist/bilikara.app dist_release/bilikara.app
           ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
+          ln -s Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app dist_release/bilikara.app
+          test "$(readlink dist_release/bilikara.app)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app
           cp README-macOS.txt dist_release/README-macOS.txt
           test -s dist_release/README-macOS.txt
           python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara.app", "隐私与安全性", "仍要打开"))'
@@ -350,13 +378,6 @@ jobs:
             exit 1
           fi
 
-          echo "=== Packaged portable FFmpeg checks ==="
-          for binary_name in ffmpeg ffprobe; do
-            packaged_tool="dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
-            test -x "$packaged_tool"
-            "$packaged_tool" -version
-            /usr/bin/otool -L "$packaged_tool"
-          done
 
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
@@ -370,7 +391,7 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          foreach ($required in @('bilikara.exe', 'bilikara-desktop.exe', '_internal/vendor/ffmpeg.exe', '_internal/vendor/ffprobe.exe')) {
+          foreach ($required in @('bilikara.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll')) {
             if (-not (Test-Path (Join-Path $package $required))) {
               throw "Extracted bundle is missing $required"
             }
@@ -389,6 +410,8 @@ jobs:
           mkdir -p test_extract
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
           test -s test_extract/dist_release/README-macOS.txt
+          test -L test_extract/dist_release/bilikara.app
+          test "$(readlink test_extract/dist_release/bilikara.app)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app
           cmp README-macOS.txt test_extract/dist_release/README-macOS.txt
           test ! -e test_extract/dist_release/bilikara.app/Contents/Resources/libav-diagnostics
           test ! -e test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
@@ -422,13 +445,19 @@ jobs:
             exit 1
           fi
 
-          echo "=== Running extracted portable FFmpeg checks ==="
-          for binary_name in ffmpeg ffprobe; do
-            packaged_tool="test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
-            test -x "$packaged_tool"
-            "$packaged_tool" -version
-            /usr/bin/otool -L "$packaged_tool"
-          done
+
+      - name: Verify extracted no-media-CLI experiment on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/bilikara.exe'
+          python scripts/check_no_media_cli_bundle.py "$backend"
+
+      - name: Verify extracted no-media-CLI experiment on macOS
+        if: runner.os == 'macOS'
+        run: |
+          python scripts/check_no_media_cli_bundle.py test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
+          python scripts/check_no_media_cli_bundle.py test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara
 
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
@@ -459,6 +488,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -467,7 +497,7 @@ jobs:
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # The action's default also requests the unavailable legacy "tools" package.
           packages: platform-tools
@@ -489,6 +519,11 @@ jobs:
             ./rust-runtime -> target
             ./src-tauri -> target
           shared-key: android-apk
+
+      - name: Cache Gradle dependencies
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Resolve APK and require signing for tags
         id: android

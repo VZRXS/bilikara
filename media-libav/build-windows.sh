@@ -17,31 +17,39 @@ mkdir -p "$prefix/source" "$prefix/licenses" "$prefix/records" "$work"
 trap 'test ! -f "$work/ffmpeg-9.0.1/ffbuild/config.log" || cp "$work/ffmpeg-9.0.1/ffbuild/config.log" "$prefix/records/config.log"' EXIT
 version=9.0.1
 url="https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz"
-curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
-curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
-curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
-# Same pinned official release signer used by the accepted Linux 9.0.1 build.
-mkdir -p "$work/keyring"
-chmod 700 "$work/keyring"
-gpg --homedir "$work/keyring" --batch --import "$prefix/source/ffmpeg-devel.asc"
-gpg --homedir "$work/keyring" --batch --status-fd 1 --verify \
-  "$prefix/source/ffmpeg-${version}.tar.xz.asc" "$prefix/source/ffmpeg-${version}.tar.xz" \
-  > "$prefix/records/signature.log" 2>&1
-grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$prefix/records/signature.log"
-# GNU tar must treat the Windows drive-letter archive path as a local file.
-tar --force-local -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
-cd "$work/ffmpeg-${version}"
-# Preserve the accepted codec/demuxer corpus; no --disable-everything pruning.
-# /MD is required: fd protocol and companion must share the UCRT fd table.
-./configure --prefix="$prefix" --toolchain=msvc --arch="$ffmpeg_arch" --target-os=win64 \
-  --extra-cflags=-MD --extra-cxxflags=-MD --disable-autodetect --disable-debug \
-  --disable-doc --disable-ffplay --disable-static --enable-shared "$asm_flag" \
-  --disable-avdevice --disable-swscale --enable-swresample --disable-network \
-  2>&1 | tee "$prefix/records/configure.log"
-make -j4 2>&1 | tee "$prefix/records/build.log"
-make install 2>&1 | tee "$prefix/records/install.log"
-cp COPYING* LICENSE.md "$prefix/licenses/"
-cp config.h config_components.h ffbuild/config.mak "$prefix/records/"
+if [ "${BILIKARA_LIBAV_CACHE_HIT:-false}" = true ]; then
+  "$python_bin" "$repo/scripts/libav_cache.py" restore "$BILIKARA_LIBAV_CACHE" "$prefix"
+else
+  curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
+  curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
+  curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
+  # Same pinned official release signer used by the accepted Linux 9.0.1 build.
+  mkdir -p "$work/keyring"
+  chmod 700 "$work/keyring"
+  gpg --homedir "$work/keyring" --batch --import "$prefix/source/ffmpeg-devel.asc"
+  gpg --homedir "$work/keyring" --batch --status-fd 1 --verify \
+    "$prefix/source/ffmpeg-${version}.tar.xz.asc" "$prefix/source/ffmpeg-${version}.tar.xz" \
+    > "$prefix/records/signature.log" 2>&1
+  grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$prefix/records/signature.log"
+  # GNU tar must treat the Windows drive-letter archive path as a local file.
+  tar --force-local -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
+  cd "$work/ffmpeg-${version}"
+  # Preserve the accepted codec/demuxer corpus; no --disable-everything pruning.
+  # /MD is required: fd protocol and companion must share the UCRT fd table.
+  ./configure --prefix="$prefix" --toolchain=msvc --arch="$ffmpeg_arch" --target-os=win64 \
+    --extra-cflags=-MD --extra-cxxflags=-MD --disable-autodetect --disable-debug \
+    --disable-doc --disable-programs --disable-static --enable-shared "$asm_flag" \
+    --disable-avdevice --disable-swscale --enable-swresample --disable-network \
+    2>&1 | tee "$prefix/records/configure.log"
+  make -j4 2>&1 | tee "$prefix/records/build.log"
+  make install 2>&1 | tee "$prefix/records/install.log"
+  cp COPYING* LICENSE.md "$prefix/licenses/"
+  cp config.h config_components.h ffbuild/config.mak "$prefix/records/"
+  if [ -n "${BILIKARA_LIBAV_CACHE:-}" ]; then
+    "$python_bin" "$repo/scripts/libav_cache.py" snapshot "$prefix" "$BILIKARA_LIBAV_CACHE"
+  fi
+fi
+
 cd "$repo"
 "$python_bin" media-libav/build.py --prefix "$prefix" --out "$prefix/bin" --test \
   2>&1 | tee "$prefix/records/companion.log"

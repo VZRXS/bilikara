@@ -537,3 +537,14 @@ filesystem/network/subprocess/thread behavior are not part of Phase 1.
 Candidate planning, quality/stream ranking, cache planning, and playlist
 planning are the later completed Phase-2 Items 5 through 8 documented in the
 business-rule migration plan.
+
+
+## Isolated no-media-CLI experiment
+
+`codex/experiment-no-media-cli` branches from the actual clean desktop tree at
+`745c837`. Frozen experimental bundles deny external media subprocesses, including
+FFmpeg/ffprobe and external downloaders that could invoke them indirectly, while
+retaining the accepted Rust/libav libraries and package closure. This is Host
+subprocess admission and diagnostics, not a new Rust domain or a claim of complete
+CLI removal. Existing production migration milestones are not reclassified.
+See [experiment instructions and evidence](experiment-no-media-cli.md).

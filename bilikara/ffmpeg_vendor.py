@@ -21,6 +21,10 @@ def runtime_files(vendor: Path) -> list[Path] | None:
                for suffix in ("pc-windows-msvc", "apple-darwin", "unknown-linux-gnu")}
     windows = isinstance(target, str) and target.endswith("-windows-msvc")
     tools = {"ffmpeg.exe", "ffprobe.exe"} if windows else {"ffmpeg", "ffprobe"}
+    if data.get("kind") == "libav":
+        tools = {"bilikara_media_libav.dll"} if windows else {
+            "libbilikara_media_libav.dylib" if target.endswith("apple-darwin") else "libbilikara_media_libav.so"
+        }
     if (data.get("schema_version") != 1 or data.get("version") != "9.0.1"
             or not isinstance(target, str) or target not in targets
             or not isinstance(names, list) or len(names) > 64 or not all(isinstance(n, str) for n in names)
