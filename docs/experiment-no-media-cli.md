@@ -4,6 +4,23 @@ Branch: `codex/experiment-no-media-cli`, based on `745c837` from the current cle
 `work/v0.8.0` tree. This is an experiment, not a release or a claim that every
 FFmpeg operation has a libav replacement.
 
+## Integrated work-branch handoff (2026-09-16)
+
+The actual final experiment tip `feb27ec` is already the parent of local desktop
+Step 1 commit `2ca4a1f` on `work/v0.8.0`. Local reconciliation restores normal
+product data roots and `BILIKARA_HOME` (including early startup logging), retains
+Step 1's explicit isolated native root, and prevents yt-dlp/aria2 user-configured
+media CLI effects. Existing experiment data directories are untouched. The
+historical isolation statements below describe experiment builds; they are not
+the integrated work branch's new default.
+
+The scoped Linux integrated gate, real desktop/Remote screenshots, empty-PATH
+native/downloader traces, fresh frozen libav-only bundle checks, concrete
+compatibility losses and deferred platform/independent review are recorded in
+[the current desktop handoff](version-roadmap.md#2026-09-16-desktop-step-1--libav-only-local-reconciliation).
+Native serving bypasses Python; the default desktop product still packages and
+uses Python. Step 2 has not started. No push or deployment occurred.
+
 ## Current behavior (2026-09-16)
 
 The desktop experiment now excludes only FFmpeg/ffprobe programs. Build scripts

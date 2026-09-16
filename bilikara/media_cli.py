@@ -1,4 +1,4 @@
-"""Experimental branch: deny FFmpeg/ffprobe processes, retain in-process libav.
+"""Bundle policy: deny FFmpeg/ffprobe processes, retain in-process libav.
 
 Frozen bundles always enforce this policy; an environment variable cannot undo
 it. Source tests opt in with BILIKARA_DISABLE_MEDIA_CLI=1. This module owns only
@@ -13,7 +13,7 @@ import sys
 DISABLED = bool(getattr(sys, "frozen", False)) or os.environ.get(
     "BILIKARA_DISABLE_MEDIA_CLI", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
-MESSAGE = "实验版已禁用外部媒体 CLI（FFmpeg/ffprobe）；请使用 Rust Native。"
+MESSAGE = "当前构建不支持外部媒体 CLI（FFmpeg/ffprobe）；请使用 Rust Native。"
 
 
 class MediaCliDisabledError(RuntimeError):

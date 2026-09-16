@@ -486,3 +486,259 @@ Evidence: `/tmp/bilikara-pop-gate-results.json` and per-command
 `default-webview.png`. Network fixtures forwarded zero external requests.
 The normal Linux deb/rpm/AppImage build passed without packaging changes.
 Windows/macOS/mobile checks remain unavailable here; no remote push was made.
+
+
+### 2026-09-16 desktop Step 1 / libav-only local reconciliation
+
+Status: **INTEGRATED_DESKTOP_STEP1_NO_CLI_LOCAL_VALIDATED_REVIEW_DEFERRED**.
+This is scoped Linux self-validation, not independent review, all-platform
+acceptance, a default Rust-backend cutover, or authorization to begin Step 2.
+The user's successful no-CLI manual use is separate evidence.
+
+#### Actual local history and preserved scope
+
+The initial working tree/index/untracked-source status was clean at
+`2ca4a1f482d95d183a24438ca2d55c1cf5bec068` (`feat(desktop): add opt-in Rust Host
+preview`). Step 1 was already recorded separately. After `git fetch origin`,
+local `codex/experiment-no-media-cli`, its remote-tracking ref, and
+`origin/work/v0.8.0` all remained at
+`feb27ecf1dcf00f1064a447cb5893f49ba8e6d9b`, which is also the merge base and
+Step 1's direct parent. The final experiment delta (including restored external
+downloaders, current UI, asset sync, libav-only packaging and cache fixes) is
+already in this ancestry. There was no new source tip to fast-forward or merge.
+This task adds an ordinary reconciliation commit on `work/v0.8.0`, preserving
+both tips and the experiment branch; it does not replay the old blanket ban.
+
+All 11 existing worktrees were inspected. No other worktree was changed; the
+unrelated dirty `scratch/v071-live-ui` worktree was left alone. No checkpoint,
+stash, reset, branch/worktree creation, history rewrite, push, tag, Actions,
+release, signing change or deployment was needed. Only the identified files
+listed below belong to this reconciliation commit.
+
+Step 1's opt-in native Host services, AppState authority, capabilities,
+Host-only admission, native export transport and shutdown behavior remain.
+Desktop platform identity stays distinct from native-backend identity; Android
+presentation is not activated on desktop. The current Host/Remote UI, caption
+and status fixes, playback-sheet scrollbar and asset-sync allowlist remain.
+The native process bypasses Python for serving; the default product still
+launches and packages Python. That distinction has not been renamed as Python
+removal from the product.
+
+#### Media policy and data roots
+
+Frozen bundles exclude and deny only FFmpeg/ffprobe executables. In-process
+libav, companion, shared-library closure, source archives and license/notice
+assets remain. Source compatibility tests retain their historical paths;
+`BILIKARA_DISABLE_MEDIA_CLI=1` exercises the bundle policy in a source launch.
+Source startup without that opt-in is not claimed to prohibit all legacy CLI
+use. BBDown, yt-dlp and aria2c remain permitted in the default product; the
+Step 1 native preview still supports Native downloading only.
+
+The remaining production edits are Host I/O/process adaptation: restore normal
+frozen data-root selection in `config.py` and early `launcher.py` logging;
+honor `BILIKARA_HOME` in both; remove experiment wording from the unavailable
+message; pass yt-dlp `--ignore-config --fixup never --downloader native` and
+aria2c `--no-conf` under no-CLI policy. These prevent user configuration/fixup
+hooks from adding media CLI work. No new Python business rule, Rust policy,
+state authority, codec or global enforcement framework was introduced.
+
+Normal Windows/Linux frozen home is the executable's `runtime` directory;
+macOS uses `~/Library/Application Support/bilikara`. Explicit `BILIKARA_HOME`
+continues to win, including early logging. Existing `runtime-no-media-cli` /
+`bilikara-no-media-cli` directories were not moved, imported, merged or deleted.
+Step 1's explicit `BILIKARA_DESKTOP_RUST_PREVIEW_DIR`, marker checks and refusal
+of unmarked nonempty roots are unchanged. Imports remain Step 2 work.
+
+Concrete capability limits for product review:
+
+- BBDown single video/audio downloads and yt-dlp single-stream HTTP downloads
+  work without muxing/fixups; aria2c transfer remains available. Arbitrary
+  downloader plugins, transports, user-configured hooks and provider formats
+  outside these fixture contracts are not certified.
+- DownKyi uses the existing Runtime MP4 normalization and FLAC-from-MP4
+  extraction; the former FFmpeg `+genpts` / `make_zero` repair path is no longer
+  available in bundles. Already-native FLAC is readable/validatable, but feeding
+  it into the MP4-input normalization API fails its existing `invalid_media`
+  contract. This is not evidence of native-FLAC remux parity.
+- A missing companion or `BILIKARA_MEDIA_BACKEND=legacy` can still use accepted
+  Pure Rust operations. Operations requiring ffprobe/FFmpeg compatibility
+  (including packet scan in those tested modes and the outside-WAV fixture)
+  raise the explicit no-CLI error, classified terminal by the existing retry
+  boundary. No successful result is fabricated and no automatic CLI repair is
+  introduced. Corruption remains `invalid_media`/`media_contract_violation`,
+  separate from unsupported capability; the source and publication boundary
+  remain intact on failure.
+- The actual Step 1 desktop entry currently uses the existing Pure Rust Native
+  media route; it does not acquire the Python adapter's companion configuration
+  from `BILIKARA_LIBAV_COMPANION`. Direct Runtime Native-cache/libav processing
+  is independently exercised below. Wiring additional preview codec/backend
+  preferences would expand Step 1 and remains deferred.
+
+Current source workflows already contain no experiment-only release exclusion;
+existing platform jobs, signing/tag gates and public asset-sync fixes were left
+unchanged. No Worker was contacted or deployed by this integration.
+
+#### Integrated gate and targeted evidence
+
+The following applicable local gate ran once. Each recorded command exited 0;
+receipts are `/tmp/bilikara-integrated-gate-results.json` and numbered logs
+`/tmp/bilikara-integrated-gate-00.log` through `25.log`. The tracked outer shell
+later reported exit 143 despite all 26 completed success receipts; acceptance
+uses the individual command exits and complete outputs, not that wrapper exit.
+Final compilation and diff checks were independently repeated below.
+
+| Directory | Exact command | Result |
+| --- | --- | --- |
+| `rust` | `cargo fmt --check` | Pass |
+| `rust` | `cargo clippy --all-targets --locked -- -D warnings` | Pass |
+| `rust` | `cargo test --locked -- --test-threads=2` | Pass |
+| `rust` | `cargo build --release --locked` | Pass |
+| `rust-runtime` | `cargo fmt --check` | Pass |
+| `rust-runtime` | `cargo clippy --all-targets --locked -- -D warnings` | Pass |
+| `rust-runtime` | `cargo test --locked -- --test-threads=2` | Pass |
+| `rust-runtime` | `cargo build --release --locked` | Pass |
+| `src-tauri` | `cargo fmt --check` | Pass |
+| `src-tauri` | `cargo clippy --all-targets --locked -- -D warnings` | Pass |
+| `src-tauri` | `cargo test --locked -- --test-threads=2` | Pass |
+| `src-tauri` | `cargo build --release --locked` | Pass |
+| `.` | `node --test tests/android_release.test.mjs` | Pass |
+| `.` | `cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --lib --locked -- --test-threads=2` | Pass |
+| `.` | `cargo clippy --manifest-path rust-runtime/Cargo.toml --all-targets --features native-host --locked -- -D warnings` | Pass |
+| `.` | `cargo build --manifest-path rust-runtime/Cargo.toml --locked --features native-host --bin bilikara-desktop-host` | Pass |
+| `.` | `cargo build --manifest-path src-tauri/Cargo.toml --locked` | Pass |
+| `.` | `cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_rust_entry_uses_authenticated_tauri_export_transport -- --ignored` | Pass |
+| `.` | `python tests/run_native_host_http.py` | Pass |
+| `.` | `BILIKARA_HOME=/tmp/bilikara-integrated-gate-home BILIKARA_REQUIRE_RUST_LIB=1 python -m unittest discover -s tests -v` | Pass |
+| `.` | `python -m compileall -q bilikara` | Pass |
+| `.` | `python -m py_compile start_bilikara.py build_bundle.py` | Pass |
+| `.` | `npm ci` | Pass |
+| `.` | `npm run build` | Pass |
+| `.` | `git diff --check` | Pass |
+| `.` | `git diff --cached --check` | Pass |
+
+Counts: Rust domain 218; default Runtime 225 (15 provisioned-media ignores);
+native-host Runtime 261 (same 15 ignores); Tauri 81 plus its separately invoked
+native export test; Python 1663 with 18 skips. The three new live no-CLI tests
+were subsequently run explicitly with provisioned fixtures, not left skipped.
+The baseline skips cover macOS package/Tauri artifacts, Windows module APIs,
+PowerShell (MSVC/license wrapper and actual asset-copy execution), the separate
+aria2 package gate and legacy companion fixtures. Existing fixtures and accepted
+C libraries were reused; no new all-platform C build is claimed.
+
+Additional exact commands from the repository root (all passed):
+
+```sh
+# Reuse accepted libav-only Linux libraries and synthetic corpus.
+BILIKARA_NO_CLI_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_LIBAV_FFMPEG_PREFIX=/tmp/bilikara-libav-only-check python -m unittest tests.test_config tests.test_media_cli_disabled -q
+strace -f -e trace=process -o /tmp/bilikara-integrated-native-process.trace python tests/run_desktop_rust_host.py /tmp/bilikara-integrated-native-ui
+strace -f -e trace=process -o /tmp/bilikara-integrated-launcher-process.trace python tests/run_desktop_launcher.py /tmp/bilikara-integrated-launcher
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_LIBAV_FFMPEG_PREFIX=/tmp/bilikara-libav-only-check strace -f -e trace=process -o /tmp/bilikara-integrated-downloaders.trace python /tmp/bilikara-integrated-downloaders.py
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_LIBAV_FFMPEG_PREFIX=/tmp/bilikara-libav-only-check strace -f -e trace=process -o /tmp/bilikara-integrated-bbdown.trace python /tmp/bilikara-integrated-bbdown.py
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_M5_FAULT_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav_test.so BILIKARA_LIBAV_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures cargo test --manifest-path rust-runtime/Cargo.toml --locked live_publication_cancellation_and_late_errors -- --ignored --test-threads=1
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_M5_FAULT_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav_test.so BILIKARA_LIBAV_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures cargo test --manifest-path rust-runtime/Cargo.toml --locked live_flac_publication_cancellation_and_late_errors -- --ignored --test-threads=1
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_LIBAV_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures cargo test --manifest-path rust-runtime/Cargo.toml --locked live_default_media_through_native_track -- --ignored --test-threads=1
+BILIKARA_LIBAV_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav.so BILIKARA_M5_FAULT_COMPANION=/tmp/bilikara-libav-only-check/bin/libbilikara_media_libav_test.so BILIKARA_LIBAV_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures PATH= /sunhonglin/bilikara/rust-runtime/target/debug/deps/bilikara_runtime-37df2f24dbe126bf --exact cache_runtime::tests::live_default_media_through_native_track --ignored --test-threads=1
+python /tmp/bilikara-integrated-build-package.py
+python scripts/check_no_media_cli_bundle.py /tmp/bilikara-integrated-package/dist/bilikara/bilikara
+python -m unittest tests.test_tool_asset_workflows tests.test_libav_bundle tests.test_build_bundle tests.test_internet_remote_frontend tests.test_internet_remote_deployment tests.test_windows_libav_preview -q
+python /tmp/bilikara-integrated-trace-summary.py
+python -m py_compile scripts/check_no_media_cli_bundle.py tests/run_desktop_launcher.py tests/run_desktop_rust_host.py
+python -m py_compile scripts/check_no_media_cli_bundle.py tests/test_media_cli_disabled.py tests/test_config.py
+node --check tests/live_desktop_rust_host.js
+git diff --check
+```
+
+Focused config/no-CLI suite: 27 passed. Bundle/asset/platform-contract suite:
+116 run, 5 platform skips. The temporary package builder reused the existing
+build_bundle staging recipe with this tree's Python/static/Rust artifacts and
+accepted libav-only C closure. It produced a fresh frozen Linux backend under
+`/tmp/bilikara-integrated-package`, then checked it with an opt-out environment
+and a PATH containing only its disposable data directory. The manifest is
+`kind: libav`; the package contains the companion, libavcodec/libavformat/
+libavutil/libswresample, BBDown, source archive and licensing assets, and no
+FFmpeg/ffprobe programs. No release artifact was published.
+
+Real BBDown 1.6.3 downloaded both video and audio via P02's non-forwarding TLS
+fixture and both outputs passed libav validation/packet scan. Real yt-dlp
+2026.8.19 was installed only under `/tmp/bilikara-integrated-ytdlp` with
+`python -m pip install --target /tmp/bilikara-integrated-ytdlp yt-dlp`; its actual
+single-stream local HTTP download ignored a hostile fixture config and passed
+libav validation. The existing aria2c and its companion libraries performed an
+actual adapter-generated HTTP transfer, exact-output check, normalization and
+packet scan. Only unrelated AppState progress callbacks were omitted in that
+adapter harness. None of these are live-production-provider acceptance.
+
+Process-tree trace analysis found zero FFmpeg/ffprobe exec attempts in either
+application entry or in the downloader child trees. Only the test orchestrator
+used FFmpeg, twice, to generate synthetic media before starting the Rust Host.
+The actual Rust entry had an empty PATH; Tauri had a directory containing only
+Python/Python3 links for its retained development launcher. Temporary app roots
+prevented user-tool discovery. Direct Native-cache/libav also passed with empty
+PATH. This evidence does not rely on the Python audit hook to police Rust or
+child downloaders and introduces no second application guard.
+
+The provisioned Rust tests retained cancellation, late-error handling and
+publication/source preservation. Early fixture attempts exposed test-assumption
+errors (native FLAC normalization and supported Pure Rust metadata in legacy
+mode), missing aria2 runtime-library search, and BBDown's required metadata/
+compact-JSON shape; fixtures were corrected to the actual contracts. No
+baseline assertion or error taxonomy was weakened.
+
+Browser plugin unavailable; existing Playwright reused. The flow was real
+Rust entry -> synthetic QR/session/add -> uncached Native media -> Remote
+playback/seek/track changes -> export -> shutdown/restart. Desktop 1440x1000
+and Remote 375x812 WebKit passed page identity, meaningful render, no error
+overlay, zero console/page errors, and the actual interactions. Tauri separately
+passed both real Linux Xvfb/Openbox launch/close paths. A temporary driver
+`/tmp/bilikara-integrated-workspace.cjs` called the existing
+`runRemoteRequestWorkspaceGate` unchanged through `tests.live_host_ui_browser`:
+quick/search/source/card/detail/queue flows passed with synthetic API responses,
+including the existing narrow/wide/localization/200% text cases. Its output is
+`/tmp/bilikara-integrated-workspace.log`. The ordinary combined browser driver
+also starts an unrelated Internet Host gate; that initial invocation failed on
+five blocked external asset requests under the rejecting proxy. The focused
+workspace rerun kept its assertions and passed; no production access was enabled
+to turn those errors green. An initial temporary wrapper output-format error
+was corrected before the final recorded pass.
+
+Matched screenshots inspected locally:
+`/tmp/bilikara-integrated-launcher/default-webview.png` and `rust-webview.png`;
+`/tmp/bilikara-integrated-native-ui/desktop-playing.png`, `desktop-queue.png`
+and `remote-375x812.png`; `/tmp/bilikara-integrated-workspace-remote-stage2-375-artist.png`.
+Native invite controls are masked in screenshots. Trace summaries are at
+`/tmp/bilikara-integrated-trace-summary.json`; native/browser and launcher
+summaries remain beside their screenshots. No production login, catalog/rating
+write, D1/Sheets scan or forwarded fixture request occurred.
+
+#### Files and next handoff
+
+Complete reconciliation file list (all modifications, no additions/deletions):
+
+- `bilikara/cache.py`
+- `bilikara/config.py`
+- `bilikara/launcher.py`
+- `bilikara/media_cli.py`
+- `scripts/check_no_media_cli_bundle.py`
+- `tests/live_desktop_rust_host.js`
+- `tests/run_desktop_launcher.py`
+- `tests/run_desktop_rust_host.py`
+- `tests/test_config.py`
+- `tests/test_media_cli_disabled.py`
+- `docs/experiment-no-media-cli.md`
+- `docs/version-roadmap.md`
+
+Production Python changes are retained Host process/path adaptation. Remaining
+Python/JS changes are test orchestration and evidence; no Rust production logic
+or UI presentation source changed in this reconciliation. The local commit is
+`fix(desktop): reconcile Step 1 with libav-only bundle policy`; its SHA is in the
+completion report. Remote push: **No**.
+
+Independent review remains deferred. Windows/macOS packaging and actual device
+playback, native window/Snap/multi-display/save-dialog behavior, real Internet
+DataChannel/cross-network behavior and Android/iOS devices remain unverified for
+this combined tree. Source-branch CI/manual success does not certify it.
+PowerShell asset-copy execution was unavailable; its HTML dependency/allowlist/
+workflow contracts passed. Existing signing/release/platform policy is unchanged.
+Next Step 2A should first review the capability losses and deliberate existing-data
+import/default-product parity plan under the existing desktop roadmap. No import,
+default-backend cutover or Step 2 implementation began here.

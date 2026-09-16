@@ -16,7 +16,8 @@ const errors = [];
 let stderr = "";
 async function launch() {
   server = spawn(executable, ["--data-dir", directory, "--static-dir", path.resolve("static"), "--port", "0", "--headless", "--no-browser"], {
-    env: {...process.env, BILIKARA_SHUTDOWN_TOKEN: shutdownToken}, stdio: ["ignore", "pipe", "pipe"]});
+    env: {...process.env, PATH: process.env.BILIKARA_TEST_APPLICATION_PATH ?? process.env.PATH,
+      BILIKARA_SHUTDOWN_TOKEN: shutdownToken}, stdio: ["ignore", "pipe", "pipe"]});
   server.stderr.on("data", v => { stderr = (stderr + v).slice(-4000); });
   lines = createInterface({input: server.stdout});
   const ready = JSON.parse(await Promise.race([once(lines, "line").then(v => v[0]), once(server,"exit").then(() => {throw Error("Desktop entry exited before readiness: " + stderr);})]));

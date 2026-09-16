@@ -92,6 +92,10 @@ def main():
             env["NODE_PATH"] = env.get("NODE_PATH", "/tmp/bilikara-pw/node_modules")
             env["BILIKARA_CATALOG_SHEETS_URL"] = "http://127.0.0.1:1/disabled-fixture.csv"
             env["DESKTOP_FIXTURE_CONTROL"] = f"http://127.0.0.1:{fixture.server.server_port}"
+            # Restrict only the application, not fixture generation or WebKit.
+            application_path = media / "application-path"
+            application_path.mkdir()
+            env["BILIKARA_TEST_APPLICATION_PATH"] = str(application_path)
             result = subprocess.run(["node", "tests/live_desktop_rust_host.js", str(evidence)], cwd=ROOT, env=env, timeout=240)
         assert "generate" in fixture.stages and "poll" in fixture.stages
         forbidden = [name for name in counts if any(word in name for word in ["batch-add", "rating", "space/wbi", "gviz", "d1/"])]

@@ -1,4 +1,4 @@
-"""Run the experiment proof in the actual extracted frozen backend."""
+"""Verify the libav-only policy in the actual extracted frozen backend."""
 from __future__ import annotations
 
 import json
@@ -27,6 +27,7 @@ def main() -> None:
         report_path = Path(directory) / "no-cli-result.json"
         env.update(BILIKARA_HOME=directory, BILIKARA_DISABLE_MEDIA_CLI="0", BILIKARA_MEDIA_BACKEND="default",
                    BILIKARA_LIBAV_SMOKE_RESULT=str(report_path), DEBUG_LOG_FILE=str(Path(directory) / "startup.log"))
+        env["PATH"] = directory  # No system or user media-tool discovery.
         result = subprocess.run([str(executable), "--tool-smoke", "no-media-cli"],
                                 env=env, cwd=directory, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=120)

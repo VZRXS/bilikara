@@ -5,10 +5,27 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara import config
+from bilikara import config, launcher, media_cli
 
 
 class ConfigPathTest(unittest.TestCase):
+    def test_no_cli_frozen_paths_and_logging_keep_product_home(self):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": "/Users/fake", "USERPROFILE": "C:\\Users\\fake"}, clear=True), \
+             patch.object(config.sys, "frozen", True, create=True), \
+             patch.object(config.sys, "executable", str(Path(directory) / "bilikara")), \
+             patch.object(media_cli, "DISABLED", True):
+            for platform in ("win32", "darwin", "linux"):
+                with self.subTest(platform=platform), patch.object(config.sys, "platform", platform):
+                    expected = (Path("~/Library/Application Support/bilikara").expanduser()
+                                if platform == "darwin" else Path(directory) / "runtime")
+                    self.assertEqual(config._default_app_home(), expected)
+                    self.assertEqual(launcher._fallback_app_home(), expected)
+                    override = Path(directory) / "explicit-home"
+                    with patch.dict(os.environ, {"BILIKARA_HOME": str(override)}):
+                        self.assertEqual(config._default_app_home(), override)
+                        self.assertEqual(launcher._fallback_app_home(), override)
+                        self.assertEqual(launcher.startup_log_path(), override / "data/logs/startup.log")
+
     def test_frozen_build_defaults_to_runtime_within_app_folder(self):
         with TemporaryDirectory() as temp_dir:
             fake_executable = Path(temp_dir) / "bilikara.exe"

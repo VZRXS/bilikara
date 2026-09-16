@@ -19,12 +19,10 @@ def startup_logging_enabled() -> bool:
 
 
 def _fallback_app_home() -> Path:
+    override = os.getenv("BILIKARA_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
     if getattr(sys, "frozen", False):
-        from .media_cli import DISABLED
-        if DISABLED:
-            if sys.platform == "darwin":
-                return Path("~/Library/Application Support/bilikara-no-media-cli").expanduser()
-            return Path(sys.executable).resolve().parent / "runtime-no-media-cli"
         if sys.platform == "darwin":
             return Path("~/Library/Application Support/bilikara").expanduser()
         return Path(sys.executable).resolve().parent / "runtime"

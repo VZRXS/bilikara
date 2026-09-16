@@ -46,6 +46,11 @@ def main():
             env.update(NO_PROXY="127.0.0.1,localhost",no_proxy="127.0.0.1,localhost")
             wm=subprocess.Popen(["openbox"],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             results=[]
+            application_path=Path(temp)/"application-path";application_path.mkdir()
+            # The default development launcher needs Python. Neither entry gets
+            # system/user tool discovery; window automation keeps the runner PATH.
+            for name in ["python", "python3"]:
+                (application_path/name).symlink_to(sys.executable)
             for native in [False,True]:
                 name="rust" if native else "default"
                 home=Path(temp)/name;home.mkdir()
@@ -54,7 +59,8 @@ def main():
                 if native:env["BILIKARA_DESKTOP_RUST_PREVIEW_DIR"]=str(home/"preview")
                 else:env.pop("BILIKARA_DESKTOP_RUST_PREVIEW_DIR",None)
                 with open(output/f"{name}-stdout.log","w") as out,open(output/f"{name}-stderr.log","w") as err:
-                    app=subprocess.Popen([str(ROOT/"src-tauri/target/debug/bilikara")],cwd=ROOT,env=env,stdout=out,stderr=err)
+                    app_env=dict(env,PATH=str(application_path),BILIKARA_DISABLE_MEDIA_CLI="1",BILIKARA_BILIBILI_COOKIE="")
+                    app=subprocess.Popen([str(ROOT/"src-tauri/target/debug/bilikara")],cwd=ROOT,env=app_env,stdout=out,stderr=err)
                     child=None
                     try:
                         def ready():

@@ -4033,6 +4033,7 @@ class CacheManager:
     ) -> list[str]:
         command = [
             self._tool_arg_path(binary_path),
+            *(["--ignore-config", "--fixup", "never", "--downloader", "native"] if media_cli.DISABLED else []),
             "--newline",
             "--no-playlist",
             "--retries",
@@ -5308,6 +5309,7 @@ class CacheManager:
         connections = str(ARIA2_CONNECTIONS_PER_TRACK)
         command = [
             self._tool_arg_path(binary_path),
+            *(["--no-conf"] if media_cli.DISABLED else []),
             *download_urls,
             "--dir", self._tool_arg_path(attempt_dir),
             "--out", out_name,
