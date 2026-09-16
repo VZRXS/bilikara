@@ -91,6 +91,7 @@ class InternetRemoteAdapterTest(unittest.TestCase):
 
         context = SimpleNamespace(
             store=StateStore(),
+            cache_manager=SimpleNamespace(bbdown_login_status=lambda: {"logged_in": True, "cookie": "private-fixture"}),
             state_revision_snapshot=lambda: 19,
             player_status_snapshot=lambda _snapshot: {
                 "is_paused": False,
@@ -105,6 +106,8 @@ class InternetRemoteAdapterTest(unittest.TestCase):
         ):
             projected = internet_remote.remote_state(context)
 
+        self.assertTrue(projected["bilibili_logged_in"])
+        self.assertNotIn("private-fixture", str(projected))
         self.assertEqual(projected["state_revision"], 19)
         self.assertEqual(projected["history"], [{"display_title": "Earlier"}])
         self.assertEqual(

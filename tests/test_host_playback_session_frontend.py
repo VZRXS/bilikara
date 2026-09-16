@@ -25,7 +25,7 @@ class HostPlaybackSessionFrontendTest(unittest.TestCase):
 
     def test_audio_variant_request_uses_only_the_observed_item_incarnation(self):
         listener = self.source_slice(
-            'elements.audioVariantBar.addEventListener("click"',
+            'async function handleAudioVariantSelection(event)',
             'elements.playlist.addEventListener("click"',
         )
         self.assertIn(
@@ -39,7 +39,7 @@ class HostPlaybackSessionFrontendTest(unittest.TestCase):
             "function isSafeHostSnapshotInteger", "async function apiPostStateSnapshot"
         )
         audio_listener = self.source_slice(
-            'elements.audioVariantBar.addEventListener("click"',
+            'async function handleAudioVariantSelection(event)',
             'elements.playlist.addEventListener("click"',
         )
         retry_listener = self.source_slice(
@@ -61,7 +61,7 @@ class FakeElement {{
 }}
 const audioVariantBar = new FakeElement();
 const queueCurrentRetry = new FakeElement();
-const elements = {{ audioVariantBar, queueCurrentRetry }};
+const elements = {{ audioVariantBar, audioVariantPopover: new FakeElement(), queueCurrentRetry }};
 const window = {{
   location: {{ href: "http://127.0.0.1:8080/" }},
   setTimeout,

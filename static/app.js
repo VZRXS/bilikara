@@ -1,3 +1,7 @@
+// Keep range focus cues for keyboard use without leaving them after touch input.
+document.addEventListener("pointerdown", () => {
+  document.documentElement.dataset.hostInputModality = "pointer";
+}, true);
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
 const backupBannerMotionMs = 360;
@@ -596,6 +600,7 @@ const elements = {
   audioVariantBar: document.getElementById("audio-variant-bar"),
   audioVariantToggle: document.getElementById("audio-variant-toggle"),
   audioVariantBackdrop: document.getElementById("audio-variant-backdrop"),
+  audioVariantPopover: document.getElementById("audio-variant-popover"),
   avSyncPanel: document.getElementById("av-sync-panel"),
   avOffsetInput: document.getElementById("av-offset-input"),
   avOffsetResetButton: document.getElementById("av-offset-reset-button"),
@@ -908,6 +913,7 @@ function setMessageForSource(source, message, isError = false) {
 }
 
 function setAppMessage(message, isError = false) {
+  if (String(message).includes("下载需要登录 Bilibili")) message = localizedCacheMessage(message);
   if (!elements.appToast) {
     return;
   }
@@ -5650,7 +5656,6 @@ function renderRatingPromptContent() {
   const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
   const coverUrl = safeHttpUrl(activeItem.cover_url);
   const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
-  const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
   const media = document.createElement("div");
   media.className = "rating-media";
   if (coverUrl) {
@@ -5668,29 +5673,29 @@ function renderRatingPromptContent() {
   }
   const copy = document.createElement("div");
   copy.className = "rating-copy";
-  const kicker = document.createElement("p");
-  kicker.className = "rating-kicker";
-  kicker.textContent = t("rating.kicker");
   const title = document.createElement("h2");
-  title.textContent = t(titleKey);
-  const hint = document.createElement("p");
-  hint.className = "rating-hint";
-  hint.textContent = t("rating.hint");
+  title.textContent = t("rating.title");
   const owner = document.createElement("p");
-  owner.className = "rating-owner owner-badge-label";
-  renderOwnerBadgeLabel(owner, ownerName);
-  copy.append(kicker, title, hint, owner);
+  owner.className = "rating-owner";
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  copy.append(title, owner);
   if (url) {
     const link = document.createElement("a");
-    link.className = "rating-link";
+    link.className = "rating-link song-detail-bilibili-link";
     link.href = url;
     link.target = "_blank";
     link.rel = "noreferrer";
-    link.textContent = url;
+    link.textContent = t("search.openOnBilibili");
     copy.appendChild(link);
   }
   media.appendChild(copy);
   content.replaceChildren(media);
+  const addUpButton = root.querySelector("[data-rating-add-up]");
+  if (addUpButton) {
+    const ownerUid = ratingOwnerUid(activeItem);
+    addUpButton.disabled = addUpButton.hasAttribute("aria-busy") || !ownerUid;
+    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+  }
   renderRatingStars();
 }
 
@@ -5712,7 +5717,13 @@ function closeRatingPrompt({ submit = true } = {}) {
   const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
   state.ratingPromptSubmitted = true;
   const promptItem = activeRatingPromptItem();
-  root.remove();
+  root.classList.add("closing");
+  root.setAttribute("inert", "");
+  root.querySelector('[role="dialog"]')?.setAttribute("aria-modal", "false");
+  const animation = root.querySelector(".rating-card")?.getAnimations()
+    .find((entry) => entry.animationName === "scale-to-center-card");
+  if (animation) animation.finished.catch(() => {}).then(() => root.remove());
+  else root.remove();
   state.ratingPromptElement = null;
   state.ratingPromptItem = null;
   state.ratingPromptItems = null;
@@ -5799,16 +5810,12 @@ function openRatingPrompt(item) {
   doneButton.className = "next-button";
   doneButton.dataset.ratingClose = "";
   doneButton.textContent = t("rating.done");
-  actions.appendChild(doneButton);
-
-  const optOut = document.createElement("label");
-  optOut.className = "rating-opt-out";
-  const optOutInput = document.createElement("input");
-  optOutInput.type = "checkbox";
-  optOutInput.dataset.ratingOptOut = "";
-  const optOutText = document.createElement("span");
-  optOutText.textContent = t("rating.optOut");
-  optOut.append(optOutInput, optOutText);
+  const addUpButton = document.createElement("button");
+  addUpButton.type = "button";
+  addUpButton.className = "toolbar-button";
+  addUpButton.dataset.ratingAddUp = "";
+  addUpButton.textContent = t("rating.addUp");
+  actions.append(addUpButton, doneButton);
 
   const tabs = document.createElement("div");
   tabs.className = "rating-tabs";
@@ -5830,7 +5837,14 @@ function openRatingPrompt(item) {
   const message = document.createElement("p");
   message.className = "rating-message";
   message.dataset.ratingMessage = "";
-  card.append(closeButton, content, stars, actions, optOut, tabs, message);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.dataset.i18n = "rating.hint";
+  hint.textContent = t("rating.hint");
+  const body = document.createElement("div");
+  body.className = "rating-body";
+  body.append(content, stars, hint, actions, tabs, message);
+  card.append(closeButton, body);
   root.append(backdrop, card);
   document.body.appendChild(root);
   state.ratingPromptElement = root;
@@ -9023,6 +9037,8 @@ function localizedCacheMessage(message, cacheStatus = "") {
   if (raw.includes("\n")) {
     raw = raw.split("\n")[0].trim();
   }
+  const loginRequired = raw.match(/(BBDown|DownKyi\/aria2c) 下载需要登录 Bilibili/);
+  if (loginRequired) return t("cache.downloadLoginRequired", { source: loginRequired[1] });
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -10824,6 +10840,13 @@ function acceptHostStateSnapshot(snapshot) {
       return false;
     }
   }
+  const loginFailure = [snapshot.current_item, ...(snapshot.playlist || [])].find((item) => {
+    if (!item || item.cache_status !== "failed" || !String(item.cache_message).includes("下载需要登录 Bilibili")) return false;
+    const previous = [state.data?.current_item, ...(state.data?.playlist || [])]
+      .find((entry) => entry?.item_incarnation_id === item.item_incarnation_id);
+    return !previous || previous.cache_status !== "failed" || previous.cache_message !== item.cache_message;
+  });
+  if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
   if (readinessOnly) {
     return true;
@@ -14082,125 +14105,92 @@ function preferredAudioVariantPopoverDirection(naturalHeight = 220) {
 }
 
 function clearAudioVariantPopoverPosition() {
-  if (!elements.audioVariantBar) {
-    return;
-  }
+  const popover = elements.audioVariantPopover;
+  if (!popover) return;
   for (const property of ["left", "top", "width", "maxHeight", "transformOrigin"]) {
-    elements.audioVariantBar.style[property] = "";
+    popover.style[property] = "";
   }
-  delete elements.audioVariantBar.dataset.popoverDirection;
+  delete popover.dataset.popoverDirection;
 }
 
 function positionAudioVariantPopover() {
-  if (
-    !state.audioVariantBarExpanded
-    || !elements.audioVariantAnchor
-    || !elements.audioVariantBar
-    || !elements.audioVariantToggle
-  ) {
-    return;
-  }
+  const popover = elements.audioVariantPopover;
+  if (!state.audioVariantBarExpanded || !popover) return;
   const row = elements.audioVariantAnchor.getBoundingClientRect();
   const anchor = elements.audioVariantToggle.getBoundingClientRect();
-  const toolbarBottom = elements.topbar?.getBoundingClientRect?.().bottom || 0;
   const inset = 12;
   const gap = 8;
-  const topBoundary = Math.max(inset, toolbarBottom + 8);
-  const availableWidth = Math.max(280, window.innerWidth - (inset * 2));
-  const buttons = [...elements.audioVariantBar.querySelectorAll(".audio-variant-button")];
-  const widestButton = buttons.reduce(
-    (width, button) => Math.max(width, Math.ceil(button.getBoundingClientRect().width)),
-    0,
-  );
-  const contentWidth = (widestButton * 2) + 8 + 24;
-  const width = Math.min(640, availableWidth, Math.max(320, contentWidth, Math.min(row.width, 420)));
-  elements.audioVariantBar.style.width = `${width}px`;
-  elements.audioVariantBar.style.maxHeight = "none";
-  const naturalHeight = Math.ceil(elements.audioVariantBar.scrollHeight || 120);
-  const direction = preferredAudioVariantPopoverDirection(naturalHeight);
-  const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - inset - gap);
-  const spaceAbove = Math.max(0, anchor.top - topBoundary - gap);
-  const directionSpace = direction === "down" ? spaceBelow : spaceAbove;
-  const maxHeight = Math.max(96, Math.min(naturalHeight, directionSpace));
+  const topBoundary = Math.max(inset, (elements.topbar?.getBoundingClientRect().bottom || 0) + gap);
+  const width = Math.min(640, window.innerWidth - inset * 2, Math.max(320, row.width));
+  popover.style.width = `${width}px`;
+  popover.style.maxHeight = "none";
+  const naturalHeight = Math.ceil(popover.scrollHeight + 2);
+  const direction = preferredAudioVariantPopoverDirection(Math.min(naturalHeight, 240));
+  const availableHeight = direction === "down"
+    ? window.innerHeight - anchor.bottom - inset - gap
+    : anchor.top - topBoundary - gap;
+  const maxHeight = Math.max(44, Math.min(naturalHeight, availableHeight, 240));
   const left = Math.max(inset, Math.min(anchor.right - width, window.innerWidth - inset - width));
-  const top = direction === "down"
-    ? anchor.bottom + gap
-    : Math.max(topBoundary, anchor.top - gap - maxHeight);
+  const top = direction === "down" ? anchor.bottom + gap : anchor.top - gap - maxHeight;
   state.audioVariantPopoverDirection = direction;
-  elements.audioVariantBar.dataset.popoverDirection = direction;
-  elements.audioVariantBar.style.left = `${left}px`;
-  elements.audioVariantBar.style.top = `${Math.round(top)}px`;
-  elements.audioVariantBar.style.maxHeight = `${Math.round(maxHeight)}px`;
-  elements.audioVariantBar.style.transformOrigin = direction === "down" ? "100% 0" : "100% 100%";
-  const icon = elements.audioVariantToggle.querySelector("span");
-  if (icon) {
-    icon.textContent = direction === "down" ? "▼" : "▲";
-  }
+  popover.dataset.popoverDirection = direction;
+  popover.style.left = `${left}px`;
+  popover.style.top = `${Math.max(inset, Math.round(top))}px`;
+  popover.style.maxHeight = `${Math.round(maxHeight)}px`;
 }
 
 function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
-  const nextOpen = Boolean(open);
+  const nextOpen = Boolean(open) && !elements.audioVariantBar.classList.contains("is-inline");
+  const wasOpen = state.audioVariantBarExpanded;
   state.audioVariantBarExpanded = nextOpen;
-  elements.audioVariantBar?.classList.toggle("is-expanded", nextOpen);
-  elements.audioVariantBar?.classList.toggle("is-collapsed", !nextOpen);
+  elements.audioVariantBar.classList.toggle("is-expanded", nextOpen);
   const toggle = elements.audioVariantToggle;
-  toggle?.setAttribute("aria-expanded", String(nextOpen));
-  toggle?.setAttribute("aria-label", nextOpen ? t("player.collapseParts") : t("player.expandParts"));
-  if (elements.audioVariantBackdrop) {
-    elements.audioVariantBackdrop.hidden = !nextOpen;
-    elements.audioVariantBackdrop.inert = !nextOpen;
-    elements.audioVariantBackdrop.setAttribute("aria-hidden", String(!nextOpen));
-  }
+  toggle.classList.toggle("is-expanded", nextOpen);
+  toggle.setAttribute("aria-expanded", String(nextOpen));
+  toggle.setAttribute("aria-label", nextOpen ? t("player.collapseParts") : t("player.expandParts"));
+  elements.audioVariantPopover.hidden = !nextOpen;
+  elements.audioVariantBackdrop.hidden = !nextOpen;
+  elements.audioVariantBackdrop.inert = !nextOpen;
+  elements.audioVariantBackdrop.setAttribute("aria-hidden", String(!nextOpen));
   if (!nextOpen) {
     clearAudioVariantPopoverPosition();
-    if (restoreFocus) {
-      toggle?.focus({ preventScroll: true });
-    }
+    if (restoreFocus) toggle.focus({ preventScroll: true });
     return;
   }
-  if (state.stageControlTrayOpen && !stageControlsAreInline()) {
-    setStageControlTrayOpen(false);
-  }
+  if (state.stageControlTrayOpen && !stageControlsAreInline()) setStageControlTrayOpen(false);
   closeCacheAdvancedInfo();
   setRemoteQrPinned(false, { dismissTransient: true });
   positionAudioVariantPopover();
+  // Every opening begins with P1; resize/snapshot updates preserve the reader's position.
+  if (!wasOpen) elements.audioVariantPopover.scrollTop = 0;
 }
 
 function syncAudioVariantOverflow() {
   const bar = elements.audioVariantBar;
-  const anchor = elements.audioVariantAnchor;
-  const list = bar?.querySelector(".audio-variant-list");
-  const toggle = elements.audioVariantToggle;
-  if (!bar || !anchor || !list || !toggle || anchor.hidden || bar.classList.contains("hidden")) {
-    return false;
-  }
-  const buttons = [...list.querySelectorAll(".audio-variant-button")];
-  const gap = parseFloat(getComputedStyle(list).columnGap || getComputedStyle(list).gap) || 0;
-  const naturalWidth = buttons.reduce(
-    (total, button) => total + button.getBoundingClientRect().width,
-    Math.max(0, buttons.length - 1) * gap,
-  );
-  const toggleWidth = Math.max(34, toggle.getBoundingClientRect().width) + 8;
-  const isOverflowing = naturalWidth > Math.max(0, anchor.clientWidth - toggleWidth - 1);
-  toggle.classList.toggle("hidden", !isOverflowing);
-  bar.classList.toggle("is-collapsed", isOverflowing && !state.audioVariantBarExpanded);
-  if (!isOverflowing && state.audioVariantBarExpanded) {
+  const popover = elements.audioVariantPopover;
+  const list = bar?.querySelector(".audio-variant-list") || popover?.querySelector(".audio-variant-list");
+  if (!list || elements.audioVariantAnchor.hidden || !bar.clientWidth) return false;
+  const scrollTop = popover.scrollTop;
+  // Reuse Remote's fit/move behavior: one ordered list, no truncated second copy.
+  bar.classList.add("is-inline");
+  elements.audioVariantToggle.classList.add("hidden");
+  bar.append(list);
+  const fits = list.scrollWidth <= bar.clientWidth + 1;
+  if (fits) {
     setAudioVariantPopoverOpen(false);
-  }
-  if (isOverflowing) {
-    const direction = state.audioVariantBarExpanded
-      ? state.audioVariantPopoverDirection
-      : preferredAudioVariantPopoverDirection();
-    const icon = toggle.querySelector("span");
-    if (icon) {
-      icon.textContent = direction === "down" ? "▼" : "▲";
-    }
+  } else {
+    bar.classList.remove("is-inline");
+    elements.audioVariantToggle.classList.remove("hidden");
+    popover.replaceChildren(list);
     if (state.audioVariantBarExpanded) {
       positionAudioVariantPopover();
+      popover.scrollTop = scrollTop;
     }
   }
-  return isOverflowing;
+  return !fits;
 }
+
+document.fonts?.ready?.then(syncAudioVariantOverflow);
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
@@ -14212,6 +14202,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     if (elements.audioVariantBar.childElementCount) {
       elements.audioVariantBar.replaceChildren();
     }
+    elements.audioVariantPopover.replaceChildren();
     setAudioVariantPopoverOpen(false);
     setClassToggle(elements.audioVariantBar, "hidden", true);
     if (elements.audioVariantAnchor) {
@@ -14238,6 +14229,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     if (elements.audioVariantBar.childElementCount) {
       elements.audioVariantBar.replaceChildren();
     }
+    elements.audioVariantPopover.replaceChildren();
     setAudioVariantPopoverOpen(false);
     setClassToggle(elements.audioVariantBar, "hidden", true);
     if (elements.audioVariantAnchor) {
@@ -14274,6 +14266,12 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   state.audioVariantBarRenderSignature = signature;
 
   elements.audioVariantBar.replaceChildren();
+  elements.audioVariantPopover.replaceChildren();
+  const summary = document.createElement("div");
+  summary.className = "audio-variant-summary";
+  summary.textContent = selectedVariant?.label || variants[0].label;
+  summary.title = summary.textContent;
+  elements.audioVariantBar.append(summary);
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
@@ -14281,6 +14279,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     button.type = "button";
     button.className = "audio-variant-button";
     button.textContent = variant.label || variant.id;
+    button.title = button.textContent;
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
     button.dataset.page = String(variant.page || "");
@@ -14296,19 +14295,16 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"),
   );
   elements.audioVariantToggle.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
-  const toggleIcon = elements.audioVariantToggle.querySelector("span");
-  toggleIcon.textContent = state.audioVariantPopoverDirection === "up" ? "▲" : "▼";
 
   elements.audioVariantBar.append(list);
   elements.audioVariantBar.classList.toggle("is-expanded", state.audioVariantBarExpanded);
-  elements.audioVariantBar.classList.toggle("is-collapsed", !state.audioVariantBarExpanded);
   setClassToggle(elements.audioVariantBar, "hidden", false);
   if (elements.audioVariantAnchor) {
     elements.audioVariantAnchor.hidden = false;
   }
 
   requestAnimationFrame(() => {
-    if (!elements.audioVariantBar.contains(list)) {
+    if (!elements.audioVariantBar.contains(list) && !elements.audioVariantPopover.contains(list)) {
       return;
     }
     syncAudioVariantOverflow();
@@ -16528,12 +16524,6 @@ function closeBindingModal({ restoreFocus = true } = {}) {
   const opener = state.bindingIntent?.focusElement;
   state.bindingIntent = null;
   elements.bindingModal?.classList.add("hidden");
-  if (elements.bindingVideoOptions) {
-    elements.bindingVideoOptions.innerHTML = "";
-  }
-  if (elements.bindingAudioOptions) {
-    elements.bindingAudioOptions.innerHTML = "";
-  }
   if (restoreFocus && opener?.isConnected) {
     opener.focus({ preventScroll: true });
   }
@@ -16593,9 +16583,6 @@ function closeGatchaFavlistModal({ restoreFocus = true } = {}) {
   const opener = state.gatchaFavlistIntent?.focusElement;
   state.gatchaFavlistIntent = null;
   elements.gatchaFavlistModal?.classList.add("hidden");
-  if (elements.gatchaFavlistOptions) {
-    elements.gatchaFavlistOptions.innerHTML = "";
-  }
   if (restoreFocus && opener?.isConnected) {
     opener.focus({ preventScroll: true });
   }
@@ -19940,7 +19927,7 @@ elements.applicationRestartButton?.addEventListener("click", (event) => {
   });
 });
 
-elements.audioVariantBar.addEventListener("click", async (event) => {
+async function handleAudioVariantSelection(event) {
   const button = event.target.closest("button[data-variant-id]");
   if (!button || !state.data?.current_item) {
     return;
@@ -20049,7 +20036,10 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     state.audioVariantSwitchInFlight = false;
     scheduleAudioVariantSwitchUnlock();
   }
-});
+}
+
+elements.audioVariantBar.addEventListener("click", handleAudioVariantSelection);
+elements.audioVariantPopover.addEventListener("click", handleAudioVariantSelection);
 
 elements.audioVariantToggle?.addEventListener("click", () => {
   setAudioVariantPopoverOpen(!state.audioVariantBarExpanded);
@@ -20581,6 +20571,9 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+    document.documentElement.dataset.hostInputModality = "keyboard";
+  }
   if (event.key !== "Escape") {
     return;
   }
@@ -20792,11 +20785,26 @@ document.addEventListener("click", async (event) => {
     renderRatingStars();
     return;
   }
-  const optOutInput = event.target.closest("[data-rating-opt-out]");
-  if (optOutInput) {
-    setRatingOptOut(optOutInput.checked);
-    if (optOutInput.checked) {
-      closeRatingPrompt({ submit: false });
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = activeRatingPromptItem();
+    const uid = ratingOwnerUid(promptItem);
+    if (addUpButton.disabled) return;
+    if (!uid) {
+      setAppMessage(t("rating.missingUidMessage"), true);
+      return;
+    }
+    addUpButton.disabled = true;
+    addUpButton.setAttribute("aria-busy", "true");
+    addUpButton.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      setAppMessage(t("rating.addedUp"));
+    } catch (error) {
+      setAppMessage(error.message || t("rating.addFailed"), true);
+    } finally {
+      addUpButton.removeAttribute("aria-busy");
+      if (state.ratingPromptElement === root) renderRatingPromptContent();
     }
     return;
   }

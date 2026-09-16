@@ -253,6 +253,7 @@ const state = {
   eventStreamReconnectTimer: null,
   eventStreamRetryMs: eventStreamInitialRetryMs,
   gatchaCandidate: null,
+  gatchaDrawBusy: false,
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
@@ -461,7 +462,6 @@ const elements = {
   poolConfigUidSelectNone: document.getElementById("gatcha-pool-uid-select-none"),
   poolConfigFavlistSelectAll: document.getElementById("gatcha-pool-favlist-select-all"),
   poolConfigFavlistSelectNone: document.getElementById("gatcha-pool-favlist-select-none"),
-  poolConfigMessage: document.getElementById("gatcha-pool-config-message"),
   reorderConfirmSheet: document.getElementById("reorder-confirm-sheet"),
   reorderConfirmSheetBackdrop: document.getElementById("reorder-confirm-sheet-backdrop"),
   reorderConfirmSheetText: document.getElementById("reorder-confirm-sheet-text"),
@@ -498,7 +498,6 @@ const elements = {
   remoteIdentityTitle: document.getElementById("remote-identity-title"),
   remoteIdentityDescription: document.getElementById("remote-identity-description"),
   remoteIdentityInput: document.getElementById("remote-identity-input"),
-  remoteIdentityMessage: document.getElementById("remote-identity-message"),
   remoteIdentityCancel: document.getElementById("remote-identity-cancel"),
   remoteIdentitySubmit: document.getElementById("remote-identity-submit"),
   urlInput: document.getElementById("url-input"),
@@ -550,7 +549,6 @@ const elements = {
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
-  gatchaMessage: document.getElementById("gatcha-message"),
   gatchaInitView: document.getElementById("gatcha-init-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
@@ -965,7 +963,7 @@ function syncRemoteRequestPanelSizeTier() {
   if (!elements.requestPanel) {
     return;
   }
-  let tier = "standard";
+  let tier = "compact";
   if (state.remoteRequestView === "quick") {
     tier = "compact";
   } else if (["discover", "sources"].includes(state.remoteRequestView)) {
@@ -1149,28 +1147,7 @@ function syncRemoteRequestTabPresentation() {
   const canExpand = Boolean(activeTablist && activeHome && elements.remoteRequestSecondarySlot);
 
   const navigation = elements.remoteRequestPrimaryTabs.parentElement;
-  const previousView = navigation.dataset.activeView;
-  const changing = previousView !== undefined && previousView !== activeView;
-  if (changing && !prefersReducedMotion()) {
-    const old = state.remoteRequestTabsExpanded
-      ? elements.remoteRequestSecondaryNav : elements.remoteRequestPrimaryTabs;
-    const ghost = old.cloneNode(true);
-    ghost.removeAttribute("id");
-    ghost.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
-    ghost.inert = true;
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.classList.add("remote-tabs-departing");
-    navigation.append(ghost);
-    const fade = ghost.animate?.([{ opacity: 1 }, { opacity: 0 }], { duration: 180 });
-    if (fade) fade.finished.then(() => ghost.remove(), () => ghost.remove());
-    else ghost.remove();
-  }
   navigation.dataset.activeView = activeView;
-  const incoming = expanded && canExpand
-    ? elements.remoteRequestSecondaryNav : elements.remoteRequestPrimaryTabs;
-  if (changing && !prefersReducedMotion()) {
-    incoming.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 180 });
-  }
 
   state.remoteRequestTabsExpanded = expanded && canExpand;
   if (!state.remoteRequestTabsExpanded) {
@@ -1234,6 +1211,12 @@ function syncRemoteRequestViewSelection() {
   syncRemoteRequestPanelSizeTier();
 }
 
+function animateRemoteRequestEntry(panel) {
+  if (!panel || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  panel.getAnimations?.().forEach((animation) => animation.cancel());
+  panel.animate?.([{ opacity: 0.6 }, { opacity: 1 }], { duration: 180, easing: "ease-out" });
+}
+
 function activateRemoteRequestView(
   view,
   { focusTab = false, focusSecondary = false } = {},
@@ -1249,6 +1232,10 @@ function activateRemoteRequestView(
   state.remoteRequestView = nextView;
   try { window.sessionStorage?.setItem("bilikara.remote.requestView", nextView); } catch { /* Optional view memory. */ }
   syncRemoteRequestViewSelection();
+  if (changed) {
+    animateRemoteRequestEntry(Array.from(elements.remoteRequestViewPanels || []).find((panel) => !panel.hidden));
+    animateRemoteRequestEntry(state.remoteRequestTabsExpanded ? elements.remoteRequestSecondaryNav : elements.remoteRequestPrimaryTabs);
+  }
   if (nextView === "sources") {
     ensureActiveRemoteSourcesLoaded();
   }
@@ -1277,6 +1264,7 @@ function activateRemoteSearchMode(mode, { focusTab = false } = {}) {
   }
   state.remoteSearchMode = nextMode;
   syncRemoteSearchModeSelection();
+  if (changed) animateRemoteRequestEntry(Array.from(elements.remoteSearchModePanels || []).find((panel) => !panel.hidden));
   const selectedTab = Array.from(elements.remoteSearchModeButtons || [])
     .find((button) => button.dataset.remoteSearchMode === nextMode);
   revealRemoteTab(selectedTab);
@@ -1297,6 +1285,7 @@ function activateRemoteDiscoverMode(mode, { focusTab = false } = {}) {
   }
   state.remoteDiscoverMode = nextMode;
   syncRemoteDiscoverModeSelection();
+  if (changed) animateRemoteRequestEntry(Array.from(elements.remoteDiscoverModePanels || []).find((panel) => !panel.hidden));
   const selectedTab = Array.from(elements.remoteDiscoverModeButtons || [])
     .find((button) => button.dataset.remoteDiscoverMode === nextMode);
   revealRemoteTab(selectedTab);
@@ -1317,6 +1306,7 @@ function activateRemoteSourcesMode(mode, { focusTab = false } = {}) {
   }
   state.remoteSourcesMode = nextMode;
   syncRemoteSourcesModeSelection();
+  if (changed) animateRemoteRequestEntry(Array.from(elements.remoteSourcesModePanels || []).find((panel) => !panel.hidden));
   ensureActiveRemoteSourcesLoaded();
   const selectedTab = Array.from(elements.remoteSourcesModeButtons || [])
     .find((button) => button.dataset.remoteSourcesMode === nextMode);
@@ -1587,14 +1577,15 @@ function renderRemoteQr(url, targets = []) {
           if (code.isDark(row, col)) path += `M${col},${row}h1v1h-1z`;
         }
       }
-      // A fixed narrow white inset for both entries, with no cropped modules.
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect width="160" height="160" fill="white"/><path d="${path}" fill="black" transform="translate(8 8) scale(${144 / count})" /></svg>`;
+      // Preserve all modules plus the four-module QR quiet zone at any URL length.
+      const size = count + 8;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="white"/><path d="${path}" fill="black" transform="translate(4 4)" /></svg>`;
       // Inline SVG works with the public Worker's strict img-src CSP (no
       // data: images). Only numeric modules from the local encoder enter SVG.
       const documentSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
       const qr = document.importNode(documentSvg.documentElement, true);
-      qr.setAttribute("width", "160");
-      qr.setAttribute("height", "160");
+      qr.setAttribute("width", "100%");
+      qr.setAttribute("height", "100%");
       qr.setAttribute("aria-hidden", "true");
       image.removeAttribute("src");
       placeholder.replaceChildren(qr);
@@ -1606,11 +1597,16 @@ function renderRemoteQr(url, targets = []) {
   }
 }
 
+window.addEventListener("remote-connection-message", (event) => {
+  setAppMessage(event.detail?.message, event.detail?.isError);
+});
+
 function setFormMessage(message, isError = false) {
   setAppMessage(message, isError);
 }
 
 function setAppMessage(message, isError = false) {
+  if (String(message).includes("下载需要登录 Bilibili")) message = localizedCacheMessage(message);
   if (!elements.appToast) {
     return;
   }
@@ -1618,6 +1614,8 @@ function setAppMessage(message, isError = false) {
     window.clearTimeout(state.appToastTimer);
     state.appToastTimer = null;
   }
+  const toastParent = document.querySelector("dialog[open]") || document.body;
+  if (elements.appToast.parentElement !== toastParent) toastParent.append(elements.appToast);
   elements.appToast.textContent = message || "";
   elements.appToast.classList.toggle("is-error", Boolean(isError));
   elements.appToast.classList.toggle("hidden", !message);
@@ -1687,6 +1685,8 @@ function localizedCacheMessage(message, cacheStatus = "") {
   if (raw.includes("\n")) {
     raw = raw.split("\n")[0].trim();
   }
+  const loginRequired = raw.match(/(BBDown|DownKyi\/aria2c) 下载需要登录 Bilibili/);
+  if (loginRequired) return t("cache.downloadLoginRequired", { source: loginRequired[1] });
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -1805,7 +1805,7 @@ function renderRemoteIdentity() {
   const identity = state.remoteIdentity;
   const registered = Boolean(identity.registered && identity.name);
   const renameMode = registered && state.remoteIdentityModalMode === "rename";
-  const modalOpen = !registered || renameMode;
+  const modalOpen = (!registered && window.BilikaraRemoteTransport?.mode !== "internet") || renameMode;
 
   if (elements.remoteIdentityName) {
     elements.remoteIdentityName.textContent = registered ? identity.name : "—";
@@ -1856,16 +1856,16 @@ function renderRemoteIdentity() {
           : "remoteIdentity.registerSubmit",
     );
     elements.remoteIdentitySubmit.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
+    elements.remoteIdentitySubmit.toggleAttribute("aria-busy", state.remoteIdentitySaving);
   }
   if (elements.remoteIdentityInput) {
     elements.remoteIdentityInput.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
   }
-  if (elements.remoteIdentityMessage) {
-    elements.remoteIdentityMessage.textContent = state.remoteIdentityChecking
-      ? t("remoteIdentity.checking")
-      : state.remoteIdentityError;
-    elements.remoteIdentityMessage.classList.toggle("is-error", Boolean(state.remoteIdentityError));
+  if (state.remoteIdentityError && state.remoteIdentityError !== state.remoteIdentityLastToast) {
+    setAppMessage(state.remoteIdentityError, true);
   }
+  state.remoteIdentityLastToast = state.remoteIdentityError;
+
 }
 
 function applyRemoteIdentity(payload) {
@@ -2341,7 +2341,6 @@ function renderRatingPromptContent() {
   const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
   const coverUrl = safeHttpUrl(activeItem.cover_url);
   const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
-  const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
   const media = document.createElement("div");
   media.className = "rating-media";
   if (coverUrl) {
@@ -2359,25 +2358,19 @@ function renderRatingPromptContent() {
   }
   const copy = document.createElement("div");
   copy.className = "rating-copy";
-  const kicker = document.createElement("p");
-  kicker.className = "rating-kicker";
-  kicker.textContent = t("rating.kicker");
   const title = document.createElement("h2");
-  title.textContent = t(titleKey);
-  const hint = document.createElement("p");
-  hint.className = "rating-hint";
-  hint.textContent = t("rating.hint");
+  title.textContent = t("rating.title");
   const owner = document.createElement("p");
-  owner.className = "rating-owner owner-badge-label";
-  renderOwnerBadgeLabel(owner, ownerName);
-  copy.append(kicker, title, hint, owner);
+  owner.className = "rating-owner";
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  copy.append(title, owner);
   if (url) {
     const link = document.createElement("a");
-    link.className = "rating-link";
+    link.className = "rating-link song-detail-bilibili-link";
     link.href = url;
     link.target = "_blank";
     link.rel = "noreferrer";
-    link.textContent = url;
+    link.textContent = t("search.openOnBilibili");
     copy.appendChild(link);
   }
   media.appendChild(copy);
@@ -2385,7 +2378,7 @@ function renderRatingPromptContent() {
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
-    addUpButton.disabled = !ownerUid;
+    addUpButton.disabled = addUpButton.hasAttribute("aria-busy") || !ownerUid;
     addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
   }
   renderRatingStars();
@@ -2432,9 +2425,10 @@ function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null 
   if (!playbackSheetIsOpen()) unlockPlaybackSheetDocumentScroll();
   syncRemoteShellInert();
 
-  setTimeout(() => {
-    root.remove();
-  }, 250);
+  const animation = root.querySelector(".rating-card")?.getAnimations()
+    .find((entry) => entry.animationName === "scale-to-center-card");
+  if (animation) animation.finished.catch(() => {}).then(() => root.remove());
+  else root.remove();
 
   if (
     restoreFocus
@@ -2556,12 +2550,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   doneButton.className = "primary-button";
   doneButton.dataset.ratingClose = "";
   doneButton.textContent = t("rating.done");
-  const optOutButton = document.createElement("button");
-  optOutButton.type = "button";
-  optOutButton.className = "secondary-button";
-  optOutButton.dataset.ratingOptOutBtn = "";
-  optOutButton.textContent = t("rating.optOutBtn");
-  actions.append(addUpButton, doneButton, optOutButton);
+  actions.append(addUpButton, doneButton);
 
   const tabs = document.createElement("div");
   tabs.className = "rating-tabs";
@@ -2584,7 +2573,14 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const message = document.createElement("p");
   message.className = "rating-message";
   message.dataset.ratingMessage = "";
-  card.append(closeButton, content, stars, actions, tabs, message);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.dataset.i18n = "rating.hint";
+  hint.textContent = t("rating.hint");
+  const body = document.createElement("div");
+  body.className = "rating-body";
+  body.append(content, stars, hint, actions, tabs, message);
+  card.append(closeButton, body);
   root.append(backdrop, card);
   document.body.appendChild(root);
   state.ratingPromptElement = root;
@@ -2802,7 +2798,7 @@ elements.openRatingButton?.addEventListener("click", () => {
 });
 
 function setHistoryExportMessage(message, isError = false) {
-  if (elements.historyExportStatus) elements.historyExportStatus.textContent = message;
+  // Feedback belongs to the toast; the status node is reserved for availability help.
   setAppMessage(message, isError);
 }
 
@@ -3210,6 +3206,13 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   const shouldRender = forceRender
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
+  const loginFailure = [snapshot.current_item, ...(snapshot.playlist || [])].find((item) => {
+    if (!item || item.cache_status !== "failed" || !String(item.cache_message).includes("下载需要登录 Bilibili")) return false;
+    const previous = [state.data?.current_item, ...(state.data?.playlist || [])]
+      .find((entry) => entry?.item_incarnation_id === item.item_incarnation_id);
+    return !previous || previous.cache_status !== "failed" || previous.cache_message !== item.cache_message;
+  });
+  if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
   const programChanged = Boolean(
     previousSnapshot
@@ -5322,6 +5325,8 @@ async function previewGatchaFavlistFromInput(input, { messageTarget = "sources-f
 }
 
 async function handleGatchaDraw() {
+  if (state.gatchaDrawBusy || !gatchaLoggedIn()) return;
+  state.gatchaDrawBusy = true;
   renderGatchaView();
   setGatchaMessage(t("gatcha.drawing"));
   try {
@@ -5337,16 +5342,14 @@ async function handleGatchaDraw() {
     setGatchaMessage("");
   } catch (error) {
     setGatchaMessage(error.message, true);
+  } finally {
+    state.gatchaDrawBusy = false;
+    renderGatchaView();
   }
 }
 
 function setGatchaMessage(message, isError = false) {
-  if (!elements.gatchaMessage) {
-    return;
-  }
-  elements.gatchaMessage.textContent = message || "";
-  elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
-  elements.gatchaMessage.classList.toggle("hidden", !message);
+  setAppMessage(message, isError);
 }
 
 function setGatchaUidMessage(message, isError = false) {
@@ -5372,7 +5375,14 @@ function syncGatchaMainContent(hasCandidate) {
   elements.gatchaResultView?.classList.toggle("hidden", !hasCandidate);
 }
 
+function gatchaLoggedIn() {
+  return Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
+}
+
 function renderGatchaView() {
+  const loggedIn = gatchaLoggedIn();
+  const notice = document.getElementById("gatcha-login-notice");
+  if (notice) notice.hidden = loggedIn;
   const hasCandidate = Boolean(state.gatchaCandidate);
   if (elements.gatchaCandidateTitle && state.gatchaCandidate?.title) {
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
@@ -5382,11 +5392,13 @@ function renderGatchaView() {
     elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
   }
   if (elements.gatchaButton) {
-    elements.gatchaButton.disabled = false;
-    elements.gatchaButton.textContent = t("gatcha.title");
+    elements.gatchaButton.disabled = !loggedIn || state.gatchaDrawBusy;
+    elements.gatchaButton.toggleAttribute("aria-busy", state.gatchaDrawBusy);
+    elements.gatchaButton.textContent = t(state.gatchaDrawBusy ? "gatcha.drawing" : "gatcha.title");
   }
   if (elements.gatchaRetryButton) {
-    elements.gatchaRetryButton.disabled = false;
+    elements.gatchaRetryButton.disabled = !loggedIn || state.gatchaDrawBusy;
+    elements.gatchaRetryButton.toggleAttribute("aria-busy", state.gatchaDrawBusy);
     elements.gatchaRetryButton.textContent = t("gatcha.retry");
   }
 }
@@ -6415,7 +6427,8 @@ function positionAudioVariantPopover() {
 function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
   const popover = audioVariantPopover();
   const toggleButton = elements.audioVariantBar.querySelector(".audio-variant-toggle");
-  const nextOpen = Boolean(open && popover && toggleButton);
+  const nextOpen = Boolean(open && popover && toggleButton)
+    && !elements.audioVariantBar.classList.contains("is-inline");
   state.audioVariantBarExpanded = nextOpen;
   elements.audioVariantBar.classList.toggle("is-expanded", nextOpen);
   toggleButton?.classList.toggle("is-expanded", nextOpen);
@@ -6434,6 +6447,26 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
   }
   window.requestAnimationFrame(positionAudioVariantPopover);
 }
+
+function syncAudioVariantLayout() {
+  const bar = elements.audioVariantBar;
+  const list = bar?.querySelector(".audio-variant-list") || elements.audioVariantPopover?.querySelector(".audio-variant-list");
+  if (!list || !bar.clientWidth) return;
+  bar.classList.add("is-inline");
+  bar.append(list);
+  const fits = list.scrollWidth <= bar.clientWidth + 1;
+  if (fits) {
+    setAudioVariantPopoverOpen(false);
+  } else {
+    bar.classList.remove("is-inline");
+    elements.audioVariantPopover?.replaceChildren(list);
+  }
+}
+
+if (typeof ResizeObserver === "function" && elements.audioVariantBar) {
+  new ResizeObserver(syncAudioVariantLayout).observe(elements.audioVariantBar);
+}
+document.fonts?.ready?.then(syncAudioVariantLayout);
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
@@ -6515,6 +6548,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   elements.audioVariantPopover?.replaceChildren(list);
   elements.audioVariantBar.append(summary, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
+  syncAudioVariantLayout();
   setAudioVariantPopoverOpen(state.audioVariantBarExpanded);
 }
 
@@ -6832,12 +6866,7 @@ function poolConfigFolderId(folder) {
 }
 
 function poolConfigSetMessage(message, isError = false) {
-  if (!elements.poolConfigMessage) {
-    return;
-  }
-  elements.poolConfigMessage.textContent = message || "";
-  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
-  elements.poolConfigMessage.classList.toggle("hidden", !message);
+  setAppMessage(message, isError);
 }
 
 function updatePoolConfigWeightLabel() {
@@ -7564,10 +7593,6 @@ function renderPlayerControls(currentItem, playbackMode) {
     "player-control-unsupported",
     currentItem,
   );
-  const cachePendingIssueSignature = remotePlayerIssueSignature(
-    "player-control-cache-pending",
-    currentItem,
-  );
   const canControl = canRemoteControlPlayer(currentItem, playbackMode);
   const playerStatus = currentPlayerStatus(currentItem);
   const isPaused = playerStatus ? Boolean(playerStatus.is_paused) : true;
@@ -7654,10 +7679,6 @@ function renderPlayerControls(currentItem, playbackMode) {
   if (!hasLocalSplitMedia(currentItem)) {
     if (typeof clearRemoteIssueByPrefix === "function") {
       clearRemoteIssueByPrefix("player-control-unsupported");
-    }
-    if (typeof reportRemoteIssue === "function") {
-      clearRemoteIssueByPrefix("player-control-cache-pending", cachePendingIssueSignature);
-      reportRemoteIssue(cachePendingIssueSignature, t("remote.controlCachePending"));
     }
     return;
   }
@@ -9570,30 +9591,26 @@ document.addEventListener("click", async (event) => {
     renderRatingStars();
     return;
   }
-  const optOutBtn = event.target.closest("[data-rating-opt-out-btn]");
-  if (optOutBtn) {
-    setRatingOptOut(true);
-    closeRatingPrompt({ submit: false });
-    return;
-  }
   const addUpButton = event.target.closest("[data-rating-add-up]");
   if (addUpButton) {
     const promptItem = activeRatingPromptItem();
     const uid = ratingOwnerUid(promptItem);
-    const message = root.querySelector("[data-rating-message]");
+    if (addUpButton.disabled) return;
     if (!uid) {
-      if (message) message.textContent = t("rating.missingUidMessage");
+      setAppMessage(t("rating.missingUidMessage"), true);
       return;
     }
     addUpButton.disabled = true;
-    if (message) message.textContent = t("rating.addingUp");
+    addUpButton.setAttribute("aria-busy", "true");
+    addUpButton.textContent = t("rating.addingUp");
     try {
       await addGatchaUid(uid);
-      if (message) message.textContent = t("rating.addedUp");
+      setAppMessage(t("rating.addedUp"));
     } catch (error) {
-      if (message) message.textContent = error.message || t("rating.addFailed");
+      setAppMessage(error.message || t("rating.addFailed"), true);
     } finally {
-      addUpButton.disabled = false;
+      addUpButton.removeAttribute("aria-busy");
+      if (state.ratingPromptElement === root) renderRatingPromptContent();
     }
     return;
   }
@@ -9744,10 +9761,10 @@ elements.audioVariantBar.addEventListener("click", (event) => {
   }
 });
 
-elements.audioVariantPopover?.addEventListener("click", async (event) => {
+async function handleAudioVariantSelection(event) {
   const button = event.target.closest("button[data-variant-id]");
   const currentItem = state.data?.current_item;
-  if (!button || !currentItem) {
+  if (!button || button.disabled || !currentItem) {
     return;
   }
   if (button.dataset.itemId !== currentItem.id) {
@@ -9823,7 +9840,9 @@ elements.audioVariantPopover?.addEventListener("click", async (event) => {
     state.audioVariantSwitchInFlight = false;
     scheduleAudioVariantSwitchUnlock();
   }
-});
+}
+elements.audioVariantBar.addEventListener("click", handleAudioVariantSelection);
+elements.audioVariantPopover?.addEventListener("click", handleAudioVariantSelection);
 
 elements.playerControlPanel.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-control-action]");
@@ -10305,6 +10324,7 @@ async function startRemoteSession() {
   initSearchDetailController();
   syncRemoteRequestViewSelection();
   renderRemoteIdentity();
+  renderGatchaView();
   await fetchRemoteIdentity();
   try {
     await fetchState();

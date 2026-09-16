@@ -61,6 +61,10 @@ pub(crate) enum LoginCommand {
     TakeSuccess {
         generation: u64,
     },
+    DownloadAccess {
+        source: String,
+        cookie: String,
+    },
     ReadCookie {
         data_path: PathBuf,
         #[serde(default)]
@@ -229,8 +233,23 @@ pub(crate) fn save_cookie(path: &Path, cookie: &str) -> Result<(), LoginError> {
     result
 }
 
+/// Shared external-download admission rule; Native remains available to guests.
+pub(crate) fn download_login_error(source: &str, cookie: &str) -> Option<&'static str> {
+    if login_cookie(cookie).is_some() {
+        return None;
+    }
+    match source {
+        "bbdown" => Some("BBDown 下载需要登录 Bilibili，请登录后重新下载"),
+        "downkyi" => Some("DownKyi/aria2c 下载需要登录 Bilibili，请登录后重新下载"),
+        _ => None,
+    }
+}
+
 pub(crate) fn execute(command: LoginCommand) -> Result<Value, LoginError> {
     match command {
+        LoginCommand::DownloadAccess { source, cookie } => {
+            Ok(json!({"message": download_login_error(&source, &cookie)}))
+        }
         LoginCommand::ReadCookie {
             data_path,
             configured_cookie,
@@ -378,4 +397,25 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
         service.complete_bilibili_login(generation, update);
     }
     Ok(json!({"diagnostics": diagnostics}))
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    #[test]
+    fn external_downloads_require_login_but_native_does_not() {
+        for cookie in [
+            "",
+            "buvid3=visitor; bili_ticket=visitor",
+            "SESSDATA=partial",
+        ] {
+            for source in ["bbdown", "downkyi"] {
+                assert!(download_login_error(source, cookie).is_some());
+            }
+            assert!(download_login_error("native", cookie).is_none());
+        }
+        for source in ["bbdown", "downkyi", "native", "yt-dlp"] {
+            assert!(download_login_error(source, "SESSDATA=synthetic; bili_jct=csrf").is_none());
+        }
+    }
 }

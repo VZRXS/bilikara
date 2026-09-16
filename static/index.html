@@ -33,7 +33,7 @@
             aria-haspopup="dialog" aria-controls="remote-mini-popover">
             <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><path d="M10 5h4M11 18.5h2"></path>
+              <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><rect x="10.4" y="4.5" width="3.2" height="1.4" rx="0.7" fill="currentColor" stroke="none"></rect><path d="M10 19h4" stroke-width="1"></path>
             </svg>
             <span class="control-label" data-i18n="top.mobileRemote">手机点歌</span>
             <span class="remote-mini-qr-wrap">
@@ -206,11 +206,10 @@
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 8V4h18v14h-8"></path>
-                <path d="M3 12a9 9 0 0 1 9 9M3 16a5 5 0 0 1 5 5"></path>
-                <circle cx="3" cy="21" r="1" fill="currentColor" stroke="none"></circle>
+                <path d="M6 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"></path>
+                <rect x="8" y="9" width="14" height="12" rx="2"></rect>
               </svg>
-              <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
+              <span class="control-label" data-i18n="display.outputTitle">双屏显示</span>
               <span class="presentation-state-dot" id="presentation-state-dot" aria-hidden="true"></span>
             </span>
             <div class="service-mode-summary" id="presentation-output-summary" data-i18n="display.outputOff">已关闭</div>
@@ -509,7 +508,7 @@
                   aria-expanded="false" aria-controls="player-fullscreen-remote-popover"
                   aria-label="手机点歌" data-i18n-aria-label="remote.openInBrowser">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                    <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><path d="M10 5h4M11 18.5h2"></path>
+                    <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><rect x="10.4" y="4.5" width="3.2" height="1.4" rx="0.7" fill="currentColor" stroke="none"></rect><path d="M10 19h4" stroke-width="1"></path>
                   </svg>
                 </button>
                 <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false"
@@ -523,7 +522,7 @@
                     <svg class="fullscreen-phone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                       <rect x="7" y="2.5" width="10" height="19" rx="2"></rect>
-                      <path d="M10 5h4M11 18.5h2"></path>
+                      <rect x="10.4" y="4.5" width="3.2" height="1.4" rx="0.7" fill="currentColor" stroke="none"></rect><path d="M10 19h4" stroke-width="1"></path>
                     </svg>
                     <span class="fullscreen-action-divider"></span>
                     <svg class="fullscreen-exit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -610,11 +609,12 @@
           <div class="audio-variant-anchor" id="audio-variant-anchor" hidden>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <button type="button" class="audio-variant-toggle hidden" id="audio-variant-toggle"
-              data-action="toggle-audio-variants" aria-expanded="false"
+              data-action="toggle-audio-variants" aria-expanded="false" aria-controls="audio-variant-popover"
               data-i18n-aria-label="player.expandParts">
-              <span aria-hidden="true">▼</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
             </button>
           </div>
+          <div class="audio-variant-popover" id="audio-variant-popover" hidden></div>
           <div class="audio-variant-backdrop" id="audio-variant-backdrop" hidden inert aria-hidden="true"></div>
           <section class="presentation-host-controls" id="presentation-host-controls" hidden
             aria-label="双屏播放控制" data-i18n-aria-label="controller.controls">
@@ -724,7 +724,7 @@
                 data-av-delay-lock disabled aria-label="Lock AV delay">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="unlocked">
                       <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
-                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 6.7-1.4"></path>
+                      <path d="M15.5 10V6.5a3.5 3.5 0 0 1 7 0V7.5"></path>
                     </svg>
                     <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="locked">
                       <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
@@ -1636,7 +1636,6 @@
     <div class="selection-modal-card">
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
-          <p class="section-tag" data-i18n="binding.tag">Part Binding</p>
           <div class="binding-modal-title-row cache-contextual-info-region">
             <h2 data-i18n="binding.title">选择分P绑定</h2>
             <span class="cache-advanced-info">
@@ -1673,7 +1672,6 @@
     <div class="selection-modal-card selection-modal-card-single">
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
-          <p class="section-tag" data-i18n="favlist.tag">Favlist Pull</p>
           <h2 data-i18n="favlist.title">选择收藏夹</h2>
         </div>
         <button type="button" id="gatcha-favlist-modal-close" class="banner-close" aria-label="关闭"
@@ -1700,7 +1698,6 @@
     <div class="selection-modal-card gatcha-pool-config-card">
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
-          <p class="section-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
           <h2 data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
         </div>
         <div class="pool-config-head-actions">
@@ -1758,7 +1755,6 @@
     <div class="selection-modal-card selection-modal-card-single bilikara-secret-card">
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
-          <p class="section-tag">Access</p>
           <h2>访问验证</h2>
         </div>
         <button type="button" id="bilikara-secret-close" class="banner-close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
@@ -1782,7 +1778,6 @@
     <div class="selection-modal-card selection-modal-card-single developer-tag-reset-card">
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
-          <p class="section-tag">Tools</p>
           <h2 id="developer-tag-reset-title">重置标签字段</h2>
         </div>
         <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>

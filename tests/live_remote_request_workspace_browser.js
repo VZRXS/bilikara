@@ -451,6 +451,7 @@ async function requestWorkspaceMetrics(page) {
         ),
         primaryButton: visualStyle(activePanel?.querySelector(".primary-button")),
       },
+      firstControlTop: (rect(visibleDescendant(".remote-identity-summary, input, textarea, select"))?.top || 0) - rect(requestCard).top,
       formControls: {
         field: visualStyle(visibleDescendant("input, textarea, select")),
         primaryButton: visualStyle(visibleDescendant("form .primary-button")),
@@ -552,7 +553,7 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
   assert(
     metrics.requestCardOverflowY === "hidden"
       && (metrics.activePanelId === "remote-request-quick-panel"
-        ? metrics.activePanelOverflowY === "auto" && metrics.activePanelScrollbarWidth === "thin"
+        ? metrics.activePanelOverflowY === "clip" && metrics.verticalOwners.length === 0
         : metrics.activePanelOverflowY === "hidden")
       && ["compact", "standard", "browse", "browse-deep"].includes(metrics.requestSize)
       && metrics.requestCard.height <= 880.5
@@ -880,6 +881,11 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await bringRequestCardIntoView(page);
     states.searchLocal = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchLocal, "375 Search / Local", { requireNoRailOverflow: true });
+    assert([states.searchSharedEmpty, states.searchLocal].every((entry) => (
+      Math.abs(entry.firstControlTop - states.quick.firstControlTop) <= 1
+    )), "Both search fields must align with the first Quick control", {
+      quick: states.quick.firstControlTop, shared: states.searchSharedEmpty.firstControlTop, local: states.searchLocal.firstControlTop,
+    });
     await capture(page, paths.searchLocal);
     await requestFirstResult(page, "#search-results", routeState, "Local");
 
@@ -1398,7 +1404,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       "Switching to Quick programmatically scrolled the document",
       { scrollBeforeCompact, after: compactMetrics.scrollY },
     );
-    const standardStates = [states.searchSharedEmpty];
+    const emptySearchStates = [states.searchSharedEmpty];
     const browseStates = [states.searchSharedResults, states.searchLocal];
     const deepBrowseStates = [
       states.categoriesHome,
@@ -1412,14 +1418,14 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     ];
     assert(
       compactMetrics.requestSize === "compact"
-        && standardStates.every((entry) => entry.requestSize === "standard")
+        && emptySearchStates.every((entry) => entry.requestSize === "compact")
         && browseStates.every((entry) => entry.requestSize === "browse-deep")
         && deepBrowseStates.every((entry) => entry.requestSize === "browse-deep")
-        && compactMetrics.requestCard.height < Math.min(...standardStates.map((entry) => entry.requestCard.height))
-        && Math.max(...standardStates.map((entry) => entry.requestCard.height))
+        && emptySearchStates.every((entry) => entry.requestCard.height <= compactMetrics.requestCard.height + 1)
+        && Math.max(...emptySearchStates.map((entry) => entry.requestCard.height))
           < Math.min(...browseStates.map((entry) => entry.requestCard.height))
         && browseStates.every((entry) => Math.abs(entry.requestCard.height - deepBrowseStates[0].requestCard.height) <= 1),
-      "Request card did not adapt from compact to standard and browse content tiers",
+      "Quick and empty search must stay compact; populated browsers must expand",
       Object.fromEntries(Object.entries({ ...states, compactMetrics })
         .map(([name, entry]) => [name, { size: entry.requestSize, height: entry.requestCard.height }])),
     );

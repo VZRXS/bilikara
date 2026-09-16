@@ -62,8 +62,6 @@
     readyPromise: null,
     readyResolve: null,
     overlay: null,
-    status: null,
-    error: null,
     identityInput: null,
     passwordInput: null,
     connectButton: null,
@@ -92,7 +90,7 @@
 
   // Exact messages owned by this adapter; unknown server/native details remain verbatim.
   const connectionMessageKeys = Object.freeze({
-    "请输入 ID 和 4–32 位房间密码。": "internetRemote.joinRequired",
+    "请输入用户名和 4–32 位房间密码。": "internetRemote.joinRequired",
     "当前浏览器不支持此公网连接。": "internetRemote.unavailable",
     "房间链接无效，请重新扫描 Host 二维码。": "internetRemote.invalidLink",
     "正在连接…": "remote.connectionConnecting",
@@ -120,11 +118,9 @@
     const raw = state.connectionMessage;
     const key = Object.hasOwn(connectionMessageKeys, raw) ? connectionMessageKeys[raw] : null;
     const message = key ? translatedCopy(key, raw) : raw;
-    if (state.status) state.status.textContent = message;
-    if (state.error) {
-      state.error.textContent = state.connectionIsError ? message : "";
-      state.error.classList.toggle("hidden", !state.connectionIsError);
-    }
+    if (message) global.dispatchEvent(new CustomEvent("remote-connection-message", {
+      detail: { message, isError: state.connectionIsError },
+    }));
     if (state.connectButton) {
       const busy = state.connectButton.hasAttribute("aria-busy") && !state.connectionIsError;
       state.connectButton.dataset.i18n = busy ? "remote.connectionConnecting" : "internetRemote.connect";
@@ -139,7 +135,7 @@
   }
 
   function setConnectionStatus(message, isError = false) {
-    state.connectionMessage = String(message || "");
+    state.connectionMessage = String(message || "").replace(/(?:\.{3}|·{3})$/u, "…");
     state.connectionIsError = isError;
     renderConnectionCopy();
   }
@@ -148,21 +144,24 @@
     if (state.overlay) return;
     const overlay = document.createElement("div");
     overlay.className = "internet-remote-join-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "internet-join-title");
     overlay.innerHTML = `
-      <form class="internet-remote-join-card">
-        <p class="panel-tag">INTERNET REMOTE</p>
-        <h1 data-i18n="internetRemote.joinTitle">连接 bilikara 房间</h1>
-        <p class="internet-remote-join-copy" data-i18n="internetRemote.joinDescription">使用 Host 显示的房间密码连接。连接后将使用与本地 Remote 相同的界面。</p>
-        <label><span data-i18n="remoteIdentity.inputLabel">ID</span><input name="identity" type="text" maxlength="24" autocomplete="nickname" required></label>
-        <label><span data-i18n="internetRemote.password">房间密码</span><input name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" required></label>
-        <p class="internet-remote-join-status" role="status"></p>
-        <p class="internet-remote-join-error hidden" role="alert"></p>
-        <button type="submit" class="primary-button" data-i18n="internetRemote.connect">连接</button>
-      </form>`;
+      <div class="remote-identity-backdrop"></div>
+      <div class="remote-identity-card internet-remote-join-card">
+        <h2 id="internet-join-title" data-i18n="internetRemote.joinTitle">连接 bilikara 房间</h2>
+        <p class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用须填写用户名，登记后本设备将始终使用该身份点歌。</p>
+        <form class="remote-identity-form">
+          <label for="internet-join-identity" data-i18n="remoteIdentity.inputLabel">用户名</label>
+          <input id="internet-join-identity" name="identity" type="text" maxlength="24" autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入用户名" required>
+          <label for="internet-join-password" data-i18n="internetRemote.password">房间密码</label>
+          <input id="internet-join-password" name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" data-i18n-placeholder="internetRemote.passwordPlaceholder" placeholder="请输入 Host 显示的房间密码" required>
+          <div class="remote-identity-actions"><button type="submit" class="primary-button" data-i18n="internetRemote.connect">连接</button></div>
+        </form>
+      </div>`;
     document.body.appendChild(overlay);
     state.overlay = overlay;
-    state.status = overlay.querySelector(".internet-remote-join-status");
-    state.error = overlay.querySelector(".internet-remote-join-error");
     state.identityInput = overlay.querySelector('input[name="identity"]');
     state.passwordInput = overlay.querySelector('input[name="password"]');
     state.connectButton = overlay.querySelector('button[type="submit"]');
@@ -174,7 +173,7 @@
       const identity = String(state.identityInput.value || "").trim();
       const password = String(state.passwordInput.value || "");
       if (!identity || password.length < 4 || password.length > 32) {
-        setConnectionStatus("请输入 ID 和 4–32 位房间密码。", true);
+        setConnectionStatus("请输入用户名和 4–32 位房间密码。", true);
         return;
       }
       state.identity = identity;
@@ -207,6 +206,9 @@
       state.readyPromise = null;
       state.readyResolve = null;
     }
+    if (wasAuthorized) {
+      for (const listener of [...listeners]) listener({ type: "error" });
+    }
     state.control?.close();
     state.bulk?.close();
     state.peer?.close();
@@ -216,7 +218,10 @@
     state.epoch = lowLevel.randomBase64Url(16);
     state.sequences = { control: 0, bulk: 0 };
     state.decoders = { control: new lowLevel.Decoder(), bulk: new lowLevel.Decoder() };
-    for (const pending of state.pending.values()) pending.reject(new Error("连接已重置"));
+    for (const pending of state.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("连接已重置"));
+    }
     state.pending.clear();
   }
 
@@ -337,6 +342,7 @@
         document.documentElement.dataset.remoteTransport = "internet";
         state.connectButton.disabled = false;
         state.connectButton.removeAttribute("aria-busy");
+        state.connectionMessage = "";
         renderConnectionCopy();
         state.readyResolve?.();
       }).catch(fail);
@@ -349,6 +355,7 @@
       return;
     }
     if (message.type === "response") {
+      if (!state.authorized) return;
       const pending = state.pending.get(message.request_id);
       if (pending) {
         state.pending.delete(message.request_id);
@@ -500,7 +507,7 @@
       original_url: itemUrl(item),
       resolved_url: itemUrl(item),
       item_incarnation_id: String(item.item_incarnation_id || ""),
-      video_media_url: "internet-remote://video",
+      video_media_url: item.cache_status === "ready" ? "internet-remote://video" : "",
       selected_pages: selectedPages.length ? selectedPages : [Number(item.page || 1)],
       selected_durations: Array.isArray(item.selected_durations) ? item.selected_durations.map(Number) : [],
       selected_parts: selectedParts,
@@ -509,7 +516,8 @@
       available_parts: availableParts,
       audio_variants: variants.map((variant) => ({
         ...variant,
-        audio_url: `internet-remote://audio/${encodeURIComponent(variant.id || "main")}`,
+        audio_url: item.cache_status === "ready"
+          ? `internet-remote://audio/${encodeURIComponent(variant.id || "main")}` : "",
       })),
     };
   }
@@ -546,8 +554,8 @@
         av_delay: {
           effective_delay_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
           locked: Boolean(remoteState.player_settings?.av_delay_locked),
-          lock_button_enabled: true,
-          has_local_adjustment: true,
+          lock_button_enabled: Boolean(remoteState.player_settings?.av_delay_lock_button_enabled),
+          has_local_adjustment: Boolean(remoteState.player_settings?.av_delay_has_local_adjustment),
         },
         volume_percent: Number(remoteState.player_settings?.volume_percent ?? 100),
         is_muted: Boolean(remoteState.player_settings?.is_muted),
@@ -561,13 +569,14 @@
         duration: Number(status.duration_seconds || 0),
         updated_at: Date.now() / 1000,
       } : null,
+      bbdown: { logged_in: Boolean(remoteState.bilibili_logged_in) },
       gatcha: remoteState.gatcha || state.remoteState?.gatcha || { busy: false },
       gatcha_pool_config: remoteState.gatcha_pool_config || state.remoteState?.gatcha_pool_config || {},
     };
   }
 
   function publishState(next) {
-    if (!next || typeof next !== "object") return;
+    if (!state.authorized || !next || typeof next !== "object") return;
     const currentRevision = Number(
       state.remoteState?.state_revision ?? state.remoteState?.revision ?? -1,
     );
@@ -843,7 +852,10 @@
       for (const callback of handlers.get(event.type) || []) callback(event);
     }
     listeners.add(dispatch);
-    if (state.remoteState) queueMicrotask(() => dispatch({ type: "state", data: JSON.stringify(localState(state.remoteState)) }));
+    queueMicrotask(() => {
+      if (state.authorized && state.remoteState) dispatch({ type: "state", data: JSON.stringify(localState(state.remoteState)) });
+      else dispatch({ type: "error" });
+    });
     return source;
   }
 
@@ -872,7 +884,7 @@
   }
 
   function scheduleReconnect() {
-    if (!state.password || !navigator.onLine || state.reconnectTimer) return;
+    const wasAuthorized = state.authorized;
     stopHeartbeat();
     if (state.authorized) {
       state.authorized = false;
@@ -880,6 +892,10 @@
       state.readyPromise = null;
       state.readyResolve = null;
     }
+    if (wasAuthorized) {
+      for (const listener of [...listeners]) listener({ type: "error" });
+    }
+    if (!state.password || !navigator.onLine || state.reconnectTimer) return;
     ensureReadyPromise();
     if (state.reconnectAttempts >= 8) {
       state.overlay?.classList.remove("hidden");
@@ -909,6 +925,7 @@
   }
 
   global.addEventListener("online", scheduleReconnect);
+  global.addEventListener("offline", scheduleReconnect);
   global.addEventListener("pageshow", refreshHeartbeatAfterForeground);
   document.addEventListener("visibilitychange", refreshHeartbeatAfterForeground);
   document.documentElement.dataset.remoteTransport = "internet-pending";

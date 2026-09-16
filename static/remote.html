@@ -32,7 +32,7 @@
             focusable="false"
           >
             <rect x="7" y="2.5" width="10" height="19" rx="2"></rect>
-            <path d="M10 5h4M11 18.5h2"></path>
+            <rect x="10.4" y="4.5" width="3.2" height="1.4" rx="0.7" fill="currentColor" stroke="none"></rect><path d="M10 19h4" stroke-width="1"></path>
           </svg>
         </h1>
         <div class="remote-header-menu" id="remote-header-menu">
@@ -221,7 +221,7 @@
           <form id="request-form" class="request-form">
             <div class="requester-row remote-identity-row">
               <p class="remote-identity-summary">
-                <span data-i18n="remoteIdentity.myId">我的 ID：</span>
+                <span data-i18n="remoteIdentity.myId">用户名：</span>
                 <strong id="remote-identity-name">—</strong>
               </p>
               <button type="button" id="remote-identity-rename" class="secondary-button" data-i18n="remoteIdentity.rename">重命名</button>
@@ -520,8 +520,8 @@
         <div id="gatcha-init-view" class="gatcha-content">
           <div class="gatcha-icon">🎲</div>
           <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
+          <p id="gatcha-login-notice" class="gatcha-login-notice" data-i18n="gatcha.loginRequired">请登录 Bilibili 账号</p>
           <button type="button" id="gatcha-button" class="primary-button" data-i18n="gatcha.title">试试运气</button>
-          <p class="gatcha-message" id="gatcha-message" role="status"></p>
         </div>
         <div id="gatcha-result-view" class="gatcha-content hidden">
           <div class="gatcha-result-copy">
@@ -542,7 +542,6 @@
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div class="binding-sheet-heading">
-              <p class="panel-tag" data-i18n="binding.tag">Part Binding</p>
               <div class="binding-sheet-title-row remote-contextual-info-region">
                 <h2 id="binding-sheet-title" data-i18n="binding.title">选择分P绑定</h2>
                 <span class="info-trigger-wrap">
@@ -600,7 +599,6 @@
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
-              <p class="panel-tag" data-i18n="favlist.tag">Favlist Pull</p>
               <h2 id="gatcha-favlist-sheet-title" data-i18n="favlist.title">选择收藏夹</h2>
             </div>
             <button type="button" id="gatcha-favlist-sheet-close" class="binding-sheet-close"
@@ -623,7 +621,6 @@
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
-              <p class="panel-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
               <h2 id="gatcha-pool-config-sheet-title" data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
             </div>
             <div class="pool-config-head-actions">
@@ -660,7 +657,6 @@
             </div>
             <div id="gatcha-pool-favlist-options" class="binding-option-list pool-config-option-list"></div>
           </section>
-          <p class="gatcha-message" id="gatcha-pool-config-message" role="status"></p>
           <div class="binding-sheet-actions">
             <button type="button" id="gatcha-pool-config-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
             <button type="button" id="gatcha-pool-config-sheet-save" class="primary-button" data-i18n="gatcha.poolSave">保存</button>
@@ -674,7 +670,6 @@
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
-              <p class="panel-tag" data-i18n="remote.queueOrderTag">Queue Order</p>
               <h2 id="reorder-confirm-sheet-title" data-i18n="remote.queueOrderTitle">确认调整顺序</h2>
             </div>
             <button type="button" id="reorder-confirm-sheet-close" class="binding-sheet-close"
@@ -985,7 +980,7 @@
                   <button type="button" id="remote-av-delay-lock-button" class="ghost-button remote-lock-button" data-av-delay-lock disabled aria-label="Lock AV delay">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="unlocked">
                       <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
-                      <path d="M8.5 10V7.5a3.5 3.5 0 0 1 6.7-1.4"></path>
+                      <path d="M15.5 10V6.5a3.5 3.5 0 0 1 7 0V7.5"></path>
                     </svg>
                     <svg class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" data-av-lock-icon="locked">
                       <rect x="5.5" y="10" width="13" height="10" rx="2"></rect>
@@ -1072,16 +1067,14 @@
 
     <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
 
-    <div id="remote-identity-modal" class="remote-identity-modal" role="dialog" aria-modal="true" aria-labelledby="remote-identity-title">
+    <div id="remote-identity-modal" class="remote-identity-modal hidden" role="dialog" aria-modal="true" aria-labelledby="remote-identity-title">
       <div class="remote-identity-backdrop" id="remote-identity-backdrop"></div>
       <div class="remote-identity-card">
-        <p class="panel-tag" data-i18n="remoteIdentity.tag">REMOTE ID</p>
         <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
-        <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用必须填写本场点歌 ID。</p>
+        <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用须填写用户名，登记后本设备将始终使用该身份点歌。</p>
         <form id="remote-identity-form" class="remote-identity-form">
-          <label for="remote-identity-input" data-i18n="remoteIdentity.inputLabel">我的 ID</label>
-          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入 ID" />
-          <p id="remote-identity-message" class="message" role="status"></p>
+          <label for="remote-identity-input" data-i18n="remoteIdentity.inputLabel">用户名</label>
+          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入用户名" />
           <div class="remote-identity-actions">
             <button type="button" id="remote-identity-cancel" class="ghost-button hidden" data-i18n="common.cancel">取消</button>
             <button type="submit" id="remote-identity-submit" class="primary-button" data-i18n="remoteIdentity.registerSubmit">添加并开始使用</button>

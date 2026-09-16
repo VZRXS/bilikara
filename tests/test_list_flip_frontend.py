@@ -446,13 +446,13 @@ console.log(JSON.stringify({ sequence }));
                 self.assertNotIn(forbidden, random_workspace)
                 self.assertNotIn(forbidden, pool_sheet)
 
-    def test_sources_owns_the_only_add_uid_command_path(self):
+    def test_sources_and_rating_reuse_the_add_uid_command(self):
         self.assertEqual(self.markup.count('id="modal-follow-uid-form"'), 1)
         self.assertEqual(
             len(re.findall(r"(?<!function )\baddGatchaUid\(", self.source)),
-            1,
+            2,
         )
-        self.assertNotIn("data-rating-add-up", self.source)
+        self.assertIn("data-rating-add-up", self.source)
         rating_render_start = self.source.index("function renderRatingPromptContent()")
         rating_open_start = self.source.index("function openRatingPrompt(", rating_render_start)
         rating_open_end = self.source.index("function maybeShowRatingPromptForProgress", rating_open_start)
@@ -468,8 +468,9 @@ console.log(JSON.stringify({ sequence }));
             + self.source[rating_open_start:rating_open_end]
             + self.source[rating_handler_start:rating_handler_end]
         )
+        self.assertIn("await addGatchaUid(uid)", rating_source)
+        self.assertIn('addUpButton.setAttribute("aria-busy", "true")', rating_source)
         for source_owner in (
-            "addGatchaUid(",
             "previewGatchaUid(",
             "refreshGatchaCache(",
             "previewGatchaFavlist(",

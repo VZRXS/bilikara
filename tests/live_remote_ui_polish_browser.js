@@ -1,7 +1,7 @@
 "use strict";
 
 const { workspaceRouteState, installWorkspaceRoutes, prepareRemotePage } = require("./live_remote_request_workspace_browser");
-function assert(value, message) { if (!value) throw new Error(message); }
+const assert = require("node:assert/strict");
 const shotPath = (path, suffix) => path?.replace(/(\.[^./]+)$/, `-polish-${suffix}$1`);
 
 async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
@@ -72,7 +72,7 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       });
       await page.locator("#remote-qr-toggle").click();
       await page.locator("#remote-settings-toggle").click();
-      await page.waitForFunction(() => !elements.remotePopoverQrImage.classList.contains("hidden"));
+      await page.locator("#remote-popover-qr-placeholder svg").waitFor({ state: "visible" });
       const menuMetrics = () => page.locator("#remote-menu-panel").evaluate((node) => ({
         width: node.clientWidth, scrollWidth: node.scrollWidth,
         height: node.clientHeight, scrollHeight: node.scrollHeight,
@@ -89,7 +89,7 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
         }) };
         renderRemoteAccess(null);
       });
-      await page.waitForFunction(() => !document.querySelector("#remote-public-qr-image").classList.contains("hidden"));
+      await page.locator("#remote-public-qr-placeholder svg").waitFor({ state: "visible" });
       assert(!await page.locator("#remote-popover-url-link").isVisible(), "Public invitation URL must not be printed");
       assert(await page.locator("#remote-share-password").innerText() === "300201", "Missing public password");
       menu = await menuMetrics();
@@ -98,7 +98,7 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       if (screenshotPath) {
         await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))));
         await page.screenshot({ path: shotPath(screenshotPath, `${scenario.width}-public-menu`), fullPage: false });
-        await page.locator("#remote-public-qr-image").screenshot({ path: shotPath(screenshotPath, `${scenario.width}-public-qr`) });
+        await page.locator("#remote-public-qr-placeholder svg").screenshot({ path: shotPath(screenshotPath, `${scenario.width}-public-qr`) });
       }
       await page.setViewportSize({ width: scenario.width, height: 360 });
       await page.waitForFunction(() => {
@@ -110,14 +110,14 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       await page.waitForFunction(() => document.querySelector("#remote-menu-panel").scrollTop > 0);
       await page.setViewportSize({ width: scenario.width, height: scenario.height });
       await page.evaluate(() => renderRemoteAccess({ preferred_url: "http://192.168.0.212:5725/remote" }));
-      await page.waitForFunction(() => !elements.remotePopoverQrImage.classList.contains("hidden"));
+      await page.locator("#remote-popover-qr-placeholder svg").waitFor({ state: "visible" });
       assert(await page.locator("#remote-share-local").isVisible() && await page.locator("#remote-share-public").isVisible(), "Both known entries must render");
       if (screenshotPath) await page.screenshot({ path: shotPath(screenshotPath, `${scenario.width}-dual-menu`), fullPage: false });
       await page.evaluate(() => {
         window.BilikaraRemoteTransport.invitation = () => null;
         renderRemoteAccess(null);
       });
-      assert(!await page.locator("#remote-public-qr-image").isVisible() && !await page.locator("#remote-share-password").isVisible(), "Stale invitation survived invalidation");
+      assert(!await page.locator("#remote-public-qr-placeholder svg").count() && !await page.locator("#remote-share-password").isVisible(), "Stale invitation survived invalidation");
       await page.locator("#remote-menu-toggle").click();
       await page.evaluate(() => { window.BilikaraRemoteTransport = { mode: "local" }; });
 
@@ -145,9 +145,11 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       await page.mouse.down();
       assert(await noPointerRing(close), "Close pointer press added an outline");
       await page.mouse.up();
+      await page.waitForFunction(() => !elements.historyExportDialog.open);
       await page.locator("#history-export-button").click();
       if (scenario.width < 400) {
         await close.tap();
+        await page.waitForFunction(() => !elements.historyExportDialog.open);
         await page.locator("#history-export-button").tap();
         assert(await noPointerRing(close), "Touch-opened modal inherited a keyboard ring");
       }
@@ -157,10 +159,12 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       await page.keyboard.press("Tab");
       assert(!await noPointerRing(close), "Keyboard navigation lost its visible focus cue");
       await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !elements.historyExportDialog.open && document.activeElement === elements.historyExportButton);
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => elements.historyExportDialog.open);
       assert(!await noPointerRing(close), "Keyboard-opened modal lost its focus cue");
       await close.click();
+      await page.waitForFunction(() => !elements.historyExportDialog.open);
       await page.locator("#history-export-button").click();
       assert(await noPointerRing(close), "Switching from keyboard to mouse retained the ring");
       await page.mouse.move(0, 0);
@@ -217,6 +221,7 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
       await page.evaluate(async () => { try { await downloadHistoryExport("csv"); } catch {} });
       assert(exports.length === 2, "Internet attempted a direct LAN export");
       await page.locator("#history-export-close").click();
+      await page.waitForFunction(() => !elements.historyExportDialog.open);
       await page.locator("#history-export-button").click();
       await page.mouse.click(2, 2);
       await page.waitForFunction(() => !elements.historyExportDialog.open);
@@ -278,7 +283,33 @@ async function runRemoteUiPolishGate(browser, baseUrl, screenshotPath) {
     assert(await fresh.locator("#confirm-source-info").getAttribute("data-tooltip-direction") === "down", "Help must flip down at the viewport top");
     await fresh.evaluate(() => closeConfirm());
     assert(!await fresh.locator("#confirm-source-info").evaluate((node) => node.matches(":popover-open")), "Closing export left a top-layer tooltip behind");
-    evidence.push({ host: empty });
+    const ratingItem = { id: "rating-ui-fixture", bvid: "BVfixture", owner_mid: 123, owner_name: "Fixture UP" };
+    const ratingSnapshot = await fresh.evaluate((item) => ({ ...state.data, current_item: item }), ratingItem);
+    await fresh.route("**/api/state", (route) => route.fulfill({ json: { ok: true, data: ratingSnapshot } }));
+    await fresh.evaluate((item) => openRatingPrompt(item), ratingItem);
+    assert.equal(await fresh.locator(".rating-actions button").count(), 2, "Host rating must offer add UP and Done");
+    let addCalls = 0;
+    let finishAdd;
+    const addPending = new Promise((resolve) => { finishAdd = resolve; });
+    await fresh.route("**/api/gatcha/uids/add", async (route) => {
+      addCalls += 1;
+      assert.equal(route.request().postDataJSON().uid, "123");
+      await addPending;
+      await route.fulfill({ json: { ok: true, data: { uid: "123", added: true } } });
+    });
+    const addUp = fresh.locator("[data-rating-add-up]");
+    await addUp.click();
+    assert.equal(await addUp.getAttribute("aria-busy"), "true");
+    assert(await addUp.isDisabled());
+    await addUp.evaluate((button) => button.click());
+    finishAdd();
+    await fresh.waitForFunction(() => !document.querySelector("[data-rating-add-up]").hasAttribute("aria-busy"));
+    assert.equal(addCalls, 1, "Repeated activation must not submit twice");
+    assert(await addUp.isEnabled());
+    assert.equal(await fresh.locator(".rating-modal-backdrop").evaluate((node) => getComputedStyle(node).backdropFilter), "blur(6px)");
+    await fresh.evaluate(() => closeRatingPrompt({ submit: false }));
+    await fresh.waitForFunction(() => !document.querySelector(".rating-modal"));
+    evidence.push({ host: empty, ratingAddCalls: addCalls });
   } finally { await context.close(); }
   return { passed: true, evidence };
 }

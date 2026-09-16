@@ -62,6 +62,16 @@ class CopyI18nTest(unittest.TestCase):
             self.assertNotEqual(english[action], english[label])
         self.assertEqual(english["service.hires"], "Prefer Hi-Res")
 
+    def test_requester_labels_use_localized_usernames(self):
+        languages = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))["languages"]
+        for language, label in [("zh", "用户名"), ("en", "Username"), ("ja", "ユーザー名")]:
+            with self.subTest(language=language):
+                self.assertEqual(languages[language]["remoteIdentity.inputLabel"], label)
+                self.assertTrue(languages[language]["internetRemote.passwordPlaceholder"])
+                for key, value in languages[language].items():
+                    if key.startswith("remoteIdentity."):
+                        self.assertNotIn("ID", value)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for copy rendering")
     def test_join_status_translates_before_and_after_language_changes(self):
         script = r'''
@@ -73,7 +83,10 @@ const source = fs.readFileSync("static/remote-transport-client.js", "utf8").repl
   "})(globalThis);",
   "globalThis.copy = {state, setConnectionStatus, localize, handleDataMessage, connectionMessageKeys}; })(globalThis);",
 );
+const notices = [];
 const sandbox = {
+  CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
+  dispatchEvent: event => notices.push(event.detail),
   fetch: () => {}, location: {hash: "#room=synthetic", origin: "https://example.test"},
   localStorage: {getItem: () => "", setItem: () => {}}, URLSearchParams,
   addEventListener: () => {}, document: {addEventListener: () => {}, documentElement: {dataset: {}}},
@@ -91,40 +104,44 @@ function element() {
     removeAttribute: key => attributes.delete(key),
     hasAttribute: key => attributes.has(key)};
 }
-state.status = element(); state.error = element(); state.connectButton = element();
+state.connectButton = element();
 setConnectionStatus("等待 Host…");
-assert.equal(state.status.textContent, "等待 Host…"); // Meaningful before catalog initialization.
+assert.equal(notices.at(-1).message, "等待 Host…"); // Meaningful before catalog initialization.
 for (const language of ["en", "ja", "zh"]) {
   const messages = languages[language];
   localize(key => messages[key] || key, () => {});
-  assert.equal(state.status.textContent, messages["internetRemote.waitingForHost"]);
+  assert.equal(notices.at(-1).message, messages["internetRemote.waitingForHost"]);
+  for (const legacy of ["等待 Host...", "等待 Host···"]) {
+    setConnectionStatus(legacy);
+    assert.equal(notices.at(-1).message, messages["internetRemote.waitingForHost"]);
+  }
   state.connectButton.disabled = true;
   state.connectButton.setAttribute("aria-busy", "true");
   setConnectionStatus("正在连接…");
   assert.equal(state.connectButton.textContent, messages["remote.connectionConnecting"]);
   assert.equal(state.connectButton.disabled, true);
   setConnectionStatus("正在重新连接…");
-  assert.equal(state.status.textContent, messages["remote.connectionReconnecting"]);
-  assert.notEqual(state.status.textContent, messages["remote.connectionConnected"]);
+  assert.equal(notices.at(-1).message, messages["remote.connectionReconnecting"]);
+  assert.notEqual(notices.at(-1).message, messages["remote.connectionConnected"]);
   handleDataMessage({type: "auth.failed", reason: "too_many_attempts"});
-  assert.equal(state.error.textContent, messages["internetRemote.tooManyAttempts"]);
+  assert.equal(notices.at(-1).message, messages["internetRemote.tooManyAttempts"]);
   assert.equal(state.connectButton.disabled, false);
   assert.equal(state.connectButton.hasAttribute("aria-busy"), false);
   assert.equal(state.connectButton.textContent, messages["internetRemote.connect"]);
   handleDataMessage({type: "auth.failed", reason: "wrong_password"});
-  assert.equal(state.error.textContent, messages["internetRemote.wrongPassword"]);
+  assert.equal(notices.at(-1).message, messages["internetRemote.wrongPassword"]);
   setConnectionStatus("等待 Host…");
 }
 setConnectionStatus("房间密码错误。", true);
 localize(key => languages.en[key] || key, () => {});
-assert.equal(state.error.textContent, languages.en["internetRemote.wrongPassword"]);
+assert.equal(notices.at(-1).message, languages.en["internetRemote.wrongPassword"]);
 const unknown = '<img src=x onerror="alert(1)"> third-party detail 42';
 setConnectionStatus(unknown, true);
 localize(key => languages.ja[key] || key, () => {});
-assert.equal(state.error.textContent, unknown); // Neither translated nor HTML-interpolated.
+assert.equal(notices.at(-1).message, unknown); // Neither translated nor HTML-interpolated.
 for (const raw of ["constructor", "toString", "__proto__"]) {
   setConnectionStatus(raw, true);
-  assert.equal(state.error.textContent, raw);
+  assert.equal(notices.at(-1).message, raw);
 }
 '''
         result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True)

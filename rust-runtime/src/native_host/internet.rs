@@ -18,6 +18,9 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         Value::Null
     };
     state["gatcha"] = public_data(&snapshot["gatcha"]);
+    state["bilibili_logged_in"] = json!(
+        snapshot["bbdown"]["login"]["logged_in"] == true || snapshot["bbdown"]["logged_in"] == true
+    );
     Ok(state)
 }
 

@@ -56,6 +56,39 @@ class DesktopLoginTest(unittest.TestCase):
         worker.join(12)
         self.assertFalse(worker.is_alive())
 
+    def test_download_access_rejects_malformed_runtime_results(self):
+        for result in [{}, {"message": False}, {"message": []}]:
+            with self.subTest(result=result), patch.object(rust_runtime, "_call_runtime_service", return_value=result):
+                with self.assertRaises(rust_runtime.RustStatusServiceError):
+                    rust_runtime.desktop_login("download_access", source="bbdown", cookie="")
+
+    def test_bbdown_new_commands_read_login_and_logout_without_restart(self):
+        def command():
+            return self.manager._bbdown_download_command(
+                self.root / "BBDown", self.root / "unused-ffmpeg",
+                "https://www.bilibili.com/video/BV1tPC2BEEjq", page=1,
+                stream_kind="audio", target_dir=self.root / "track",
+            )
+        with patch("bilikara.bilibili.cfg.COOKIE", ""), patch.object(
+            self.manager, "_bbdown_stream_preference_args", return_value=[]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "BBDown 下载需要登录"):
+                command()
+            with LoginFixture():
+                generation = self.request("start", force=False)["generation"]
+                self.join(self.worker(generation))
+            self.assertTrue(self.manager.bbdown_login_status()["logged_in"])
+            for source in ["bbdown", "downkyi"]:
+                self.assertEqual(self.manager._download_login_error(source), "")
+            authenticated = command()
+            self.assertEqual(authenticated[authenticated.index("-c") + 1], bilibili.effective_bilibili_cookie())
+            self.assertIn("-c", authenticated)  # A running child keeps its admitted argv.
+            self.manager.logout_bbdown()
+            for source in ["bbdown", "downkyi"]:
+                self.assertIn("下载需要登录", self.manager._download_login_error(source))
+            with self.assertRaisesRegex(RuntimeError, "BBDown 下载需要登录"):
+                command()
+
     def test_success_png_downloader_readability_and_exactly_one_existing_hook(self):
         with LoginFixture() as fixture:
             arrived, release = threading.Event(), threading.Event()

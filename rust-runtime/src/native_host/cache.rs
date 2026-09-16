@@ -375,6 +375,23 @@ pub(super) fn retry(
             app.native().player_media.clone(),
         ))
     })?;
+    if let Some(message) =
+        crate::desktop_login::download_login_error(&policy.download_source, cookie)
+    {
+        use std::io::Write;
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(context.directory.join("logs/native-cache.log"))
+        {
+            let _ = writeln!(
+                log,
+                "download_login_required source={}",
+                policy.download_source
+            );
+        }
+        return Err(ApiError::new(403, "download_login_required", message));
+    }
     if !policy.available_with(context.desktop && context.bbdown.is_some()) {
         return Err(ApiError::new(
             501,

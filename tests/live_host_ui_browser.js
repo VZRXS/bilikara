@@ -21,6 +21,10 @@ function suffixedPath(path, suffix) {
 
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
+  if (runMode === "host-parts") {
+    try { return await require("./live_host_parts_browser").runHostPartsGate(browser, baseUrl, screenshotPath); }
+    finally { await browser.close(); }
+  }
   if (runMode === "ui-polish") {
     try { return await runRemoteUiPolishGate(browser, baseUrl, screenshotPath); }
     finally { await browser.close(); }
@@ -1555,7 +1559,8 @@ async function run() {
         outsideControls: !elements.stageExtendedControls.contains(elements.audioVariantBar)
           && !elements.stageControlTray.contains(elements.audioVariantBar),
         toggleVisible: !toggle.classList.contains("hidden") && toggle.getBoundingClientRect().width > 0,
-        collapsed: elements.audioVariantBar.classList.contains("is-collapsed"),
+        collapsed: !elements.audioVariantBar.classList.contains("is-inline")
+          && elements.audioVariantPopover.hidden,
         sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
         sameVideo: state.hostPlaybackSession?.video === window.__hostShellNodes.video,
         sameAudio: state.hostPlaybackSession?.audio === window.__hostShellNodes.audio,
@@ -1571,20 +1576,19 @@ async function run() {
     await shellPage.locator(".audio-variant-toggle").click();
     await shellPage.waitForTimeout(80);
     const variantPopupEvidence = await shellPage.evaluate(() => {
-      const bar = elements.audioVariantBar.getBoundingClientRect();
-      const buttons = [...elements.audioVariantBar.querySelectorAll(".audio-variant-button")];
-      const icon = elements.audioVariantToggle.querySelector("span")?.textContent || "";
+      const bar = elements.audioVariantPopover.getBoundingClientRect();
+      const buttons = [...elements.audioVariantPopover.querySelectorAll(".audio-variant-button")];
+      const icon = elements.audioVariantToggle.querySelector("svg path")?.getAttribute("d");
       const toggle = elements.audioVariantToggle.getBoundingClientRect();
       return {
-        open: state.audioVariantBarExpanded && elements.audioVariantBar.classList.contains("is-expanded"),
+        open: state.audioVariantBarExpanded && !elements.audioVariantPopover.hidden,
         backdrop: !elements.audioVariantBackdrop.hidden && !elements.audioVariantBackdrop.inert,
-        direction: elements.audioVariantBar.dataset.popoverDirection,
-        arrowMatchesDirection: elements.audioVariantBar.dataset.popoverDirection === "down"
-          ? icon === "▼"
-          : icon === "▲",
+        direction: elements.audioVariantPopover.dataset.popoverDirection,
+        arrowMatchesDirection: icon === "m6 9 6 6 6-6"
+          && elements.audioVariantToggle.classList.contains("is-expanded"),
         anchorRightDelta: Math.abs(bar.right - toggle.right),
         anchoredToToggle: Math.abs(bar.right - toggle.right) <= 0.5,
-        toggleOutsidePopup: !elements.audioVariantBar.contains(elements.audioVariantToggle),
+        toggleOutsidePopup: !elements.audioVariantPopover.contains(elements.audioVariantToggle),
         balancedColumns: buttons.length === 12
           && Math.max(...buttons.map((button) => button.getBoundingClientRect().width))
             - Math.min(...buttons.map((button) => button.getBoundingClientRect().width)) <= 1,
@@ -1657,7 +1661,10 @@ async function run() {
         rank: 4.8,
       });
     });
-    await shellPage.waitForTimeout(100);
+    await shellPage.locator(".request-workspace .song-detail-close").hover();
+    await shellPage.locator(".request-workspace .song-detail-card").evaluate(async (card) => {
+      await Promise.all(card.getAnimations({ subtree: true }).map((animation) => animation.finished));
+    });
     const songDetailEvidence = await shellPage.evaluate(() => {
       const workspace = elements.requestWorkspace.getBoundingClientRect();
       const view = elements.requestWorkspace.querySelector(".song-detail-view");
@@ -1666,7 +1673,7 @@ async function run() {
       const facts = view.querySelector(".song-detail-facts").getBoundingClientRect();
       return {
         cardWithinWorkspace: card.left >= workspace.left - 1 && card.right <= workspace.right + 1,
-        noHorizontalOverflow: view.scrollWidth <= view.clientWidth + 1,
+        noHorizontalOverflow: view.scrollWidth <= view.clientWidth,
         horizontal: facts.left >= cover.right - 1
           && Math.abs(facts.top - cover.top) <= 1,
         coverRatio: cover.height > 0 ? cover.width / cover.height : 0,

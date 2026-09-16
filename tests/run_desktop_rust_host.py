@@ -65,6 +65,9 @@ def main():
             elif name == "/fixture/release":
                 release.set()
                 body = {}
+            elif name == "/fixture/login-ready":
+                fixture.codes = [0]
+                body = {}
             elif name == "/fixture/login-wait":
                 fixture.codes = [86101]
                 body = {}
@@ -149,7 +152,7 @@ def main():
                 (fixture_dir / "mode").write_text("slow")
             driver="tests/live_desktop_import.js" if cache_policy or bbdown else "tests/live_desktop_rust_host.js"
             result = subprocess.run(["node", driver, str(evidence)], cwd=ROOT, env=env, timeout=240)
-        if cache_policy or bbdown: assert not fixture.stages, "Cache policy tests must not run login"
+        if cache_policy or bbdown_real: assert not fixture.stages, "Cache policy tests must not run login"
         else: assert "generate" in fixture.stages and "poll" in fixture.stages
         forbidden = [name for name in counts if any(word in name for word in ["batch-add", "rating", "space/wbi", "gviz", "d1/"])]
         assert not forbidden, forbidden

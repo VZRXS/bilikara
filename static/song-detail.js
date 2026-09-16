@@ -98,6 +98,24 @@
     );
   }
 
+  function renderOwnerLabel(container, item, name) {
+    container.classList.add("song-detail-owner");
+    const avatarUrl = normalizedAvatarUrl(item);
+    const mark = document.createElement(avatarUrl ? "img" : "span");
+    if (avatarUrl) {
+      mark.className = "song-detail-owner-avatar";
+      mark.alt = "";
+      mark.referrerPolicy = "no-referrer";
+      mark.src = avatarUrl;
+    } else {
+      mark.className = "song-detail-up-mark owner-badge";
+      mark.textContent = "UP";
+    }
+    const label = document.createElement("strong");
+    label.textContent = name;
+    container.replaceChildren(mark, label);
+  }
+
   function ownerAvatarFromCachedOwners(item, owners) {
     const directAvatar = normalizedAvatarUrl(item);
     if (directAvatar) {
@@ -191,11 +209,7 @@
             </div>
             <div class="song-detail-facts">
               <h3 class="song-detail-title" data-song-detail-title></h3>
-              <div class="song-detail-owner" data-song-detail-owner>
-                <img class="song-detail-owner-avatar hidden" data-song-detail-owner-avatar alt="" referrerpolicy="no-referrer">
-                <span class="song-detail-up-mark owner-badge" data-song-detail-up-mark>UP</span>
-                <strong data-song-detail-owner-name>—</strong>
-              </div>
+              <div class="song-detail-owner" data-song-detail-owner></div>
               <div class="song-detail-bvid hidden" data-song-detail-bvid></div>
               <a class="song-detail-bilibili-link hidden" data-song-detail-bilibili-link target="_blank" rel="noopener noreferrer"></a>
               <div class="song-detail-metrics">
@@ -223,9 +237,6 @@
       cover: root.querySelector("[data-song-detail-cover]"),
       duration: root.querySelector("[data-song-detail-duration]"),
       owner: root.querySelector("[data-song-detail-owner]"),
-      ownerAvatar: root.querySelector("[data-song-detail-owner-avatar]"),
-      upMark: root.querySelector("[data-song-detail-up-mark]"),
-      ownerName: root.querySelector("[data-song-detail-owner-name]"),
       bvid: root.querySelector("[data-song-detail-bvid]"),
       bilibiliLink: root.querySelector("[data-song-detail-bilibili-link]"),
       playsLabel: root.querySelector("[data-song-detail-plays-label]"),
@@ -282,16 +293,8 @@
       elements.duration.textContent = duration;
       elements.duration.classList.toggle("hidden", !duration);
       elements.title.textContent = stringValue(item?.title) || stringValue(item?.bvid) || "Bilibili";
-      elements.ownerName.textContent = firstValue(item, ["owner_name", "author"]) || translate("search.detailOwnerUnknown");
+      renderOwnerLabel(elements.owner, item, firstValue(item, ["owner_name", "author"]) || translate("search.detailOwnerUnknown"));
       activeBilibiliUrl = renderBilibiliMetadata(elements, item, translate);
-      const avatarUrl = normalizedAvatarUrl(item);
-      elements.ownerAvatar.classList.toggle("hidden", !avatarUrl);
-      elements.upMark.classList.toggle("hidden", Boolean(avatarUrl));
-      if (avatarUrl) {
-        elements.ownerAvatar.src = avatarUrl;
-      } else {
-        elements.ownerAvatar.removeAttribute("src");
-      }
       elements.plays.textContent = formatCompactCount(firstValue(item, ["played_count", "play_count", "play", "view", "views"]));
       const rating = ratingValue(item);
       elements.rating.textContent = rating == null ? "—" : `${Number(rating.toFixed(1))} / 5`;
@@ -412,5 +415,6 @@
     normalizeBilibiliImageUrl,
     normalizedBvid,
     ownerAvatarFromCachedOwners,
+    renderOwnerLabel,
   };
 })(window);

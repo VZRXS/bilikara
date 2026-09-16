@@ -1335,6 +1335,10 @@ pub struct RemoteHistoryEntryV1 {
 pub struct RemotePlayerSettingsV1 {
     pub effective_av_delay_ms: i32,
     pub av_delay_locked: bool,
+    #[serde(default)]
+    pub av_delay_lock_button_enabled: bool,
+    #[serde(default)]
+    pub av_delay_has_local_adjustment: bool,
     pub volume_percent: u8,
     pub is_muted: bool,
     pub key_shift: i8,
@@ -2062,6 +2066,8 @@ mod tests {
             player_settings: RemotePlayerSettingsV1 {
                 effective_av_delay_ms: 0,
                 av_delay_locked: false,
+                av_delay_lock_button_enabled: false,
+                av_delay_has_local_adjustment: false,
                 volume_percent: 80,
                 is_muted: false,
                 key_shift: 0,

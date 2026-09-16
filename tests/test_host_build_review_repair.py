@@ -133,7 +133,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             ".rating-modal": "modal",
             ".audio-variant-backdrop": "modal",
             ".stage-control-backdrop": "modal",
-            ".audio-variant-bar.is-expanded": "modal-content",
+            ".audio-variant-popover": "modal-content",
             ".stage-control-tray": "modal-content",
             ".cache-advanced-info .cache-advanced-tooltip": "tooltip",
             ".confirm-popover": "confirm",
@@ -291,7 +291,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
 
         form_action_rule = re.search(
             r"\.remote-identity-actions :is\(\.primary-button, \.ghost-button\),\s*"
-            r"\.internet-remote-join-card > \.primary-button\s*\{([^}]*)\}",
+            r"\.internet-remote-join-card \.primary-button\s*\{([^}]*)\}",
             self.remote_styles,
         ).group(1)
         self.assertIn("height: var(--remote-form-control-height)", form_action_rule)
@@ -339,8 +339,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("border-radius: 20px", panel_rule)
         self.assertNotIn("bottom: 0", panel_rule)
 
-        self.assertIn("--modal-backdrop-blur: 10px", self.styles)
-        self.assertIn("--modal-backdrop-blur: 10px", self.remote_styles)
+        self.assertIn("--modal-backdrop-blur: 6px", self.styles)
+        self.assertIn("--modal-backdrop-blur: 6px", self.remote_styles)
         self.assertIn(
             "backdrop-filter: blur(var(--modal-backdrop-blur))",
             self.styles,
@@ -968,7 +968,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("function positionAudioVariantPopover()", self.script)
         self.assertIn("function setAudioVariantPopoverOpen", self.script)
         self.assertIn('dataset.popoverDirection', self.script)
-        self.assertIn('classList.toggle("hidden", !isOverflowing)', self.script)
+        self.assertIn('const fits = list.scrollWidth <= bar.clientWidth + 1', self.script)
+        self.assertIn('popover.replaceChildren(list)', self.script)
 
     def test_narrow_stage_keeps_song_title_peer_size(self):
         narrow = self.styles[

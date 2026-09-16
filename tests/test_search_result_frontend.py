@@ -111,8 +111,12 @@ console.log(JSON.stringify({{
         host_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
         remote_html = (ROOT / "static" / "remote.html").read_text(encoding="utf-8")
-        self.assertEqual(host_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 2)
-        self.assertEqual(remote_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 2)
+        self.assertEqual(host_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 1)
+        self.assertEqual(remote_js.count("renderOwnerBadgeLabel(owner, ownerName);"), 1)
+        for source in (host_js, remote_js):
+            self.assertIn("window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);", source)
+            self.assertIn('link.className = "rating-link song-detail-bilibili-link";', source)
+            self.assertIn('link.textContent = t("search.openOnBilibili");', source)
         self.assertIn("renderOwnerBadgeLabel(elements.currentOwner, ownerText);", remote_js)
         self.assertIn('id="current-owner" class="current-owner-line owner-badge-label playback-metadata-text hidden"', remote_html)
         self.assertIn('data-playback-metadata-field="owner"', remote_html)
@@ -407,7 +411,8 @@ console.log(JSON.stringify({{
     def test_search_list_and_expanded_detail_share_image_url_normalization(self):
         detail = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
         self.assertIn("image.src = coverUrl;", detail)
-        self.assertIn("elements.ownerAvatar.src = avatarUrl;", detail)
+        self.assertIn("mark.src = avatarUrl;", detail)
+        self.assertIn("renderOwnerLabel(elements.owner, item,", detail)
         self.assertIn("normalizeBilibiliImageUrl(\n      firstValue(item", detail)
 
         for source_path in ("static/app.js", "static/remote.js"):
@@ -960,11 +965,11 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         expected = "0.2s cubic-bezier(0.16, 1, 0.3, 1)"
         self.assertIn(expected, detail_css)
         self.assertIn(expected, remote_css)
-        self.assertIn("transform: scale(0.75);", detail_css)
+        self.assertIn("transform: scale(0.96);", detail_css)
         self.assertIn("transform: scale(1);", detail_css)
         self.assertIn(".song-detail-view.closing .song-detail-card", detail_css)
-        self.assertGreaterEqual(remote_css.count("transform: scale(0.75);"), 2)
-        self.assertGreaterEqual(detail_css.count("transform: scale(0.75);"), 2)
+        self.assertGreaterEqual(remote_css.count("transform: scale(0.96);"), 2)
+        self.assertGreaterEqual(detail_css.count("transform: scale(0.96);"), 2)
         self.assertNotIn("transform: scale(0.5);", remote_css)
         self.assertNotIn("transform: scale(0.5);", detail_css)
 

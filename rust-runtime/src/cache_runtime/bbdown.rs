@@ -292,6 +292,14 @@ pub(super) fn run_track(
     track: &TrackSpec,
     cancel: &Arc<AtomicBool>,
 ) -> Result<TrackResult, CacheRuntimeError> {
+    if let Some(message) = crate::desktop_login::download_login_error("bbdown", &job.spec.cookie) {
+        append_log(&job.spec.log_file, "download_login_required source=bbdown");
+        return Err(CacheRuntimeError::new("authentication", message));
+    }
+    append_log(
+        &job.spec.log_file,
+        "download_credentials_loaded source=bbdown (attempt login; credentials redacted)",
+    );
     // Reuse the Native resolver/rankers only as a supported-DASH preflight.
     // BBDown owns the transfer. In particular reject non-DASH segmented input
     // before BBDown's legacy segment merger can try a media CLI.

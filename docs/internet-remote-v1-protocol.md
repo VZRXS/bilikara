@@ -148,9 +148,13 @@ item shape contains display metadata, public cache projection, audio-variant
 labels, Bilibili cover URL, and an opaque item-incarnation token used only for
 optimistic concurrency. The token is not a credential and grants no capability.
 The DTO has no local paths, resolved media URLs, cookies, diagnostics, update
-state, or tool settings. The Host adapter adds only the bounded public projection
-of the existing Rust Gatcha task status and pool configuration needed by the
-shared Remote UI; task results and local records are not forwarded.
+state, or tool settings. Display titles reuse the Rust title-cleanup service.
+Player settings include the authoritative `av_delay_lock_button_enabled` and
+`av_delay_has_local_adjustment` flags; the browser does not infer them from the
+effective offset. Older snapshots default these additional flags to false.
+The Host adapter adds the bounded public projection of the existing Rust Gatcha
+task status and pool configuration, plus `bilibili_logged_in` as a boolean for
+the shared Remote UI. Credentials, task results and local records are not forwarded.
 
 `rust-runtime/src/internet_remote.rs` constructs this DTO directly from one
 authoritative `AppSnapshot`. Bilibili CDN covers in `http://` or protocol-relative

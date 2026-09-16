@@ -758,7 +758,7 @@ console.log(JSON.stringify({ settled, phase: state.hostPlaybackSession.phase,
 
     def test_audio_variant_click_preserves_intent_during_internal_video_hold(self):
         listener = self._slice(
-            'elements.audioVariantBar.addEventListener("click",',
+            'async function handleAudioVariantSelection(event)',
             'elements.audioVariantToggle?.addEventListener',
         )
         result = self.run_node(
@@ -780,6 +780,7 @@ console.log(JSON.stringify({ captures }));
 """,
             """
 let variantClick;
+elements.audioVariantPopover = { addEventListener() {} };
 elements.audioVariantBar = { addEventListener(name, fn) { variantClick = fn; } };
 const audioVariantSwitchDebounceMs = 350;
 function audioVariantSwitchLocked() { return false; }

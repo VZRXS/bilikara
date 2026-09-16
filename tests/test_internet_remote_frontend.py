@@ -787,6 +787,74 @@ console.log(JSON.stringify({{ sent, reconnects }}));
         self.assertIn('peer.queues[lane] = peer.queues[lane].then', self.host_js)
         self.assertIn('lane === "control" && message?.type === "ping"', self.host_js)
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_public_projection_and_disconnect_never_replay_cached_state_as_live(self):
+        script = r'''
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const fs = require("node:fs");
+const source = fs.readFileSync("static/remote-transport-client.js", "utf8").replace(
+  "})(globalThis);",
+  "globalThis.testAdapter = {state, localState, createStateSource, scheduleReconnect, disconnect, handleDataMessage}; })(globalThis);",
+);
+const sandbox = {
+  fetch: () => {}, location: {hash: "#room=fixture", origin: "https://example.test"},
+  localStorage: {getItem: () => "", setItem: () => {}}, URLSearchParams,
+  navigator: {onLine: true}, queueMicrotask, clearTimeout: () => {}, clearInterval: () => {},
+  setTimeout: () => 1, addEventListener: () => {}, dispatchEvent: () => {},
+  Event: class {}, BilikaraInternetTransport: {randomBase64Url: () => "fixture", Decoder: class {}},
+  document: {addEventListener: () => {}, documentElement: {dataset: {}}},
+};
+vm.runInNewContext(source, sandbox);
+const {state, localState, createStateSource, scheduleReconnect, disconnect, handleDataMessage} = sandbox.testAdapter;
+(async () => {
+  const data = {revision: 1, player_settings: {effective_av_delay_ms: 50,
+    av_delay_locked: false, av_delay_lock_button_enabled: false, av_delay_has_local_adjustment: false},
+    current_item: {id: "fixture", display_title: "Song", cache_status: "downloading"}, bilibili_logged_in: false};
+  let local = localState(data);
+  assert.equal(local.player_settings.av_delay.has_local_adjustment, false);
+  assert.equal(local.player_settings.av_delay.lock_button_enabled, false);
+  assert.equal(local.bbdown.logged_in, false);
+  assert.equal(local.current_item.video_media_url, "");
+  data.player_settings.av_delay_has_local_adjustment = true;
+  data.player_settings.av_delay_lock_button_enabled = true;
+  data.bilibili_logged_in = true;
+  data.current_item.cache_status = "ready";
+  local = localState(data);
+  assert.equal(local.player_settings.av_delay.has_local_adjustment, true);
+  assert.equal(local.player_settings.av_delay.lock_button_enabled, true);
+  assert.equal(local.bbdown.logged_in, true);
+  assert.equal(local.current_item.video_media_url, "internet-remote://video");
+  for (const online of [true, false]) {
+    sandbox.navigator.onLine = online;
+    state.authorized = true; state.password = "fixture"; state.reconnectTimer = null;
+    state.remoteState = data;
+    const events = []; const stream = createStateSource();
+    stream.addEventListener("state", e => events.push(e.type));
+    stream.addEventListener("error", e => events.push(e.type));
+    await Promise.resolve(); assert.deepEqual(events, ["state"]);
+    scheduleReconnect(); assert.deepEqual(events, ["state", "error"]);
+    handleDataMessage({type: "state", data: {...data, revision: 2}});
+    assert.deepEqual(events, ["state", "error"]);
+    stream.close();
+    const reconnectEvents = []; const replacement = createStateSource();
+    replacement.addEventListener("state", e => reconnectEvents.push(e.type));
+    replacement.addEventListener("error", e => reconnectEvents.push(e.type));
+    await Promise.resolve(); assert.deepEqual(reconnectEvents, ["error"]);
+    replacement.close();
+  }
+  state.authorized = true; state.remoteState = data;
+  const events = []; const stream = createStateSource();
+  stream.addEventListener("state", e => events.push(e.type));
+  stream.addEventListener("error", e => events.push(e.type));
+  await Promise.resolve(); disconnect();
+  assert.deepEqual(events, ["state", "error"]);
+  assert.equal(state.authorized, false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_local_transport_remains_native_fetch_and_event_source(self):
         self.assertIn('mode: "local"', self.remote_transport)
         self.assertIn("fetch: nativeFetch", self.remote_transport)

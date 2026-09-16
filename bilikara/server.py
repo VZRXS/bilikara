@@ -74,7 +74,7 @@ from .internet_remote import (
     remote_state as internet_remote_state,
     submit_rating_background,
 )
-from .cache import CacheManager
+from .cache import CacheManager, _debug_print
 from .rust_backend import PlaybackCapabilityError
 from .config import (
     APP_RELEASES_URL,
@@ -2489,7 +2489,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/rating/log":
                 message = str(body.get("message") or "").strip()
                 if message:
-                    print(f"[rating-front] {message}", flush=True)
+                    _debug_print(f"[rating-front] {message}")
                 self._write_json({"ok": True})
                 return
             if route == "/api/rating/submit":
@@ -2523,7 +2523,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if score < 1 or score > 5:
                     raise ValueError("score must be between 1 and 5")
                 duplicate = not CONTEXT.register_rating_submission(session_user_name, play_id)
-                print(f"[rating] user={session_user_name} play_id={play_id} bvid={bvid} score={score} duplicate={duplicate}", flush=True)
+                _debug_print(f"[rating] user={session_user_name} play_id={play_id} bvid={bvid} score={score} duplicate={duplicate}")
                 if not duplicate:
                     self._submit_rating_in_background(session_user_name, play_id, bvid, score)
                 self._write_json({
@@ -2834,7 +2834,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 score=score,
             )
             if not result.get("success"):
-                print(f"[bilikara] rating submit failed: {result.get('error') or 'unknown error'}", flush=True)
+                _debug_print(f"[bilikara] rating submit failed: {result.get('error') or 'unknown error'}")
 
         threading.Thread(target=worker, daemon=True, name="bilikara-rating-submit").start()
 

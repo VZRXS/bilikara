@@ -836,6 +836,9 @@ def desktop_login(command: str, **fields: Any) -> dict[str, Any]:
                 or result.get("state") not in {"idle", "starting", "waiting", "logged_in", "failed"}
                 or any(not isinstance(result.get(key), str) for key in ("message", "data_path", "qr_image"))):
             raise RustStatusServiceError("Invalid desktop login snapshot")
+    elif command == "download_access":
+        if "message" not in result or (result["message"] is not None and not isinstance(result["message"], str)):
+            raise RustStatusServiceError("Invalid download login decision")
     elif command == "read_cookie":
         if not isinstance(result.get("cookie"), str):
             raise RustStatusServiceError("Invalid desktop credential result")

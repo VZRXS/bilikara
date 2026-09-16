@@ -19,6 +19,15 @@ assets, validates the Worker, and deploys to `rtc.kevinx96.icu`. Worker source,
 Cloudflare credentials, and deployment configuration remain in that repository.
 The application repository does not deploy the Worker itself.
 
+The copied frontend assets are a one-way mirror, not an independent fork.
+`sync_internet_remote_assets.ps1` overwrites its allowlisted destination files.
+A manual edit to those files in the Worker repository will therefore be replaced
+on the next successful sync, including a deployment triggered by a Worker push.
+Make shared UI fixes in the configured Bilikara source branch and commit/push
+them there. Uncommitted local changes are never read by Actions. Worker-only
+code and configuration outside the copied assets remain owned by the Worker
+repository.
+
 ## Public repository configuration
 
 Configure these under **Settings → Secrets and variables → Actions** in each

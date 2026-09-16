@@ -1732,6 +1732,34 @@ class PlaybackCapabilityHttpBoundaryTest(unittest.TestCase):
         )
 
 
+class RatingConsoleFailureTest(unittest.TestCase):
+    def test_invalid_console_does_not_fail_logging_or_lose_rating_submission(self):
+        context = Mock()
+        context.register_rating_submission.side_effect = [True, False]
+        body = {"session_user_name": "Test", "play_id": "play-1",
+                "bvid": "BV1tPC2BEEjq", "score": 4, "message": "open rating"}
+        submitted = Mock()
+        for route in ["/api/rating/log", "/api/rating/submit", "/api/rating/submit"]:
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+            handler.path = route
+            handler.headers = {}
+            handler._read_json_body = lambda: body
+            handler._submit_rating_in_background = submitted
+            writes = []
+            handler._write_json = lambda payload, status=None: writes.append((payload, status))
+            console = Mock()
+            console.write.side_effect = OSError(22, "Invalid argument")
+            console.buffer.write.side_effect = OSError(22, "Invalid argument")
+            console.encoding = "utf-8"
+            with patch("bilikara.server.CONTEXT", context), patch("sys.stdout", console):
+                handler.do_POST()
+            self.assertEqual(len(writes), 1)
+            self.assertTrue(writes[0][0]["ok"], writes)
+            self.assertIsNone(writes[0][1])
+        submitted.assert_called_once_with("Test", "play-1", "BV1tPC2BEEjq", 4)
+        self.assertTrue(writes[0][0]["data"]["duplicate"])
+
+
 class PlaylistAddRequestTest(unittest.TestCase):
     def test_add_requires_session_user_before_parsing_video(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)

@@ -422,10 +422,13 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(request_view_rule)
         self.assertIn("overflow-y: hidden", request_view_rule.group(1))
         self.assertIn("overscroll-behavior-y: contain", request_view_rule.group(1))
-        self.assertIn(
-            ".request-panel > #remote-request-quick-panel::-webkit-scrollbar-thumb",
+        quick_rule = re.search(
+            r"\.request-panel > #remote-request-quick-panel\s*\{([^}]*)\}",
             self.styles,
         )
+        self.assertIsNotNone(quick_rule)
+        self.assertIn("overflow: clip", quick_rule.group(1))
+        self.assertIn("overscroll-behavior-y: auto", quick_rule.group(1))
         self.assertIsNotNone(re.search(
             r'id="sources-follow-uid-form".*?id="sources-add-follow-uid-button".*?'
             r'id="refresh-gatcha-cache-button".*?</form>',

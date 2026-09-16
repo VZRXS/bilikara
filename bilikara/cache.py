@@ -72,6 +72,10 @@ ARIA2_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 ARIA2_HTTP_STATUS_RE = re.compile(r"\bstatus=(401|402|403)\b", re.IGNORECASE)
+BBDOWN_HTTP_STATUS_RE = re.compile(
+    r"(?:net_http_message_not_success_statuscode_reason[, :]+|Response status code does not indicate success: )(4\d{2}|5\d{2})\b",
+    re.IGNORECASE,
+)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
@@ -79,9 +83,6 @@ CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
 DOWNKYI_TRACK_MAX_ATTEMPTS = 10
 DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
-DOWNKYI_AUTH_REQUIRED_MESSAGE = (
-    "DownKyi/aria2c requires a valid Bilibili login/Cookie"
-)
 BILIBILI_LOGIN_LOG_NAME = "bilibili-login.log"
 DESKTOP_STARTUP_LOG_NAME = "desktop-startup.log"
 PERSISTENT_DIAGNOSTIC_LOG_NAMES = frozenset(
@@ -2258,11 +2259,8 @@ class CacheManager:
             raise ValueError("当前不在自动缓存窗口中")
 
         download_source = self._current_download_source()
-        if (
-            download_source == DOWNLOAD_SOURCE_DOWNKYI
-            and not effective_bilibili_cookie()
-        ):
-            raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+        if login_error := self._download_login_error(download_source, item_id):
+            raise ValueError(login_error)
         log_path = self._item_log_path(item_id, download_source)
 
         if download_source == DOWNLOAD_SOURCE_NATIVE:
@@ -2598,7 +2596,7 @@ class CacheManager:
         item = self.store.get_item(item_id)
         if not item:
             return
-        missing_downkyi_cookie = False
+        missing_download_login = False
         with self.lock:
             download_source = self.download_source
             if download_source != DOWNLOAD_SOURCE_NATIVE:
@@ -2608,14 +2606,13 @@ class CacheManager:
                     or self.stop_event.is_set()
                 ):
                     return
-                missing_downkyi_cookie = bool(
-                    download_source == DOWNLOAD_SOURCE_DOWNKYI
-                    and not effective_bilibili_cookie()
+                missing_download_login = bool(
+                    (login_error := self._download_login_error(download_source, item_id))
                 )
                 cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
                 if cache_attempt_token is None:
                     cache_attempt_token = self._begin_cache_attempt_for_item(item)
-                if not missing_downkyi_cookie:
+                if not missing_download_login:
                     self.pending_ids.add(item_id)
                     self.python_worker_download_sources[item_id] = download_source
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
@@ -2644,12 +2641,12 @@ class CacheManager:
                         expected_item_incarnation_id=item.item_incarnation_id,
                     )
             return
-        if missing_downkyi_cookie:
+        if missing_download_login:
             self._project_cache_event(
                 item_id,
                 "failed",
                 cache_attempt_token=cache_attempt_token,
-                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
+                message=f"缓存失败: {login_error}",
             )
             self._record_item_activity(item_id)
             return
@@ -2679,19 +2676,16 @@ class CacheManager:
             download_source = self.python_worker_download_sources.setdefault(
                 item_id, self.download_source
             )
-            if (
-                download_source == DOWNLOAD_SOURCE_DOWNKYI
-                and not effective_bilibili_cookie()
-            ):
+            if login_error := self._download_login_error(download_source, item_id):
                 cache_attempt_token = self._begin_cache_attempt_for_item(item)
-                missing_downkyi_cookie = True
+                missing_download_login = True
             else:
                 cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
                 if cache_attempt_token is None:
                     cache_attempt_token = self._begin_cache_attempt_for_item(item)
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
-                missing_downkyi_cookie = False
-            if missing_downkyi_cookie:
+                missing_download_login = False
+            if missing_download_login:
                 worker = None
             else:
                 self._remove_queued_item(item_id)
@@ -2704,12 +2698,12 @@ class CacheManager:
                     daemon=True,
                 )
                 self.urgent_workers[item_id] = worker
-        if missing_downkyi_cookie:
+        if missing_download_login:
             self._project_cache_event(
                 item_id,
                 "failed",
                 cache_attempt_token=cache_attempt_token,
-                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
+                message=f"缓存失败: {login_error}",
             )
             return
         assert worker is not None
@@ -2761,11 +2755,8 @@ class CacheManager:
             download_source = self.python_worker_download_sources.setdefault(
                 item_id, self.download_source
             )
-            if (
-                download_source == DOWNLOAD_SOURCE_DOWNKYI
-                and not effective_bilibili_cookie()
-            ):
-                raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+            if login_error := self._download_login_error(download_source, item_id):
+                raise ValueError(login_error)
             if item_id not in self.python_cache_attempt_tokens:
                 self.python_cache_attempt_tokens[item_id] = (
                     self._begin_cache_attempt_for_item(item)
@@ -2808,11 +2799,8 @@ class CacheManager:
             return
         with self.lock:
             download_source = self.download_source
-            if (
-                download_source == DOWNLOAD_SOURCE_DOWNKYI
-                and not effective_bilibili_cookie()
-            ):
-                raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+            if login_error := self._download_login_error(download_source, item_id):
+                raise ValueError(login_error)
             self.python_worker_download_sources[item_id] = download_source
             if item_id not in self.python_cache_attempt_tokens:
                 self.python_cache_attempt_tokens[item_id] = (
@@ -3050,10 +3038,7 @@ class CacheManager:
             self._cache_attempt_reservation_for_item(item, cache_attempt_token)
         with self.lock:
             download_source = self.python_worker_download_sources[item_id]
-        if (
-            download_source == DOWNLOAD_SOURCE_DOWNKYI
-            and not effective_bilibili_cookie()
-        ):
+        if login_error := self._download_login_error(download_source, item_id):
             token = (
                 self._begin_cache_attempt_for_item(item)
                 if cache_attempt_token is None
@@ -3074,7 +3059,7 @@ class CacheManager:
                 item_id,
                 "failed",
                 cache_attempt_token=token,
-                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
+                message=f"缓存失败: {login_error}",
             )
             self._record_item_activity(item_id)
             return False
@@ -3916,6 +3901,8 @@ class CacheManager:
             target_dir=target_dir,
         )
 
+        if download_source == DOWNLOAD_SOURCE_BBDOWN:
+            self._append_log_line(log_path, "download_credentials_loaded source=bbdown (current login; credentials redacted)")
         label = "视频轨" if stream_kind == "video" else "音轨"
         stage_label = f"下载{label} P{page}"
         self._raise_if_priority_shift(item.id)
@@ -3989,6 +3976,20 @@ class CacheManager:
             target_dir=target_dir,
         )
 
+    def _download_login_error(
+        self, source: str, item_id: str | None = None, *, cookie: str | None = None
+    ) -> str:
+        message = rust_runtime.desktop_login(
+            "download_access", source=source,
+            cookie=effective_bilibili_cookie() if cookie is None else cookie,
+        )["message"] or ""
+        if message and item_id:
+            self._append_log_line(
+                self._item_log_path(item_id, source),
+                f"download_login_required source={source}: {message}",
+            )
+        return message
+
     def _bbdown_download_command(
         self,
         binary_path: Path,
@@ -4017,8 +4018,11 @@ class CacheManager:
             "--video-only" if stream_kind == "video" else "--audio-only",
         ]
         cookie = effective_bilibili_cookie()
-        if cookie:
-            command.extend(["-c", cookie])
+        if message := self._download_login_error(DOWNLOAD_SOURCE_BBDOWN, cookie=cookie):
+            error = DownloadCommandError(message)
+            error.kind = "authentication_required"
+            raise error
+        command.extend(["-c", cookie])
         return command
 
     def _ytdlp_download_command(
@@ -4782,6 +4786,11 @@ class CacheManager:
     ) -> dict[str, Path]:
         item_id = item.id
         cookie = effective_bilibili_cookie()
+        if message := self._download_login_error(DOWNLOAD_SOURCE_DOWNKYI, item_id, cookie=cookie):
+            error = DownloadCommandError(message)
+            error.kind = "authentication_required"
+            raise error
+        self._append_log_line(log_path, "download_credentials_loaded source=downkyi (current login; credentials redacted)")
 
         selected_pages = self._selected_pages_for_item(item)
         video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
@@ -5627,11 +5636,10 @@ class CacheManager:
             pending_ids = set(self.pending_ids)
             download_source = self.download_source
         if (
-            download_source == DOWNLOAD_SOURCE_DOWNKYI
-            and item_ids
-            and not effective_bilibili_cookie()
+            item_ids
+            and (login_error := self._download_login_error(download_source))
         ):
-            raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+            raise ValueError(login_error)
         observed_items = {
             item.id: item
             for item in self.store.list_items()
@@ -5856,7 +5864,7 @@ class CacheManager:
                 status_match = (
                     ARIA2_HTTP_STATUS_RE.search(line)
                     if progress_from_output
-                    else None
+                    else BBDOWN_HTTP_STATUS_RE.search(line)
                 )
                 if status_match is not None:
                     classified_http_status = int(status_match.group(1))
@@ -5930,7 +5938,15 @@ class CacheManager:
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            if classified_http_status == 401:
+            if classified_http_status is not None and not progress_from_output:
+                message = f"{stage_label}: BBDown 请求被 Bilibili 拒绝 (HTTP {classified_http_status})"
+                if classified_http_status == 412:
+                    message += "；请检查 Host 的 Bilibili 登录状态，稍后重试或更换网络"
+                error = DownloadCommandError(message)
+                error.kind = "upstream_http"
+                error.http_status = classified_http_status
+                error.status_code = classified_http_status
+            elif classified_http_status == 401:
                 error = DownloadCommandError(
                     "DownKyi/aria2c Bilibili login/Cookie is invalid or expired "
                     "(HTTP 401)"

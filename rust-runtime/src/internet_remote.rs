@@ -413,6 +413,8 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
         player_settings: RemotePlayerSettingsV1 {
             effective_av_delay_ms: snapshot.player_settings.av_offset_ms,
             av_delay_locked: snapshot.player_settings.av_delay.locked,
+            av_delay_lock_button_enabled: snapshot.player_settings.av_delay.lock_button_enabled,
+            av_delay_has_local_adjustment: snapshot.player_settings.av_delay.has_local_adjustment,
             volume_percent: snapshot.player_settings.volume_percent.clamp(0, 100) as u8,
             is_muted: snapshot.player_settings.is_muted,
             key_shift: snapshot.player_settings.key_shift.clamp(-6, 6) as i8,
@@ -426,7 +428,14 @@ fn project_history(entry: &HistoryEntry) -> RemoteHistoryEntryV1 {
     RemoteHistoryEntryV1 {
         bvid,
         page,
-        display_title: entry.display_title.chars().take(512).collect(),
+        display_title: bilikara_rust::clean_display_title(
+            &entry.title,
+            &entry.display_title,
+            &entry.part_title,
+        )
+        .chars()
+        .take(512)
+        .collect(),
         requested_at: entry.requested_at,
         requester_name: entry.requester_name.chars().take(96).collect(),
         request_count: entry.request_count,
@@ -468,7 +477,11 @@ fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
         item_incarnation_id: item.item_incarnation_id.clone(),
         bvid: item.bvid.clone(),
         page: item.page.clamp(1, i64::from(u32::MAX)) as u32,
-        display_title: item.display_title.clone(),
+        display_title: bilikara_rust::clean_display_title(
+            &item.title,
+            &item.display_title,
+            &item.part_title,
+        ),
         cover_url: safe_cover_url(&item.cover_url),
         owner_mid: item.owner_mid.max(0) as u64,
         owner_name: item.owner_name.clone(),
@@ -786,9 +799,27 @@ mod tests {
         assert_eq!(projected.history.len(), 1);
         assert_eq!(projected.history[0].bvid, "BV1ab411c7mD");
         assert_eq!(projected.history[0].page, 2);
-        assert_eq!(projected.history[0].display_title, "Song P2");
+        assert_eq!(projected.history[0].display_title, "Song");
         assert_eq!(projected.history[0].requester_name, "Alice");
         assert_eq!(projected.history[0].request_count, 3);
+    }
+
+    #[test]
+    fn projection_preserves_av_delay_control_decision() {
+        let mut snapshot = empty_snapshot();
+        for (enabled, adjusted, locked) in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            snapshot.player_settings.av_delay.lock_button_enabled = enabled;
+            snapshot.player_settings.av_delay.has_local_adjustment = adjusted;
+            snapshot.player_settings.av_delay.locked = locked;
+            let settings = project_remote_state(&snapshot).player_settings;
+            assert_eq!(settings.av_delay_lock_button_enabled, enabled);
+            assert_eq!(settings.av_delay_has_local_adjustment, adjusted);
+            assert_eq!(settings.av_delay_locked, locked);
+        }
     }
 
     #[test]
@@ -801,7 +832,7 @@ mod tests {
             aid: 1,
             cid: 101,
             page: 1,
-            title: "Song".to_owned(),
+            title: "【カラオケ】Song".to_owned(),
             part_title: "On Vocal".to_owned(),
             display_title: "Song - On Vocal".to_owned(),
             cover_url: "https://i1.hdslb.com/bfs/archive/test.jpg".to_owned(),
@@ -840,6 +871,7 @@ mod tests {
 
         let projected = project_item(&item);
 
+        assert_eq!(projected.display_title, "Song");
         assert_eq!(projected.selected_pages, vec![1]);
         assert_eq!(projected.selected_durations, vec![120]);
         assert_eq!(projected.selected_parts, vec!["On Vocal"]);

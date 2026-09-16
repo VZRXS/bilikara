@@ -33,6 +33,33 @@ def release(
 
 DECISION_CASES = (
     {
+        "name": "v0.8 preview hidden from stable channel",
+        "current": "v0.7.2",
+        "include_preview": False,
+        "releases": [release("v0.8.0-preview.1", prerelease=True), release("v0.7.2")],
+        "latest": "v0.7.2",
+        "action": "no_action",
+        "reason": "already_current",
+    },
+    {
+        "name": "v0.8 preview opt in",
+        "current": "v0.7.2",
+        "include_preview": True,
+        "releases": [release("v0.8.0-preview.1", prerelease=True), release("v0.7.2")],
+        "latest": "v0.8.0-preview.1",
+        "action": "normal_upgrade",
+        "reason": "newer_version",
+    },
+    {
+        "name": "v0.8 preview opt out returns to v0.7.2",
+        "current": "v0.8.0-preview.1",
+        "include_preview": False,
+        "releases": [release("v0.8.0-preview.1", prerelease=True), release("v0.7.2")],
+        "latest": "v0.7.2",
+        "action": "preview_to_stable",
+        "reason": "preview_channel_disabled",
+    },
+    {
         "name": "stable normal upgrade",
         "current": "v0.6.3",
         "include_preview": False,

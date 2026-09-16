@@ -4,9 +4,9 @@
   z-index: 40;
   overflow: auto;
   padding: clamp(26px, 4vw, 42px);
-  background: color-mix(in srgb, var(--panel, #fff) 96%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--modal-backdrop-bg);
+  backdrop-filter: blur(var(--modal-backdrop-blur));
+  -webkit-backdrop-filter: blur(var(--modal-backdrop-blur));
   animation: song-detail-backdrop-in 0.2s ease-out;
 }
 
@@ -308,7 +308,7 @@
 @keyframes song-detail-card-in {
   from {
     opacity: 0;
-    transform: scale(0.75);
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
@@ -323,7 +323,7 @@
   }
   to {
     opacity: 0;
-    transform: scale(0.75);
+    transform: scale(0.96);
   }
 }
 
@@ -416,4 +416,63 @@
   .song-detail-view.closing .song-detail-card {
     animation-duration: 1ms;
   }
+}
+
+/* Centered Host and Remote dialogs share 200ms motion and backdrop treatment.
+   Drawer motion remains directional. */
+@keyframes fade-in-backdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-out-backdrop {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes scale-from-center-card {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes scale-to-center-card {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.96); }
+}
+.rating-card { animation: scale-from-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1); }
+.rating-modal-backdrop { animation: fade-in-backdrop 200ms ease-out; }
+.rating-modal.closing .rating-card { animation: scale-to-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.rating-modal.closing .rating-modal-backdrop { animation: fade-out-backdrop 200ms ease-out forwards; }
+.history-export-dialog::backdrop,
+.playback-sheet-backdrop {
+  backdrop-filter: blur(var(--modal-backdrop-blur));
+  -webkit-backdrop-filter: blur(var(--modal-backdrop-blur));
+}
+
+/* Discrete display transitions preserve the existing synchronous hidden state. */
+.selection-modal,
+.internet-remote-join-overlay {
+  opacity: 1;
+  transition: opacity 200ms ease-out, display 200ms allow-discrete;
+}
+.selection-modal.hidden,
+.internet-remote-join-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.selection-modal-card,
+.internet-remote-join-card {
+  transform: scale(1);
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.selection-modal.hidden .selection-modal-card,
+.internet-remote-join-overlay.hidden .internet-remote-join-card { transform: scale(0.96); }
+@starting-style {
+  .selection-modal, .internet-remote-join-overlay { opacity: 0; }
+  .selection-modal-card, .internet-remote-join-card { transform: scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rating-card, .rating-modal-backdrop,
+  .rating-modal.closing .rating-card, .rating-modal.closing .rating-modal-backdrop {
+    animation-duration: 1ms;
+  }
+  .selection-modal, .selection-modal-card,
+  .internet-remote-join-overlay, .internet-remote-join-card { transition-duration: 1ms; }
 }

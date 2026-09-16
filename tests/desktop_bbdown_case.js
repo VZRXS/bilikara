@@ -39,6 +39,34 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
     await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,pinnedBBDown:"1.6.3",realChild:true,nonForwardingTLSFixture:true,providerDownloadTested:false,applicationPathEmpty:true,pythonBackend:false,mediaValidated:true,consoleErrors:errors,browserWarnings:warnings},null,2));
     return;
   }
+  // Guest admission must fail without a child; fixture login enables retry without restarting.
+  await caps(false);
+  await until(async()=> !(await current()).video_media_url);
+  await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-wait");
+  await okay("/api/bbdown/logout",{});
+  const guestStarts=(await starts()).length;
+  await page.locator("#cache-download-source-select").selectOption("bbdown");
+  await caps(true);
+  await until(async()=> (await current()).cache_status==="failed");
+  assert.match((await current()).cache_message,/下载需要登录 Bilibili/);
+  await page.waitForFunction(()=>document.querySelector("#app-toast")?.textContent.includes("Sign in to Bilibili"));
+  await capture("bbdown-login-required.png",page);
+  const guest=await current();
+  assert.equal((await api("/api/cache/retry",{item_id:guest.id,expected_item_incarnation_id:guest.item_incarnation_id})).status,403);
+  for(let n=0;n<4;n++)await okay("/api/state");
+  assert.equal((await starts()).length,guestStarts);
+  assert.match(await fs.readFile(path.join(directory,"logs/native-cache.log"),"utf8"),/download_login_required source=bbdown/);
+  await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-ready");
+  await okay("/api/bbdown/login/start",{});
+  await until(async()=> (await okay("/api/state")).bbdown.logged_in);
+  await mode("success");await retry();await ready();
+  await page.waitForFunction(()=>state.data.current_item.cache_status==="ready" && state.data.bbdown.logged_in);
+  await capture("bbdown-login-retry-ready.png",page);
+  const loggedInArtifact=(await current()).artifact_set_id;
+  await page.locator("#cache-download-source-select").selectOption("native");
+  await until(async()=> (await current()).artifact_set_id!==loggedInArtifact);
+  await ready();
+  await page.waitForFunction(()=>state.data.cache_policy.download_source==="native" && !state.cachePolicySaving);
   await mode("late");
   await page.locator("#cache-download-source-select").selectOption("bbdown");
   await until(async()=> (await running()).length>=2);

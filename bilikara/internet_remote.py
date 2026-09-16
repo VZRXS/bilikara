@@ -123,6 +123,10 @@ def _decorate_remote_state(context: Any, state: dict[str, Any]) -> dict[str, Any
         else:
             public["state_revision"] = max(0, int(public.get("revision") or 0))
         public["player_status"] = _public_player_status(status)
+        login_status = getattr(getattr(context, "cache_manager", None), "bbdown_login_status", None)
+        public["bilibili_logged_in"] = bool(
+            login_status().get("logged_in") if callable(login_status) else False
+        )
         return public
 
 

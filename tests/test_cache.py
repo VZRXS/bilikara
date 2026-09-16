@@ -294,6 +294,10 @@ class CacheManagerOutputTest(unittest.TestCase):
 
 class CacheManagerPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
+        # These lifecycle fixtures model an authenticated external-tool session.
+        credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self.temp_dir = TemporaryDirectory()
         temp_path = Path(self.temp_dir.name)
         self.cache_dir = temp_path / "cache"
@@ -4295,7 +4299,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "_worker_loop",
             lambda self: None,
         ), patch(
-            "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"
+            "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test; bili_jct=csrf"
         ), patch(
             "bilikara.cache.rust_runtime.http_download_available", return_value=True
         ), patch(
@@ -6195,6 +6199,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
 class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
+        # These lifecycle fixtures model an authenticated external-tool session.
+        credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self.temp_dir = TemporaryDirectory()
         root = Path(self.temp_dir.name)
         self.cache_dir = root / "cache"
@@ -8000,6 +8008,10 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
 
 class CacheManagerArtifactRetirementTest(unittest.TestCase):
     def setUp(self) -> None:
+        # These lifecycle fixtures model an authenticated external-tool session.
+        credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self.temp_dir = TemporaryDirectory()
         root = Path(self.temp_dir.name)
         self.cache_dir = root / "cache"
@@ -8513,6 +8525,10 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
 
 class CacheManagerBBDownRegressionTest(unittest.TestCase):
     def setUp(self) -> None:
+        # These lifecycle fixtures model an authenticated external-tool session.
+        credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self.temp_dir = TemporaryDirectory()
         temp_path = Path(self.temp_dir.name)
         self.cache_dir = temp_path / "cache"
@@ -8726,6 +8742,9 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
 
 class CacheManagerDownkyiRegressionTest(unittest.TestCase):
     def setUp(self) -> None:
+        credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self.temp_dir = TemporaryDirectory()
         temp_path = Path(self.temp_dir.name)
         self.cache_dir = temp_path / "cache"
@@ -8797,7 +8816,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
         service = Mock(return_value=dash)
 
         def isolated_service(name, request):
-            if threading.get_ident() == owner_thread:
+            if threading.get_ident() == owner_thread and name != "desktop_login":
                 return service(name, request)
             return original_service(name, request)
 
@@ -8807,8 +8826,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 manager.video_quality = "1080P 高清"
                 with patch.object(manager, "_should_force_avc_locked", return_value=False), patch.object(
                     rust_runtime, "_call_runtime_service", side_effect=isolated_service
-                ), patch.object(bilibili, "effective_bilibili_cookie", return_value="SESSDATA=fixture"), patch(
-                    "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=fixture"
+                ), patch.object(bilibili, "effective_bilibili_cookie", return_value="SESSDATA=fixture; bili_jct=csrf"), patch(
+                    "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=fixture; bili_jct=csrf"
                 ), patch.object(manager, "_download_stream_with_rust") as native_download, patch.object(
                     manager, "_download_dash_streams_native"
                 ) as native_group, patch.object(manager, "_download_stream_with_aria2c") as aria:
@@ -8843,7 +8862,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                             call = by_kind[kind]
                             self.assertEqual(call.args[1], Path("/tools/aria2c"))
                             self.assertEqual(call.kwargs["urls"], [selected["url"], *selected["backup_urls"]])
-                            self.assertEqual(call.kwargs["cookie"], "SESSDATA=fixture")
+                            self.assertEqual(call.kwargs["cookie"], "SESSDATA=fixture; bili_jct=csrf")
                     with patch.object(manager, "_raise_if_priority_shift"), patch.object(
                         manager, "_begin_download_progress"
                     ), patch.object(manager, "_download_dash_streams_with_aria2c",
@@ -8859,7 +8878,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                     for call in service.call_args_list:
                         self.assertEqual(call.args[0], "bilibili_dash")
                         self.assertEqual(call.args[1]["cid"], 111)
-                        self.assertEqual(call.args[1]["cookie"], "SESSDATA=fixture")
+                        self.assertEqual(call.args[1]["cookie"], "SESSDATA=fixture; bili_jct=csrf")
                     native_download.assert_not_called()
                     native_group.assert_not_called()
             finally:
@@ -9006,8 +9025,13 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
         self.assertFalse(CacheManager._is_terminal_track_failure(unknown))
         self.assertTrue(CacheManager._is_terminal_track_failure(authentication))
 
-    def test_downkyi_without_cookie_fails_before_tool_preparation_or_track_work(self):
-        item = self._single_downkyi_item("downkyi-no-cookie")
+    def test_external_without_login_fails_before_tool_preparation_or_track_work(self):
+        for source in [DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI]:
+            with self.subTest(source=source):
+                self._assert_external_login_required(source)
+
+    def _assert_external_login_required(self, source):
+        item = self._single_downkyi_item(source + "-no-cookie")
         self.store.add_item(item, requester_name="cache-test-user")
         item = self.store.get_item(item.id)
         self.assertIsNotNone(item)
@@ -9017,7 +9041,9 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with manager.lock:
-                    manager.python_worker_download_sources[item.id] = DOWNLOAD_SOURCE_DOWNKYI
+                    manager.python_worker_download_sources[item.id] = source
+                    manager.download_source = source
+                    manager.desired_ids.add(item.id)
                 with patch.object(manager, "_ensure_downloader") as prepare_aria2c, patch.object(
                     manager, "_ensure_ffmpeg"
                 ) as prepare_ffmpeg, patch.object(
@@ -9048,10 +9074,15 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 )
                 refreshed = self.store.get_item(item.id)
                 self.assertEqual(refreshed.cache_status, "failed")
-                self.assertEqual(
-                    refreshed.cache_message,
-                    "缓存失败: DownKyi/aria2c requires a valid Bilibili login/Cookie",
-                )
+                self.assertIn("下载需要登录 Bilibili", refreshed.cache_message)
+                with self.assertRaisesRegex(ValueError, "下载需要登录 Bilibili"):
+                    retry_cache_item(manager, self.store, item.id)
+                log = manager._item_log_path(item.id, source).read_text(encoding="utf-8")
+                self.assertIn("download_login_required source=" + source, log)
+                self.assertNotIn("SESSDATA", log)
+                with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=new; bili_jct=new"), patch.object(manager, "enqueue") as enqueue:
+                    retry_cache_item(manager, self.store, item.id)
+                    enqueue.assert_called_once()
             finally:
                 manager.shutdown()
 
@@ -9116,6 +9147,35 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
 
         self.assertEqual(len(download_calls), 1)
         self.assertNotIn("10", str(raised.exception))
+
+    def test_bbdown_http_error_survives_generic_upgrade_hint(self):
+        item = self._single_downkyi_item("bbdown-http-rejection")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                    manager.active_item_id = item.id
+                manager._begin_download_progress(
+                    item.id, [{"key": "audio-p1", "label": "音轨", "order": 0}],
+                    cache_attempt_token=1,
+                )
+                command = [sys.executable, "-c", "print('net_http_message_not_success_statuscode_reason, 412, Precondition Failed'); print('请尝试升级到最新版本后重试!'); raise SystemExit(1)"]
+                with self.assertRaises(DownloadCommandError) as raised:
+                    manager._run_item_command(
+                        item.id, command, Path(sys.executable),
+                        Path(self.temp_dir.name) / "bbdown-http.log",
+                        stage_label="下载音轨 P1", stream_kind="audio",
+                        target_dir=self.cache_dir, track_key="audio-p1",
+                        cache_attempt_token=1, tool_dir=Path(self.temp_dir.name),
+                    )
+                self.assertEqual(raised.exception.http_status, 412)
+                self.assertIn("HTTP 412", str(raised.exception))
+                self.assertFalse(manager._should_force_refresh_bbdown(str(raised.exception)))
+                self.assertEqual(raised.exception.return_code, 1)
+            finally:
+                manager.shutdown()
 
     def test_aria2_http_statuses_are_classified_and_redacted(self):
         item = self._single_downkyi_item("downkyi-aria-http")
@@ -9215,7 +9275,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             })
             return Path(target_dir) / out_name
 
-        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test; bili_jct=csrf"), patch(
             "bilikara.cache.fetch_dash_playurl", side_effect=mock_fetch_dash
         ), patch.object(
             CacheManager, "_download_stream_with_aria2c", side_effect=mock_download_aria2c
@@ -9312,7 +9372,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 "audio": [{"id": 30216, "url": "audio.m4s", "backup_urls": []}],
             }
 
-        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test; bili_jct=csrf"), patch(
             "bilikara.cache.fetch_dash_playurl", side_effect=mock_fetch_dash
         ), patch.object(
             CacheManager, "_download_stream_with_aria2c", return_value=Path("/tmp/ok")
@@ -9569,7 +9629,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             video_page=1,
         )
 
-        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test; bili_jct=csrf"), patch(
             "bilikara.cache.fetch_dash_playurl", return_value={
                 "video": [{"url": "video.m4s", "backup_urls": []}],
                 "audio": [{"id": 30216, "url": "audio.m4s", "backup_urls": []}],
