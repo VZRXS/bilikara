@@ -5,6 +5,7 @@ mod cache;
 mod catalog;
 mod catalog_append;
 pub mod desktop;
+mod desktop_import;
 mod diagnostics;
 mod exports;
 mod files;
@@ -324,7 +325,7 @@ fn start(
         server: Some(server),
     };
     cache::start_pump(context.clone())?;
-    if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
+    if !desktop && with_app(|app| Ok(!app.native().cookie.is_empty()))? {
         library::refresh_after_login(&context, "credential_restore");
     }
     if desktop {

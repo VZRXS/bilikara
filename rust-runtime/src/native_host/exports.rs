@@ -133,7 +133,7 @@ fn archive_id(archive: &crate::SessionArchiveSeed) -> String {
     }
 }
 
-fn valid_source(source: &str) -> bool {
+pub(super) fn valid_source(source: &str) -> bool {
     ["played", "history"].contains(&source)
         || regex::Regex::new(r"^played-[A-Za-z0-9._-]{1,128}\.json$")
             .unwrap()

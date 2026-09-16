@@ -89,7 +89,16 @@ pub(super) fn load_desktop(directory: &Path) -> Result<String, ApiError> {
     if path.metadata().is_ok_and(|m| m.len() > MAX_LOGIN_BYTES) {
         return Err(io_error());
     }
-    Ok(crate::desktop_login::read_cookie(&path))
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => return Err(io_error()),
+    };
+    let cookie = crate::desktop_login::read_cookie(&path);
+    if cookie.is_empty() && !bytes.iter().all(u8::is_ascii_whitespace) {
+        return Err(io_error());
+    }
+    Ok(cookie)
 }
 fn save_for_host(context: &HostContext, cookie: &str) -> Result<(), ApiError> {
     if !context.desktop {

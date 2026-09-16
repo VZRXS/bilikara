@@ -1,6 +1,6 @@
 //! In-process adapter for the existing native cache workers. Every event is
 //! applied through its reserved AppState attempt token; no Python event pump.
-use super::preferences::CachePolicy;
+use super::preferences::{CachePolicy, MediaSelection};
 use super::*;
 use crate::cache_runtime::{CacheJobSpec, CacheRuntimeCommand, execute_cache_runtime};
 use crate::{AppStateRequest, CacheEvent, PlaylistItem};
@@ -11,6 +11,7 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
     execute_cache_runtime(CacheRuntimeCommand::Start {}).map_err(cache_error)?;
     context.clone().spawn("native-host-cache", move||{
         let mut fingerprint=String::new();
+        let mut selections=HashMap::new();
         let mut last_error=String::new();
         let mut last_cleanup=std::time::Instant::now();
         let mut last_metrics=None::<std::time::Instant>;
@@ -19,7 +20,7 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
                 if app.native().updates.expire(now()) { app.native().revision += 1; }
                 Ok(())
             });
-            if let Err(error)=tick(&context,&mut fingerprint) && error.to_string()!=last_error {
+            if let Err(error)=tick(&context,&mut fingerprint,&mut selections) && error.to_string()!=last_error {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
             }
             if last_cleanup.elapsed() >= Duration::from_secs(10) {
@@ -80,7 +81,11 @@ fn cache_error(error: crate::CacheRuntimeError) -> ApiError {
     ApiError::new(503, "cache", format!("Rust 缓存服务：{}", error.message))
 }
 
-fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiError> {
+fn tick(
+    context: &HostContext,
+    last_fingerprint: &mut String,
+    selections: &mut HashMap<String, (String, MediaSelection, bool)>,
+) -> Result<(), ApiError> {
     if with_app(|app| Ok(app.native_session_choice_pending()))? {
         return Ok(());
     }
@@ -91,13 +96,16 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
             apply_event(event)?;
         }
     }
-    let (snapshot, cookie, policy) = with_app(|app| {
+    let (snapshot, cookie, policy, player) = with_app(|app| {
         Ok((
             app.native_core_snapshot()?,
             app.native().cookie.clone(),
             app.native().cache_policy.clone(),
+            app.native().player_media.clone(),
         ))
     })?;
+    let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let usable = policy.available() && (!context.desktop || player.usable());
     let items: Vec<_> = snapshot
         .current_item
         .iter()
@@ -106,7 +114,7 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
     // Do not resubmit on every progress/status observation. Failure stays failed
     // until explicit retry, avoiding an unbounded Bilibili request loop.
     let fingerprint = format!(
-        "{}:{}",
+        "{}:{effective:?}:{usable}:{}",
         policy.snapshot(),
         items
             .iter()
@@ -149,17 +157,58 @@ fn tick(context: &HostContext, last_fingerprint: &mut String) -> Result<(), ApiE
                 cache_ready: item.cache_status == "ready",
             })
             .collect(),
-        max_items: policy.max_cache_items,
+        max_items: if usable { policy.max_cache_items } else { 0 },
         retention_limit: 0,
         active_item_ids: active,
         primary_active_item_id: primary,
         urgent_item_ids: ids("urgent_item_ids"),
     })
     .map_err(|_| ApiError::new(500, "cache_plan", "Rust 缓存规划失败"))?;
+    selections.retain(|id, (incarnation, _, _)| {
+        items
+            .iter()
+            .any(|item| &item.id == id && &item.item_incarnation_id == incarnation)
+    });
+    // Leaving the retained window invalidates the AppState reader. Re-entry
+    // needs a fresh attempt even if the runtime still remembers old artifacts.
+    for (id, (_, _, retained)) in selections.iter_mut() {
+        if !plan.retained_ids.contains(id) {
+            *retained = false;
+        }
+    }
+    // Retry is the existing replacement-attempt path: it cancels old work,
+    // reserves a new AppState token, and keeps readable artifacts until publish.
+    // This map tracks only which effective inputs this pump has submitted.
+    let mut replaced = Vec::new();
+    if context.desktop && usable {
+        for item in items
+            .iter()
+            .filter(|item| plan.desired_ids.contains(&item.id))
+        {
+            if selections
+                .get(&item.id)
+                .is_some_and(|(_, old, retained)| !retained || effective.changes_artifact(old))
+            {
+                execute_cache_runtime(CacheRuntimeCommand::Retry {
+                    job: job(context, item, &cookie, &policy, &effective)?,
+                    urgent: false,
+                })
+                .map_err(cache_error)?;
+                replaced.push(item.id.clone());
+            }
+            selections.insert(
+                item.id.clone(),
+                (item.item_incarnation_id.clone(), effective.clone(), true),
+            );
+        }
+    }
     let jobs = items
         .iter()
-        .filter(|item| plan.desired_ids.contains(&item.id) && item.cache_status != "failed")
-        .map(|item| job(context, item, &cookie, &policy))
+        .filter(|item| {
+            plan.desired_ids.contains(&item.id)
+                && (item.cache_status != "failed" || replaced.contains(&item.id))
+        })
+        .map(|item| job(context, item, &cookie, &policy, &effective))
         .collect::<Result<Vec<_>, _>>()?;
     execute_cache_runtime(CacheRuntimeCommand::Sync {
         cache_root: context.cache_root.clone(),
@@ -265,13 +314,14 @@ fn job(
     item: &PlaylistItem,
     cookie: &str,
     policy: &CachePolicy,
+    effective: &MediaSelection,
 ) -> Result<CacheJobSpec, ApiError> {
     let pages=item.available_pages.iter().enumerate().filter(|(_,page)|item.selected_pages.contains(page)||**page==item.video_page).map(|(index,page)|json!({"page":page,"cid":item.available_cids.get(index),"duration_seconds":item.available_durations.get(index),"label":item.available_parts.get(index)})).collect::<Vec<_>>();
     serde_json::from_value(json!({
         "schema_version":1,"item_id":item.id,"item_incarnation_id":item.item_incarnation_id,"bvid":item.bvid,"aid":item.aid,
         "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("logs/native-cache.log"),
         "cookie":cookie,"user_agent":crate::native_video::USER_AGENT,"referer":"https://www.bilibili.com/","timeout_ms":15000,
-        "video_quality":policy.video_quality,"avc_quality_cap":policy.video_quality,"audio_hires":policy.audio_hires,"selected_audio_variant_id":item.selected_audio_variant_id,
+        "video_quality":effective.quality,"avc_quality_cap":effective.avc_cap,"audio_hires":policy.audio_hires,"selected_audio_variant_id":item.selected_audio_variant_id,
         "reported_ready":item.cache_status=="ready","existing_video_relative_path":item.video_relative_path,
         "existing_audio_variants":item.audio_variants.iter().map(|variant|json!({"id":variant.get("id"),"label":variant.get("label"),"page":variant.get("page"),"relative_path":variant.get("audio_url").and_then(Value::as_str).unwrap_or("").trim_start_matches("/media/")})).collect::<Vec<_>>()
     })).map_err(|_|ApiError::new(500,"cache_job","歌曲缺少原生缓存所需的分 P 信息"))
@@ -282,9 +332,29 @@ pub(super) fn retry(
     item: &PlaylistItem,
     cookie: &str,
 ) -> Result<(), ApiError> {
-    let policy = with_app(|app| Ok(app.native().cache_policy.clone()))?;
+    let (policy, player) = with_app(|app| {
+        Ok((
+            app.native().cache_policy.clone(),
+            app.native().player_media.clone(),
+        ))
+    })?;
+    if !policy.available() {
+        return Err(ApiError::new(
+            501,
+            "imported_cache_policy_unavailable",
+            "Imported downloader/preferences are unavailable; select supported Native settings explicitly",
+        ));
+    }
+    if context.desktop && !player.usable() {
+        return Err(ApiError::new(
+            501,
+            "player_media_unavailable",
+            "Host player reports no AVC decode support; this media backend requires AVC",
+        ));
+    }
+    let effective = MediaSelection::new(&policy, &player, context.desktop);
     execute_cache_runtime(CacheRuntimeCommand::Retry {
-        job: job(context, item, cookie, &policy)?,
+        job: job(context, item, cookie, &policy, &effective)?,
         urgent: true,
     })
     .map_err(cache_error)?;

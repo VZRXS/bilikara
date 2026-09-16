@@ -51,9 +51,14 @@ def main():
             # system/user tool discovery; window automation keeps the runner PATH.
             for name in ["python", "python3"]:
                 (application_path/name).symlink_to(sys.executable)
-            for native in [False,True]:
-                name="rust" if native else "default"
-                home=Path(temp)/name;home.mkdir()
+            legacy=Path(temp)/"synthetic-legacy"; (legacy/"data").mkdir(parents=True)
+            (legacy/"data"/"player_state.json").write_text(json.dumps({"playback_mode":"local","player_settings":{"volume_percent":43}}))
+            legacy_bytes=(legacy/"data"/"player_state.json").read_bytes()
+            for name in ["default","rust","import","restart"]:
+                native=name!="default"
+                home=Path(temp)/("import" if name=="restart" else name);home.mkdir(exist_ok=True)
+                if name in ["import","restart"]:env["BILIKARA_DESKTOP_RUST_IMPORT_FROM"]=str(legacy)
+                else:env.pop("BILIKARA_DESKTOP_RUST_IMPORT_FROM",None)
                 log=output/f"{name}-startup.log"
                 env.update(BILIKARA_HOME=str(home/"python-home"),BILIKARA_DESKTOP_STARTUP_LOG=str(log),BILIKARA_REQUIRE_RUST_LIB="1")
                 if native:env["BILIKARA_DESKTOP_RUST_PREVIEW_DIR"]=str(home/"preview")
@@ -90,12 +95,17 @@ def main():
                         except OSError:pass
                         else:raise AssertionError("Listener survived window close")
                         until(lambda:"stage=backend_exited_gracefully" in log.read_text())
+                        if name in ["import","restart"]:
+                            saved=json.loads((home/"preview"/"host-state.json").read_text())
+                            assert saved["state"]["player_settings"]["volume_percent"]==43
+                            assert (legacy/"data"/"player_state.json").read_bytes()==legacy_bytes
+                            assert "--import-from" in command
                         results.append({"backend":name,"realTauri":True,"ready":True,"windowClose":True,"childReaped":True,"listenerClosed":True})
                     finally:
                         if app.poll() is None:app.terminate();app.wait(timeout=40)
                         if child and Path(f"/proc/{child}").exists():os.kill(child,15)
             (output/"launcher-summary.json").write_text(json.dumps(results,indent=2))
-            print("Default Python and opt-in Rust Tauri launcher/window-close checks passed.")
+            print("Default Python, opt-in Rust and imported/restarted Tauri launcher checks passed.")
         finally:
             if wm:wm.terminate();wm.wait()
             xvfb.terminate();xvfb.wait();proxy.shutdown()

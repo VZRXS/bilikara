@@ -1,5 +1,5 @@
 //! Desktop development entry: one Runtime/AppState, PR109 transport, P02/P03 services.
-//! Never discovers or imports normal desktop data, credentials, or Python.
+//! Legacy desktop data is read only through an explicit one-time import.
 use super::*;
 use crate::{AppStateRequest, AppStateSeed, execute_app_state, initialize_native_host};
 use std::io::Write;
@@ -11,7 +11,7 @@ extern "C" fn request_exit(_: libc::c_int) {
     EXIT_REQUESTED.store(true, Ordering::Release);
 }
 
-const MARKER: &str = ".bilikara-desktop-rust-preview";
+pub(super) const MARKER: &str = ".bilikara-desktop-rust-preview";
 
 pub(super) fn unavailable() -> ApiError {
     ApiError::new(
@@ -24,7 +24,7 @@ pub(super) fn unavailable() -> ApiError {
 /// An empty explicitly selected directory is enrolled once. Refuse any existing
 /// unmarked directory, including ordinary desktop data. Storage's lock prevents
 /// concurrent authorities; its checkpoint validation remains authoritative.
-fn preview_root(path: &Path) -> Result<PathBuf, String> {
+pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("--data-dir must be an absolute isolated development directory".into());
     }
@@ -47,7 +47,8 @@ fn preview_root(path: &Path) -> Result<PathBuf, String> {
             .is_some()
         {
             return Err(
-                "Refusing nonempty unmarked directory; existing-record import is deferred".into(),
+                "Refusing nonempty unmarked directory; use --import-from with a new destination"
+                    .into(),
             );
         }
         std::fs::OpenOptions::new()
@@ -188,13 +189,15 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let mut args = arguments;
     let mut directory = None;
     let mut assets = None;
+    let mut import_from = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => directory = args.next().map(PathBuf::from),
+            "--import-from" => import_from = Some(PathBuf::from(args.next().ok_or("--import-from requires an explicit legacy app-home")?)),
             "--static-dir" => assets = args.next().map(PathBuf::from),
             "--no-browser" | "--headless" => {},
             "--port" if args.next().as_deref() == Some("0") => {},
-            _ => return Err("Usage: bilikara-desktop-host --data-dir ABSOLUTE_EMPTY_OR_PREVIEW_DIR --static-dir SHARED_STATIC_DIR [--port 0 --headless --no-browser]".into()),
+            _ => return Err("Usage: bilikara-desktop-host --data-dir ABSOLUTE_EMPTY_OR_PREVIEW_DIR --static-dir SHARED_STATIC_DIR [--import-from ABSOLUTE_LEGACY_APP_HOME] [--port 0 --headless --no-browser]".into()),
         }
     }
     let assets = assets
@@ -202,7 +205,15 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let source = asset_source(&assets)?;
-    let directory = preview_root(&directory.ok_or("Explicit --data-dir is required")?)?;
+    let directory = directory.ok_or("Explicit --data-dir is required")?;
+    if let Some(source) = import_from {
+        super::desktop_import::restore(
+            &source,
+            &directory,
+            &std::env::var("BILIKARA_BILIBILI_COOKIE").unwrap_or_default(),
+        )?;
+    }
+    let directory = preview_root(&directory)?;
     let _ = FONT.set(assets.join("fonts/SourceHanSans-VF.ttf"));
     crate::playlist_export::prewarm_fonts(&desktop_font_path()?).map_err(|e| e.message)?;
     let seed: AppStateSeed = serde_json::from_value(json!({"session_started_at":now(),

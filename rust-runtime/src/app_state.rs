@@ -16,6 +16,8 @@ use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
 mod native_persistence;
+#[cfg(feature = "native-host")]
+pub(crate) use native_persistence::prepare_import;
 mod player_control;
 pub use player_control::PlayerControlInput;
 #[cfg(feature = "native-host")]

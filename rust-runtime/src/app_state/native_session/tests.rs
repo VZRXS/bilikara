@@ -398,3 +398,123 @@ fn native_sync_decision_measurements_reject_text_and_objects() {
     let event = &result["events"][0];
     assert_eq!(event.as_object().unwrap().len(), 2); // event and at only
 }
+
+#[test]
+fn desktop_player_facts_are_host_owned_transient_and_separate_from_backend_support() {
+    let (mut app, host) = setup();
+    app.native().desktop = true;
+    let report = json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":3});
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["cache_policy"]["media_capabilities"],
+        json!({})
+    );
+    let response = app.native_media_capabilities(&host, &report).unwrap();
+    assert_eq!(response["max_avc_quality"], "480P 清晰");
+    let revision = app.native().revision;
+    app.native_media_capabilities(&host, &report).unwrap();
+    assert_eq!(app.native().revision, revision);
+    let before = app.native().player_media.clone();
+    assert!(
+        app.native_media_capabilities(&host, &json!({"hevc_supported":"yes"}))
+            .is_err()
+    );
+    assert_eq!(app.native().player_media, before);
+    app.native_redeem("invite-token", "", "remote".into())
+        .unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    assert_eq!(
+        app.native_media_capabilities(&remote, &report)
+            .unwrap_err()
+            .status,
+        403
+    );
+    let (_, claim) = ready(&mut app);
+    app.native_claim(&host, &claim, false).unwrap();
+    let other = Identity {
+        client: "new-webview".into(),
+        ..host.clone()
+    };
+    assert_eq!(
+        app.native_media_capabilities(&other, &report)
+            .unwrap_err()
+            .code,
+        "player_not_owner"
+    );
+    app.native_claim(&host, &claim, true).unwrap();
+    app.native_claim(&other, &claim, false).unwrap();
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["cache_policy"]["media_capabilities"],
+        json!({})
+    );
+    app.native_media_capabilities(
+        &other,
+        &json!({"hevc_supported":true,"avc_supported":false}),
+    )
+    .unwrap();
+    let state = app.native_snapshot(true).unwrap();
+    assert_eq!(state["cache_policy"]["enabled"], false);
+    assert_eq!(
+        state["cache_policy"]["media_backend"]["hevc_available"],
+        false
+    );
+    assert_eq!(state["bbdown"]["ready"], false);
+}
+
+#[test]
+fn desktop_next_consumes_reset_preference_without_resetting_global_delay() {
+    for reset in [false, true] {
+        let (mut app, _) = setup();
+        app.native().desktop = true;
+        let (snapshot, _) = ready(&mut app);
+        let mut second = snapshot.current_item.unwrap();
+        second.id = "second".into();
+        clear_committed_artifact(&mut second, true);
+        second.cache_status = "pending".into();
+        second.cache_progress = 0.0;
+        app.native_execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: second,
+            position: "tail".into(),
+            requester_name: "Alice".into(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 4.0,
+        })
+        .unwrap();
+        app.native_execute(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::SetPersistent {
+                effective_delay_ms: 320,
+            },
+            now: 5.0,
+        })
+        .unwrap();
+        app.native_execute(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::SetEffective {
+                effective_delay_ms: 620,
+            },
+            now: 6.0,
+        })
+        .unwrap();
+        app.native().cache_policy.reset_offset_on_next = reset;
+        let generation = app.native_core_snapshot().unwrap().playback_generation;
+        app.native_execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: generation,
+            reset_av_delay: !reset,
+            now: 7.0,
+        })
+        .unwrap();
+        let settings = app.native_core_snapshot().unwrap().player_settings;
+        assert_eq!(settings.av_delay.global_delay_ms, 320);
+        assert_eq!(
+            settings.av_delay.local_delay_ms,
+            if reset { 0 } else { 300 }
+        );
+    }
+}

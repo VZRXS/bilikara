@@ -26,6 +26,15 @@ fn restart_seed(seed: &mut AppStateSeed) {
     }
 }
 
+/// Desktop import uses the same restart invalidation and seed contract, without
+/// constructing another AppState or trusting saved media paths.
+#[cfg(feature = "native-host")]
+pub(crate) fn prepare_import(mut seed: AppStateSeed) -> Result<AppStateSeed, String> {
+    restart_seed(&mut seed);
+    validate_seed(&seed).map_err(|_| "Invalid desktop state contract".to_owned())?;
+    Ok(seed)
+}
+
 impl AppStateData {
     fn native_checkpoint(&self) -> AppStateSeed {
         let mut seed = AppStateSeed {

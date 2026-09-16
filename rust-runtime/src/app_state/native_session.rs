@@ -14,6 +14,8 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub desktop: bool,
+    pub player_media: crate::native_host::preferences::PlayerMedia,
+    pub media_client: String,
     pub cache_policy: crate::native_host::preferences::CachePolicy,
     pub cache_usage_bytes: u64,
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
@@ -259,7 +261,20 @@ impl AppState {
             .map_err(|_| ApiError::new(500, "snapshot", "无法读取 Rust 状态"))
     }
 
-    pub(crate) fn native_execute(&mut self, command: AppStateRequest) -> Result<Value, ApiError> {
+    pub(crate) fn native_execute(
+        &mut self,
+        mut command: AppStateRequest,
+    ) -> Result<Value, ApiError> {
+        if self.native_session.desktop {
+            match &mut command {
+                AppStateRequest::AdvanceToNext { reset_av_delay, .. }
+                | AppStateRequest::MoveToFront { reset_av_delay, .. }
+                | AppStateRequest::SetCurrentItem { reset_av_delay, .. } => {
+                    *reset_av_delay = self.native_session.cache_policy.reset_offset_on_next
+                }
+                _ => {}
+            }
+        }
         let renamed = match &command {
             AppStateRequest::RenameSessionUser {
                 current_name,
@@ -317,6 +332,39 @@ impl AppState {
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
         value["cache_policy"] = session.cache_policy.snapshot();
+        if session.desktop {
+            let effective = crate::native_host::preferences::MediaSelection::new(
+                &session.cache_policy,
+                &session.player_media,
+                true,
+            );
+            value["cache_policy"]["force_avc"] = json!(true);
+            value["cache_policy"]["avc_quality_cap"] = json!(session.player_media.avc_quality_cap);
+            value["cache_policy"]["media_capabilities"] = session.player_media.snapshot();
+            value["cache_policy"]["effective_video_quality"] = json!(effective.quality);
+            value["cache_policy"]["media_backend"] =
+                json!({"video_codecs":["avc"],"hevc_available":false});
+            if !session.player_media.usable() {
+                value["cache_policy"]["enabled"] = json!(false);
+                value["cache_policy"]["unavailable_reason"] = json!(
+                    "Host player reports no AVC decode support; this media backend requires AVC"
+                );
+            }
+        }
+        if value["cache_policy"]["enabled"] == false {
+            let message = value["cache_policy"]["unavailable_reason"].clone();
+            if let Some(item) = value
+                .get_mut("current_item")
+                .filter(|item| item.is_object())
+            {
+                item["cache_message"] = message.clone();
+            }
+            if let Some(items) = value.get_mut("playlist").and_then(Value::as_array_mut) {
+                for item in items {
+                    item["cache_message"] = message.clone();
+                }
+            }
+        }
         value["cache_policy"]["usage_bytes"] = json!(session.cache_usage_bytes);
         // Count committed songs, not the staging/artifacts top-level directories.
         value["cache_policy"]["cached_item_count"] = json!(
@@ -335,7 +383,12 @@ impl AppState {
                 session.updates.snapshot()
             };
         }
-        value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":if session.desktop {"Desktop Rust preview · Native only"} else {"Android Alpha"}});
+        value["bbdown"] = json!({"available":session.cache_policy.available(),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available(),"state":if session.cache_policy.available() {"ready"} else {"unavailable"},"version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available() {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview · Native only"} else {"Android Alpha"}});
+        if session.desktop && !session.player_media.usable() {
+            value["bbdown"]["ready"] = json!(false);
+            value["bbdown"]["state"] = json!("unavailable");
+            value["bbdown"]["message"] = value["cache_policy"]["unavailable_reason"].clone();
+        }
         value["bbdown"]["logged_in"] = json!(!session.cookie.is_empty());
         // The shared status chip aggregates these two fields. No external FFmpeg
         // is installed or advertised; media normalization is in-process Rust.
@@ -356,6 +409,41 @@ impl AppState {
             value["remote_access"] = session.remote_access.clone();
         }
         Ok(value)
+    }
+
+    pub(crate) fn native_media_capabilities(
+        &mut self,
+        identity: &Identity,
+        body: &Value,
+    ) -> Result<Value, ApiError> {
+        self.native_authorize(identity, true)?;
+        if !self.native_session.desktop {
+            return Ok(json!({"profile":"avc-aac-720p","hevc_available":false}));
+        }
+        if identity.client.is_empty() || identity.client.len() > 128 {
+            return Err(ApiError::invalid("Missing Host player identity"));
+        }
+        if self
+            .native_session
+            .claim
+            .as_ref()
+            .is_some_and(|claim| claim.client != identity.client)
+        {
+            return Err(ApiError::new(
+                409,
+                "player_not_owner",
+                "Another Host player owns the playback program",
+            ));
+        }
+        let next = crate::native_host::preferences::PlayerMedia::reported(body)?;
+        if next != self.native_session.player_media
+            || self.native_session.media_client != identity.client
+        {
+            self.native_session.player_media = next;
+            self.native_session.media_client = identity.client.clone();
+            self.native_session.revision += 1;
+        }
+        Ok(self.native_session.player_media.snapshot())
     }
 
     pub(crate) fn native_claim(
@@ -396,6 +484,11 @@ impl AppState {
             .as_ref()
             .is_some_and(|c| c.generation == generation && c.client != identity.client);
         if matches && !occupied {
+            if self.native_session.desktop && self.native_session.media_client != identity.client {
+                self.native_session.player_media = Default::default();
+                self.native_session.media_client = identity.client.clone();
+                self.native_session.revision += 1;
+            }
             self.native_session.claim = Some(Claim {
                 client: identity.client.clone(),
                 generation,

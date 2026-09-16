@@ -141,14 +141,21 @@ fn resolve_rust_preview(
             candidate_executable: path_has_executable_bit(&executable),
         });
     }
+    let mut args = vec![
+        "--data-dir".into(),
+        directory.to_string_lossy().into_owned(),
+        "--static-dir".into(),
+        root.join("static").to_string_lossy().into_owned(),
+    ];
+    if let Some(source) = std::env::var_os("BILIKARA_DESKTOP_RUST_IMPORT_FROM") {
+        args.extend([
+            "--import-from".into(),
+            source.to_string_lossy().into_owned(),
+        ]);
+    }
     Ok(BackendCommandResolution {
         command: executable.to_string_lossy().into_owned(),
-        args: vec![
-            "--data-dir".into(),
-            directory.to_string_lossy().into_owned(),
-            "--static-dir".into(),
-            root.join("static").to_string_lossy().into_owned(),
-        ],
+        args,
         candidate_type: "desktop-rust-preview",
     })
 }

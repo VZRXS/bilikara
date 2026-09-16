@@ -49,7 +49,6 @@ pub(super) fn dispatch(
         }
         if (path.starts_with("/api/app/") && path != "/api/app/update/status")
             || path.starts_with("/api/rating/")
-            || (method == Method::POST && path.starts_with("/api/gatcha/"))
         {
             return Err(desktop::unavailable());
         }
@@ -114,6 +113,12 @@ pub(super) fn dispatch(
             app.native_snapshot(true)
         });
     }
+    if path == "/api/ui-language" {
+        return preferences::language(context, identity, Some(&body));
+    }
+    if context.desktop && path == "/api/client/media-capabilities" {
+        return with_app(|app| app.native_media_capabilities(identity, &body));
+    }
     if with_app(|app| Ok(app.native_session_choice_pending()))? {
         return Err(ApiError::new(
             409,
@@ -138,9 +143,6 @@ pub(super) fn dispatch(
         // Backend-owned outcomes are logged separately; never persist arbitrary
         // client messages, usernames or capability URLs in diagnostics.
         return Ok(json!({}));
-    }
-    if path == "/api/ui-language" {
-        return preferences::language(context, identity, Some(&body));
     }
     if path.starts_with("/api/gatcha/") {
         return library::write(context, identity, path, &body);
@@ -261,8 +263,7 @@ pub(super) fn dispatch(
                 return Ok(json!({}));
             }
             "/api/client/media-capabilities" => {
-                app.native_authorize(identity, true)?;
-                return Ok(json!({"profile":"avc-aac-720p","hevc_available":false}));
+                return app.native_media_capabilities(identity, &body);
             }
             _ => {}
         }

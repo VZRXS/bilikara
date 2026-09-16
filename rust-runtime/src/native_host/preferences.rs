@@ -12,6 +12,9 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct CachePolicy {
     pub max_cache_items: usize,
+    pub download_source: String,
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub retained_settings: serde_json::Map<String, Value>,
     pub video_quality: String,
     pub audio_hires: bool,
     pub reset_offset_on_next: bool,
@@ -21,6 +24,8 @@ impl Default for CachePolicy {
     fn default() -> Self {
         Self {
             max_cache_items: 3,
+            download_source: "native".into(),
+            retained_settings: serde_json::Map::new(),
             video_quality: "720P 高清".into(),
             audio_hires: false,
             reset_offset_on_next: false,
@@ -50,11 +55,23 @@ impl CachePolicy {
         Ok(())
     }
 
+    pub(crate) fn available(&self) -> bool {
+        self.download_source == "native" && self.validate().is_ok()
+    }
+
     pub(crate) fn snapshot(&self) -> Value {
         let mut value = json!(self);
-        value["enabled"] = json!(true);
-        value["download_source"] = json!("native");
+        value.as_object_mut().unwrap().remove("retained_settings");
+        value["enabled"] = json!(self.available());
+        value["unavailable_reason"] = json!(if self.available() {
+            ""
+        } else {
+            "Imported download source or cache preference is unavailable in Desktop Rust; select supported Native settings explicitly"
+        });
         value["download_source_choices"] = json!([{"value":"native","label":"Rust Native"}]);
+        if self.download_source != "native" {
+            value["download_source_choices"].as_array_mut().unwrap().push(json!({"value":self.download_source,"label":format!("{} (unavailable in Desktop Rust)", self.download_source)}));
+        }
         value["avc_quality_cap"] = json!(&self.video_quality);
         value["choices"] = json!([1, 2, 3, 4, 5]);
         value["video_quality_choices"] = json!(Self::qualities());
@@ -69,9 +86,13 @@ impl CachePolicy {
         let mut next = json!(self);
         for (key, value) in fields {
             if key == "download_source" && value == "native" {
+                next[key] = value.clone();
                 continue;
             }
-            if next.get(key).is_none() {
+            if !matches!(
+                key.as_str(),
+                "max_cache_items" | "video_quality" | "audio_hires" | "reset_offset_on_next"
+            ) {
                 return Err(ApiError::invalid(
                     "此 Host 仅支持原生下载器和列出的缓存设置",
                 ));
@@ -82,6 +103,123 @@ impl CachePolicy {
             serde_json::from_value(next).map_err(|_| ApiError::invalid("缓存设置格式无效"))?;
         next.validate()?;
         Ok(next)
+    }
+}
+
+/// Transient Host decoder facts; never serialized into preferences or imported.
+/// Quality interpretation remains in the shared Rust quality service.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct PlayerMedia {
+    pub avc_supported: Option<bool>,
+    pub avc_quality_cap: String,
+    pub details: Value,
+}
+
+impl PlayerMedia {
+    pub(crate) fn reported(body: &Value) -> Result<Self, ApiError> {
+        let hevc = body["hevc_supported"]
+            .as_bool()
+            .ok_or_else(|| ApiError::invalid("hevc_supported must be a boolean"))?;
+        let avc = body["avc_supported"].as_bool().unwrap_or(false);
+        let quality = decide_quality_policy(&QualityPolicyRequest {
+            raw_quality: body["max_avc_quality"].as_str().unwrap_or_default().into(),
+            raw_cap: String::new(),
+            choice_index: body["max_avc_quality_index"].as_i64(),
+        });
+        let cap = quality
+            .indexed_quality
+            .or(quality.optional_quality)
+            .unwrap_or(bilikara_rust::VideoQuality::Q360)
+            .label()
+            .to_owned();
+        let mut details = json!({"hevc_supported":hevc,"avc_supported":avc,
+            "force_avc":!hevc,"max_avc_quality":cap,
+            "max_avc_quality_index":CachePolicy::qualities().iter().position(|v| v==&cap)});
+        // Diagnostics are bounded, do not influence the runtime's codec contract.
+        for (key, limit) in [("user_agent", 500), ("platform", 100)] {
+            details[key] = json!(
+                body[key]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(limit)
+                    .collect::<String>()
+            );
+        }
+        let mut types = serde_json::Map::new();
+        if let Some(values) = body["can_play_type"].as_object() {
+            for (key, value) in values.iter().take(32) {
+                types.insert(
+                    key.chars().take(120).collect(),
+                    json!(
+                        value
+                            .as_str()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(20)
+                            .collect::<String>()
+                    ),
+                );
+            }
+        }
+        details["can_play_type"] = json!(types);
+        details["avc_levels"] = json!(body["avc_levels"].as_array().into_iter().flatten().take(20)
+            .filter(|v|v.is_object()).map(|v|json!({
+                "name":v["name"].as_str().unwrap_or_default().chars().take(50).collect::<String>(),
+                "codec":v["codec"].as_str().unwrap_or_default().chars().take(120).collect::<String>(),
+                "can_play_type":v["can_play_type"].as_str().unwrap_or_default().chars().take(20).collect::<String>(),
+                "max_avc_quality_index":v["max_avc_quality_index"].as_i64()
+            })).collect::<Vec<_>>());
+        Ok(Self {
+            avc_supported: Some(avc),
+            avc_quality_cap: cap,
+            details,
+        })
+    }
+
+    pub(crate) fn usable(&self) -> bool {
+        self.avc_supported != Some(false)
+    }
+
+    pub(crate) fn snapshot(&self) -> Value {
+        if self.details.is_null() {
+            json!({})
+        } else {
+            self.details.clone()
+        }
+    }
+}
+
+/// Effective media inputs, excluding count/reset/UI facts that cannot change an
+/// artifact. The existing cache runtime remains AVC-only even on an HEVC player.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MediaSelection {
+    pub quality: String,
+    pub avc_cap: String,
+    pub audio_hires: bool,
+}
+
+impl MediaSelection {
+    pub(crate) fn new(policy: &CachePolicy, player: &PlayerMedia, desktop: bool) -> Self {
+        let cap = if desktop {
+            &player.avc_quality_cap
+        } else {
+            &policy.video_quality
+        };
+        let decision = decide_quality_policy(&QualityPolicyRequest {
+            raw_quality: policy.video_quality.clone(),
+            raw_cap: cap.clone(),
+            choice_index: None,
+        });
+        Self {
+            quality: decision.bbdown_quality_order[0].label().into(),
+            avc_cap: cap.clone(),
+            audio_hires: policy.audio_hires,
+        }
+    }
+
+    pub(crate) fn changes_artifact(&self, other: &Self) -> bool {
+        self.quality != other.quality || self.audio_hires != other.audio_hires
     }
 }
 
@@ -128,21 +266,29 @@ pub(super) fn load(directory: &Path) -> Result<Saved, ApiError> {
         Err(_) => return Err(storage_error()),
     };
     let mut bytes = Vec::new();
-    file.take(4097)
+    file.take(65537)
         .read_to_end(&mut bytes)
         .map_err(|_| storage_error())?;
-    if bytes.len() > 4096 {
+    if bytes.len() > 65536 {
         return Err(storage_error());
     }
     let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| storage_error())?;
     if saved.schema_version != 1 {
         return Err(storage_error());
     }
-    saved.cache.validate().map_err(|_| storage_error())?;
+    // Existing native/mobile preferences retain their strict contract. Only
+    // explicit desktop imports carry preserved legacy settings for unavailable
+    // values; loading them must not silently select a different downloader.
+    if saved.cache.retained_settings.is_empty() && !saved.cache.available() {
+        return Err(storage_error());
+    }
+    if saved.cache.download_source.len() > 128 || saved.cache.video_quality.len() > 128 {
+        return Err(storage_error());
+    }
     Ok(saved)
 }
 
-fn save(
+pub(super) fn save(
     directory: &Path,
     cache: &CachePolicy,
     language: Option<UiLanguage>,
@@ -258,6 +404,45 @@ mod tests {
         );
         assert_eq!(original.max_cache_items, 3);
     }
+    #[test]
+    fn desktop_baseline_boundaries_and_effective_media_noops() {
+        let original = CachePolicy::default();
+        for count in 1..=5 {
+            for quality in CachePolicy::qualities() {
+                let next=original.updated(&json!({"max_cache_items":count,"video_quality":quality,"audio_hires":true,"reset_offset_on_next":true})).unwrap();
+                assert!(next.available());
+            }
+        }
+        let policy = original
+            .updated(&json!({"video_quality":"1080P 高清"}))
+            .unwrap();
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":3}),
+        )
+        .unwrap();
+        let selected = MediaSelection::new(&policy, &player, true);
+        assert_eq!(selected.quality, "480P 清晰");
+        assert_eq!(selected.avc_cap, "480P 清晰");
+        let next=policy.updated(&json!({"max_cache_items":1,"reset_offset_on_next":true,"video_quality":"720P 高清"})).unwrap();
+        assert!(!selected.changes_artifact(&MediaSelection::new(&next, &player, true)));
+        let next = next.updated(&json!({"audio_hires":true})).unwrap();
+        assert!(selected.changes_artifact(&MediaSelection::new(&next, &player, true)));
+        let unknown = PlayerMedia::default();
+        assert!(unknown.usable());
+        assert!(
+            MediaSelection::new(&policy, &unknown, true)
+                .avc_cap
+                .is_empty()
+        );
+        let incomplete =
+            PlayerMedia::reported(&json!({"hevc_supported":false,"avc_supported":true})).unwrap();
+        assert_eq!(incomplete.avc_quality_cap, "360P 流畅");
+        assert_eq!(
+            MediaSelection::new(&policy, &player, false).avc_cap,
+            policy.video_quality
+        );
+    }
+
     #[test]
     fn roundtrip_replacement_and_corrupt_preferences_fail_closed() {
         let directory = std::env::temp_dir().join(format!(

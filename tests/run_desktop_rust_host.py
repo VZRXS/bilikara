@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    cache_policy = "--cache-policy" in sys.argv
     evidence = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="desktop-rust-evidence-"))
     evidence.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="desktop-rust-fixture-") as temp:
@@ -27,11 +28,16 @@ def main():
             ("audio.m4a", ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "90", "-vn", "-c:a", "aac"]),
         ]:
             subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", *args, "-movflags", "+faststart", str(media / name)], check=True)
+        if cache_policy:
+            subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","90","-c:a","flac","-strict","-2",str(media/"audio-flac.mp4")],check=True)
         fixture = LoginFixture()
         fixture.extra_hosts = ["api.bilibili.com", "fixture.bilivideo.com", "api.kevinx96.icu"]
         delayed = threading.Event()
         release = threading.Event()
         counts = {}
+        media_requests = []
+        media_delay = threading.Event()
+        media_release = threading.Event(); media_release.set()
         def handle(handler):
             route = urlsplit(handler.path)
             query = parse_qs(route.query)
@@ -41,7 +47,13 @@ def main():
             counts[name] = counts.get(name, 0) + 1
             status = 200
             headers = {}
-            if name == "/fixture/delayed":
+            if name == "/fixture/cache-stats":
+                body = {"media":list(media_requests)}
+            elif name == "/fixture/cache-delay":
+                media_release.clear(); media_delay.set(); body = {}
+            elif name == "/fixture/cache-release":
+                media_delay.clear(); media_release.set(); body = {}
+            elif name == "/fixture/delayed":
                 body = {"started": delayed.is_set()}
             elif name == "/fixture/release":
                 release.set()
@@ -62,7 +74,14 @@ def main():
                     "pages": [{"page": 1, "cid": 456, "duration": 90, "part": "Take A" if manual else "on vocal"}, {"page": 2, "cid": 457, "duration": 90, "part": "Take B" if manual else "off vocal"}]}}
             elif name in ["/x/player/wbi/playurl", "/x/player/playurl"]:
                 body = {"code": 0, "data": {"quality": 64, "dash": {"video": [{"id": 64, "codecid": 7, "bandwidth": 100000, "baseUrl": "https://fixture.bilivideo.com/video.mp4", "mimeType": "video/mp4", "codecs": "avc1.64001e"}], "audio": [{"id": 30280, "bandwidth": 128000, "baseUrl": "https://fixture.bilivideo.com/audio.m4a", "mimeType": "audio/mp4", "codecs": "mp4a.40.2"}]}}}
-            elif name in ["/video.mp4", "/audio.m4a"]:
+                if cache_policy:
+                    dash=body["data"]["dash"]
+                    dash["video"]=[{"id":quality,"codecid":codec,"bandwidth":100000,"baseUrl":f"https://fixture.bilivideo.com/video.mp4?q={quality}&codec={codec}","mimeType":"video/mp4","codecs":"avc1.64001e" if codec==7 else "hev1.1.6.L93.B0"} for quality in [116,80,64,32,16] for codec in [7,12]]
+                    dash["flac"]={"audio":{"id":30251,"baseUrl":"https://fixture.bilivideo.com/audio-flac.mp4","mimeType":"audio/mp4","codecs":"fLaC"}}
+            elif name in ["/video.mp4", "/audio.m4a", "/audio-flac.mp4"]:
+                media_requests.append({"path":name,"quality":query.get("q",[""])[0],"codec":query.get("codec",[""])[0]})
+                if cache_policy and name=="/video.mp4" and media_delay.is_set():
+                    media_release.wait(10)
                 body = (media / name[1:]).read_bytes()
                 if handler.headers.get("Range"):
                     first, last = handler.headers["Range"].split("=", 1)[1].split("-", 1)
@@ -96,8 +115,11 @@ def main():
             application_path = media / "application-path"
             application_path.mkdir()
             env["BILIKARA_TEST_APPLICATION_PATH"] = str(application_path)
-            result = subprocess.run(["node", "tests/live_desktop_rust_host.js", str(evidence)], cwd=ROOT, env=env, timeout=240)
-        assert "generate" in fixture.stages and "poll" in fixture.stages
+            if cache_policy: env["BILIKARA_CACHE_POLICY_FIXTURE"]="1"
+            driver="tests/live_desktop_import.js" if cache_policy else "tests/live_desktop_rust_host.js"
+            result = subprocess.run(["node", driver, str(evidence)], cwd=ROOT, env=env, timeout=240)
+        if cache_policy: assert not fixture.stages, "Cache policy tests must not run login"
+        else: assert "generate" in fixture.stages and "poll" in fixture.stages
         forbidden = [name for name in counts if any(word in name for word in ["batch-add", "rating", "space/wbi", "gviz", "d1/"])]
         assert not forbidden, forbidden
         (evidence / "fixture-summary.json").write_text(json.dumps({"request_counts": counts, "login_stages": fixture.stages, "forwarded_external_requests": 0}, indent=2))
