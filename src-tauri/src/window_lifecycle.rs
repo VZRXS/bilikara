@@ -662,12 +662,21 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         geometry_diagnostic("hide_before_restore", "error_ignored");
     }
 
-    let path = app
-        .path()
-        .app_config_dir()
-        .map(|directory| directory.join(GEOMETRY_FILENAME))
-        .map_err(|_| ())
-        .ok();
+    let path = if let Some(root) = std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR") {
+        let root = PathBuf::from(root);
+        // A rejected/uninitialized preview must not touch a supplied normal directory.
+        (fs::read(root.join(".bilikara-desktop-rust-preview"))
+            .ok()
+            .as_deref()
+            == Some(b"desktop-rust-preview-v1\n"))
+        .then(|| root.join(GEOMETRY_FILENAME))
+    } else {
+        app.path()
+            .app_config_dir()
+            .map(|directory| directory.join(GEOMETRY_FILENAME))
+            .map_err(|_| ())
+            .ok()
+    };
     let saved = path.as_deref().and_then(|path| match load_geometry(path) {
         Ok(Some(geometry)) if stored_geometry_is_valid(&geometry) => Some(geometry),
         Ok(Some(_)) => {

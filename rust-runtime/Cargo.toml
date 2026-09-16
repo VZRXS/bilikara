@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 name = "native_host_alpha"
 required-features = ["native-host"]
 
+[[bin]]
+name = "bilikara-desktop-host"
+required-features = ["native-host"]
+
 [features]
 native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "qrcode/svg", "dep:time"]
 

@@ -269,6 +269,12 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
         return Some(PathBuf::from(override_path));
     }
 
+    // Preview startup diagnostics remain on stdout unless an explicit test/dev
+    // log path is supplied; do not open the normal product's persistent log.
+    if std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR").is_some() {
+        return None;
+    }
+
     #[cfg(target_os = "windows")]
     {
         let install_dir = current_exe.parent()?;

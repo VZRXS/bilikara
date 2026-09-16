@@ -20,8 +20,8 @@
 .android-session-choice-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .android-session-choice-actions button { flex: 1; min-height: 44px; }
 
-html[data-native-host="true"] .session-user-list { padding: 0 0 10px; }
-html[data-native-host="true"] .session-user-badge {
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-list { padding: 0 0 10px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-badge {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   height: auto;
@@ -33,7 +33,7 @@ html[data-native-host="true"] .session-user-badge {
   cursor: pointer;
   -webkit-touch-callout: none;
 }
-html[data-native-host="true"] .session-user-badge.is-actions-open { min-width: 184px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-badge.is-actions-open { min-width: 184px; }
 .android-user-toggle {
   min-height: 36px;
   padding: 4px 2px;
@@ -51,11 +51,11 @@ html[data-native-host="true"] .session-user-badge.is-actions-open { min-width: 1
 .android-user-actions button[data-user-action="remove"] { color: var(--red); }
 
 /* Two distinct hit targets on Android; desktop keeps its hover affordance. */
-html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) .fullscreen-action-control {
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-panel:is(:fullscreen, .is-tauri-fullscreen) .fullscreen-action-control {
   display: flex;
   gap: 8px;
 }
-html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(#player-fullscreen-button, .android-fullscreen-remote-button) {
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(#player-fullscreen-button, .android-fullscreen-remote-button) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -64,11 +64,11 @@ html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen
   height: 44px;
   padding: 10px;
 }
-html[data-native-host="true"] .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(.fullscreen-phone-icon, .fullscreen-action-divider, .fullscreen-exit-hover-label) {
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-panel:is(:fullscreen, .is-tauri-fullscreen) :is(.fullscreen-phone-icon, .fullscreen-action-divider, .fullscreen-exit-hover-label) {
   display: none;
 }
-html[data-native-host="true"] .android-fullscreen-remote-button svg { width: 22px; height: 22px; }
-html[data-native-host="true"] .fullscreen-action-control:not(.is-qr-pinned) .fullscreen-remote-popover {
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .android-fullscreen-remote-button svg { width: 22px; height: 22px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) .fullscreen-action-control:not(.is-qr-pinned) .fullscreen-remote-popover {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -491,14 +491,14 @@ html[data-android-layout="portrait"] .android-my-page {
 .android-my-page h2 { margin: 0 0 16px; font-size: 24px; }
 
 /* Single random pick, with the same metadata as the search feed. */
-html[data-native-host="true"] #gatcha-candidate-card { width: min(100%, 280px); text-align: left; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-cover img { position: absolute; inset: 0; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-meta { padding: 0 8px; gap: 4px; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-title { font-size: 14px; line-height: 1.35; }
-html[data-native-host="true"] #gatcha-candidate-card .search-result-url { font-size: 11px; }
-html[data-native-host="true"][data-native-export-ready="true"] #history-export-button { display: inline-flex !important; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card { width: min(100%, 280px); text-align: left; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover img { position: absolute; inset: 0; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-meta { padding: 0 8px; gap: 4px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-title { font-size: 14px; line-height: 1.35; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-url { font-size: 11px; }
+html[data-native-host="true"]:not([data-host-platform="desktop"])[data-native-export-ready="true"] #history-export-button { display: inline-flex !important; }
 .android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
 .android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
 html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
@@ -634,11 +634,11 @@ html[data-android-layout="portrait"] .category-browser-tab-name {
 }
 html[data-android-layout="portrait"] .category-browser-tab.active { background: var(--accent-soft); border-color: var(--accent); }
 html[data-android-layout="portrait"] .category-browser-tab.active .category-browser-tab-name { color: var(--accent-deep); text-shadow: none; }
-html[data-native-host="true"][data-android-layout="portrait"] .app-shell .category-browser-tab-name {
+html[data-native-host="true"]:not([data-host-platform="desktop"])[data-android-layout="portrait"] .app-shell .category-browser-tab-name {
   -webkit-text-stroke: 0;
   text-shadow: none;
 }
-html[data-native-host="true"][data-android-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
+html[data-native-host="true"]:not([data-host-platform="desktop"])[data-android-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
 html[data-android-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
 html[data-android-layout="portrait"] .request-mode-head { padding: 8px 10px; }
 html[data-android-layout="portrait"] :is(.request-discover-view, .request-search-view) > .request-mode-panel { padding: 8px 10px; }
@@ -700,20 +700,20 @@ html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock
 /* A phone in landscape has desktop width but not desktop height. Keep the
    countdown and next songs visible without scaling the player/video itself. */
 @media (orientation: landscape) and (max-height: 600px) {
-  html[data-native-host="true"] .player-delay-card {
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-card {
     min-height: 0;
     padding: 12px 20px;
     gap: 8px;
   }
-  html[data-native-host="true"] .player-delay-head {
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-head {
     flex-shrink: 0;
     margin: 0;
     padding-right: 96px;
     gap: 8px;
   }
-  html[data-native-host="true"] .player-delay-heading { font-size: 22px; }
-  html[data-native-host="true"] .player-delay-countdown { width: 44px; height: 44px; font-size: 18px; }
-  html[data-native-host="true"] :is(.player-delay-now-row, .player-delay-list-row) {
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-heading { font-size: 22px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-countdown { width: 44px; height: 44px; font-size: 18px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(.player-delay-now-row, .player-delay-list-row) {
     flex-shrink: 0;
     grid-template-columns: 28px minmax(0, 1fr) minmax(60px, 15%) 48px;
     min-height: 46px;
@@ -721,17 +721,17 @@ html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock
     gap: 10px;
     border-radius: 14px;
   }
-  html[data-native-host="true"] :is(.player-delay-play-icon, .player-delay-list-index) { width: 26px; height: 26px; font-size: 14px; }
-  html[data-native-host="true"] .player-delay-song-title { font-size: 16px; line-height: 1.3; }
-  html[data-native-host="true"] .player-delay-list-row .player-delay-song-title { font-size: 14px; }
-  html[data-native-host="true"] :is(.player-delay-requester, .player-delay-duration) { font-size: 12px; }
-  html[data-native-host="true"] .player-delay-section-title { flex-shrink: 0; padding: 0; font-size: 15px; }
-  html[data-native-host="true"] .player-delay-list {
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(.player-delay-play-icon, .player-delay-list-index) { width: 26px; height: 26px; font-size: 14px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-song-title { font-size: 16px; line-height: 1.3; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-list-row .player-delay-song-title { font-size: 14px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(.player-delay-requester, .player-delay-duration) { font-size: 12px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-section-title { flex-shrink: 0; padding: 0; font-size: 15px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-list {
     flex: 1 1 0;
     gap: 6px;
     overflow-y: auto;
     pointer-events: auto;
     overscroll-behavior: contain;
   }
-  html[data-native-host="true"] .player-delay-total { flex-shrink: 0; margin: 0; padding: 3px 10px; font-size: 13px; }
+  html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-delay-total { flex-shrink: 0; margin: 0; padding: 3px 10px; font-size: 13px; }
 }

@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 class LoginFixture:
     def __init__(self):
+        self.extra_hosts = []
+        self.handle_request = None
         self.codes = [0]
         self.cookies = [
             "SESSDATA=synthetic-session; Domain=.bilibili.com; Path=/; Secure; HttpOnly",
@@ -48,7 +50,7 @@ class LoginFixture:
         openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
                 "-out", csr, "-subj", "/CN=passport.bilibili.com")
         extensions = root / "server.ext"
-        extensions.write_text("subjectAltName=DNS:passport.bilibili.com\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
+        extensions.write_text("subjectAltName=DNS:passport.bilibili.com" + "".join(",DNS:" + host for host in self.extra_hosts) + "\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
         openssl("x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key,
                 "-CAcreateserial", "-out", cert, "-days", "1", "-extfile", extensions)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -81,6 +83,8 @@ class LoginFixture:
                     self.connection.close()
 
             def do_GET(self):
+                if fixture.handle_request and fixture.handle_request(self):
+                    return
                 generate = self.path.startswith("/x/passport-login/web/qrcode/generate")
                 fixture.stages.append("generate" if generate else "poll")
                 hook = fixture.before_generate if generate else fixture.before_poll

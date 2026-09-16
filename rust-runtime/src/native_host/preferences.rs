@@ -73,7 +73,7 @@ impl CachePolicy {
             }
             if next.get(key).is_none() {
                 return Err(ApiError::invalid(
-                    "Android 仅支持原生下载器和列出的缓存设置",
+                    "此 Host 仅支持原生下载器和列出的缓存设置",
                 ));
             }
             next[key] = value.clone();

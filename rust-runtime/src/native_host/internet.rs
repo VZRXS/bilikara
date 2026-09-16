@@ -134,6 +134,20 @@ fn effect(
         return Ok(reply);
     };
     let kind = effect["kind"].as_str().unwrap_or_default();
+    if context.desktop
+        && matches!(
+            kind,
+            "submit_rating"
+                | "gatcha_pool_config_set"
+                | "gatcha_uid_preview"
+                | "gatcha_uid_add"
+                | "gatcha_refresh"
+                | "gatcha_favlist_preview"
+                | "gatcha_favlist_refresh"
+        )
+    {
+        return Err(desktop::unavailable());
+    }
     let page_fields = [
         ("q", "query"),
         ("limit", "limit"),
@@ -300,20 +314,27 @@ fn catalog_parts(id: &str) -> Result<(&str, u32), ApiError> {
 }
 
 fn add(
-    _context: &HostContext,
+    context: &HostContext,
     peer: &str,
     request_id: &str,
     effect: &Value,
 ) -> Result<Value, ApiError> {
     let (bvid, page) = catalog_parts(effect["catalog_item_id"].as_str().unwrap_or_default())?;
     let cookie = with_app(|app| {
-        api::queue_space(app.native_core_snapshot()?.playlist.len())?;
+        if !context.desktop {
+            api::queue_space(app.native_core_snapshot()?.playlist.len())?;
+        }
         Ok(app.native().cookie.clone())
     })?;
     let request: NativeVideoRequest = serde_json::from_value(json!({"url":format!("https://www.bilibili.com/video/{bvid}?p={page}"),"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
     let item = fetch_native_video(&request, &cookie).map_err(api::video_error)?;
     let result = with_app(|app| {
-        api::queue_space(app.native_core_snapshot()?.playlist.len())?;
+        if context.stop.load(Ordering::Acquire) {
+            return Err(ApiError::new(503, "stopped", "Host 已停止"));
+        }
+        if !context.desktop {
+            api::queue_space(app.native_core_snapshot()?.playlist.len())?;
+        }
         let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
         app.native_execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
             schema_version: 1,
@@ -324,7 +345,7 @@ fn add(
             now: now(),
         })
     })?;
-    if result["accepted"] == true {
+    if result["accepted"] == true && !context.desktop {
         catalog_append::enqueue(&item);
     }
     Ok(result)

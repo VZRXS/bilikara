@@ -13,6 +13,7 @@ mod tests;
 
 #[derive(Default)]
 pub(crate) struct NativeSession {
+    pub desktop: bool,
     pub cache_policy: crate::native_host::preferences::CachePolicy,
     pub cache_usage_bytes: u64,
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
@@ -311,7 +312,7 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":true,"native_android_beta":true,"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true});
+        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":!session.desktop,"catalog_write":!session.desktop,"maintenance":!session.desktop});
         value["app"] = json!({"version":"0.8.0-preview.0","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
@@ -328,9 +329,13 @@ impl AppState {
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
         if host {
-            value["app_update"] = session.updates.snapshot();
+            value["app_update"] = if session.desktop {
+                json!({"state":"unavailable","available":false,"message":"Desktop Rust preview: updater is unavailable"})
+            } else {
+                session.updates.snapshot()
+            };
         }
-        value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":"Android Alpha"});
+        value["bbdown"] = json!({"available":true,"download_source":"native","ready":true,"state":"ready","version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":if session.desktop {"Desktop Rust preview · Native only"} else {"Android Alpha"}});
         value["bbdown"]["logged_in"] = json!(!session.cookie.is_empty());
         // The shared status chip aggregates these two fields. No external FFmpeg
         // is installed or advertised; media normalization is in-process Rust.

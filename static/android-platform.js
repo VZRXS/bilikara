@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.document?.documentElement?.dataset?.nativeHost !== "true") return;
+  if (root.document?.documentElement?.dataset?.nativeHost !== "true" || root.document.documentElement.dataset.hostPlatform === "desktop") return;
   const bridge = root.BilikaraHostPlatform;
   if (!bridge?.postMessage) return;
   const pending = new Map();

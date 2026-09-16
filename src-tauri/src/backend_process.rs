@@ -45,6 +45,8 @@ struct ReadyEvent {
     port: u16,
     #[serde(rename = "baseUrl")]
     base_url: String,
+    #[serde(default, rename = "bootstrapUrl")]
+    bootstrap_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -52,12 +54,20 @@ pub(crate) struct BackendProcess {
     child: Arc<Mutex<Option<Child>>>,
     base_url: Arc<Mutex<Option<String>>>,
     shutdown_token: String,
+    host_cookie: Arc<Mutex<Option<String>>>,
     active_downloads: Arc<AtomicUsize>,
 }
 
 impl BackendProcess {
     pub(crate) fn backend_url(&self) -> Result<Option<String>, ()> {
         self.base_url.lock().map(|url| url.clone()).map_err(|_| ())
+    }
+
+    pub(crate) fn host_cookie(&self) -> Option<String> {
+        self.host_cookie
+            .lock()
+            .ok()
+            .and_then(|cookie| cookie.clone())
     }
 
     pub(crate) fn begin_download(&self) -> ActiveBackendDownloadGuard {
@@ -96,6 +106,9 @@ enum BackendStdoutLine {
 }
 
 fn resolve_backend_command() -> Result<BackendCommandResolution, PackagedBackendMissing> {
+    if let Some(directory) = std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR") {
+        return resolve_rust_preview(Path::new(&directory));
+    }
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     let current_dir = current_exe
@@ -104,6 +117,66 @@ fn resolve_backend_command() -> Result<BackendCommandResolution, PackagedBackend
     let packaged_macos =
         cfg!(target_os = "macos") && platform::is_macos_app_bundle_executable(&current_exe);
     resolve_backend_command_from(&current_exe, current_dir, packaged_macos)
+}
+
+// A single development opt-in. Packaged/default resolution is unchanged.
+fn resolve_rust_preview(
+    directory: &Path,
+) -> Result<BackendCommandResolution, PackagedBackendMissing> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root");
+    let executable = root
+        .join("rust-runtime/target/debug")
+        .join(if cfg!(windows) {
+            "bilikara-desktop-host.exe"
+        } else {
+            "bilikara-desktop-host"
+        });
+    if !directory.is_absolute() || !path_has_executable_bit(&executable) {
+        return Err(PackagedBackendMissing {
+            command_path: executable.clone(),
+            candidate_type: "desktop-rust-preview-requires-absolute-data-dir-and-built-binary",
+            candidate_exists: executable.is_file(),
+            candidate_executable: path_has_executable_bit(&executable),
+        });
+    }
+    Ok(BackendCommandResolution {
+        command: executable.to_string_lossy().into_owned(),
+        args: vec![
+            "--data-dir".into(),
+            directory.to_string_lossy().into_owned(),
+            "--static-dir".into(),
+            root.join("static").to_string_lossy().into_owned(),
+        ],
+        candidate_type: "desktop-rust-preview",
+    })
+}
+
+// Validate the optional capability handoff without logging its contents.
+fn ready_navigation(ready: &ReadyEvent) -> Option<(String, Option<String>)> {
+    let address = parse_local_http_url(&ready.base_url)?;
+    if address.connect_host != "127.0.0.1" && address.connect_host != "::1" {
+        return None;
+    }
+    let Some(bootstrap) = ready.bootstrap_url.as_ref() else {
+        return Some((ready.base_url.clone(), None));
+    };
+    if !window_origin_authorized(bootstrap, &ready.base_url) {
+        return None;
+    }
+    let url = tauri::Url::parse(bootstrap).ok()?;
+    let token = url.path().strip_prefix("/bootstrap/")?;
+    if url.query().is_some()
+        || url.fragment().is_some()
+        || token.len() != 43
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    Some((bootstrap.clone(), Some(format!("bilikara_native={token}"))))
 }
 
 fn resolve_backend_command_from(
@@ -364,7 +437,7 @@ pub(crate) fn window_origin_authorized(window_url: &str, backend_url: &str) -> b
         .is_some_and(|(window_origin, backend_origin)| window_origin == backend_origin)
 }
 
-fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
+pub(crate) fn request_backend_shutdown(base_url: &str, shutdown_token: &str, native: bool) -> bool {
     let Some(address) = parse_local_http_url(base_url) else {
         return false;
     };
@@ -380,10 +453,14 @@ fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
-    let _ = stream.shutdown(Shutdown::Write);
+    // Python accepts a write-half-close; Hyper treats it as disconnect before
+    // dispatch. Native HTTP uses Content-Length framing and Connection: close.
+    if !native {
+        let _ = stream.shutdown(Shutdown::Write);
+    }
     let mut response = Vec::new();
     let _ = stream.read_to_end(&mut response);
-    true
+    !native || response.starts_with(b"HTTP/1.1 200 ") || response.starts_with(b"HTTP/1.0 200 ")
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
@@ -557,10 +634,12 @@ pub(crate) fn launch(
     let stdout_tail = Arc::new(Mutex::new(BoundedOutputTail::default()));
     let stderr_tail = Arc::new(Mutex::new(BoundedOutputTail::default()));
 
+    let host_cookie = Arc::new(Mutex::new(None));
     app.manage(BackendProcess {
         child: child_arc.clone(),
         base_url: base_url.clone(),
         shutdown_token: shutdown_token.clone(),
+        host_cookie: host_cookie.clone(),
         active_downloads: Arc::new(AtomicUsize::new(0)),
     });
 
@@ -603,6 +682,13 @@ pub(crate) fn launch(
         let result = drain_backend_stdout(
             reader,
             |ready| {
+                let Some((navigation, cookie)) = ready_navigation(&ready) else {
+                    eprintln!("Rejected invalid backend readiness URL");
+                    return;
+                };
+                if let Ok(mut stored) = host_cookie.lock() {
+                    *stored = cookie;
+                }
                 ready_for_reader.store(true, Ordering::Release);
                 if let Some(startup_log) = startup_log_for_stdout.as_ref() {
                     let address = parse_local_http_url(&ready.base_url)
@@ -654,9 +740,10 @@ pub(crate) fn launch(
                 } else if let Some(startup_log) = startup_log_for_stdout.as_ref() {
                     startup_log.append("window_focus", "status=ok");
                 }
-                if let Err(error) =
-                    window_clone.eval(format!("window.location.replace('{}');", ready.base_url))
-                {
+                if let Err(error) = window_clone.eval(format!(
+                    "window.location.replace({});",
+                    serde_json::to_string(&navigation).expect("navigation URL")
+                )) {
                     eprintln!("Failed to navigate to backend: {}", error);
                     if let Some(startup_log) = startup_log_for_stdout.as_ref() {
                         startup_log
@@ -788,7 +875,9 @@ pub(crate) fn shutdown(state: &BackendProcess) {
         .and_then(|stored_url| stored_url.clone());
     let shutdown_requested = shutdown_url
         .as_deref()
-        .map(|url| request_backend_shutdown(url, &state.shutdown_token))
+        .map(|url| {
+            request_backend_shutdown(url, &state.shutdown_token, state.host_cookie().is_some())
+        })
         .unwrap_or(false);
     desktop_diagnostics::append_desktop_diagnostic(
         "desktop_shutdown",
@@ -823,6 +912,28 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::thread;
+
+    #[test]
+    fn desktop_preview_command_and_capability_handoff_are_explicit() {
+        assert!(resolve_rust_preview(Path::new("relative")).is_err());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let default =
+            resolve_backend_command_from(&root.join("unused/bilikara-app"), root, false).unwrap();
+        assert_eq!(default.command, "python");
+        assert_eq!(default.candidate_type, "development-python-script");
+        let token = "a".repeat(43);
+        let mut ready: ReadyEvent = serde_json::from_value(serde_json::json!({"event":"bilikara.ready","host":"127.0.0.1","port":4567,"baseUrl":"http://127.0.0.1:4567","bootstrapUrl":format!("http://127.0.0.1:4567/bootstrap/{token}")})).unwrap();
+        let (url, cookie) = ready_navigation(&ready).unwrap();
+        assert!(url.ends_with(&token));
+        assert_eq!(cookie, Some(format!("bilikara_native={token}")));
+        ready.bootstrap_url = Some(format!("http://192.168.1.2:4567/bootstrap/{token}"));
+        assert!(ready_navigation(&ready).is_none());
+        ready.bootstrap_url = None;
+        assert_eq!(
+            ready_navigation(&ready),
+            Some((ready.base_url.clone(), None))
+        );
+    }
 
     #[test]
     fn backend_urls_support_loopback_physical_ipv4_and_ipv6() {

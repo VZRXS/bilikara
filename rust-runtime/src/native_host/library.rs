@@ -403,9 +403,8 @@ fn refresh(
     let operation = network_operation("/api/gatcha/refresh", &json!({}), &cookie)?;
     let directory = context.directory.clone();
     let stop = context.stop.clone();
-    thread::Builder::new()
-        .name("native-library-refresh".into())
-        .spawn(move || {
+    context
+        .spawn("native-library-refresh", move || {
             let result = if stop.load(Ordering::Acquire) {
                 Err(ApiError::new(503, "stopped", "Host 已停止"))
             } else {
@@ -418,6 +417,9 @@ fn refresh(
 }
 
 pub(super) fn refresh_after_login(context: &HostContext, trigger: &'static str) {
+    if context.desktop {
+        return;
+    } // Bulk maintenance is deferred in desktop preview.
     // A library failure must not turn a successful login into a failed login.
     // No manual/global UI lock or cooldown for login/credential restore, as on
     // desktop. The internal I/O lease still prevents duplicate scans.

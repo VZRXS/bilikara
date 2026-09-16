@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
     execute_cache_runtime(CacheRuntimeCommand::Start {}).map_err(cache_error)?;
-    thread::Builder::new().name("native-host-cache".into()).spawn(move||{
+    context.clone().spawn("native-host-cache", move||{
         let mut fingerprint=String::new();
         let mut last_error=String::new();
         let mut last_cleanup=std::time::Instant::now();

@@ -38,6 +38,22 @@ pub(super) fn dispatch(
     body: Value,
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
+    if context.desktop {
+        if path.starts_with("/api/app/") {
+            with_app(|app| app.native_authorize(identity, true))?;
+        }
+        if method == Method::GET && path == "/api/app/update/status" {
+            return Ok(
+                json!({"state":"unavailable","available":false,"message":"Desktop Rust preview: updater is unavailable"}),
+            );
+        }
+        if (path.starts_with("/api/app/") && path != "/api/app/update/status")
+            || path.starts_with("/api/rating/")
+            || (method == Method::POST && path.starts_with("/api/gatcha/"))
+        {
+            return Err(desktop::unavailable());
+        }
+    }
     if method == Method::GET {
         if path == "/api/internet-remote/state" {
             return internet::route(context, identity, path, &body);
@@ -146,12 +162,17 @@ pub(super) fn dispatch(
             if snapshot.session_users.is_empty() {
                 return Err(ApiError::invalid("请先添加本场 KTV 用户"));
             }
-            queue_space(snapshot.playlist.len())?;
+            if !context.desktop {
+                queue_space(snapshot.playlist.len())?;
+            }
             Ok((app.native().cookie.clone(), snapshot.session_generation))
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
         let item = fetch_native_video(&request, &cookie).map_err(video_error)?;
         let snapshot = with_app(|app| {
+            if context.stop.load(Ordering::Acquire) {
+                return Err(ApiError::new(503, "stopped", "Host 已停止"));
+            }
             let requester =
                 app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
             let snapshot = app.native_core_snapshot()?;
@@ -164,7 +185,9 @@ pub(super) fn dispatch(
             }
             // Other phones can finish metadata I/O first. Recheck admission
             // under the same lock as AddItem, not only before the HTTP request.
-            queue_space(snapshot.playlist.len())?;
+            if !context.desktop {
+                queue_space(snapshot.playlist.len())?;
+            }
             let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
             let result = app.native_execute(AppStateRequest::AddItem {
                 schema_version: 1,
@@ -183,7 +206,9 @@ pub(super) fn dispatch(
             }
             app.native_snapshot(host)
         })?;
-        catalog_append::enqueue(&item);
+        if !context.desktop {
+            catalog_append::enqueue(&item);
+        }
         return Ok(snapshot);
     }
     if path == "/api/cache/retry" {

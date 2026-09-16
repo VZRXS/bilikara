@@ -111,7 +111,7 @@ fn format_pairs(pairs: &BTreeMap<String, String>, order: &[&str], extras: bool) 
 
 /// Desktop retains b_nut and case-insensitive names; the shared jar still
 /// restricts acceptance to cookies applicable to https://api.bilibili.com/.
-fn login_cookie(value: &str) -> Option<String> {
+pub(crate) fn login_cookie(value: &str) -> Option<String> {
     if value.len() > 16 * 1024 || value.contains(['\r', '\n', '\0']) {
         return None;
     }
@@ -180,7 +180,7 @@ fn insert_pair(pairs: &mut BTreeMap<String, String>, name: &str, value: &Value) 
         pairs.insert(cookie_name(name), text);
     }
 }
-fn read_cookie(path: &Path) -> String {
+pub(crate) fn read_cookie(path: &Path) -> String {
     let Ok(bytes) = fs::read(path) else {
         return String::new();
     };
@@ -200,7 +200,7 @@ fn remove_qr(data_path: &Path) {
 
 /// Called only under the existing status/generation lock. Network and waits
 /// never hold that lock. Publication cannot interleave with reset/logout.
-fn save_cookie(path: &Path, cookie: &str) -> Result<(), LoginError> {
+pub(crate) fn save_cookie(path: &Path, cookie: &str) -> Result<(), LoginError> {
     if login_cookie(cookie).as_deref() != Some(cookie) {
         return Err(storage_error());
     }

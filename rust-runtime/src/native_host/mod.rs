@@ -4,6 +4,7 @@ mod api;
 mod cache;
 mod catalog;
 mod catalog_append;
+pub mod desktop;
 mod diagnostics;
 mod exports;
 mod files;
@@ -95,6 +96,9 @@ pub(crate) struct HostContext {
     export_slots: Arc<Semaphore>,
     export_renderer: std::sync::OnceLock<RemoteExportRenderer>,
     port: u16,
+    desktop: bool,
+    shutdown_token: Option<String>,
+    workers: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 /// Dropping the handle stops the server and native cache pump. Keep it managed
@@ -102,10 +106,11 @@ pub(crate) struct HostContext {
 pub struct NativeHost {
     bootstrap_url: String,
     context: Arc<HostContext>,
+    server: Option<thread::JoinHandle<()>>,
 }
 impl NativeHost {
     pub fn start(directory: &Path, assets: AssetSource) -> Result<Self, String> {
-        start(directory, assets).map_err(|error| error.to_string())
+        start(directory, assets, false, None).map_err(|error| error.to_string())
     }
     pub fn bootstrap_url(&self) -> &str {
         &self.bootstrap_url
@@ -124,9 +129,41 @@ impl NativeHost {
         .map_err(|error| error.to_string())
     }
 }
+impl HostContext {
+    fn spawn(&self, name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|_| std::io::Error::other("worker lock"))?;
+        if self.stop.load(Ordering::Acquire) {
+            return Err(std::io::Error::other("Host stopped"));
+        }
+        // Retire completed handles so a long session does not accumulate them.
+        let mut live = Vec::new();
+        for worker in workers.drain(..) {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                live.push(worker);
+            }
+        }
+        *workers = live;
+        workers.push(thread::Builder::new().name(name.into()).spawn(work)?);
+        Ok(())
+    }
+}
 impl Drop for NativeHost {
     fn drop(&mut self) {
         self.context.stop.store(true, Ordering::Release);
+        // Listener, async requests/SSE/media, and blocking HTTP work retire first.
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+        let workers = std::mem::take(&mut *self.context.workers.lock().expect("worker lock"));
+        for worker in workers {
+            let _ = worker.join();
+        }
+        // AppState remains alive until the owner has dropped this handle.
     }
 }
 
@@ -154,7 +191,12 @@ pub(crate) fn qr_image(value: &str) -> Result<String, ApiError> {
     ))
 }
 
-fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> {
+fn start(
+    directory: &Path,
+    assets: AssetSource,
+    desktop: bool,
+    shutdown_token: Option<String>,
+) -> Result<NativeHost, ApiError> {
     let directory = directory
         .canonicalize()
         .map_err(|_| ApiError::new(503, "storage", "Host 私有目录不可用"))?;
@@ -185,7 +227,11 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
     let local = format!("http://127.0.0.1:{port}/remote?invite={invite}");
     let preferred = lan_urls.first().unwrap_or(&local).clone();
     let qr = qr_image(&preferred)?;
-    let saved_cookie = login::load(&directory)?;
+    let saved_cookie = if desktop {
+        login::load_desktop(&directory)?
+    } else {
+        login::load(&directory)?
+    };
     let saved_preferences = preferences::load(&directory)?;
     // Seed/migrate configured UP sources before any login-triggered refresh.
     library::initialize(&directory)?;
@@ -199,6 +245,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
             ));
         }
         let session = app.native();
+        session.desktop = desktop;
         session.host_token = host_token.clone();
         session.invite = invite;
         session.cookie = saved_cookie;
@@ -219,6 +266,9 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         export_slots: Arc::new(Semaphore::new(1)),
         export_renderer: std::sync::OnceLock::new(),
         port,
+        desktop,
+        shutdown_token,
+        workers: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -227,7 +277,7 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
         .build()
         .map_err(|_| ApiError::new(503, "runtime", "无法启动 Host 网络运行时"))?;
     let worker_context = context.clone();
-    thread::Builder::new()
+    let server = thread::Builder::new()
         .name("native-host-http".into())
         .spawn(move || {
             runtime.block_on(async move {
@@ -241,24 +291,46 @@ fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, ApiError> 
                     listener,
                     router.into_make_service_with_connect_info::<SocketAddr>(),
                 );
-                let _ = server
-                    .with_graceful_shutdown(async move {
-                        while !stop.load(Ordering::Acquire) {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                        }
-                    })
-                    .await;
+                let graceful_stop = stop.clone();
+                let mut serving = tokio::spawn(async move {
+                    server
+                        .with_graceful_shutdown(async move {
+                            while !graceful_stop.load(Ordering::Acquire) {
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                        })
+                        .await
+                });
+                while !stop.load(Ordering::Acquire) && !serving.is_finished() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                // Give completed responses a bounded drain. A WebView can keep
+                // an SSE/media/body connection open after its window closes.
+                // Runtime drop cancels those async tasks and waits for blocking
+                // requests; the owner joins this thread before shutting AppState.
+                if tokio::time::timeout(Duration::from_secs(2), &mut serving)
+                    .await
+                    .is_err()
+                {
+                    serving.abort();
+                    let _ = serving.await;
+                }
             })
         })
         .map_err(|_| ApiError::new(503, "runtime", "无法创建 Host 服务线程"))?;
+    let mut host = NativeHost {
+        bootstrap_url: format!("http://127.0.0.1:{port}/bootstrap/{host_token}"),
+        context: context.clone(),
+        server: Some(server),
+    };
     cache::start_pump(context.clone())?;
     if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
         library::refresh_after_login(&context, "credential_restore");
     }
-    Ok(NativeHost {
-        bootstrap_url: format!("http://127.0.0.1:{port}/bootstrap/{host_token}"),
-        context,
-    })
+    if desktop {
+        host.install_desktop_export()?;
+    }
+    Ok(host)
 }
 
 fn json_response(status: u16, value: Value) -> Response {
@@ -354,6 +426,9 @@ async fn handle_inner(
 ) -> Result<Response, ApiError> {
     // Check DNS-rebinding/port constraints even for the capability entry pages.
     validate_host(request.headers(), context.port)?;
+    if context.stop.load(Ordering::Acquire) {
+        return Err(ApiError::new(503, "stopped", "Host 已停止"));
+    }
     let method = request.method().clone();
     if !matches!(method, Method::GET | Method::HEAD | Method::POST) {
         return Err(ApiError::new(405, "method", "不支持此请求方式"));
@@ -401,6 +476,21 @@ async fn handle_inner(
             200,
             json!({"ok":true,"status":"ready","backend":"rust"}),
         ));
+    }
+    if path == "/api/app/shutdown" && method == Method::POST && context.desktop {
+        if !identity.loopback
+            || context.shutdown_token.as_deref().is_none_or(|expected| {
+                request
+                    .headers()
+                    .get("x-bilikara-shutdown-token")
+                    .and_then(|v| v.to_str().ok())
+                    != Some(expected)
+            })
+        {
+            return Err(ApiError::new(403, "shutdown", "关闭凭证无效"));
+        }
+        context.stop.store(true, Ordering::Release);
+        return Ok(json_response(200, json!({"ok":true})));
     }
     let host = with_app(|app| app.native_authorize(&identity, false))?;
     if path == "/api/events" && method == Method::GET {

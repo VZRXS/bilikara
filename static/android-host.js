@@ -6,6 +6,42 @@
   if (root.dataset.nativeHost !== "true") return;
 
   const byId = (id) => document.getElementById(id);
+  const sessionChoice = byId("android-session-choice");
+  let sessionChoiceBusy = false;
+  function syncSessionChoice() {
+    const pending = Boolean(state.data?.session_flags?.startup_choice_pending);
+    if (pending && !sessionChoice.open) sessionChoice.showModal();
+    else if (!pending && sessionChoice.open) sessionChoice.close();
+    return pending;
+  }
+  sessionChoice.addEventListener("cancel", event => event.preventDefault());
+  sessionChoice.addEventListener("click", async event => {
+    const button = event.target.closest("[data-session-choice]");
+    if (!button || sessionChoiceBusy) return;
+    sessionChoiceBusy = true;
+    const buttons = Array.from(sessionChoice.querySelectorAll("button"));
+    const disabled = buttons.map(item => item.disabled);
+    const label = button.textContent;
+    buttons.forEach(item => { item.disabled = true; });
+    button.setAttribute("aria-busy", "true");
+    button.textContent = t("remoteIdentity.saving");
+    byId("android-session-choice-error").textContent = "";
+    try {
+      await apiPostStateSnapshot("/api/session/startup-choice", {choice:button.dataset.sessionChoice});
+      render();
+      syncSessionChoice();
+    } catch (error) {
+      byId("android-session-choice-error").textContent = error.message;
+    } finally {
+      buttons.forEach((item,index) => { item.disabled = disabled[index]; });
+      button.removeAttribute("aria-busy");
+      button.textContent = label;
+      sessionChoiceBusy = false;
+    }
+  });
+  // Restart choice is shared native persistence UI; Android navigation is not.
+  window.BilikaraNativeSession = {syncSessionChoice};
+  if (root.dataset.hostPlatform === "desktop") return;
   const sessionHelp = document.querySelector('[data-i18n="session.help"]');
   if (sessionHelp) sessionHelp.dataset.i18n = "mobile.sessionHelp";
   let selectedSessionUser = "";
@@ -75,39 +111,6 @@
     if (event.target.closest("#session-user-list") || userActionBusy || !selectedSessionUser) return;
     selectedSessionUser = "";
     syncSessionUsers();
-  });
-  const sessionChoice = byId("android-session-choice");
-  let sessionChoiceBusy = false;
-  function syncSessionChoice() {
-    const pending = Boolean(state.data?.session_flags?.startup_choice_pending);
-    if (pending && !sessionChoice.open) sessionChoice.showModal();
-    else if (!pending && sessionChoice.open) sessionChoice.close();
-    return pending;
-  }
-  sessionChoice.addEventListener("cancel", event => event.preventDefault());
-  sessionChoice.addEventListener("click", async event => {
-    const button = event.target.closest("[data-session-choice]");
-    if (!button || sessionChoiceBusy) return;
-    sessionChoiceBusy = true;
-    const buttons = Array.from(sessionChoice.querySelectorAll("button"));
-    const disabled = buttons.map(item => item.disabled);
-    const label = button.textContent;
-    buttons.forEach(item => { item.disabled = true; });
-    button.setAttribute("aria-busy", "true");
-    button.textContent = t("remoteIdentity.saving");
-    byId("android-session-choice-error").textContent = "";
-    try {
-      await apiPostStateSnapshot("/api/session/startup-choice", {choice:button.dataset.sessionChoice});
-      render();
-      syncSessionChoice();
-    } catch (error) {
-      byId("android-session-choice-error").textContent = error.message;
-    } finally {
-      buttons.forEach((item,index) => { item.disabled = disabled[index]; });
-      button.removeAttribute("aria-busy");
-      button.textContent = label;
-      sessionChoiceBusy = false;
-    }
   });
   const dock = byId("android-host-dock");
   const tools = byId("android-page-tools");

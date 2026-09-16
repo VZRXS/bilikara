@@ -35,7 +35,11 @@ const searchResultItemByElement = new WeakMap();
 let searchDetailController = null;
 
 function openExternalUrl(url) {
-  if (document.documentElement?.dataset?.nativeHost === "true") {
+  if (document.documentElement?.dataset?.hostPlatform === "desktop") {
+    setAppMessage("Desktop Rust preview: external-link integration is unavailable.");
+    return;
+  }
+  if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
     // External-link integration is deferred; never navigate the player away.
     setAppMessage("Android Beta：请在另一台设备打开链接，保持本机播放页面在前台。");
     return;
@@ -1322,6 +1326,7 @@ function isTauriWebKitRuntime() {
 function isAndroidNativePlaybackRuntime() {
   return typeof document !== "undefined"
     && document.documentElement?.dataset?.nativeHost === "true"
+    && document.documentElement?.dataset?.hostPlatform !== "desktop"
     && typeof navigator !== "undefined"
     && /Android/i.test(navigator.userAgent || "");
 }
@@ -1381,7 +1386,7 @@ function canTogglePlayerFullscreen() {
 }
 
 function tauriInvoke() {
-  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.core?.invoke || null;
 }
 
@@ -3105,7 +3110,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
 }
 
 function tauriEventListen() {
-  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true") return null;
+  if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.event?.listen || null;
 }
 
@@ -5201,7 +5206,7 @@ function initializeNativeMaximizeRegion(appWindow) {
 }
 
 function initializeWindowChrome() {
-  if (document.documentElement?.dataset?.nativeHost === "true") return;
+  if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return;
   const tauriWindowApi = window.__TAURI__?.window;
   const appWindow = tauriWindowApi?.getCurrentWindow?.();
   const userAgent = String(navigator.userAgent || "");
@@ -9300,7 +9305,7 @@ function disconnectClient() {
 }
 
 function render() {
-  if (window.BilikaraAndroidHost?.syncSessionChoice()) return;
+  if (window.BilikaraNativeSession?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
     return;
@@ -17551,7 +17556,7 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
-  if (document.documentElement?.dataset?.nativeHost === "true") {
+  if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
     if (!window.BilikaraAndroidExport) throw new Error("Android 系统保存功能不可用，请更新系统 WebView 后重试");
     return window.BilikaraAndroidExport.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize);
   }
@@ -17867,6 +17872,7 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
 }
 
 function scheduleStartupAppUpdateCheck() {
+  if (state.data?.capabilities?.app_update === false) return false;
   if (globalThis.document?.documentElement?.dataset?.nativeHost === "true" && !globalThis.BilikaraAndroidPlatform) return false;
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
@@ -21488,7 +21494,7 @@ async function startPolling() {
 }
 
 async function restartHostPlaybackAfterBootstrap() {
-  if (!state.hostPlaybackBootstrapRestartPending || !state.hasValidStateResponse) {
+  if (!state.hostPlaybackBootstrapRestartPending || !state.hasValidStateResponse || state.data?.session_flags?.startup_choice_pending) {
     return false;
   }
   state.hostPlaybackBootstrapRestartPending = false;

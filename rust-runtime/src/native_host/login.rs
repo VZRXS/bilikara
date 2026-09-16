@@ -41,7 +41,11 @@ fn run(context: &HostContext, generation: u64) -> Result<(), ApiError> {
                 .map_err(|e| login_service::LoginError::new(e.status, &e.code, e.message))
         },
         record,
-        canonical_cookie,
+        if context.desktop {
+            crate::desktop_login::login_cookie
+        } else {
+            canonical_cookie
+        },
     );
     match result {
         Ok(Some(cookie)) => finish(context, generation, Ok(cookie)),
@@ -76,6 +80,30 @@ fn regular_or_missing(path: &Path) -> Result<(), ApiError> {
         Ok(meta) if meta.is_file() => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         _ => Err(io_error()),
+    }
+}
+
+pub(super) fn load_desktop(directory: &Path) -> Result<String, ApiError> {
+    let path = directory.join("BBDown.data");
+    regular_or_missing(&path)?;
+    if path.metadata().is_ok_and(|m| m.len() > MAX_LOGIN_BYTES) {
+        return Err(io_error());
+    }
+    Ok(crate::desktop_login::read_cookie(&path))
+}
+fn save_for_host(context: &HostContext, cookie: &str) -> Result<(), ApiError> {
+    if !context.desktop {
+        return save(&context.directory, cookie);
+    }
+    let path = context.directory.join("BBDown.data");
+    regular_or_missing(&path)?;
+    if cookie.is_empty() {
+        if path.exists() {
+            fs::remove_file(path).map_err(|_| io_error())?;
+        }
+        Ok(())
+    } else {
+        crate::desktop_login::save_cookie(&path, cookie).map_err(Into::into)
     }
 }
 
@@ -150,9 +178,9 @@ pub(super) fn begin(context: Arc<HostContext>, identity: &Identity) -> Result<Va
     })?;
     if let Some(generation) = generation {
         let context = context.clone();
-        if thread::Builder::new()
-            .name("native-bilibili-login".into())
-            .spawn(move || {
+        if context
+            .clone()
+            .spawn("native-bilibili-login", move || {
                 if let Err(error) = run(&context, generation) {
                     let _ = finish(&context, generation, Err(error));
                 }
@@ -181,7 +209,7 @@ pub(super) fn begin(context: Arc<HostContext>, identity: &Identity) -> Result<Va
 pub(super) fn logout(context: &HostContext, identity: &Identity) -> Result<Value, ApiError> {
     with_app(|app| {
         app.native_authorize(identity, true)?;
-        save(&context.directory, "")?;
+        save_for_host(context, "")?;
         let session = app.native();
         session.login_generation = None;
         session.login.reset_bilibili_login();
@@ -233,7 +261,7 @@ fn finish(
             return Ok(false);
         }
         let result = result.and_then(|cookie| {
-            save(&context.directory, &cookie)?;
+            save_for_host(context, &cookie)?;
             Ok(cookie)
         });
         let mut diagnostic = LoginDiagnostic::new(generation, "finish");
@@ -298,6 +326,9 @@ mod tests {
             export_slots: Arc::new(Semaphore::new(1)),
             export_renderer: std::sync::OnceLock::new(),
             port: 0,
+            desktop: false,
+            shutdown_token: None,
+            workers: std::sync::Mutex::new(Vec::new()),
         };
         let generation = with_app(|app| {
             let session = app.native();

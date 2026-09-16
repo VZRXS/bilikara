@@ -297,6 +297,7 @@ fn build_backend_http_request(
 fn request_backend_download(
     base_url: &str,
     request: &ValidatedBackendDownloadRequest,
+    host_cookie: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let Some(address) = parse_local_http_url(base_url) else {
         return Err("本机后端地址无效".to_string());
@@ -315,7 +316,17 @@ fn request_backend_download(
         .set_read_timeout(Some(Duration::from_secs(180)))
         .map_err(|error| format!("无法设置导出读取超时：{error}"))?;
 
-    let request_bytes = build_backend_http_request(&address, request);
+    let mut request_bytes = build_backend_http_request(&address, request);
+    if let Some(cookie) = host_cookie {
+        // Cookie comes only from the validated backend readiness capability,
+        // never from frontend arguments. Existing origin/path admission applies.
+        let at = request_bytes
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or("Invalid request")?
+            + 2;
+        request_bytes.splice(at..at, format!("Cookie: {cookie}\r\n").bytes());
+    }
     stream
         .write_all(&request_bytes)
         .map_err(|error| format!("发送导出请求失败：{error}"))?;
@@ -323,7 +334,9 @@ fn request_backend_download(
         "[tauri-export] transport=request_written method={} endpoint={}",
         request.method, request.path
     );
-    let _ = stream.shutdown(Shutdown::Write);
+    if host_cookie.is_none() {
+        let _ = stream.shutdown(Shutdown::Write);
+    }
 
     let mut raw_response = Vec::new();
     (&mut stream)
@@ -623,6 +636,7 @@ pub(crate) async fn save_backend_download(
     });
 
     let endpoint = validated.path.clone();
+    let host_cookie = state.host_cookie();
     let worker_endpoint = endpoint.clone();
     // Acquire before scheduling the worker, then move the lease into it. This
     // keeps WindowEvent::Destroyed from shutting down Python before the export
@@ -636,31 +650,32 @@ pub(crate) async fn save_backend_download(
         // Stage 3: request_backend
         let t_req = Instant::now();
         log_native_export_stage("request_backend", &worker_endpoint, "");
-        let raw_response = match request_backend_download(&base_url, &validated) {
-            Ok(raw) => {
-                worker_timings.push(StageTiming {
-                    stage: "request_backend".to_string(),
-                    elapsed_ms: t_req.elapsed().as_millis() as u64,
-                });
-                raw
-            }
-            Err(error) => {
-                worker_timings.push(StageTiming {
-                    stage: "request_backend".to_string(),
-                    elapsed_ms: t_req.elapsed().as_millis() as u64,
-                });
-                return Err(Box::new((
-                    "request_backend",
-                    "REQUEST_BACKEND_FAILED",
-                    staged_error("request_backend", error),
-                    None,
-                    None,
-                    None,
-                    None,
-                    worker_timings,
-                )));
-            }
-        };
+        let raw_response =
+            match request_backend_download(&base_url, &validated, host_cookie.as_deref()) {
+                Ok(raw) => {
+                    worker_timings.push(StageTiming {
+                        stage: "request_backend".to_string(),
+                        elapsed_ms: t_req.elapsed().as_millis() as u64,
+                    });
+                    raw
+                }
+                Err(error) => {
+                    worker_timings.push(StageTiming {
+                        stage: "request_backend".to_string(),
+                        elapsed_ms: t_req.elapsed().as_millis() as u64,
+                    });
+                    return Err(Box::new((
+                        "request_backend",
+                        "REQUEST_BACKEND_FAILED",
+                        staged_error("request_backend", error),
+                        None,
+                        None,
+                        None,
+                        None,
+                        worker_timings,
+                    )));
+                }
+            };
 
         // Stage 4: validate_response
         let t_val = Instant::now();
@@ -988,6 +1003,109 @@ mod tests {
         .into_bytes();
         response.extend_from_slice(body);
         response
+    }
+
+    #[test]
+    #[ignore = "build rust-runtime bilikara-desktop-host with native-host first; run explicitly for desktop preview"]
+    fn desktop_rust_entry_uses_authenticated_tauri_export_transport() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "tauri-native-export-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let executable = root
+            .join("rust-runtime/target/debug")
+            .join(if cfg!(windows) {
+                "bilikara-desktop-host.exe"
+            } else {
+                "bilikara-desktop-host"
+            });
+        let mut child = Command::new(executable)
+            .args([
+                "--data-dir",
+                directory.to_str().unwrap(),
+                "--static-dir",
+                root.join("static").to_str().unwrap(),
+            ])
+            .env("BILIKARA_SHUTDOWN_TOKEN", "synthetic-transport-stop")
+            .env_remove("BILIKARA_DESKTOP_PID")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("build desktop Rust preview entry first");
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        let base = ready["baseUrl"].as_str().unwrap();
+        let cookie = format!(
+            "bilikara_native={}",
+            ready["bootstrapUrl"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap()
+        );
+        let result = std::panic::catch_unwind(|| {
+            let mut user = validate_backend_download_request(&download_request(
+                "/api/playlist/export?format=csv&source=played",
+                None,
+                Some("desktop-export-test"),
+            ))
+            .unwrap();
+            // Same private transport, with setup through the real session route.
+            user.path = "/api/session-users/add".into();
+            user.method = "POST";
+            user.body = r#"{"name":"Export Fixture"}"#.into();
+            assert_eq!(
+                parse_backend_download_response(
+                    request_backend_download(base, &user, Some(&cookie)).unwrap()
+                )
+                .unwrap()
+                .status,
+                200
+            );
+            for format in ["csv", "image"] {
+                let request = validate_backend_download_request(&download_request(
+                    &format!("/api/playlist/export?format={format}&source=played&page_size=50"),
+                    None,
+                    Some("desktop-export-test"),
+                ))
+                .unwrap();
+                let response = parse_backend_download_response(
+                    request_backend_download(base, &request, Some(&cookie)).unwrap(),
+                )
+                .unwrap();
+                let validated = validate_backend_download_response(&response, &request).unwrap();
+                assert_eq!(
+                    validated.required_extension,
+                    if format == "csv" { "csv" } else { "png" }
+                );
+                assert!(!response.body.is_empty());
+            }
+        });
+        let stopped = crate::backend_process::request_backend_shutdown(
+            base,
+            "synthetic-transport-stop",
+            true,
+        );
+        if !stopped {
+            let _ = child.kill();
+        }
+        assert!(child.wait().unwrap().success());
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(stopped);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
     }
 
     #[test]
@@ -1460,7 +1578,7 @@ mod tests {
             Some("client-1"),
         ))
         .expect("request");
-        let error = request_backend_download(&format!("http://127.0.0.1:{port}"), &request)
+        let error = request_backend_download(&format!("http://127.0.0.1:{port}"), &request, None)
             .expect_err("closed port must fail");
         assert!(error.starts_with("无法连接本机后端："));
     }
@@ -1486,7 +1604,7 @@ mod tests {
             Some("client-1"),
         ))
         .expect("request");
-        let raw = request_backend_download(&format!("http://127.0.0.1:{port}"), &request)
+        let raw = request_backend_download(&format!("http://127.0.0.1:{port}"), &request, None)
             .expect("download response");
         let response = parse_backend_download_response(raw).expect("parse response");
         assert_eq!(

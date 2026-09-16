@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.document?.documentElement?.dataset?.nativeHost !== "true") return;
+  if (root.document?.documentElement?.dataset?.nativeHost !== "true" || root.document.documentElement.dataset.hostPlatform === "desktop") return;
   const bridge = root.BilikaraHostExport;
   if (!bridge?.postMessage) return;
   root.document.documentElement.dataset.nativeExportReady = "true";
