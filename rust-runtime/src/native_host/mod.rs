@@ -98,6 +98,7 @@ pub(crate) struct HostContext {
     export_renderer: std::sync::OnceLock<RemoteExportRenderer>,
     port: u16,
     desktop: bool,
+    bbdown: Option<crate::cache_runtime::bbdown::Executable>,
     shutdown_token: Option<String>,
     workers: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -234,6 +235,11 @@ fn start(
         login::load(&directory)?
     };
     let saved_preferences = preferences::load(&directory)?;
+    let bbdown = if desktop {
+        crate::cache_runtime::bbdown::Executable::discover(&directory)
+    } else {
+        None
+    };
     // Seed/migrate configured UP sources before any login-triggered refresh.
     library::initialize(&directory)?;
     with_app(|app| {
@@ -247,6 +253,7 @@ fn start(
         }
         let session = app.native();
         session.desktop = desktop;
+        session.bbdown_available = bbdown.is_some();
         session.host_token = host_token.clone();
         session.invite = invite;
         session.cookie = saved_cookie;
@@ -269,6 +276,7 @@ fn start(
         port,
         desktop,
         shutdown_token,
+        bbdown,
         workers: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -57,7 +57,9 @@ pub(super) fn markdown(
         Ok((
             app.native_core_snapshot()?,
             app.native_diagnostics(),
-            app.native().cache_policy.snapshot(),
+            app.native()
+                .cache_policy
+                .snapshot_with(context.desktop && context.bbdown.is_some()),
         ))
     })?;
     // Never include the login checkpoint, access URLs, tokens, or raw HTTP headers.

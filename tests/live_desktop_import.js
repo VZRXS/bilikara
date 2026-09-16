@@ -19,6 +19,7 @@ let stderr = "";
 async function launch() {
   server = spawn(executable, ["--import-from", source, "--data-dir", directory, "--static-dir", path.resolve("static"), "--port", "0", "--headless", "--no-browser"], {
     env: {...process.env, PATH: applicationPath, HOME: path.join(temporary,"home"),
+      BB_DOWN_PATH:process.env.BILIKARA_BBDOWN_ACTIVE || path.join(temporary,"unavailable-BBDown"),
       BILIKARA_HOME:path.join(temporary,"unused-default-home"), BILIKARA_BILIBILI_COOKIE:"",
       HTTP_PROXY:proxyUrl, HTTPS_PROXY:proxyUrl, ALL_PROXY:proxyUrl,
       http_proxy:proxyUrl, https_proxy:proxyUrl, all_proxy:proxyUrl,
@@ -96,7 +97,7 @@ async function openHost(ready) {
   assert.equal(missingArgument.status,1);await assert.rejects(fs.stat(directory));
   proxy=require("node:http").createServer((request,response)=>{blockedRequests.push(request.method);response.writeHead(503);response.end();});
   proxy.on("connect",(request,socket)=>{blockedRequests.push("CONNECT");socket.end("HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n");});
-  proxy.listen(0,"127.0.0.1");await once(proxy,"listening");proxyUrl=process.env.BILIKARA_CACHE_POLICY_FIXTURE ? process.env.HTTPS_PROXY : `http://127.0.0.1:${proxy.address().port}`;
+  proxy.listen(0,"127.0.0.1");await once(proxy,"listening");proxyUrl=(process.env.BILIKARA_CACHE_POLICY_FIXTURE || process.env.BILIKARA_BBDOWN_FIXTURE) ? process.env.HTTPS_PROXY : `http://127.0.0.1:${proxy.address().port}`;
   let ready=await launch();
   const unauthenticated = await fetch(ready.baseUrl+"/api/state");
   assert.equal(unauthenticated.status,403);
@@ -151,9 +152,20 @@ async function openHost(ready) {
       restart:async(beforeNavigate)=>{await host.close();await stop(ready);ready=await launch();if(beforeNavigate)await beforeNavigate(ready);host=await openHost(ready);},
       inspectPersisted:()=>fs.readFile(path.join(directory,"native-preferences.json"),"utf8")});
   }
+  if(process.env.BILIKARA_BBDOWN_FIXTURE) {
+    await require("./desktop_bbdown_case.js")({api,okay,capture,browser,evidence,directory,getPage:()=>page,
+      restart:async()=>{if(server.exitCode===null){await host.close();await stop(ready);}ready=await launch();host=await openHost(ready);},
+      shutdown:async()=>{await host.close();await stop(ready);},getPid:()=>server.pid});
+    // The case verifies active-child shutdown and restarts for the common receipt.
+  }
   await host.close();await stop(ready);
   source+="-preserved";assert.deepEqual(await sourceBytes(),original);
   assert.deepEqual(errors,[]);assert.deepEqual(blockedRequests,[],"Import/restart must not trigger remote catalog, credential or media requests");
   await fs.writeFile(path.join(evidence,"import-summary.json"),JSON.stringify({passed:true,actualRustEntry:true,pythonBackend:false,applicationPathEmpty:true,sourceBytesUnchanged:true,imports:1,restarts:1,queueMutation:true,settingsMutation:true,credentialRestored:true,archives:true,exports:["csv","png"],unavailableSource:"bbdown",reimportSkippedWithAbsentSource:true,pageErrors:errors,externalRequests:blockedRequests.length},null,2));
   console.log("Actual desktop import, exports, native mutations and no-reimport restart passed");
-})().catch(async error=>{console.error(error,stderr);if(page)await capture("failure.png",page).catch(()=>{});process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}if(proxy)proxy.close();if(temporary)await fs.rm(temporary,{recursive:true,force:true});});
+})().catch(async error=>{console.error(error,stderr);if(process.env.BILIKARA_BBDOWN_FIXTURE){
+    if(page)await fs.writeFile(path.join(evidence,"failure-state.json"),JSON.stringify(await api("/api/state"),null,2)).catch(()=>{});
+    await fs.copyFile(path.join(directory,"logs/native-cache.log"),path.join(evidence,"failure-cache.log")).catch(()=>{});
+    const fixtureRoot=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
+    if(fixtureRoot)for(const file of await fs.readdir(fixtureRoot))if(file.endsWith(".started"))await fs.copyFile(path.join(fixtureRoot,file),path.join(evidence,file));
+  }if(page)await capture("failure.png",page).catch(()=>{});process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}if(proxy)proxy.close();if(temporary)await fs.rm(temporary,{recursive:true,force:true});});

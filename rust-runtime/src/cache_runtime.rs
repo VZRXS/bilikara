@@ -26,6 +26,36 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "native-host")]
+pub(crate) mod bbdown;
+
+/// Captured at Host admission. The wire/FFI always defaults to Native and cannot
+/// supply a program path or select a desktop executor.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum Executor {
+    #[default]
+    Native,
+    #[cfg(feature = "native-host")]
+    Bbdown(bbdown::Executable),
+}
+
+impl Executor {
+    fn source(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            #[cfg(feature = "native-host")]
+            Self::Bbdown(_) => "bbdown",
+        }
+    }
+    fn attempts(&self) -> u32 {
+        match self {
+            Self::Native => TRACK_ATTEMPTS,
+            #[cfg(feature = "native-host")]
+            Self::Bbdown(_) => 1,
+        }
+    }
+}
+
 const MAX_CACHE_JOBS: usize = 256;
 const MAX_JOB_PAGES: usize = 32;
 const MAX_EVENTS: usize = 4096;
@@ -59,6 +89,8 @@ pub struct ExistingAudioVariant {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheJobSpec {
+    #[serde(skip)]
+    pub(crate) executor: Executor,
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub item_id: String,
@@ -1051,7 +1083,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                     job.cache_attempt_token,
                     &item_id,
                     "started",
-                    json!({"tracks": initial_tracks}),
+                    json!({"tracks": initial_tracks,"source":job.spec.executor.source()}),
                 );
                 break (job, cancel);
             }
@@ -1237,6 +1269,12 @@ fn run_track(
     track: &TrackSpec,
     cancel: &Arc<AtomicBool>,
 ) -> Result<TrackResult, CacheRuntimeError> {
+    #[cfg(feature = "native-host")]
+    if let Executor::Bbdown(executable) = &job.spec.executor {
+        // BBDown owns its internal transfer retry budget. Do not wrap it in
+        // Native's ten-attempt resolver/download loop.
+        return bbdown::run_track(executable, shared, job, track, cancel);
+    }
     let mut last_error = CacheRuntimeError::new("download", "track download failed");
     for attempt in 1..=TRACK_ATTEMPTS {
         if cancel.load(Ordering::Acquire) {
@@ -1322,62 +1360,21 @@ fn run_track(
             continue;
         }
         emit_track_progress(shared, job, track, "validating", attempt, (0, 0));
-        let normalized = crate::media_routing::normalize(
-            &MediaNormalizeRequest {
-                schema_version: 1,
-                source: raw_path.clone(),
-                destination: normalized_path.clone(),
-                expected_kind: track.kind,
-            },
-            cancel,
-            &|| false,
-        );
-        let diagnostic = match &normalized {
-            Ok(result) => Some(&result.diagnostic),
-            Err(error) => error.diagnostic.as_ref(),
-        };
-        if let Some(diagnostic) = diagnostic {
-            append_log(
-                &job.spec.log_file,
-                &format!("media_diagnostic: {}", json!(diagnostic)),
-            );
-        }
+        let normalized = normalize_track(&job.spec, track, &raw_path, &normalized_path, cancel);
         let _ = fs::remove_file(&raw_path);
         match normalized {
-            Ok(result) => {
-                let result = result.media;
-                if result.output.duration_seconds < 1.0 {
-                    last_error = CacheRuntimeError::new(
-                        "invalid_media",
-                        format!("{} has an invalid duration", track.label),
-                    );
-                    let _ = fs::remove_dir_all(&attempt_dir);
-                } else if track.kind == ExpectedMediaKind::Video
-                    && track.page.duration_seconds.is_some_and(|expected| {
-                        result.output.duration_seconds + duration_tolerance(expected) < expected
-                    })
-                {
-                    last_error = CacheRuntimeError::new(
-                        "invalid_media",
-                        format!("{} is shorter than expected", track.label),
-                    );
-                    let _ = fs::remove_dir_all(&attempt_dir);
-                } else {
-                    let size = result.output.file_bytes;
-                    emit_track_progress(shared, job, track, "ready", attempt, (size, size));
-                    return Ok(TrackResult {
-                        spec: track.clone(),
-                        temporary_path: normalized_path,
-                        final_name,
-                        probe: result.output,
-                    });
-                }
+            Ok(probe) => {
+                let size = probe.file_bytes;
+                emit_track_progress(shared, job, track, "ready", attempt, (size, size));
+                return Ok(TrackResult {
+                    spec: track.clone(),
+                    temporary_path: normalized_path,
+                    final_name,
+                    probe,
+                });
             }
             Err(error) => {
-                last_error = CacheRuntimeError::new(
-                    error.kind,
-                    format!("{}: {}", track.label, error.message),
-                );
+                last_error = error;
                 let _ = fs::remove_dir_all(&attempt_dir);
             }
         }
@@ -1400,6 +1397,60 @@ fn run_track(
         track.label, TRACK_ATTEMPTS, last_error.message
     );
     Err(last_error)
+}
+
+/// Shared validation and normalization for both acquisition paths. Publication
+/// and duration/track contracts are identical regardless of executor.
+fn normalize_track(
+    job: &CacheJobSpec,
+    track: &TrackSpec,
+    source: &Path,
+    destination: &Path,
+    cancel: &AtomicBool,
+) -> Result<MediaProbe, CacheRuntimeError> {
+    let normalized = crate::media_routing::normalize(
+        &MediaNormalizeRequest {
+            schema_version: 1,
+            source: source.to_path_buf(),
+            destination: destination.to_path_buf(),
+            expected_kind: track.kind,
+        },
+        cancel,
+        &|| false,
+    );
+    let diagnostic = match &normalized {
+        Ok(result) => Some(&result.diagnostic),
+        Err(error) => error.diagnostic.as_ref(),
+    };
+    if let Some(diagnostic) = diagnostic {
+        append_log(
+            &job.log_file,
+            &format!("media_diagnostic: {}", json!(diagnostic)),
+        );
+    }
+    let probe = normalized
+        .map_err(|error| {
+            CacheRuntimeError::new(error.kind, format!("{}: {}", track.label, error.message))
+        })?
+        .media
+        .output;
+    if probe.duration_seconds < 1.0 {
+        return Err(CacheRuntimeError::new(
+            "invalid_media",
+            format!("{} has an invalid duration", track.label),
+        ));
+    }
+    if track.kind == ExpectedMediaKind::Video
+        && track.page.duration_seconds.is_some_and(|expected| {
+            probe.duration_seconds + duration_tolerance(expected) < expected
+        })
+    {
+        return Err(CacheRuntimeError::new(
+            "invalid_media",
+            format!("{} is shorter than expected", track.label),
+        ));
+    }
+    Ok(probe)
 }
 
 fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntimeError {
@@ -1745,7 +1796,7 @@ where
         CacheRuntimeError::new("publish", "immutable artifact destination has no parent")
     })?;
     create_directory_within_cache_root(&job.cache_root, committed_parent)?;
-    fs::rename(&complete_dir, &committed_dir)
+    crate::file_publication::publish_directory_no_replace(&complete_dir, &committed_dir)
         .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
     for track in &tracks {
         if let Some(parent) = track.temporary_path.parent() {
@@ -1962,6 +2013,7 @@ fn emit_track_progress(
         &job.spec.item_id,
         "progress",
         json!({
+            "source": job.spec.executor.source(),
             "track": {
                 "key": track.key,
                 "label": track.label,
@@ -1970,7 +2022,7 @@ fn emit_track_progress(
                 "stream_kind": match track.kind { ExpectedMediaKind::Video => "video", ExpectedMediaKind::Audio => "audio" },
                 "phase": phase,
                 "attempt": attempt,
-                "max_attempts": TRACK_ATTEMPTS,
+                "max_attempts": job.spec.executor.attempts(),
                 "current_bytes": bytes.0,
                 "target_bytes": bytes.1,
                 "done": phase == "ready",
@@ -2044,7 +2096,7 @@ fn initial_track_payloads(job: &CacheJobSpec) -> Result<Vec<Value>, CacheRuntime
                 "stream_kind": match track.kind { ExpectedMediaKind::Video => "video", ExpectedMediaKind::Audio => "audio" },
                 "phase": "queued",
                 "attempt": 0,
-                "max_attempts": TRACK_ATTEMPTS,
+                "max_attempts": job.executor.attempts(),
                 "current_bytes": 0,
                 "target_bytes": 0,
                 "done": false,
@@ -2485,6 +2537,7 @@ mod tests {
 
     fn job(root: &Path) -> CacheJobSpec {
         CacheJobSpec {
+            executor: Executor::Native,
             schema_version: 1,
             item_id: "song-a".to_owned(),
             item_incarnation_id: reservation(1).item_incarnation_id,
@@ -2713,6 +2766,49 @@ mod tests {
         let mut duplicate = valid;
         duplicate.pages.push(duplicate.pages[0].clone());
         assert!(validate_job(&duplicate).is_err());
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn queued_bbdown_attempt_keeps_source_and_settings_until_explicit_replacement() {
+        let root = publication_root("captured-bbdown");
+        let issued = Arc::new(AtomicU64::new(0));
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |id, incarnation| {
+            Ok(reservation_for(
+                issued.fetch_add(1, Ordering::Relaxed) + 1,
+                id,
+                incarnation,
+            ))
+        }));
+        let mut selected = job(&root);
+        selected.executor = Executor::Bbdown(bbdown::Executable::fixture(root.join("BBDown 空")));
+        selected.cookie = "synthetic-old-cookie".into();
+        selected.audio_hires = true;
+        let first = runtime
+            .submit(selected, CacheJobPriority::Normal, false)
+            .unwrap();
+        let observed = runtime
+            .submit(job(&root), CacheJobPriority::Normal, false)
+            .unwrap();
+        assert_eq!(first.cache_attempt_token, observed.cache_attempt_token);
+        {
+            let state = lock_state(&runtime.shared);
+            let captured = &state.jobs["song-a"].spec;
+            assert_eq!(captured.executor.source(), "bbdown");
+            assert_eq!(captured.executor.attempts(), 1);
+            assert!(captured.audio_hires);
+            assert_eq!(captured.cookie, "synthetic-old-cookie");
+        }
+        let replacement = runtime
+            .submit(job(&root), CacheJobPriority::Normal, true)
+            .unwrap();
+        assert_ne!(replacement.cache_attempt_token, first.cache_attempt_token);
+        let state = lock_state(&runtime.shared);
+        assert_eq!(state.jobs["song-a"].spec.executor.source(), "native");
+        assert_eq!(
+            state.jobs["song-a"].spec.executor.attempts(),
+            TRACK_ATTEMPTS
+        );
     }
 
     #[test]

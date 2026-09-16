@@ -336,6 +336,7 @@ mod tests {
             export_renderer: std::sync::OnceLock::new(),
             port: 0,
             desktop: false,
+            bbdown: None,
             shutdown_token: None,
             workers: std::sync::Mutex::new(Vec::new()),
         };

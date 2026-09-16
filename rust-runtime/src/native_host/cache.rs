@@ -94,6 +94,12 @@ fn tick(
     if let Some(events) = events["events"].as_array() {
         for event in events {
             apply_event(event)?;
+            // Cancelling a refresh preserves its readable artifact/status. A
+            // second Sync after settlement must finish eviction when disabled
+            // or outside the window, even though that status did not change.
+            if event["kind"] == "cancelled" {
+                last_fingerprint.clear();
+            }
         }
     }
     let (snapshot, cookie, policy, player) = with_app(|app| {
@@ -105,7 +111,8 @@ fn tick(
         ))
     })?;
     let effective = MediaSelection::new(&policy, &player, context.desktop);
-    let usable = policy.available() && (!context.desktop || player.usable());
+    let usable = policy.available_with(context.desktop && context.bbdown.is_some())
+        && (!context.desktop || player.usable());
     let items: Vec<_> = snapshot
         .current_item
         .iter()
@@ -240,7 +247,12 @@ fn apply_event(event: &Value) -> Result<(), ApiError> {
             message: "等待 Rust 缓存队列".into(),
         },
         "started" => CacheEvent::Started {
-            message: "正在下载视频及音轨".into(),
+            message: if payload["source"] == "bbdown" {
+                "BBDown 正在下载视频及音轨"
+            } else {
+                "正在下载视频及音轨"
+            }
+            .into(),
         },
         "progress" => {
             let track = &payload["track"];
@@ -254,7 +266,12 @@ fn apply_event(event: &Value) -> Result<(), ApiError> {
             CacheEvent::Progress {
                 progress,
                 message: Some(format!(
-                    "{}：{}%",
+                    "{}{}：{}%",
+                    if payload["source"] == "bbdown" {
+                        "BBDown · "
+                    } else {
+                        ""
+                    },
                     track["label"].as_str().unwrap_or("下载中"),
                     progress as u32
                 )),
@@ -317,14 +334,34 @@ fn job(
     effective: &MediaSelection,
 ) -> Result<CacheJobSpec, ApiError> {
     let pages=item.available_pages.iter().enumerate().filter(|(_,page)|item.selected_pages.contains(page)||**page==item.video_page).map(|(index,page)|json!({"page":page,"cid":item.available_cids.get(index),"duration_seconds":item.available_durations.get(index),"label":item.available_parts.get(index)})).collect::<Vec<_>>();
-    serde_json::from_value(json!({
+    let mut job: CacheJobSpec = serde_json::from_value(json!({
         "schema_version":1,"item_id":item.id,"item_incarnation_id":item.item_incarnation_id,"bvid":item.bvid,"aid":item.aid,
         "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("logs/native-cache.log"),
         "cookie":cookie,"user_agent":crate::native_video::USER_AGENT,"referer":"https://www.bilibili.com/","timeout_ms":15000,
         "video_quality":effective.quality,"avc_quality_cap":effective.avc_cap,"audio_hires":policy.audio_hires,"selected_audio_variant_id":item.selected_audio_variant_id,
         "reported_ready":item.cache_status=="ready","existing_video_relative_path":item.video_relative_path,
         "existing_audio_variants":item.audio_variants.iter().map(|variant|json!({"id":variant.get("id"),"label":variant.get("label"),"page":variant.get("page"),"relative_path":variant.get("audio_url").and_then(Value::as_str).unwrap_or("").trim_start_matches("/media/")})).collect::<Vec<_>>()
-    })).map_err(|_|ApiError::new(500,"cache_job","歌曲缺少原生缓存所需的分 P 信息"))
+    })).map_err(|_|ApiError::new(500,"cache_job","歌曲缺少原生缓存所需的分 P 信息"))?;
+    job.executor = match policy.download_source.as_str() {
+        "native" => crate::cache_runtime::Executor::Native,
+        "bbdown" if context.desktop => {
+            crate::cache_runtime::Executor::Bbdown(context.bbdown.clone().ok_or_else(|| {
+                ApiError::new(
+                    501,
+                    "bbdown_unavailable",
+                    "BBDown executable unavailable; configure BB_DOWN_PATH and restart Host",
+                )
+            })?)
+        }
+        _ => {
+            return Err(ApiError::new(
+                501,
+                "cache_source_unavailable",
+                "Selected downloader has no native Host executor",
+            ));
+        }
+    };
+    Ok(job)
 }
 
 pub(super) fn retry(
@@ -338,7 +375,7 @@ pub(super) fn retry(
             app.native().player_media.clone(),
         ))
     })?;
-    if !policy.available() {
+    if !policy.available_with(context.desktop && context.bbdown.is_some()) {
         return Err(ApiError::new(
             501,
             "imported_cache_policy_unavailable",

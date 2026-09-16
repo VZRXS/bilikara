@@ -16,8 +16,10 @@ class ConfigPathTest(unittest.TestCase):
              patch.object(media_cli, "DISABLED", True):
             for platform in ("win32", "darwin", "linux"):
                 with self.subTest(platform=platform), patch.object(config.sys, "platform", platform):
+                    # Frozen executable lookup resolves macOS directory aliases
+                    # and Windows short names before choosing the runtime home.
                     expected = (Path("~/Library/Application Support/bilikara").expanduser()
-                                if platform == "darwin" else Path(directory) / "runtime")
+                                if platform == "darwin" else Path(directory).resolve() / "runtime")
                     self.assertEqual(config._default_app_home(), expected)
                     self.assertEqual(launcher._fallback_app_home(), expected)
                     override = Path(directory) / "explicit-home"

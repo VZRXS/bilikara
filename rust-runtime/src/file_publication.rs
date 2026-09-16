@@ -44,6 +44,84 @@ pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Resul
     }
 }
 
+/// Atomic no-replace publication for a complete cache artifact directory.
+/// Hard links cannot publish directories; use the platform's exclusive rename.
+pub(crate) fn publish_directory_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let source = CString::new(source.as_os_str().as_bytes())?;
+        let destination = CString::new(destination.as_os_str().as_bytes())?;
+        // SAFETY: NUL-terminated paths and platform constants live for this call.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let source = CString::new(source.as_os_str().as_bytes())?;
+        let destination = CString::new(destination.as_os_str().as_bytes())?;
+        // SAFETY: both paths remain live; RENAME_EXCL refuses any destination.
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        // SAFETY: terminated paths live for the call. MoveFileW never replaces.
+        let result = unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileW(
+                source.as_ptr(),
+                destination.as_ptr(),
+            )
+        };
+        if result != 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        windows
+    )))]
+    {
+        let _ = (source, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive directory publication unavailable",
+        ))
+    }
+}
+
 pub(crate) fn io_failure_message(stage: &str, error: &std::io::Error) -> String {
     // Error::Display may contain a caller-supplied path. Only record OS facts.
     let code = error
@@ -69,6 +147,23 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn artifact_directory_publication_never_replaces_even_an_empty_competitor() {
+        let root = directory();
+        let source = root.join("owned");
+        let destination = root.join("competing");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("track"), b"owned").unwrap();
+        fs::create_dir(&destination).unwrap();
+        assert!(publish_directory_no_replace(&source, &destination).is_err());
+        assert!(source.join("track").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        let final_path = root.join("ready");
+        publish_directory_no_replace(&source, &final_path).unwrap();
+        assert_eq!(fs::read(final_path.join("track")).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

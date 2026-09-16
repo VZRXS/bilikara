@@ -59,18 +59,37 @@ impl CachePolicy {
         self.download_source == "native" && self.validate().is_ok()
     }
 
+    pub(crate) fn available_with(&self, bbdown: bool) -> bool {
+        self.available() || (bbdown && self.download_source == "bbdown" && self.validate().is_ok())
+    }
+
     pub(crate) fn snapshot(&self) -> Value {
+        self.snapshot_with(false)
+    }
+
+    pub(crate) fn snapshot_with(&self, bbdown: bool) -> Value {
         let mut value = json!(self);
         value.as_object_mut().unwrap().remove("retained_settings");
-        value["enabled"] = json!(self.available());
-        value["unavailable_reason"] = json!(if self.available() {
+        value["enabled"] = json!(self.available_with(bbdown));
+        value["unavailable_reason"] = json!(if self.available_with(bbdown) {
             ""
         } else {
             "Imported download source or cache preference is unavailable in Desktop Rust; select supported Native settings explicitly"
         });
         value["download_source_choices"] = json!([{"value":"native","label":"Rust Native"}]);
-        if self.download_source != "native" {
+        if bbdown {
+            value["download_source_choices"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"value":"bbdown","label":"BBDown"}));
+        }
+        if self.download_source != "native" && !(bbdown && self.download_source == "bbdown") {
             value["download_source_choices"].as_array_mut().unwrap().push(json!({"value":self.download_source,"label":format!("{} (unavailable in Desktop Rust)", self.download_source)}));
+        }
+        if self.download_source == "bbdown" && !bbdown {
+            value["unavailable_reason"] = json!(
+                "BBDown unavailable: configure an installed compatible executable with BB_DOWN_PATH and restart Host, or select Native"
+            );
         }
         value["avc_quality_cap"] = json!(&self.video_quality);
         value["choices"] = json!([1, 2, 3, 4, 5]);
@@ -85,7 +104,7 @@ impl CachePolicy {
             .ok_or_else(|| ApiError::invalid("没有可更新的缓存策略"))?;
         let mut next = json!(self);
         for (key, value) in fields {
-            if key == "download_source" && value == "native" {
+            if key == "download_source" && (value == "native" || value == "bbdown") {
                 next[key] = value.clone();
                 continue;
             }
@@ -197,6 +216,7 @@ pub(crate) struct MediaSelection {
     pub quality: String,
     pub avc_cap: String,
     pub audio_hires: bool,
+    pub source: String,
 }
 
 impl MediaSelection {
@@ -215,11 +235,14 @@ impl MediaSelection {
             quality: decision.bbdown_quality_order[0].label().into(),
             avc_cap: cap.clone(),
             audio_hires: policy.audio_hires,
+            source: policy.download_source.clone(),
         }
     }
 
     pub(crate) fn changes_artifact(&self, other: &Self) -> bool {
-        self.quality != other.quality || self.audio_hires != other.audio_hires
+        self.source != other.source
+            || self.quality != other.quality
+            || self.audio_hires != other.audio_hires
     }
 }
 
@@ -326,6 +349,13 @@ pub(super) fn update(
     with_app(|app| {
         app.native_authorize(identity, true)?;
         let next = app.native().cache_policy.updated(body)?;
+        if body["download_source"] == "bbdown" && (!context.desktop || context.bbdown.is_none()) {
+            return Err(ApiError::new(
+                501,
+                "bbdown_unavailable",
+                "BBDown unavailable: configure an installed compatible executable with BB_DOWN_PATH and restart Host",
+            ));
+        }
         if next != app.native().cache_policy {
             save(&context.directory, &next, app.native().ui_language)?;
             app.native().cache_policy = next;
@@ -379,7 +409,7 @@ pub(super) fn language(
 mod tests {
     use super::*;
     #[test]
-    fn validates_entire_patch_and_exposes_only_native_choices() {
+    fn validates_entire_patch_and_defaults_to_native_choices() {
         let original = CachePolicy::default();
         for patch in [
             json!({"max_cache_items":0}),
@@ -387,7 +417,7 @@ mod tests {
             json!({"max_cache_items":true}),
             json!({"video_quality":"8K"}),
             json!({"audio_hires":"true"}),
-            json!({"download_source":"bbdown"}),
+            json!({"download_source":"downkyi"}),
             json!({"max_cache_items":5,"unknown":1}),
         ] {
             assert!(original.updated(&patch).is_err(), "{patch}");
@@ -404,6 +434,30 @@ mod tests {
         );
         assert_eq!(original.max_cache_items, 3);
     }
+    #[test]
+    fn bbdown_policy_requires_host_capability_and_changes_artifact_identity() {
+        let native = CachePolicy::default();
+        let bbdown = native
+            .updated(&json!({"download_source":"bbdown"}))
+            .unwrap();
+        assert!(!bbdown.available());
+        assert!(!bbdown.available_with(false));
+        assert!(bbdown.available_with(true));
+        assert_eq!(bbdown.snapshot()["enabled"], false);
+        assert_eq!(bbdown.snapshot_with(true)["enabled"], true);
+        assert_eq!(
+            bbdown.snapshot_with(true)["download_source_choices"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            MediaSelection::new(&bbdown, &PlayerMedia::default(), true)
+                .changes_artifact(&MediaSelection::new(&native, &PlayerMedia::default(), true))
+        );
+    }
+
     #[test]
     fn desktop_baseline_boundaries_and_effective_media_noops() {
         let original = CachePolicy::default();

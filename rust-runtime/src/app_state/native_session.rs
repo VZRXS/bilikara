@@ -14,6 +14,7 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub desktop: bool,
+    pub bbdown_available: bool,
     pub player_media: crate::native_host::preferences::PlayerMedia,
     pub media_client: String,
     pub cache_policy: crate::native_host::preferences::CachePolicy,
@@ -331,7 +332,9 @@ impl AppState {
         value["app"] = json!({"version":"0.8.0-preview.0","releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
-        value["cache_policy"] = session.cache_policy.snapshot();
+        value["cache_policy"] = session
+            .cache_policy
+            .snapshot_with(session.desktop && session.bbdown_available);
         if session.desktop {
             let effective = crate::native_host::preferences::MediaSelection::new(
                 &session.cache_policy,
@@ -383,8 +386,8 @@ impl AppState {
                 session.updates.snapshot()
             };
         }
-        value["bbdown"] = json!({"available":session.cache_policy.available(),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available(),"state":if session.cache_policy.available() {"ready"} else {"unavailable"},"version":"Rust Native","max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available() {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview · Native only"} else {"Android Alpha"}});
-        if session.desktop && !session.player_media.usable() {
+        value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
+        if value["cache_policy"]["enabled"] == false {
             value["bbdown"]["ready"] = json!(false);
             value["bbdown"]["state"] = json!("unavailable");
             value["bbdown"]["message"] = value["cache_policy"]["unavailable_reason"].clone();

@@ -251,3 +251,33 @@ external-tool provisioning, full desktop lifecycle parity, default backend
 cutover and Python packaging retirement remain separate work. Physical
 multi-display, native dialogs and platform-specific process behavior require
 their own Windows/macOS/device validation.
+
+### BBDown in the Rust Desktop Host
+
+The explicit BBDown source supports selected video/audio pages with an existing
+compatible BBDown 1.6.3 executable. Startup checks `BB_DOWN_PATH` first; an invalid
+override fails closed. Otherwise it checks existing private `tools/bbdown`,
+configured `BILIKARA_HOME/tools/bbdown` and installed/bundled executable-relative
+locations. It neither searches PATH nor downloads/installs a binary. A bounded
+offline help check verifies the version and required arguments. Configure a
+trusted executable and restart to change availability. Public requests cannot
+supply executable paths or commands. DownKyi/aria2c and yt-dlp are not Rust Host
+executors; their default-product behavior remains available.
+
+Each accepted attempt captures its source, effective preferences and P02
+credentials. BBDown uses typed arguments, owned staging, separate tracks and
+`--skip-mux`; it receives no FFmpeg/ffprobe path. An empty private config, empty
+child PATH and a noncredential `;` cookie when logged out prevent accidental
+use of adjacent tool configuration or `BBDown.data`. Child output is drained
+without logging raw output or cookie arguments. Rust supervises cancellation,
+termination and reaping within the existing bounded job concurrency. There is
+one invocation per track per attempt; the tool retains its internal retries.
+
+A successful exit alone does not make an artifact ready. Required outputs must
+be nonempty regular files inside owned staging and pass the shared Rust media
+inspection, normalization and track/duration contracts. Artifact directories
+publish through atomic no-replace operations, preserving relative URLs, audio
+identities and order. Source changes replace attempts; late results cannot own
+a replacement. Reader leases still govern collection. Missing/incompatible
+executables and unsupported outputs fail explicitly without Native substitution
+or Python/media-CLI fallback.
