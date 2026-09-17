@@ -17,7 +17,7 @@ the integrated work branch's new default.
 The scoped Linux integrated gate, real desktop/Remote screenshots, empty-PATH
 native/downloader traces, fresh frozen libav-only bundle checks, concrete
 compatibility losses and deferred platform/independent review are recorded in
-[the current desktop handoff](version-roadmap.md#2026-09-16-desktop-step-1--libav-only-local-reconciliation).
+[the current desktop handoff](../version-roadmap.md#2026-09-16-desktop-step-1--libav-only-local-reconciliation).
 Native serving bypasses Python; the default desktop product still packages and
 uses Python. Step 2 has not started. No push or deployment occurred.
 

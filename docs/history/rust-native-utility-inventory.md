@@ -3,7 +3,7 @@
 > Shared catalog: the verified public `gid=0` source is now implemented as
 > a shared Rust, read-only GViz CSV search fallback. Snapshot expiry and local
 > removal exclusions are enforced; external deletion/blacklist synchronization
-> remains unverified. See [the catalog service contract](shared-catalog.md).
+> remains unverified. See [the catalog service contract](../shared-catalog.md).
 
 This inventory defines the boundary of Phase 1, the native utility layer. It
 was produced by reviewing every Python module in `bilikara/`, including
@@ -136,7 +136,7 @@ thin native adapter; Rust owns D1 query/normalization/cache and the former
 module's review/admin/rating/maintenance request policy. Native Host and both
 Internet adapters share that service. Direct Feishu is retired. **The verified
 Sheets source is a read-only fallback with bounded snapshot caching. External
-blacklist/deletion synchronization remains unverified.** See [catalog service contract](shared-catalog.md)
+blacklist/deletion synchronization remains unverified.** See [catalog service contract](../shared-catalog.md)
 for provider behavior, cache policy and retained responsibilities.
 
 ## P05: DASH / DownKyi service reuse slice
@@ -301,7 +301,7 @@ native result validation and best-effort enqueue/error adapters. There is no
 Python catalog parser or semantic fallback. The monthly runner and local rating
 identity ledger are unchanged in scope. The verified Sheets read-only fallback
 uses that same Rust service and AppState snapshot cache. Provider behavior and
-coverage limits are documented in the [catalog service contract](shared-catalog.md).
+coverage limits are documented in the [catalog service contract](../shared-catalog.md).
 
 ### `bilikara/playlist_export.py`
 

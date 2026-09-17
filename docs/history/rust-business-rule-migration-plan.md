@@ -700,7 +700,7 @@ native-response validation, without a stateful compatibility fallback.
 
 Phase 2 concerns deterministic immutable decisions. The later migration of
 stateful runtime ownership is the separate v0.8 AppState cutover; see the
-[version roadmap](version-roadmap.md) for the convergence direction.
+[version roadmap](../version-roadmap.md) for the convergence direction.
 
 ## Post-Phase-2 ownership rule
 

@@ -4,40 +4,39 @@
 
 `bilikara` 是一个基于 B 站卡拉 OK 视频的点歌平台。主要由 OpenAI Codex 协助设计与实现，并经过人工整理、验证与迭代。
 
-> [!IMPORTANT]
-> **Rust 后端迁移说明**
->
-> bilikara 正在从现有 Python Host 逐步迁移到 Rust 后端。自 v0.7 起，新增后端功能与业务规则只在 Rust 侧实现；Python 层进入维护模式，不再承接新增后端功能，仅保留当前运行所需的 I/O、兼容与迁移职责，并处理影响正常使用的必要缺陷。
->
-> v0.7 仍是 Rust 规则核心、Python 运行编排与 Tauri 桌面壳并存的过渡架构，并非纯 Rust 后端。详细边界与后续计划请参阅 [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)。
-
-v0.8 M6 media integration: supported packages use the trusted same-build FFmpeg
-9.0.1 companion by default for metadata, packet traversal, single-track H.264/AAC
-MP4 copy/fast-start, and FLAC-in-MP4 extraction. Set `BILIKARA_MEDIA_BACKEND=legacy`
-**before startup** to restore the previous routes without loading libav. Windows
-x64 extracted-package execution awaits Actions after review/push; manual playback
-acceptance is separate. Unprovisioned builds retain existing behavior. CLI remains
-packaged; this does not certify historical Hi-Res fixes or other platforms.
-See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
+架构演进与后续计划见 [版本路线图](docs/version-roadmap.md)。
 
 <p align="center">
-  <img src="images/host.png" alt="Host 界面" width="700"><br>
+  <img src="images/host.png" alt="Host 界面" width="900"><br>
   <sub>Host 界面</sub>
 </p>
 
 <table>
   <tr>
     <td align="center" valign="top" width="33%">
-      <img src="images/remote_top.png" alt="移动端控制台上半部分" width="170"><br>
+      <img src="images/remote_top.png" alt="移动端快速点歌与点歌列表" width="170"><br>
       <sub>移动端控制台</sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src="images/remote_bottom.png" alt="移动端控制台下半部分" width="170"><br>
-      <sub>移动端控制台 (cont.)</sub>
+      <img src="images/remote_bottom.png" alt="移动端点歌列表与试试运气" width="170"><br>
+      <sub>点歌列表与试试运气</sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src="images/remote_control_panel.png" alt="移动端播放控制面板" width="170"><br>
-      <sub>移动端播放控制面板</sub>
+      <img src="images/remote_control_panel.png" alt="Remote 播放抽屉" width="170"><br>
+      <sub>播放抽屉</sub>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="images/remote_search.png" alt="Remote 在共享曲库中搜索 KOTOKO" width="220"><br>
+      <sub>共享曲库搜索</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="images/song_detail.png" alt="Remote 歌曲详情页" width="220"><br>
+      <sub>歌曲详情</sub>
     </td>
   </tr>
 </table>
@@ -47,11 +46,11 @@ See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
 ### 核心播放与缓存
 
 - 通过 B 站视频链接或 BV 号加入点歌列表（支持链接指定分 p），后台自动进入本地缓存流程
-- 默认由 BBDown 下载并交给 FFmpeg 处理缓存媒体；DownKyi / aria2c 与 Rust Native 是相互独立的可选下载源，浏览器端使用分离视频 / 音频播放器同步播放
+- 默认由 Rust Native 下载并在进程内完成媒体处理；BBDown 与 DownKyi / aria2c 是相互独立的可选下载源，浏览器端使用分离视频 / 音频播放器同步播放
 - 支持毫秒级音画延迟补偿、独立音量控制、静音，以及 -6 ~ +6 key 的音调调整（切歌时自动复位）
 - 音量、音画延迟、切歌延迟等播放器设置会本地记忆并在重新打开后恢复
 - 可设置 1 ~ 5 秒切歌延迟；切歌时显示过渡画面，包含即将播放、倒计时和后续点歌列表
-- 多分 p 视频自动判断有效分 p，自动缓存多音轨，可随时切换；切换时会同步当前播放进度与播放状态
+- 多分 p 视频自动判断有效分 p，自动缓存多音轨，并尝试优先播放 On vocal（原唱）音轨；可随时切换音轨，切换时会同步当前播放进度与播放状态
 - 加入点歌列表后自动后台缓存，缓存失败 / 长时间无变化显示重试按钮，并支持一键重试
 - 缓存限制：最多只自动缓存前 1 ~ 5 首，默认 3 首，防止磁盘占用过大；服务关闭后自动清空缓存目录
 - bilikara 自行生成 B 站登录二维码并轮询登录结果；确认后会将登录凭据以 UTF-8 明文、分号分隔的 Cookie 文本保存到 `<应用数据目录>/tools/bbdown/BBDown.data`，供 BBDown 下载时使用（**安全提示：** 该文件未加密，请妥善保护本机账户访问权限）
@@ -73,13 +72,13 @@ See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
   <sub>歌单导出图片</sub>
 </p>
 
-### 试试运气（Gatcha 自定义卡池）
+### 试试运气与本地来源
 
-- 试试运气（Gatcha）：内置 27 位初始 UP 主 UID，用户可按需自由添加其他 B 站 UID
-- 自定义拉取：系统自动增量拉取关注 UP 主符合卡拉 OK 筛选条件（如带伴奏、KTV 等关键词）的稿件，并写入本地索引
-- 关注浏览：支持按 UID 浏览本地索引的所有已收录稿件，方便按 UP 主点歌
-- 收藏夹支持：输入 B 站 UID 即可拉取其公开收藏夹列表，预览并选择需要的收藏夹稿件导入本地索引
-- 手动更新：支持一键全量刷新各 UID 的稿件列表，并自动将新增 BV 号同步上传共建共享曲库
+- 登录 Bilibili 后，可从配置的 UP 主投稿中随机抽取歌曲，查看结果后点歌、顶歌，或再试一次；未登录时显示提示并禁用抽取按钮
+- 在「自定义卡池」中管理 UP 主和收藏夹来源，支持查看、添加、移除和刷新来源
+- 按 UP 主或收藏夹浏览已收录的稿件，也可在「本地曲库」搜索本地缓存的来源数据
+- 来源更新时筛选符合卡拉 OK 条件的稿件并保存索引；本地索引是歌曲信息，不等同于已下载的播放媒体
+- 新收录的 BV 号可参与共享曲库共建；视频打分窗口中的「添加 UP 主到本地列表」用于管理本地来源，不会代替你在 B 站关注账号
 
 ### 共享曲库（Cloudflare D1 后端）
 
@@ -98,8 +97,8 @@ See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
 - 在远程搜索和历史结果中展示评分人数与平均分
 
 <p align="center">
-  <img src="images/rating.png" alt="评分界面" width="220"><br>
-  <sub>评分界面</sub>
+  <img src="images/rating_remote.png" alt="Remote 竖屏视频打分窗口" width="320"><br>
+  <sub>视频打分窗口</sub>
 </p>
 
 ### 控制、设置与界面体验
@@ -108,49 +107,64 @@ See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
   - 查看和调整点歌列表
   - 远程暂停 / 播放、前后跳转 15 秒、切歌
   - 切换音轨、调节音量、音画延迟、升降 key
-- 移动端控制面板：
-  - 播放控制收纳到悬浮球中，不干扰主页浏览
+- 移动端播放控制：
+  - 底部播放栏显示当前歌曲、点歌人和进度，点击后展开播放抽屉
+  - 快速点歌、共享曲库 / 本地来源搜索、发现与来源浏览通过标签页切换
+  - 局域网可直接连接；开启公网房间后，也可使用公网 Remote 入口与房间密码连接
 - 新点歌提示：Host 端全屏播放中收到新请求时，会在左上角弹出提示
-- 服务设置：
+- 运行设置：
   - 查看缓存占用，调整自动缓存数量
   - 调整默认清晰度、Hi-Res 优先、切歌延迟
-  - 管理 BBDown 登录
-  - Host 本机可在高级服务设置中选择下一次媒体处理使用的 Rust 或 Python 引擎
-  - 数据清理、重新缓存 / 重置播放器和应用更新检查；更新检查默认选择正式版，可按需开启预览版
+  - 管理 Bilibili 登录，选择 Rust Native、BBDown 或 DownKyi / aria2c 下载器
+  - 数据清理、重新缓存 / 重置播放器和应用更新检查
   - 可复制经过脱敏的诊断 Markdown，并生成可下载的诊断包；诊断采集会限制日志与导出记录范围，并遮蔽凭据和本地用户名
   - 源码脚本运行时，更新检查会跳转 GitHub Releases 页面；打包版运行时会自动下载更新并重启服务
-- 界面设置：
-  - 布局：基础 / 完整
+- 设置：
+  - Host 使用常驻播放区与侧边工作区，切换队列、历史、点歌、试试运气、本场用户和设置时保持播放
   - 主题：浅橙 / 黑橙 / 黑蓝主题
   - 语言：中文（zh）/ 英文（en）/ 日文（ja）
-  - 本地双屏演出：仅桌面版可用；现有 Host 会移动到所选扩展屏并切换为观众画面，主屏打开不含媒体播放器的本地 Controller。Host 始终是唯一的本地播放与解码主体
   - Host 和 Remote 会分别记忆偏好
 
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="images/server_settings.png" alt="服务设置" width="240"><br>
-      <sub>服务设置</sub>
+      <img src="images/server_settings.png" alt="运行设置" width="420"><br>
+      <sub>运行设置</sub>
     </td>
     <td align="center" valign="top" width="50%">
-      <img src="images/ui_settings.png" alt="界面设置" width="320"><br>
-      <sub>界面设置</sub>
+      <img src="images/ui_settings.png" alt="界面与系统设置" width="420"><br>
+      <sub>设置</sub>
     </td>
   </tr>
 </table>
 
+### 全屏播放与双屏显示
+
+全屏播放时，将光标悬浮在右上角的退出全屏按钮上，即可显示手机点歌二维码。收到新点歌请求时，左上角会显示歌曲提示。普通全屏与双屏显示中的观众画面均支持这些功能。
+
+桌面版可将操作界面与观众画面分开：主屏保留 Host 点歌、队列和播放控制，扩展屏全屏显示视频，适合连接电视或投影仪。
+
+1. 连接扩展屏，在 Host 右上角打开「双屏显示」。
+2. 选择操作屏与播放屏并启用；主屏显示当前播放进度与后续歌单，播放屏显示视频画面。
+3. 仍可通过手机 Remote 点歌和控制播放；结束时退出双屏显示，恢复单屏使用。
+
 <table>
   <tr>
-    <td align="center" width="50%">
-      <img src="images/transition.png" alt="切歌过渡画面" width="420"><br>
-      <sub>切歌过渡画面</sub>
+    <td align="center" valign="top" width="50%">
+      <img src="images/dual_screen_control.png" alt="双屏显示的 Host 控制界面" width="420"><br>
+      <sub>操作屏：队列与播放控制</sub>
     </td>
-    <td align="center" width="50%">
-      <img src="images/incoming_request.png" alt="新点歌提示" width="420"><br>
-      <sub>新点歌提示</sub>
+    <td align="center" valign="top" width="50%">
+      <img src="images/fullscreen.png" alt="全屏播放：手机点歌二维码与新点歌提示" width="420"><br>
+      <sub>全屏播放：二维码与新点歌提示</sub>
     </td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="images/transition.png" alt="切歌过渡画面" width="600"><br>
+  <sub>切歌过渡画面</sub>
+</p>
 
 ## 启动
 
@@ -176,96 +190,63 @@ See [M6 package and routing](media-libav/WINDOWS_PREVIEW.md).
 
 桌面入口由 Tauri 提供窗口壳，启动时会自动拉起 Python 后端服务并打开 Host 界面；关闭桌面窗口后会请求后端退出并清理本次运行的缓存。
 
-**后端 / 浏览器模式**
+**迁移期间的兼容入口**
 
-打包产物中也会保留 Python 后端可执行文件；后端包本身可直接使用，不依赖 Tauri 桌面壳。直接运行后端时，会自动打开系统浏览器进入 Host 界面。发布包中的后端入口通常是：
+浏览器 Host 模式与独立 Python 后端入口仅作为 Rust 迁移期间的兼容入口保留，计划在完全迁移至 Rust 后淘汰。日常使用请通过桌面入口启动；此计划不影响手机浏览器中的 Remote 控制台。
 
-- Windows：运行 `bilikara.exe`
-- macOS：运行 `bilikara.app`
+Host 用于播放与管理，Remote 用于手机点歌和控制。手机与 Host 在同一局域网时，可扫描 Host 的二维码连接；公网访问则需先在 Host 创建公网房间，再使用公网 Remote 入口和房间密码连接。
 
 **从源码启动**
 
+源码运行也需要 Rust Domain、Rust Runtime 和原生媒体库。先安装 Python、Rust 工具链与所在平台的原生编译依赖，并按 [媒体打包说明](media-libav/PACKAGING.md) 准备 libav 及 companion；只安装 Python 并不足以启动完整播放器。Linux/macOS 源码运行需将 `BILIKARA_LIBAV_COMPANION` 指向构建出的 companion 动态库；完整平台配置请参考打包工作流。
+
 ```bash
+cargo build --manifest-path rust/Cargo.toml --release --locked
+cargo build --manifest-path rust-runtime/Cargo.toml --release --locked
 python start_bilikara.py
 ```
 
-或（Ubuntu）
+以上源码入口用于开发与调试。Tauri 桌面入口自行管理后端进程和端口。
 
-```bash
-./start_bilikara.sh
-```
+Host 会依据系统路由推荐局域网地址。VPN、多网卡或容器环境下，如手机无法连接，请检查监听地址、防火墙和设备所在网络，并尝试二维码面板中的备用地址。
 
-无论使用后端可执行文件还是源码脚本，启动后默认优先尝试 `http://127.0.0.1:8080`；如果默认端口被占用，会自动尝试后续端口。打开的本地页面全部关闭后，服务会在几秒内自动退出。
+## 本地构建与打包
 
-**提示：** Host 会先依据系统路由选择推荐的局域网 IPv4，再从结构化网卡信息中排列可用的备用地址；容器网桥、虚拟网卡和隧道会被降级，但在它们是唯一可用路径时仍可作为后备。复杂路由、VPN 或多网卡环境不保证总能自动选中正确地址，请在手机访问提示中尝试备用 URL，或通过 `BILIKARA_HOST` 手动指定监听地址。
+桌面发行包由原生 Rust 库、libav/companion、Python 后端和 Tauri 桌面壳组成。应在目标系统及架构上构建；完整步骤以 [打包工作流](.github/workflows/ci-bundle.yml) 和 [媒体打包说明](media-libav/PACKAGING.md) 为准。
 
-## 本地打包
+1. 安装 Python、Rust、Node.js 24（可用 `nvm use`）及目标平台的编译工具；Windows 使用 MSVC，macOS 使用 Xcode Command Line Tools。
+2. 构建同源 libav 和 companion，设置绝对路径 `BILIKARA_LIBAV_PREFIX`。该目录须包含库、依赖、构建记录、源码和许可证，打包脚本会验证完整性；系统安装的 FFmpeg 命令不能代替它。
+3. 构建 Python 后端：Windows 运行 `build_windows.bat`，macOS 运行 `build_macos.command`。脚本安装打包依赖并调用 `build_bundle.py`，产物位于 `dist/`。
+4. 构建 Tauri 桌面壳：运行 `npm ci` 和 `npm run build`。完整发行包还需按工作流将桌面入口与后端包组装、验证并压缩；单独构建桌面壳不等于生成完整发行包。
 
-项目现在分为两层打包：Python 后端包和 Tauri 桌面壳。
+开发桌面界面可运行 `npm ci`、`npm run dev:rust`；媒体库仍须事先准备。Node.js 和编译工具是开发构建依赖，最终用户无需安装。
 
-**Python 后端包**
+- 发布包包含 Rust Native、libav/companion 和固定版本 BBDown，不包含外部 `ffmpeg` / `ffprobe`；选择 DownKyi / aria2c 时按需准备下载工具
+- 静态页面、原生库及工具资源随应用打包；运行数据与日志写入可写目录
+- Windows 打包版默认使用可执行文件旁的 `runtime/`；macOS 使用 `~/Library/Application Support/bilikara/`；源码运行默认使用仓库目录。可通过 `BILIKARA_HOME` 覆盖
+- Windows 产物未使用代码签名证书；macOS 使用 ad-hoc 签名，首次启动可能需要按上文放行
+- 后端启动排障可使用 `python build_bundle.py --console` 生成控制台版本，或查看应用数据目录下的 `data/logs/startup.log`
 
-构建时需要本地安装 Python。打包后得到的后端可执行文件本身就是完整的浏览器模式应用，会调用系统浏览器打开 Host 界面。
-
-- Windows：`build_windows.bat`
-- macOS：`build_macos.command`
-
-它们会自动安装 `PyInstaller` 并生成打包产物到 `dist/`：
-
-- Windows 通常会生成 `dist/bilikara/`，其中的 `bilikara.exe` 可直接双击运行
-- macOS 会生成 `dist/bilikara.app`，可直接双击运行
-
-**Tauri 桌面壳**
-
-构建 Tauri 桌面壳需要安装 Node.js 24 或更高版本，以及 Rust 工具链。Node.js 24 仅是构建 / CI 基线，不是最终用户运行已打包应用的要求。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
-
-```bash
-npm ci
-npm run dev
-```
-
-构建桌面壳可运行：
-
-```bash
-npm ci
-npm run build
-```
-
-CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面壳，并把桌面入口放进最终发布包：Windows 为 `bilikara-desktop.exe`，macOS 为 `Bilikara-Desktop.app`。
-
-补充说明：
-
-- 打包后的应用会把静态页面资源封装进应用内部
-- 发布包元数据中的发布者 / CompanyName 设置为 `VZRXS`；Windows 安全提示中的“已验证发布者”仍需要代码签名证书
-- Tauri 桌面壳 `bilikara-desktop.exe` 会通过 `scripts/sign_windows.ps1` 签名；CI 可配置 `WINDOWS_SIGN_CERTIFICATE_BASE64` + `WINDOWS_SIGN_CERTIFICATE_PASSWORD`，也可改用 `WINDOWS_SIGN_CERTIFICATE_PATH` 或 `WINDOWS_SIGN_CERTIFICATE_THUMBPRINT`，未配置证书时会跳过签名并继续显示未知发布者
-- 打包后的 `data/`、日志、缓存和工具文件默认都会写到可写运行目录；macOS 使用 `~/Library/Application Support/bilikara/`，Windows 使用包内 `runtime/`；可通过 `BILIKARA_HOME` 指定其他目录
-- 打包脚本会构建并嵌入 `bilikara_rust` 与 `bilikara_runtime`，并把经过验证的 `ffmpeg` / `ffprobe` 和按目标架构固定为 1.6.3 的 `BBDown` 放进不可变 vendor；正式包不内置 `aria2c`
-- Tauri 桌面壳启动后会拉起同目录或相邻目录里的 Python 后端包；开发模式下会回退到 `python start_bilikara.py`
-- 当前 Tauri 桌面版采用类似 sidecar 的 Python 后端进程方案；长期规划中，会考虑逐步将更适合桌面集成、进程管理和跨平台适配的能力迁移到 Rust / Tauri 侧
-- Windows 和 macOS 的最终包通常需要在各自系统上分别构建；也就是说，Windows 包最好在 Windows 上打，macOS 包最好在 macOS 上打
-- Windows 打包脚本会依次尝试 `py`、`python`、`python3`；如果都不存在，需要先安装 Python 3
-- 如需排查后端打包版启动问题，可使用 `python build_bundle.py --console` 生成带控制台窗口的调试包
-
-架构与版本规划文档：
-
-- [版本路线图](docs/version-roadmap.md)
-- [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)
-- [移动 Host 与共享 Rust 架构](docs/mobile-host-rust-architecture.md)
-- [原生工具迁移清单](docs/rust-native-utility-inventory.md)
+开发参考：[版本路线图](docs/version-roadmap.md)、[移动 Host 与共享 Rust 架构](docs/mobile-host-rust-architecture.md)、[共享曲库服务契约](docs/shared-catalog.md)。历史设计与实验记录位于 [docs/history/](docs/history/README.md)。
 
 ## 可选环境变量
 
-- `BILIKARA_HOST`：监听地址；脚本启动默认 `0.0.0.0`，Windows 打包版默认优先使用探测到的局域网 IPv4，失败时回退到 `0.0.0.0`
-- `BILIKARA_PORT`：监听端口，默认 `8080`
-- `BILIKARA_HOME`：自定义应用数据目录；不设置时，打包版默认写入应用目录内的 `runtime/`
-- `BILIKARA_MAX_CACHE_ITEMS`：自动缓存窗口大小，默认 `3`
-- `BILIKARA_BILIBILI_COOKIE`：用于获取会员清晰度或受限内容播放地址的 cookie
-- `BB_DOWN_PATH`：自定义本地 `BBDown` 可执行文件路径
-- `FFMPEG_PATH`：自定义本地 `ffmpeg` 可执行文件路径
-- `ARIA2C_PATH`：自定义实验性 DownKyi 下载源使用的 `aria2c` 可执行文件路径
-- `BILIKARA_STARTUP_LOG`：设为 `1` 时，启动日志会写入 `runtime/data/logs/startup.log`，用于排查打包版启动问题
-- `BILIKARA_RUST_STRICT_EQUIVALENCE`：设为 `1` 时，对已迁移能力同时运行 Rust 与 Python 参考实现并比较规范结果；仅建议用于测试、CI 和开发诊断
-- `BILIKARA_RUST_TIMING_DIAGNOSTICS`：设为 `1` 时，在后端状态中聚合 Rust FFI、JSON、Python 回退和严格等价检查耗时；默认关闭且不会逐调用打印日志
+一般使用优先通过界面设置。环境变量须在启动前配置，桌面入口与独立后端的适用范围有所不同。
+
+| 变量 | 用途 |
+| :--- | :--- |
+| `BILIKARA_HOME` | 应用数据目录；平台默认位置见上文 |
+| `BILIKARA_HOST` | 后端监听地址；源码默认 `0.0.0.0`，Windows 打包版优先使用探测到的局域网 IPv4 |
+| `BILIKARA_PORT` | 独立后端端口，默认 `8080`；Tauri 启动时自行选择端口 |
+| `BILIKARA_MAX_CACHE_ITEMS` | 初始自动缓存窗口，默认 `3`；已保存的缓存设置由应用管理 |
+| `BILIKARA_BILIBILI_COOKIE` | 提供 Bilibili Cookie；通常建议使用界面扫码登录，勿公开或提交凭据 |
+| `BB_DOWN_PATH` | 指定可信的本地 BBDown 可执行文件 |
+| `ARIA2C_PATH` | 指定 DownKyi 下载源使用的 aria2c 可执行文件 |
+| `BILIKARA_LIBAV_COMPANION` | Linux/macOS 源码运行使用的 companion 动态库绝对路径；发行包自行定位内置库 |
+| `BILIKARA_LIBAV_PREFIX` | 原生媒体库构建、验证与打包所需的绝对路径，详见媒体打包说明 |
+| `BILIKARA_STARTUP_LOG` | 设为 `1` 启用启动日志；桌面入口会自动启用 |
+
+内部迁移、严格等价检查及旧媒体路径开关属于开发诊断用途，不作为普通运行配置推荐。开发专用 Rust Host 的启用方式与限制见版本路线图。
 
 ## 技术说明
 
@@ -278,11 +259,11 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 播放流程以本地缓存和本地媒体播放为主；Rust Native 是默认下载源，BBDown 与 DownKyi / aria2c 是显式可选下载源
 - Rust Native 由 `bilikara_runtime` 直接下载、校验并重封装媒体，以临时文件和完整 sample 校验后原子发布，视频输出使用 fast-start MP4
 - 当前原生媒体链路选择 AVC/H.264 视频以及常规 AAC 或可用的 Hi-Res FLAC 音轨；高解析音频处理失败时不会静默回退到外部工具
-- BBDown 与 DownKyi 的分离 MP4/M4A 轨道优先由 Rust MediaBackend 校验；仅当容器或编解码不受支持时才调用绑定的 ffprobe 兼容校验。DownKyi 的 FFmpeg 重封装与 BBDown/DownKyi 完整包扫描仍保留；Rust Native 不会静默回退到 aria2c 或 Python 媒体实现
+- 媒体检查与重封装使用同源构建的 libav/companion，不需要外部 FFmpeg/ffprobe 程序；不支持的媒体会明确报错。BBDown 与 DownKyi / aria2c 是下载器，使用前需要登录 Bilibili，重新下载时读取当前凭据
 - 手机访问 URL 的首选地址来自系统路由决定的源 IPv4；其他活动物理网卡地址可作为备用，虚拟和隧道地址会被降级
 - BBDown 与 Rust Native 下载日志会写到应用数据目录下的 `data/logs/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`
-- BBDown 保持默认支持；DownKyi / aria2c 和 Rust Native 可从 Host 设置中独立选择，Rust Native 不可用时会明确失败
+- Rust Native 是默认下载源；BBDown 和 DownKyi / aria2c 可从 Host 设置中独立选择，Rust Native 不可用时会明确失败
 - 如果当前歌曲已经缓存完成，前端会使用浏览器里的分离视频 / 音频播放器播放本地文件
 - 本地播放时，视频与音频流会分开同步，用来支持独立的音画延迟补偿、音量控制、静音和升降 key
 - Host 页面和手机端控制台会共享同一套播放器设置，包括音画延迟、音量、静音状态和音调调整
@@ -291,10 +272,10 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 
 ## 注意
 
-- 本地缓存依赖运行环境能访问 B 站；打包版首次使用默认 BBDown 不需要联网准备工具，用户选择 DownKyi 时自动准备 aria2c 需要访问项目工具镜像，Rust Runtime 随应用打包
+- 本地缓存依赖运行环境能访问 B 站；打包版默认使用随应用打包的 Rust Native，首次使用不需要联网准备工具；BBDown 同样已内置，用户选择 DownKyi 时自动准备 aria2c 需要访问项目工具镜像
 - 音画延迟补偿、音量控制、静音、远程暂停 / 跳转 / 切换音轨、升降 key 等能力依赖本地缓存媒体和浏览器媒体能力
 - 导出需要随应用提供的 Rust Runtime；图片与启动字体预热共用 Rust 字体资源，不依赖 Pillow。没有可用字体的字符以 Unicode 编号显示
-- Rust 下载与媒体后端状态会显示在右上角服务设置面板中
+- Rust 下载与媒体后端状态会显示在右上角运行设置面板中
 - 如果 Windows 后端打包版出现启动异常或页面打不开，可先尝试 `python build_bundle.py --console`，或设置 `BILIKARA_STARTUP_LOG=1` 收集启动日志
 - Tauri 桌面入口会设置 `BILIKARA_LAUNCH_MODE=tauri` 和 `BILIKARA_STARTUP_LOG=1`，桌面启动问题通常可先查看 `runtime/data/logs/startup.log`
 - 为了让本地播放支持拖动和快进，后端对缓存媒体实现了 `Range` 请求支持

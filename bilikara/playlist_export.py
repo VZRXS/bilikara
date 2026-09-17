@@ -1,7 +1,6 @@
 """Compatibility entry points for the authoritative Rust export service."""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from .config import APP_VERSION, STATIC_DIR
@@ -20,12 +19,9 @@ def playlist_csv_bytes(items: list[dict[str, Any]], *, time_header: str = "点�
 def playlist_image_export(
     items: list[dict[str, Any]],
     *,
-    logo_path: Path | None = None,
     title: str = "bilikara 歌单导出",
     page_size: int = PLAYLIST_IMAGE_PAGE_SIZE,
 ) -> tuple[bytes, str, str]:
-    # The established design does not draw a logo. Retain the caller signature.
-    del logo_path
     return export_playlist_artifact({
         "operation": "image", "items": items, "title": title, "page_size": page_size,
         "font_path": str((STATIC_DIR / "fonts" / "SourceHanSans-VF.ttf").resolve()),

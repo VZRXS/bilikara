@@ -176,22 +176,6 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertIn(payload["name"], payload["url"])
                 self.assertTrue(payload["recipe_revision"])
 
-    def test_checked_in_ffmpeg_locks_pin_both_macos_architectures(self):
-        for arch in ("arm64", "x64"):
-            with self.subTest(tool="ffmpeg", arch=arch):
-                path = ROOT / "tools" / "ffmpeg" / f"macos-{arch}.json"
-                if not path.is_file():
-                    continue
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(payload["schema_version"], 2)
-                self.assertEqual(payload["tool"], "ffmpeg")
-                self.assertEqual(payload["version"], "8.1.2")
-                self.assertEqual(payload["platform"], "darwin")
-                self.assertEqual(payload["arch"], arch)
-                self.assertTrue(payload["url"].startswith("https://"))
-                self.assertIn(payload["name"], payload["url"])
-                self.assertTrue(payload["recipe_revision"])
-
     def test_normal_bundle_embeds_required_media_tools(self):
         self.assertIn("Build Windows libav libraries and companion", self.bundle_workflow)
         self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
