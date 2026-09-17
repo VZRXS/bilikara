@@ -5657,7 +5657,10 @@ function renderRatingPromptContent() {
   const coverUrl = safeHttpUrl(activeItem.cover_url);
   const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
   const media = document.createElement("div");
-  media.className = "rating-media";
+  media.className = "song-detail-hero";
+  const cover = document.createElement("div");
+  cover.className = "song-detail-cover";
+  media.appendChild(cover);
   if (coverUrl) {
     const image = document.createElement("img");
     image.className = "rating-cover";
@@ -5665,15 +5668,16 @@ function renderRatingPromptContent() {
     image.alt = "";
     image.loading = "lazy";
     image.referrerPolicy = "no-referrer";
-    media.appendChild(image);
+    cover.appendChild(image);
   } else {
     const placeholder = document.createElement("div");
     placeholder.className = "rating-cover rating-cover-empty";
-    media.appendChild(placeholder);
+    cover.appendChild(placeholder);
   }
   const copy = document.createElement("div");
-  copy.className = "rating-copy";
+  copy.className = "song-detail-facts";
   const title = document.createElement("h2");
+  title.className = "song-detail-title rating-title";
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
@@ -5688,6 +5692,10 @@ function renderRatingPromptContent() {
     link.textContent = t("search.openOnBilibili");
     copy.appendChild(link);
   }
+  const score = document.createElement("div");
+  score.className = "song-detail-metric rating-score";
+  score.append(root.querySelector(".rating-stars"), root.querySelector(".rating-hint"));
+  copy.appendChild(score);
   media.appendChild(copy);
   content.replaceChildren(media);
   const addUpButton = root.querySelector("[data-rating-add-up]");

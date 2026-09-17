@@ -2807,6 +2807,10 @@ select:disabled {
   overflow: visible;
 }
 
+#gatcha-init-view {
+  min-height: 0;
+}
+
 .gatcha-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -4068,13 +4072,6 @@ body.remote-identity-modal-open {
   color: var(--muted);
 }
 
-.rating-media {
-  display: grid;
-  grid-template-columns: 33.333% minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
 .rating-cover {
   width: 100%;
   aspect-ratio: 16 / 10;
@@ -4100,25 +4097,11 @@ body.remote-identity-modal-open {
   text-transform: uppercase;
 }
 
-.rating-copy h2 {
-  margin: 0 32px 6px 0;
-  font-size: 22px;
-}
-
 .rating-hint {
   margin: 0 0 12px;
   text-align: center;
   font-size: 14px;
   line-height: 1.55;
-}
-
-.rating-copy .rating-owner {
-  margin-top: 6px;
-}
-
-.rating-link {
-  display: inline-block;
-  margin-top: 8px;
 }
 
 .rating-stars {

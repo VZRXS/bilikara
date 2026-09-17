@@ -296,7 +296,7 @@
 
 .song-detail-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
 }
 
@@ -475,4 +475,75 @@
   }
   .selection-modal, .selection-modal-card,
   .internet-remote-join-overlay, .internet-remote-join-card { transition-duration: 1ms; }
+}
+
+/* Rating uses the same cover/facts geometry as song details. */
+.rating-card {
+  width: min(780px, 100%);
+}
+
+.rating-body {
+  padding: 20px;
+}
+
+.rating-card > .rating-close {
+  top: -14px;
+  right: -14px;
+}
+
+.rating-title {
+  padding-right: 24px;
+  font-size: 22px;
+}
+
+.rating-score {
+  margin-top: auto;
+}
+
+.rating-score .rating-stars {
+  justify-content: flex-start;
+  gap: 2px;
+  margin: 0;
+}
+
+.rating-score .rating-stars button {
+  flex: 0 1 36px;
+  justify-content: flex-start;
+  text-align: left;
+  width: 36px;
+  min-width: 0;
+  padding: 0;
+}
+
+.rating-score .rating-hint {
+  margin: 0;
+  text-align: left;
+  font-size: 13px;
+}
+
+.rating-actions {
+  display: grid;
+  grid-template-columns: auto minmax(min-content, 1fr);
+  margin-top: 16px;
+}
+
+.rating-actions > button[data-rating-add-up],
+.rating-actions > button[data-rating-close],
+.song-detail-actions > button[data-song-detail-request],
+.song-detail-actions > button[data-song-detail-next] {
+  min-width: 0;
+  min-height: 44px;
+  height: auto;
+  padding-inline: 18px;
+}
+
+.rating-actions > [data-rating-close],
+.song-detail-actions > [data-song-detail-next] {
+  width: auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .rating-body { padding: 14px; }
+  .rating-card > .rating-close { top: -10px; right: -8px; }
 }
