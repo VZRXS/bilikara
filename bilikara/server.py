@@ -1665,7 +1665,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if export_format == "image":
                     payload, content_type, default_filename = playlist_image_export(
                         history,
-                        logo_path=_playlist_export_logo_path(),
                         title=str(settings["title"]),
                         page_size=export_page_size,
                     )
@@ -3370,14 +3369,6 @@ def run_webui(
         open_browser=auto_open_browser,
         auto_select_port=auto_select_port,
     )
-
-
-def _playlist_export_logo_path() -> Path | None:
-    for filename in ("bili.png", "bili.jpg", "bili.jpeg"):
-        candidate = STATIC_DIR / "pic" / filename
-        if candidate.exists():
-            return candidate
-    return None
 
 
 def _port_probe_hosts(host: str) -> tuple[str, ...]:

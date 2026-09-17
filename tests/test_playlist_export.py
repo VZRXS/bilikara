@@ -69,7 +69,7 @@ class PlaylistExportTest(unittest.TestCase):
                         self.assertNotEqual(first.crop((94, 371, 145, 407)).tobytes(), last.crop((94, 371, 145, 407)).tobytes())
 
     def test_long_fields_multilingual_symbols_emoji_and_alternate_rows(self):
-        payload, _, _ = export.playlist_image_export(SYNTHETIC, logo_path=Path("unused-logo.png"))
+        payload, _, _ = export.playlist_image_export(SYNTHETIC)
         image = self.decode_png(payload, 2)
         self.assertEqual(image.getpixel((100, 365)), (255, 255, 255))
         self.assertEqual(image.getpixel((100, 469)), (251, 246, 239))

@@ -2,7 +2,9 @@ __pycache__/
 .venv/
 *.pyc
 data/
-tools/
+tools/*
+!tools/aria2/
+!tools/load_test_remote_sse.py
 build/
 dist/
 .vscode/
