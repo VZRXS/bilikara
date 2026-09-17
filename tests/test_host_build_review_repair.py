@@ -32,7 +32,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         cls.translations = json.loads(
             (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
         )
-        cls.design = (ROOT / "docs" / "host-shell-v0.8-design.txt").read_text(
+        cls.design = (ROOT / "docs" / "history" / "host-shell-v0.8-design.txt").read_text(
             encoding="utf-8"
         )
 

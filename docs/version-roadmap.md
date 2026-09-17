@@ -64,9 +64,15 @@ rules. The first AppState cutover is now established:
   normal Rust mode.
 - Retain transactional fallback only where temporary output can be cleaned up
   and final publication is atomic.
-- Split `src-tauri/src/main.rs` into focused modules before adding substantial
-  runtime responsibilities.
-- Begin replacing external command-line dependencies.
+- The `src-tauri/src/main.rs` split is done: the entry point is now a thin
+  binary, with desktop shell responsibilities in `backend_process.rs`,
+  `backend_download.rs`, `window_lifecycle.rs`, `window_chrome.rs`,
+  `presentation.rs`, `desktop_diagnostics.rs`, `platform.rs` and `android.rs`.
+- Replacing external command-line dependencies is under way rather than
+  pending: Rust Native is the default download source, and the packaged media
+  route is in-process libav, so release bundles no longer carry an `ffmpeg` or
+  `ffprobe` executable. BBDown stays vendored, and DownKyi/aria2c remain
+  explicit opt-in transition fallbacks.
 
 External-tool direction:
 
@@ -96,8 +102,11 @@ External-tool direction:
   Linux trusted-prefix integration is locally testable; Windows x64 package
   execution needs Actions after review/push. Code review, Actions evidence and
   deferred manual playback are separate gates. No ARM64/macOS or historical
-  Hi-Res acceptance is claimed. CLI stays packaged; original M7 removal is a
-  later-version decision. Mobile production must not depend on CLI executables.
+  Hi-Res acceptance is claimed. The packaged CLI is now BBDown only: libav is
+  built with `--disable-programs` and release bundles carry no `ffmpeg` or
+  `ffprobe` executable, so `legacy` needs a user-supplied binary via
+  `FFMPEG_PATH`. Original M7 removal is a later-version decision. Mobile
+  production must not depend on CLI executables.
 
 Casting foundation:
 

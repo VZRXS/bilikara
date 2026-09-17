@@ -345,7 +345,7 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         inventory_path = (
             Path(__file__).resolve().parent.parent
             / "docs"
-            / "rust-native-utility-inventory.md"
+            / "history" / "rust-native-utility-inventory.md"
         )
         inventory = inventory_path.read_text(encoding="utf-8")
         capability_section = inventory.split(
