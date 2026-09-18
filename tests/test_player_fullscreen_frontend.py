@@ -18,7 +18,7 @@ class PlayerFullscreenFrontendTest(unittest.TestCase):
 
         functions = "\n".join([
             section("function fullscreenElement()", "function isWebKitPlaybackRuntime()"),
-            section("function isPlayerPanelFullscreen()", "function tauriInvoke()"),
+            section("function isPlayerPanelFullscreen()", "function tauriInvoke("),
             section("async function setTauriWindowFullscreen", "function presentationSceneApi()"),
             section("function requestElementFullscreen", "function clearPlayerFrameClickTimer"),
             section("function handleFullscreenChange()", 'document.addEventListener("fullscreenchange"'),

@@ -42,6 +42,31 @@
   // Restart choice is shared native persistence UI; Android navigation is not.
   window.BilikaraNativeSession = {syncSessionChoice};
   if (root.dataset.hostPlatform === "desktop") return;
+  // Reuse the desktop selector and stage controls, but keep the selector in
+  // Settings so it remains reachable when the portrait top bar is hidden.
+  const displaySettings = byId("presentation-settings");
+  const settingsBody = document.querySelector("#host-workspace-settings .settings-workspace-body");
+  if (displaySettings && settingsBody) {
+    const section = document.createElement("section");
+    section.className = "settings-section android-display-settings";
+    const hint = document.createElement("p");
+    hint.className = "android-display-hint";
+    hint.dataset.i18n = "mobile.externalDisplayHint";
+    hint.textContent = t("mobile.externalDisplayHint");
+    section.append(displaySettings, hint);
+    settingsBody.prepend(section);
+  }
+  const displayBridge = window.BilikaraAndroidPresentation;
+  if (displayBridge) {
+    const heartbeat = window.setInterval(() => {
+      if (displayBridge.isForeground() && !document.hidden) publishPresentationOutputState();
+    }, 250);
+    const refreshDisplayDiagnostics = () => displayBridge.refreshDiagnostics().catch(() => {});
+    displayBridge.listen("bilikara-presentation-state", refreshDisplayDiagnostics);
+    displayBridge.listen("displays-changed", refreshDisplayDiagnostics);
+    refreshDisplayDiagnostics();
+    window.addEventListener("pagehide", () => window.clearInterval(heartbeat));
+  }
   const sessionHelp = document.querySelector('[data-i18n="session.help"]');
   if (sessionHelp) sessionHelp.dataset.i18n = "mobile.sessionHelp";
   let selectedSessionUser = "";
@@ -171,6 +196,7 @@
       layout: portrait ? "portrait" : "landscape", page,
       native_window_controls: Boolean(window.BilikaraHostWindow),
       playback_visibility: window.BilikaraAndroidPlayback?.diagnostics() || null,
+      external_display: window.BilikaraAndroidPresentation?.diagnostics() || {available:false},
       viewport: {width: window.innerWidth, height: window.innerHeight},
       qr_source: !source ? "missing" : source.startsWith("data:image/svg+xml;base64,") ? "inline-svg" : "invalid",
       qr_source_chars: source.length, image_policy_blocks: blockedImages,

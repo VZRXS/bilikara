@@ -11671,7 +11671,6 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) .native-alpha-
 /* These desktop-only/deferred capabilities remain unavailable on Android.
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
-  #presentation-settings,
   #application-restart-row, #diagnostic-package-button,
   #developer-mode-trigger, #ffmpeg-status-row
 ) { display: none !important; }

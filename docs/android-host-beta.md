@@ -49,10 +49,11 @@ still needs applying if the online catalog Worker has not yet been updated.
 
 ## Deferred by the user
 
-Independent dual-screen output, general external-link integration, developer
-mode and diagnostic ZIP packages. Continue using the existing system WiFi/HDMI
-mirror. Neither real hardware display latency nor long-session reliability is
-claimed by desktop browser or emulator tests.
+General external-link integration, developer mode and diagnostic ZIP packages.
+Independent Android audience output is now implemented; see the
+[external-display guide](android-external-display.md). System WiFi/HDMI mirroring
+remains the fallback. Neither real hardware display latency nor long-session
+reliability is claimed by desktop browser or emulator tests.
 
 ## APK workflow and signing
 

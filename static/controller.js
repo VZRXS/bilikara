@@ -1,8 +1,9 @@
 (function initializePresentationOutput() {
   "use strict";
 
-  const invoke = window.__TAURI__?.core?.invoke || null;
-  const listen = window.__TAURI__?.event?.listen || null;
+  const androidDisplay = window.BilikaraAndroidPresentation;
+  const invoke = androidDisplay?.invoke || window.__TAURI__?.core?.invoke || null;
+  const listen = androidDisplay?.listen || window.__TAURI__?.event?.listen || null;
   const sceneApi = window.BilikaraPresentationScene;
   const renderer = window.BilikaraPresentationRenderer;
   const sync = window.BilikaraPresentationSync;
@@ -15,6 +16,8 @@
   const state = {
     session: null,
     lastMasterEnvelope: null,
+    lastMasterAt: 0,
+    lastDiagnosticsAt: 0,
     scene: null,
     clock: null,
     video: null,
@@ -149,12 +152,20 @@
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
     elements.remoteUrlLink.textContent = url;
     elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
+    const nativeQr = String(candidate?.qr_image || "");
+    const qrUrl = androidDisplay
+      ? (nativeQr.startsWith("data:image/svg+xml;base64,") ? nativeQr : "")
+      : `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
     if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
     elements.remoteQrImage.dataset.qrUrl = qrUrl;
     elements.remoteQrImage.classList.add("hidden");
     elements.remoteQrPlaceholder.textContent = t("remote.qrLoading");
     elements.remoteQrPlaceholder.classList.remove("hidden");
+    if (!qrUrl) {
+      elements.remoteQrImage.removeAttribute("src");
+      elements.remoteQrPlaceholder.textContent = t("remote.qrImageFailed");
+      return;
+    }
     elements.remoteQrImage.onload = () => {
       if (elements.remoteQrImage.dataset.qrUrl !== qrUrl) return;
       elements.remoteQrImage.classList.remove("hidden");
@@ -184,8 +195,10 @@
     elements.internetRemotePassword.textContent = active
       ? String(candidate?.password || "").slice(0, 32)
       : "";
-    const qrImage = active && String(candidate?.qr_image || "").startsWith("data:image/png;base64,")
-      ? String(candidate.qr_image)
+    const candidateQr = String(candidate?.qr_image || "");
+    const qrImage = active && (candidateQr.startsWith("data:image/png;base64,")
+      || (androidDisplay && candidateQr.startsWith("data:image/svg+xml;base64,")))
+      ? candidateQr
       : "";
     if (elements.internetRemoteQrImage.__bilikaraQrImage === qrImage) return;
     elements.internetRemoteQrImage.__bilikaraQrImage = qrImage;
@@ -258,6 +271,7 @@
   }
 
   function failClosed(message = "", key = "") {
+    state.video?.pause();
     state.failedClosed = true;
     state.session = null;
     elements.exit.disabled = true;
@@ -365,11 +379,20 @@
   }
 
   function showEmpty(key) {
+    retireVideo();
     if (elements.status) {
       elements.status.dataset.i18n = key;
       elements.status.textContent = t(key);
     }
     preserveOverlayAndReplace(elements.empty);
+    state.video = null;
+  }
+
+  function retireVideo() {
+    if (!state.video) return;
+    state.video.pause();
+    state.video.removeAttribute("src");
+    state.video.load();
     state.video = null;
   }
 
@@ -395,6 +418,14 @@
 
   function applyClock() {
     const video = state.video;
+    const stale = Boolean(androidDisplay && Date.now() - state.lastMasterAt > 2000);
+    if (state.failedClosed || (androidDisplay && (
+      !androidDisplay.isForeground() || stale || state.session?.phase !== "active"
+    ))) {
+      video?.pause();
+      reportOutputDiagnostics(stale);
+      return;
+    }
     if (
       !video
       || !state.clock
@@ -406,6 +437,7 @@
       currentTime: video.currentTime,
       paused: video.paused,
     }, Date.now());
+    reportOutputDiagnostics(false, correction.driftSeconds);
     if (correction.action === "seek") safeSeek(correction.targetTime);
     if (Math.abs(Number(video.playbackRate || 1) - correction.playbackRate) > 0.001) {
       video.playbackRate = correction.playbackRate;
@@ -421,7 +453,21 @@
     }
   }
 
+  function reportOutputDiagnostics(stale, drift = 0) {
+    if (!androidDisplay || Date.now() - state.lastDiagnosticsAt < 1000) return;
+    state.lastDiagnosticsAt = Date.now();
+    const video = state.video;
+    const quality = video?.getVideoPlaybackQuality?.();
+    androidDisplay.reportOutput({
+      drift_ms: Math.round(drift * 1000), current_time: Number(video?.currentTime || 0),
+      ready_state: Number(video?.readyState || 0), error_code: Number(video?.error?.code || 0),
+      dropped_frames: Number(quality?.droppedVideoFrames || 0), total_frames: Number(quality?.totalVideoFrames || 0),
+      paused: !video || video.paused, seeking: Boolean(video?.seeking), stale,
+    });
+  }
+
   function mountScene(scene) {
+    retireVideo();
     document.documentElement.dataset.theme = scene.theme;
     document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
     if (!scene.videoUrl) {
@@ -455,7 +501,9 @@
     ) {
       return;
     }
+    if (state.failedClosed || candidate.payload?.scene?.generation !== state.session?.generation) return;
     state.lastMasterEnvelope = candidate;
+    state.lastMasterAt = Date.now();
     applyLanguage(candidate.payload?.language);
     renderRemoteAccess(candidate.payload?.remoteAccess);
     renderInternetRemote(candidate.payload?.internetRemote);
@@ -500,7 +548,13 @@
       failClosed(t("controller.tauriRequired"), "controller.tauriRequired");
       return;
     }
-    if (typeof BroadcastChannel === "function") {
+    if (androidDisplay) {
+      state.unlisteners.push(await listen("master-state", event => handleMasterMessage(event.payload)));
+      state.unlisteners.push(await listen("foreground", () => {
+        if (!androidDisplay.isForeground()) state.lastMasterAt = 0;
+        applyClock();
+      }));
+    } else if (typeof BroadcastChannel === "function") {
       state.channel = new BroadcastChannel(sync.channelName);
       state.channel.addEventListener("message", (event) => handleMasterMessage(event.data));
     }
@@ -576,6 +630,7 @@
     document.addEventListener(eventName, revealCursor, { passive: true });
   });
   window.addEventListener("pagehide", () => {
+    retireVideo();
     if (state.cursorHideTimer) window.clearTimeout(state.cursorHideTimer);
     state.unlisteners.splice(0).forEach((unlisten) => unlisten?.());
     state.channel?.close();

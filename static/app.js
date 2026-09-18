@@ -1391,7 +1391,8 @@ function canTogglePlayerFullscreen() {
     && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
 }
 
-function tauriInvoke() {
+function tauriInvoke(capability = "desktop") {
+  if (capability === "presentation" && window.BilikaraAndroidPresentation) return window.BilikaraAndroidPresentation.invoke;
   if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.core?.invoke || null;
 }
@@ -1700,6 +1701,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
   }
   const video = session?.video || activePrimaryVideoElement();
   const scene = currentPresentationScene();
+  const internetQrImage = String(state.internetRemoteDisplay?.qr_image || "");
   const clock = {
     itemIdentity: scene.currentItemIdentity,
     mediaTime: Math.max(0, Number(video?.currentTime || 0)),
@@ -1718,8 +1720,9 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
       hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
       connected_count: Math.max(0, Math.trunc(Number(state.internetRemoteDisplay?.connected_count) || 0)),
       password: String(state.internetRemoteDisplay?.password || "").slice(0, 32),
-      qr_image: String(state.internetRemoteDisplay?.qr_image || "").startsWith("data:image/png;base64,")
-        ? String(state.internetRemoteDisplay.qr_image).slice(0, 524_288)
+      qr_image: (internetQrImage.startsWith("data:image/png;base64,")
+        || (window.BilikaraAndroidPresentation && internetQrImage.startsWith("data:image/svg+xml;base64,")))
+        ? internetQrImage.slice(0, 524_288)
         : "",
     },
   }, {
@@ -1727,6 +1730,10 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     sequence: ++state.presentationOutputSequence,
     sentAt: Date.now(),
   });
+  if (window.BilikaraAndroidPresentation) {
+    window.BilikaraAndroidPresentation.postMaster(envelope);
+    return true;
+  }
   ensurePresentationOutputChannel()?.postMessage(envelope);
   try {
     localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
@@ -1877,7 +1884,7 @@ async function applyPresentationComposition(candidate) {
   }
   state.presentationHostReadyKey = readyKey;
   await presentationAnimationFrame();
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
     return false;
   }
@@ -2037,7 +2044,7 @@ function applyPresentationDisplayInfo(candidate) {
 }
 
 async function refreshPresentationDisplays({ announceError = false } = {}) {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   if (state.presentationDisplayRefreshTimer !== null) {
     window.clearTimeout(state.presentationDisplayRefreshTimer);
     state.presentationDisplayRefreshTimer = null;
@@ -2068,7 +2075,7 @@ async function refreshPresentationDisplays({ announceError = false } = {}) {
 }
 
 async function showPresentationDisplayIdentifiers({ announceError = false } = {}) {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   const displayIds = (state.presentationDisplayInfo?.displays || [])
     .map((display) => display.id)
     .filter(Boolean);
@@ -2105,7 +2112,7 @@ async function showPresentationDisplayIdentifiers({ announceError = false } = {}
 }
 
 function dismissPresentationDisplayIdentifiers() {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
     return;
   }
@@ -2357,7 +2364,7 @@ function renderPresentationOutputControl() {
   if (!settings || !button || !status) {
     return;
   }
-  const nativeAvailable = typeof tauriInvoke() === "function";
+  const nativeAvailable = typeof tauriInvoke("presentation") === "function";
   settings.classList.toggle("hidden", false);
   if (!nativeAvailable) {
     button.disabled = true;
@@ -2509,12 +2516,15 @@ async function handlePresentationSession(candidate) {
     state.presentationSelectedDisplayId = "";
     setAppMessage(t("display.presentationDisconnected"), true);
     await refreshPresentationDisplays();
+  } else if (window.BilikaraAndroidPresentation && session.phase === "inactive"
+    && session.recoveryReason.startsWith("output")) {
+    setAppMessage(t("display.presentationTransitionFailed", {message:session.recoveryReason}), true);
   }
   return session;
 }
 
 async function activateLocalPresentation() {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   const displayId = state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(displayId);
   if (typeof invoke !== "function" || !selected?.selectable) {
@@ -2530,7 +2540,7 @@ async function activateLocalPresentation() {
 }
 
 async function deactivateLocalPresentation() {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
     throw new Error(t("display.presentationUnavailable"));
   }
@@ -2680,7 +2690,7 @@ function seekHostPlayer(video, audio, targetTime) {
 }
 
 async function acknowledgeControllerCommand(generation, sequence) {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
     throw new Error("Tauri presentation commands are unavailable");
   }
@@ -3040,7 +3050,7 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
 }
 
 function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
-  const invoke = tauriInvoke();
+  const invoke = tauriInvoke("presentation");
   const capturedVideo = session?.video;
   const capturedAudio = session?.audio;
   if (typeof publishPresentationOutputState === "function") {
@@ -3115,7 +3125,8 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
   return tracked;
 }
 
-function tauriEventListen() {
+function tauriEventListen(capability = "desktop") {
+  if (capability === "presentation" && window.BilikaraAndroidPresentation) return window.BilikaraAndroidPresentation.listen;
   if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.event?.listen || null;
 }
@@ -3134,8 +3145,8 @@ function teardownLocalPresentationListeners() {
 }
 
 async function initializeLocalPresentation() {
-  const invoke = tauriInvoke();
-  const listen = tauriEventListen();
+  const invoke = tauriInvoke("presentation");
+  const listen = tauriEventListen("presentation");
   if (typeof invoke !== "function" || typeof listen !== "function") {
     renderPresentationOutputControl();
     return;
@@ -3188,6 +3199,11 @@ async function initializeLocalPresentation() {
       unlistenComposition,
       unlistenCommand,
     );
+    if (window.BilikaraAndroidPresentation) {
+      state.presentationUnlisteners.push(await listen("displays-changed", event => {
+        applyPresentationDisplayInfo(event.payload);
+      }));
+    }
     await handlePresentationSession(await invoke("get_presentation_session"));
     await refreshPresentationDisplays();
   } catch (error) {
@@ -9589,6 +9605,7 @@ function syncTopControlPopoverPositions() {
       return;
     }
     if (popup === elements.cachePanel && globalThis.BilikaraAndroidHost?.isPortrait()) return;
+    if (popup === elements.presentationSettingsPanel && popup.closest(".android-display-settings")) return;
     if (popup === elements.cachePanel && popup.offsetWidth > 0) {
       const style = window.getComputedStyle(popup);
       const borders = (parseFloat(style.borderLeftWidth) || 0)
@@ -17669,6 +17686,7 @@ async function diagnosticResponse(path) {
 }
 
 async function generateDiagnosticsMarkdown() {
+  await globalThis.BilikaraAndroidPresentation?.refreshDiagnostics().catch(() => {});
   const response = await diagnosticResponse("/api/diagnostics/markdown");
   const payload = await response.json();
   return typeof payload?.data?.markdown === "string"

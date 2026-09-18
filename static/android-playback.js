@@ -18,7 +18,7 @@
   }
 
   function blockStart() {
-    if (!document.hidden) return false;
+    if (!document.hidden && window.BilikaraAndroidPresentation?.isForeground() !== false) return false;
     if (!suspended) suspended = capture();
     if (applyingPause) return true;
     const session = state.hostPlaybackSession;
@@ -77,7 +77,7 @@
   }
 
   window.BilikaraAndroidPlayback = {blockStart, interceptIntent, visibilityChanged,
-    diagnostics:() => ({background:document.hidden, resume_pending:Boolean(suspended?.resume),
+    diagnostics:() => ({background:document.hidden || window.BilikaraAndroidPresentation?.isForeground() === false, resume_pending:Boolean(suspended?.resume),
       background_pauses:pauseCount, foreground_resumes:resumeCount})};
   // A native media play event can arrive after an in-flight play() was paused.
   document.addEventListener("play", event => {
@@ -85,5 +85,6 @@
     if (event.target === session?.video || event.target === session?.audio) blockStart();
   }, true);
   window.addEventListener("pagehide", () => { suspended = null; });
+  window.BilikaraAndroidPresentation?.listen("foreground", () => visibilityChanged());
   if (document.hidden) blockStart();
 })();

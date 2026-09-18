@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const source = fs.readFileSync("static/android-playback.js", "utf8");
 
-function fixture(android = true) {
+function fixture(android = true, nativeBridge = false) {
   const listeners = {}, calls = [];
   const media = () => ({paused:false, ended:false, dataset:{playerItemId:"song"}, pause(){this.paused=true;}});
   const video = media(), audio = media();
@@ -14,6 +14,11 @@ function fixture(android = true) {
     localShouldBePlaying:true, localPlaybackStartGeneration:4};
   const document = {hidden:false, addEventListener(name, callback){listeners[name]=callback;}};
   const window = {clearTimeout(id){calls.push(["clear-timer",id]);}, addEventListener(name,cb){listeners[name]=cb;}};
+  let foreground = true;
+  if (nativeBridge) window.BilikaraAndroidPresentation = {
+    isForeground:()=>foreground,
+    listen:(name,callback)=>{listeners[`native-${name}`]=callback;},
+  };
   const context = {state, document, window, isAndroidNativePlaybackRuntime:()=>android,
     activeLocalPlayerElements:()=>({video,audio}),
     isCurrentHostPlaybackSession:(s,v,a)=>s===state.hostPlaybackSession && s.video===v && s.audio===a
@@ -34,10 +39,25 @@ function fixture(android = true) {
   vm.runInNewContext(source,context);
   const api=window.BilikaraAndroidPlayback;
   const hide=value=>{document.hidden=value;api.visibilityChanged();};
-  return {context,state,session,video,audio,window,document,listeners,calls,api,hide};
+  const setForeground = value=>{foreground=value;listeners["native-foreground"]();};
+  return {context,state,session,video,audio,window,document,listeners,calls,api,hide,setForeground};
 }
 
 assert.equal(fixture(false).api,undefined,"Desktop and web Remote must keep existing behavior");
+{
+  const f=fixture(true,true);
+  f.setForeground(false);
+  assert.equal(f.document.hidden,false,"Native background can precede document visibility");
+  assert.ok(f.video.paused && f.audio.paused && f.api.diagnostics().background);
+  f.hide(true);f.setForeground(true);
+  assert.equal(f.video.paused,true,"Both native Activity and DOM must be foreground");
+  f.hide(false);
+  assert.equal(f.video.paused,false);
+  assert.equal(f.calls.filter(c=>c[0]==="android-foreground-resume").length,1);
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"user"});
+  f.setForeground(false);f.setForeground(true);
+  assert.equal(f.video.paused,true,"Native foreground must preserve manual pause");
+}
 {
   const f=fixture();
   f.hide(true);f.hide(true);f.api.blockStart();

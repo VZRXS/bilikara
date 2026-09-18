@@ -2,6 +2,62 @@
 .android-host-only { display: none; }
 .android-fullscreen-remote-button { display: none; }
 
+html[data-host-platform="android"] .android-display-settings #presentation-settings {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  flex: none;
+  box-sizing: border-box;
+}
+html[data-host-platform="android"] .android-display-settings .status-chip-toggle {
+  width: 100%;
+  min-height: 48px;
+  height: auto;
+  text-align: start;
+}
+html[data-host-platform="android"] .android-display-settings .control-label { display: inline; }
+html[data-host-platform="android"] .android-display-settings .presentation-output-panel {
+  position: static !important;
+  transform: none !important;
+  width: 100% !important;
+  min-width: 0;
+  max-height: none;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 12px;
+  box-shadow: none;
+}
+html[data-host-platform="android"] .android-display-settings .presentation-display-list {
+  grid-template-columns: minmax(0, 1fr);
+  max-height: 260px;
+  overflow-y: auto;
+}
+html[data-host-platform="android"] .android-display-settings .presentation-display-option {
+  grid-template-columns: 20px 28px minmax(0, 1fr);
+  gap: 6px;
+}
+html[data-host-platform="android"] .android-display-settings .presentation-display-state {
+  grid-column: 3;
+  text-align: start;
+  font-size: 12px;
+}
+.android-display-hint { font-size: 13px; line-height: 1.6; color: var(--muted); }
+html[data-host-platform="android"] body.is-presentation-control-host #player-frame {
+  aspect-ratio: 16 / 9;
+  height: auto;
+}
+html[data-host-platform="android"] body.is-presentation-control-host .presentation-host-transport-row {
+  grid-template-columns: auto minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+@media (max-width: 420px) {
+  html[data-host-platform="android"] .presentation-host-transport-row {
+    grid-template-columns: 1fr 44px !important;
+  }
+  html[data-host-platform="android"] .presentation-host-progress-wrap { grid-column: 1 / -1; grid-row: 2; }
+}
+
 #android-session-choice {
   width: min(440px, calc(100vw - 32px));
   box-sizing: border-box;

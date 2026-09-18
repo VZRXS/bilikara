@@ -11,7 +11,8 @@ function setup(native = true, orientationType = "portrait-primary") {
     setAttribute(k,v) { this.attrs[k]=String(v); }
     removeAttribute(k) { delete this.attrs[k]; }
     addEventListener(k,fn) { this.listeners[k]=fn; }
-    append(node) { node.parentElement=this; }
+    append(...nodes) { nodes.forEach(node => { node.parentElement=this; this.children.push(node); }); }
+    prepend(node) { node.parentElement=this; this.children.unshift(node); }
     before(node) { node.parentElement=this.parentElement; }
     after(node) { node.parentElement=this.parentElement; }
     querySelectorAll(selector) { return this.children.filter(n=>selector==="button" || (selector.includes("data-request-view") ? n.dataset.requestView : selector.includes("workspace") ? n.dataset.androidWorkspace : n.dataset.androidPage)); }
@@ -39,8 +40,8 @@ function setup(native = true, orientationType = "portrait-primary") {
   const history={state:null,entries:[],replaceState(s){this.state=s;this.entries[this.entries.length-1]=s;},pushState(s){this.state=s;this.entries.push(s);}};
   const calls=[];
   const window={screen:{orientation},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
-  const context={window,history,state,elements,clearTimeout:()=>{},
-    document:{documentElement:root,getElementById:get,querySelector:()=>requestTabs,createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+  const context={window,history,state,elements,clearTimeout:()=>{},t:key=>key,
+    document:{documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     renderHostWorkspaceSelection:()=>window.BilikaraAndroidHost?.syncVisibility(),
     activateHostWorkspace:(name,{inputOrigin}={})=>{state.activeHostWorkspace=name;calls.push(name);window.BilikaraAndroidHost?.workspaceActivated(name,inputOrigin);window.BilikaraAndroidHost?.syncVisibility();},
@@ -56,6 +57,8 @@ assert.equal(desktop.window.BilikaraAndroidHost,undefined);
 assert.equal(desktop.get("cache-settings").parentElement.id,"top-controls");
 assert.deepEqual(desktop.calls,[]);
 const mobile=setup();
+assert.equal(mobile.get("presentation-settings").parentElement.className,"settings-section android-display-settings");
+assert.equal(mobile.get("presentation-settings").parentElement.parentElement.id,"settings-body");
 assert.equal(mobile.root.dataset.androidPage,"playback");
 assert.equal(mobile.elements.hostWorkspaceRegion.hidden,true);
 assert.equal(mobile.get("cache-settings").parentElement.id,"android-settings-slot");

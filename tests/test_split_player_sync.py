@@ -5938,8 +5938,8 @@ const supportsFS = supportsPlayerFullscreen();
 
 console.log(JSON.stringify({ isTauriWK, supportsFS }));
 """,
-            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke()"),
-            self._slice("function tauriInvoke()", "function syncApplicationRestartAvailability()"),
+            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke("),
+            self._slice("function tauriInvoke(", "function syncApplicationRestartAvailability()"),
         )
         self.assertTrue(result["isTauriWK"])
         self.assertTrue(result["supportsFS"])
@@ -5955,7 +5955,7 @@ const isTauriWK = isTauriWebKitRuntime();
 
 console.log(JSON.stringify({ isWebKit, isTauriWK }));
 """,
-            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke()"),
+            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke("),
         )
         self.assertFalse(result["isWebKit"])
         self.assertFalse(result["isTauriWK"])
