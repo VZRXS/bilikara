@@ -255,9 +255,10 @@ exercises that bundle policy in source launches. Unsupported media operations
 fail explicitly; missing companion support does not authorize installing or
 falling back to a media CLI. Corruption remains distinct from unsupported media.
 
-Runtime updates, remaining maintenance/rating/catalog-publication features,
-external-tool provisioning, full desktop lifecycle parity, default backend
-cutover and Python packaging retirement remain separate work. Physical
+Update checking is covered below. Update installation, remaining
+maintenance/rating/catalog-publication features, external-tool provisioning,
+full desktop lifecycle parity, default backend cutover and Python packaging
+retirement remain separate work. Physical
 multi-display, native dialogs and platform-specific process behavior require
 their own Windows/macOS/device validation.
 
@@ -290,3 +291,166 @@ identities and order. Source changes replace attempts; late results cannot own
 a replacement. Reader leases still govern collection. Missing/incompatible
 executables and unsupported outputs fail explicitly without Native substitution
 or Python/media-CLI fallback.
+
+### Update checking in the Rust Desktop Host
+
+v0.8.0-preview.1 is published and development continues on `work/v0.8.0`. Step
+1-2B - settings, legacy import, BBDown/DownKyi execution, tool readiness and the
+scoped CI - is closed.
+
+The desktop Host answers `GET /api/app/update/status` and
+`POST /api/app/update/check` with a real check-only result instead of the
+earlier `unavailable` placeholder. It fetches release metadata and nothing else.
+No archive transfer, staging, executable replacement, update helper or restart
+belongs to this path, and automatic installation stays unavailable: release
+metadata alone does not prove an installable native replacement.
+
+The check reuses the shared `decide_release_update` channel policy and the
+shared update-asset scoring, which `bilikara_rust` now exports as a typed rlib
+API rather than only through its JSON/FFI adapter, so there is no
+Rust-to-JSON-to-Rust round trip. Desktop keeps its own established source order,
+the GitHub API first and then the mirror, matching `bilikara/updater.py`; it
+does not adopt Android's mirror-first `releases.json` or its APK selection.
+Stable checks read the `/latest` document and preview checks read the release
+list. Release I/O is bounded to 1 MiB with a 10 second timeout per source, runs
+outside the AppState lock, and uses the shared TLS/trusted-source client. A
+release is accepted only when its tag is a bounded ASCII tag and its page is the
+published release page, and the page URL is then reconstructed from that
+validated tag.
+
+Version eligibility, compatible-asset availability and installation capability
+remain three separate facts - `eligible_update`, `asset_available` and
+`auto_update_supported`, the last always false here. A network or schema failure
+becomes `failed`, never an up-to-date success. The deliberate preview-to-stable
+switch is preserved, including when the stable version is numerically lower.
+Windows/macOS descriptors are never confused with the Android APK in the same
+release, because the shared scoring accepts only platform-matched `.zip`
+packages.
+
+The current version, platform and architecture come from trusted local
+configuration: the launcher's `BILIKARA_VERSION` override first, then the
+`APP_VERSION` file the bundle build writes beside the shared assets. An
+unresolved version stays empty and the shared policy then treats the build as a
+development build; nothing is taken from an HTTP payload, a published tag or a
+crate version. A source checkout without `APP_VERSION` therefore checks as a
+development build unless `BILIKARA_VERSION` is set.
+
+The desktop application-operation guard was narrowly replaced, not lifted. Only
+the status and check routes are admitted; Android install/finish, shutdown,
+external-link, maintenance and rating operations still report unavailable,
+`/api/app/*` is not broadly exposed, and Host-only authorization is unchanged,
+so Remote clients cannot acquire update control. Requests cannot select an
+endpoint, path or destination, and no Bilibili cookie, bootstrap credential or
+shutdown token reaches a release endpoint or appears in status or logging.
+Repeated checks are bounded by the existing busy guard, a superseded check
+cannot overwrite a newer result, and a completion after shutdown cannot mutate a
+stopped Host.
+
+The `app_update` capability now reports available on desktop as well, so the
+capability projection no longer contradicts the working route. Automatic startup
+checking is still skipped on a native Host without the Android platform bridge,
+which is what keeps desktop checking manual.
+
+The Host UI is unchanged. Its existing update control already renders a
+check-only result: with `auto_update_supported` false it offers to view the
+version and shows the backend message, which carries the release page URL
+because this preview has no external-link integration. Automatic startup
+checking stays off on desktop and this increment adds no periodic background
+check. Only the native path's corresponding Python update-check orchestration is
+bypassed; the default Python updater, its install/restart path, transport,
+launcher, FFI/DTO/persistence and packaging consumers are untouched.
+
+#### Independent review of the desktop update check (scoped PASS)
+
+An independent reviewer session, separate from the implementation author,
+inspected the code and tests rather than the implementation summary, and
+re-ran the checks itself. Scoped result: PASS. A PASS authorises neither a
+release nor the default backend cutover.
+
+State of this increment: implementation complete; implementation self-tests
+complete; independent review complete with the evidence below; committed
+locally only. Not pushed. No Actions run was dispatched, no tag or release was
+touched, `v0.8.0-preview.1` is unchanged, and there is no physical Windows,
+macOS or Android device evidence for this delta.
+
+Reviewer-executed commands, all against the current working tree:
+
+| Command | Result |
+| :--- | :--- |
+| `cd rust && cargo fmt --check` | PASS |
+| `cd rust && cargo clippy --all-targets --locked -- -D warnings` | PASS |
+| `cd rust && cargo test --locked` | PASS, 220 tests |
+| `cd rust && cargo build --release --locked` | PASS |
+| `cd rust-runtime && cargo fmt --check` | PASS |
+| `cd rust-runtime && cargo clippy --all-targets --locked -- -D warnings` | PASS |
+| `cd rust-runtime && cargo clippy --all-targets --locked --features native-host -- -D warnings` | PASS |
+| `cd rust-runtime && cargo test --locked` | PASS, 228 tests |
+| `cd rust-runtime && cargo test --locked --features native-host --lib` | PASS, 283 tests, 9 consecutive clean runs |
+| `cd rust-runtime && cargo build --release --locked --features native-host` | PASS |
+| `BILIKARA_REQUIRE_RUST_LIB=1 python -m unittest discover -s tests` | PASS, `Ran 1668 tests`, `OK (skipped=18)` |
+| `python -m compileall -q bilikara`, `python -m py_compile start_bilikara.py build_bundle.py` | PASS |
+| `git diff --check` | PASS |
+
+Endpoint and state integration was exercised against the real
+`bilikara-desktop-host` executable, not only through helper tests. A reviewer
+harness ran the production binary behind the repository's own non-forwarding
+TLS fixture, with `api.github.com` deliberately absent from the fixture
+certificate, and confirmed over real HTTP: the idle projection, the trusted
+`BILIKARA_VERSION` current version, `capabilities.app_update` and `app.version`
+agreeing with `/api/state`; `/api/app/update/check` agreeing byte for byte with
+`/api/app/update/status` and with `/api/state`'s `app_update` on every
+transition; the primary-to-mirror source fallback actually occurring; a request
+being unable to redefine the trusted version or platform; the release page URL
+reconstructed from the validated tag; stable and preview channels; the three
+separate facts `eligible_update`, `asset_available` and `auto_update_supported`;
+`400` on a missing or non-boolean channel; `403` for a client without the Host
+capability; `501` for install, finish, rating, external-link and
+`GET /api/app/update`; `403` for shutdown, which its own token guard rejects
+before the desktop guard; no `libpython` mapping and no child process in the
+serving process; and no archive, package or installer written anywhere under the
+preview data directory. 39 of 40 reviewer assertions passed; the single
+mismatch was the reviewer's own expectation of `501` rather than `403` for
+shutdown, which is the stricter outcome, not a defect.
+
+Limits of this review, stated rather than inferred:
+
+- The browser-rendered assertions added to `tests/live_desktop_rust_host.js`
+  were NOT executed. That script fails earlier, at its existing
+  `[data-action="toggle-audio-variants"]` click on the Remote page, because the
+  variant list fits inline at the Remote viewport width and
+  `syncAudioVariantLayout` then hides the toggle. The reviewer reproduced the
+  identical failure from an unmodified `HEAD` checkout, so it pre-dates this
+  increment and belongs to the accepted UI work in `150f00d`, not here. The
+  backend contract those assertions would check was verified directly instead;
+  the rendered button text itself remains unverified.
+- No packaged-platform evidence. Windows and macOS package selection is
+  exercised only with synthetic descriptors on Linux, where the shared policy
+  correctly reports no compatible package.
+- No live release or account service was contacted; all release metadata came
+  from local fixtures.
+- `src-tauri` checks and `npm run build` were not rerun, because no `src-tauri`
+  or `static/` file changed in this increment.
+- `rust-runtime/tests/native_host_http.rs` fails intermittently (2 of 7
+  reviewer runs) on `/api/diagnostics/markdown`. Its client timeout of 5 s
+  races the 5 s connectivity-probe timeout in `diagnostics.rs`; both values are
+  unchanged at `HEAD` and no file in this increment touches that path. It is a
+  pre-existing environment-dependent flake, filed separately.
+- `rust-runtime/src/native_host_storage.rs` is modified in the working tree by
+  separate flake-fix work and was deliberately EXCLUDED from this increment's
+  commit. The reviewer confirmed the increment does not depend on it: with that
+  file reverted to `HEAD`, the native-host library suite still passed 283 tests
+  in 4 consecutive runs.
+
+Remaining Python consumers, unchanged by this increment: `bilikara/updater.py`
+still owns the default desktop update check, download, install and restart
+path; `bilikara/server.py` still routes `/api/app/update/*` for the default
+Python Host; `bilikara/config.py` still resolves `APP_VERSION`; and
+`build_bundle.py` and the packaging scripts still produce the Python bundle.
+Completing the native check/status loop does not delete the default Python
+install and restart responsibilities or the packaging responsibilities, and it
+does not schedule the historical Python groups as blockers.
+
+Next documented action: none is scheduled by this review. Update installation,
+the default backend cutover, Python packaging retirement, the pre-existing
+Remote audio-variant harness blocker and the `native_host_http` flake remain
+separate, individually unauthorized work.

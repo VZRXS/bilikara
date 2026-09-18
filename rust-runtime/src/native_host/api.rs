@@ -43,13 +43,13 @@ pub(super) fn dispatch(
             with_app(|app| app.native_authorize(identity, true))?;
         }
         if method == Method::GET && path == "/api/app/update/status" {
-            return Ok(
-                json!({"state":"unavailable","available":false,"message":"Desktop Rust preview: updater is unavailable"}),
-            );
+            return updates::desktop_status(identity);
         }
-        if (path.starts_with("/api/app/") && path != "/api/app/update/status")
-            || path.starts_with("/api/rating/")
-        {
+        // Narrowly admit the check-only update loop. Android install/finish,
+        // shutdown, external-link, maintenance and rating operations stay
+        // unavailable; `/api/app/*` is not broadly exposed.
+        let admitted = matches!(path, "/api/app/update/status" | "/api/app/update/check");
+        if (path.starts_with("/api/app/") && !admitted) || path.starts_with("/api/rating/") {
             return Err(desktop::unavailable());
         }
     }
@@ -130,7 +130,7 @@ pub(super) fn dispatch(
         return preferences::update(context, identity, &body);
     }
     if path.starts_with("/api/app/update/") {
-        return updates::route(identity, path, &body);
+        return updates::route(context, identity, path, &body);
     }
     if path.starts_with("/api/internet-remote/") {
         return internet::route(context, identity, path, &body);

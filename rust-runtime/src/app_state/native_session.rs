@@ -74,6 +74,12 @@ pub(crate) struct Identity {
     pub client: String,
 }
 
+/// The AppState is a process-wide singleton, so the unit tests that own it must
+/// run one at a time. Without this the parallel test threads observe each
+/// other's native session, storage lock and background leases.
+#[cfg(test)]
+pub(crate) static GLOBAL_APP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn with_app<T>(
     action: impl FnOnce(&mut AppState) -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
@@ -328,8 +334,9 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":!session.desktop,"catalog_write":!session.desktop,"maintenance":!session.desktop});
-        value["app"] = json!({"version":"0.8.0-preview.0","releases_url":"https://github.com/VZRXS/bilikara/releases"});
+        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"catalog_write":!session.desktop,"maintenance":!session.desktop});
+        value["app"] = json!({"version":session.updates.version_label().unwrap_or_else(|| "0.8.0-preview.0".to_owned()),
+            "releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
         value["cache_policy"] = session
@@ -380,11 +387,10 @@ impl AppState {
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
         if host {
-            value["app_update"] = if session.desktop {
-                json!({"state":"unavailable","available":false,"message":"Desktop Rust preview: updater is unavailable"})
-            } else {
-                session.updates.snapshot()
-            };
+            // One authoritative update status for both platforms. The desktop
+            // check-only loop and the Android loop project the same state the
+            // status route returns; there is no second placeholder projection.
+            value["app_update"] = session.updates.snapshot();
         }
         value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
         if value["cache_policy"]["enabled"] == false {

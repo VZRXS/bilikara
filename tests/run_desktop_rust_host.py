@@ -111,6 +111,24 @@ def main():
                     body = body[first:last+1]
                     status = 206
                 headers["Accept-Ranges"] = "bytes"
+            elif name in ["/bilikara/releases", "/bilikara/releases/latest"]:
+                # Desktop release metadata only. api.github.com is deliberately
+                # absent from the fixture certificate, so the desktop check has
+                # to fall back from its primary source to this mirror.
+                release = {
+                    "tag_name": "v0.8.1", "draft": False, "prerelease": False,
+                    "name": "bilikara v0.8.1",
+                    "html_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.1",
+                    "assets": [
+                        {"name": "bilikara-v0.8.1-windows-x64.zip", "label": "",
+                         "content_type": "application/zip",
+                         "browser_download_url": "https://github.com/VZRXS/bilikara/releases/download/v0.8.1/bilikara-v0.8.1-windows-x64.zip"},
+                        {"name": "bilikara-v0.8.1-android-arm64.apk", "label": "",
+                         "content_type": "application/vnd.android.package-archive",
+                         "browser_download_url": "https://github.com/VZRXS/bilikara/releases/download/v0.8.1/bilikara-v0.8.1-android-arm64.apk"},
+                    ],
+                }
+                body = release if name.endswith("/latest") else [release]
             elif name in ["/api/catalog/search", "/search", "/api/search"]:
                 body = [{"title":"Desktop fixture catalog","bvid":"BV1xx411c7mD","url":"https://www.bilibili.com/video/BV1xx411c7mD"}]
             else:
@@ -133,6 +151,8 @@ def main():
             env = dict(os.environ, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
             env["NODE_PATH"] = env.get("NODE_PATH", "/tmp/bilikara-pw/node_modules")
             env["BILIKARA_CATALOG_SHEETS_URL"] = "http://127.0.0.1:1/disabled-fixture.csv"
+            # The trusted launcher override the desktop update check reads.
+            env["BILIKARA_VERSION"] = "0.8.0"
             env["DESKTOP_FIXTURE_CONTROL"] = f"http://127.0.0.1:{fixture.server.server_port}"
             # Restrict only the application, not fixture generation or WebKit.
             application_path = media / "application-path"

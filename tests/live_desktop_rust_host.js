@@ -173,8 +173,27 @@ async function capture(name, target) {
   console.log("CSV, PNG, ZIP and browser download passed");
   const catalog=await okay("/api/catalog/search?q=desktop-fixture&limit=20");
   assert.equal(catalog.items[0].bvid,"BV1xx411c7mD");
+  // Check-only desktop updates: a real request reaches the shared release
+  // decision through the trusted-source fallback and installs nothing.
+  assert.equal((await api("/api/app/update/check",{})).status,400);
+  const checked=await okay("/api/app/update/check",{include_preview:false});
+  assert.equal(checked.state,"available");
+  assert.equal(checked.update_action,"normal_upgrade");
+  assert.equal(checked.current_version,"0.8.0");
+  assert.equal(checked.latest_version,"v0.8.1");
+  assert.equal(checked.include_preview,false);
+  assert.equal(checked.eligible_update,true);
+  // Linux ships no desktop package, and this Host could not install one anyway.
+  assert.equal(checked.asset_available,false);
+  assert.equal(checked.auto_update_supported,false);
+  assert.equal(checked.platform_auto_update_supported,false);
+  assert.deepEqual((await api("/api/app/update/status")).body.data,checked);
+  assert.deepEqual((await okay("/api/state")).app_update,checked);
+  await page.waitForFunction(()=>state.data?.app_update?.state==="available");
+  assert.match(await page.locator("#update-check-button").textContent(),/v0\.8\.1/);
   // Known unsupported actions report unavailable rather than fake readiness.
-  assert.equal((await api("/api/app/update/check",{})).status,501);
+  for(const route of ["/api/app/update/install","/api/app/update/finish","/api/rating/submit"])
+    assert.equal((await api(route,{include_preview:false})).status,501,route);
   await remoteContext.close(); await host.close();
   await stop(ready);
   ready=await launch(); host=await browser.newContext({viewport:{width:1440,height:1000}}); page=await host.newPage();

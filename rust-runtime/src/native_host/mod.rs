@@ -253,6 +253,11 @@ fn start(
         }
         let session = app.native();
         session.desktop = desktop;
+        if desktop {
+            // One authority for the check-only update loop: the same state the
+            // status route and the SSE projection read.
+            session.updates = updates::UpdateState::desktop(desktop::update_facts());
+        }
         session.bbdown_available = bbdown.is_some();
         session.host_token = host_token.clone();
         session.invite = invite;

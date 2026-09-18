@@ -169,6 +169,87 @@ fn desktop_font_path() -> Result<PathBuf, String> {
         .ok_or("Desktop font path unavailable".into())
 }
 
+// Trusted desktop facts for the check-only update loop, resolved once from
+// local configuration before the listener starts. Same scope as FONT above.
+static UPDATE_FACTS: std::sync::OnceLock<updates::DesktopUpdateFacts> = std::sync::OnceLock::new();
+
+const PLATFORM: &str = if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "linux") {
+    "linux"
+} else {
+    "unknown"
+};
+
+/// Mirrors the established `normalize_machine_arch` spellings. The target
+/// architecture is a compile-time fact of this executable.
+fn machine_arch() -> String {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "x86",
+        other => other,
+    }
+    .to_owned()
+}
+
+fn sane_version(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 80
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b".-+_".contains(&c))
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn read_version_file(path: &Path) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > 256 {
+        return None;
+    }
+    sane_version(std::fs::read_to_string(path).ok()?.lines().next()?)
+}
+
+/// Resolves the current version from trusted local configuration only: the
+/// launcher's `BILIKARA_VERSION` override first, which is the same override
+/// `bilikara/config.py` and `build_bundle.py` honor, then the `APP_VERSION`
+/// file the bundle build writes beside the shared assets. An unresolved
+/// version stays empty, and the shared release policy then treats this build
+/// as a development build. It is never taken from an HTTP payload, a published
+/// tag or an unrelated crate version.
+fn resolve_update_facts(assets: &Path) -> updates::DesktopUpdateFacts {
+    facts_from(std::env::var("BILIKARA_VERSION").ok().as_deref(), assets)
+}
+
+fn facts_from(launcher_version: Option<&str>, assets: &Path) -> updates::DesktopUpdateFacts {
+    let version = launcher_version
+        .and_then(sane_version)
+        .or_else(|| read_version_file(&assets.parent()?.join("APP_VERSION")))
+        .unwrap_or_default();
+    updates::DesktopUpdateFacts {
+        version,
+        platform: PLATFORM.to_owned(),
+        arch: machine_arch(),
+    }
+}
+
+pub(super) fn update_facts() -> updates::DesktopUpdateFacts {
+    UPDATE_FACTS
+        .get()
+        .cloned()
+        .unwrap_or_else(|| updates::DesktopUpdateFacts {
+            version: String::new(),
+            platform: PLATFORM.to_owned(),
+            arch: machine_arch(),
+        })
+}
+
 pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     #[cfg(unix)]
     unsafe {
@@ -215,6 +296,7 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     }
     let directory = preview_root(&directory)?;
     let _ = FONT.set(assets.join("fonts/SourceHanSans-VF.ttf"));
+    let _ = UPDATE_FACTS.set(resolve_update_facts(&assets));
     crate::playlist_export::prewarm_fonts(&desktop_font_path()?).map_err(|e| e.message)?;
     let seed: AppStateSeed = serde_json::from_value(json!({"session_started_at":now(),
         "session_played_file":format!("played-native-{}.json", (now()*1000.0) as u64),"updated_at":now()})).map_err(|e| e.to_string())?;
@@ -253,6 +335,51 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_version_comes_only_from_trusted_local_configuration() {
+        let root = std::env::temp_dir().join(format!("desktop-version-{}", token().unwrap()));
+        let assets = root.join("static");
+        std::fs::create_dir_all(&assets).unwrap();
+
+        // Nothing configured: a development build. The shared release policy
+        // handles that explicitly; no version is invented from a crate version,
+        // a published tag or an Android default.
+        let development = facts_from(None, &assets);
+        assert_eq!(development.version, "");
+        assert_eq!(development.platform, PLATFORM);
+        assert_eq!(development.arch, machine_arch());
+        assert!(!development.arch.is_empty());
+
+        // The bundle build writes APP_VERSION beside the shared assets.
+        std::fs::write(root.join("APP_VERSION"), "0.8.0\n").unwrap();
+        assert_eq!(facts_from(None, &assets).version, "0.8.0");
+        // The launcher override takes precedence over the packaged file.
+        assert_eq!(
+            facts_from(Some("v0.8.0-preview.1"), &assets).version,
+            "v0.8.0-preview.1"
+        );
+        // An unusable override falls back to the file rather than being trusted.
+        assert_eq!(facts_from(Some("  "), &assets).version, "0.8.0");
+        assert_eq!(
+            facts_from(Some("0.8.0 || curl evil"), &assets).version,
+            "0.8.0"
+        );
+
+        // Malformed and oversized files are ignored, not trusted.
+        for contents in ["0.8.0 ; rm -rf /\n", "开发版\n", ""] {
+            std::fs::write(root.join("APP_VERSION"), contents).unwrap();
+            assert_eq!(facts_from(None, &assets).version, "", "{contents:?}");
+        }
+        std::fs::write(root.join("APP_VERSION"), "v".repeat(300)).unwrap();
+        assert_eq!(facts_from(None, &assets).version, "");
+        // A directory or a symlink in that position is not a version file.
+        std::fs::remove_file(root.join("APP_VERSION")).unwrap();
+        std::fs::create_dir(root.join("APP_VERSION")).unwrap();
+        assert_eq!(facts_from(None, &assets).version, "");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn isolated_root_never_enrolls_existing_data() {
         let root = std::env::temp_dir().join(format!("desktop-root-{}", token().unwrap()));

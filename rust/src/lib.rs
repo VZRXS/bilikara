@@ -23,6 +23,9 @@ mod url_utils;
 mod version;
 mod video_stream_ranking;
 
+pub use asset_selection::{
+    UpdateAssetCandidate, UpdateAssetSelection, UpdateAssetTarget, select_update_asset,
+};
 pub use audio_binding::{
     AudioBindingDecision, AudioBindingError, AudioBindingMode, AudioBindingRequest,
     AudioBindingResult, AudioPageDescriptor, decide_audio_binding,

@@ -316,6 +316,9 @@ mod tests {
 
     #[test]
     fn successful_login_refreshes_library_once_but_stale_or_failed_login_does_not() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory =
             std::env::temp_dir().join(format!("bilikara-login-library-{}", token().unwrap()));
         fs::create_dir_all(&directory).unwrap();

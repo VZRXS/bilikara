@@ -7,17 +7,41 @@ use crate::asset_tokens::{
 
 const SCHEMA_VERSION: u32 = 1;
 
+/// Immutable host-gathered platform facts. The caller resolves these from
+/// trusted local configuration; they are never taken from a network payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAssetTarget {
+    pub platform: String,
+    pub arch: String,
+}
+
+/// One release asset descriptor, supplied in the release's own asset order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAssetCandidate {
+    pub name: String,
+    pub label: String,
+    pub browser_download_url: String,
+    pub content_type: String,
+}
+
+/// A position into the candidate slice, or no compatible asset for this target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAssetSelection {
+    Selected { selected_index: usize },
+    NoMatch,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SelectionRequest {
     schema_version: u32,
-    target: Target,
+    target: TargetWire,
     assets: Vec<AssetDescriptor>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Target {
+struct TargetWire {
     platform: String,
     arch: String,
 }
@@ -53,7 +77,7 @@ struct SelectionResponse {
     scores: Vec<AssetScore>,
 }
 
-fn asset_text(asset: &AssetDescriptor) -> String {
+fn asset_text(asset: &UpdateAssetCandidate) -> String {
     [
         asset.name.as_str(),
         asset.label.as_str(),
@@ -64,7 +88,7 @@ fn asset_text(asset: &AssetDescriptor) -> String {
     .to_lowercase()
 }
 
-fn score_asset_for_target(asset: &AssetDescriptor, target: &Target) -> i32 {
+fn score_asset_for_target(asset: &UpdateAssetCandidate, target: &UpdateAssetTarget) -> i32 {
     if !is_downloadable_archive(&asset.name, &asset.browser_download_url) {
         return -1;
     }
@@ -129,7 +153,29 @@ fn score_asset_for_target(asset: &AssetDescriptor, target: &Target) -> i32 {
     platform_score + arch_score
 }
 
-fn select_update_asset(request: SelectionRequest) -> Option<SelectionResponse> {
+/// Scores each candidate for the target and returns the best eligible position.
+///
+/// Ties keep the earliest candidate. A target platform without an in-place
+/// update package, or a release that only ships assets for other platforms,
+/// returns `NoMatch`; that is a valid domain decision, not a failure.
+pub fn select_update_asset(
+    target: &UpdateAssetTarget,
+    assets: &[UpdateAssetCandidate],
+) -> UpdateAssetSelection {
+    assets
+        .iter()
+        .enumerate()
+        .map(|(position, asset)| (position, score_asset_for_target(asset, target)))
+        .filter(|(_, score)| *score >= 0)
+        .max_by_key(|(position, score)| (*score, std::cmp::Reverse(*position)))
+        .map_or(UpdateAssetSelection::NoMatch, |(position, _)| {
+            UpdateAssetSelection::Selected {
+                selected_index: position,
+            }
+        })
+}
+
+fn select_update_asset_wire(request: SelectionRequest) -> Option<SelectionResponse> {
     if request.schema_version != SCHEMA_VERSION
         || request
             .assets
@@ -139,20 +185,38 @@ fn select_update_asset(request: SelectionRequest) -> Option<SelectionResponse> {
         return None;
     }
 
-    let scores: Vec<AssetScore> = request
+    let target = UpdateAssetTarget {
+        platform: request.target.platform,
+        arch: request.target.arch,
+    };
+    let candidates: Vec<UpdateAssetCandidate> = request
         .assets
         .iter()
-        .map(|asset| AssetScore {
-            original_index: asset.original_index,
-            score: score_asset_for_target(asset, &request.target),
+        .map(|asset| UpdateAssetCandidate {
+            name: asset.name.clone(),
+            label: asset.label.clone(),
+            browser_download_url: asset.browser_download_url.clone(),
+            content_type: asset.content_type.clone(),
         })
         .collect();
 
-    let selected_index = scores
+    let scores: Vec<AssetScore> = request
+        .assets
         .iter()
-        .filter(|entry| entry.score >= 0)
-        .max_by_key(|entry| (entry.score, std::cmp::Reverse(entry.original_index)))
-        .map(|entry| entry.original_index);
+        .zip(candidates.iter())
+        .map(|(wire, asset)| AssetScore {
+            original_index: wire.original_index,
+            score: score_asset_for_target(asset, &target),
+        })
+        .collect();
+
+    // Indexes are strictly increasing, so the typed position maps back exactly.
+    let selected_index = match select_update_asset(&target, &candidates) {
+        UpdateAssetSelection::Selected { selected_index } => {
+            Some(request.assets[selected_index].original_index)
+        }
+        UpdateAssetSelection::NoMatch => None,
+    };
     let status = if selected_index.is_some() {
         SelectionStatus::Selected
     } else {
@@ -174,7 +238,7 @@ fn select_update_asset(request: SelectionRequest) -> Option<SelectionResponse> {
 /// failed. A valid request with no eligible asset returns a `no_match` response.
 pub(crate) fn select_update_asset_json(request_json: &str) -> Option<String> {
     let request: SelectionRequest = serde_json::from_str(request_json).ok()?;
-    let response = select_update_asset(request)?;
+    let response = select_update_asset_wire(request)?;
     serde_json::to_string(&response).ok()
 }
 
@@ -204,6 +268,96 @@ mod tests {
 
     fn response(request_json: &str) -> Value {
         serde_json::from_str(&select_update_asset_json(request_json).unwrap()).unwrap()
+    }
+
+    fn candidate(name: &str, url: &str) -> UpdateAssetCandidate {
+        UpdateAssetCandidate {
+            name: name.into(),
+            label: String::new(),
+            browser_download_url: url.into(),
+            content_type: "application/zip".into(),
+        }
+    }
+
+    #[test]
+    fn typed_selection_keeps_desktop_packages_apart_from_other_platform_assets() {
+        let release = [
+            candidate(
+                "bilikara-v0.8.0-android-arm64.apk",
+                "https://example/bilikara-v0.8.0-android-arm64.apk",
+            ),
+            candidate("bilikara-v0.8.0-linux-x64.zip", "https://example/linux.zip"),
+            candidate(
+                "bilikara-v0.8.0-windows-x64.zip",
+                "https://example/windows.zip",
+            ),
+            candidate(
+                "bilikara-v0.8.0-macos-universal2.zip",
+                "https://example/macos.zip",
+            ),
+        ];
+        let windows = UpdateAssetTarget {
+            platform: "windows".into(),
+            arch: "x64".into(),
+        };
+        assert_eq!(
+            select_update_asset(&windows, &release),
+            UpdateAssetSelection::Selected { selected_index: 2 }
+        );
+        let macos = UpdateAssetTarget {
+            platform: "macos".into(),
+            arch: "arm64".into(),
+        };
+        assert_eq!(
+            select_update_asset(&macos, &release),
+            UpdateAssetSelection::Selected { selected_index: 3 }
+        );
+        // An APK is not a desktop package even when it is the only asset.
+        for target in ["windows", "macos"] {
+            assert_eq!(
+                select_update_asset(
+                    &UpdateAssetTarget {
+                        platform: target.into(),
+                        arch: "x64".into(),
+                    },
+                    &release[..1],
+                ),
+                UpdateAssetSelection::NoMatch
+            );
+        }
+        // Linux has no in-place update package; that is a decision, not an error.
+        assert_eq!(
+            select_update_asset(
+                &UpdateAssetTarget {
+                    platform: "linux".into(),
+                    arch: "x64".into(),
+                },
+                &release,
+            ),
+            UpdateAssetSelection::NoMatch
+        );
+        assert_eq!(
+            select_update_asset(&windows, &[]),
+            UpdateAssetSelection::NoMatch
+        );
+    }
+
+    #[test]
+    fn typed_selection_keeps_the_earliest_candidate_on_equal_scores() {
+        let release = [
+            candidate("bilikara-windows-x64-a.zip", "https://example/a.zip"),
+            candidate("bilikara-windows-x64-b.zip", "https://example/b.zip"),
+        ];
+        assert_eq!(
+            select_update_asset(
+                &UpdateAssetTarget {
+                    platform: "windows".into(),
+                    arch: "x64".into(),
+                },
+                &release,
+            ),
+            UpdateAssetSelection::Selected { selected_index: 0 }
+        );
     }
 
     #[test]
