@@ -10069,24 +10069,24 @@ body.is-presentation-stage-only .left-column {
 }
 
 /* Keep the title intact; move the tab group below it when the panel is narrow. */
-:root:not([data-host-platform="android"]) .request-workspace-head.host-peer-head {
+:root:not([data-android-layout="portrait"]) .request-workspace-head.host-peer-head {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
 }
 
-:root:not([data-host-platform="android"]) .request-workspace-head > .host-peer-heading {
+:root:not([data-android-layout="portrait"]) .request-workspace-head > .host-peer-heading {
   display: block;
   flex: 0 0 auto;
   max-width: 100%;
 }
 
-:root:not([data-host-platform="android"]) .request-workspace-head h2 {
+:root:not([data-android-layout="portrait"]) .request-workspace-head h2 {
   overflow: visible;
   white-space: normal;
 }
 
-:root:not([data-host-platform="android"]) .request-workspace-head > .request-subview-tabs {
+:root:not([data-android-layout="portrait"]) .request-workspace-head > .request-subview-tabs {
   flex: 0 1 auto;
   max-width: 100%;
   margin-inline-start: auto;
@@ -11671,7 +11671,6 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) .native-alpha-
 /* These desktop-only/deferred capabilities remain unavailable on Android.
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
-  #presentation-settings,
   #application-restart-row, #diagnostic-package-button,
   #developer-mode-trigger, #ffmpeg-status-row
 ) { display: none !important; }
@@ -11680,14 +11679,14 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
    phone. Keep the shared controls and DOM/tab order, but stack their labels
    and wrap touch targets inside the native Host's scrollable tray. */
 @media (max-width: 900px) {
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls > .av-sync-panel,
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls > .volume-panel {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls > .av-sync-panel,
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls > .volume-panel {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     overflow: visible;
   }
 
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls .av-sync-controls {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
     width: 100%;
     min-width: 0;
     max-width: 100%;
@@ -11696,18 +11695,18 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
     justify-self: stretch;
   }
 
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls .av-sync-controls > button {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > button {
     flex: 1 0 60px;
     min-height: 44px;
   }
 
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls .av-sync-input-wrap {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-input-wrap {
     flex: 1 0 112px;
     min-width: 0;
     min-height: 44px;
   }
 
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls .volume-controls {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .volume-controls {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr) auto;
     width: 100%;
@@ -11715,7 +11714,7 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
     justify-self: stretch;
   }
 
-  html[data-native-host="true"]:not([data-host-platform="desktop"]) .app-shell .stage-extended-controls .volume-slider {
+  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .volume-slider {
     width: 100%;
     min-width: 0;
     min-height: 44px;

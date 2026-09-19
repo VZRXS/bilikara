@@ -14,11 +14,13 @@ class MainActivity : TauriActivity() {
   private val hostWindowControls = HostWindowControls(this)
   private val hostExports = HostExports(this)
   private val hostPlatform = HostPlatform(this)
+  private val hostPresentation by lazy { HostPresentation(this) }
 
   @Keep
   fun installHostWindowControls(webView: WebView, origin: String): Boolean {
     hostExports.install(webView, origin)
     hostPlatform.install(webView, origin)
+    hostPresentation.install(webView, origin)
     return hostWindowControls.install(webView, origin)
   }
 
@@ -29,7 +31,22 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     HostWindowInsets.install(findViewById(android.R.id.content))
-    // Foreground HDMI mirror testing only; this is not a background wake lock.
+    // Foreground playback and external presentation, not a background wake lock.
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    hostPresentation.setForeground(true)
+  }
+
+  override fun onPause() {
+    hostPresentation.setForeground(false)
+    super.onPause()
+  }
+
+  override fun onDestroy() {
+    hostPresentation.destroy()
+    super.onDestroy()
   }
 }

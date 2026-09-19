@@ -9,6 +9,8 @@ signed release. The technical bootstrap names `android-alpha.html` and
 
 ## Included in this acceptance round
 
+- One adaptive Android Host layout with Auto/Desktop/Phone and independent
+  system/landscape/portrait preferences. See [adaptive layout](android-layout.md).
 - Compact landscape upcoming-song panel, with scrollable following songs.
 - Queue move requests accept the shared Host's `index` field. Cache usage counts
   actual private media bytes (including partial downloads); cached-song counts
@@ -49,10 +51,11 @@ still needs applying if the online catalog Worker has not yet been updated.
 
 ## Deferred by the user
 
-Independent dual-screen output, general external-link integration, developer
-mode and diagnostic ZIP packages. Continue using the existing system WiFi/HDMI
-mirror. Neither real hardware display latency nor long-session reliability is
-claimed by desktop browser or emulator tests.
+General external-link integration, developer mode and diagnostic ZIP packages.
+Independent Android audience output is now implemented; see the
+[external-display guide](android-external-display.md). System WiFi/HDMI mirroring
+remains the fallback. Neither real hardware display latency nor long-session
+reliability is claimed by desktop browser or emulator tests.
 
 ## APK workflow and signing
 

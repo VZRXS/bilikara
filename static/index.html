@@ -806,6 +806,24 @@
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
               </div>
               <div class="settings-section-card">
+                <div class="cache-panel-row settings-control-row android-window-preferences" id="android-layout-settings" hidden>
+                  <p class="cache-panel-label" id="android-layout-label" data-i18n="mobile.layout">界面布局</p>
+                  <div class="mode-switch" id="android-layout-switch" role="group" aria-labelledby="android-layout-label">
+                    <button type="button" class="mode-button" data-android-layout-mode="auto" data-i18n="mobile.layoutAuto" disabled>自动</button>
+                    <button type="button" class="mode-button" data-android-layout-mode="desktop" data-i18n="mobile.layoutDesktop" disabled>桌面</button>
+                    <button type="button" class="mode-button" data-android-layout-mode="phone" data-i18n="mobile.layoutPhone" disabled>手机</button>
+                  </div>
+                  <p class="cache-panel-hint" data-i18n="mobile.layoutHint">自动按窗口宽度切换布局；不重载播放器。手动选择会保存在本机。</p>
+                </div>
+                <div class="cache-panel-row settings-control-row android-window-preferences" id="android-orientation-settings" hidden>
+                  <p class="cache-panel-label" id="android-orientation-label" data-i18n="mobile.orientation">屏幕方向</p>
+                  <div class="mode-switch" id="android-orientation-switch" role="group" aria-labelledby="android-orientation-label">
+                    <button type="button" class="mode-button" data-android-orientation-mode="system" data-i18n="mobile.orientationSystem" disabled>跟随系统</button>
+                    <button type="button" class="mode-button" data-android-orientation-mode="landscape" data-i18n="mobile.orientationLandscape" disabled>横屏</button>
+                    <button type="button" class="mode-button" data-android-orientation-mode="portrait" data-i18n="mobile.orientationPortrait" disabled>竖屏</button>
+                  </div>
+                  <p class="cache-panel-hint" data-i18n="mobile.orientationHint">方向与布局独立；部分平板或分屏模式可能忽略方向请求。全屏播放退出后恢复此设置。</p>
+                </div>
                 <div class="cache-panel-row settings-control-row">
                   <div>
                     <p class="cache-panel-label" data-i18n="top.language">语言</p>
@@ -1813,6 +1831,7 @@
   <script src="/presentation-scene.js" defer></script>
   <script src="/presentation-renderer.js" defer></script>
   <script src="/presentation-sync.js" defer></script>
+  <script src="/android-presentation.js" defer></script>
   <script src="/internet-remote-transport.js" defer></script>
   <script src="/internet-remote-host.js" defer></script>
   <script src="/host-language.js" defer></script>
@@ -1820,6 +1839,7 @@
   <script src="/android-platform.js" defer></script>
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>
+  <script src="/android-layout.js" defer></script>
   <script src="/android-host.js" defer></script>
 </body>
 
