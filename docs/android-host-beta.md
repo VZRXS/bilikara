@@ -9,6 +9,8 @@ signed release. The technical bootstrap names `android-alpha.html` and
 
 ## Included in this acceptance round
 
+- One adaptive Android Host layout with Auto/Desktop/Phone and independent
+  system/landscape/portrait preferences. See [adaptive layout](android-layout.md).
 - Compact landscape upcoming-song panel, with scrollable following songs.
 - Queue move requests accept the shared Host's `index` field. Cache usage counts
   actual private media bytes (including partial downloads); cached-song counts

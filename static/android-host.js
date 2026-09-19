@@ -1,4 +1,4 @@
-/* Android portrait presentation only. All actions and media stay in the shared
+/* Android adaptive presentation only. All actions and media stay in the shared
    Host tree; this module owns neither playback nor application state. */
 (() => {
   "use strict";
@@ -42,19 +42,24 @@
   // Restart choice is shared native persistence UI; Android navigation is not.
   window.BilikaraNativeSession = {syncSessionChoice};
   if (root.dataset.hostPlatform === "desktop") return;
-  // Reuse the desktop selector and stage controls, but keep the selector in
-  // Settings so it remains reachable when the portrait top bar is hidden.
+  // Only the phone layout embeds this selector in Settings. The desktop layout
+  // restores the original node, not a second copy with duplicate handlers.
   const displaySettings = byId("presentation-settings");
+  const displayAnchor = document.createComment("desktop display settings position");
+  displaySettings?.before(displayAnchor);
   const settingsBody = document.querySelector("#host-workspace-settings .settings-workspace-body");
+  let displaySection = null;
   if (displaySettings && settingsBody) {
     const section = document.createElement("section");
     section.className = "settings-section android-display-settings";
+    section.hidden = true;
     const hint = document.createElement("p");
     hint.className = "android-display-hint";
     hint.dataset.i18n = "mobile.externalDisplayHint";
     hint.textContent = t("mobile.externalDisplayHint");
-    section.append(displaySettings, hint);
+    section.append(hint);
     settingsBody.prepend(section);
+    displaySection = section;
   }
   const displayBridge = window.BilikaraAndroidPresentation;
   if (displayBridge) {
@@ -163,6 +168,13 @@
   });
   const pages = new Set(["playback", "queue", "request", "users", "my"]);
   let portrait = false;
+  let preferences = {layout: "auto", orientation: "system"};
+  let preferencesReady = false;
+  let preferenceBusy = false;
+  let preferenceError = false;
+  const layoutApi = window.BilikaraAndroidLayout;
+  const layoutSwitch = byId("android-layout-switch");
+  const orientationSwitch = byId("android-orientation-switch");
   let page = "playback";
   let settings = false;
   let queueView = "queue";
@@ -194,6 +206,10 @@
     const safeStates = new Set(["no-address", "missing-source", "invalid-source", "loading", "loaded", "failed"]);
     const data = {
       layout: portrait ? "portrait" : "landscape", page,
+      layout_mode: preferences.layout, resolved_layout: portrait ? "phone" : "desktop",
+      requested_orientation: preferences.orientation,
+      screen_orientation: window.screen?.orientation?.type || "unknown",
+      window_preferences_ready: preferencesReady, window_preferences_error: preferenceError,
       native_window_controls: Boolean(window.BilikaraHostWindow),
       playback_visibility: window.BilikaraAndroidPlayback?.diagnostics() || null,
       external_display: window.BilikaraAndroidPresentation?.diagnostics() || {available:false},
@@ -294,21 +310,29 @@
   }
 
   function workspaceActivated(workspace, inputOrigin) {
-    if (!portrait || inputOrigin === "android-navigation") return;
+    if (inputOrigin === "android-navigation") return;
     // Existing flows (e.g. asking the user to add a session user) must still
     // reveal their target page, even when the currently visible page is Play.
     const target = {queue: "queue", history: "queue", request: "request", random: "request", users: "users", settings: "my"}[workspace];
     if (!target) return;
     if (target === "queue") queueView = workspace;
     if (target === "request") requestView = workspace;
+    if (!portrait) {
+      page = target;
+      settings = target === "my";
+      saveRoute(true);
+      return;
+    }
     navigate(target, {openSettings: target === "my"});
   }
 
   function updateOrientation() {
-    // The keyboard can make visualViewport wider than tall. Screen orientation
-    // does not change with the IME, so typing must not restore the desktop rail.
-    const type = window.screen?.orientation?.type;
-    const next = type ? type.startsWith("portrait") : window.matchMedia("(orientation: portrait)").matches;
+    // This is a layout choice, not a physical orientation lock. Window width
+    // handles tablets, folding and split windows without treating IME height
+    // changes as rotation. The shared desktop shell adapts to remaining height.
+    const width = document.documentElement.clientWidth || window.innerWidth;
+    const next = layoutApi?.resolveLayout(preferences.layout, width) === "phone";
+    root.dataset.androidLayoutMode = preferences.layout;
     if (root.dataset.androidLayout && next === portrait) return;
     portrait = next;
     root.dataset.androidLayout = portrait ? "portrait" : "landscape";
@@ -317,12 +341,20 @@
     if (state.hostWorkspaceTransitionTimer) clearTimeout(state.hostWorkspaceTransitionTimer);
     state.hostWorkspaceTransitionTimer = null;
     if (portrait) {
+      if (displaySection) {
+        displaySection.hidden = false;
+        displaySection.prepend(displaySettings);
+      }
       requestTabs.append(sharedRequestTabs);
       byId("android-settings-slot").append(cacheSettings);
       for (const {node} of loginNodes) byId("android-account-slot").append(node);
       for (const {node} of advancedNodes) byId("cache-panel").append(node);
       navigate(page, {openSettings: settings, remember: false});
     } else {
+      if (displaySection) {
+        displayAnchor.after(displaySettings);
+        displaySection.hidden = true;
+      }
       requestTabsAnchor.after(sharedRequestTabs);
       cacheAnchor.after(cacheSettings);
       for (const {node, anchor} of loginNodes) anchor.after(node);
@@ -340,6 +372,59 @@
     }
     renderHostWorkspaceSelection();
     schedulePersistentStageMeasurement();
+  }
+
+  function syncWindowPreferences() {
+    for (const [group, attribute, value] of [
+      [layoutSwitch, "androidLayoutMode", preferences.layout],
+      [orientationSwitch, "androidOrientationMode", preferences.orientation],
+    ]) {
+      for (const button of group.querySelectorAll("button")) {
+        const selected = button.dataset[attribute] === value;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-pressed", String(selected));
+        button.disabled = !preferencesReady || preferenceBusy;
+      }
+    }
+  }
+
+  async function changeWindowPreference(event, field, group) {
+    const button = event.target.closest("button");
+    if (!button || !group.contains(button) || button.disabled || preferenceBusy) return;
+    const mode = button.dataset[field === "layout" ? "androidLayoutMode" : "androidOrientationMode"];
+    if (mode === preferences[field]) return;
+    preferenceBusy = true;
+    button.setAttribute("aria-busy", "true");
+    syncWindowPreferences();
+    try {
+      preferences = await (field === "layout" ? layoutApi.client.saveLayout(mode) : layoutApi.client.saveOrientation(mode));
+      preferenceError = false;
+      updateOrientation();
+    } catch {
+      preferenceError = true;
+      setAppMessage(t("mobile.windowPreferenceFailed"), true);
+    } finally {
+      preferenceBusy = false;
+      button.removeAttribute("aria-busy");
+      syncWindowPreferences();
+    }
+  }
+
+  byId("android-layout-settings").hidden = false;
+  byId("android-orientation-settings").hidden = false;
+  layoutSwitch.addEventListener("click", event => changeWindowPreference(event, "layout", layoutSwitch));
+  orientationSwitch.addEventListener("click", event => changeWindowPreference(event, "orientation", orientationSwitch));
+  syncWindowPreferences();
+  if (layoutApi?.client) {
+    layoutApi.client.load().then(saved => {
+      preferences = saved;
+      preferencesReady = true;
+      updateOrientation();
+      syncWindowPreferences();
+    }).catch(() => {
+      preferenceError = true;
+      setAppMessage(t("mobile.windowPreferenceFailed"), true);
+    });
   }
 
   window.BilikaraAndroidHost = {isPortrait: () => portrait, syncSessionChoice, syncSessionUsers, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};

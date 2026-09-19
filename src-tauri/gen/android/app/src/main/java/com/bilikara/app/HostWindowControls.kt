@@ -1,6 +1,7 @@
 package com.bilikara.app
 
 import android.content.pm.ActivityInfo
+import android.content.Context
 import android.net.Uri
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -11,12 +12,32 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import androidx.webkit.WebMessageCompat
+import org.json.JSONObject
 
 /** Window presentation only; no media or application-state authority. */
 internal class HostWindowControls(private val activity: AppCompatActivity) {
   private var active = false
   private var previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
   private var installed = false
+  // Device-local window preferences, not playlist/session/player state. Native
+  // storage survives the loopback origin's port changing between launches.
+  // MainActivity constructs this helper before ContextWrapper is attached.
+  // Access storage only when install() runs with a live Activity context.
+  private val preferences by lazy {
+    activity.getSharedPreferences("host-window", Context.MODE_PRIVATE)
+  }
+  private val layoutModes = setOf("auto", "desktop", "phone")
+  private val orientationModes = setOf("system", "landscape", "portrait")
+
+  private fun requestedDirection(mode: String): Int = when (mode) {
+    "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    "portrait" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+    else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+  }
+
+  private fun snapshot() = JSONObject()
+    .put("layout", preferences.getString("layout", "auto").takeIf { it in layoutModes } ?: "auto")
+    .put("orientation", preferences.getString("orientation", "system").takeIf { it in orientationModes } ?: "system")
 
   fun install(webView: WebView, origin: String): Boolean {
     if (installed) return true
@@ -41,8 +62,43 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
         setFullscreen(enabled)
         back.isEnabled = enabled
         reply.postMessage(if (enabled) "entered" else "exited")
+        return@addWebMessageListener
       }
+      if (!isMainFrame || sourceOrigin != expected || message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
+      val page = Uri.parse(webView.url ?: "")
+      if (page.scheme != expected.scheme || page.authority != expected.authority ||
+        page.path !in listOf("/", "/index.html")) return@addWebMessageListener
+      val raw = message.data ?: return@addWebMessageListener
+      if (raw.length > 1024) return@addWebMessageListener
+      val input = try { JSONObject(raw) } catch (_: Exception) { return@addWebMessageListener }
+      val id = input.optString("id")
+      if (!id.matches(Regex("window-[0-9]{1,16}"))) return@addWebMessageListener
+      val result = JSONObject().put("id", id)
+      try {
+        val mode = input.optString("mode")
+        when (input.optString("action")) {
+          "get-preferences" -> Unit
+          "set-layout" -> {
+            require(mode in layoutModes)
+            check(preferences.edit().putString("layout", mode).commit())
+          }
+          "set-orientation" -> {
+            require(mode in orientationModes)
+            check(preferences.edit().putString("orientation", mode).commit())
+            // Fullscreen temporarily overrides direction without overwriting
+            // the user's preference. Some large-screen ROMs ignore requests.
+            if (active) previousOrientation = requestedDirection(mode)
+            else activity.requestedOrientation = requestedDirection(mode)
+          }
+          else -> error("unsupported_window_action")
+        }
+        result.put("ok", true).put("data", snapshot())
+      } catch (_: Exception) {
+        result.put("ok", false).put("error", "window_preferences_failed")
+      }
+      reply.postMessage(result.toString())
     }
+    activity.requestedOrientation = requestedDirection(snapshot().getString("orientation"))
     installed = true
     return true
   }

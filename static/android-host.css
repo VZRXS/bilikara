@@ -1,6 +1,12 @@
-/* Native Android portrait shell; desktop and landscape keep styles.css. */
+/* Native Android phone shell; the desktop layout keeps styles.css. The legacy
+   data-android-layout="portrait" marker now means phone UI, not device rotation. */
 .android-host-only { display: none; }
 .android-fullscreen-remote-button { display: none; }
+.android-window-preferences[hidden], .android-display-settings[hidden] { display: none !important; }
+.android-window-preferences { flex-wrap: wrap; gap: 10px; }
+.android-window-preferences .mode-switch { flex-wrap: wrap; max-width: 100%; }
+.android-window-preferences .mode-button { min-height: 44px; padding: 8px 12px; }
+.android-window-preferences .cache-panel-hint { flex-basis: 100%; margin: 0; line-height: 1.6; }
 
 html[data-host-platform="android"] .android-display-settings #presentation-settings {
   display: block;
@@ -43,11 +49,11 @@ html[data-host-platform="android"] .android-display-settings .presentation-displ
   font-size: 12px;
 }
 .android-display-hint { font-size: 13px; line-height: 1.6; color: var(--muted); }
-html[data-host-platform="android"] body.is-presentation-control-host #player-frame {
+html[data-android-layout="portrait"] body.is-presentation-control-host #player-frame {
   aspect-ratio: 16 / 9;
   height: auto;
 }
-html[data-host-platform="android"] body.is-presentation-control-host .presentation-host-transport-row {
+html[data-android-layout="portrait"] body.is-presentation-control-host .presentation-host-transport-row {
   grid-template-columns: auto minmax(0, 1fr) 44px;
   gap: 8px;
 }
@@ -547,7 +553,8 @@ html[data-android-layout="portrait"] .android-my-page {
 .android-my-page h2 { margin: 0 0 16px; font-size: 24px; }
 
 /* Single random pick, with the same metadata as the search feed. */
-html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card { width: min(100%, 280px); text-align: left; }
+html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card { width: min(100%, 360px); text-align: left; }
+html[data-native-host="true"][data-android-layout="portrait"] #gatcha-candidate-card { width: min(100%, 280px); }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover img { position: absolute; inset: 0; }
