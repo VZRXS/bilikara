@@ -3431,6 +3431,10 @@ function scheduleMountedPlayerControlsHide() {
   if (!video || !video.controls) {
     return;
   }
+  // Android's UA-shadow controls consume thumb events before the page sees
+  // them. Let the WebView fade its own controls instead of removing the entire
+  // controls attribute on a timer and aborting an in-progress native drag.
+  if (globalThis.BilikaraAndroidHost) return;
   const hideGeneration = state.localPlayerControlsHideGeneration;
   const hideTimer = window.setTimeout(() => {
     if (
@@ -12733,7 +12737,7 @@ function setSplitPlaybackIntent(
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
   }
-  if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay)) return true;
+  if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay, source)) return true;
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
@@ -15010,6 +15014,12 @@ function renderPlayer(currentItem, playbackMode) {
     if (session.seekResumePending) {
       return;
     }
+    // Android's native timeline pauses before dispatching `seeking`. That
+    // temporary pause is not a new user intent: the existing seek lifecycle
+    // must retain whether playback should resume when the seek settles.
+    if (globalThis.BilikaraAndroidHost && video.seeking) {
+      return;
+    }
     if (video.ended && !audio.ended) {
       return;
     }
@@ -15043,7 +15053,8 @@ function renderPlayer(currentItem, playbackMode) {
       return;
     }
     beginSplitPlayerSeek(video, audio, {
-      resumeAfterSeek: !video.paused || state.localShouldBePlaying,
+      resumeAfterSeek: window.BilikaraAndroidPlayback?.seekResumeIntent?.(video, audio)
+        ?? (!video.paused || state.localShouldBePlaying),
       onSettled: reportCurrentVideoStatus,
     });
   });
@@ -15135,7 +15146,10 @@ function renderPlayer(currentItem, playbackMode) {
     }, { passive: true });
   });
 
-  addMountedPlayerListener(video, "pointerleave", () => {
+  addMountedPlayerListener(video, "pointerleave", (event) => {
+    // Touch pointers leave at finger-up (and when entering a UA seek control),
+    // unlike a desktop hover. Removing controls here cancels native scrubbing.
+    if (globalThis.BilikaraAndroidHost && event.pointerType === "touch") return;
     hideMountedPlayerControls();
   });
 
@@ -19769,6 +19783,14 @@ elements.playerFrame?.addEventListener("click", (event) => {
   if (!event.target.closest("video")) {
     return;
   }
+  if (globalThis.BilikaraAndroidHost) {
+    // A tap reveals the native controls; it must not enqueue the desktop
+    // playback toggle while the user is trying to grab the seekbar. Leave
+    // default actions intact so native play/seek controls still work.
+    clearPlayerFrameClickTimer();
+    revealMountedPlayerControlsForUserInteraction();
+    return;
+  }
   const { video, audio } = activeLocalPlayerElements();
   if (isTauriWebKitRuntime()) {
     clearPlayerFrameClickTimer();
@@ -19792,6 +19814,14 @@ elements.playerFrame?.addEventListener("click", (event) => {
 
 elements.playerFrame?.addEventListener("dblclick", (event) => {
   if (event.target.closest("button, input, select, textarea, a")) {
+    return;
+  }
+  if (globalThis.BilikaraAndroidHost) {
+    if (!event.target.closest("video")) return;
+    event.preventDefault();
+    clearPlayerFrameClickTimer();
+    toggleMountedLocalPlayback();
+    revealMountedPlayerControlsForUserInteraction();
     return;
   }
   handlePlayerFrameDoubleClick().catch(() => {});

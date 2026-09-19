@@ -28,8 +28,14 @@ function fixture(android = true, nativeBridge = false) {
     scheduleSplitPlaybackStartupWatchdog:()=>calls.push(["arm-watchdog"]),
     clearAndroidAudioClockRecovery:()=>calls.push(["clear-audio-recovery"]),
     reportPlayerStatus:()=>{calls.push(["status"]);return true;},
+    clearPlayerFrameClickTimer:()=>calls.push(["clear-click"]),
+    revealMountedPlayerControlsForUserInteraction:()=>calls.push(["reveal-controls"]),
+    toggleMountedLocalPlayback:()=>{
+      calls.push(["double-tap"]);
+      context.setSplitPlaybackIntent(video,audio,!state.localShouldBePlaying,{source:"player-toggle-intent"});
+    },
     setSplitPlaybackIntent:(v,a,playing,{source})=>{
-      if(window.BilikaraAndroidPlayback.interceptIntent(playing))return true;
+      if(window.BilikaraAndroidPlayback.interceptIntent(playing,source))return true;
       calls.push([source,playing]);
       session.logicalPlayIntent=state.localShouldBePlaying=playing;
       v.paused=a.paused=!playing;
@@ -108,4 +114,59 @@ for(const invalidate of [f=>f.state.data.playback_generation++, f=>f.state.hostP
   const f=fixture();f.hide(true);f.listeners.pagehide();f.hide(false);
   assert.equal(f.video.paused,true,"A destroyed page cannot carry an auto-resume lease");
 }
-console.log("PASS Android-only pause/resume, manual intent, late play, stale generation, startup and page teardown");
+{
+  const f=fixture();
+  f.listeners.pointerdown({target:f.video,pointerType:"touch",pointerId:7,isPrimary:true});
+  assert.equal(f.api.isTouchingVideo(f.video),true);
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"native-video-pause-intent"});
+  assert.equal(f.state.localShouldBePlaying,false,"Native pause still stops audio immediately");
+  assert.equal(f.api.seekResumeIntent(f.video,f.audio),true,"Thumb-down pause preserves pre-scrub intent");
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"remote-pause"});
+  assert.equal(f.api.seekResumeIntent(f.video,f.audio),false,"Remote pause during drag cancels auto-resume");
+}
+for(const finish of [f=>f.listeners.pointerup({pointerId:7}), f=>f.listeners.pointercancel({pointerId:7}),
+  f=>f.state.data.playback_generation++, f=>f.state.hostPlaybackSession={...f.session},
+  f=>f.hide(true), f=>f.listeners.pagehide()]) {
+  const f=fixture();
+  f.listeners.pointerdown({target:f.video,pointerType:"touch",pointerId:7});
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"native-video-pause-intent"});
+  finish(f);
+  assert.equal(f.api.isTouchingVideo(f.video),false,"A finished/retired gesture cannot affect the next seek");
+  assert.equal(f.api.seekResumeIntent(f.video,f.audio),false);
+}
+{
+  const f=fixture();
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"user"});
+  f.listeners.pointerdown({target:f.video,pointerType:"touch",pointerId:7});
+  f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"native-video-pause-intent"});
+  assert.equal(f.api.seekResumeIntent(f.video,f.audio),false,"Dragging a paused song never invents a play intent");
+}
+function tapAt(f, time, {move=false, duration=50, target=f.video}={}) {
+  const point={identifier:1,clientX:100,clientY:50};
+  f.listeners.touchstart({target,timeStamp:time,touches:[point]});
+  if(move) f.listeners.touchmove({touches:[{...point,clientX:130}]});
+  const event={timeStamp:time+duration,touches:[],prevented:false,preventDefault(){this.prevented=true;}};
+  f.listeners.touchend(event);
+  return event;
+}
+{
+  const f=fixture();
+  assert.equal(tapAt(f,1000).prevented,false,"Single touch leaves native controls untouched");
+  assert.equal(f.calls.some(c=>c[0]==="double-tap"),false);
+  assert.equal(tapAt(f,1200).prevented,true,"Second stationary tap cancels the native double-tap seek action");
+  assert.equal(f.calls.filter(c=>c[0]==="double-tap").length,1);
+  assert.equal(f.state.localShouldBePlaying,false);
+  tapAt(f,2000); tapAt(f,2200);
+  assert.equal(f.state.localShouldBePlaying,true);
+}
+for(const invalidate of [f=>f.listeners.touchcancel(), f=>f.state.data.playback_generation++,
+  f=>f.context.setSplitPlaybackIntent(f.video,f.audio,false,{source:"remote-pause"}),
+  f=>f.api.seekResumeIntent(f.video,f.audio), f=>f.hide(true), f=>f.listeners.pagehide()]) {
+  const f=fixture();tapAt(f,1000);invalidate(f);tapAt(f,1200);
+  assert.equal(f.calls.some(c=>c[0]==="double-tap"),false,"Cancelled, native-control and retired taps cannot become a double tap");
+}
+for(const options of [{move:true},{duration:400},{target:{tagName:"BUTTON"}}]) {
+  const f=fixture();tapAt(f,1000,options);tapAt(f,1500);
+  assert.equal(f.calls.some(c=>c[0]==="double-tap"),false,"Drag/long press/other controls are not video double taps");
+}
+console.log("PASS Android visibility/touch leases, double taps, native controls, manual intent and stale generation");

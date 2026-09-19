@@ -5116,7 +5116,9 @@ console.log(JSON.stringify({{ afterRetired, effects }}));
         self.assertIn('video.removeAttribute("controls")', mount)
         self.assertIn("video.tabIndex = 0", mount)
         self.assertNotIn("showMountedPlayerControls", self.source)
-        self.assertEqual(self.source.count("revealMountedPlayerControlsForUserInteraction"), 4)
+        # Android single/double taps are two more explicit user interactions,
+        # not automatic playback lifecycle requests.
+        self.assertEqual(self.source.count("revealMountedPlayerControlsForUserInteraction"), 6)
         for source in automatic_sources:
             self.assertNotIn("revealMountedPlayerControlsForUserInteraction", source)
 

@@ -36,6 +36,15 @@ audience output. The last active shared workspace is mapped back to its phone
 page. Independent audience output keeps its own full-screen shared renderer;
 changing the Host's layout does not rotate or rebuild the audience WebView.
 
+## Player touch controls
+
+In both phone and desktop layouts on Android, a single tap on the video reveals
+the native controls without toggling playback. Double-tap the video to play/pause;
+use the explicit fullscreen button to enter or leave fullscreen. Native play
+buttons and the seekbar keep their normal single-tap/drag actions. Scrubbing a
+playing song retains its resume intent; scrubbing a paused song leaves it paused.
+Desktop browser and desktop Tauri click/fullscreen shortcuts are unchanged.
+
 ## Acceptance
 
 1. Leave Auto selected. Rotate a phone; inspect phone portrait and desktop
@@ -50,6 +59,10 @@ changing the Host's layout does not rotate or rebuild the audience WebView.
 5. Where an independent display is available, leave audience playback running and
    switch Host layouts. Do not confuse an emulator display with a real HDMI/mirror
    route; hardware routing and audiovisual latency require separate validation.
+6. Single-tap the video to reveal controls, drag its seekbar, then double-tap to
+   pause/resume. Repeat while paused and in fullscreen. A seek must not turn a
+   temporary native scrub pause into a permanent user pause, or resume a song
+   that was already paused. The native play button must still respond to one tap.
 
 `tests/android_layout.cjs` and `tests/android_portrait_navigation.cjs` cover policy,
 bridge failures/lifecycle, duplicate guards, workspace restoration and persisted
@@ -59,3 +72,6 @@ behavior on every vendor's ROM, split-window manager or physical display hardwar
 at phone/tablet/window sizes. `tests/live_android_layout_device.cjs` targets only
 the disposable `emulator-5562`, checks real native preferences/rotation/restart,
 and uses HTTP-only synthetic media for fullscreen playback (no database writes).
+`tests/android_player_gestures.cjs`, `tests/android_playback_visibility.cjs` and
+`tests/live_android_player_gestures.cjs` cover gesture ordering, cancellation,
+native-control dragging while playing/paused, and phone/wide/fullscreen views.
