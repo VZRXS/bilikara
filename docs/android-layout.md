@@ -23,6 +23,17 @@ settings, not a second Rust AppState authority. Failed saves leave the last
 confirmed preference active and report an error. Requests are origin/main-frame/
 Host-path scoped, bounded and timed out; remote pages cannot set these preferences.
 
+Native snapshots and subsequent writes use a confirmed pair of these two UI
+preferences. Android `commit()` changes its memory map before reporting disk
+failure, so each save writes the full pair and a failed save attempts to restore
+the previous pair. A failed orientation save does not change the Activity's
+requested orientation or fullscreen's saved exit orientation. A later layout
+save cannot adopt that failed orientation (and vice versa). Recovery failure is
+reported as `window_preferences_recovery_failed`. Subsequent native snapshots
+describe the confirmed UI pair, not a renewed disk-durability acknowledgement.
+The current window continues using that pair; failed recovery cannot guarantee
+what survives process death or another storage failure.
+
 The phone-only dock and settings embedding switch off in desktop mode. Existing
 request tabs, login/cache controls and audience-display selector return to their
 desktop positions, preserving the same nodes/listeners. Desktop responsive rules
@@ -75,3 +86,9 @@ and uses HTTP-only synthetic media for fullscreen playback (no database writes).
 `tests/android_player_gestures.cjs`, `tests/android_playback_visibility.cjs` and
 `tests/live_android_player_gestures.cjs` cover gesture ordering, cancellation,
 native-control dragging while playing/paused, and phone/wide/fullscreen views.
+`HostWindowPreferencesTest.kt` runs native Kotlin against a SharedPreferences
+interface double that changes memory before a failed disk result and serializes
+the whole map on later writes. It checks both field orders, returned snapshot
+maps, Activity-helper recreation, recovery failure and write exceptions. It is
+separate from JS rejection mocks and from the instrumented fullscreen test;
+the latter still needs an Android environment.

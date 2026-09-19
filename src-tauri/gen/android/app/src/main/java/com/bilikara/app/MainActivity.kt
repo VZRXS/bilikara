@@ -40,6 +40,11 @@ class MainActivity : TauriActivity() {
     hostPresentation.setForeground(true)
   }
 
+  override fun onConfigurationChanged(configuration: android.content.res.Configuration) {
+    super.onConfigurationChanged(configuration)
+    hostPresentation.onControllerDisplayChanged()
+  }
+
   override fun onPause() {
     hostPresentation.setForeground(false)
     super.onPause()

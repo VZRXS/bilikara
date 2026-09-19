@@ -153,15 +153,24 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
   private fun session() = JSONObject().put("mode", if (phase == "inactive") "singleScreen" else "localDualScreen")
     .put("phase", phase).put("generation", generation).put("hostReady", hostReady).put("controllerReady", outputReady)
     .put("selectedOutputDisplayId", if (displayId < 0) "" else displayId.toString())
-    .put("controllerDisplayId", Display.DEFAULT_DISPLAY.toString())
+    .put("controllerDisplayId", controllerDisplayId()?.toString() ?: "")
     .put("lastAcceptedCommandSequence", 0).put("lastAppliedCommandSequence", 0)
     .put("playbackAuthority", "host").put("mediaRendererOwner", "host").put("recoveryReason", reason)
 
-  private fun targets() = manager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
-    .filter { it.isValid && it.displayId != Display.DEFAULT_DISPLAY }
+  // This is the Activity's display, not necessarily the system display 0.
+  // WindowManager's context-associated display also works on API 24-29.
+  @Suppress("DEPRECATION")
+  private fun controllerDisplayId(): Int? = activity.windowManager.defaultDisplay
+    ?.takeIf { it.isValid }?.displayId
+
+  private fun targets(controllerId: Int? = controllerDisplayId()) =
+    manager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
+      .filter { it.isValid && isAudienceDisplay(it.displayId, controllerId) }
 
   private fun displays(): JSONObject {
-    val selectable = targets().map { it.displayId }.toSet()
+    val controllerId = controllerDisplayId()
+    val candidates = targets(controllerId)
+    val selectable = candidates.map { it.displayId }.toSet()
     val list = JSONArray()
     for (display in manager.displays.filter { it.isValid }) {
       val mode = display.mode
@@ -173,15 +182,15 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
         .put("refreshRate", mode.refreshRate).put("scaleFactor", metrics.density)
         .put("flags", display.flags).put("state", display.state)
         .put("builtIn", display.displayId == Display.DEFAULT_DISPLAY)
-        .put("controller", display.displayId == Display.DEFAULT_DISPLAY)
+        .put("controller", display.displayId == controllerId)
         .put("primary", display.displayId == Display.DEFAULT_DISPLAY)
         .put("selectable", display.displayId in selectable)
         // IDs are valid for this attachment only and are never persisted.
         .put("identityStable", true).put("identityQuality", "stable").put("mirrored", false))
     }
     return JSONObject().put("displays", list).put("monitorCount", list.length())
-      .put("controllerDisplayId", Display.DEFAULT_DISPLAY.toString())
-      .put("recommendedDisplayId", targets().firstOrNull()?.displayId?.toString() ?: "")
+      .put("controllerDisplayId", controllerId?.toString() ?: "")
+      .put("recommendedDisplayId", candidates.firstOrNull()?.displayId?.toString() ?: "")
   }
 
   @SuppressLint("SetJavaScriptEnabled")
@@ -264,7 +273,11 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
   private fun watchHost(lease: Long) {
     handler.postDelayed({
       if (generation == lease && phase != "inactive") {
-        if (foreground && phase == "active" && SystemClock.uptimeMillis() - lastMasterAt > 5000) {
+        // Moving an Activity need not add/remove/change a physical display.
+        // Recheck its association even if a same-size move sends no config event.
+        if (!isAudienceDisplay(displayId, controllerDisplayId())) {
+          stop("displayDisconnected")
+        } else if (foreground && phase == "active" && SystemClock.uptimeMillis() - lastMasterAt > 5000) {
           stop("outputHeartbeatLost")
         } else watchHost(lease)
       }
@@ -285,6 +298,7 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
 
   fun setForeground(value: Boolean) {
     foreground = value
+    if (value) changed()
     if (value) lastMasterAt = SystemClock.uptimeMillis()
     val payload = JSONObject().put("foreground", value)
     emit(host, "foreground", payload)
@@ -296,6 +310,7 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
   override fun onDisplayAdded(id: Int) = changed()
   override fun onDisplayChanged(id: Int) = changed()
   override fun onDisplayRemoved(id: Int) = changed()
+  fun onControllerDisplayChanged() { dismissIdentifiers(); changed(); notifySession() }
   private fun changed() {
     if (phase != "inactive" && targets().none { it.displayId == displayId }) stop("displayDisconnected")
     record("displaysChanged")

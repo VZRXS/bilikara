@@ -24,7 +24,7 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
   // MainActivity constructs this helper before ContextWrapper is attached.
   // Access storage only when install() runs with a live Activity context.
   private val preferences by lazy {
-    activity.getSharedPreferences("host-window", Context.MODE_PRIVATE)
+    HostWindowPreferences(activity.getSharedPreferences("host-window", Context.MODE_PRIVATE))
   }
   private val layoutModes = setOf("auto", "desktop", "phone")
   private val orientationModes = setOf("system", "landscape", "portrait")
@@ -35,9 +35,7 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
     else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
   }
 
-  private fun snapshot() = JSONObject()
-    .put("layout", preferences.getString("layout", "auto").takeIf { it in layoutModes } ?: "auto")
-    .put("orientation", preferences.getString("orientation", "system").takeIf { it in orientationModes } ?: "system")
+  private fun snapshot() = JSONObject(preferences.snapshot())
 
   fun install(webView: WebView, origin: String): Boolean {
     if (installed) return true
@@ -80,11 +78,11 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
           "get-preferences" -> Unit
           "set-layout" -> {
             require(mode in layoutModes)
-            check(preferences.edit().putString("layout", mode).commit())
+            preferences.setLayout(mode)
           }
           "set-orientation" -> {
             require(mode in orientationModes)
-            check(preferences.edit().putString("orientation", mode).commit())
+            preferences.setOrientation(mode)
             // Fullscreen temporarily overrides direction without overwriting
             // the user's preference. Some large-screen ROMs ignore requests.
             if (active) previousOrientation = requestedDirection(mode)
@@ -93,8 +91,9 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
           else -> error("unsupported_window_action")
         }
         result.put("ok", true).put("data", snapshot())
-      } catch (_: Exception) {
-        result.put("ok", false).put("error", "window_preferences_failed")
+      } catch (error: Exception) {
+        result.put("ok", false).put("error", if (error.message == "window_preferences_recovery_failed")
+          "window_preferences_recovery_failed" else "window_preferences_failed")
       }
       reply.postMessage(result.toString())
     }

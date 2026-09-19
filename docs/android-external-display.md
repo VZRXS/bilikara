@@ -35,6 +35,14 @@ does not include receiver names, media URLs, cookies or QR credentials.
 - Kotlin owns display enumeration, window lifetime, attachment-generation
   tokens and a restricted message bridge. It does not own business or playback
   state. Display IDs are scoped to the current attachment and never persisted.
+- The controller is the display associated with the Host Activity's window,
+  which need not be Android display 0. A system launcher on a secondary display
+  or a moved window can put the Host on a Presentation-capable display. That
+  same display is excluded from candidates, recommendation and activation;
+  an unknown controller association offers no output. Resume/configuration
+  callbacks and the existing window watchdog revalidate the association and
+  tear down output if a moved Host would share its audience display. Primary /
+  built-in screen labels remain separate from the controller role.
 - The main shared Host keeps its existing video/audio and playback clock.
   The audience WebView plays **muted video only** and follows the same scene /
   clock protocol as desktop. This currently costs an additional video decoder;
@@ -69,6 +77,11 @@ npm run android:build:debug
 `tests/android_presentation.cjs` exercises request settlement, unsupported
 commands, message unsubscribe/teardown, muted stage playback, next-song
 replacement, generation rejection, transport timeout and background suspension.
+`HostDisplaySelectionTest.kt` additionally covers controller IDs 0 and 7,
+recommendation order, a stale selection after moving the Host, and an unknown
+controller. These deterministic JVM tests do not establish actual window moves
+or HDMI output on a device. The PR #110 integration evidence and its build /
+browser limitations are recorded in [the roadmap](version-roadmap.md#android-pr-110-local-integration-and-correction).
 
 `tests/live_android_presentation.cjs` is an opt-in acceptance harness for a
 dedicated, disposable `emulator-5562` with a developer secondary-display overlay

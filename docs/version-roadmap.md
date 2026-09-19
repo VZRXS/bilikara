@@ -454,3 +454,63 @@ Next documented action: none is scheduled by this review. Update installation,
 the default backend cutover, Python packaging retirement, the pre-existing
 Remote audio-variant harness blocker and the `native_host_http` flake remain
 separate, individually unauthorized work.
+
+### Android PR #110 local integration and correction
+
+Preview 1 is already released; development remains on `work/v0.8.0`. Accepted
+desktop Step 1–2B and the desktop update-check receipt above remain closed.
+This is a bounded Android integration, not a restart of mobile completion or
+the desktop migration queue. Default backend/distribution policy, retired
+FFmpeg/ffprobe executables and retained libav/BBDown/aria2c sources are unchanged.
+No Python production responsibility exits here.
+
+On 2026-09-19, PR #110 was still open: `kevinx96/bilikara:dev` at `d3062ec`,
+targeting `VZRXS/bilikara:work/v0.8.0` at `150f00d`. Local HEAD was `c83648d`,
+including the accepted desktop updater/test work. History-preserving local
+merge `226252d` has parents `c83648d` and `d3062ec`; it required no conflict
+resolution. The independent uncommitted `native_host_storage.rs` lock change
+was preserved byte for byte and excluded from both this merge and the separate
+Android corrective commit. GitHub was not merged and no push was performed.
+
+- **Concern A — CONFIRMED.** The exported, resizable single-task Activity is
+  not confined to display 0. Android's launch policy permits secondary-display
+  launch/movement, and Presentation discovery is based on display capability,
+  not the calling Activity's location. The former `targets()` excluded only 0;
+  session/controller projections also hardcoded 0. The correction uses the
+  Activity WindowManager's associated display for projections, recommendation,
+  filtering and activation revalidation, and rechecks window moves through the
+  lifecycle and existing watchdog. Default-off, generation checks and normal
+  phone-plus-output behavior remain intact.
+- **Concern B — CONFIRMED.** AOSP `SharedPreferencesImpl.commit()` first calls
+  `commitToMemory()`, then waits for the disk result; it does not roll memory
+  back on failure. The old snapshots reread that memory and each setter only
+  replaced one field. The JS consumer accepts the entire pair on a later
+  successful response. Native confirmed-pair snapshots, full-pair writes and
+  explicit recovery now prevent the failed field entering the next operation.
+  Failed orientation saves return before either normal or fullscreen-exit
+  orientation changes. Recovery failure stays explicit; no crash-durability
+  guarantee is made after an unsuccessful recovery.
+
+Validation is implementation self-testing, not independent approval. Seven
+Kotlin/JUnit tests passed using the Android SharedPreferences interface and a
+faithful memory-before-disk double, without adding a new test framework. The
+same tests against extracted pre-fix selection/read/write statements failed
+six cases, including both cross-field persistence sequences. That baseline
+exercise is extracted-code evidence, not an executed old APK. Existing
+Python/Node Android/layout/audience/player checks passed 176 tests. `npm ci`,
+`npm run build` (local Linux artifacts only), Python compilation and diff checks
+passed. Exact commands, complete file lists and logs are under
+`.tmp/pr110-integration/`.
+
+Android Gradle compilation stopped at missing generated `tauri.settings.gradle`;
+this environment also lacks an Android SDK, full JDK and adb. No APK compilation,
+instrumentation, emulator, physical display/audio, CI or release evidence is
+claimed. The existing offline Chromium layout harness timed out waiting for
+playback, including a separate temporary probe using the visible Start button;
+diagnostics confirmed this Chromium has no H.264/AAC support (`canPlayType()`
+empty, media error 4 / `DEMUXER_ERROR_NO_SUPPORTED_STREAMS`). Its later
+layout/media assertions remain unverified. The accepted Rust and
+desktop evidence above is reused rather than reopening their full gates or
+the unrelated Tauri/bootstrap, updater-installation and storage/test-flake work.
+No external service write, production-data access, deployment, tag or release
+mutation was performed.
