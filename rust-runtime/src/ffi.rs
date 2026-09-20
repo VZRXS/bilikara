@@ -316,6 +316,9 @@ pub unsafe extern "C" fn bilikara_runtime_status_service(
         // SAFETY: This C ABI entrypoint requires a valid null-terminated UTF-8 string.
         let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
         let command: StatusServiceCommand = serde_json::from_str(request_text).ok()?;
+        if matches!(command, StatusServiceCommand::GachaReset) {
+            crate::gatcha_refresh_ffi::reset();
+        }
         let service = STATUS_SERVICE.get_or_init(|| Mutex::new(RuntimeStatusService::default()));
         let mut service = service
             .lock()

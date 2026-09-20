@@ -360,105 +360,17 @@ check. Only the native path's corresponding Python update-check orchestration is
 bypassed; the default Python updater, its install/restart path, transport,
 launcher, FFI/DTO/persistence and packaging consumers are untouched.
 
-#### Independent review of the desktop update check (scoped PASS)
-
-An independent reviewer session, separate from the implementation author,
-inspected the code and tests rather than the implementation summary, and
-re-ran the checks itself. Scoped result: PASS. A PASS authorises neither a
-release nor the default backend cutover.
-
-State of this increment: implementation complete; implementation self-tests
-complete; independent review complete with the evidence below; committed
-locally only. Not pushed. No Actions run was dispatched, no tag or release was
-touched, `v0.8.0-preview.1` is unchanged, and there is no physical Windows,
-macOS or Android device evidence for this delta.
-
-Reviewer-executed commands, all against the current working tree:
-
-| Command | Result |
-| :--- | :--- |
-| `cd rust && cargo fmt --check` | PASS |
-| `cd rust && cargo clippy --all-targets --locked -- -D warnings` | PASS |
-| `cd rust && cargo test --locked` | PASS, 220 tests |
-| `cd rust && cargo build --release --locked` | PASS |
-| `cd rust-runtime && cargo fmt --check` | PASS |
-| `cd rust-runtime && cargo clippy --all-targets --locked -- -D warnings` | PASS |
-| `cd rust-runtime && cargo clippy --all-targets --locked --features native-host -- -D warnings` | PASS |
-| `cd rust-runtime && cargo test --locked` | PASS, 228 tests |
-| `cd rust-runtime && cargo test --locked --features native-host --lib` | PASS, 283 tests, 9 consecutive clean runs |
-| `cd rust-runtime && cargo build --release --locked --features native-host` | PASS |
-| `BILIKARA_REQUIRE_RUST_LIB=1 python -m unittest discover -s tests` | PASS, `Ran 1668 tests`, `OK (skipped=18)` |
-| `python -m compileall -q bilikara`, `python -m py_compile start_bilikara.py build_bundle.py` | PASS |
-| `git diff --check` | PASS |
-
-Endpoint and state integration was exercised against the real
-`bilikara-desktop-host` executable, not only through helper tests. A reviewer
-harness ran the production binary behind the repository's own non-forwarding
-TLS fixture, with `api.github.com` deliberately absent from the fixture
-certificate, and confirmed over real HTTP: the idle projection, the trusted
-`BILIKARA_VERSION` current version, `capabilities.app_update` and `app.version`
-agreeing with `/api/state`; `/api/app/update/check` agreeing byte for byte with
-`/api/app/update/status` and with `/api/state`'s `app_update` on every
-transition; the primary-to-mirror source fallback actually occurring; a request
-being unable to redefine the trusted version or platform; the release page URL
-reconstructed from the validated tag; stable and preview channels; the three
-separate facts `eligible_update`, `asset_available` and `auto_update_supported`;
-`400` on a missing or non-boolean channel; `403` for a client without the Host
-capability; `501` for install, finish, rating, external-link and
-`GET /api/app/update`; `403` for shutdown, which its own token guard rejects
-before the desktop guard; no `libpython` mapping and no child process in the
-serving process; and no archive, package or installer written anywhere under the
-preview data directory. 39 of 40 reviewer assertions passed; the single
-mismatch was the reviewer's own expectation of `501` rather than `403` for
-shutdown, which is the stricter outcome, not a defect.
-
-Limits of this review, stated rather than inferred:
-
-- The browser-rendered assertions added to `tests/live_desktop_rust_host.js`
-  were NOT executed. That script fails earlier, at its existing
-  `[data-action="toggle-audio-variants"]` click on the Remote page, because the
-  variant list fits inline at the Remote viewport width and
-  `syncAudioVariantLayout` then hides the toggle. The reviewer reproduced the
-  identical failure from an unmodified `HEAD` checkout, so it pre-dates this
-  increment and belongs to the accepted UI work in `150f00d`, not here. The
-  backend contract those assertions would check was verified directly instead;
-  the rendered button text itself remains unverified.
-- No packaged-platform evidence. Windows and macOS package selection is
-  exercised only with synthetic descriptors on Linux, where the shared policy
-  correctly reports no compatible package.
-- No live release or account service was contacted; all release metadata came
-  from local fixtures.
-- `src-tauri` checks and `npm run build` were not rerun, because no `src-tauri`
-  or `static/` file changed in this increment.
-- `rust-runtime/tests/native_host_http.rs` fails intermittently (2 of 7
-  reviewer runs) on `/api/diagnostics/markdown`. Its client timeout of 5 s
-  races the 5 s connectivity-probe timeout in `diagnostics.rs`; both values are
-  unchanged at `HEAD` and no file in this increment touches that path. It is a
-  pre-existing environment-dependent flake, filed separately.
-- `rust-runtime/src/native_host_storage.rs` is modified in the working tree by
-  separate flake-fix work and was deliberately EXCLUDED from this increment's
-  commit. The reviewer confirmed the increment does not depend on it: with that
-  file reverted to `HEAD`, the native-host library suite still passed 283 tests
-  in 4 consecutive runs.
-
-Remaining Python consumers, unchanged by this increment: `bilikara/updater.py`
-still owns the default desktop update check, download, install and restart
-path; `bilikara/server.py` still routes `/api/app/update/*` for the default
-Python Host; `bilikara/config.py` still resolves `APP_VERSION`; and
-`build_bundle.py` and the packaging scripts still produce the Python bundle.
-Completing the native check/status loop does not delete the default Python
-install and restart responsibilities or the packaging responsibilities, and it
-does not schedule the historical Python groups as blockers.
-
-Next documented action: none is scheduled by this review. Update installation,
-the default backend cutover, Python packaging retirement, the pre-existing
-Remote audio-variant harness blocker and the `native_host_http` flake remain
-separate, individually unauthorized work.
+The default Python Host retains its update responsibilities:
+`bilikara/updater.py` owns update checking, downloading, installation and
+restart; `bilikara/server.py` routes `/api/app/update/*`;
+`bilikara/config.py` resolves `APP_VERSION`; and `build_bundle.py` and the
+packaging scripts produce the Python bundle. The native check/status loop
+does not replace those installation, restart or packaging responsibilities.
 
 ### Android PR #110 local integration and correction
 
 Preview 1 is already released; development remains on `work/v0.8.0`. Accepted
-desktop Step 1–2B and the desktop update-check receipt above remain closed.
+desktop Step 1–2B and desktop update-check work remain closed.
 This is a bounded Android integration, not a restart of mobile completion or
 the desktop migration queue. Default backend/distribution policy, retired
 FFmpeg/ffprobe executables and retained libav/BBDown/aria2c sources are unchanged.
@@ -514,3 +426,49 @@ desktop evidence above is reused rather than reopening their full gates or
 the unrelated Tauri/bootstrap, updater-installation and storage/test-flake work.
 No external service write, production-data access, deployment, tag or release
 mutation was performed.
+
+### Configured-source Gatcha refresh
+
+The default Host's public background-refresh entry marshals trusted paths,
+credential snapshots, keywords and observer callbacks to a Rust-owned task.
+Callers include manual HTTP refresh, settings-triggered refresh, Internet
+Remote's Host effect, startup with restored login credentials and the
+login-success callback. The first startup/login invocation is nonblocking and
+can rebuild an old schema; later invocations use the manual wrapper. The
+`upload_default_uids_to_lark` compatibility argument remains accepted without
+policy effect.
+
+`gatcha_refresh` and the existing repository/status services own task admission,
+worker execution, result interpretation, completion indexing and cancellation.
+Python transports configuration and DTOs, holds C callback lifetimes and
+delivers observer notifications; no callback is necessary to finish repository
+or Catalog work. The additive C ABI preserves existing ABI-v1 services and
+snapshot DTOs without starting a native Host or creating another AppState.
+Each default Host has a Rust resource-owner token so an old Host's shutdown
+cannot stop its replacement.
+
+The native Host calls the same typed Rust service directly. Manual
+authorization/cooldown, automatic-login eligibility and status text remain
+Host-specific. Native desktop automatic bulk refresh is disabled, and native
+refresh does not upload completion records. Aggregate repository errors with
+no UID success mean `failed` in the default Host and `partial` in the native
+Host; these are distinct projections of the shared result.
+
+Normal default-Host completion queues only newly added UID records through
+the existing bounded Catalog append facility. Startup schema rebuilding uses
+Rust repository fetches, temporary/checkpoint paths, UID/folder resume and
+per-file atomic publication; it indexes only favorite entries. Repository page
+retries are bounded. Rebuild publication is not an atomic three-file
+transaction. This task service does not perform monthly or account-wide scans.
+
+Network requests run outside AppState locks. Cancellation is cooperative at
+repository operation/page/retry and publication boundaries. In-flight Bilibili
+work can finish, including WBI key acquisition and its signed request. Stopped
+or replaced tasks cannot publish a late status or enqueue new completion work.
+Already accepted Catalog jobs retain the queue's independent delivery lifetime;
+queue acceptance is best effort, not a delivery guarantee.
+
+Source-add and favorite-specific public adapters, synchronous repository
+refresh, frozen `_py_*` references and their tests, and WBI/monthly consumers
+remain. The default Python Host transport, launcher and release packaging
+remain in use; the native Host is still opt-in.

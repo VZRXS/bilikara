@@ -157,6 +157,15 @@ def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
     return _mutate("reset_tags", bvid=bvid, secret=secret)
 
 
+def catalog_append_configuration() -> dict:
+    """Trusted Host configuration for the existing Rust append queue."""
+    return {
+        "base_url": _CLOUDFLARE_API_URL,
+        "user_agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+        "timeout_ms": 20_000,
+    }
+
+
 def append_catalog_entries_in_background(entries: list[dict]) -> bool:
     """Best-effort indexing: True means Rust queue acceptance, not delivery."""
     normalized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]

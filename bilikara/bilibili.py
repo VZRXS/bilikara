@@ -587,50 +587,6 @@ def _save_gatcha_favlist(payload: dict) -> None:
     _write_json_file(_GATCHA_FAVLIST_FILE, payload)
 
 
-def _gatcha_file_schema_latest(path, expected_version: int) -> bool:
-    if not path.exists():
-        return True
-    payload = _read_json_file(path)
-    if not isinstance(payload, dict):
-        return False
-    try:
-        version = int(payload.get("schema_version") or 0)
-    except (TypeError, ValueError):
-        version = 0
-    return version >= expected_version
-
-
-def _gatcha_schema_rebuild_needed() -> bool:
-    if (
-        _GATCHA_CACHE_TEMP_FILE.exists()
-        or _GATCHA_UIDS_TEMP_FILE.exists()
-        or _GATCHA_FAVLIST_TEMP_FILE.exists()
-        or _GATCHA_REBUILD_PROGRESS_FILE.exists()
-    ):
-        return True
-    return not (
-        _gatcha_file_schema_latest(_GATCHA_UIDS_FILE, _GATCHA_UIDS_SCHEMA_VERSION)
-        and _gatcha_file_schema_latest(_GATCHA_CACHE_FILE, _GATCHA_CACHE_SCHEMA_VERSION)
-        and _gatcha_file_schema_latest(_GATCHA_FAVLIST_FILE, _GATCHA_FAVLIST_SCHEMA_VERSION)
-    )
-
-
-def _load_gatcha_rebuild_progress() -> dict:
-    payload = _read_json_file(_GATCHA_REBUILD_PROGRESS_FILE)
-    if isinstance(payload, dict):
-        return payload
-    return {}
-
-
-def _save_gatcha_rebuild_progress(progress: dict) -> None:
-    progress["updated_at"] = time.time()
-    _write_json_file(_GATCHA_REBUILD_PROGRESS_FILE, progress)
-
-
-def _gatcha_rebuild_status(progress: dict, message: str) -> None:
-    _set_gatcha_task_status("running", message=message, result={"rebuild": dict(progress)}, blocking=False)
-
-
 def _load_gatcha_cache_temp() -> dict:
     payload = _read_json_file(_GATCHA_CACHE_TEMP_FILE)
     if not isinstance(payload, dict):
@@ -1466,38 +1422,6 @@ def _refresh_gatcha_uid_cache(cache_payload: dict, mid: str, *, force_full: bool
     }
 
 
-def _gatcha_refresh_task_result(cache_payload: dict | None) -> dict:
-    if not isinstance(cache_payload, dict):
-        return {"uid_count": 0, "entry_count": 0, "errors": []}
-    uids = cache_payload.get("uids")
-    entry_count = 0
-    uid_count = 0
-    if isinstance(uids, dict):
-        uid_count = len(uids)
-        for entries in uids.values():
-            if isinstance(entries, list):
-                entry_count += len(entries)
-    summary = cache_payload.get("refresh_summary")
-    errors = []
-    uid_results = []
-    favlist_error = ""
-    if isinstance(summary, dict):
-        raw_errors = summary.get("errors")
-        if isinstance(raw_errors, list):
-            errors = [error for error in raw_errors if isinstance(error, dict)]
-        raw_results = summary.get("uids")
-        if isinstance(raw_results, list):
-            uid_results = [result for result in raw_results if isinstance(result, dict)]
-        favlist_error = str(summary.get("favlist_error") or "")
-    return {
-        "uid_count": uid_count,
-        "entry_count": entry_count,
-        "uid_results": uid_results,
-        "errors": errors,
-        "favlist_error": favlist_error,
-    }
-
-
 def _py_refresh_gatcha_cache() -> dict:
     if not effective_bilibili_cookie():
         raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
@@ -1548,30 +1472,6 @@ def _py_refresh_gatcha_cache() -> dict:
         refresh_summary["favlist_error"] = str(exc)
     cache_payload["refresh_summary"] = refresh_summary
     return cache_payload
-
-
-def _replace_gatcha_file_from_temp(temp_path, final_path) -> None:
-    if temp_path.exists():
-        temp_path.replace(final_path)
-
-
-def _cleanup_gatcha_rebuild_temp_files() -> None:
-    for path in (
-        _GATCHA_CACHE_TEMP_FILE,
-        _GATCHA_UIDS_TEMP_FILE,
-        _GATCHA_FAVLIST_TEMP_FILE,
-        _GATCHA_REBUILD_PROGRESS_FILE,
-        _GATCHA_REBUILD_PROGRESS_FILE.with_suffix(_GATCHA_REBUILD_PROGRESS_FILE.suffix + ".tmp"),
-    ):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-    for path in _GATCHA_REBUILD_PROGRESS_FILE.parent.glob(f".{_GATCHA_REBUILD_PROGRESS_FILE.name}.*.tmp"):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _gatcha_rebuild_temp_active() -> bool:
@@ -1648,182 +1548,6 @@ def _merge_favlist_into_rebuild_temp(payload: dict) -> None:
     _save_gatcha_favlist_temp(favlist_temp)
 
 
-def _merge_current_gatcha_changes_into_rebuild(uid_temp: dict, cache_temp: dict) -> None:
-    current_uid_payload = _load_gatcha_uid_payload()
-    current_uids = _normalize_gatcha_uid_list(current_uid_payload.get("uids"))
-    temp_uids = _normalize_gatcha_uid_list(uid_temp.get("uids"))
-    for uid in current_uids:
-        if uid not in temp_uids:
-            temp_uids.append(uid)
-    uid_temp["uids"] = temp_uids
-
-    temp_profiles = uid_temp.get("profiles") if isinstance(uid_temp.get("profiles"), dict) else {}
-    for uid, profile in (current_uid_payload.get("profiles") or {}).items():
-        uid_key = str(uid)
-        if uid_key not in temp_profiles and isinstance(profile, dict):
-            temp_profiles[uid_key] = dict(profile)
-    uid_temp["profiles"] = temp_profiles
-
-    current_cache = _load_gatcha_cache(reset_legacy=False)
-    current_cache_uids = current_cache.get("uids") if isinstance(current_cache, dict) else {}
-    temp_cache_uids = cache_temp.get("uids") if isinstance(cache_temp.get("uids"), dict) else {}
-    if isinstance(current_cache_uids, dict):
-        for uid, entries in current_cache_uids.items():
-            uid_key = str(uid)
-            if uid_key not in temp_cache_uids and isinstance(entries, list):
-                temp_cache_uids[uid_key] = _dedupe_gatcha_entries(entries)
-    cache_temp["uids"] = temp_cache_uids
-
-    temp_cache_profiles = cache_temp.get("profiles") if isinstance(cache_temp.get("profiles"), dict) else {}
-    current_cache_profiles = current_cache.get("profiles") if isinstance(current_cache, dict) else {}
-    if isinstance(current_cache_profiles, dict):
-        for uid, profile in current_cache_profiles.items():
-            uid_key = str(uid)
-            if uid_key not in temp_cache_profiles and isinstance(profile, dict):
-                temp_cache_profiles[uid_key] = dict(profile)
-    cache_temp["profiles"] = temp_cache_profiles
-
-
-def rebuild_gatcha_files_for_latest_schema() -> dict:
-    if not effective_bilibili_cookie():
-        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
-
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-    configured_uids = _normalize_gatcha_uid_list(uid_payload.get("uids"))
-
-    progress = _load_gatcha_rebuild_progress()
-    completed_uids = {
-        str(uid).strip()
-        for uid in progress.get("completed_uids", [])
-        if str(uid).strip()
-    }
-    completed_folders = {
-        str(folder_id).strip()
-        for folder_id in progress.get("completed_folders", [])
-        if str(folder_id).strip()
-    }
-    progress.update(
-        {
-            "schema_version": {
-                "uids": _GATCHA_UIDS_SCHEMA_VERSION,
-                "cache": _GATCHA_CACHE_SCHEMA_VERSION,
-                "favlist": _GATCHA_FAVLIST_SCHEMA_VERSION,
-            },
-            "uid_total": len(configured_uids),
-            "started_at": float(progress.get("started_at") or time.time()),
-        }
-    )
-    _save_gatcha_rebuild_progress(progress)
-    _gatcha_rebuild_status(progress, "正在重建抽卡缓存格式...")
-
-    uid_temp = _load_gatcha_uid_temp(configured_uids)
-    uid_temp["uids"] = list(configured_uids)
-    cache_temp = _load_gatcha_cache_temp()
-    cache_temp.setdefault("uids", {})
-    cache_temp.setdefault("profiles", {})
-
-    for index, mid in enumerate(configured_uids, start=1):
-        if mid in completed_uids:
-            continue
-        progress.update({"phase": "uid", "current_uid": mid, "uid_index": index})
-        _save_gatcha_rebuild_progress(progress)
-        _gatcha_rebuild_status(progress, f"正在重建 UID {mid} 的抽卡缓存 ({index}/{len(configured_uids)})...")
-
-        profile = _request_gatcha_uid_profile(mid)
-        normalized_profile = _normalize_gatcha_profile(profile.get("uid"), profile) or profile
-        normalized_mid = str(normalized_profile.get("uid") or mid)
-        uid_temp.setdefault("profiles", {})[normalized_mid] = normalized_profile
-        cache_temp.setdefault("profiles", {})[normalized_mid] = normalized_profile
-        _save_gatcha_uid_temp(uid_temp)
-        _save_gatcha_cache_temp(cache_temp)
-
-        def _save_uid_progress(entries: list[dict]) -> None:
-            cache_temp.setdefault("uids", {})[normalized_mid] = _dedupe_gatcha_entries(entries)
-            cache_temp["updated_at"] = time.time()
-            progress["current_uid_entry_count"] = len(cache_temp["uids"][normalized_mid])
-            _save_gatcha_cache_temp(cache_temp)
-            _save_gatcha_rebuild_progress(progress)
-
-        fetched_entries = _fetch_gatcha_videos_for_uid(normalized_mid, on_progress=_save_uid_progress)
-        cache_temp.setdefault("uids", {})[normalized_mid] = _dedupe_gatcha_entries(fetched_entries)
-        cache_temp["updated_at"] = time.time()
-        completed_uids.add(mid)
-        completed_uids.add(normalized_mid)
-        progress["completed_uids"] = sorted(completed_uids)
-        progress.pop("current_uid_entry_count", None)
-        _save_gatcha_cache_temp(cache_temp)
-        _save_gatcha_uid_temp(uid_temp)
-        _save_gatcha_rebuild_progress(progress)
-
-    current_favlist = _load_gatcha_favlist()
-    favlist_temp = _load_gatcha_favlist_temp(current_favlist)
-    favlist_uid = str(favlist_temp.get("uid") or "").strip()
-    folders = favlist_temp.get("folders") if isinstance(favlist_temp.get("folders"), list) else []
-    progress.update({"phase": "favlist", "favlist_total": len(folders)})
-    _save_gatcha_rebuild_progress(progress)
-    if folders:
-        for index, folder in enumerate(folders, start=1):
-            if not isinstance(folder, dict):
-                continue
-            folder_uid = _favlist_folder_uid(folder, favlist_uid)
-            folder_id = _gatcha_favlist_media_id(folder)
-            progress_folder_key = _favlist_browser_id(folder_uid, folder_id)
-            if not folder_uid or not folder_id or progress_folder_key in completed_folders:
-                continue
-            progress.update({"current_folder_id": folder_id, "favlist_index": index})
-            _save_gatcha_rebuild_progress(progress)
-            _gatcha_rebuild_status(progress, f"正在重建收藏夹缓存 ({index}/{len(folders)})...")
-            entries = _fetch_gatcha_favlist_entries_for_folder(folder_uid, folder)
-            favlist_temp["items"] = _dedupe_gatcha_entries(list(favlist_temp.get("items") or []) + entries)
-            favlist_temp["updated_at"] = time.time()
-            completed_folders.add(progress_folder_key)
-            progress["completed_folders"] = sorted(completed_folders)
-            _save_gatcha_favlist_temp(favlist_temp)
-            _save_gatcha_rebuild_progress(progress)
-    else:
-        _save_gatcha_favlist_temp(favlist_temp)
-
-    _merge_current_gatcha_changes_into_rebuild(uid_temp, cache_temp)
-    uid_temp["updated_at"] = time.time()
-    cache_temp["updated_at"] = time.time()
-    favlist_temp["updated_at"] = time.time()
-    _save_gatcha_uid_temp(uid_temp)
-    _save_gatcha_cache_temp(cache_temp)
-    _save_gatcha_favlist_temp(favlist_temp)
-
-    _replace_gatcha_file_from_temp(_GATCHA_UIDS_TEMP_FILE, _GATCHA_UIDS_FILE)
-    _replace_gatcha_file_from_temp(_GATCHA_CACHE_TEMP_FILE, _GATCHA_CACHE_FILE)
-    _replace_gatcha_file_from_temp(_GATCHA_FAVLIST_TEMP_FILE, _GATCHA_FAVLIST_FILE)
-    _cleanup_gatcha_rebuild_temp_files()
-
-    rebuilt_payload = {
-        "uids": cache_temp.get("uids") if isinstance(cache_temp.get("uids"), dict) else {},
-        "profiles": cache_temp.get("profiles") if isinstance(cache_temp.get("profiles"), dict) else {},
-        "refresh_summary": {
-            "uids": [
-                {
-                    "uid": uid,
-                    "mode": "rebuild",
-                    "added_count": len(entries) if isinstance(entries, list) else 0,
-                    "total_count": len(entries) if isinstance(entries, list) else 0,
-                }
-                for uid, entries in (cache_temp.get("uids") or {}).items()
-            ],
-            "errors": [],
-            "favlist_error": "",
-            "updated_at": time.time(),
-        },
-    }
-    result = _gatcha_refresh_task_result(rebuilt_payload)
-    result["rebuild"] = {
-        "completed": True,
-        "uid_count": len(configured_uids),
-        "favlist_folder_count": len(folders),
-    }
-    return result
-
-
 def refresh_gatcha_cache_in_background(
     *,
     on_start: callable | None = None,
@@ -1831,69 +1555,52 @@ def refresh_gatcha_cache_in_background(
     use_global_lock: bool = True,
     upload_default_uids_to_lark: bool = True,
     startup_schema_rebuild: bool = False,
+    _owner: int = 0,
 ) -> bool:
-    if use_global_lock:
-        if not rust_runtime.try_begin_gatcha_refresh(
-            busy_message=GATCHA_TASK_BUSY_MESSAGE,
-            task={
-                "status": "running",
-                "message": GATCHA_TASK_BUSY_MESSAGE,
-                "blocking": True,
+    """Start the shared Rust task; callbacks only notify existing observers.
+
+    The historical upload_default_uids_to_lark parameter remains accepted. It
+    already had no effect: Rust indexes only this refresh's eligible new rows.
+    """
+    from . import gatcha_refresh
+    from .shared_catalog import catalog_append_configuration
+
+    headers = dict(BILIBILI_HEADERS or {})
+    refresh = {
+        "repository": {
+            "schema_version": 1,
+            "paths": {
+                "uid_file": str(_GATCHA_UIDS_FILE.resolve()),
+                "cache_file": str(_GATCHA_CACHE_FILE.resolve()),
+                "favlist_file": str(_GATCHA_FAVLIST_FILE.resolve()),
+                "pool_config_file": str(_GATCHA_POOL_CONFIG_FILE.resolve()),
             },
-        ):
-            return False
-        if on_start is not None:
-            on_start()
-    else:
-        _set_gatcha_task_status("running", message=GATCHA_TASK_BUSY_MESSAGE, blocking=not startup_schema_rebuild)
-
-    def _worker() -> None:
-        cache_payload: dict | None = None
-        task_status = "failed"
-        try:
-            if startup_schema_rebuild and _gatcha_schema_rebuild_needed():
-                result = rebuild_gatcha_files_for_latest_schema()
-                task_status = "success"
-                message = "抽卡缓存格式重建完成。"
-                _set_gatcha_task_status(task_status, message=message, result=result, blocking=False)
-                # A local schema rebuild does not discover new remote records. Uploading the
-                # rebuilt UID cache here would resend the entire library during process
-                # startup. Favorite-list entries remain a separate source and must keep their
-                # existing remote-pool synchronization path.
-                favlist_entries = _local_gatcha_favlist_candidates()
-                if favlist_entries:
-                    _append_catalog_entries_async(favlist_entries)
-                return
-
-            cache_payload = refresh_gatcha_cache()
-            result = _gatcha_refresh_task_result(cache_payload)
-            has_errors = bool(result.get("errors") or result.get("favlist_error"))
-            has_uid_success = bool(result.get("uid_results"))
-            if has_errors and not has_uid_success:
-                task_status = "failed"
-                message = "抽卡缓存更新失败，未成功拉取任何 UID。"
-            elif has_errors:
-                task_status = "partial"
-                message = "抽卡缓存已部分更新，但有 UID 或收藏夹拉取失败。"
-            else:
-                task_status = "success"
-                message = "抽卡缓存更新完成。"
-            _set_gatcha_task_status(task_status, message=message, result=result)
-        except Exception as exc:
-            _set_gatcha_task_status("failed", message="抽卡缓存更新失败。", error=str(exc))
-            return
-        finally:
-            if use_global_lock:
-                rust_runtime.release_gatcha_refresh()
-                if on_done is not None:
-                    on_done()
-        if cache_payload is not None and task_status != "failed":
-            entries = _gatcha_refresh_added_entries(cache_payload)
-            if entries:
-                _append_catalog_entries_async(entries)
-
-    threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
-    return True
+            "default_uids": _default_gatcha_uids(),
+            "operation": "refresh_all",
+            "cookie": effective_bilibili_cookie(),
+            "user_agent": str(headers.get("User-Agent") or headers.get("user-agent") or "Mozilla/5.0"),
+            "referer": str(headers.get("Referer") or headers.get("referer") or "https://www.bilibili.com/"),
+            "timeout_ms": 20_000,
+            "keywords": list(GATCHA_KEYWORDS),
+        },
+        "catalog": catalog_append_configuration(),
+    }
+    if startup_schema_rebuild:
+        refresh["rebuild"] = {
+            "uid_temp": str(_GATCHA_UIDS_TEMP_FILE.resolve()),
+            "cache_temp": str(_GATCHA_CACHE_TEMP_FILE.resolve()),
+            "favlist_temp": str(_GATCHA_FAVLIST_TEMP_FILE.resolve()),
+            "progress": str(_GATCHA_REBUILD_PROGRESS_FILE.resolve()),
+        }
+    try:
+        return gatcha_refresh.start({
+            "refresh": refresh,
+            "owner": _owner,
+            "use_global_lock": use_global_lock,
+            "blocking": use_global_lock or not startup_schema_rebuild,
+        }, on_start=on_start, on_done=on_done)
+    except rust_runtime.RustRuntimeServiceError as exc:
+        raise BilibiliError(str(exc)) from exc
 
 
 def _py_add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
@@ -2130,39 +1837,6 @@ def _gatcha_cache_payload_entries(cache_payload: dict, *, exclude_uids: set[str]
                 payload.setdefault("owner_url", str(profile.get("space_url") or ""))
             entries.append(payload)
     return entries
-
-
-def _gatcha_refresh_added_entries(cache_payload: dict) -> list[dict]:
-    """Project only records added by the latest UID refresh for remote append."""
-    if not isinstance(cache_payload, dict):
-        return []
-    uid_entries = cache_payload.get("uids")
-    profiles = cache_payload.get("profiles")
-    summary = cache_payload.get("refresh_summary")
-    results = summary.get("uids") if isinstance(summary, dict) else None
-    if not isinstance(uid_entries, dict) or not isinstance(results, list):
-        return []
-
-    added_by_uid: dict[str, list[dict]] = {}
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        uid = str(result.get("uid") or "").strip()
-        try:
-            added_count = int(result.get("added_count") or 0)
-        except (TypeError, ValueError):
-            continue
-        raw_entries = uid_entries.get(uid)
-        if not uid or added_count <= 0 or not isinstance(raw_entries, list):
-            continue
-        added_by_uid[uid] = raw_entries[:added_count]
-
-    return _gatcha_cache_payload_entries(
-        {
-            "uids": added_by_uid,
-            "profiles": profiles if isinstance(profiles, dict) else {},
-        }
-    )
 
 
 def _append_catalog_entries_async(entries: list[dict]) -> None:

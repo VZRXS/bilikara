@@ -26,6 +26,7 @@ class VideoFixture:
         self.before_response = None
         self.status = 200
         self.requests = []
+        self.posts = []
         self.redirects = {"/short": "https://www.bilibili.com/video/BV1xx411c7mD?p=2&x=&x=%E4%B8%AD#keep"}
 
     def __enter__(self):
@@ -76,7 +77,17 @@ class VideoFixture:
                 else:
                     self.send_response(fixture.status)
                     value = fixture.return_value
+                    if callable(value):
+                        value = value(self.path)
                     body = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode("utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                fixture.posts.append((self.path, json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))))
+                body = b'{"success":true,"added":1}'
+                self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

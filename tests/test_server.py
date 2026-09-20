@@ -393,6 +393,7 @@ class AppContextStateRevisionTest(unittest.TestCase):
 
     def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
         context = AppContext.__new__(AppContext)
+        context._gatcha_refresh_owner = 42
         context._startup_lock = threading.RLock()
         context._startup_gatcha_refresh_bypass_available = True
         context._state_change_condition = threading.Condition()
@@ -409,8 +410,10 @@ class AppContextStateRevisionTest(unittest.TestCase):
                 "use_global_lock": False,
                 "upload_default_uids_to_lark": False,
                 "startup_schema_rebuild": True,
+                "_owner": 42,
             },
         )
+        self.assertEqual(refresh.call_args_list[1].kwargs["_owner"], 42)
         self.assertIn("on_start", refresh.call_args_list[1].kwargs)
         self.assertIn("on_done", refresh.call_args_list[1].kwargs)
         self.assertNotIn("use_global_lock", refresh.call_args_list[1].kwargs)

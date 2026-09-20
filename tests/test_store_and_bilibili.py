@@ -1,3 +1,4 @@
+from gatcha_refresh_fixture import ConfiguredRefreshFixture
 import io
 from video_service_fixture import video_fixture
 import json
@@ -1814,98 +1815,23 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual([entry["bvid"] for entry in cache_payload["uids"]["1"]], ["BVFULL"])
 
     def test_rebuild_gatcha_files_for_latest_schema_uses_temp_and_replaces_files(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            favlist_file = data_dir / "gatcha_favlist.json"
-            uid_temp_file = data_dir / "gatcha_uids_temp.json"
-            cache_temp_file = data_dir / "gatcha_cache_temp.json"
-            favlist_temp_file = data_dir / "gatcha_favlist_temp.json"
-            progress_file = data_dir / "gatcha_rebuild_progress.json"
-            uid_file.write_text(json.dumps({"uids": ["1"], "profiles": {}}), encoding="utf-8")
-            cache_file.write_text(json.dumps({"schema_version": 2, "uids": {}, "profiles": {}}), encoding="utf-8")
-            favlist_file.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "uid": "42",
-                        "folders": [{"id": "100", "title": "K songs"}],
-                        "items": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            def fake_fetch(mid, *, on_progress=None, max_pages=None):
-                entries = [
-                    {
-                        "mid": mid,
-                        "bvid": "BVREBUILT1",
-                        "title": "rebuilt",
-                        "url": "https://www.bilibili.com/video/BVREBUILT1",
-                        "cover_url": "https://example.com/cover.jpg",
-                        "played_count": "10",
-                        "preserved_1": "90",
-                    }
-                ]
-                if on_progress is not None:
-                    on_progress(entries)
-                return entries
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
-                patch.object(bilibili_module, "_GATCHA_UIDS_TEMP_FILE", uid_temp_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_TEMP_FILE", cache_temp_file),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_TEMP_FILE", favlist_temp_file),
-                patch.object(bilibili_module, "_GATCHA_REBUILD_PROGRESS_FILE", progress_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(
-                    bilibili_module,
-                    "_request_gatcha_uid_profile",
-                    return_value={
-                        "uid": "1",
-                        "name": "up-1",
-                        "space_url": "https://space.bilibili.com/1",
-                        "avatar_url": "https://example.com/avatar.jpg",
-                    },
-                ),
-                patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
-                patch.object(
-                    bilibili_module,
-                    "_fetch_gatcha_favlist_entries_for_folder",
-                    return_value=[
-                        {
-                            "mid": "9",
-                            "bvid": "BVFAVREBUILD",
-                            "title": "fav rebuilt",
-                            "url": "https://www.bilibili.com/video/BVFAVREBUILD",
-                            "cover_url": "https://example.com/fav-cover.jpg",
-                            "played_count": "20",
-                            "preserved_1": "120",
-                        }
-                    ],
-                ),
-            ):
-                result = bilibili_module.rebuild_gatcha_files_for_latest_schema()
-
-            self.assertTrue(result["rebuild"]["completed"])
-            self.assertFalse(uid_temp_file.exists())
-            self.assertFalse(cache_temp_file.exists())
-            self.assertFalse(favlist_temp_file.exists())
-            self.assertFalse(progress_file.exists())
-            uid_payload = json.loads(uid_file.read_text(encoding="utf-8"))
+        with ConfiguredRefreshFixture(legacy=True) as fixture:
+            fixture.add_folder()
+            self.assertTrue(fixture.start(use_global_lock=False, startup_schema_rebuild=True))
+            status = fixture.wait()
+            self.assertEqual(status["last_status"], "success")
+            self.assertTrue(status["last_result"]["rebuild"]["completed"])
+            for name in ("uids_temp", "cache_temp", "favlist_temp", "rebuild_progress"):
+                self.assertFalse(fixture.path(name).exists())
+            uid_payload, cache_payload, favlist_payload = (fixture.read(name) for name in ("uids", "cache", "favlist"))
             self.assertEqual(uid_payload["schema_version"], 2)
             self.assertEqual(uid_payload["profiles"]["1"]["avatar_url"], "https://example.com/avatar.jpg")
-            cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
             self.assertEqual(cache_payload["schema_version"], 3)
             self.assertEqual(cache_payload["uids"]["1"][0]["cover_url"], "https://example.com/cover.jpg")
-            favlist_payload = json.loads(favlist_file.read_text(encoding="utf-8"))
             self.assertEqual(favlist_payload["schema_version"], 2)
             self.assertEqual(favlist_payload["items"][0]["cover_url"], "https://example.com/fav-cover.jpg")
+            self.assertEqual(fixture.appended_bvids(1), ["BVFAVREBUILD"])
+
 
     def test_nonblocking_gatcha_rebuild_status_does_not_report_busy(self):
         bilibili_module.rust_runtime.reset_gatcha_status_service()
@@ -2365,91 +2291,37 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual([entry["bvid"] for entry in payload["items"]], ["BVNEW", "BVOLD"])
 
     def test_startup_gatcha_refresh_can_bypass_global_refresh_lock(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        bilibili_module.rust_runtime.reset_gatcha_status_service()
-        self.assertTrue(
-            bilibili_module.rust_runtime.try_begin_gatcha_refresh(
-                busy_message="test busy"
-            )
-        )
-        try:
-            with (
-                patch.object(bilibili_module, "refresh_gatcha_cache", return_value={}) as refresh,
-                patch.object(bilibili_module.threading, "Thread", FakeThread),
-            ):
-                self.assertFalse(bilibili_module.refresh_gatcha_cache_in_background())
-                self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(use_global_lock=False))
-
-            self.assertEqual(refresh.call_count, 1)
-            self.assertTrue(bilibili_module.gatcha_task_snapshot()["busy"])
-        finally:
+        with ConfiguredRefreshFixture() as fixture:
+            self.assertTrue(bilibili_module.rust_runtime.try_begin_gatcha_refresh(busy_message="test busy"))
+            self.assertFalse(fixture.start())
+            self.assertTrue(fixture.start(use_global_lock=False))
+            status = fixture.wait()
+            self.assertTrue(status["busy"])
+            self.assertEqual(status["last_status"], "success")
             bilibili_module.rust_runtime.release_gatcha_refresh()
 
+
     def test_startup_schema_rebuild_uploads_only_favlist_candidates(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
+        with ConfiguredRefreshFixture(legacy=True) as fixture:
+            fixture.add_folder()
+            self.assertTrue(fixture.start(use_global_lock=False, startup_schema_rebuild=True))
+            status = fixture.wait()
+            self.assertEqual(status["last_status"], "success")
+            self.assertFalse(status["blocking"])
+            self.assertEqual(fixture.appended_bvids(1), ["BVFAVREBUILD"])
 
-            def start(self):
-                self.target()
-
-        favlist_entry = {
-            "bvid": "BV1FAVONLY01",
-            "title": "favorite only",
-            "url": "https://www.bilibili.com/video/BV1FAVONLY01",
-        }
-        with (
-            patch.object(bilibili_module, "_gatcha_schema_rebuild_needed", return_value=True),
-            patch.object(
-                bilibili_module,
-                "rebuild_gatcha_files_for_latest_schema",
-                return_value={"rebuild": {"completed": True}},
-            ) as rebuild,
-            patch.object(bilibili_module, "refresh_gatcha_cache") as refresh,
-            patch.object(
-                bilibili_module,
-                "_local_gatcha_favlist_candidates",
-                return_value=[favlist_entry],
-            ),
-            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
-            patch.object(bilibili_module.threading, "Thread", FakeThread),
-        ):
-            self.assertTrue(
-                bilibili_module.refresh_gatcha_cache_in_background(
-                    use_global_lock=False,
-                    startup_schema_rebuild=True,
-                )
-            )
-
-        rebuild.assert_called_once()
-        refresh.assert_not_called()
-        append_lark.assert_called_once_with([favlist_entry])
 
     def test_background_gatcha_refresh_records_failure_status(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
+        with ConfiguredRefreshFixture() as fixture:
+            fixture.fail_uids.add("1")
+            self.assertTrue(fixture.start())
+            snapshot = fixture.wait()
+            self.assertFalse(snapshot["busy"])
+            self.assertEqual(snapshot["last_status"], "failed")
+            self.assertEqual(snapshot["last_result"]["errors"][0]["uid"], "1")
+            self.assertIn("synthetic UID failure", snapshot["last_result"]["errors"][0]["error"])
+            self.assertEqual(fixture.provider.posts, [])
 
-            def start(self):
-                self.target()
-
-        bilibili_module.rust_runtime.reset_gatcha_status_service()
-        with (
-            patch.object(bilibili_module, "refresh_gatcha_cache", side_effect=RuntimeError("boom")),
-            patch.object(bilibili_module.threading, "Thread", FakeThread),
-        ):
-            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background())
-            snapshot = bilibili_module.gatcha_task_snapshot()
-
-        self.assertFalse(snapshot["busy"])
-        self.assertEqual(snapshot["last_status"], "failed")
-        self.assertEqual(snapshot["last_error"], "boom")
 
     def test_refresh_gatcha_cache_reports_partial_uid_failures(self):
         cache_payload = {"uids": {}, "profiles": {}}
@@ -2475,115 +2347,28 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(summary["errors"], [{"uid": "1", "error": "uid failed"}])
 
     def test_startup_gatcha_refresh_does_not_upload_when_no_uid_added_entries(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
+        with ConfiguredRefreshFixture() as fixture:
+            fixture.videos["1"] = []
+            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_lark=False))
+            self.assertEqual(fixture.wait()["last_status"], "success")
+            self.assertEqual(fixture.provider.posts, [])
 
-            def start(self):
-                self.target()
-
-        cache_payload = {
-            "uids": {
-                "1": [{"bvid": "BVDEFAULT", "title": "default", "url": "https://www.bilibili.com/video/BVDEFAULT"}],
-                "2": [{"bvid": "BVUSER", "title": "user", "url": "https://www.bilibili.com/video/BVUSER"}],
-            },
-            "profiles": {},
-            "refresh_summary": {
-                "uids": [
-                    {"uid": "1", "mode": "incremental", "added_count": 0, "total_count": 1},
-                    {"uid": "2", "mode": "incremental", "added_count": 0, "total_count": 1},
-                ]
-            },
-        }
-
-        with (
-            patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
-            patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
-            patch.object(bilibili_module.threading, "Thread", FakeThread),
-        ):
-            self.assertTrue(
-                bilibili_module.refresh_gatcha_cache_in_background(
-                    use_global_lock=False,
-                    upload_default_uids_to_lark=False,
-                )
-            )
-
-        append_lark.assert_not_called()
 
     def test_startup_gatcha_refresh_uploads_only_new_uid_entries(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
+        with ConfiguredRefreshFixture() as fixture:
+            fixture.write("cache", {"schema_version": 3, "uids": {"1": [{"bvid":"BVOLD", "title":"old"}]}, "profiles":{}})
+            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_lark=False))
+            self.assertEqual(fixture.wait()["last_status"], "success")
+            self.assertEqual(fixture.appended_bvids(1), ["BVNEW0000001"])
+            self.assertEqual([v["bvid"] for v in fixture.read("cache")["uids"]["1"]], ["BVNEW0000001", "BVOLD"])
 
-            def start(self):
-                self.target()
-
-        cache_payload = {
-            "uids": {
-                "1": [
-                    {"bvid": "BVNEW", "title": "new", "url": "https://www.bilibili.com/video/BVNEW"},
-                    {"bvid": "BVDEFAULT", "title": "default", "url": "https://www.bilibili.com/video/BVDEFAULT"},
-                ],
-                "2": [{"bvid": "BVUSER", "title": "user", "url": "https://www.bilibili.com/video/BVUSER"}],
-            },
-            "profiles": {},
-            "refresh_summary": {
-                "uids": [
-                    {"uid": "1", "mode": "incremental", "added_count": 1, "total_count": 2},
-                    {"uid": "2", "mode": "incremental", "added_count": 0, "total_count": 1},
-                ]
-            },
-        }
-
-        with (
-            patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
-            patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
-            patch.object(bilibili_module.threading, "Thread", FakeThread),
-        ):
-            self.assertTrue(
-                bilibili_module.refresh_gatcha_cache_in_background(
-                    use_global_lock=False,
-                    upload_default_uids_to_lark=False,
-                )
-            )
-
-        uploaded_entries = append_lark.call_args.args[0]
-        self.assertEqual([entry["bvid"] for entry in uploaded_entries], ["BVNEW"])
 
     def test_manual_gatcha_refresh_uploads_default_uids_to_cloudflare_append_path_by_default(self):
-        class FakeThread:
-            def __init__(self, *, target, daemon=None, name=None):
-                self.target = target
+        with ConfiguredRefreshFixture(uids=("1", "2")) as fixture:
+            self.assertTrue(fixture.start())
+            self.assertEqual(fixture.wait()["last_status"], "success")
+            self.assertEqual(fixture.appended_bvids(2), ["BVNEW0000001", "BVNEW0000002"])
 
-            def start(self):
-                self.target()
-
-        cache_payload = {
-            "uids": {
-                "1": [{"bvid": "BVDEFAULT", "title": "default", "url": "https://www.bilibili.com/video/BVDEFAULT"}],
-                "2": [{"bvid": "BVUSER", "title": "user", "url": "https://www.bilibili.com/video/BVUSER"}],
-            },
-            "profiles": {},
-            "refresh_summary": {
-                "uids": [
-                    {"uid": "1", "mode": "full", "added_count": 1, "total_count": 1},
-                    {"uid": "2", "mode": "full", "added_count": 1, "total_count": 1},
-                ]
-            },
-        }
-
-        with (
-            patch.object(bilibili_module, "refresh_gatcha_cache", return_value=cache_payload),
-            patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
-            patch.object(bilibili_module, "_append_catalog_entries_async") as append_lark,
-            patch.object(bilibili_module.threading, "Thread", FakeThread),
-        ):
-            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(use_global_lock=False))
-
-        uploaded_entries = append_lark.call_args.args[0]
-        self.assertEqual([entry["bvid"] for entry in uploaded_entries], ["BVDEFAULT", "BVUSER"])
 
     @video_fixture
     def test_fetch_video_item(self, mock_request_json):

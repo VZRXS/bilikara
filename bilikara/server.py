@@ -450,6 +450,8 @@ class AppContext:
             on_restart_requested=self._request_update_restart,
         )
         self.cache_manager.prepare_session()
+        from .gatcha_refresh import new_owner
+        self._gatcha_refresh_owner = new_owner()
         self._closed = False
         self._server: ThreadingHTTPServer | None = None
         self._host = HOST
@@ -558,6 +560,7 @@ class AppContext:
         return refresh_gatcha_cache_in_background(
             on_start=self._notify_state_changed,
             on_done=self._notify_state_changed,
+            _owner=getattr(self, "_gatcha_refresh_owner", 0),
         )
 
     def app_update_snapshot(self) -> dict[str, object]:
@@ -643,6 +646,7 @@ class AppContext:
             use_global_lock=False,
             upload_default_uids_to_lark=False,
             startup_schema_rebuild=True,
+            _owner=getattr(self, "_gatcha_refresh_owner", 0),
         )
 
     def add_item(
@@ -1299,6 +1303,9 @@ class AppContext:
         if self._closed:
             return
         self._closed = True
+        from .gatcha_refresh import stop as stop_gatcha_refresh
+        if hasattr(self, "_gatcha_refresh_owner"):
+            stop_gatcha_refresh(self._gatcha_refresh_owner)
         self.cache_manager.shutdown()
         self.store.shutdown()
 

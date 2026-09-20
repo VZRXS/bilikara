@@ -46,7 +46,7 @@ pub(crate) struct NativeHostStorage {
     directory: PathBuf,
     // Keep the stable lock file open for the lifetime of this state authority.
     // Never unlink it: replacing a lock inode could admit a second writer.
-    _lock: File,
+    lock: File,
     last_state: Option<AppStateSeed>,
 }
 
@@ -119,7 +119,7 @@ impl NativeHostStorage {
         })?;
         let storage = Self {
             directory,
-            _lock: lock,
+            lock,
             last_state: None,
         };
         let state = storage.load()?;
@@ -240,6 +240,17 @@ impl NativeHostStorage {
             self.last_state = Some(checkpoint.state);
         }
         result
+    }
+}
+
+impl Drop for NativeHostStorage {
+    fn drop(&mut self) {
+        // Closing the descriptor is not a deterministic release. A flock lives on
+        // the open file description, so any child forked while this Host was
+        // running keeps that description - and the lock - alive until it execs.
+        // Unlock first: that clears the lock on the shared description itself, so
+        // the directory is free the moment this authority goes away.
+        let _ = fs2::FileExt::unlock(&self.lock);
     }
 }
 

@@ -1,4 +1,7 @@
+mod configured_refresh;
 use crate::bilibili_service::{BilibiliHttpClient, BilibiliServiceError};
+use crate::gatcha_refresh::RefreshControl;
+pub(crate) use configured_refresh::execute_configured_refresh;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -6,7 +9,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::form_urlencoded;
 
@@ -268,6 +270,7 @@ fn execute_gatcha_operation(
             &request.paths,
             keywords,
             &network_client(cookie, user_agent, referer, *timeout_ms)?,
+            &RefreshControl::default(),
         ),
         GatchaOperation::PreviewFavlist {
             uid,
@@ -628,7 +631,9 @@ fn refresh_all(
     paths: &GatchaPaths,
     keywords: &[String],
     client: &BilibiliHttpClient,
+    control: &RefreshControl,
 ) -> Result<Value, GatchaRepositoryError> {
+    control.check()?;
     let (configured, legacy_cache, initial_checkpoints) = {
         let _guard = repository_guard()?;
         let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
@@ -646,8 +651,11 @@ fn refresh_all(
     };
     let mut results = Vec::new();
     let mut errors = Vec::new();
-    persist_refresh_summary(paths, &results, &errors, "", false, configured.len())?;
+    control.commit(|| {
+        persist_refresh_summary(paths, &results, &errors, "", false, configured.len())
+    })?;
     for uid in &configured {
+        control.check()?;
         let result = (|| {
             let (known_profile, existing) = {
                 let _guard = repository_guard()?;
@@ -676,16 +684,19 @@ fn refresh_all(
             let stop_bvid = incremental
                 .then(|| initial_checkpoints.get(uid).cloned().flatten())
                 .flatten();
-            let fresh = fetch_uid_entries(client, uid, keywords, stop_bvid.as_deref())?;
-            let (added_count, total_count) = persist_refreshed_uid(
-                paths,
-                uid,
-                &profile,
-                &existing,
-                &fresh.entries,
-                fresh.first_bvid.as_deref(),
-                incremental,
-            )?;
+            let fresh =
+                fetch_uid_entries_controlled(client, uid, keywords, stop_bvid.as_deref(), control)?;
+            let (added_count, total_count) = control.commit(|| {
+                persist_refreshed_uid(
+                    paths,
+                    uid,
+                    &profile,
+                    &existing,
+                    &fresh.entries,
+                    fresh.first_bvid.as_deref(),
+                    incremental,
+                )
+            })?;
             Ok::<Value, GatchaRepositoryError>(json!({
                 "uid": uid,
                 "mode": if incremental { "incremental" } else { "full" },
@@ -697,25 +708,27 @@ fn refresh_all(
             Ok(value) => results.push(value),
             Err(failure) => errors.push(json!({"uid": uid, "error": failure.message})),
         }
-        persist_refresh_summary(paths, &results, &errors, "", false, configured.len())?;
+        control.commit(|| {
+            persist_refresh_summary(paths, &results, &errors, "", false, configured.len())
+        })?;
     }
-    let favlist_result = {
-        let _guard = repository_guard()?;
-        refresh_existing_favlist(paths, client)
-    };
+    control.check()?;
+    let favlist_result = refresh_existing_favlist(paths, client, control);
     let favlist_error = favlist_result
         .as_ref()
         .err()
         .map(|failure| failure.message.clone())
         .unwrap_or_default();
-    persist_refresh_summary(
-        paths,
-        &results,
-        &errors,
-        &favlist_error,
-        true,
-        configured.len(),
-    )
+    control.commit(|| {
+        persist_refresh_summary(
+            paths,
+            &results,
+            &errors,
+            &favlist_error,
+            true,
+            configured.len(),
+        )
+    })
 }
 
 fn persist_refreshed_uid(
@@ -947,6 +960,7 @@ fn refresh_favlist(
 fn refresh_existing_favlist(
     paths: &GatchaPaths,
     client: &BilibiliHttpClient,
+    control: &RefreshControl,
 ) -> Result<Option<Value>, GatchaRepositoryError> {
     if !paths.favlist_file.exists() {
         return Ok(None);
@@ -964,29 +978,39 @@ fn refresh_existing_favlist(
         if uid.is_empty() || folder_id(folder).is_empty() {
             continue;
         }
-        fresh.extend(fetch_favlist_entries(client, &uid, folder, Some(1))?);
+        fresh.extend(fetch_favlist_entries_controlled(
+            client,
+            &uid,
+            folder,
+            Some(1),
+            control,
+        )?);
         refreshed += 1;
     }
     if refreshed == 0 {
         return Ok(None);
     }
-    let existing = array(&payload, "items").to_vec();
-    let (merged, added_count) = merge_incremental_entries(&existing, &fresh);
-    payload
-        .as_object_mut()
-        .expect("favlist payload")
-        .insert("items".to_owned(), Value::Array(merged.clone()));
-    payload
-        .as_object_mut()
-        .expect("favlist payload")
-        .insert("updated_at".to_owned(), json!(unix_timestamp()));
-    atomic_write_json(&paths.favlist_file, &payload)?;
-    Ok(Some(json!({
-        "mode": "incremental",
-        "folder_count": refreshed,
-        "added_count": added_count,
-        "total_count": merged.len(),
-    })))
+    control.commit(|| {
+        let _guard = repository_guard()?;
+        payload = load_favlist(&paths.favlist_file);
+        let existing = array(&payload, "items").to_vec();
+        let (merged, added_count) = merge_incremental_entries(&existing, &fresh);
+        payload
+            .as_object_mut()
+            .expect("favlist payload")
+            .insert("items".to_owned(), Value::Array(merged.clone()));
+        payload
+            .as_object_mut()
+            .expect("favlist payload")
+            .insert("updated_at".to_owned(), json!(unix_timestamp()));
+        atomic_write_json(&paths.favlist_file, &payload)?;
+        Ok(Some(json!({
+            "mode": "incremental",
+            "folder_count": refreshed,
+            "added_count": added_count,
+            "total_count": merged.len(),
+        })))
+    })
 }
 
 fn fetch_profile(client: &BilibiliHttpClient, uid: &str) -> Result<Value, GatchaRepositoryError> {
@@ -1085,16 +1109,28 @@ fn fetch_uid_entries(
     keywords: &[String],
     stop_bvid: Option<&str>,
 ) -> Result<UidFetchResult, GatchaRepositoryError> {
+    fetch_uid_entries_controlled(client, uid, keywords, stop_bvid, &RefreshControl::default())
+}
+
+fn fetch_uid_entries_controlled(
+    client: &BilibiliHttpClient,
+    uid: &str,
+    keywords: &[String],
+    stop_bvid: Option<&str>,
+    control: &RefreshControl,
+) -> Result<UidFetchResult, GatchaRepositoryError> {
     let mut output = Vec::new();
     let mut seen = HashSet::new();
     let mut first_bvid = None;
     let page_size = 50usize;
     let mut page = 1usize;
     loop {
+        control.check()?;
         if page > 1 {
-            thread::sleep(GATCHA_REQUEST_DELAY);
+            control.sleep(GATCHA_REQUEST_DELAY)?;
         }
-        let payload = retry_request(
+        let payload = retry_request_controlled(
+            control,
             GATCHA_REQUEST_DELAY,
             |_| true,
             || {
@@ -1203,6 +1239,16 @@ fn fetch_favlist_entries(
     folder: &Map<String, Value>,
     max_pages: Option<usize>,
 ) -> Result<Vec<Value>, GatchaRepositoryError> {
+    fetch_favlist_entries_controlled(client, uid, folder, max_pages, &RefreshControl::default())
+}
+
+fn fetch_favlist_entries_controlled(
+    client: &BilibiliHttpClient,
+    uid: &str,
+    folder: &Map<String, Value>,
+    max_pages: Option<usize>,
+    control: &RefreshControl,
+) -> Result<Vec<Value>, GatchaRepositoryError> {
     let media_id = folder_id(folder);
     if media_id.is_empty() {
         return Ok(Vec::new());
@@ -1211,8 +1257,9 @@ fn fetch_favlist_entries(
     let page_size = 20usize;
     let mut page = 1usize;
     loop {
+        control.check()?;
         if page > 1 {
-            thread::sleep(FAVLIST_REQUEST_DELAY);
+            control.sleep(FAVLIST_REQUEST_DELAY)?;
         }
         let query = encode_query(&[
             ("media_id", media_id.clone()),
@@ -1222,7 +1269,8 @@ fn fetch_favlist_entries(
             ("order", "mtime".to_owned()),
             ("type", "0".to_owned()),
         ]);
-        let payload = retry_request(
+        let payload = retry_request_controlled(
+            control,
             FAVLIST_REQUEST_DELAY,
             |error| error.kind == "risk_control",
             || {
@@ -1485,6 +1533,19 @@ fn network_error(value: BilibiliServiceError) -> GatchaRepositoryError {
 fn retry_request<T, Retry, Request>(
     delay: Duration,
     should_retry: Retry,
+    request: Request,
+) -> Result<T, GatchaRepositoryError>
+where
+    Retry: Fn(&BilibiliServiceError) -> bool,
+    Request: FnMut() -> Result<T, BilibiliServiceError>,
+{
+    retry_request_controlled(&RefreshControl::default(), delay, should_retry, request)
+}
+
+fn retry_request_controlled<T, Retry, Request>(
+    control: &RefreshControl,
+    delay: Duration,
+    should_retry: Retry,
     mut request: Request,
 ) -> Result<T, GatchaRepositoryError>
 where
@@ -1492,9 +1553,10 @@ where
     Request: FnMut() -> Result<T, BilibiliServiceError>,
 {
     for attempt in 0..3 {
+        control.check()?;
         match request() {
             Ok(value) => return Ok(value),
-            Err(failure) if attempt < 2 && should_retry(&failure) => thread::sleep(delay),
+            Err(failure) if attempt < 2 && should_retry(&failure) => control.sleep(delay)?,
             Err(failure) => return Err(network_error(failure)),
         }
     }
@@ -2201,6 +2263,7 @@ fn default_timeout_ms() -> u64 {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use std::thread;
 
     fn paths(root: &Path) -> GatchaPaths {
         GatchaPaths {

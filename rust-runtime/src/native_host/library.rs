@@ -26,6 +26,7 @@ fn record(
     event: &'static str,
     started: Instant,
     result: Option<&Result<Value, ApiError>>,
+    owner: Option<&TaskLease>,
 ) {
     let summary = result
         .and_then(|result| result.as_ref().ok())
@@ -46,6 +47,15 @@ fn record(
             .is_some_and(|s| s["favlist_error"].as_str().is_some_and(|e| !e.is_empty())),
     };
     let _ = with_app(|app| {
+        if owner.is_some_and(|owner| {
+            owner.stopped()
+                || owner
+                    .ticket
+                    .as_ref()
+                    .is_some_and(|ticket| !app.native().login.owns_configured_refresh(ticket))
+        }) {
+            return Ok(());
+        }
         app.native_library_diagnostic(diagnostic);
         Ok(())
     });
@@ -221,21 +231,19 @@ struct TaskLease {
     automatic: bool,
     trigger: &'static str,
     started: Instant,
+    ticket: Option<crate::gatcha_refresh::RefreshTicket>,
+    stop: Option<Arc<AtomicBool>>,
 }
 
 fn partial_refresh(value: &Value) -> bool {
-    let summary = value.get("refresh_summary").unwrap_or(value);
-    summary["errors"]
-        .as_array()
-        .is_some_and(|errors| !errors.is_empty())
-        || summary["favlist_error"]
-            .as_str()
-            .is_some_and(|error| !error.is_empty())
+    crate::gatcha_refresh::summary_has_errors(value)
 }
+
 impl TaskLease {
     fn acquire(
         identity: Option<&Identity>,
         trigger: &'static str,
+        configured: bool,
     ) -> Result<(Self, String), ApiError> {
         let started = Instant::now();
         let result = with_app(|app| {
@@ -245,23 +253,45 @@ impl TaskLease {
             }
             let session = app.native();
             Self::reserve(session, identity.is_none())?;
+            let ticket = if configured {
+                // Reserve keeps native authorization/cooldown policy. Transfer
+                // its lease to the shared task owner under the same AppState lock.
+                if identity.is_some() {
+                    session.login.release_gacha_refresh();
+                }
+                session.login.begin_configured_refresh(
+                    identity.is_some(),
+                    GachaTaskUpdate {
+                        status: GachaTaskStatus::Running,
+                        message: "本地曲库更新中".into(),
+                        error: String::new(),
+                        result: None,
+                        blocking: identity.is_some(),
+                    },
+                )
+            } else {
+                None
+            };
             Ok((
                 Self {
                     complete: false,
                     automatic: identity.is_none(),
                     trigger,
                     started,
+                    ticket,
+                    stop: None,
                 },
                 session.cookie.clone(),
             ))
         });
         match &result {
-            Ok(_) => record(trigger, "started", started, None),
+            Ok(_) => record(trigger, "started", started, None, None),
             Err(error) => record(
                 trigger,
                 "skipped",
                 started,
                 Some(&Err(ApiError::new(error.status, &error.code, ""))),
+                None,
             ),
         }
         result
@@ -319,7 +349,17 @@ impl TaskLease {
     }
 
     fn finish(mut self, result: &Result<Value, ApiError>) -> Result<(), ApiError> {
-        Self::publish(result, self.automatic)?;
+        if self.stopped() {
+            self.complete = true;
+            return Ok(());
+        }
+        if let Some(ticket) = &self.ticket {
+            let current = with_app(|app| Ok(app.native().login.owns_configured_refresh(ticket)))?;
+            if !current {
+                self.complete = true;
+                return Ok(());
+            }
+        }
         record(
             self.trigger,
             if result.is_err() {
@@ -331,14 +371,36 @@ impl TaskLease {
             },
             self.started,
             Some(result),
+            Some(&self),
         );
+        self.publish_owned(result)?;
         self.complete = true;
         Ok(())
     }
 
-    fn publish(result: &Result<Value, ApiError>, automatic: bool) -> Result<(), ApiError> {
+    fn stopped(&self) -> bool {
+        self.stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Acquire))
+    }
+
+    fn publish_owned(&self, result: &Result<Value, ApiError>) -> Result<(), ApiError> {
         with_app(|app| {
-            Self::publish_session(app.native(), result, automatic);
+            if self.stopped() {
+                return Ok(());
+            }
+            let session = app.native();
+            if let Some(ticket) = &self.ticket {
+                if !session.login.owns_configured_refresh(ticket) {
+                    return Ok(());
+                }
+                // Native status text/cooldown remain an entry-specific projection.
+                let task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+                session
+                    .login
+                    .finish_configured_refresh(ticket.0, !self.automatic, task);
+            }
+            Self::publish_session(session, result, self.automatic);
             Ok(())
         })
     }
@@ -348,30 +410,13 @@ impl TaskLease {
         result: &Result<Value, ApiError>,
         automatic: bool,
     ) {
-        let partial = result.as_ref().is_ok_and(partial_refresh);
-        let failed = result.is_err() || partial;
+        let task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+        let failed = task.status != GachaTaskStatus::Success;
         session.library_refresh_active = false;
         if !automatic {
             session.login.release_gacha_refresh();
         }
-        session.login.set_gacha_task(GachaTaskUpdate {
-            status: if result.is_err() {
-                GachaTaskStatus::Failed
-            } else if partial {
-                GachaTaskStatus::Partial
-            } else {
-                GachaTaskStatus::Success
-            },
-            message: if failed {
-                "曲库更新失败或部分更新，请稍后重试"
-            } else {
-                "本地曲库更新完成"
-            }
-            .into(),
-            error: String::new(),
-            result: None,
-            blocking: false,
-        });
+        session.login.set_gacha_task(task);
         // This cooldown is shared by all phones; playback/cache downloads
         // and cached browsing are not blocked by a failed library fetch.
         if !automatic {
@@ -385,8 +430,16 @@ impl Drop for TaskLease {
     fn drop(&mut self) {
         if !self.complete {
             let result = Err(ApiError::new(503, "library_task", "曲库任务中断"));
-            record(self.trigger, "interrupted", self.started, Some(&result));
-            let _ = Self::publish(&result, self.automatic);
+            record(
+                self.trigger,
+                "interrupted",
+                self.started,
+                Some(&result),
+                Some(self),
+            );
+            if !self.stopped() {
+                let _ = self.publish_owned(&result);
+            }
         }
     }
 }
@@ -399,16 +452,35 @@ fn refresh(
     if context.stop.load(Ordering::Acquire) {
         return Err(ApiError::new(503, "stopped", "Host 已停止"));
     }
-    let (lease, cookie) = TaskLease::acquire(identity, trigger)?;
+    let (mut lease, cookie) = TaskLease::acquire(identity, trigger, true)?;
+    lease.stop = Some(context.stop.clone());
+    let control = lease
+        .ticket
+        .as_ref()
+        .expect("configured refresh ticket")
+        .1
+        .clone();
+    control.follow_host(context.stop.clone());
     let operation = network_operation("/api/gatcha/refresh", &json!({}), &cookie)?;
-    let directory = context.directory.clone();
+    let request = crate::gatcha_refresh::RefreshRequest {
+        repository: GatchaRepositoryRequest {
+            schema_version: 1,
+            paths: paths(&context.directory),
+            default_uids: default_uids(),
+            operation,
+        },
+        rebuild: None,
+        catalog: None,
+    };
     let stop = context.stop.clone();
     context
         .spawn("native-library-refresh", move || {
             let result = if stop.load(Ordering::Acquire) {
                 Err(ApiError::new(503, "stopped", "Host 已停止"))
             } else {
-                execute(&directory, operation)
+                crate::gatcha_refresh::execute(&request, &control, &|_| {})
+                    .payload
+                    .map_err(|e| ApiError::new(400, &e.kind, e.message))
             };
             let _ = lease.finish(&result);
         })
@@ -458,7 +530,7 @@ pub(super) fn write(
     if path == "/api/gatcha/refresh" {
         return refresh(context, Some(identity), "manual_refresh");
     }
-    let (lease, cookie) = TaskLease::acquire(Some(identity), "manual_source")?;
+    let (lease, cookie) = TaskLease::acquire(Some(identity), "manual_source", false)?;
     let operation = network_operation(path, body, &cookie)?;
     let result = execute(&context.directory, operation);
     lease.finish(&result)?;
@@ -474,6 +546,109 @@ pub(super) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configured_native_http_uses_shared_task_and_stopped_lease_cannot_publish() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        let directory = std::env::temp_dir().join(format!("native-refresh-{}", token().unwrap()));
+        let seed = serde_json::from_value(
+            json!({"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0}),
+        )
+        .unwrap();
+        assert!(
+            crate::initialize_native_host(&directory, seed)
+                .error()
+                .is_none()
+        );
+        let host = super::super::start(
+            &directory,
+            Arc::new(|_| {
+                Some(Asset {
+                    bytes: b"fixture".to_vec(),
+                    mime: "text/html".into(),
+                })
+            }),
+            true,
+            None,
+        )
+        .unwrap();
+        // Empty configured sources exercise the real service without any remote
+        // traffic; the known cache summary proves repository execution occurred.
+        std::fs::write(
+            paths(&directory).uid_file,
+            br#"{"schema_version":2,"uids":[],"profiles":{}}"#,
+        )
+        .unwrap();
+        with_app(|app| {
+            app.native().cookie = "synthetic".into();
+            Ok(())
+        })
+        .unwrap();
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let bootstrap = client
+            .get(host.bootstrap_url())
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document")
+            .send()
+            .unwrap();
+        let cookie = bootstrap.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/api/gatcha/refresh",
+                host.local_port()
+            ))
+            .header("cookie", cookie)
+            .json(&json!({}))
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.json::<Value>().unwrap()["data"]["started"], true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while with_app(|app| Ok(app.native().library_refresh_active)).unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            with_app(|app| Ok(app.native().login.gacha_snapshot().last_status)).unwrap(),
+            GachaTaskStatus::Success
+        );
+        let cache: Value =
+            serde_json::from_slice(&std::fs::read(paths(&directory).cache_file).unwrap()).unwrap();
+        assert_eq!(cache["refresh_summary"]["completed"], true);
+        let (mut late, _) = TaskLease::acquire(None, "test_late", true).unwrap();
+        late.stop = Some(host.context.stop.clone());
+        late.ticket
+            .as_ref()
+            .unwrap()
+            .1
+            .follow_host(host.context.stop.clone());
+        host.context.stop.store(true, Ordering::Release);
+        let revision = with_app(|app| Ok(app.native().revision)).unwrap();
+        assert!(late.ticket.as_ref().unwrap().1.check().is_err());
+        late.finish(&Ok(json!({}))).unwrap();
+        assert_eq!(with_app(|app| Ok(app.native().revision)).unwrap(), revision);
+        assert_eq!(
+            with_app(|app| Ok(app.native().login.gacha_snapshot().last_status)).unwrap(),
+            GachaTaskStatus::Running
+        );
+        drop(host);
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn automatic_refresh_is_nonblocking_and_does_not_consume_manual_cooldown() {
         let mut session = crate::app_state::native_session::NativeSession::default();

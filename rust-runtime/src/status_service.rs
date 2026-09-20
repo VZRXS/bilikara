@@ -132,9 +132,71 @@ pub struct RuntimeStatusService {
     bilibili_generation: u64,
     bilibili_worker: Option<u64>,
     bilibili_success: Option<u64>,
+    refresh_generation: u64,
+    configured_refresh: Option<crate::gatcha_refresh::RefreshTicket>,
 }
 
 impl RuntimeStatusService {
+    #[cfg(any(feature = "native-host", test))]
+    pub(crate) fn owns_configured_refresh(
+        &self,
+        ticket: &crate::gatcha_refresh::RefreshTicket,
+    ) -> bool {
+        self.configured_refresh.as_ref().is_some_and(|current| {
+            current.0 == ticket.0 && std::sync::Arc::ptr_eq(&current.1, &ticket.1)
+        })
+    }
+    pub(crate) fn begin_configured_refresh(
+        &mut self,
+        global_lock: bool,
+        task: GachaTaskUpdate,
+    ) -> Option<crate::gatcha_refresh::RefreshTicket> {
+        if self.configured_refresh.is_some() || (global_lock && self.gacha_refresh_lease) {
+            return None;
+        }
+        if global_lock {
+            self.gacha_refresh_lease = true;
+        }
+        self.refresh_generation = self.refresh_generation.wrapping_add(1).max(1);
+        let ticket = (
+            self.refresh_generation,
+            std::sync::Arc::new(crate::gatcha_refresh::RefreshControl::default()),
+        );
+        self.configured_refresh = Some(ticket.clone());
+        self.set_gacha_busy_message(DEFAULT_GACHA_BUSY_MESSAGE.into());
+        self.set_gacha_task(task);
+        Some(ticket)
+    }
+
+    pub(crate) fn configured_refresh_progress(&mut self, generation: u64, progress: Value) {
+        if self.configured_refresh.as_ref().map(|t| t.0) == Some(generation) {
+            self.set_gacha_task(GachaTaskUpdate {
+                status: GachaTaskStatus::Running,
+                message: "正在重建抽卡缓存格式...".into(),
+                error: String::new(),
+                result: Some(serde_json::json!({"rebuild":progress})),
+                blocking: false,
+            });
+        }
+    }
+
+    pub(crate) fn finish_configured_refresh(
+        &mut self,
+        generation: u64,
+        global_lock: bool,
+        task: GachaTaskUpdate,
+    ) -> bool {
+        if self.configured_refresh.as_ref().map(|t| t.0) != Some(generation) {
+            return false;
+        }
+        self.configured_refresh = None;
+        if global_lock {
+            self.release_gacha_refresh();
+        }
+        self.set_gacha_task(task);
+        true
+    }
+
     pub fn gacha_snapshot(&self) -> GachaTaskSnapshot {
         let background_busy = self.gacha_task.status == GachaTaskStatus::Running;
         let busy = self.gacha_refresh_lease || (background_busy && self.gacha_task.blocking);
@@ -160,7 +222,12 @@ impl RuntimeStatusService {
         busy_message: String,
         task: Option<GachaTaskUpdate>,
     ) -> bool {
-        if self.gacha_refresh_lease {
+        if self.gacha_refresh_lease
+            || self
+                .configured_refresh
+                .as_ref()
+                .is_some_and(|_| self.gacha_task.blocking)
+        {
             return false;
         }
         self.gacha_refresh_lease = true;
@@ -193,6 +260,9 @@ impl RuntimeStatusService {
     }
 
     pub fn reset_gacha(&mut self) {
+        if let Some((_, control)) = self.configured_refresh.take() {
+            control.stop();
+        }
         self.gacha_task = GachaTaskState::default();
         self.gacha_refresh_lease = false;
         self.gacha_busy_message.clear();
@@ -319,6 +389,14 @@ impl RuntimeStatusService {
             DEFAULT_GACHA_BUSY_MESSAGE
         } else {
             &self.gacha_busy_message
+        }
+    }
+}
+
+impl Drop for RuntimeStatusService {
+    fn drop(&mut self) {
+        if let Some((_, control)) = &self.configured_refresh {
+            control.stop();
         }
     }
 }
