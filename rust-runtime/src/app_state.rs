@@ -1115,7 +1115,7 @@ fn format_authoritative_identity(
     format!("{prefix}-{namespace}-{counter:016x}")
 }
 
-fn valid_authoritative_identity(value: &str, prefix: char) -> bool {
+pub(crate) fn valid_authoritative_identity(value: &str, prefix: char) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 51
         && bytes[0] == prefix as u8
@@ -1132,7 +1132,7 @@ fn artifact_relative_directory(item_incarnation_id: &str, artifact_set_id: &str)
     format!("{ARTIFACT_ROOT_COMPONENT}/{item_incarnation_id}/{artifact_set_id}")
 }
 
-fn valid_artifact_relative_directory(
+pub(crate) fn valid_artifact_relative_directory(
     value: &str,
     item_incarnation_id: &str,
     artifact_set_id: &str,
@@ -5015,6 +5015,77 @@ fn execute_error_response(error: ExecuteError) -> AppStateResponse {
             error,
         }),
         ExecuteError::Internal(message) => internal_error_response(&message),
+    }
+}
+
+/// Cache event application holds only AppState's existing serialized authority.
+pub(crate) fn with_cache_application<T>(
+    action: impl FnOnce(&mut AppState) -> T,
+) -> Result<T, AppStateError> {
+    let mut app = APP_STATE
+        .get_or_init(|| Mutex::new(AppState::default()))
+        .lock()
+        .map_err(|_| AppStateError {
+            kind: "internal_error".into(),
+            message: "Rust AppState lock is poisoned".into(),
+            details: None,
+        })?;
+    Ok(action(&mut app))
+}
+
+impl AppState {
+    pub(crate) fn cache_runtime_item(
+        &self,
+        item_id: &str,
+        token: u64,
+    ) -> Result<PlaylistItem, AppStateError> {
+        let Some(data) = &self.data else {
+            return Err(AppStateError {
+                kind: "uninitialized".into(),
+                message: "AppState is not initialized".into(),
+                details: None,
+            });
+        };
+        validate_cache_attempt_ownership(data, item_id, token, self.next_cache_attempt_token)
+            .map_err(|error| match error {
+                ExecuteError::Rejected(error) => error,
+                ExecuteError::Internal(message) => AppStateError {
+                    kind: "internal_error".into(),
+                    message,
+                    details: None,
+                },
+            })?;
+        Ok(data
+            .find_item(item_id)
+            .expect("validated live item")
+            .clone())
+    }
+
+    pub(crate) fn cache_observation(
+        &mut self,
+        committed: bool,
+        effects: PersistenceEffects,
+    ) -> AppStateResponse {
+        let mut observation = self.execute(AppStateRequest::Snapshot { schema_version: 1 });
+        if let AppStateResponse::Success(ref mut out) = observation {
+            out.committed = committed;
+            out.effects = effects;
+        }
+        observation
+    }
+}
+
+impl AppStateResponse {
+    pub(crate) fn accumulate_cache_effects(&self, effects: &mut PersistenceEffects) -> bool {
+        let Self::Success(response) = self else {
+            return false;
+        };
+        effects.write_core |= response.effects.write_core;
+        effects.write_session_played |= response.effects.write_session_played;
+        effects.write_backup |= response.effects.write_backup;
+        effects.delete_backup |= response.effects.delete_backup;
+        effects.delete_runtime_files |= response.effects.delete_runtime_files;
+        response.committed
     }
 }
 

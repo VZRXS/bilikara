@@ -61,6 +61,47 @@ def retry_cache_item(
     )
 
 
+def cache_observation_fixture(response=None, *, item_ids=(), settlements=(), errors=()):
+    """Already-applied service output; interpretation is tested in Rust.
+
+    Empty scheduler stubs must still supply the real authoritative observation.
+    """
+    if response is None:
+        response = rust_runtime.app_state_request("snapshot")
+    return {
+        "effects": {
+            "observation": response,
+            "settlements": list(settlements),
+            "activity_item_ids": list(item_ids),
+            "settled_item_ids": list(item_ids),
+            "cancelled": False,
+            "errors": list(errors),
+        },
+        "snapshot": {},
+    }
+
+
+def observe_cache_projection(manager, item_id, token, projection, *, artifact=None):
+    """Exercise only default Host observation/collector compatibility glue."""
+    import time
+    errors = []
+    try:
+        response = rust_runtime.app_state_request(
+            "apply_cache_event", item_id=item_id, cache_attempt_token=token,
+            event=projection, now=time.time(),
+        )
+    except rust_runtime.RustAppStateRejectedError as exc:
+        errors.append({"kind": exc.kind})
+        response = rust_runtime.app_state_request("snapshot")
+    batch = cache_observation_fixture(
+        response, item_ids=[item_id], errors=errors,
+        settlements=[{"cache_attempt_token": token, "artifact": artifact}],
+    )
+    with patch.object(manager, "_native_cache_request", return_value=batch):
+        manager._drain_native_cache_events()
+    return batch
+
+
 class CacheManagerOutputTest(unittest.TestCase):
     def test_prewarm_prepares_legacy_tools_without_overriding_runtime_status(self):
         manager = CacheManager.__new__(CacheManager)
@@ -436,7 +477,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "pending_ids": sorted(generations),
                     },
                 }
-            return {"events": [], "snapshot": {}}
+            return cache_observation_fixture()
 
         return runtime_request
 
@@ -558,189 +599,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
             f"{item.artifact_relative_directory}/audio.m4a",
         )
 
-    def test_native_cache_events_project_state_and_reject_stale_attempt_tokens(self):
-        item = self.make_item("song-native-events")
-        self.store.add_item(item, requester_name="cache-test-user")
-        stale_token = begin_cache_attempt(self.store, item.id)
-        cache_attempt_token = begin_cache_attempt(self.store, item.id)
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
-            CacheManager, "_worker_loop", lambda self: None
-        ):
-            manager = CacheManager(self.store, max_cache_items=3)
-            try:
-                manager.download_source = DOWNLOAD_SOURCE_NATIVE
-                manager._apply_native_cache_event(
-                    {
-                        "generation": 2,
-                        "cache_attempt_token": cache_attempt_token,
-                        "item_id": item.id,
-                        "kind": "started",
-                        "payload": {
-                            "tracks": [
-                                {
-                                    "key": "video-p1",
-                                    "label": "视频轨P1",
-                                    "order": 0,
-                                    "stream_kind": "video",
-                                    "phase": "queued",
-                                    "attempt": 0,
-                                    "max_attempts": 10,
-                                    "current_bytes": 0,
-                                    "target_bytes": 0,
-                                    "done": False,
-                                }
-                            ]
-                        },
-                    }
-                )
-                manager._apply_native_cache_event(
-                    {
-                        "generation": 2,
-                        "cache_attempt_token": cache_attempt_token,
-                        "item_id": item.id,
-                        "kind": "ready",
-                        "payload": self.ready_payload(
-                            item.id,
-                            cache_attempt_token,
-                            video_name="video-p1.mp4",
-                            audio_name="audio-p1.m4a",
-                            variant_id="p1_track_1",
-                        ),
-                    }
-                )
-                with manager.lock:
-                    manager.pending_ids.add(item.id)
-                    manager.active_item_id = item.id
-                manager._apply_native_cache_event(
-                    {
-                        "generation": 2,
-                        "cache_attempt_token": stale_token,
-                        "item_id": item.id,
-                        "kind": "failed",
-                        "payload": {"message": "stale failure"},
-                    }
-                )
-                cached = self.store.get_item(item.id)
-                cached_status = cached.cache_status
-                selected_variant_id = cached.selected_audio_variant_id
-                with manager.lock:
-                    stale_terminal_kept_pending = item.id in manager.pending_ids
-                    stale_terminal_kept_active = manager.active_item_id == item.id
-                    accepted_identity = (
-                        manager.native_cache_generations[item.id],
-                        manager.native_cache_attempt_tokens[item.id],
-                    )
-            finally:
-                manager.shutdown()
 
-        self.assertEqual(cached_status, "ready")
-        self.assertEqual(selected_variant_id, "p1_track_1")
-        self.assertTrue(stale_terminal_kept_pending)
-        self.assertTrue(stale_terminal_kept_active)
-        self.assertEqual(accepted_identity, (2, cache_attempt_token))
-        self.assertEqual(manager.native_cache_generations, {})
 
-    def test_native_attempt_identity_pair_is_idempotent_and_rejects_conflicts(self):
-        item_id = "song-native-identity-order"
-        with patch.object(CacheManager, "_worker_loop", lambda self: None):
-            manager = CacheManager(self.store, max_cache_items=1)
-            try:
-                self.assertTrue(
-                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
-                )
-                self.assertFalse(
-                    manager._accept_native_cache_attempt_identity(item_id, 1, 101)
-                )
-                self.assertEqual(
-                    (
-                        manager.native_cache_generations[item_id],
-                        manager.native_cache_attempt_tokens[item_id],
-                    ),
-                    (2, 202),
-                )
-                self.assertTrue(
-                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
-                )
-                self.assertFalse(
-                    manager._accept_native_cache_attempt_identity(item_id, 2, 203)
-                )
-                self.assertEqual(
-                    (
-                        manager.native_cache_generations[item_id],
-                        manager.native_cache_attempt_tokens[item_id],
-                    ),
-                    (2, 202),
-                )
-                manager.native_cache_attempt_tokens.pop(item_id)
-                self.assertTrue(
-                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
-                )
-                self.assertEqual(manager.native_cache_attempt_tokens[item_id], 202)
-            finally:
-                manager.shutdown()
-
-    def test_inverse_native_submit_completion_keeps_newer_generation_token_pair(self):
-        item = self.make_item("song-native-inverse-submit")
-        item.selected_pages = [1]
-        item.selected_cids = [456]
-        item.selected_durations = [120]
-        self.store.add_item(item, requester_name="cache-test-user")
-        first_processing = threading.Event()
-        newer_recorded = threading.Event()
-
-        class DelayedResult(dict):
-            def get(self, key, default=None):
-                if key == "generation":
-                    first_processing.set()
-                    if not newer_recorded.wait(5.0):
-                        raise AssertionError("newer Native result did not complete")
-                return super().get(key, default)
-
-        responses: queue.Queue[dict[str, object]] = queue.Queue()
-        responses.put(DelayedResult(generation=1, cache_attempt_token=101))
-        responses.put({"generation": 2, "cache_attempt_token": 202})
-
-        with patch.object(CacheManager, "_worker_loop", lambda self: None):
-            manager = CacheManager(self.store, max_cache_items=1)
-            original_accept = manager._accept_native_cache_attempt_identity
-
-            def accept_identity(item_id, generation, cache_attempt_token):
-                accepted = original_accept(item_id, generation, cache_attempt_token)
-                if generation == 2:
-                    newer_recorded.set()
-                return accepted
-
-            try:
-                manager.download_source = DOWNLOAD_SOURCE_NATIVE
-                with patch.object(
-                    manager, "_ensure_native_cache_runtime"
-                ), patch.object(
-                    manager,
-                    "_native_cache_request",
-                    side_effect=lambda _command, **_fields: responses.get_nowait(),
-                ), patch.object(
-                    manager, "_drain_native_cache_events"
-                ), patch.object(
-                    manager,
-                    "_accept_native_cache_attempt_identity",
-                    side_effect=accept_identity,
-                ):
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        first = executor.submit(manager.enqueue, item.id)
-                        self.assertTrue(first_processing.wait(5.0))
-                        second = executor.submit(manager.enqueue, item.id)
-                        second.result(timeout=5.0)
-                        first.result(timeout=5.0)
-
-                self.assertEqual(
-                    (
-                        manager.native_cache_generations[item.id],
-                        manager.native_cache_attempt_tokens[item.id],
-                    ),
-                    (2, 202),
-                )
-            finally:
-                manager.shutdown()
 
     def test_native_sync_submits_rust_jobs_without_using_python_worker_queue(self):
         item = self.make_item("song-native-sync")
@@ -763,7 +623,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "pending_ids": [item.id],
                     },
                 }
-            return {"events": [], "snapshot": {}}
+            return cache_observation_fixture()
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
@@ -776,14 +636,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ):
                     manager.sync_with_playlist()
                 queued = manager.tasks.qsize()
-                generation = manager.native_cache_generations[item.id]
-                cache_attempt_token = manager.native_cache_attempt_tokens[item.id]
             finally:
                 manager.shutdown()
 
         self.assertEqual(queued, 0)
-        self.assertEqual(generation, 7)
-        self.assertEqual(cache_attempt_token, 107)
+        self.assertFalse(hasattr(manager, "native_cache_generations"))
+        self.assertFalse(hasattr(manager, "native_cache_attempt_tokens"))
         sync_request = next(fields for command, fields in calls if command == "sync")
         self.assertEqual(sync_request["jobs"][0]["item_id"], item.id)
         observed = self.store.get_item(item.id)
@@ -827,7 +685,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "pending_ids": [future.id],
                     },
                 }
-            return {"events": [], "snapshot": {}}
+            return cache_observation_fixture()
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.effective_bilibili_cookie", return_value=""
@@ -896,7 +754,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 }
             if command == "submit":
                 return {"generation": 2, "cache_attempt_token": 102}
-            return {"events": [], "snapshot": {}}
+            return cache_observation_fixture()
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
@@ -1228,20 +1086,16 @@ class CacheManagerPolicyTest(unittest.TestCase):
                             )
                         with manager.lock:
                             manager.download_source = DOWNLOAD_SOURCE_BBDOWN
-                            manager.native_cache_generations[item.id] = 7
                             manager.pending_ids.add(item.id)
                             manager.urgent_cache_ids.add(item.id)
                             manager.active_item_id = item.id
 
-                        manager._apply_native_cache_event(
-                            {
-                                "generation": 7,
-                                "cache_attempt_token": cache_attempt_token,
-                                "sequence": sequence,
-                                "item_id": item.id,
-                                "kind": kind,
-                                "payload": payload,
-                            }
+                        projection = {"kind": kind, "message": kind}
+                        if kind == "ready":
+                            projection.update(payload)
+                        observe_cache_projection(
+                            manager, item.id, cache_attempt_token, projection,
+                            artifact=payload if kind == "ready" else None,
                         )
 
                         with manager.lock:
@@ -1274,7 +1128,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 with manager.lock:
                     manager.download_source = DOWNLOAD_SOURCE_BBDOWN
-                    manager.native_cache_generations[item.id] = 3
                     manager.python_worker_download_sources[item.id] = (
                         DOWNLOAD_SOURCE_BBDOWN
                     )
@@ -1283,17 +1136,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.urgent_cache_ids.add(item.id)
                     manager.active_item_id = item.id
 
-                with self.assertRaisesRegex(ValueError, "superseded"):
-                    manager._apply_native_cache_event(
-                        {
-                            "generation": 3,
-                            "cache_attempt_token": native_token,
-                            "sequence": 1,
-                            "item_id": item.id,
-                            "kind": "cancelled",
-                            "payload": {"reason": "old native job ended"},
-                        }
-                    )
+                batch = observe_cache_projection(
+                    manager, item.id, native_token,
+                    {"kind": "cancelled", "message": "old native job ended"},
+                )
+                self.assertEqual(batch["effects"]["errors"][0]["kind"], "cache_attempt_superseded")
 
                 with manager.lock:
                     self.assertIn(item.id, manager.pending_ids)
@@ -1394,7 +1241,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     "cache_attempt_tokens": {},
                     "snapshot": {},
                 }
-            return {"events": [], "snapshot": {}}
+            return cache_observation_fixture()
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
@@ -1500,122 +1347,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_native_snapshot_recovers_lost_terminal_event_once(self):
-        item = self.make_item("song-terminal-recovery")
-        self.store.add_item(item, requester_name="cache-test-user")
-        cache_attempt_token = begin_cache_attempt(self.store, item.id)
-        reservation = self.store.cache_attempt_reservation(cache_attempt_token)
-        relative_directory = reservation["artifact_relative_directory"]
-        terminal = {
-            "sequence": 9,
-            "generation": 3,
-            "cache_attempt_token": cache_attempt_token,
-            "item_id": item.id,
-            "kind": "ready",
-            "payload": {
-                "video_relative_path": f"{relative_directory}/video-p1.mp4",
-                "video_media_url": f"/media/{relative_directory}/video-p1.mp4",
-                "audio_variants": [
-                    {
-                        "id": "p1-vocal",
-                        "label": "Vocal",
-                        "page": 1,
-                        "audio_url": f"/media/{relative_directory}/audio-p1-vocal.m4a",
-                    },
-                    {
-                        "id": "p1-off-vocal",
-                        "label": "Off Vocal",
-                        "page": 1,
-                        "audio_url": f"/media/{relative_directory}/audio-p1-off-vocal.m4a",
-                    },
-                ],
-                "selected_audio_variant_id": "p1-vocal",
-                "item_incarnation_id": reservation["item_incarnation_id"],
-                "artifact_set_id": reservation["artifact_set_id"],
-                "artifact_relative_directory": relative_directory,
-            },
-        }
-        snapshot = {
-            "primary_active_item_id": None,
-            "active_item_ids": [],
-            "urgent_item_ids": [],
-            "pending_ids": [],
-            "terminal_events": [terminal],
-        }
 
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
-            CacheManager, "_worker_loop", lambda self: None
-        ):
-            manager = CacheManager(self.store, max_cache_items=1)
-            try:
-                manager.download_source = DOWNLOAD_SOURCE_NATIVE
-                manager._apply_native_cache_snapshot(snapshot)
-                self.assertTrue(
-                    self.store.set_audio_variant(
-                        item.id,
-                        "p1-off-vocal",
-                        expected_item_incarnation_id=reservation[
-                            "item_incarnation_id"
-                        ],
-                    )
-                )
-                manager._apply_native_cache_snapshot(snapshot)
-                cached = self.store.get_item(item.id)
-                self.assertEqual(cached.cache_status, "ready")
-                self.assertEqual(cached.selected_audio_variant_id, "p1-off-vocal")
-                self.assertEqual(manager.native_cache_terminal_sequences[item.id], 9)
-            finally:
-                manager.shutdown()
-
-    def test_native_drain_applies_events_before_terminal_snapshot_recovery(self):
-        item = self.make_item("song-terminal-order")
-        self.store.add_item(item, requester_name="cache-test-user")
-        cache_attempt_token = begin_cache_attempt(self.store, item.id)
-        ready = {
-            "sequence": 9,
-            "generation": 3,
-            "cache_attempt_token": cache_attempt_token,
-            "item_id": item.id,
-            "kind": "ready",
-            "payload": self.ready_payload(
-                item.id,
-                cache_attempt_token,
-                video_name="video-p1.mp4",
-                audio_name="audio-p1.m4a",
-            ),
-        }
-        result = {
-            "events": [
-                {
-                    "sequence": 8,
-                    "generation": 3,
-                    "cache_attempt_token": cache_attempt_token,
-                    "item_id": item.id,
-                    "kind": "queued",
-                    "payload": {"priority": "normal"},
-                },
-                ready,
-            ],
-            "snapshot": {
-                "primary_active_item_id": None,
-                "active_item_ids": [],
-                "urgent_item_ids": [],
-                "pending_ids": [],
-                "terminal_events": [ready],
-            },
-        }
-
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
-            CacheManager, "_worker_loop", lambda self: None
-        ):
-            manager = CacheManager(self.store, max_cache_items=1)
-            try:
-                manager.download_source = DOWNLOAD_SOURCE_NATIVE
-                with patch.object(manager, "_native_cache_request", return_value=result):
-                    manager._drain_native_cache_events()
-                self.assertEqual(self.store.get_item(item.id).cache_status, "ready")
-            finally:
-                manager.shutdown()
 
     def test_cache_metrics_reports_usage_by_item(self):
         for item_id in ("song-a", "song-b"):
@@ -2332,7 +2064,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 python_tokens = dict(manager.python_cache_attempt_tokens)
                 retry_requested = set(manager.retry_requested_ids)
                 queued_python_tasks = manager.tasks.qsize()
-                native_generations = dict(manager.native_cache_generations)
+                native_ownership_is_rust = not hasattr(manager, "native_cache_generations")
             finally:
                 manager.native_cache_started = False
                 manager.shutdown()
@@ -2384,7 +2116,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 job["item_incarnation_id"],
                 self.store.get_item(job["item_id"]).item_incarnation_id,
             )
-            self.assertTrue(native_generations[job["item_id"]] > 0)
+            self.assertTrue(native_ownership_is_rust)
 
     def test_native_hevc_recaching_survives_later_syncs_and_window_changes(self):
         """S1: the repaired ownership must hold across ordinary later syncs."""
@@ -2531,12 +2263,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         }
                     )
                 owner_map = dict(manager.python_worker_download_sources)
-                native_generation = manager.native_cache_generations.get(
-                    "song-native-ready"
-                )
-                native_token = manager.native_cache_attempt_tokens.get(
-                    "song-native-ready"
-                )
+                native_ownership_is_rust = not hasattr(manager, "native_cache_attempt_tokens")
                 # Observed before shutdown, which clears the cache root.
                 refreshed = self.store.get_item("song-native-ready")
                 published_dir_exists = published_dir.exists()
@@ -2557,9 +2284,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             [variant["id"] for variant in job["existing_audio_variants"]], ["p1"]
         )
         self.assertEqual(job["item_incarnation_id"], before.item_incarnation_id)
-        self.assertEqual(native_generation, 1)
-        self.assertIsInstance(native_token, int)
-        self.assertGreater(native_token, 0)
+        self.assertTrue(native_ownership_is_rust)
         self.assertEqual(owner_map, {})
 
         self.assertEqual(refreshed.cache_status, "ready")
@@ -2784,7 +2509,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         }
                     if command in {"submit", "retry"}:
                         return {"generation": 1, "cache_attempt_token": 1}
-                    return {"events": [], "snapshot": {}}
+                    return cache_observation_fixture()
 
                 with patch.object(
                     manager, "_register_active_process", side_effect=register
@@ -3198,7 +2923,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                                 current.id, current.item_incarnation_id
                             ),
                         }
-                    return {"events": [], "snapshot": {}}
+                    return cache_observation_fixture()
 
                 def report_capabilities():
                     try:
@@ -8007,6 +7732,12 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 manager.shutdown()
 
 class CacheManagerArtifactRetirementTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Import the server before each test initializes its isolated AppState.
+        from bilikara.server import AppContext
+        cls.app_context_type = AppContext
+
     def setUp(self) -> None:
         # These lifecycle fixtures model an authenticated external-tool session.
         credential_patch = patch("bilikara.bilibili.cfg.COOKIE", "SESSDATA=synthetic; bili_jct=csrf")
@@ -8150,6 +7881,214 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
             artifact_set_id=program["artifact_set_id"],
         )
 
+    def _queue_runtime_eviction(self, item_id):
+        observed = self.store.get_item(item_id)
+        self.manager._native_cache_request("start")
+        self.manager.native_cache_started = True
+        self.manager._native_cache_request(
+            "sync", cache_root=str(self.cache_dir.resolve()),
+            current_ids=[item_id],
+            current_item_incarnations={item_id: observed.item_incarnation_id},
+            retained_ids=[], jobs=[], ordered_ids=[], preempt_item_id="",
+        )
+
+    def _runtime_ready_observation(self, item_id):
+        observed = self.store.get_item(item_id)
+        token = self.manager._begin_cache_attempt_for_item(observed)
+        reservation, _, committed = self.manager._cache_attempt_paths(token)
+        # Rust has published these files but the Python reader registry has not
+        # received the settlement yet.
+        committed.mkdir(parents=True)
+        (committed / "video-p1.mp4").write_bytes(b"runtime-video")
+        (committed / "audio-p1.m4a").write_bytes(b"runtime-audio")
+        artifact = {
+            key: reservation[key]
+            for key in (
+                "item_incarnation_id", "artifact_set_id", "artifact_relative_directory"
+            )
+        }
+        relative_path = f"{artifact['artifact_relative_directory']}/video-p1.mp4"
+        response = rust_runtime.app_state_request(
+            "apply_cache_event", item_id=item_id, cache_attempt_token=token,
+            event={
+                "kind": "ready", "progress": 100.0, "message": "ready",
+                "video_relative_path": relative_path,
+                "video_media_url": f"/media/{relative_path}",
+                "audio_variants": [{
+                    "id": "p1", "label": "P1", "page": 1,
+                    "audio_url": f"/media/{artifact['artifact_relative_directory']}/audio-p1.m4a",
+                }],
+                "selected_audio_variant_id": "p1", **artifact,
+            },
+            now=1.0,
+        )
+        batch = cache_observation_fixture(
+            response, item_ids=[item_id],
+            settlements=[{"cache_attempt_token": token, "artifact": artifact}],
+        )
+        return batch, committed, relative_path
+
+    def test_runtime_ready_media_is_readable_inside_notification(self):
+        self.store.add_item(self._item("song-ready"), requester_name="retirement-user")
+        batch, committed, relative_path = self._runtime_ready_observation("song-ready")
+        readers = []
+
+        def read_notified_media():
+            self.assertEqual(self.store.get_item("song-ready").cache_status, "ready")
+            reader = self.manager.acquire_media_reader(relative_path)
+            self.assertIsNotNone(reader)
+            readers.append(reader)
+            self.assertEqual((committed / "video-p1.mp4").read_bytes(), b"runtime-video")
+
+        notify = Mock(side_effect=read_notified_media)
+        with patch.object(self.store, "on_change", notify), patch.object(
+            self.manager, "_native_cache_request", return_value=batch
+        ), patch.object(
+            self.store, "apply_cache_event", side_effect=AssertionError("Python semantic re-entry")
+        ):
+            self.manager._drain_native_cache_events()
+        notify.assert_called_once_with()
+        self._evict("song-ready")
+        self.assertTrue(committed.is_dir())
+        self.manager.release_media_reader(readers[0])
+        self.assertFalse(committed.exists())
+
+    def test_runtime_ready_persistence_retry_preserves_reader_and_applies_once(self):
+        self.store.add_item(self._item("song-write-ready"), requester_name="retirement-user")
+        batch, committed, relative_path = self._runtime_ready_observation("song-write-ready")
+        notify = Mock()
+        with patch.object(self.store, "on_change", notify), patch.object(
+            self.manager, "_native_cache_request", return_value=batch
+        ) as request:
+            with patch.object(self.store, "_write_json_payload_unlocked", side_effect=OSError("synthetic persistence error")):
+                with self.assertRaisesRegex(OSError, "synthetic persistence error"):
+                    self.manager._drain_native_cache_events()
+            self.assertEqual(self.store.get_item("song-write-ready").cache_status, "ready")
+            revision = self.store.revision
+            reader = self.manager.acquire_media_reader(relative_path)
+            self.assertIsNotNone(reader)
+            self.manager.collect_retired_artifacts()
+            self.assertTrue(committed.is_dir())
+            notify.assert_not_called()
+            self.assertIsNotNone(self.store._pending_cache_observation)
+
+            self.manager._drain_native_cache_events()
+
+            request.assert_called_once_with("process_events", max_events=128, max_cache_items=2)
+            self.assertEqual(self.store.revision, revision)
+            self.assertIsNone(self.store._pending_cache_observation)
+            notify.assert_called_once_with()
+            persisted = json.loads(self.store.player_state_file.read_text())
+            self.assertEqual(persisted["updated_at"], self.store._persistence["updated_at"])
+        self._evict("song-write-ready")
+        self.assertTrue(committed.is_dir())
+        self.manager.release_media_reader(reader)
+        self.assertFalse(committed.exists())
+
+    def test_runtime_batch_reaches_rust_without_python_semantics_and_notifies_sse(self):
+        self.store.add_item(self._item("song-runtime"), requester_name="retirement-user")
+        published = self._publish("song-runtime", b"runtime")
+        reader = self.manager.acquire_media_reader(
+            f"{published['artifact_relative_directory']}/video-p1.mp4"
+        )
+        self.assertIsNotNone(reader)
+        context = self.app_context_type.__new__(self.app_context_type)
+        context._closed = False
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context._sse_payload_condition = threading.Condition()
+        context._sse_payload_revision = -1
+        context._sse_payload = b""
+        context._sse_payload_building = False
+        context.snapshot = lambda: {**self.store.snapshot(), "state_revision": context._state_revision}
+        self.store.on_change = context._notify_state_changed
+        before_revision, before_sse = context.serialized_sse_state_event()
+        self._queue_runtime_eviction("song-runtime")
+        with patch.object(self.store, "apply_cache_event", side_effect=AssertionError("Python semantic re-entry")), patch.object(
+            self.manager, "_project_cache_event", side_effect=AssertionError("Python interpreter")
+        ), patch.object(self.manager, "_publish_download_progress", side_effect=AssertionError("Python progress")):
+            self.manager._drain_native_cache_events()
+        self.assertEqual(self.store.get_item("song-runtime").cache_status, "pending")
+        self.assertTrue(context.wait_for_state_change(before_revision, timeout=0.01))
+        after_revision, after_sse = context.serialized_sse_state_event()
+        self.assertGreater(after_revision, before_revision)
+        self.assertNotEqual(after_sse, before_sse)
+        payload = json.loads(after_sse.decode().split("data: ", 1)[1].strip())
+        self.assertEqual(payload["current_item"]["cache_status"], "pending")
+        self.assertEqual(payload["revision"], self.store.revision)
+        persisted = json.loads(self.store.player_state_file.read_text())
+        self.assertEqual(persisted["updated_at"], self.store._persistence["updated_at"])
+        self.assertTrue(published["directory"].is_dir())
+        self.manager.release_media_reader(reader)
+        self.assertFalse(published["directory"].exists())
+        self.manager._drain_native_cache_events()
+        self.assertEqual(context.state_revision_snapshot(), after_revision)
+        with self.assertRaises(rust_runtime.RustRuntimeServiceError) as rejected:
+            self.manager._native_cache_request("drain_events", max_events=1)
+        self.assertEqual(rejected.exception.kind, "event_owner")
+
+    def test_runtime_observation_retries_persistence_error_without_reapplying_mutation(self):
+        self.store.add_item(self._item("song-write"), requester_name="retirement-user")
+        self._publish("song-write", b"write")
+        self._queue_runtime_eviction("song-write")
+        notify = Mock()
+        self.store.on_change = notify
+        original_request = self.manager._native_cache_request
+        with patch.object(self.manager, "_native_cache_request", wraps=original_request) as request:
+            with patch.object(self.store, "_write_json_payload_unlocked", side_effect=OSError("synthetic persistence error")):
+                with self.assertRaisesRegex(OSError, "synthetic persistence error"):
+                    self.manager._drain_native_cache_events()
+            committed_revision = self.store.revision
+            self.assertEqual(self.store.get_item("song-write").cache_status, "pending")
+            notify.assert_not_called()
+            self.assertIsNotNone(self.store._pending_cache_observation)
+            self.manager._drain_native_cache_events()
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(self.store.revision, committed_revision)
+            self.assertIsNone(self.store._pending_cache_observation)
+            notify.assert_called_once_with()
+        self.assertEqual(json.loads(self.store.player_state_file.read_text())["updated_at"], self.store._persistence["updated_at"])
+
+    def test_real_runtime_failure_is_applied_by_poller_and_does_not_auto_retry(self):
+        import time
+        self.store.add_item(self._item("song-failed"), requester_name="retirement-user")
+        # Fail before provider resolution: the Rust worker cannot create staging.
+        (self.cache_dir / ".staging").write_bytes(b"synthetic obstruction")
+        self.manager.download_source = DOWNLOAD_SOURCE_NATIVE
+        self.manager.log_dir = Path(self.temp_dir.name) / "logs"
+        changed = threading.Event()
+        self.store.on_change = changed.set
+        with patch.object(self.store, "apply_cache_event", side_effect=AssertionError("Python event mutation")), patch.object(
+            self.manager, "_project_cache_event", side_effect=AssertionError("Python event interpreter")
+        ):
+            self.manager.enqueue("song-failed")
+            deadline = time.monotonic() + 5.0
+            while self.store.get_item("song-failed").cache_status != "failed" and time.monotonic() < deadline:
+                changed.wait(0.1)
+                changed.clear()
+            failed = self.store.get_item("song-failed")
+            self.assertEqual(failed.cache_status, "failed")
+            self.assertTrue(failed.cache_message.startswith("缓存失败: "))
+            before = self.manager._native_cache_request("snapshot")["last_event_sequence"]
+            self.manager.sync_with_playlist()
+            self.manager.sync_with_playlist()
+            self.assertEqual(self.manager._native_cache_request("snapshot")["last_event_sequence"], before)
+            self.assertEqual(self.store.get_item("song-failed").cache_status, "failed")
+        self.assertEqual(self.manager.python_worker_download_sources, {})
+        self.assertEqual(self.manager.native_cache_error, "")
+
+    def test_runtime_notification_poller_is_started_once_and_joined_on_shutdown(self):
+        with patch.object(self.manager, "_native_cache_event_loop", wraps=self.manager._native_cache_event_loop) as loop:
+            self.manager._ensure_native_cache_runtime()
+            worker = self.manager.native_cache_event_worker
+            self.manager._ensure_native_cache_runtime()
+            self.assertIs(worker, self.manager.native_cache_event_worker)
+            self.manager.shutdown()
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(loop.call_count, 1)
+            self.assertTrue(self.manager.native_cache_event_stop.is_set())
+            self.assertFalse(self.manager.native_cache_started)
+
     def test_host_retirement_waits_for_exact_range_reader_then_collects(self):
         self.store.add_item(
             self._item("song-a"), requester_name="retirement-user"
@@ -8241,16 +8180,10 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
             "artifact_set_id": reservation["artifact_set_id"],
             "artifact_relative_directory": relative_directory,
         }
-        ready_event = {
-            "sequence": 1,
-            "generation": 1,
-            "cache_attempt_token": token,
-            "item_id": "song-native",
-            "kind": "ready",
-            "payload": payload,
-        }
-        self.manager._apply_native_cache_event(ready_event)
-        self.manager._apply_native_cache_event(ready_event)
+        projection = {"kind": "ready", "message": "ready", **payload}
+        observe_cache_projection(self.manager, "song-native", token, projection, artifact=payload)
+        observe_cache_projection(self.manager, "song-native", token, projection, artifact=payload)
+
         self.assertNotIn(token, self.manager.active_artifact_attempts)
         snapshot = self.store.snapshot()
         self.assertEqual(
@@ -8278,15 +8211,10 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         published = self._publish_without_ready("song-removed", b"removed")
         self.assertTrue(self.store.remove_item("song-removed"))
 
-        self.manager._apply_native_cache_event(
-            {
-                "sequence": 1,
-                "generation": 1,
-                "cache_attempt_token": published["token"],
-                "item_id": "song-removed",
-                "kind": "ready",
-                "payload": published["result"],
-            }
+        observe_cache_projection(
+            self.manager, "song-removed", published["token"],
+            {"kind": "ready", "message": "ready", **{key: value for key, value in published["result"].items() if key not in {"video_file", "validation_files", "validation_metadata"}}},
+            artifact=published["result"],
         )
 
         self.assertFalse(published["directory"].exists())

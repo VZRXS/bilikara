@@ -377,12 +377,10 @@ class CacheManager:
         self.native_cache_started = False
         self.native_cache_event_stop = threading.Event()
         self.native_cache_event_worker: threading.Thread | None = None
-        self.native_cache_generations: dict[str, int] = {}
-        self.native_cache_attempt_tokens: dict[str, int] = {}
-        self.native_cache_terminal_sequences: dict[str, int] = {}
         self.native_cache_snapshot: dict[str, Any] = {}
         self.native_cache_error = ""
         self.native_cache_call_lock = threading.Lock()
+        self.native_cache_observation_lock = threading.Lock()
         rust_runtime.reset_bilibili_login_status()
         self._load_cache_policy()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
@@ -395,28 +393,6 @@ class CacheManager:
     @staticmethod
     def _cache_incarnation_mismatch(error: BaseException) -> bool:
         return getattr(error, "kind", None) == "item_incarnation_mismatch"
-
-    def _accept_native_cache_attempt_identity(
-        self,
-        item_id: str,
-        generation: int,
-        cache_attempt_token: int,
-    ) -> bool:
-        if generation <= 0:
-            return False
-        with self.lock:
-            current_generation = self.native_cache_generations.get(item_id)
-            current_token = self.native_cache_attempt_tokens.get(item_id)
-            if current_generation is None or generation > current_generation:
-                self.native_cache_generations[item_id] = generation
-                self.native_cache_attempt_tokens[item_id] = cache_attempt_token
-                return True
-            if generation < current_generation:
-                return False
-            if current_token is None:
-                self.native_cache_attempt_tokens[item_id] = cache_attempt_token
-                return True
-            return current_token == cache_attempt_token
 
     def _project_cache_event(
         self,
@@ -966,24 +942,36 @@ class CacheManager:
                     return
 
     def _drain_native_cache_events(self) -> None:
-        result = self._native_cache_request("drain_events", max_events=128)
-        events = result.get("events")
-        if not isinstance(events, list):
-            raise RuntimeError("Rust cache runtime returned invalid events")
-        for event in events:
-            if isinstance(event, dict):
-                try:
-                    self._apply_native_cache_event(event)
-                except PlaylistStoreCommandError as exc:
-                    _debug_print(
-                        "[bilikara-cache] rejected Rust cache publication "
-                        f"for item={event.get('item_id')}: {exc.kind}"
-                    )
-        snapshot = result.get("snapshot")
-        if isinstance(snapshot, dict):
-            self._apply_native_cache_snapshot(snapshot)
-        with self.lock:
-            self.native_cache_error = ""
+        # Keep synchronous callers and the poller in delivery order too.
+        with self.native_cache_observation_lock:
+            if self.stop_event.is_set():
+                return
+            # Rust drains, recovers and commits the batch. This poller only delivers
+            # existing persistence/observer and artifact-lifetime effects.
+            result = self.store.process_runtime_cache_events(
+                self._native_cache_request,
+                max_cache_items=self.max_cache_items,
+                register_artifact=self._record_committed_artifact,
+            )
+            effects = result["effects"]
+            for settlement in effects["settlements"]:
+                self._settle_artifact_attempt(settlement["cache_attempt_token"])
+            with self.lock:
+                for item_id in effects["settled_item_ids"]:
+                    if item_id not in self.python_worker_download_sources:
+                        self.pending_ids.discard(item_id)
+                        self.urgent_cache_ids.discard(item_id)
+                        if self.active_item_id == item_id:
+                            self.active_item_id = None
+            self._apply_native_cache_snapshot(result["snapshot"])
+            for item_id in effects["activity_item_ids"]:
+                self._record_item_activity(item_id)
+            if effects["settlements"]:
+                self.collect_retired_artifacts()
+            for error in effects["errors"]:
+                _debug_print(f"[bilikara-cache] rejected Rust cache publication: {error['kind']}")
+            with self.lock:
+                self.native_cache_error = ""
 
     def _apply_native_cache_snapshot(self, snapshot: dict[str, Any]) -> None:
         active_ids = {
@@ -1002,11 +990,6 @@ class CacheManager:
             if str(item_id).strip()
         }
         primary_id = str(snapshot.get("primary_active_item_id") or "").strip()
-        terminal_events = [
-            dict(event)
-            for event in snapshot.get("terminal_events", [])
-            if isinstance(event, dict)
-        ]
         with self.lock:
             self.native_cache_snapshot = dict(snapshot)
             if self.download_source == DOWNLOAD_SOURCE_NATIVE:
@@ -1020,192 +1003,6 @@ class CacheManager:
                 self.active_item_id = python_active_id or primary_id or None
                 self.pending_ids = pending_ids | active_ids | python_owned_ids
                 self.urgent_cache_ids = urgent_ids | python_urgent_ids
-        for event in terminal_events:
-            try:
-                self._apply_native_cache_event(event)
-            except PlaylistStoreCommandError as exc:
-                _debug_print(
-                    "[bilikara-cache] rejected Rust terminal cache publication "
-                    f"for item={event.get('item_id')}: {exc.kind}"
-                )
-
-    def _apply_native_cache_event(self, event: dict[str, Any]) -> None:
-        item_id = str(event.get("item_id") or "").strip()
-        kind = str(event.get("kind") or "").strip()
-        payload = event.get("payload")
-        payload = payload if isinstance(payload, dict) else {}
-        try:
-            generation = int(event.get("generation") or 0)
-        except (TypeError, ValueError):
-            return
-        cache_attempt_token = event.get("cache_attempt_token")
-        if (
-            isinstance(cache_attempt_token, bool)
-            or not isinstance(cache_attempt_token, int)
-            or cache_attempt_token <= 0
-        ):
-            return
-        try:
-            sequence = int(event.get("sequence") or 0)
-        except (TypeError, ValueError):
-            return
-        terminal = kind in {"ready", "failed", "cancelled", "evicted"}
-        with self.lock:
-            if (
-                terminal
-                and sequence > 0
-                and sequence <= self.native_cache_terminal_sequences.get(item_id, 0)
-            ):
-                return
-            if generation > 0 and not self._accept_native_cache_attempt_identity(
-                item_id,
-                generation,
-                cache_attempt_token,
-            ):
-                return
-            matching_native_terminal = bool(
-                terminal
-                and generation > 0
-                and self.native_cache_generations.get(item_id) == generation
-                and self.native_cache_attempt_tokens.get(item_id)
-                == cache_attempt_token
-            )
-            if (
-                matching_native_terminal
-                and item_id not in self.python_worker_download_sources
-            ):
-                self.pending_ids.discard(item_id)
-                self.urgent_cache_ids.discard(item_id)
-                if self.active_item_id == item_id:
-                    self.active_item_id = None
-        if kind == "ready":
-            try:
-                self._track_active_artifact_attempt(
-                    cache_attempt_token, payload
-                )
-                self._record_committed_artifact(payload)
-            except ValueError:
-                self._settle_artifact_attempt(cache_attempt_token)
-                self.collect_retired_artifacts()
-                return
-        item = self.store.get_item(item_id)
-        if not item:
-            if terminal:
-                self._settle_artifact_attempt(cache_attempt_token)
-                self.collect_retired_artifacts()
-            return
-
-        if kind == "queued":
-            self._project_cache_event(
-                item_id,
-                "queued",
-                cache_attempt_token=cache_attempt_token,
-                message="等待 Rust 缓存队列",
-            )
-        elif kind == "started":
-            tracks = payload.get("tracks")
-            normalized_tracks = {
-                str(track.get("key") or ""): dict(track)
-                for track in (tracks if isinstance(tracks, list) else [])
-                if isinstance(track, dict) and str(track.get("key") or "").strip()
-            }
-            with self.lock:
-                self.item_download_progress[item_id] = normalized_tracks
-                self.item_download_attempt_tokens[item_id] = cache_attempt_token
-            self._project_cache_event(
-                item_id,
-                "started",
-                cache_attempt_token=cache_attempt_token,
-                message=self._cache_start_message(item),
-            )
-            self._publish_download_progress(
-                item_id,
-                cache_attempt_token=cache_attempt_token,
-            )
-        elif kind == "progress":
-            track = payload.get("track")
-            if not isinstance(track, dict):
-                return
-            track_key = str(track.get("key") or "").strip()
-            if not track_key:
-                return
-            with self.lock:
-                if (
-                    self.item_download_attempt_tokens.get(item_id)
-                    != cache_attempt_token
-                ):
-                    return
-                tracks = self.item_download_progress.setdefault(item_id, {})
-                tracks[track_key] = dict(track)
-            self._publish_download_progress(
-                item_id,
-                cache_attempt_token=cache_attempt_token,
-            )
-        elif kind == "ready":
-            variants = payload.get("audio_variants")
-            if not isinstance(variants, list) or not variants:
-                self._mark_native_cache_failed(
-                    item_id,
-                    "Rust 缓存结果缺少音轨",
-                    cache_attempt_token=cache_attempt_token,
-                )
-                if sequence > 0:
-                    with self.lock:
-                        self.native_cache_terminal_sequences[item_id] = sequence
-                return
-            self._clear_item_download_progress(
-                item_id,
-                cache_attempt_token=cache_attempt_token,
-            )
-            self._project_cache_event(
-                item_id,
-                "ready",
-                cache_attempt_token=cache_attempt_token,
-                progress=100.0,
-                message=self._ready_message(item),
-                video_relative_path=str(payload.get("video_relative_path") or ""),
-                video_media_url=str(payload.get("video_media_url") or ""),
-                audio_variants=[
-                    dict(variant) for variant in variants if isinstance(variant, dict)
-                ],
-                selected_audio_variant_id=str(
-                    payload.get("selected_audio_variant_id") or ""
-                ),
-                item_incarnation_id=str(
-                    payload.get("item_incarnation_id") or ""
-                ),
-                artifact_set_id=str(payload.get("artifact_set_id") or ""),
-                artifact_relative_directory=str(
-                    payload.get("artifact_relative_directory") or ""
-                ),
-            )
-        elif kind == "failed":
-            self._mark_native_cache_failed(
-                item_id,
-                str(payload.get("message") or "Rust 缓存任务失败"),
-                cache_attempt_token=cache_attempt_token,
-            )
-        elif kind in {"cancelled", "evicted"}:
-            self._clear_item_download_progress(
-                item_id,
-                cache_attempt_token=cache_attempt_token,
-            )
-            self._project_cache_event(
-                item_id,
-                kind,
-                cache_attempt_token=cache_attempt_token,
-                message=str(payload.get("reason") or self._outside_window_message()),
-            )
-        else:
-            return
-        if terminal and sequence > 0:
-            with self.lock:
-                self.native_cache_terminal_sequences[item_id] = max(
-                    sequence,
-                    self.native_cache_terminal_sequences.get(item_id, 0),
-                )
-        self._record_item_activity(item_id)
-
     def _mark_native_cache_failed(
         self,
         item_id: str,
@@ -2145,9 +1942,6 @@ class CacheManager:
             self.active_process_item_ids.clear()
             self.native_cache_started = False
             self.native_cache_event_worker = None
-            self.native_cache_generations.clear()
-            self.native_cache_attempt_tokens.clear()
-            self.native_cache_terminal_sequences.clear()
             self.native_cache_snapshot.clear()
         for item in items:
             cache_attempt_token = cache_attempt_tokens.get(item.id)
@@ -2199,8 +1993,6 @@ class CacheManager:
             self.active_processes.clear()
             self.active_process_item_ids.clear()
             self.active_item_id = None
-            self.native_cache_generations.clear()
-            self.native_cache_attempt_tokens.clear()
             self.native_cache_snapshot.clear()
             while True:
                 try:
@@ -2278,19 +2070,9 @@ class CacheManager:
             job["item_incarnation_id"] = expected_item_incarnation_id
             try:
                 self._ensure_native_cache_runtime()
-                result = self._native_cache_request(
+                self._native_cache_request(
                     "retry", job=job, urgent=urgent
                 )
-                generation = int(result.get("generation") or 0)
-                cache_attempt_token = self._require_cache_attempt_token(
-                    result.get("cache_attempt_token")
-                )
-                if generation > 0:
-                    self._accept_native_cache_attempt_identity(
-                        item_id,
-                        generation,
-                        cache_attempt_token,
-                    )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
                 if self._cache_incarnation_mismatch(exc):
@@ -2535,23 +2317,6 @@ class CacheManager:
                 self.native_cache_error = str(exc)
             return
 
-        generations = result.get("generations")
-        cache_attempt_tokens = result.get("cache_attempt_tokens")
-        if isinstance(generations, dict) and isinstance(cache_attempt_tokens, dict):
-            with self.lock:
-                for item_id, generation in generations.items():
-                    try:
-                        normalized_item_id = str(item_id)
-                        cache_attempt_token = self._require_cache_attempt_token(
-                            cache_attempt_tokens.get(item_id)
-                        )
-                        self._accept_native_cache_attempt_identity(
-                            normalized_item_id,
-                            int(generation),
-                            cache_attempt_token,
-                        )
-                    except (TypeError, ValueError):
-                        continue
         snapshot = result.get("snapshot")
         if isinstance(snapshot, dict):
             self._apply_native_cache_snapshot(snapshot)
@@ -2619,19 +2384,9 @@ class CacheManager:
         if download_source == DOWNLOAD_SOURCE_NATIVE:
             try:
                 self._ensure_native_cache_runtime()
-                result = self._native_cache_request(
+                self._native_cache_request(
                     "submit", job=self._native_cache_job(item), priority="normal"
                 )
-                generation = int(result.get("generation") or 0)
-                cache_attempt_token = self._require_cache_attempt_token(
-                    result.get("cache_attempt_token")
-                )
-                if generation > 0:
-                    self._accept_native_cache_attempt_identity(
-                        item_id,
-                        generation,
-                        cache_attempt_token,
-                    )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
                 if not self._cache_incarnation_mismatch(exc):
@@ -5736,21 +5491,11 @@ class CacheManager:
             item = observed_items[item_id]
             try:
                 self._ensure_native_cache_runtime()
-                result = self._native_cache_request(
+                self._native_cache_request(
                     "retry",
                     job=self._native_cache_job(item),
                     urgent=False,
                 )
-                generation = int(result.get("generation") or 0)
-                cache_attempt_token = self._require_cache_attempt_token(
-                    result.get("cache_attempt_token")
-                )
-                if generation > 0:
-                    self._accept_native_cache_attempt_identity(
-                        item_id,
-                        generation,
-                        cache_attempt_token,
-                    )
             except Exception as exc:  # noqa: BLE001
                 if not self._cache_incarnation_mismatch(exc):
                     self._mark_native_cache_failed(

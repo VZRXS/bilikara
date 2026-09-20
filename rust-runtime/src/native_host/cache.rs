@@ -2,8 +2,8 @@
 //! applied through its reserved AppState attempt token; no Python event pump.
 use super::preferences::{CachePolicy, MediaSelection};
 use super::*;
+use crate::PlaylistItem;
 use crate::cache_runtime::{CacheJobSpec, CacheRuntimeCommand, execute_cache_runtime};
-use crate::{AppStateRequest, CacheEvent, PlaylistItem};
 use bilikara_rust::{CacheItem, CachePlanRequest, plan_cache_window};
 use std::collections::HashMap;
 
@@ -89,17 +89,30 @@ fn tick(
     if with_app(|app| Ok(app.native_session_choice_pending()))? {
         return Ok(());
     }
-    let events = execute_cache_runtime(CacheRuntimeCommand::DrainEvents { max_events: 128 })
-        .map_err(cache_error)?;
-    if let Some(events) = events["events"].as_array() {
-        for event in events {
-            apply_event(event)?;
-            // Cancelling a refresh preserves its readable artifact/status. A
-            // second Sync after settlement must finish eviction when disabled
-            // or outside the window, even though that status did not change.
-            if event["kind"] == "cancelled" {
-                last_fingerprint.clear();
-            }
+    let processed = crate::cache_runtime::process_cache_events(
+        crate::cache_application::HostContract::Native,
+        128,
+    )
+    .map_err(cache_error)?;
+    if processed.effects.cancelled {
+        last_fingerprint.clear();
+    }
+    for error in processed.effects.errors {
+        if ![
+            "item_not_found",
+            "cache_attempt_stale",
+            "cache_attempt_not_found",
+            "cache_attempt_mismatch",
+        ]
+        .contains(&error.kind.as_str())
+        {
+            with_app(|app| {
+                app.native_diagnostic(
+                    &json!({"event":"cache-projection-rejected","kind":error.kind}),
+                    now(),
+                );
+                Ok(())
+            })?;
         }
     }
     let (snapshot, cookie, policy, player) = with_app(|app| {
@@ -234,98 +247,6 @@ fn tick(
     Ok(())
 }
 
-fn apply_event(event: &Value) -> Result<(), ApiError> {
-    let Some(item_id) = event["item_id"].as_str() else {
-        return Ok(());
-    };
-    let Some(token) = event["cache_attempt_token"].as_u64().filter(|v| *v > 0) else {
-        return Ok(());
-    };
-    let payload = &event["payload"];
-    let projection = match event["kind"].as_str().unwrap_or("") {
-        "queued" => CacheEvent::Queued {
-            message: "等待 Rust 缓存队列".into(),
-        },
-        "started" => CacheEvent::Started {
-            message: if payload["source"] == "bbdown" {
-                "BBDown 正在下载视频及音轨"
-            } else {
-                "正在下载视频及音轨"
-            }
-            .into(),
-        },
-        "progress" => {
-            let track = &payload["track"];
-            let current = track["current_bytes"].as_f64().unwrap_or(0.0);
-            let total = track["target_bytes"].as_f64().unwrap_or(0.0);
-            let progress = if total > 0.0 {
-                (100.0 * current / total).clamp(0.0, 99.0)
-            } else {
-                0.0
-            };
-            CacheEvent::Progress {
-                progress,
-                message: Some(format!(
-                    "{}{}：{}%",
-                    if payload["source"] == "bbdown" {
-                        "BBDown · "
-                    } else {
-                        ""
-                    },
-                    track["label"].as_str().unwrap_or("下载中"),
-                    progress as u32
-                )),
-            }
-        }
-        "ready" => {
-            let mut ready = payload.clone();
-            ready["kind"] = json!("ready");
-            ready["message"] = json!("已就绪");
-            serde_json::from_value(ready)
-                .map_err(|_| ApiError::new(500, "cache_event", "缓存完成消息无效"))?
-        }
-        "failed" => CacheEvent::Failed {
-            message: payload["message"]
-                .as_str()
-                .unwrap_or("媒体下载失败，请查看诊断或重试")
-                .chars()
-                .take(400)
-                .collect(),
-        },
-        "cancelled" => CacheEvent::Cancelled {
-            message: "缓存任务已取消".into(),
-        },
-        "evicted" => CacheEvent::Evicted {
-            message: "等待进入缓存窗口".into(),
-        },
-        _ => return Ok(()),
-    };
-    with_app(|app| {
-        let response = app.execute(AppStateRequest::ApplyCacheEvent {
-            schema_version: 1,
-            item_id: item_id.into(),
-            cache_attempt_token: token,
-            event: projection,
-            now: now(),
-        });
-        if let Some(error) = response.error()
-            && ![
-                "item_not_found",
-                "cache_attempt_stale",
-                "cache_attempt_not_found",
-                "cache_attempt_mismatch",
-            ]
-            .contains(&error.kind.as_str())
-        {
-            app.native_diagnostic(
-                &json!({"event":"cache-projection-rejected","kind":error.kind}),
-                now(),
-            );
-        }
-        Ok(())
-    })
-}
-
 fn job(
     context: &HostContext,
     item: &PlaylistItem,
@@ -413,24 +334,4 @@ pub(super) fn retry(
     })
     .map_err(cache_error)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn rejects_malformed_ready_message_without_mutating_state() {
-        assert!(
-            apply_event(
-                &json!({"item_id":"id","cache_attempt_token":1,"kind":"ready","payload":{}})
-            )
-            .is_err()
-        );
-        assert!(
-            apply_event(
-                &json!({"item_id":"id","cache_attempt_token":0,"kind":"ready","payload":{}})
-            )
-            .is_ok()
-        );
-    }
 }

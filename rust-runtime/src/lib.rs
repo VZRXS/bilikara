@@ -1,5 +1,6 @@
 mod app_state;
 mod bilibili_service;
+mod cache_application;
 mod cache_runtime;
 mod cloudflare_service;
 mod desktop_login;

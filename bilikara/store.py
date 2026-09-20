@@ -412,6 +412,7 @@ class PlaylistStore:
         self._snapshot: dict[str, Any] = {}
         self._persistence: dict[str, Any] = {}
         self._previous_session_path: Path | None = None
+        self._pending_cache_observation: dict[str, Any] | None = None
         self._cache_attempt_reservations: dict[
             int, tuple[str, dict[str, Any]]
         ] = {}
@@ -828,6 +829,68 @@ class PlaylistStore:
                 return False
             raise
         return True
+
+    def process_runtime_cache_events(
+        self,
+        request: Callable[..., dict[str, Any]],
+        *,
+        max_cache_items: int,
+        register_artifact: Callable[[dict[str, Any]], object],
+    ) -> dict[str, Any]:
+        """Observe an already-applied Rust batch without replaying its mutations.
+
+        Serialize with other store calls so projections cannot arrive out of
+        order. A failed persistence write remains pending for the next poll.
+        """
+        with self.lock:
+            result = self._pending_cache_observation
+            if result is None:
+                result = request(
+                    "process_events", max_events=128, max_cache_items=max_cache_items
+                )
+                effects = result.get("effects")
+                if not isinstance(effects, dict) or not isinstance(result.get("snapshot"), dict):
+                    raise RuntimeError("Rust cache application returned invalid observation")
+                for key in ("settlements", "activity_item_ids", "settled_item_ids", "errors"):
+                    if not isinstance(effects.get(key), list):
+                        raise RuntimeError("Rust cache application returned invalid effects")
+                if any(
+                    not isinstance(item_id, str)
+                    for key in ("activity_item_ids", "settled_item_ids")
+                    for item_id in effects[key]
+                ):
+                    raise RuntimeError("Rust cache application returned invalid item identities")
+                for settlement in effects["settlements"]:
+                    if not isinstance(settlement, dict):
+                        raise RuntimeError("Rust cache application returned invalid settlement")
+                    token = settlement.get("cache_attempt_token")
+                    artifact = settlement.get("artifact")
+                    if isinstance(token, bool) or not isinstance(token, int) or token <= 0:
+                        raise RuntimeError("Rust cache application returned invalid attempt token")
+                    if artifact is not None and (not isinstance(artifact, dict) or any(
+                        not isinstance(artifact.get(key), str) for key in
+                        ("item_incarnation_id", "artifact_set_id", "artifact_relative_directory")
+                    )):
+                        raise RuntimeError("Rust cache application returned invalid artifact identity")
+                response = effects.get("observation")
+                if not isinstance(response, dict):
+                    raise RuntimeError("Rust cache application omitted authoritative observation")
+                # Readers must know the artifacts before Ready becomes visible,
+                # including when persistence fails and this batch is retried.
+                # Registration follows the collector's store -> artifact lock order.
+                for settlement in effects["settlements"]:
+                    if settlement["artifact"] is not None:
+                        register_artifact(settlement["artifact"])
+                self._accept_response_unlocked(response)
+                self._pending_cache_observation = result
+            response = result["effects"]["observation"]
+            self._persist_response_unlocked(response)
+            for settlement in result["effects"]["settlements"]:
+                self._cache_attempt_reservations.pop(settlement["cache_attempt_token"], None)
+            if response["committed"] and self.on_change is not None:
+                self.on_change()
+            self._pending_cache_observation = None
+            return result
 
     def apply_cache_event(
         self,

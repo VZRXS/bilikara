@@ -180,6 +180,11 @@ pub enum CacheRuntimeCommand {
         #[serde(default = "default_event_limit")]
         max_events: usize,
     },
+    ProcessEvents {
+        #[serde(default = "default_event_limit")]
+        max_events: usize,
+        max_cache_items: usize,
+    },
     Shutdown {},
 }
 
@@ -213,13 +218,13 @@ impl std::fmt::Display for CacheRuntimeError {
 impl std::error::Error for CacheRuntimeError {}
 
 #[derive(Clone, Debug, Serialize)]
-struct CacheEvent {
-    sequence: u64,
-    generation: u64,
-    cache_attempt_token: u64,
-    item_id: String,
-    kind: String,
-    payload: Value,
+pub(crate) struct RuntimeEvent {
+    pub(crate) sequence: u64,
+    pub(crate) generation: u64,
+    pub(crate) cache_attempt_token: u64,
+    pub(crate) item_id: String,
+    pub(crate) kind: String,
+    pub(crate) payload: Value,
 }
 
 #[derive(Clone)]
@@ -259,8 +264,8 @@ struct RuntimeState {
     primary_active_item_id: Option<String>,
     cancel_reasons: HashMap<(String, u64), String>,
     completed: HashMap<String, CompletedJob>,
-    terminal_events: HashMap<String, CacheEvent>,
-    events: VecDeque<CacheEvent>,
+    terminal_events: HashMap<String, RuntimeEvent>,
+    events: VecDeque<RuntimeEvent>,
 }
 
 struct SharedRuntime {
@@ -272,6 +277,7 @@ struct CacheRuntime {
     shared: Arc<SharedRuntime>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     reserve_cache_attempt: CacheAttemptReserver,
+    application: Mutex<crate::cache_application::CacheApplication>,
 }
 
 type CacheAttemptReserver = Arc<
@@ -473,8 +479,30 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
         }
         CacheRuntimeCommand::Snapshot {} => Ok(active_runtime()?.snapshot()),
         CacheRuntimeCommand::DrainEvents { max_events } => {
-            Ok(active_runtime()?.drain_events(max_events))
+            let runtime = active_runtime()?;
+            let application = runtime
+                .application
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if application.owner.is_some() {
+                return Err(CacheRuntimeError::new(
+                    "event_owner",
+                    "Runtime events belong to the application service",
+                ));
+            }
+            Ok(runtime.drain_events(max_events))
         }
+        CacheRuntimeCommand::ProcessEvents {
+            max_events,
+            max_cache_items,
+        } => process_cache_events(
+            crate::cache_application::HostContract::Default { max_cache_items },
+            max_events,
+        )
+        .and_then(|batch| {
+            serde_json::to_value(batch)
+                .map_err(|error| CacheRuntimeError::new("internal", error.to_string()))
+        }),
         CacheRuntimeCommand::Shutdown {} => {
             let runtime = runtime_slot()
                 .lock()
@@ -486,6 +514,22 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
             Ok(json!({"stopped": true}))
         }
     }
+}
+
+/// One serialized drain/application owner per Runtime. Neither Host receives raw
+/// events. Runtime state is released before taking AppState; no worker joins here.
+#[derive(Serialize)]
+pub(crate) struct ProcessedCacheEvents {
+    pub(crate) effects: crate::cache_application::ApplicationEffects,
+    snapshot: Value,
+}
+
+pub(crate) fn process_cache_events(
+    contract: crate::cache_application::HostContract,
+    max_events: usize,
+) -> Result<ProcessedCacheEvents, CacheRuntimeError> {
+    let runtime = active_runtime()?;
+    runtime.process_events(contract, max_events)
 }
 
 impl CacheRuntime {
@@ -528,6 +572,7 @@ impl CacheRuntime {
             shared,
             workers: Mutex::new(vec![primary, urgent]),
             reserve_cache_attempt,
+            application: Mutex::new(Default::default()),
         })
     }
 
@@ -540,6 +585,7 @@ impl CacheRuntime {
             }),
             workers: Mutex::new(Vec::new()),
             reserve_cache_attempt,
+            application: Mutex::new(Default::default()),
         }
     }
 
@@ -979,10 +1025,82 @@ impl CacheRuntime {
     fn drain_events(&self, max_events: usize) -> Value {
         let limit = max_events.clamp(1, MAX_DRAIN_EVENTS);
         let mut state = lock_state(&self.shared);
-        let events: Vec<CacheEvent> = (0..limit)
+        let events: Vec<RuntimeEvent> = (0..limit)
             .filter_map(|_| state.events.pop_front())
             .collect();
         json!({"events": events, "snapshot": snapshot_locked(&state)})
+    }
+
+    fn process_events(
+        &self,
+        contract: crate::cache_application::HostContract,
+        max_events: usize,
+    ) -> Result<ProcessedCacheEvents, CacheRuntimeError> {
+        self.process_events_with(contract, max_events, |application, events, now| {
+            crate::app_state::with_cache_application(|app| {
+                application.apply(app, events, contract, now)
+            })
+            .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
+        })
+    }
+
+    fn process_events_with(
+        &self,
+        contract: crate::cache_application::HostContract,
+        max_events: usize,
+        apply: impl FnOnce(
+            &mut crate::cache_application::CacheApplication,
+            Vec<RuntimeEvent>,
+            f64,
+        )
+            -> Result<crate::cache_application::ApplicationEffects, CacheRuntimeError>,
+    ) -> Result<ProcessedCacheEvents, CacheRuntimeError> {
+        let mut application = self.application.lock().unwrap_or_else(|p| p.into_inner());
+        if application.owner.is_some_and(|owner| {
+            std::mem::discriminant(&owner) != std::mem::discriminant(&contract)
+        }) {
+            return Err(CacheRuntimeError::new(
+                "event_owner",
+                "CacheRuntime already has a Host event owner",
+            ));
+        }
+        application.owner = Some(contract);
+        let (events, snapshot, ids, sequences) = {
+            let mut state = lock_state(&self.shared);
+            let limit = state
+                .events
+                .len()
+                .min(max_events.clamp(1, MAX_DRAIN_EVENTS));
+            let mut events: Vec<_> = state.events.drain(..limit).collect();
+            let mut recovery: Vec<_> = state.terminal_events.values().cloned().collect();
+            recovery.sort_by_key(|event| event.sequence);
+            events.extend(recovery);
+            let ids = state
+                .jobs
+                .keys()
+                .chain(state.active.keys())
+                .chain(state.completed.keys())
+                .chain(state.terminal_events.keys())
+                .chain(state.events.iter().map(|e| &e.item_id))
+                .cloned()
+                .collect();
+            let mut snapshot = snapshot_locked(&state);
+            snapshot.as_object_mut().unwrap().remove("terminal_events");
+            let sequences = state
+                .events
+                .iter()
+                .chain(state.terminal_events.values())
+                .map(|event| event.sequence)
+                .collect();
+            (events, snapshot, ids, sequences)
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let effects = apply(&mut application, events, now)?;
+        application.retain(&ids, &sequences);
+        Ok(ProcessedCacheEvents { effects, snapshot })
     }
 
     fn shutdown(&self) {
@@ -1978,7 +2096,7 @@ fn push_event_locked(
     payload: Value,
 ) {
     state.next_event_sequence = state.next_event_sequence.saturating_add(1).max(1);
-    let event = CacheEvent {
+    let event = RuntimeEvent {
         sequence: state.next_event_sequence,
         generation,
         cache_attempt_token,
@@ -2041,7 +2159,7 @@ fn snapshot_locked(state: &RuntimeState) -> Value {
         .map(|(item_id, _)| item_id.clone())
         .collect();
     urgent_ids.sort();
-    let mut terminal_events: Vec<CacheEvent> = state.terminal_events.values().cloned().collect();
+    let mut terminal_events: Vec<RuntimeEvent> = state.terminal_events.values().cloned().collect();
     terminal_events.sort_by_key(|event| event.sequence);
     json!({
         "stopping": state.stopping,
@@ -3734,6 +3852,89 @@ mod tests {
         assert!(item_dir.exists());
         runtime.shutdown();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn application_recovers_overflow_once_and_has_one_host_owner() {
+        use crate::cache_application::{HostContract, tests::fixture};
+        let (mut app, reservation) = fixture();
+        let token = reservation["cache_attempt_token"].as_u64().unwrap();
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("no admission")));
+        {
+            let mut state = lock_state(&runtime.shared);
+            push_event_locked(
+                &mut state,
+                1,
+                token,
+                "song",
+                "failed",
+                json!({"message":"fixture failure"}),
+            );
+            for _ in 0..MAX_EVENTS {
+                push_event_locked(
+                    &mut state,
+                    1,
+                    token,
+                    "song",
+                    "progress",
+                    json!({"track":{"key":"v"}}),
+                );
+            }
+        }
+        let contract = HostContract::Default { max_cache_items: 1 };
+        let first = runtime
+            .process_events_with(contract, 1, |service, events, now| {
+                Ok(service.apply(&mut app, events, contract, now))
+            })
+            .unwrap();
+        assert_eq!(
+            first
+                .effects
+                .observation
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .current_item
+                .as_ref()
+                .unwrap()
+                .cache_status,
+            "failed"
+        );
+        assert_eq!(first.snapshot["event_count"], MAX_EVENTS - 1);
+        assert!(first.snapshot.get("terminal_events").is_none());
+        let second = runtime
+            .process_events_with(contract, 128, |service, events, now| {
+                Ok(service.apply(&mut app, events, contract, now))
+            })
+            .unwrap();
+        let wire = serde_json::to_value(second).unwrap();
+        assert_eq!(wire["effects"]["observation"]["committed"], false);
+        assert_eq!(wire["effects"]["settlements"], json!([]));
+        let conflict = runtime.process_events_with(HostContract::Native, 128, |_, _, _| {
+            panic!("second owner must not drain")
+        });
+        assert_eq!(conflict.err().unwrap().kind, "event_owner");
+        runtime.shutdown();
+        assert!(lock_state(&runtime.shared).stopping);
+        // A final observation after workers join cannot reopen the terminal attempt.
+        let final_batch = runtime
+            .process_events_with(contract, 128, |service, events, now| {
+                Ok(service.apply(&mut app, events, contract, now))
+            })
+            .unwrap();
+        assert_eq!(
+            final_batch
+                .effects
+                .observation
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .current_item
+                .as_ref()
+                .unwrap()
+                .cache_status,
+            "failed"
+        );
     }
 
     #[test]
