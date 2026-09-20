@@ -37,10 +37,11 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       const url=new URL(route.request().url());
       if(url.pathname.startsWith("/api/d1/")) {
         const offset=Number(url.searchParams.get("offset")||0);
-        requests.push({path:url.pathname,kind:url.searchParams.get("kind"),offset});
+        const limit=Math.min(100,Number(url.searchParams.get("limit")||100));
+        requests.push({path:url.pathname,kind:url.searchParams.get("kind"),offset,limit});
         const data=url.pathname==="/api/d1/browse" && !url.searchParams.get("tag")
           ? {tags:[{tag:"Offline tag",count:221}],items:[],has_more:false}
-          : {items:items.slice(offset,offset+100),tags:[],has_more:offset+100<items.length,next_offset:Math.min(offset+100,items.length)};
+          : {items:items.slice(offset,offset+limit),tags:[],offset,has_more:offset+limit<items.length,next_offset:Math.min(offset+limit,items.length)};
         return route.fulfill({json:{ok:true,data}});
       }
       return url.hostname==="127.0.0.1" ? route.continue() : route.abort();
@@ -86,20 +87,57 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await remote.locator("#remote-identity-submit").click();
     await remote.waitForFunction(()=>state.remoteIdentity?.registered);
     const primary=async()=>{const back=remote.locator("#remote-request-secondary-back");if(await back.isVisible())await back.click();};
-    const pageAll=async(name,selector,count)=>check(name,async()=>{
-      assert.equal(await remote.evaluate(count),100);
-      for(const expected of [200,221]) {
-        await wheelToEnd(remote,selector);
-        const deadline=Date.now()+4000;
-        while(await remote.evaluate(count)<expected && Date.now()<deadline)await remote.waitForTimeout(50);
-        assert.ok(await remote.evaluate(count)>=expected,`scroll did not load page ending at ${expected}`);
+    const pageAll=async(name,selector,count,initial=100)=>check(name,async()=>{
+      assert.equal(await remote.evaluate(count),initial);
+      const pager=remote.locator(selector).locator("xpath=following-sibling::nav[contains(@class, 'result-pager')]");
+      const input=pager.locator("[data-page-input]");
+      assert.equal(await remote.locator(`${selector} .search-result-item`).count(),4);
+      assert.equal(await input.isVisible(),true);
+      assert.equal(await pager.evaluate(el=>getComputedStyle(el).borderTopWidth),"0px");
+      if (name === "remoteUp") {
+        const touch = await context.newCDPSession(remote);
+        for (const expected of [2,3,4,3,2]) {
+          const current = Number(await pager.getAttribute("data-page"));
+          await remote.locator(selector).evaluate(el => window.scrollTo(0, el.getBoundingClientRect().top + scrollY - 8));
+          const box = await remote.locator(`${selector} .search-result-item`).first().boundingBox();
+          const dx = expected > current ? -100 : 100;
+          const x = dx < 0 ? box.x + box.width - 10 : box.x + 10;
+          const y = Math.max(60, box.y + 40);
+          await touch.send("Input.dispatchTouchEvent", {type:"touchStart",touchPoints:[{x,y,id:1}]});
+          for (let step = 1; step <= 6; step++) {
+            await touch.send("Input.dispatchTouchEvent", {type:"touchMove",touchPoints:[{x:x+dx*step/6,y,id:1}]});
+          }
+          await touch.send("Input.dispatchTouchEvent", {type:"touchEnd",touchPoints:[]});
+          await remote.waitForFunction(({selector,expected}) => document.querySelector(selector).nextElementSibling.dataset.page === String(expected), {selector,expected});
+          const dots = await pager.locator("[data-dot-page]").evaluateAll(nodes => nodes.map(node => Number(node.dataset.dotPage)));
+          assert.deepEqual(dots, expected === 4 || (current >= 3 && expected < current) ? [2,3,4] : [1,2,3]);
+          assert.equal(await remote.locator(".song-detail-view:not(.hidden)").count(), 0);
+        }
+        await touch.detach();
       }
-      assert.equal(await remote.evaluate(count),221);
-      // No unbounded requests after the final page or duplicate items.
+      for(const page of [26,27,56]) {
+        await input.fill(String(page));
+        await pager.focus();
+        assert.equal(await input.inputValue(), String(page), "focus changes must preserve the entered page");
+        await input.press("Enter");
+        await remote.waitForFunction(({selector,page})=>{
+          const grid=document.querySelector(selector);
+          return grid.getAttribute("aria-busy")==="false"
+            && grid.nextElementSibling.querySelector("input").value===String(page);
+        },{selector,page});
+        assert.equal(await remote.locator(`${selector} .search-result-item`).count(),page===56?1:4);
+        assert.ok((await remote.locator(selector).textContent()).includes(`Offline song ${(page-1)*4}`));
+      }
+      await pager.focus();
+      await pager.press("ArrowRight");
+      assert.equal(await pager.getAttribute("data-page"),"56");
+      // Scrolling a terminal page cannot issue an extra load.
       const before=requests.length;
       await wheelToEnd(remote,selector);
       await remote.waitForTimeout(200);
       assert.equal(requests.length,before);
+      assert.equal(await remote.locator(selector).evaluate(el=>getComputedStyle(el).overflowY),"visible");
+      measurements[name]={page:56,visibleItems:1,initialItems:await remote.evaluate(count)};
     });
     await remote.locator("#remote-request-sources-tab").click();
     await remote.locator('#sources-follow-grid [data-uid="123"]').click();
@@ -114,8 +152,8 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await primary();
     await remote.locator("#remote-request-discover-tab").click();
     await remote.locator("[data-category-browser-grid] [data-category-id]").first().click();
-    await remote.waitForFunction(()=>state.categoryBrowseItems?.length===100);
-    await pageAll("remoteCategories","[data-category-browse-results]",()=>state.categoryBrowseItems.length);
+    await remote.waitForFunction(()=>state.categoryBrowseItems?.length===12);
+    await pageAll("remoteCategories","[data-category-browse-results]",()=>state.categoryBrowseItems.length,12);
     for(const kind of ["name","artist"]) {
       await primary();
       await remote.locator("#remote-request-discover-tab").click();
@@ -123,9 +161,9 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       const panel=remote.locator(`#remote-discover-${kind}-panel`);
       await panel.locator('[data-letter="A"]').click();
       await panel.locator('[data-tag="Offline tag"]').click();
-      await remote.waitForFunction(kind=>state.d1BrowseModes[kind]?.data?.items?.length===100,kind);
+      await remote.waitForFunction(kind=>state.d1BrowseModes[kind]?.data?.items?.length===12,kind);
       const count=kind==="name" ? ()=>state.d1BrowseModes.name.data.items.length : ()=>state.d1BrowseModes.artist.data.items.length;
-      await pageAll(`remote${kind}`,`#remote-discover-${kind}-panel [data-d1-browse-results]`,count);
+      await pageAll(`remote${kind}`,`#remote-discover-${kind}-panel [data-d1-browse-results]`,count,12);
     }
     await remote.screenshot({path:path.join(directory,"remote-browse.png")});
     console.log(JSON.stringify({measurements,requests,failures,onlineD1Requests:0}));

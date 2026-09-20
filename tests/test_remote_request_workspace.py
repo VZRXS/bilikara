@@ -602,21 +602,23 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIn("container: elements.remoteShell", self.script)
         self.assertIn("resolveReturnFocus: resolveRequestDetailReturnFocus", self.script)
 
-    def test_browse_height_and_pagination_follow_visible_content_scroller(self):
+    def test_browse_uses_document_scroll_and_explicit_result_pages(self):
         self.assertIn("function syncRemoteRequestPanelSizeTier()", self.script)
         self.assertIn('["discover", "sources"].includes(state.remoteRequestView)', self.script)
         self.assertIn('tier = "browse-deep";', self.script)
-        self.assertIn("resultsContainer.scrollHeight", self.script)
-        self.assertIn("- resultsContainer.scrollTop", self.script)
-        self.assertIn("- resultsContainer.clientHeight", self.script)
-        self.assertRegex(
-            self.script,
-            r'(?s)elements\.sourcesFollowResults\?\.addEventListener\("scroll".*?passive: true',
-        )
-        self.assertRegex(
-            self.script,
-            r'(?s)elements\.favlistSongResults\?\.addEventListener\("scroll".*?passive: true',
-        )
+        self.assertNotIn("shouldAutoLoadNextBrowsePage", self.script)
+        self.assertNotIn('sourcesFollowResults?.addEventListener("scroll"', self.script)
+        self.assertNotIn('favlistSongResults?.addEventListener("scroll"', self.script)
+        self.assertIn("window.BilikaraResultPager.create(container", self.script)
+        markup = (ROOT / "static" / "remote.html").read_text(encoding="utf-8")
+        self.assertIn('src="/result-pagination.js"', markup)
+        self.assertIn('href="/result-pagination.css"', markup)
+        pagination_styles = (ROOT / "static" / "result-pagination.css").read_text(encoding="utf-8")
+        card_rule = re.search(r"\.request-panel\[data-request-size\]\s*\{([^}]*)\}", pagination_styles)
+        self.assertIsNotNone(card_rule)
+        self.assertIn("height: auto", card_rule.group(1))
+        self.assertIn("overflow: visible", card_rule.group(1))
+        self.assertIn("touch-action: pan-y pinch-zoom", pagination_styles)
         self.assertNotIn('t("search.categoryLoadedMore"', self.script)
         self.assertNotIn('t("search.categoryLoadedAll"', self.script)
         self.assertNotIn('"search.categoryLoadedMore"', self.i18n_text)

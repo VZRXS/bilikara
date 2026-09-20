@@ -27,8 +27,9 @@ class RemoteSearchHardeningTest(unittest.TestCase):
             "function syncRemoteRequestPanelSizeTier", "function syncRemoteSearchModeSelection"
         )
         cls.render_source = cls._slice(
-            "function renderSearchResultItems", "function appendSearchResultItems"
+            "function renderSearchResultPage", "function appendSearchResultItems"
         )
+        cls.hide_pager_source = cls._slice("function hideRemoteResultPager", "function renderSearchResultPage")
         cls.sync_source = cls._slice(
             "function syncBilikaraSearchView", "async function executeCanonicalBilikaraSearch"
         )
@@ -54,16 +55,15 @@ class RemoteSearchHardeningTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout.strip().splitlines()[-1])
 
-    def test_inline_browse_results_keep_scroll_below_fixed_controls(self):
-        result_rule = self.css.split(
-            ".remote-search-browser-view .search-results", 1
+    def test_inline_browse_results_use_document_scroll(self):
+        pagination_css = (ROOT / "static" / "result-pagination.css").read_text(encoding="utf-8")
+        result_rule = pagination_css.split(
+            ".request-panel :is(.search-results, .tag-browser-tags, .follow-up-grid)", 1
         )[1].split("}", 1)[0]
         for declaration in (
-            "min-height: 0;",
             "max-height: none;",
-            "overflow-x: hidden;",
-            "overflow-y: auto;",
-            "overscroll-behavior-y: contain;",
+            "overflow: visible;",
+            "overscroll-behavior-y: auto;",
         ):
             self.assertIn(declaration, result_rule)
         for obsolete in (
@@ -172,7 +172,7 @@ function t(key) {{ return key; }}
 const document = {{ createElement() {{ return {{}}; }} }};
 {self.size_tier_source}
 {self.render_source}
-renderSearchResultItems(container, Array.from({{ length: 8 }}, (_, index) => ({{ id: index }})));
+renderSearchResultPage(container, Array.from({{ length: 8 }}, (_, index) => ({{ id: index }})));
 console.log(JSON.stringify({{ eager: rows.map((row) => row.eagerCover) }}));
 """
         )
@@ -234,6 +234,8 @@ function renderLarkSearchResults(items) {{
 
 {self.size_tier_source}
 {self.render_source}
+const remoteResultPagers = new WeakMap();
+{self.hide_pager_source}
 {self.sync_source}
 
 syncBilikaraSearchView();

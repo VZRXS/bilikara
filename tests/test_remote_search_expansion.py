@@ -25,6 +25,10 @@ class RemoteSearchExpansionTest(unittest.TestCase):
             source.index("const canonicalBilikaraSearch =") :
             source.index("function d1BrowseTitle(")
         ]
+        cls.hide_pager_source = source[
+            source.index("function hideRemoteResultPager(") :
+            source.index("function renderSearchResultPage(")
+        ]
         cls.form_handlers = source[
             source.index('elements.larkSearchQuery?.addEventListener("input"') :
             source.index('elements.larkSearchResults?.addEventListener("click"')
@@ -33,6 +37,8 @@ class RemoteSearchExpansionTest(unittest.TestCase):
     def run_node(self, body: str) -> dict:
         script = f"""
 const searchResultItemByElement = new WeakMap();
+const remoteResultPagers = new WeakMap();
+{self.hide_pager_source}
 
 function mockElement(id) {{
   const listeners = new Map();

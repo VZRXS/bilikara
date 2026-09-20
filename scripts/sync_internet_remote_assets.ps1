@@ -27,6 +27,8 @@ $files = @(
     "remote.css",
     "remote.html",
     "remote.js",
+    "result-pagination.css",
+    "result-pagination.js",
     "song-detail.css",
     "song-detail.js",
     "status-indicators.css"

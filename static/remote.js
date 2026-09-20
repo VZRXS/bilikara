@@ -20,12 +20,12 @@ const stateFallbackRefreshMs = 1000;
 const nativeEventStreamDeadlineMs = 12000;
 const remoteConnectionOfflineGraceMs = 3000;
 const expandedSearchEagerCoverCount = 6;
-const d1BrowseItemLimit = 450;
+const d1BrowseItemLimit = 12; // Four visible cards plus at most two pages ahead.
 const d1BrowseTagLimit = 450;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const browsePageSize = 100;
-const browseAutoLoadThresholdPx = 160;
 const searchResultItemByElement = new WeakMap();
+const remoteResultPagers = new WeakMap();
 let searchDetailController = null;
 const categoryBrowseDefinitionsRaw = [
   { key: "hotBlood", tags: ["热血", "战斗"] },
@@ -801,6 +801,7 @@ function setLanguage(language) {
     render();
   }
   syncBilikaraSearchView();
+  remoteResultPagers.get(elements.searchResults)?.localize(state.language);
   renderCategoryBrowseView();
   renderD1BrowseView("name");
   renderD1BrowseView("artist");
@@ -3700,6 +3701,7 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 function hideSearchResults() {
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
+  hideRemoteResultPager(elements.searchResults);
 }
 
 function hideLarkSearchResults() {
@@ -3708,6 +3710,7 @@ function hideLarkSearchResults() {
   }
   elements.larkSearchResults.innerHTML = "";
   elements.larkSearchResults.classList.add("hidden");
+  hideRemoteResultPager(elements.larkSearchResults);
 }
 
 function searchResultOwnerName(item) {
@@ -3993,7 +3996,68 @@ function createSearchResultRow(item, { eagerCover = false } = {}) {
   return row;
 }
 
+function remoteResultPaginationOptions(container, items, emptyText) {
+  const owner = requestDetailOwnerForContainer(container);
+  let data = {}, load = null, loading = false, key = owner;
+  if (owner === "uids" || owner === "favorites") {
+    const favorites = owner === "favorites";
+    data = (favorites ? state.favlistBrowseData : state.followBrowseData) || {};
+    const selected = favorites ? state.favlistBrowseSelectedFolderId : state.followBrowseSelectedUid;
+    const query = String(data.query || "");
+    loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
+    key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    load = page => favorites
+      ? fetchGatchaFavlistBrowse(selected, query, page)
+      : fetchGatchaBrowse(selected, query, page);
+  } else if (owner === "name" || owner === "artist") {
+    const mode = d1BrowseModeState(owner);
+    data = mode.data || {};
+    loading = mode.loading;
+    const query = { kind: owner, letter: mode.letter, tag: mode.tag, locale: mode.locale, query: mode.query };
+    key = JSON.stringify([query, mode.seq]);
+    if (typeof data.has_more === "boolean") load = page => fetchD1Browse({ ...query, ...page });
+  } else if (owner === "categories") {
+    const category = selectedCategoryBrowseDefinition();
+    data = { has_more: state.categoryBrowseHasMore };
+    loading = state.categoryBrowseLoading;
+    const query = { tags: category?.tags || [], query: state.categoryBrowseQuery };
+    key = JSON.stringify([query, state.categoryBrowseSeq]);
+    load = page => fetchD1CategoryBrowse({ ...query, ...page });
+  } else if (owner === "shared") {
+    key = JSON.stringify([owner, canonicalBilikaraSearch.seq]);
+    loading = canonicalBilikaraSearch.loading;
+  }
+  const limited = !load;
+  const total = Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
+    ? data.matched_count : (limited || data.has_more === false ? items.length : null);
+  const readAhead = ["name", "artist", "categories"].includes(owner) ? 2 : 0;
+  return { key, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead,
+    emptyText, language: state.language };
+}
+
 function renderSearchResultItems(container, items, emptyText = "") {
+  if (!container) return;
+  if (!window.BilikaraResultPager) {
+    renderSearchResultPage(container, items, emptyText);
+    return;
+  }
+  let pager = remoteResultPagers.get(container);
+  if (!pager) {
+    pager = window.BilikaraResultPager.create(container, {
+      translate: t,
+      renderItems: (page, message) => renderSearchResultPage(container, page, message),
+      reportError: message => setAppMessage(message, true),
+    });
+    remoteResultPagers.set(container, pager);
+  }
+  pager.update(remoteResultPaginationOptions(container, Array.isArray(items) ? items : [], emptyText));
+}
+
+function hideRemoteResultPager(container) {
+  if (container) remoteResultPagers.get(container)?.hide();
+}
+
+function renderSearchResultPage(container, items, emptyText = "") {
   if (!container) {
     return;
   }
@@ -4063,6 +4127,7 @@ function syncBilikaraSearchView() {
     if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
       elements.larkSearchResults.innerHTML = "";
       elements.larkSearchResults.classList.add("hidden");
+      hideRemoteResultPager(elements.larkSearchResults);
     } else {
       renderLarkSearchResults(items);
     }
@@ -4367,6 +4432,7 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     } else {
       results.innerHTML = "";
       results.classList.add("hidden");
+      hideRemoteResultPager(results);
     }
   }
   if (message) {
@@ -4454,9 +4520,6 @@ function ensureCategoryBrowseView() {
     </div>
   `;
   elements.remoteDiscoverCategoriesPanel.appendChild(view);
-  view.querySelector("[data-category-browse-results]")?.addEventListener("scroll", (event) => {
-    maybeLoadMoreCategoryBrowse(event.currentTarget);
-  }, { passive: true });
   return view;
 }
 
@@ -4517,6 +4580,7 @@ function renderCategoryBrowseView() {
     });
   }
   if (!selected) {
+    hideRemoteResultPager(results);
     syncRemoteRequestPanelSizeTier();
     return;
   }
@@ -4586,7 +4650,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
       tags: category.tags,
       query: state.categoryBrowseQuery,
       offset: append ? state.categoryBrowseOffset : 0,
-      limit: browsePageSize,
+      limit: d1BrowseItemLimit,
     });
     if (state.categoryBrowseSeq !== searchSeq) {
       return;
@@ -4605,59 +4669,6 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
       state.categoryBrowseLoading = false;
       renderCategoryBrowseView();
     }
-  }
-}
-
-function shouldAutoLoadNextBrowsePage(resultsContainer, { active, loading, hasMore }) {
-  if (!active || loading || !hasMore || !resultsContainer) {
-    return false;
-  }
-  // Browse owns an inner scrolling viewport; hidden panels cannot load pages.
-  if (!resultsContainer.getClientRects().length) return false;
-  const remainingScroll = resultsContainer.scrollHeight
-    - resultsContainer.scrollTop
-    - resultsContainer.clientHeight;
-  return Number.isFinite(remainingScroll)
-    && remainingScroll <= browseAutoLoadThresholdPx;
-}
-
-function maybeLoadMoreCategoryBrowse(resultsContainer) {
-  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
-    active: Boolean(state.categoryBrowseSelectedId),
-    loading: state.categoryBrowseLoading,
-    hasMore: state.categoryBrowseHasMore,
-  })) {
-    loadCategoryBrowse({ append: true });
-  }
-}
-
-function maybeLoadMoreFavlistBrowse(resultsContainer) {
-  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
-    active: Boolean(state.favlistBrowseSelectedFolderId),
-    loading: state.favlistBrowseLoading,
-    hasMore: Boolean(state.favlistBrowseData?.has_more),
-  })) {
-    loadFavlistBrowse({
-      folderId: state.favlistBrowseSelectedFolderId,
-      query: String(state.favlistBrowseData?.query || "").trim(),
-      keepQuery: true,
-      append: true,
-    });
-  }
-}
-
-function maybeLoadMoreFollowBrowse(resultsContainer) {
-  if (shouldAutoLoadNextBrowsePage(resultsContainer, {
-    active: Boolean(state.followBrowseSelectedUid),
-    loading: state.followBrowseLoading,
-    hasMore: Boolean(state.followBrowseData?.has_more),
-  })) {
-    loadFollowBrowse({
-      uid: state.followBrowseSelectedUid,
-      query: String(state.followBrowseData?.query || "").trim(),
-      keepQuery: true,
-      append: true,
-    });
   }
 }
 
@@ -4706,6 +4717,7 @@ function renderFavlistBrowse() {
   }
 
   if (!hasSelectedFolder) {
+    hideRemoteResultPager(elements.favlistSongResults);
     if (elements.favlistSearchButton) {
       elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
       elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
@@ -5123,6 +5135,7 @@ function renderSourcesFollowBrowse() {
   }
 
   if (!hasSelectedUid) {
+    hideRemoteResultPager(elements.sourcesFollowResults);
     elements.sourcesFollowGrid.innerHTML = "";
     if (!owners.length) {
       const empty = document.createElement("div");
@@ -8956,40 +8969,6 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
     }
   }
 });
-
-elements.sourcesFollowResults?.addEventListener("scroll", (event) => {
-  maybeLoadMoreFollowBrowse(event.currentTarget);
-}, { passive: true });
-
-elements.favlistSongResults?.addEventListener("scroll", (event) => {
-  maybeLoadMoreFavlistBrowse(event.currentTarget);
-}, { passive: true });
-
-window.addEventListener("scroll", (event) => {
-  if (state.remoteRequestView === "discover" && ["name","artist"].includes(state.remoteDiscoverMode)) {
-    const kind = state.remoteDiscoverMode;
-    const mode = d1BrowseModeState(kind);
-    const results = d1BrowsePanel(kind)?.querySelector("[data-d1-browse-results]");
-    if (event.target === results && shouldAutoLoadNextBrowsePage(results,
-      {active:Boolean(mode.tag),loading:mode.loading,hasMore:mode.data?.has_more})) {
-      loadD1Browse({kind,append:true});
-    }
-  }
-  if (
-    state.remoteRequestView === "discover"
-    && state.remoteDiscoverMode === "categories"
-    && state.categoryBrowseSelectedId
-  ) {
-    const results = elements.remoteDiscoverCategoriesPanel?.querySelector("[data-category-browse-results]");
-    if (event.target === results) maybeLoadMoreCategoryBrowse(results);
-  }
-  if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "uids") {
-    if (event.target === elements.sourcesFollowResults) maybeLoadMoreFollowBrowse(elements.sourcesFollowResults);
-  }
-  if (state.remoteRequestView === "sources" && state.remoteSourcesMode === "favorites") {
-    if (event.target === elements.favlistSongResults) maybeLoadMoreFavlistBrowse(elements.favlistSongResults);
-  }
-}, { passive: true, capture: true });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
   canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");

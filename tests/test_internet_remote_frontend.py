@@ -549,9 +549,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('id="sources-follow-results"', self.remote_html)
         self.assertNotIn('id="follow-browse-more"', self.remote_html)
         self.assertNotIn('id="modal-follow-browse-more"', self.remote_html)
-        self.assertIn("function maybeLoadMoreFollowBrowse", self.remote_js)
+        self.assertIn("function remoteResultPaginationOptions", self.remote_js)
         self.assertIn(
-            "maybeLoadMoreFollowBrowse(elements.sourcesFollowResults)",
+            "fetchGatchaBrowse(selected, query, page)",
             self.remote_js,
         )
         browse_route = self.remote_transport.index(
@@ -564,9 +564,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_favlist_browse_uses_bounded_offset_pagination(self):
         self.assertIn('id="favlist-song-results"', self.remote_html)
         self.assertNotIn('id="favlist-browse-more"', self.remote_html)
-        self.assertIn("function maybeLoadMoreFavlistBrowse", self.remote_js)
+        self.assertIn("function remoteResultPaginationOptions", self.remote_js)
         self.assertIn(
-            "maybeLoadMoreFavlistBrowse(elements.favlistSongResults)", self.remote_js
+            "fetchGatchaFavlistBrowse(selected, query, page)", self.remote_js
         )
         fetch_start = self.remote_js.index("async function fetchGatchaFavlistBrowse")
         fetch_end = self.remote_js.index("async function fetchPoolConfig", fetch_start)
@@ -885,6 +885,8 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
             "remote.html",
             "remote.css",
             "remote.js",
+            "result-pagination.css",
+            "result-pagination.js",
             "remote-queue.css",
             "remote-queue.js",
             "song-detail.css",

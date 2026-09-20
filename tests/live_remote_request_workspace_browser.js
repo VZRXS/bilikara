@@ -367,7 +367,6 @@ async function requestWorkspaceMetrics(page) {
       ".search-results, .category-browser-home, .tag-browser-tags, .follow-up-grid",
     ) || []).find((element) => (
       element.getClientRects().length > 0
-      && ["auto", "scroll"].includes(getComputedStyle(element).overflowY)
     ));
     const browseCards = Array.from(browseScroller?.querySelectorAll(
       ".search-result-item, .category-browser-card, .tag-browser-tag, .follow-up-button",
@@ -551,15 +550,13 @@ function assertWorkspaceGeometry(metrics, label, { requireNoRailOverflow = false
     metrics.panelStates,
   );
   assert(
-    metrics.requestCardOverflowY === "hidden"
+    metrics.requestCardOverflowY === "visible"
       && (metrics.activePanelId === "remote-request-quick-panel"
-        ? metrics.activePanelOverflowY === "clip" && metrics.verticalOwners.length === 0
-        : metrics.activePanelOverflowY === "hidden")
+        ? ["clip", "visible"].includes(metrics.activePanelOverflowY)
+        : metrics.activePanelOverflowY === "visible")
       && ["compact", "standard", "browse", "browse-deep"].includes(metrics.requestSize)
-      && metrics.requestCard.height <= 880.5
-      && metrics.verticalOwners.length <= 1
-      && metrics.verticalOwners.every((owner) => owner.insideActivePanel),
-    `${label}: adaptive Request card did not keep one content-only scroll owner`,
+      && metrics.verticalOwners.length === 0,
+    `${label}: Request browsing must use document scrolling without an inner vertical owner`,
     metrics,
   );
   assert(metrics.searchModalCount === 0, `${label}: retired advanced modal is still present`, metrics);
@@ -854,7 +851,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#lark-search-query").fill("workspace-results");
     await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
     await sharedResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.searchSharedResults = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchSharedResults, "375 Search / Shared results", { requireNoRailOverflow: true });
@@ -877,7 +874,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#search-query").fill("workspace-local");
     await page.locator("#search-form").evaluate((form) => form.requestSubmit());
     await localResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.searchLocal = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchLocal, "375 Search / Local", { requireNoRailOverflow: true });
@@ -944,30 +941,31 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     const overflowScroll = await page.locator(
       "#remote-discover-categories-panel .category-browser-home",
     ).evaluate((content) => {
-      const before = content.scrollTop;
-      content.scrollTop = content.scrollHeight;
+      const before = window.scrollY;
+      content.lastElementChild?.lastElementChild?.scrollIntoView({block: "end"});
       return {
         before,
-        after: content.scrollTop,
+        after: window.scrollY,
+        innerScroll: content.scrollTop,
         clientHeight: content.clientHeight,
         scrollHeight: content.scrollHeight,
       };
     });
     assert(
-      categoriesOverflow.verticalOwners.length === 1
-        && categoriesOverflow.verticalOwners[0].className.includes("category-browser-home")
-        && overflowScroll.scrollHeight > overflowScroll.clientHeight
+      categoriesOverflow.verticalOwners.length === 0
+        && overflowScroll.innerScroll === 0
+        && overflowScroll.scrollHeight <= overflowScroll.clientHeight + 1
         && overflowScroll.after > overflowScroll.before
         && categoryCardGeometry.overlaps.length === 0
         && new Set(categoryCardGeometry.rects.map(({ label }) => label)).size
           === categoryCardGeometry.rects.length,
-      "an overlong category browser did not keep scrolling inside its content region",
+      "an overlong category browser did not remain fully reachable through document scrolling",
       { categoriesOverflow, overflowScroll, categoryCardGeometry },
     );
     await capture(page, paths.categoriesOverflow);
     await page.evaluate(() => {
       document.querySelectorAll(".browser-overflow-fixture").forEach((element) => element.remove());
-      document.querySelector("#remote-discover-categories-panel .category-browser-home").scrollTop = 0;
+      document.querySelector(".request-panel").scrollIntoView({block: "start"});
     });
 
     const categoryResponse = page.waitForResponse((response) => (
@@ -975,7 +973,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     ));
     await page.locator("#remote-discover-categories-panel .category-browser-card").first().click();
     await categoryResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
     const categorySearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/category-browse" && url.searchParams.get("q") === "workspace-category";
@@ -984,7 +982,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-categories-panel [data-category-browse-search]")
       .evaluate((form) => form.requestSubmit());
     await categorySearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.categoriesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.categoriesDetail, "375 Discover / Categories detail", { requireNoRailOverflow: true });
@@ -1038,7 +1036,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-name-panel [data-tag]").first().click();
     await nameItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
     const nameSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
@@ -1048,7 +1046,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-name-panel [data-d1-browse-query]").fill("workspace-name");
     await page.locator("#remote-discover-name-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
     await nameSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.name = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.name, "375 Discover / Name", { requireNoRailOverflow: true });
@@ -1078,7 +1076,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-artist-panel [data-tag]").first().click();
     await artistItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
     const artistSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
@@ -1088,7 +1086,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#remote-discover-artist-panel [data-d1-browse-query]").fill("workspace-artist");
     await page.locator("#remote-discover-artist-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
     await artistSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.artist = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.artist, "375 Discover / Artist", { requireNoRailOverflow: true });
@@ -1131,7 +1129,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#sources-follow-grid [data-uid]").click();
     await uploaderDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
     const uploaderSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/browse" && url.searchParams.get("q") === "workspace-uploader";
@@ -1139,7 +1137,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#sources-follow-search-query").fill("workspace-uploader");
     await page.locator("#sources-follow-search-form").evaluate((form) => form.requestSubmit());
     await uploaderSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.uploaderDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.uploaderDetail, "375 Sources / selected uploader", { requireNoRailOverflow: true });
@@ -1185,7 +1183,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#favlist-grid [data-folder-id]").click();
     await favoritesDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
     const favoriteSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/favlist/browse" && url.searchParams.get("q") === "workspace-favorites";
@@ -1193,7 +1191,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#favlist-search-query").fill("workspace-favorites");
     await page.locator("#favlist-search-form").evaluate((form) => form.requestSubmit());
     await favoriteSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 8);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
     await bringRequestCardIntoView(page);
     states.favoritesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.favoritesDetail, "375 Sources / selected folder", { requireNoRailOverflow: true });
@@ -1219,8 +1217,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         && retainedNodes.quickValue === "BV1PRESERVEDQUICK"
         && retainedNodes.sharedValue === "workspace-results"
         && retainedNodes.localValue === "workspace-local"
-        && retainedNodes.sharedRows === 8
-        && retainedNodes.localRows === 8,
+        && retainedNodes.sharedRows === 4
+        && retainedNodes.localRows === 4,
       "Switching views remounted or cleared Quick/Search owners",
       retainedNodes,
     );
@@ -1423,28 +1421,19 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         && deepBrowseStates.every((entry) => entry.requestSize === "browse-deep")
         && emptySearchStates.every((entry) => entry.requestCard.height <= compactMetrics.requestCard.height + 1)
         && Math.max(...emptySearchStates.map((entry) => entry.requestCard.height))
-          < Math.min(...browseStates.map((entry) => entry.requestCard.height))
-        && browseStates.every((entry) => Math.abs(entry.requestCard.height - deepBrowseStates[0].requestCard.height) <= 1),
+          < Math.min(...browseStates.map((entry) => entry.requestCard.height)),
       "Quick and empty search must stay compact; populated browsers must expand",
       Object.fromEntries(Object.entries({ ...states, compactMetrics })
         .map(([name, entry]) => [name, { size: entry.requestSize, height: entry.requestCard.height }])),
     );
-    // Entry grids share the song-browser height even when their tiles are shorter.
+    // All tiles in the current page participate in document layout.
     const browseCapacityStates = [states.searchSharedResults, states.searchLocal,
       states.categoriesDetail, states.name, states.artist, states.uploaderDetail, states.favoritesDetail];
-    assert(deepBrowseStates.every((entry) => Math.abs(entry.requestCard.height - states.categoriesDetail.requestCard.height) <= 1),
-      "Browse entry grids must keep the same card height as their song lists", deepBrowseStates.map((entry) => entry.requestCard));
-    assert(
-      browseCapacityStates.every((entry) => (
-        entry.browse?.visibleRowCapacity >= 2
-          && entry.browse.visibleRowCapacity <= 2.6
-      )),
-      "Browse result viewport does not expose roughly 2–2.5 card rows",
-      browseCapacityStates.map((entry) => ({
-        size: entry.requestSize,
-        browse: entry.browse,
-      })),
-    );
+    assert(browseCapacityStates.every(entry => entry.browse
+      && entry.browse.scrollHeight <= entry.browse.clientHeight + 1
+      && entry.browse.itemCount > 0 && entry.browse.itemCount <= 4),
+    "Paged result grids must contain at most four reachable cards without inner scrolling",
+    browseCapacityStates.map(entry => entry.browse));
     assert(
       [...browseStates, ...deepBrowseStates]
         .every((entry) => entry.persistentBrowseMessages.length === 0),
