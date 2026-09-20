@@ -6000,7 +6000,6 @@ async function fetchState() {
   state.hasValidStateResponse = true;
   scheduleStartupAppUpdateCheck();
   maybeShowIncomingRequestToast(previousData, state.data);
-  maybeShowSongTransitionOverlay(previousData, state.data);
 
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localPreferencesHydrated) {
@@ -11815,6 +11814,17 @@ function maybeShowSongTransitionOverlay(previousData, nextData, { force = false,
   const previousId = currentItemIdFromData(previousData);
   const nextId = currentItemIdFromData(nextData);
   if (!nextId || (!force && previousId === nextId)) {
+    return;
+  }
+  // A delayed command response must not reclaim a completed or superseded hold.
+  // Snapshot acceptance already registers transitions for newly observed songs.
+  if (
+    generation > 0
+    && (
+      generation !== state.manualTransitionHoldGeneration
+      || nextId !== state.manualTransitionHoldItemId
+    )
+  ) {
     return;
   }
   if (

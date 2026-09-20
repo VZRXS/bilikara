@@ -62,10 +62,10 @@
   --item-bg: rgba(255, 255, 255, 0.72);
   --item-border: 1px solid rgba(67, 53, 41, 0.08);
 
-  --playback-dock-bg: color-mix(in srgb, var(--panel) 94%, var(--bg));
-  --playback-dock-border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
-  --playback-progress-track: color-mix(in srgb, var(--ink) 8%, transparent);
-  --playback-cover-bg: color-mix(in srgb, var(--ink) 7%, transparent);
+  --playback-dock-bg: var(--panel);
+  --playback-dock-border: 1px solid var(--line);
+  --playback-progress-track: var(--line);
+  --playback-cover-bg: var(--line);
   --playback-sheet-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
 
   --player-btn-border: 1px solid rgba(67, 53, 41, 0.08);
@@ -175,6 +175,15 @@
   --remote-layer-modal: 400;
   --remote-layer-gate: 500;
   --remote-layer-toast: 600;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  :root {
+    --playback-dock-bg: color-mix(in srgb, var(--panel) 94%, var(--bg));
+    --playback-dock-border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+    --playback-progress-track: color-mix(in srgb, var(--ink) 8%, transparent);
+    --playback-cover-bg: color-mix(in srgb, var(--ink) 7%, transparent);
+  }
 }
 
 * {
@@ -1746,8 +1755,19 @@ h1 {
     linear-gradient(to right,
       var(--accent) 0,
       var(--accent) var(--range-fill-percent),
-      color-mix(in srgb, var(--ink) 14%, transparent) var(--range-fill-percent),
-      color-mix(in srgb, var(--ink) 14%, transparent) 100%);
+      var(--line) var(--range-fill-percent),
+      var(--line) 100%);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .player-progress-range::-webkit-slider-runnable-track {
+    background:
+      linear-gradient(to right,
+        var(--accent) 0,
+        var(--accent) var(--range-fill-percent),
+        color-mix(in srgb, var(--ink) 14%, transparent) var(--range-fill-percent),
+        color-mix(in srgb, var(--ink) 14%, transparent) 100%);
+  }
 }
 
 .player-progress-range::-webkit-slider-thumb {
@@ -1766,7 +1786,13 @@ h1 {
   height: 4px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: var(--line);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .player-progress-range::-moz-range-track {
+    background: color-mix(in srgb, var(--ink) 14%, transparent);
+  }
 }
 
 .player-progress-range::-moz-range-progress {
@@ -1788,8 +1814,14 @@ h1 {
 }
 
 .player-progress-range:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: -3px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .player-progress-range:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 .player-progress-range:disabled {
@@ -1917,6 +1949,11 @@ button[data-control-action="next-track"] {
   padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
     max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
   overflow: hidden;
+}
+
+/* The binding picker opens over song details, regardless of DOM insertion order. */
+#binding-sheet {
+  z-index: calc(var(--remote-layer-modal) + 1);
 }
 
 .binding-sheet.hidden {
@@ -4343,8 +4380,14 @@ body.remote-identity-modal-open {
 }
 
 .playback-dock:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline: 3px solid var(--accent);
   outline-offset: 3px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .playback-dock:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  }
 }
 
 .playback-dock-progress {
@@ -4367,6 +4410,7 @@ body.remote-identity-modal-open {
   z-index: 1;
   display: grid;
   grid-template-columns: 82px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 11px;
   align-items: center;
   height: 100%;
@@ -5781,8 +5825,15 @@ body.playback-sheet-scroll-locked {
 
 .binding-sheet-close:focus-visible,
 .rating-close:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .binding-sheet-close:focus-visible,
+  .rating-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 /* Pointer/touch actions must not inherit a keyboard ring through modal autofocus.

@@ -116,8 +116,16 @@
 .request-workspace .song-detail-close:focus-visible,
 .selection-modal .song-detail-close:focus-visible,
 .remote-shell > .song-detail-view .song-detail-close:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .request-workspace .song-detail-close:focus-visible,
+  .selection-modal .song-detail-close:focus-visible,
+  .remote-shell > .song-detail-view .song-detail-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -405,7 +413,6 @@
     z-index: 3;
     gap: 8px;
     padding-top: 2px;
-    background: var(--panel, #fff);
   }
 }
 
@@ -522,9 +529,17 @@
 }
 
 .rating-actions {
+  --rating-actions-gap: 10px;
   display: grid;
-  grid-template-columns: auto minmax(min-content, 1fr);
+  grid-template-columns:
+    minmax(calc((100% - var(--rating-actions-gap)) / 2), max-content)
+    minmax(min-content, 1fr);
+  gap: var(--rating-actions-gap);
   margin-top: 16px;
+}
+
+.rating-actions > [data-rating-add-up] {
+  white-space: normal;
 }
 
 .rating-actions > button[data-rating-add-up],

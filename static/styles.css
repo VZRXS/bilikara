@@ -828,8 +828,14 @@ p {
 }
 
 .banner-close:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .banner-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 #dismiss-backup-button {
@@ -1717,14 +1723,21 @@ h2 {
   align-items: center;
   min-height: 0;
   padding: 2px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px solid var(--accent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  background: var(--panel);
   color: var(--accent-deep);
   font-size: 12px;
   font-weight: 800;
   line-height: 1.3;
   white-space: nowrap;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .app-update-version-badge {
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  }
 }
 
 .app-update-status {
@@ -2367,9 +2380,18 @@ h2 {
   .player-panel.is-tauri-fullscreen #player-fullscreen-button:hover:not(:disabled) {
     width: var(--fullscreen-action-expanded-width);
     color: var(--ink);
-    background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
-    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    background: var(--settings-panel-bg);
+    border-color: var(--accent);
     transform: none;
+  }
+
+  @supports (color: color-mix(in srgb, black, white)) {
+    .player-panel:fullscreen #player-fullscreen-button:hover:not(:disabled),
+    .player-panel:-webkit-full-screen #player-fullscreen-button:hover:not(:disabled),
+    .player-panel.is-tauri-fullscreen #player-fullscreen-button:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
+      border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    }
   }
 
   .player-panel:fullscreen .fullscreen-action-control:hover .fullscreen-phone-icon,
@@ -5514,7 +5536,13 @@ select:disabled {
 }
 
 .presentation-status-chip.is-active {
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  border-color: var(--green);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-status-chip.is-active {
+    border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  }
 }
 
 .presentation-state-dot {
@@ -5528,17 +5556,35 @@ select:disabled {
 
 .presentation-state-dot.is-connecting {
   background: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-state-dot.is-connecting {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
 }
 
 .presentation-state-dot.is-active {
   background: var(--green);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
+  box-shadow: 0 0 0 4px var(--tool-ready-bg);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-state-dot.is-active {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
+  }
 }
 
 .presentation-state-dot.is-error {
   background: var(--red);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 14%, transparent);
+  box-shadow: 0 0 0 4px var(--status-failed-bg);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-state-dot.is-error {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 14%, transparent);
+  }
 }
 
 .presentation-output-panel {
@@ -5584,7 +5630,13 @@ select:disabled {
 .presentation-output-icon {
   flex: 0 0 36px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-output-icon {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
 }
 
 .presentation-output-switch {
@@ -5721,11 +5773,24 @@ select:disabled {
 
 .presentation-display-option:hover:not(:disabled),
 .presentation-display-option:focus-visible {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-display-option:hover:not(:disabled),
+  .presentation-display-option:focus-visible {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
 }
 
 .presentation-display-option.is-selected {
-  background: color-mix(in srgb, var(--green) 10%, transparent);
+  background: var(--tool-ready-bg);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-display-option.is-selected {
+    background: color-mix(in srgb, var(--green) 10%, transparent);
+  }
 }
 
 .presentation-display-option:disabled {
@@ -5762,8 +5827,14 @@ select:disabled {
 }
 
 .presentation-display-option.is-selected .presentation-device-icon {
-  background: color-mix(in srgb, var(--green) 16%, transparent);
+  background: var(--tool-ready-bg);
   color: var(--green);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-display-option.is-selected .presentation-device-icon {
+    background: color-mix(in srgb, var(--green) 16%, transparent);
+  }
 }
 
 .presentation-display-copy {
@@ -7001,8 +7072,14 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .rating-close:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .rating-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 .rating-tabs {
@@ -9168,11 +9245,23 @@ body[data-tauri-platform="macos"] .window-drag-region {
 
 .window-control-button.is-native-hovered {
   z-index: var(--host-layer-tooltip);
-  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  background: var(--line);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .window-control-button.is-native-hovered {
+    background: color-mix(in srgb, var(--ink) 9%, transparent);
+  }
 }
 
 .window-control-button:hover {
-  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  background: var(--line);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .window-control-button:hover {
+    background: color-mix(in srgb, var(--ink) 9%, transparent);
+  }
 }
 
 .window-close-button:hover {
@@ -9290,8 +9379,14 @@ body[data-tauri-platform="linux"] .app-shell {
 }
 
 .stage-controls-toggle:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  outline: 3px solid var(--accent);
   outline-offset: 3px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .stage-controls-toggle:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  }
 }
 
 .stage-control-backdrop {
@@ -9655,9 +9750,19 @@ body[data-tauri-platform="linux"] .app-shell {
 .gatcha-message.is-error,
 .search-message.is-error,
 .bbdown-login-message.is-error {
-  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
-  background: color-mix(in srgb, var(--red) 10%, var(--panel));
+  border-color: var(--red);
+  background: var(--panel);
   color: var(--red);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .message-surface.is-error,
+  .gatcha-message.is-error,
+  .search-message.is-error,
+  .bbdown-login-message.is-error {
+    border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+    background: color-mix(in srgb, var(--red) 10%, var(--panel));
+  }
 }
 
 .bbdown-login-qr .bbdown-login-message,
@@ -10181,7 +10286,14 @@ body.is-presentation-stage-only .left-column {
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  background: var(--panel);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .request-subview-tabs,
+  .request-mode-tabs {
+    background: color-mix(in srgb, var(--panel) 72%, transparent);
+  }
 }
 
 .request-subview-tabs button,
@@ -10888,7 +11000,13 @@ body.is-tauri-fullscreen-active .left-column {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .work-rail-update-dot {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  }
 }
 
 .settings-workspace {
@@ -10952,8 +11070,14 @@ body.is-tauri-fullscreen-active .left-column {
   padding: 0 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--panel) 90%, var(--accent-soft));
+  background: var(--panel);
   overflow: visible;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .settings-section-card {
+    background: color-mix(in srgb, var(--panel) 90%, var(--accent-soft));
+  }
 }
 
 .settings-section-card > .cache-panel-row {
@@ -11125,7 +11249,13 @@ body.is-tauri-fullscreen-active .left-column {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .work-rail-button.needs-attention::after {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  }
 }
 
 .session-user-list.is-empty {
@@ -11488,21 +11618,40 @@ body.is-presentation-control-host .presentation-host-controls {
 
 .presentation-host-controls .presentation-host-play.is-playing {
   color: var(--on-accent);
-  border-color: color-mix(in srgb, var(--accent-deep) 38%, transparent);
+  border-color: var(--accent-deep);
   background: var(--accent);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-controls .presentation-host-play.is-playing {
+    border-color: color-mix(in srgb, var(--accent-deep) 38%, transparent);
+  }
 }
 
 .presentation-host-controls .presentation-host-play.is-paused {
   color: var(--accent-deep);
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-color: var(--accent);
   background: var(--toolbar-btn-bg);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-soft-hover);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-controls .presentation-host-play.is-paused {
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
 }
 
 .presentation-host-controls .presentation-host-next {
   color: var(--accent-deep);
-  border: 1.5px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  border: 1.5px solid var(--accent);
   background: var(--accent-soft);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-controls .presentation-host-next {
+    border: 1.5px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 .presentation-host-controls .presentation-host-next svg {
@@ -11553,8 +11702,19 @@ body.is-presentation-control-host .presentation-host-controls {
     linear-gradient(to right,
       var(--accent) 0,
       var(--accent) var(--range-fill-percent),
-      color-mix(in srgb, var(--ink) 14%, transparent) var(--range-fill-percent),
-      color-mix(in srgb, var(--ink) 14%, transparent) 100%);
+      var(--line) var(--range-fill-percent),
+      var(--line) 100%);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-progress::-webkit-slider-runnable-track {
+    background:
+      linear-gradient(to right,
+        var(--accent) 0,
+        var(--accent) var(--range-fill-percent),
+        color-mix(in srgb, var(--ink) 14%, transparent) var(--range-fill-percent),
+        color-mix(in srgb, var(--ink) 14%, transparent) 100%);
+  }
 }
 
 .presentation-host-progress::-webkit-slider-thumb {
@@ -11573,7 +11733,13 @@ body.is-presentation-control-host .presentation-host-controls {
   height: 4px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: var(--line);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-progress::-moz-range-track {
+    background: color-mix(in srgb, var(--ink) 14%, transparent);
+  }
 }
 
 .presentation-host-progress::-moz-range-progress {
@@ -11595,8 +11761,14 @@ body.is-presentation-control-host .presentation-host-controls {
 }
 
 .presentation-host-progress:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: -3px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-progress:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  }
 }
 
 .presentation-host-progress:disabled {
@@ -11622,12 +11794,24 @@ body.is-presentation-control-host .presentation-host-controls {
 }
 
 .presentation-host-controls button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-color: var(--accent);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-controls button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  }
 }
 
 .presentation-host-controls button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-host-controls button:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  }
 }
 
 .presentation-host-controls button:disabled {
@@ -11806,7 +11990,13 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
 .av-sync-lock-button svg, .volume-mute-button svg { width: 20px; height: 20px; flex: 0 0 auto; }
 .av-sync-lock-button svg.hidden, .volume-mute-button svg.hidden { display: none; }
 
-body[data-window-focused="false"] .window-control-button { color: color-mix(in srgb, var(--ink) 45%, transparent); }
+body[data-window-focused="false"] .window-control-button { color: var(--muted); }
+
+@supports (color: color-mix(in srgb, black, white)) {
+  body[data-window-focused="false"] .window-control-button {
+    color: color-mix(in srgb, var(--ink) 45%, transparent);
+  }
+}
 body[data-window-focused="false"] .window-close-button:hover { color: #fff; }
 
 /* Desktop preview keeps the desktop layout; these actions await parity. */

@@ -155,8 +155,15 @@ body.is-cursor-hidden * {
 .presentation-output-exit:hover:not(:disabled) {
   width: var(--presentation-action-expanded-width);
   color: var(--ink);
-  background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
-  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--settings-panel-bg);
+  border-color: var(--accent);
+}
+
+@supports (color: color-mix(in srgb, black, white)) {
+  .presentation-output-exit:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  }
 }
 
 .presentation-output-exit:focus-visible {
