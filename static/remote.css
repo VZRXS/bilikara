@@ -1919,6 +1919,11 @@ button[data-control-action="next-track"] {
   overflow: hidden;
 }
 
+/* The binding picker opens over song details, regardless of DOM insertion order. */
+#binding-sheet {
+  z-index: calc(var(--remote-layer-modal) + 1);
+}
+
 .binding-sheet.hidden {
   display: none;
 }

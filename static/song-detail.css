@@ -405,7 +405,6 @@
     z-index: 3;
     gap: 8px;
     padding-top: 2px;
-    background: var(--panel, #fff);
   }
 }
 

@@ -902,6 +902,134 @@ console.log(JSON.stringify({{
             {"firstGeneration": 1, "finalGeneration": 1, "pendingItem": "next"},
         )
 
+    def test_delayed_responses_do_not_restart_a_completed_transition(self):
+        snapshots = self.source_slice(
+            "function isSafeHostSnapshotInteger", "function syncCachePanelVisibility"
+        )
+        polling = self.source_slice("async function fetchState", "function renderSignatureForData")
+        holds = self.source_slice(
+            "function shouldHoldCurrentItemForTransition", "function stopMountedPlayerForAdvanceDelay"
+        )
+        transitions = self.source_slice(
+            "function maybeShowSongTransitionOverlay", "function hasPendingSongTransitionOverlayForItem"
+        )
+        clear_delay = self.source_slice(
+            "function clearLocalAdvanceDelay", "function teardownMountedPlayer"
+        )
+        advance = self.source_slice(
+            "async function advanceLocalPlayerNow", "async function requestNextTrack"
+        )
+        playlist_action = self.source_slice(
+            "async function handlePlaylistAction", 'elements.addForm.addEventListener("submit"'
+        )
+        for carrier in ("poll", "next", "next-newer-snapshot", "play-now"):
+            with self.subTest(carrier=carrier):
+                result = self.run_node(
+                    f"""
+const window = {{ location: {{ href: "http://127.0.0.1/" }}, clearTimeout, clearInterval }};
+function item(id) {{
+  return {{
+    id, item_incarnation_id: `i-${{id}}`, artifact_set_id: `a-${{id}}`,
+    selected_audio_variant_id: "vocal", video_media_url: `/media/${{id}}/video.mp4`,
+    audio_variants: [{{ id: "vocal", audio_url: `/media/${{id}}/audio.m4a` }}],
+  }};
+}}
+const oldItem = item("old");
+const nextItem = item("next");
+function snapshot(revision, current, generation) {{
+  return {{
+    state_revision: revision, revision, playback_generation: generation,
+    current_item: current, playlist: current === oldItem ? [nextItem] : [],
+    playback_program: {{
+      item_id: current.id, item_incarnation_id: current.item_incarnation_id,
+      artifact_set_id: current.artifact_set_id, selected_audio_variant_id: "vocal",
+    }},
+    player_settings: {{ song_advance_delay_seconds: 3 }},
+  }};
+}}
+const state = {{
+  data: snapshot(1, oldItem, 1), localPreferencesHydrated: true,
+  pendingSongTransitionOverlayData: null, pendingSongTransitionGeneration: 0,
+  localShouldBePlaying: true, localAdvanceInFlight: false, localAdvanceDelayToken: 0,
+  manualTransitionHoldItemId: "", manualTransitionHoldGeneration: 0,
+  songTransitionGeneration: 0, lastSongTransitionOverlayKey: "",
+}};
+function currentItemIdFromData(data) {{ return String(data?.current_item?.id || ""); }}
+function queuedNextItem() {{ return state.data.playlist[0]; }}
+function manualTransitionOverlaySeconds() {{ return 3; }}
+function hasLocalAdvanceDelayOverlay() {{ return false; }}
+function hidePlayerDelayOverlay() {{}}
+function closeOpenMenus() {{}}
+function renderPlayer() {{}}
+function frontendPlaybackMode() {{ return "local"; }}
+function isCurrentHostPlaybackSession() {{ return false; }}
+function render() {{}}
+function setAppMessage(message) {{ throw new Error(message); }}
+function syncMountedLocalPlayer() {{}}
+function currentAvOffsetMs() {{ return 0; }}
+function clientHeaders() {{ return {{}}; }}
+function parseApiResponse(response) {{ return response.json(); }}
+function scheduleStartupAppUpdateCheck() {{}}
+function maybeShowIncomingRequestToast() {{}}
+function syncLocalPlayerSettingsFromSnapshot() {{}}
+function scheduleFavlistBrowseReloadFromState() {{}}
+function renderSignatureForData(data) {{ return String(data.state_revision); }}
+function resyncMountedLocalPlayerIfOffsetChanged() {{}}
+function hasDownloadingItems() {{ return false; }}
+let respond;
+function fetch() {{ return new Promise(resolve => {{ respond = resolve; }}); }}
+function apiPost() {{ return new Promise(resolve => {{ respond = resolve; }}); }}
+{snapshots}
+{polling}
+{holds}
+{transitions}
+{clear_delay}
+{advance}
+{playlist_action}
+const carrier = {json.dumps(carrier)};
+const button = {{
+  dataset: {{ id: "next", action: "play-now" }}, disabled: false,
+  getAttribute() {{ return null; }}, setAttribute() {{}}, removeAttribute() {{}},
+}};
+const pending = carrier === "poll" ? fetchState()
+  : carrier === "play-now" ? handlePlaylistAction(button) : advanceLocalPlayerNow();
+// Another response delivers the switch while the original request is pending.
+acceptHostStateSnapshot(snapshot(2, nextItem, 2));
+await Promise.resolve();
+const firstTransition = state.pendingSongTransitionGeneration;
+// Its countdown finishes and the exact mounted pair is now playing.
+state.pendingSongTransitionOverlayData = null;
+state.pendingSongTransitionGeneration = 0;
+clearLocalAdvanceDelay({{ resetInFlight: true }});
+state.localShouldBePlaying = true;
+const payload = carrier === "next" ? snapshot(2, nextItem, 2) : snapshot(3, nextItem, 2);
+respond(carrier === "poll"
+  ? {{ ok: true, json: async () => ({{ ok: true, data: payload }}) }}
+  : carrier === "play-now" ? payload : {{ data: payload, stale: false }});
+const applied = await pending;
+console.log(JSON.stringify({{
+  applied: applied ?? null, firstTransition, shouldPlay: state.localShouldBePlaying,
+  pending: Boolean(state.pendingSongTransitionOverlayData),
+  holdGeneration: state.manualTransitionHoldGeneration,
+  inFlight: state.localAdvanceInFlight, itemId: state.data.current_item.id,
+  revision: state.data.state_revision,
+}}));
+"""
+                )
+                self.assertEqual(
+                    result,
+                    {
+                        "applied": None if carrier == "play-now" else True,
+                        "firstTransition": 1,
+                        "shouldPlay": True,
+                        "pending": False,
+                        "holdGeneration": 0,
+                        "inFlight": False,
+                        "itemId": "next",
+                        "revision": 2 if carrier == "next" else 3,
+                    },
+                )
+
     def test_stale_completion_cannot_resume_newer_item_and_valid_completion_runs_once(self):
         resume_function = self.source_slice(
             "function resumeMountedPlayerAfterOverlay",
