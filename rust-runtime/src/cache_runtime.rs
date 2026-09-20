@@ -1558,16 +1558,9 @@ fn normalize_track(
             format!("{} has an invalid duration", track.label),
         ));
     }
-    if track.kind == ExpectedMediaKind::Video
-        && track.page.duration_seconds.is_some_and(|expected| {
-            probe.duration_seconds + duration_tolerance(expected) < expected
-        })
-    {
-        return Err(CacheRuntimeError::new(
-            "invalid_media",
-            format!("{} is shorter than expected", track.label),
-        ));
-    }
+    // Page metadata may describe the longer audio track. Normalization already
+    // validates this track's structure and preserved media; a shorter video
+    // timeline alone is not evidence of an incomplete download.
     Ok(probe)
 }
 
@@ -2223,10 +2216,6 @@ fn initial_track_payloads(job: &CacheJobSpec) -> Result<Vec<Value>, CacheRuntime
         .collect())
 }
 
-fn duration_tolerance(expected: f64) -> f64 {
-    3.0_f64.max(expected * 0.02)
-}
-
 pub(crate) fn variant_id(page: u32, label: &str, index: usize) -> String {
     let mut normalized = String::new();
     let mut separator = false;
@@ -2690,6 +2679,80 @@ mod tests {
             std::process::id(),
             ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn complete_video_shorter_than_page_metadata_normalizes_but_truncation_fails() {
+        use mp4::{
+            AvcConfig, MediaConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig, TrackType,
+        };
+        let root = publication_root("unequal-track-durations");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("video.mp4");
+        let mut writer = Mp4Writer::write_start(
+            fs::File::create(&source).unwrap(),
+            &Mp4Config {
+                major_brand: "isom".parse().unwrap(),
+                minor_version: 512,
+                compatible_brands: vec!["isom".parse().unwrap(), "avc1".parse().unwrap()],
+                timescale: 1000,
+            },
+        )
+        .unwrap();
+        writer
+            .add_track(&TrackConfig {
+                track_type: TrackType::Video,
+                timescale: 1000,
+                language: "und".into(),
+                media_conf: MediaConfig::AvcConfig(AvcConfig {
+                    width: 64,
+                    height: 64,
+                    seq_param_set: vec![
+                        0x67, 0x42, 0xc0, 0x1e, 0xda, 0x02, 0x80, 0xb7, 0xfe, 0x5c, 0x05, 0x05,
+                        0x05, 0x02,
+                    ],
+                    pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
+                }),
+            })
+            .unwrap();
+        writer
+            .write_sample(
+                1,
+                &Mp4Sample {
+                    start_time: 0,
+                    duration: 241868,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: vec![0, 0, 0, 2, 0x65, 0].into(),
+                },
+            )
+            .unwrap();
+        writer.write_end().unwrap();
+        drop(writer.into_writer());
+        let mut spec = job(&root);
+        spec.pages[0].duration_seconds = Some(247.0);
+        let track = track_specs(&spec).unwrap().remove(0);
+        let normalized = normalize_track(
+            &spec,
+            &track,
+            &source,
+            &root.join("normalized.mp4"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!((normalized.duration_seconds - 241.868).abs() < 0.001);
+        assert_eq!(normalized.sample_count, 1);
+        assert_eq!(normalized.sample_bytes, 6);
+        assert!(normalized.fast_start);
+
+        let bytes = fs::read(&source).unwrap();
+        fs::write(&source, &bytes[..bytes.len() - 32]).unwrap();
+        let rejected = root.join("rejected.mp4");
+        let error = normalize_track(&spec, &track, &source, &rejected, &AtomicBool::new(false))
+            .unwrap_err();
+        assert_eq!(error.kind, "invalid_media");
+        assert!(!rejected.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn publication_tracks(

@@ -6697,8 +6697,43 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(DownloadCommandError, "与原始音轨时长不一致"):
             self._validate_source_audio_duration("122.001", source_duration=120.0)
 
-    def test_video_significantly_shorter_than_expected_is_rejected(self):
-        self._assert_duration_rejected("video", "87", expected=243)
+    def test_video_missing_or_invalid_duration_is_rejected(self):
+        for actual in (None, "0", "0.5"):
+            with self.subTest(actual=actual):
+                self._assert_duration_rejected("video", actual, expected=247)
+
+    def test_complete_tracks_can_be_shorter_than_page_duration(self):
+        # BV1gaVD6hEDd reports 247s for the page despite unequal track durations.
+        # Each file's successful structural inspection supplies its own duration.
+        manager = CacheManager.__new__(CacheManager)
+        for kind, duration in (("video", 241.867938), ("audio", 246.186333), ("video", 87.0)):
+            with self.subTest(kind=kind, duration=duration):
+                media = self.cache_dir / f"{kind}.mp4"
+                media.write_bytes(b"inspected media fixture")
+                metadata = manager._normalized_rust_media_probe(
+                    self._rust_probe_payload(media, kind, duration), media_path=media
+                )
+                with patch.object(manager, "_probe_media_metadata", return_value=metadata):
+                    result = manager._validate_media_file(
+                        None, Path("/unused/ffmpeg"), media,
+                        label=f"{kind} P1", required_streams={kind},
+                        log_path=self.log_path,
+                        diagnostic_context={"expected_duration": 247},
+                    )
+                self.assertEqual(result["duration_seconds"], duration)
+
+    def test_truncated_video_is_rejected_without_page_duration_comparison(self):
+        video = self._native_media_fixtures()["video"]
+        truncated = video.with_name("truncated.mp4")
+        truncated.write_bytes(video.read_bytes()[:-32])
+        manager = CacheManager.__new__(CacheManager)
+        with self.assertRaisesRegex(DownloadCommandError, "invalid_media"):
+            manager._validate_media_file(
+                None, Path("/unused/ffmpeg"), truncated,
+                label="视频轨 P1", required_streams={"video"},
+                log_path=self.log_path,
+                diagnostic_context={"expected_duration": 247},
+            )
 
     def test_downkyi_unsupported_container_requires_ffprobe(self):
         media = self.cache_dir / "song" / "audio.flac"

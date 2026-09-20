@@ -4416,13 +4416,6 @@ class CacheManager:
                     expected_duration = (
                         self._duration_for_page(item, page) if stream_kind == "video" else None
                     )
-                    if expected_duration:
-                        tolerance = self._duration_tolerance(expected_duration)
-                        if duration + tolerance < expected_duration:
-                            raise DownloadCommandError(
-                                f"{stage_label}: duration {duration:.1f}s is shorter than "
-                                f"expected {expected_duration:.1f}s"
-                            )
                     metadata = {
                         **dict(output),
                         "label": str(track.get("label") or stage_label),
@@ -6442,13 +6435,9 @@ class CacheManager:
             raise DownloadCommandError(f"缓存校验失败: {label} 未报告有效时长")
         if duration is not None and duration < 1.0:
             raise DownloadCommandError(f"缓存校验失败: {label} 时长异常，实际 {duration:.2f} 秒")
-        if expected_duration is not None and expected_duration > 0 and duration is not None:
-            tolerance = self._duration_tolerance(expected_duration)
-            if duration + tolerance < expected_duration:
-                raise DownloadCommandError(
-                    f"缓存校验失败: {label} 时长异常，预期约 {expected_duration:.0f} 秒，"
-                    f"实际 {duration:.0f} 秒"
-                )
+        # A page's duration can follow its longer audio track. The Rust media
+        # inspection above validates the file itself; page metadata is only
+        # diagnostic context, not evidence that this track was truncated.
         if "source_audio_duration" in context:
             source_audio_duration = self._optional_probe_float(context.get("source_audio_duration"))
             if (
@@ -6732,10 +6721,6 @@ class CacheManager:
             if duration is not None and duration > 0:
                 return duration
         return None
-
-    @staticmethod
-    def _duration_tolerance(expected_duration: float) -> float:
-        return max(3.0, expected_duration * 0.02)
 
     @staticmethod
     def _discard_invalid_media(media_path: Path) -> None:
