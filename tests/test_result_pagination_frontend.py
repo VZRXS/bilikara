@@ -59,19 +59,19 @@ const calls = [];
 const pages = new Pages();
 const input = initial({load: async range => {
   calls.push(range);
-  return {items: items(range.offset, 4), offset: range.offset,
-    matched_count: 612, has_more: true, next_offset: range.offset + 4};
+  return {items: items(range.offset, 6), offset: range.offset,
+    matched_count: 612, has_more: true, next_offset: range.offset + 6};
 }});
 pages.update(input);
-assert.equal(pages.pageCount, 153);
-await pages.goTo(126);
-assert.deepEqual(calls, [{offset: 500, limit: 4}]);
-assert.equal(pages.items[0].id, 500);
+assert.equal(pages.pageCount, 102);
+await pages.goTo(84);
+assert.deepEqual(calls, [{offset: 498, limit: 6}]);
+assert.equal(pages.items[0].id, 498);
 pages.update(input); // An unrelated SSE render preserves the visible page.
-assert.equal(pages.page, 126);
+assert.equal(pages.page, 84);
 await pages.goTo(2);
-assert.equal(pages.items[0].id, 4);
-await pages.goTo(126);
+assert.equal(pages.items[0].id, 6);
+await pages.goTo(84);
 assert.equal(calls.length, 1);
 """)
 
@@ -80,18 +80,18 @@ assert.equal(calls.length, 1);
 let reject, calls = 0;
 const pages = new Pages();
 pages.update(initial({load: () => { calls++; return new Promise((_, fail) => {reject = fail}); }}));
-const pending = pages.goTo(26);
+const pending = pages.goTo(17);
 assert.equal(pages.loading, true);
 assert.equal(pages.page, 1);
-assert.equal(await pages.goTo(27), false);
+assert.equal(await pages.goTo(18), false);
 assert.equal(calls, 1);
 reject(new Error('offline'));
 await assert.rejects(pending, /offline/);
 assert.equal(pages.loading, false);
 assert.equal(pages.page, 1);
 assert.equal(pages.items[0].id, 0);
-pages.load = async () => ({items: items(100, 4), matched_count: 612, has_more: true, next_offset: 104});
-assert.equal(await pages.goTo(26), true);
+pages.load = async () => ({items: items(96, 6), matched_count: 612, has_more: true, next_offset: 102});
+assert.equal(await pages.goTo(17), true);
 """)
 
     def test_replaced_source_ignores_both_late_success_and_failure(self):
@@ -100,10 +100,10 @@ for (const fail of [false, true]) {
   let resolve, reject;
   const pages = new Pages();
   pages.update(initial({load: () => new Promise((yes, no) => { resolve = yes; reject = no; })}));
-  const pending = pages.goTo(26);
+  const pending = pages.goTo(17);
   pages.update(initial({key: 'other', items: items(800, 20), total: 20, hasMore: false}));
   if (fail) reject(new Error('old request failed'));
-  else resolve({items: items(100, 4), has_more: false});
+  else resolve({items: items(96, 6), has_more: false});
   assert.equal(await pending, false);
   assert.equal(pages.page, 1);
   assert.equal(pages.items[0].id, 800);
@@ -115,28 +115,28 @@ for (const fail of [false, true]) {
         self.run_case("""
 let requested;
 const pages = new Pages();
-pages.update(initial({items: items(0, 450), total: null, load: async range => {
+pages.update(initial({items: items(0, 100), total: null, load: async range => {
   requested = range;
-  return {items: items(range.offset, 4), offset: range.offset,
-    next_offset: range.offset + 4, has_more: true};
+  return {items: items(range.offset, 6), offset: range.offset,
+    next_offset: range.offset + 6, has_more: true};
 }}));
-await pages.goTo(113);
-assert.deepEqual(requested, {offset: 448, limit: 4});
-assert.deepEqual(pages.items.map(item => item.id), items(448, 4).map(item => item.id));
+await pages.goTo(17);
+assert.deepEqual(requested, {offset: 96, limit: 6});
+assert.deepEqual(pages.items.map(item => item.id), items(96, 6).map(item => item.id));
 assert.equal(pages.pageCount, null);
 """)
 
     def test_limited_results_remain_browsable_after_page_cache_eviction(self):
         self.run_case("""
 const pages = new Pages();
-pages.update(initial({items: items(0, 450), total: 450, hasMore: false, limited: true}));
-for (let page = 1; page <= 113; page++) await pages.goTo(page);
+pages.update(initial({items: items(0, 452), total: 452, hasMore: false, limited: true}));
+for (let page = 1; page <= 76; page++) await pages.goTo(page);
 assert.equal(pages.items.length, 2);
 assert.equal(pages.canNext, false);
 assert.ok(pages.cache.size <= 12);
 await pages.goTo(2);
-assert.equal(pages.items[0].id, 4);
-await assert.rejects(pages.goTo(114), RangeError);
+assert.equal(pages.items[0].id, 6);
+await assert.rejects(pages.goTo(77), RangeError);
 for (const page of [0, -1, 2.5, NaN, Infinity]) await assert.rejects(pages.goTo(page), RangeError);
 """)
 
@@ -146,19 +146,19 @@ const pages = new Pages();
 pages.update(initial({total: null}));
 for (const response of [
   {items: []}, {items: 'invalid'},
-  {items: items(100, 4), offset: 0},
-  {items: items(100, 4), has_more: true, next_offset: 100},
+  {items: items(96, 6), offset: 0},
+  {items: items(96, 6), has_more: true, next_offset: 96},
 ]) {
   pages.load = async () => response;
-  await assert.rejects(pages.goTo(26));
+  await assert.rejects(pages.goTo(17));
   assert.equal(pages.page, 1);
   assert.equal(pages.items[0].id, 0);
   assert.equal(pages.loading, false);
 }
-pages.load = async () => ({items: items(100, 3), offset: 100, has_more: false});
-await pages.goTo(26);
-assert.equal(pages.total, 103);
-assert.equal(pages.pageCount, 26);
+pages.load = async () => ({items: items(96, 3), offset: 96, has_more: false});
+await pages.goTo(17);
+assert.equal(pages.total, 99);
+assert.equal(pages.pageCount, 17);
 assert.equal(pages.canNext, false);
 await pages.goTo(1);
 assert.equal(pages.canNext, true);
@@ -193,25 +193,25 @@ assert.deepEqual(dotWindow(maximumPage, null), [maximumPage-2, maximumPage-1, ma
         self.run_case("""
 const calls = [];
 const pages = new Pages();
-pages.update(initial({items: items(0,12), total: null, readAhead: 2, load: async range => {
+pages.update(initial({items: items(0,18), total: null, readAhead: 2, load: async range => {
   calls.push(range);
-  return {items: items(range.offset,12), offset: range.offset,
-    has_more:true,next_offset:range.offset+12};
+  return {items: items(range.offset,18), offset: range.offset,
+    has_more:true,next_offset:range.offset+18};
 }}));
 await pages.goTo(2);
 await pages.goTo(3);
 assert.equal(calls.length, 0);
 await pages.goTo(4);
-assert.deepEqual(calls, [{offset:12, limit:12}]);
-assert.equal(pages.items.length,4);
+assert.deepEqual(calls, [{offset:18, limit:18}]);
+assert.equal(pages.items.length,6);
 await pages.goTo(5);
 await pages.goTo(6);
 assert.equal(calls.length,1);
-await pages.goTo(126);
-assert.deepEqual(calls[1], {offset:500,limit:12});
-await pages.goTo(128);
+await pages.goTo(84);
+assert.deepEqual(calls[1], {offset:498,limit:18});
+await pages.goTo(86);
 assert.equal(calls.length,2);
-assert.equal(pages.items[0].id,508);
+assert.equal(pages.items[0].id,510);
 await assert.rejects(pages.goTo(maximumPage+1), RangeError);
 """)
 
@@ -219,13 +219,13 @@ await assert.rejects(pages.goTo(maximumPage+1), RangeError);
         self.run_case("""
 let calls = 0;
 const pages = new Pages();
-pages.update(initial({items: items(0,12), total: null, readAhead: 2, load: async range => {
+pages.update(initial({items: items(0,18), total: null, readAhead: 2, load: async range => {
   calls++;
-  assert.deepEqual(range, {offset:12,limit:12});
-  return {items:items(12,6),offset:12,has_more:false,next_offset:18};
+  assert.deepEqual(range, {offset:18,limit:18});
+  return {items:items(18,8),offset:18,has_more:false,next_offset:26};
 }}));
 await pages.goTo(4);
-assert.equal(pages.total,18);
+assert.equal(pages.total,26);
 assert.equal(pages.pageCount,5);
 await pages.goTo(5);
 assert.equal(pages.items.length,2);
@@ -254,7 +254,7 @@ const mode = {letter: 'A', tag: 'Artist', locale: 'ja', query: 'song', seq: 2,
   data: {has_more: true}, loading: false};
 const d1BrowseModeState = () => mode;
 eval(script.slice(begin, end));
-const range = {offset: 500, limit: 4};
+const range = {offset: 498, limit: 6};
 const uploader = remoteResultPaginationOptions('uids', items(0, 100), '');
 assert.deepEqual(uploader.load(range), ['42', 'song', range]);
 assert.equal(uploader.total, 612);

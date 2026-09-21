@@ -101,6 +101,44 @@ async function capture(page, path, fullPage = false) {
   if (path) await page.screenshot({ path, fullPage });
 }
 
+async function expandBrowseSearch(page, inputSelector) {
+  const input = page.locator(inputSelector);
+  const bar = input.locator("xpath=ancestor::div[contains(@class, 'browse-search-bar')]");
+  assert(!await input.isVisible(), `${inputSelector}: secondary search must start collapsed`);
+  const before = await bar.boundingBox();
+  const beforeForm = await bar.locator('form').boundingBox();
+  await bar.locator('button[type="submit"]').click();
+  assert(await input.isVisible(), `${inputSelector}: search did not expand`);
+  assert(await input.evaluate(el => el === document.activeElement), `${inputSelector}: expanded input did not receive focus`);
+  await page.waitForFunction(selector => {
+    const form = document.querySelector(selector).closest('form');
+    return Math.abs(form.getBoundingClientRect().width - form.parentElement.clientWidth + 52) < 1;
+  }, inputSelector);
+  const after = await bar.boundingBox();
+  assert(Math.abs(before.height - after.height) < 1, `${inputSelector}: expanding search added a row`, { before, after });
+  const afterForm = await bar.locator('form').boundingBox();
+  assert(afterForm.x < beforeForm.x && Math.abs(afterForm.x + afterForm.width - beforeForm.x - beforeForm.width) < 1,
+    `${inputSelector}: search did not expand left from its fixed right edge`, { beforeForm, afterForm });
+  const cancel = bar.locator('.browse-search-cancel');
+  const beforeHover = await cancel.boundingBox();
+  await cancel.hover();
+  const afterHover = await cancel.boundingBox();
+  assert(Math.abs(beforeHover.y - afterHover.y) < 1,
+    `${inputSelector}: hovering Cancel moved its hit target`, { beforeHover, afterHover });
+  return input;
+}
+
+async function cancelBrowseSearch(page, ownerSelector) {
+  const bar = page.locator(`${ownerSelector} .browse-search-bar`);
+  await bar.locator('.browse-search-cancel').click();
+  await page.waitForFunction(selector => document.querySelector(
+    `${selector} .browse-search-form`,
+  )?.getAttribute('aria-busy') === 'false', ownerSelector);
+  await bar.locator('input').waitFor({ state: 'hidden' });
+  assert(!await bar.locator('input').isVisible(), `${ownerSelector}: cleared search did not collapse`);
+  assert(await bar.locator('input').inputValue() === '', `${ownerSelector}: cancelled filter remained in the input`);
+}
+
 function workspaceRouteState() {
   return {
     snapshot: null,
@@ -454,6 +492,7 @@ async function requestWorkspaceMetrics(page) {
       formControls: {
         field: visualStyle(visibleDescendant("input, textarea, select")),
         primaryButton: visualStyle(visibleDescendant("form .primary-button")),
+        inlineFrame: visualStyle(visibleDescendant("input, textarea, select")?.closest(".browse-search-form")),
       },
       quickActions: quickActionRow ? {
         row: rect(quickActionRow),
@@ -851,7 +890,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#lark-search-query").fill("workspace-results");
     await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
     await sharedResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.searchSharedResults = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchSharedResults, "375 Search / Shared results", { requireNoRailOverflow: true });
@@ -874,7 +913,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     await page.locator("#search-query").fill("workspace-local");
     await page.locator("#search-form").evaluate((form) => form.requestSubmit());
     await localResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#search-results .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.searchLocal = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchLocal, "375 Search / Local", { requireNoRailOverflow: true });
@@ -973,19 +1012,19 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     ));
     await page.locator("#remote-discover-categories-panel .category-browser-card").first().click();
     await categoryResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 6);
     const categorySearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/category-browse" && url.searchParams.get("q") === "workspace-category";
     });
-    await page.locator("#remote-discover-categories-panel [data-category-browse-query]").fill("workspace-category");
-    await page.locator("#remote-discover-categories-panel [data-category-browse-search]")
-      .evaluate((form) => form.requestSubmit());
+    await (await expandBrowseSearch(page, "#remote-discover-categories-panel [data-category-browse-query]")).fill("workspace-category");
+    await page.locator("#remote-discover-categories-panel [data-category-browse-submit]").click();
     await categorySearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-categories-panel .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.categoriesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.categoriesDetail, "375 Discover / Categories detail", { requireNoRailOverflow: true });
+    await cancelBrowseSearch(page, "#remote-discover-categories-panel");
     const categoryBackGeometry = await page.evaluate(() => {
       const rail = document.querySelector("#remote-discover-categories-panel [data-category-browser-tabs]");
       const back = rail?.querySelector("[data-category-browse-back]");
@@ -1036,22 +1075,23 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-name-panel [data-tag]").first().click();
     await nameItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 6);
     const nameSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
         && url.searchParams.get("kind") === "name"
         && url.searchParams.get("q") === "workspace-name";
     });
-    await page.locator("#remote-discover-name-panel [data-d1-browse-query]").fill("workspace-name");
-    await page.locator("#remote-discover-name-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
+    await (await expandBrowseSearch(page, "#remote-discover-name-panel [data-d1-browse-query]")).fill("workspace-name");
+    await page.locator("#remote-discover-name-panel [data-d1-browse-submit]").click();
     await nameSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-name-panel .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.name = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.name, "375 Discover / Name", { requireNoRailOverflow: true });
     await capture(page, paths.name);
     await requestFirstResult(page, "#remote-discover-name-panel", routeState, "Name");
+    await cancelBrowseSearch(page, "#remote-discover-name-panel");
     const nameBackResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
@@ -1076,17 +1116,17 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#remote-discover-artist-panel [data-tag]").first().click();
     await artistItemsResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 6);
     const artistSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/d1/browse"
         && url.searchParams.get("kind") === "artist"
         && url.searchParams.get("q") === "workspace-artist";
     });
-    await page.locator("#remote-discover-artist-panel [data-d1-browse-query]").fill("workspace-artist");
-    await page.locator("#remote-discover-artist-panel [data-d1-browse-search]").evaluate((form) => form.requestSubmit());
+    await (await expandBrowseSearch(page, "#remote-discover-artist-panel [data-d1-browse-query]")).fill("workspace-artist");
+    await page.locator("#remote-discover-artist-panel [data-d1-browse-submit]").click();
     await artistSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#remote-discover-artist-panel .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.artist = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.artist, "375 Discover / Artist", { requireNoRailOverflow: true });
@@ -1129,15 +1169,15 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#sources-follow-grid [data-uid]").click();
     await uploaderDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 6);
     const uploaderSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/browse" && url.searchParams.get("q") === "workspace-uploader";
     });
-    await page.locator("#sources-follow-search-query").fill("workspace-uploader");
-    await page.locator("#sources-follow-search-form").evaluate((form) => form.requestSubmit());
+    await (await expandBrowseSearch(page, "#sources-follow-search-query")).fill("workspace-uploader");
+    await page.locator("#sources-follow-search-button").click();
     await uploaderSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#sources-follow-results .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.uploaderDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.uploaderDetail, "375 Sources / selected uploader", { requireNoRailOverflow: true });
@@ -1163,6 +1203,7 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         .map((row) => ({ owner: row.dataset.requestResultOwner, key: row.dataset.requestResultKey })),
     }));
     assert(restoredFocus.owner === "uids", "Detached uploader detail opener did not recover focus in its owner", restoredFocus);
+    await cancelBrowseSearch(page, "#sources-follow-items-view");
     await page.locator("#sources-follow-back").click();
     await page.waitForFunction(() => !document.querySelector("#sources-follow-list-view")?.classList.contains("hidden"));
 
@@ -1183,20 +1224,29 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     });
     await page.locator("#favlist-grid [data-folder-id]").click();
     await favoritesDetailResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 6);
     const favoriteSearchResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/api/gatcha/favlist/browse" && url.searchParams.get("q") === "workspace-favorites";
     });
-    await page.locator("#favlist-search-query").fill("workspace-favorites");
-    await page.locator("#favlist-search-form").evaluate((form) => form.requestSubmit());
+    await (await expandBrowseSearch(page, "#favlist-search-query")).fill("workspace-favorites");
+    await page.locator("#favlist-search-button").click();
     await favoriteSearchResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll("#favlist-song-results .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.favoritesDetail = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.favoritesDetail, "375 Sources / selected folder", { requireNoRailOverflow: true });
     await capture(page, paths.favoritesDetail);
     await requestFirstResult(page, "#favlist-song-results", routeState, "Favorites");
+    await cancelBrowseSearch(page, "#favlist-items-view");
+    const favoriteRequestsBeforeDraft = routeState.favoriteRequests.length;
+    const draftInput = await expandBrowseSearch(page, "#favlist-search-query");
+    await draftInput.fill("unsubmitted draft");
+    await draftInput.press("Escape");
+    await draftInput.waitFor({ state: "hidden" });
+    assert(routeState.favoriteRequests.length === favoriteRequestsBeforeDraft,
+      "Cancelling an unsubmitted search draft issued a provider request", routeState.favoriteRequests);
+    assert(!await draftInput.isVisible(), "Escape did not collapse the draft search");
     await page.locator("#favlist-browse-back").click();
     await page.waitForFunction(() => !document.querySelector("#favlist-list-view")?.classList.contains("hidden"));
 
@@ -1217,8 +1267,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
         && retainedNodes.quickValue === "BV1PRESERVEDQUICK"
         && retainedNodes.sharedValue === "workspace-results"
         && retainedNodes.localValue === "workspace-local"
-        && retainedNodes.sharedRows === 4
-        && retainedNodes.localRows === 4,
+        && retainedNodes.sharedRows === 6
+        && retainedNodes.localRows === 6,
       "Switching views remounted or cleared Quick/Search owners",
       retainedNodes,
     );
@@ -1288,14 +1338,21 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     ];
     assert(
       formControlStates.every(({ formControls }) => (
-        formControls.field?.height === "48px"
+        formControls.inlineFrame
+          ? formControls.inlineFrame.height === "44px"
+            && formControls.inlineFrame.borderRadius === "24px"
+            && formControls.field?.height === "44px"
+            && formControls.field?.fontSize === "16px"
+            && formControls.primaryButton?.height === "44px"
+            && formControls.primaryButton?.borderRadius === "50%"
+          : formControls.field?.height === "48px"
           && formControls.field?.fontSize === "16px"
           && formControls.field?.borderRadius === "16px"
           && formControls.primaryButton?.height === "48px"
           && formControls.primaryButton?.fontSize === "16px"
           && formControls.primaryButton?.borderRadius === "16px"
       )),
-      "Request form controls do not share 48px / 16px / 16px geometry",
+      "Primary forms must retain 48px fields; inline browse search must use a 44px capsule with 16px input text",
       formControlStates.map(({ activePanelId, formControls }) => ({ activePanelId, formControls })),
     );
     assert(
@@ -1431,8 +1488,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       states.categoriesDetail, states.name, states.artist, states.uploaderDetail, states.favoritesDetail];
     assert(browseCapacityStates.every(entry => entry.browse
       && entry.browse.scrollHeight <= entry.browse.clientHeight + 1
-      && entry.browse.itemCount > 0 && entry.browse.itemCount <= 4),
-    "Paged result grids must contain at most four reachable cards without inner scrolling",
+      && entry.browse.itemCount > 0 && entry.browse.itemCount <= 6),
+    "Paged result grids must contain at most six reachable cards without inner scrolling",
     browseCapacityStates.map(entry => entry.browse));
     assert(
       [...browseStates, ...deepBrowseStates]

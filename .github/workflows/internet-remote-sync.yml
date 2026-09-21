@@ -8,6 +8,7 @@ on:
     paths:
       - scripts/sync_internet_remote_assets.ps1
       - static/accent-palette.css
+      - static/browse-search.js
       - static/export-download.js
       - static/export-guard.js
       - static/i18n.json
@@ -21,6 +22,10 @@ on:
       - static/remote.css
       - static/remote.html
       - static/remote.js
+      - static/result-pagination.css
+      - static/result-pagination.js
+      - static/search-result-media.css
+      - static/search-result-media.js
       - static/song-detail.css
       - static/song-detail.js
       - static/status-indicators.css
@@ -67,6 +72,7 @@ jobs:
 
       - name: Check browser scripts
         run: |
+          node --check static/browse-search.js
           node --check static/export-guard.js
           node --check static/export-download.js
           node --check static/internet-remote-host.js
@@ -75,6 +81,8 @@ jobs:
           node --check static/qrcode-generator.js
           node --check static/remote.js
           node --check static/remote-queue.js
+          node --check static/result-pagination.js
+          node --check static/search-result-media.js
           node --check static/song-detail.js
 
       - name: Note optional deployment configuration

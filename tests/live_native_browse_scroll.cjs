@@ -91,7 +91,7 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       assert.equal(await remote.evaluate(count),initial);
       const pager=remote.locator(selector).locator("xpath=following-sibling::nav[contains(@class, 'result-pager')]");
       const input=pager.locator("[data-page-input]");
-      assert.equal(await remote.locator(`${selector} .search-result-item`).count(),4);
+      assert.equal(await remote.locator(`${selector} .search-result-item`).count(),6);
       assert.equal(await input.isVisible(),true);
       assert.equal(await pager.evaluate(el=>getComputedStyle(el).borderTopWidth),"0px");
       if (name === "remoteUp") {
@@ -115,7 +115,7 @@ const [exe, directory, executablePath] = process.argv.slice(2);
         }
         await touch.detach();
       }
-      for(const page of [26,27,56]) {
+      for(const page of [17,18,37]) {
         await input.fill(String(page));
         await pager.focus();
         assert.equal(await input.inputValue(), String(page), "focus changes must preserve the entered page");
@@ -125,19 +125,19 @@ const [exe, directory, executablePath] = process.argv.slice(2);
           return grid.getAttribute("aria-busy")==="false"
             && grid.nextElementSibling.querySelector("input").value===String(page);
         },{selector,page});
-        assert.equal(await remote.locator(`${selector} .search-result-item`).count(),page===56?1:4);
-        assert.ok((await remote.locator(selector).textContent()).includes(`Offline song ${(page-1)*4}`));
+        assert.equal(await remote.locator(`${selector} .search-result-item`).count(),page===37?5:6);
+        assert.ok((await remote.locator(selector).textContent()).includes(`Offline song ${(page-1)*6}`));
       }
       await pager.focus();
       await pager.press("ArrowRight");
-      assert.equal(await pager.getAttribute("data-page"),"56");
+      assert.equal(await pager.getAttribute("data-page"),"37");
       // Scrolling a terminal page cannot issue an extra load.
       const before=requests.length;
       await wheelToEnd(remote,selector);
       await remote.waitForTimeout(200);
       assert.equal(requests.length,before);
       assert.equal(await remote.locator(selector).evaluate(el=>getComputedStyle(el).overflowY),"visible");
-      measurements[name]={page:56,visibleItems:1,initialItems:await remote.evaluate(count)};
+      measurements[name]={page:37,visibleItems:5,initialItems:await remote.evaluate(count)};
     });
     await remote.locator("#remote-request-sources-tab").click();
     await remote.locator('#sources-follow-grid [data-uid="123"]').click();
@@ -152,8 +152,8 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await primary();
     await remote.locator("#remote-request-discover-tab").click();
     await remote.locator("[data-category-browser-grid] [data-category-id]").first().click();
-    await remote.waitForFunction(()=>state.categoryBrowseItems?.length===12);
-    await pageAll("remoteCategories","[data-category-browse-results]",()=>state.categoryBrowseItems.length,12);
+    await remote.waitForFunction(()=>state.categoryBrowseItems?.length===18);
+    await pageAll("remoteCategories","[data-category-browse-results]",()=>state.categoryBrowseItems.length,18);
     for(const kind of ["name","artist"]) {
       await primary();
       await remote.locator("#remote-request-discover-tab").click();
@@ -161,9 +161,9 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       const panel=remote.locator(`#remote-discover-${kind}-panel`);
       await panel.locator('[data-letter="A"]').click();
       await panel.locator('[data-tag="Offline tag"]').click();
-      await remote.waitForFunction(kind=>state.d1BrowseModes[kind]?.data?.items?.length===12,kind);
+      await remote.waitForFunction(kind=>state.d1BrowseModes[kind]?.data?.items?.length===18,kind);
       const count=kind==="name" ? ()=>state.d1BrowseModes.name.data.items.length : ()=>state.d1BrowseModes.artist.data.items.length;
-      await pageAll(`remote${kind}`,`#remote-discover-${kind}-panel [data-d1-browse-results]`,count,12);
+      await pageAll(`remote${kind}`,`#remote-discover-${kind}-panel [data-d1-browse-results]`,count,18);
     }
     await remote.screenshot({path:path.join(directory,"remote-browse.png")});
     console.log(JSON.stringify({measurements,requests,failures,onlineD1Requests:0}));

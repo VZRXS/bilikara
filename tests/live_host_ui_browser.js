@@ -5834,32 +5834,34 @@ async function run() {
     );
     const requestRatingEvidence = await results.locator(".search-result-item").first().evaluate((card) => {
       const cover = card.querySelector(".search-result-cover");
-      const rating = card.querySelector(".search-result-rating-stars");
-      const base = card.querySelector(".search-result-rating-stars-base");
+      const rating = card.querySelector(".search-result-rating-badge");
       const fallback = card.querySelector(".search-result-cover-fallback");
       const ratingStyle = getComputedStyle(rating);
-      const baseStyle = getComputedStyle(base);
+      const coverRect = cover.getBoundingClientRect();
+      const ratingRect = rating.getBoundingClientRect();
       return {
         coverWidth: cover.getBoundingClientRect().width,
         ratingWidth: rating.getBoundingClientRect().width,
-        baseWidth: base.getBoundingClientRect().width,
-        baseText: base.textContent,
+        ratingLabel: rating.getAttribute("aria-label"),
+        ratingText: rating.textContent,
+        inBottomRow: rating.parentElement.classList.contains("search-result-cover-stats"),
+        insideCover: ratingRect.left >= coverRect.left && ratingRect.top >= coverRect.top
+          && ratingRect.right <= coverRect.right && ratingRect.bottom <= coverRect.bottom,
         ratingOverflow: ratingStyle.overflow,
         ratingTextOverflow: ratingStyle.textOverflow,
-        baseOverflow: baseStyle.overflow,
-        baseTextOverflow: baseStyle.textOverflow,
         fallbackClassed: Boolean(fallback),
       };
     });
     assert(
-      requestRatingEvidence.baseText === "★★★★★"
-        && requestRatingEvidence.baseWidth < requestRatingEvidence.coverWidth - 16
+      /^★ \d\.\d$/.test(requestRatingEvidence.ratingText)
+        && requestRatingEvidence.ratingLabel.includes("/5")
+        && requestRatingEvidence.inBottomRow
+        && requestRatingEvidence.insideCover
+        && requestRatingEvidence.ratingWidth < requestRatingEvidence.coverWidth - 16
         && requestRatingEvidence.ratingOverflow === "visible"
         && requestRatingEvidence.ratingTextOverflow !== "ellipsis"
-        && requestRatingEvidence.baseOverflow === "visible"
-        && requestRatingEvidence.baseTextOverflow !== "ellipsis"
         && requestRatingEvidence.fallbackClassed,
-      "empty-cover fallback truncation leaked into the five-star rating overlay",
+      "empty-cover fallback clipped or lost the compact accessible rating",
       requestRatingEvidence,
     );
     if (requestResultDensityScreenshotPath) {
@@ -5877,7 +5879,7 @@ async function run() {
     for (const selector of [
       ".search-result-cover",
       ".search-result-title",
-      ".search-result-status",
+      ".search-result-url",
       ".host-ui-wheel-control",
     ]) {
       await results.evaluate((element) => { element.scrollTop = 0; });

@@ -91,7 +91,8 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
           assert.ok(artwork.width > 150 && artwork.height > 80, "Cover has a usable rendered size");
           assert.ok(Math.abs(artwork.width / artwork.height - 16 / 9) < 0.05, "Cover keeps search's aspect ratio");
           assert.equal(await card.locator(".search-result-duration").isVisible(), true);
-          assert.equal(await card.locator(".search-result-status").isVisible(), true);
+          assert.equal(await card.locator(".search-result-cover-stats .search-result-plays").isVisible(), true);
+          assert.equal(await card.locator(".search-result-plays").textContent(), "1.2万");
           assert.equal(await card.locator(".search-result-duration").textContent(), "4:01");
           assert.ok((await card.textContent()).includes("Test UP"));
           assert.equal(await card.locator("script,button").count(), 0, "Text is escaped and Confirm remains the only add action");

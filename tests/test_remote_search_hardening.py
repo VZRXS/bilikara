@@ -108,7 +108,9 @@ const document = {{ createElement(tagName) {{ return new MockElement(tagName); }
 function searchResultCoverUrl(item) {{ return String(item?.cover_url || ""); }}
 function formatSearchDuration() {{ return ""; }}
 function firstSearchResultValue() {{ return ""; }}
-function createSearchResultRatingStars() {{ return null; }}
+function formatCompactCount() {{ return ""; }}
+function createSearchResultRatingBadge() {{ return null; }}
+function searchResultStatusLabel() {{ return ""; }}
 {self.cover_source}
 
 const eager = createSearchResultCover({{ bvid: "BV-EAGER", cover_url: "https://example.test/eager.jpg" }}, {{ eagerCover: true }});
@@ -140,7 +142,7 @@ console.log(JSON.stringify({{
                 "eagerReferrerPolicy": "no-referrer",
                 "eagerState": "error",
                 "eagerFallback": "search-result-cover-fallback",
-                "eagerFallbackText": "BV-EAGER",
+                "eagerFallbackText": "Bili",
                 "eagerErrorClass": True,
                 "lazyLoading": "lazy",
                 "lazyState": "loaded",

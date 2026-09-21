@@ -1,7 +1,7 @@
 /* Remote result navigation. This owns only the current read-only UI page. */
 (function (root) {
   "use strict";
-  const pageSize = 4;
+  const pageSize = 6;
   const maximumPage = Math.floor(100000 / pageSize) + 1;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 

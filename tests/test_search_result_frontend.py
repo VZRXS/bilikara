@@ -65,8 +65,6 @@ console.log(JSON.stringify({{
             "search-result-owner owner-badge-label",
             "search-result-rating-text",
         ]
-        if not remote:
-            expected_order.append("search-result-bvid")
         self.assertEqual(result["order"], expected_order)
         self.assertEqual(result["ownerChildren"], ["owner-badge", "owner-badge-name"])
 
@@ -82,10 +80,10 @@ console.log(JSON.stringify({{
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_host_places_bvid_after_rating(self):
+    def test_host_omits_bvid_from_card_metadata(self):
         self.assert_metadata_order("static/app.js", remote=False)
 
-    def test_empty_cover_ellipsis_does_not_clip_rating_stars(self):
+    def test_empty_cover_ellipsis_is_scoped_to_fallback_text(self):
         script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('fallback.className = "search-result-cover-fallback"', script)

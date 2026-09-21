@@ -6904,17 +6904,20 @@ function searchResultRatingText(item) {
   return rating == null ? t("search.ratingNone") : t("search.ratingValue", { rating: formatSearchRating(rating) });
 }
 
-function createSearchResultRatingStars(item) {
+function createSearchResultRatingBadge(item) {
   const rating = searchResultRatingValue(item);
   if (rating == null) {
     return null;
   }
-  const stars = document.createElement("span");
-  stars.className = "search-result-rating-stars";
-  stars.setAttribute("aria-label", searchResultRatingText(item));
-  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
-  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
-  return stars;
+  const badge = document.createElement("span");
+  badge.className = "search-result-rating-badge";
+  badge.setAttribute("role", "img");
+  badge.setAttribute("aria-label", searchResultRatingText(item));
+  badge.title = searchResultRatingText(item);
+  const value = document.createElement("span");
+  value.textContent = `★ ${rating.toFixed(1)}`;
+  badge.appendChild(value);
+  return badge;
 }
 
 function searchResultStatusLabel(item) {
@@ -6943,10 +6946,6 @@ function createSearchResultUrlLine(item) {
   const line = document.createElement("div");
   line.className = "search-result-url";
 
-  const bvid = document.createElement("span");
-  bvid.className = "search-result-bvid";
-  bvid.textContent = String(item?.bvid || item?.url || "");
-
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
     const owner = document.createElement("span");
@@ -6958,7 +6957,6 @@ function createSearchResultUrlLine(item) {
   rating.className = "search-result-rating-text";
   rating.textContent = searchResultRatingText(item);
   line.appendChild(rating);
-  line.appendChild(bvid);
 
   return line;
 }
@@ -7091,30 +7089,54 @@ function createSearchResultItem(item, options = {}) {
   } else {
     const fallback = document.createElement("span");
     fallback.className = "search-result-cover-fallback";
-    fallback.textContent = String(item?.bvid || "Bili");
+    fallback.textContent = "Bili";
     cover.appendChild(fallback);
     cover.classList.add("is-empty");
   }
 
+  const stats = document.createElement("div");
+  stats.className = "search-result-cover-stats";
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    plays.setAttribute("role", "img");
+    plays.setAttribute("aria-label", `${t("search.playCountLabel")} ${playCount}`);
+    plays.title = plays.getAttribute("aria-label");
+    plays.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.25" y="2.5" width="13.5" height="11" rx="2.5"/><path d="m6.5 5 4 3-4 3Z"/></svg>';
+    const value = document.createElement("span");
+    value.textContent = playCount;
+    plays.appendChild(value);
+    stats.appendChild(plays);
+  }
+  const ratingBadge = createSearchResultRatingBadge(item);
+  if (ratingBadge) stats.appendChild(ratingBadge);
   const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
   if (duration) {
     const durationNode = document.createElement("span");
     durationNode.className = "search-result-duration";
     durationNode.textContent = duration;
-    cover.appendChild(durationNode);
+    stats.appendChild(durationNode);
   }
-  const ratingStars = createSearchResultRatingStars(item);
-  if (ratingStars) {
-    cover.appendChild(ratingStars);
+  if (stats.children.length) cover.appendChild(stats);
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    status.title = statusLabel;
+    cover.appendChild(status);
   }
   if (options.showDeveloperActions !== false) {
     const developerDeleteButton = createDeveloperDeleteButton(item);
     if (developerDeleteButton) {
       cover.appendChild(developerDeleteButton);
+      cover.classList.add("has-developer-actions");
     }
     const developerResetButton = createDeveloperTagResetButton(item);
     if (developerResetButton) {
       cover.appendChild(developerResetButton);
+      cover.classList.add("has-developer-actions");
     }
   }
 
@@ -7125,28 +7147,6 @@ function createSearchResultItem(item, options = {}) {
   title.className = "search-result-title";
   title.textContent = String(item.title || "");
 
-  const statusLine = document.createElement("div");
-  statusLine.className = "search-result-status";
-  const statusLabel = searchResultStatusLabel(item);
-  if (statusLabel) {
-    const status = document.createElement("span");
-    status.className = "search-result-follow";
-    status.textContent = statusLabel;
-    statusLine.appendChild(status);
-  }
-  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
-  if (playCount) {
-    const plays = document.createElement("span");
-    plays.className = "search-result-plays";
-    const playLabel = document.createElement("span");
-    playLabel.className = "search-result-play-label";
-    playLabel.textContent = t("search.playCountLabel");
-    const playValue = document.createElement("span");
-    playValue.textContent = playCount;
-    plays.append(playLabel, playValue);
-    statusLine.appendChild(plays);
-  }
-
   const url = createSearchResultUrlLine(item);
 
   const button = document.createElement("button");
@@ -7155,11 +7155,7 @@ function createSearchResultItem(item, options = {}) {
   button.dataset.url = itemUrl;
   button.textContent = t("search.add");
 
-  body.append(title);
-  if (statusLine.children.length) {
-    body.appendChild(statusLine);
-  }
-  body.appendChild(url);
+  body.append(title, url);
   row.append(cover, body);
   if (options.showPrimaryAction !== false) {
     row.appendChild(button);

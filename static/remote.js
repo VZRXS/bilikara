@@ -20,7 +20,7 @@ const stateFallbackRefreshMs = 1000;
 const nativeEventStreamDeadlineMs = 12000;
 const remoteConnectionOfflineGraceMs = 3000;
 const expandedSearchEagerCoverCount = 6;
-const d1BrowseItemLimit = 12; // Four visible cards plus at most two pages ahead.
+const d1BrowseItemLimit = 18; // Six visible cards plus at most two pages ahead.
 const d1BrowseTagLimit = 450;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const browsePageSize = 100;
@@ -3793,17 +3793,20 @@ function searchResultRatingText(item) {
   return rating == null ? t("search.ratingNone") : t("search.ratingValue", { rating: formatSearchRating(rating) });
 }
 
-function createSearchResultRatingStars(item) {
+function createSearchResultRatingBadge(item) {
   const rating = searchResultRatingValue(item);
   if (rating == null) {
     return null;
   }
-  const stars = document.createElement("span");
-  stars.className = "search-result-rating-stars";
-  stars.setAttribute("aria-label", searchResultRatingText(item));
-  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
-  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
-  return stars;
+  const badge = document.createElement("span");
+  badge.className = "search-result-rating-badge";
+  badge.setAttribute("role", "img");
+  badge.setAttribute("aria-label", searchResultRatingText(item));
+  badge.title = searchResultRatingText(item);
+  const value = document.createElement("span");
+  value.textContent = `★ ${rating.toFixed(1)}`;
+  badge.appendChild(value);
+  return badge;
 }
 
 function searchResultStatusLabel(item) {
@@ -3889,10 +3892,10 @@ function setSourceManagementLoadingMessage(target, message) {
   setSourceManagementInlineMessage(target, message);
 }
 
-function appendSearchResultCoverFallback(cover, item, stateName) {
+function appendSearchResultCoverFallback(cover, stateName) {
   const fallback = document.createElement("span");
   fallback.className = "search-result-cover-fallback";
-  fallback.textContent = String(item?.bvid || "Bili");
+  fallback.textContent = "Bili";
   cover.appendChild(fallback);
   cover.classList.add("is-empty");
   cover.classList.toggle("is-error", stateName === "error");
@@ -3918,24 +3921,46 @@ function createSearchResultCover(item, { eagerCover = false } = {}) {
         return;
       }
       image.remove();
-      appendSearchResultCoverFallback(cover, item, "error");
+      appendSearchResultCoverFallback(cover, "error");
     };
     cover.appendChild(image);
     image.src = coverUrl;
   } else {
-    appendSearchResultCoverFallback(cover, item, "missing");
+    appendSearchResultCoverFallback(cover, "missing");
   }
 
+  const stats = document.createElement("div");
+  stats.className = "search-result-cover-stats";
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    plays.setAttribute("role", "img");
+    plays.setAttribute("aria-label", `${t("search.playCountLabel")} ${playCount}`);
+    plays.title = plays.getAttribute("aria-label");
+    plays.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.25" y="2.5" width="13.5" height="11" rx="2.5"/><path d="m6.5 5 4 3-4 3Z"/></svg>';
+    const value = document.createElement("span");
+    value.textContent = playCount;
+    plays.appendChild(value);
+    stats.appendChild(plays);
+  }
+  const ratingBadge = createSearchResultRatingBadge(item);
+  if (ratingBadge) stats.appendChild(ratingBadge);
   const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
   if (duration) {
     const durationNode = document.createElement("span");
     durationNode.className = "search-result-duration";
     durationNode.textContent = duration;
-    cover.appendChild(durationNode);
+    stats.appendChild(durationNode);
   }
-  const ratingStars = createSearchResultRatingStars(item);
-  if (ratingStars) {
-    cover.appendChild(ratingStars);
+  if (stats.children.length) cover.appendChild(stats);
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    status.title = statusLabel;
+    cover.appendChild(status);
   }
   return cover;
 }
@@ -3957,28 +3982,6 @@ function createSearchResultRow(item, { eagerCover = false } = {}) {
   title.className = "search-result-title";
   title.textContent = String(item?.title || "");
 
-  const statusLine = document.createElement("div");
-  statusLine.className = "search-result-status";
-  const statusLabel = searchResultStatusLabel(item);
-  if (statusLabel) {
-    const status = document.createElement("span");
-    status.className = "search-result-follow";
-    status.textContent = statusLabel;
-    statusLine.appendChild(status);
-  }
-  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
-  if (playCount) {
-    const plays = document.createElement("span");
-    plays.className = "search-result-plays";
-    const playLabel = document.createElement("span");
-    playLabel.className = "search-result-play-label";
-    playLabel.textContent = t("search.playCountLabel");
-    const playValue = document.createElement("span");
-    playValue.textContent = playCount;
-    plays.append(playLabel, playValue);
-    statusLine.appendChild(plays);
-  }
-
   const url = createSearchResultUrlLine(item);
 
   const button = document.createElement("button");
@@ -3987,11 +3990,7 @@ function createSearchResultRow(item, { eagerCover = false } = {}) {
   button.dataset.url = itemUrl;
   button.textContent = t("search.detail");
 
-  meta.append(title);
-  if (statusLine.children.length) {
-    meta.appendChild(statusLine);
-  }
-  meta.appendChild(url);
+  meta.append(title, url);
   row.append(cover, meta, button);
   return row;
 }
@@ -4443,6 +4442,12 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     message.textContent = mode.loading ? t("search.browseLoading") : text;
     message.classList.remove("is-error");
   }
+  window.BilikaraBrowseSearch?.sync(view.querySelector("[data-d1-browse-search]"),
+    view.querySelector(".tag-browser-nav"), {
+      key: JSON.stringify([normalizedKind, mode.letter, mode.tag, mode.locale]),
+      title: mode.tag || [title, mode.letter].filter(Boolean).join(" / "),
+      query: mode.query, loading: mode.loading, translate: t,
+    });
   syncRemoteRequestPanelSizeTier();
 }
 
@@ -4581,6 +4586,7 @@ function renderCategoryBrowseView() {
   }
   if (!selected) {
     hideRemoteResultPager(results);
+    window.BilikaraBrowseSearch?.reset(view.querySelector("[data-category-browse-search]"));
     syncRemoteRequestPanelSizeTier();
     return;
   }
@@ -4620,6 +4626,10 @@ function renderCategoryBrowseView() {
     message.textContent = text;
     message.classList.remove("is-error");
   }
+  window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
+    key: selected.id, title: selected.name, query: state.categoryBrowseQuery,
+    loading: state.categoryBrowseLoading, translate: t,
+  });
   syncRemoteRequestPanelSizeTier();
 }
 
@@ -4718,6 +4728,7 @@ function renderFavlistBrowse() {
 
   if (!hasSelectedFolder) {
     hideRemoteResultPager(elements.favlistSongResults);
+    window.BilikaraBrowseSearch?.reset(elements.favlistSearchForm);
     if (elements.favlistSearchButton) {
       elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
       elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
@@ -4800,6 +4811,13 @@ function renderFavlistBrowse() {
     hasMore,
     loadingText: t("favlist.loadingItems"),
   }));
+  window.BilikaraBrowseSearch?.sync(elements.favlistSearchForm,
+    elements.favlistItemsView.querySelector(".follow-browser-head"), {
+      key: state.favlistBrowseSelectedFolderId, title: elements.favlistBrowseTitle.textContent,
+      query: String(state.favlistBrowseData?.selected_folder_id || "") === state.favlistBrowseSelectedFolderId
+        ? state.favlistBrowseData.query : "",
+      loading: state.favlistBrowseLoading, translate: t,
+    });
   syncRemoteRequestPanelSizeTier();
 }
 
@@ -5136,6 +5154,7 @@ function renderSourcesFollowBrowse() {
 
   if (!hasSelectedUid) {
     hideRemoteResultPager(elements.sourcesFollowResults);
+    window.BilikaraBrowseSearch?.reset(elements.sourcesFollowSearchForm);
     elements.sourcesFollowGrid.innerHTML = "";
     if (!owners.length) {
       const empty = document.createElement("div");
@@ -5209,6 +5228,13 @@ function renderSourcesFollowBrowse() {
     hasMore,
     loadingText: t("follow.loadingItems"),
   }));
+  window.BilikaraBrowseSearch?.sync(elements.sourcesFollowSearchForm,
+    elements.sourcesFollowItemsView.querySelector(".follow-browser-head"), {
+      key: state.followBrowseSelectedUid, title: elements.sourcesFollowTitle.textContent,
+      query: String(state.followBrowseData?.selected_uid || "") === state.followBrowseSelectedUid
+        ? state.followBrowseData.query : "",
+      loading: state.followBrowseLoading, translate: t,
+    });
   syncRemoteRequestPanelSizeTier();
 }
 

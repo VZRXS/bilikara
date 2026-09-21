@@ -115,6 +115,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
     const assertCompactCards=async (selector,label) => {
       const grid=page.locator(selector);
       await grid.locator(".search-result-cover img").first().evaluate(img=>img.decode());
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
       const metrics=await grid.evaluate(el=>{
         const rect=node=>node.getBoundingClientRect().toJSON();
         return {columns:getComputedStyle(el).gridTemplateColumns.split(" ").length,
@@ -123,10 +124,12 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
             const title=card.querySelector(".search-result-title"),style=getComputedStyle(title);
             return {card:rect(card),cover:rect(card.querySelector(".search-result-cover")),
               title:rect(title),font:parseFloat(style.fontSize),line:parseFloat(style.lineHeight),
-              stars:rect(card.querySelector(".search-result-rating-stars")),
+              rating:rect(card.querySelector(".search-result-rating-badge")),
+              ratingText:card.querySelector(".search-result-rating-badge").textContent,
+              ratingRaised:card.querySelector(".search-result-cover").classList.contains("is-rating-raised"),
+              plays:rect(card.querySelector(".search-result-plays")),
               duration:rect(card.querySelector(".search-result-duration")),
-              bvidShown:getComputedStyle(card.querySelector(".search-result-bvid")).display!=="none",
-              hasOwner:!!card.querySelector(".search-result-owner")};
+              hasBvidLabel:!!card.querySelector(".search-result-bvid")};
           })};
       });
       assert.equal(metrics.columns,2,`${label}: two columns`);
@@ -135,8 +138,16 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
         assert.ok(Math.abs(card.cover.height-card.cover.width*9/16)<1,`${label}: cover must be 16:9 ${JSON.stringify(card.cover)}`);
         assert.ok(card.card.height<=card.cover.height+100,`${label}: oversized metadata ${card.card.height}`);
         assert.ok(card.font>=13 && card.font<=14 && card.title.height<=2*card.line+1,`${label}: readable two-line title`);
-        assert.ok(card.stars.right+2<=card.duration.x,`${label}: rating/duration overlap`);
-        assert.equal(card.bvidShown,!card.hasOwner,`${label}: owner gets the metadata row; BV remains the no-owner fallback`);
+        assert.match(card.ratingText,/^★ \d\.\d$/,`${label}: star with a decimal rating`);
+        if(card.ratingRaised) {
+          assert.ok(card.rating.bottom+2<=card.duration.y,`${label}: raised rating/duration overlap`);
+        } else {
+          assert.ok(card.plays.right+2<=card.rating.x && card.rating.right+2<=card.duration.x,`${label}: bottom rating overlap`);
+          assert.ok(Math.abs(card.rating.x-card.plays.right-6)<1,`${label}: rating stays next to the play count`);
+          assert.ok(Math.abs(card.rating.bottom-card.duration.bottom)<1,`${label}: aligned bottom metadata`);
+        }
+        assert.ok(card.plays.right+2<=card.duration.x,`${label}: plays/duration overlap`);
+        assert.equal(card.hasBvidLabel,false,`${label}: BV belongs in the detail sheet`);
       }
       cardMetrics.push({label,width:metrics.viewport,coverHeight:metrics.cards[0].cover.height,cardHeight:metrics.cards[0].card.height});
       await page.screenshot({path:path.join(directory,`${label}-${metrics.viewport}.png`)});
@@ -219,9 +230,10 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
     assert.equal(await page.locator("#bbdown-login-button").evaluate(el=>!!el.closest("#cache-settings")),true);
     const landscapeCard=await page.locator(".category-browser-results .search-result-item").first().evaluate(el=>({
       coverMinHeight:parseFloat(getComputedStyle(el.querySelector(".search-result-cover")).minHeight),
-      bvidShown:getComputedStyle(el.querySelector(".search-result-bvid")).display!=="none",
+      hasBvidLabel:!!el.querySelector(".search-result-bvid"),
     }));
-    assert.ok(landscapeCard.coverMinHeight>=118 && landscapeCard.bvidShown,"Landscape retains desktop card sizing and BV labels");
+    assert.ok(landscapeCard.coverMinHeight>=118,"Landscape retains desktop card sizing");
+    assert.equal(landscapeCard.hasBvidLabel,false,"Landscape also leaves BV in the detail sheet");
     await page.evaluate(()=>{window.testOrientation="portrait-primary";screen.orientation.dispatchEvent(new Event("change"));});
     await page.setViewportSize({width:360,height:780});
     await assertFit();

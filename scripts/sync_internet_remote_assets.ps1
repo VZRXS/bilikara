@@ -14,6 +14,7 @@ $destinationRoot = if ([System.IO.Path]::IsPathRooted($Destination)) {
 }
 $files = @(
     "accent-palette.css",
+    "browse-search.js",
     "export-download.js",
     "export-guard.js",
     "i18n.json",
@@ -29,6 +30,8 @@ $files = @(
     "remote.js",
     "result-pagination.css",
     "result-pagination.js",
+    "search-result-media.css",
+    "search-result-media.js",
     "song-detail.css",
     "song-detail.js",
     "status-indicators.css"

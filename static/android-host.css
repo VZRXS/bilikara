@@ -735,27 +735,12 @@ html[data-android-layout="portrait"] #host-workspace-request .search-result-titl
   min-height: 2.7em;
   max-height: 2.7em;
 }
-html[data-android-layout="portrait"] #host-workspace-request :is(.search-result-status, .search-result-url) {
+html[data-android-layout="portrait"] #host-workspace-request .search-result-url {
   gap: 4px;
   font-size: 11px;
   line-height: 1.35;
 }
 html[data-android-layout="portrait"] #host-workspace-request .search-result-owner { flex: 1; }
-/* The detail sheet retains the full BV number; don't squeeze the uploader.
-   If no uploader is available, keep BV as the card's metadata fallback. */
-html[data-android-layout="portrait"] #host-workspace-request .search-result-owner ~ .search-result-bvid { display: none; }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-plays { gap: 3px; }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-rating-stars {
-  left: 5px;
-  bottom: 5px;
-  font-size: 12px;
-}
-html[data-android-layout="portrait"] #host-workspace-request .search-result-duration {
-  right: 5px;
-  bottom: 5px;
-  padding: 2px 4px;
-  font-size: 10px;
-}
 html[data-android-layout="portrait"] .tag-browser-message { font-size: 11px; padding: 4px 8px; }
 html[data-android-layout="portrait"] .native-alpha-notice { font-size: 12px; }
 html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }
