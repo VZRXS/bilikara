@@ -254,16 +254,7 @@ fn job(
     policy: &CachePolicy,
     effective: &MediaSelection,
 ) -> Result<CacheJobSpec, ApiError> {
-    let pages=item.available_pages.iter().enumerate().filter(|(_,page)|item.selected_pages.contains(page)||**page==item.video_page).map(|(index,page)|json!({"page":page,"cid":item.available_cids.get(index),"duration_seconds":item.available_durations.get(index),"label":item.available_parts.get(index)})).collect::<Vec<_>>();
-    let mut job: CacheJobSpec = serde_json::from_value(json!({
-        "schema_version":1,"item_id":item.id,"item_incarnation_id":item.item_incarnation_id,"bvid":item.bvid,"aid":item.aid,
-        "video_page":item.video_page,"pages":pages,"cache_root":context.cache_root,"log_file":context.directory.join("logs/native-cache.log"),
-        "cookie":cookie,"user_agent":crate::native_video::USER_AGENT,"referer":"https://www.bilibili.com/","timeout_ms":15000,
-        "video_quality":effective.quality,"avc_quality_cap":effective.avc_cap,"audio_hires":policy.audio_hires,"selected_audio_variant_id":item.selected_audio_variant_id,
-        "reported_ready":item.cache_status=="ready","existing_video_relative_path":item.video_relative_path,
-        "existing_audio_variants":item.audio_variants.iter().map(|variant|json!({"id":variant.get("id"),"label":variant.get("label"),"page":variant.get("page"),"relative_path":variant.get("audio_url").and_then(Value::as_str).unwrap_or("").trim_start_matches("/media/")})).collect::<Vec<_>>()
-    })).map_err(|_|ApiError::new(500,"cache_job","歌曲缺少原生缓存所需的分 P 信息"))?;
-    job.executor = match policy.download_source.as_str() {
+    let executor = match policy.download_source.as_str() {
         "native" => crate::cache_runtime::Executor::Native,
         "bbdown" if context.desktop => {
             crate::cache_runtime::Executor::Bbdown(context.bbdown.clone().ok_or_else(|| {
@@ -282,7 +273,22 @@ fn job(
             ));
         }
     };
-    Ok(job)
+    crate::cache_runtime::orchestration::build_job(
+        item,
+        crate::cache_runtime::orchestration::JobInputs {
+            cache_root: context.cache_root.clone(),
+            log_file: context.directory.join("logs/native-cache.log"),
+            cookie: cookie.into(),
+            user_agent: crate::native_video::USER_AGENT.into(),
+            referer: "https://www.bilibili.com/".into(),
+            video_quality: effective.quality.clone(),
+            avc_quality_cap: effective.avc_cap.clone(),
+            audio_hires: policy.audio_hires,
+            executor,
+        },
+        crate::cache_runtime::orchestration::JobContract::Native,
+    )
+    .map_err(cache_error)
 }
 
 pub(super) fn retry(

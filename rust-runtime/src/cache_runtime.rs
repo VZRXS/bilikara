@@ -29,6 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "native-host")]
 pub(crate) mod bbdown;
 
+pub(crate) mod orchestration;
+
 /// Captured at Host admission. The wire/FFI always defaults to Native and cannot
 /// supply a program path or select a desktop executor.
 #[derive(Clone, Debug, Default)]
@@ -278,6 +280,7 @@ struct CacheRuntime {
     workers: Mutex<Vec<JoinHandle<()>>>,
     reserve_cache_attempt: CacheAttemptReserver,
     application: Mutex<crate::cache_application::CacheApplication>,
+    orchestration: Mutex<orchestration::Orchestration>,
 }
 
 type CacheAttemptReserver = Arc<
@@ -574,6 +577,7 @@ impl CacheRuntime {
             workers: Mutex::new(vec![primary, urgent]),
             reserve_cache_attempt,
             application: Mutex::new(Default::default()),
+            orchestration: Mutex::new(Default::default()),
         })
     }
 
@@ -587,6 +591,7 @@ impl CacheRuntime {
             workers: Mutex::new(Vec::new()),
             reserve_cache_attempt,
             application: Mutex::new(Default::default()),
+            orchestration: Mutex::new(Default::default()),
         }
     }
 
@@ -597,8 +602,22 @@ impl CacheRuntime {
         replace: bool,
     ) -> Result<CacheAttemptIdentity, CacheRuntimeError> {
         validate_job(&job)?;
-        let item_id = job.item_id.clone();
         let mut state = lock_state(&self.shared);
+        let result = Self::submit_locked(&mut state, job, priority, replace, |id, incarnation| {
+            self.reserve_attempt(id, incarnation)
+        });
+        self.shared.wake.notify_all();
+        result
+    }
+
+    fn submit_locked(
+        state: &mut RuntimeState,
+        job: CacheJobSpec,
+        priority: CacheJobPriority,
+        replace: bool,
+        mut reserve: impl FnMut(&str, &str) -> Result<CacheAttemptReservation, CacheRuntimeError>,
+    ) -> Result<CacheAttemptIdentity, CacheRuntimeError> {
+        let item_id = job.item_id.clone();
         if state.stopping {
             return Err(CacheRuntimeError::new(
                 "stopped",
@@ -670,7 +689,7 @@ impl CacheRuntime {
             })?;
         let replace_existing =
             replace || state.active.contains_key(&item_id) || state.jobs.contains_key(&item_id);
-        let reservation = self.reserve_attempt(&job.item_id, &job.item_incarnation_id)?;
+        let reservation = reserve(&job.item_id, &job.item_incarnation_id)?;
         let cache_attempt_token = reservation.cache_attempt_token;
         state.completed.remove(&item_id);
         if replace_existing {
@@ -687,7 +706,7 @@ impl CacheRuntime {
                     .to_owned(),
                 );
             }
-            remove_queued_locked(&mut state, &item_id);
+            remove_queued_locked(state, &item_id);
         }
         state.terminal_events.remove(&item_id);
         state.next_generation = next_generation;
@@ -701,16 +720,15 @@ impl CacheRuntime {
                 spec: job,
             },
         );
-        queue_locked(&mut state, &item_id, priority);
+        queue_locked(state, &item_id, priority);
         push_event_locked(
-            &mut state,
+            state,
             generation,
             cache_attempt_token,
             &item_id,
             "queued",
             json!({"priority": priority_name(priority)}),
         );
-        self.shared.wake.notify_all();
         Ok(CacheAttemptIdentity {
             generation,
             cache_attempt_token,
@@ -903,7 +921,11 @@ impl CacheRuntime {
     }
 
     fn reorder(&self, ordered_ids: &[String]) {
-        let mut state = lock_state(&self.shared);
+        Self::reorder_locked(&mut lock_state(&self.shared), ordered_ids);
+        self.shared.wake.notify_all();
+    }
+
+    fn reorder_locked(state: &mut RuntimeState, ordered_ids: &[String]) {
         let queued: HashSet<String> = state.normal_queue.drain(..).collect();
         for item_id in ordered_ids {
             if queued.contains(item_id)
@@ -920,14 +942,18 @@ impl CacheRuntime {
                 state.normal_queue.push_back(item_id);
             }
         }
-        self.shared.wake.notify_all();
     }
 
     fn cancel_item(&self, item_id: &str, reason: &str) -> bool {
         if !valid_item_id(item_id) {
             return false;
         }
-        let mut state = lock_state(&self.shared);
+        let result = Self::cancel_item_locked(&mut lock_state(&self.shared), item_id, reason);
+        self.shared.wake.notify_all();
+        result
+    }
+
+    fn cancel_item_locked(state: &mut RuntimeState, item_id: &str, reason: &str) -> bool {
         state.completed.remove(item_id);
         let mut cancelled = false;
         if let Some(active) = state.active.get(item_id) {
@@ -939,10 +965,10 @@ impl CacheRuntime {
             cancelled = true;
         }
         if let Some(job) = state.jobs.remove(item_id) {
-            remove_queued_locked(&mut state, item_id);
+            remove_queued_locked(state, item_id);
             if !state.active.contains_key(item_id) {
                 push_event_locked(
-                    &mut state,
+                    state,
                     job.generation,
                     job.cache_attempt_token,
                     item_id,
@@ -952,7 +978,6 @@ impl CacheRuntime {
             }
             cancelled = true;
         }
-        self.shared.wake.notify_all();
         cancelled
     }
 
@@ -2002,6 +2027,11 @@ where
 }
 
 fn validate_job(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
+    validate_job_fields(job)?;
+    validate_cache_root(&job.cache_root)
+}
+
+fn validate_job_fields(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
     if job.schema_version != 1 {
         return Err(CacheRuntimeError::new(
             "invalid_request",
@@ -2026,7 +2056,6 @@ fn validate_job(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
             "cache job BVID is invalid",
         ));
     }
-    validate_cache_root(&job.cache_root)?;
     if !job.log_file.is_absolute() || job.log_file.file_name().is_none() {
         return Err(CacheRuntimeError::new(
             "invalid_request",

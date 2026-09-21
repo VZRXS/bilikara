@@ -353,10 +353,6 @@ class CacheManager:
         with self.native_cache_call_lock:
             return rust_runtime.cache_runtime_request(command, **fields)
 
-    @staticmethod
-    def _cache_incarnation_mismatch(error: BaseException) -> bool:
-        return getattr(error, "kind", None) == "item_incarnation_mismatch"
-
     def _project_cache_event(
         self,
         item_id: str,
@@ -526,12 +522,9 @@ class CacheManager:
 
     def _ensure_native_cache_runtime(self) -> None:
         with self.lock:
-            if self.native_cache_started:
+            if self.native_cache_started or self.stop_event.is_set():
                 return
-        snapshot = self._native_cache_request("start")
-        with self.lock:
-            if self.native_cache_started:
-                return
+            snapshot = self._native_cache_request("start")
             self.native_cache_started = True
             self.native_cache_error = ""
             self.native_cache_snapshot = dict(snapshot)
@@ -542,23 +535,24 @@ class CacheManager:
                 daemon=True,
             )
             self.native_cache_event_worker = worker
-        worker.start()
+            worker.start()
 
     def _native_cache_event_loop(self) -> None:
         while not self.native_cache_event_stop.wait(0.1):
             try:
-                self._drain_native_cache_events()
+                if self._drain_native_cache_events():
+                    self._native_orchestration("wake")
             except Exception as exc:  # noqa: BLE001
                 with self.lock:
                     self.native_cache_error = str(exc)
                 if self.native_cache_event_stop.wait(1.0):
                     return
 
-    def _drain_native_cache_events(self) -> None:
+    def _drain_native_cache_events(self) -> bool:
         # Keep synchronous callers and the poller in delivery order too.
         with self.native_cache_observation_lock:
             if self.stop_event.is_set():
-                return
+                return False
             # Rust drains, recovers and commits the batch. This poller only delivers
             # existing persistence/observer and artifact-lifetime effects.
             result = self.store.process_runtime_cache_events(
@@ -566,13 +560,6 @@ class CacheManager:
                 max_cache_items=self.max_cache_items,
             )
             effects = result["effects"]
-            with self.lock:
-                for item_id in effects["settled_item_ids"]:
-                    if item_id not in self.python_worker_download_sources:
-                        self.pending_ids.discard(item_id)
-                        self.urgent_cache_ids.discard(item_id)
-                        if self.active_item_id == item_id:
-                            self.active_item_id = None
             self._apply_native_cache_snapshot(result["snapshot"])
             for item_id in effects["activity_item_ids"]:
                 self._record_item_activity(item_id)
@@ -582,141 +569,75 @@ class CacheManager:
                 _debug_print(f"[bilikara-cache] rejected Rust cache publication: {error['kind']}")
             with self.lock:
                 self.native_cache_error = ""
+            return bool(effects["settlements"])
 
     def _apply_native_cache_snapshot(self, snapshot: dict[str, Any]) -> None:
-        active_ids = {
-            str(item_id)
-            for item_id in snapshot.get("active_item_ids", [])
-            if str(item_id).strip()
-        }
-        pending_ids = {
-            str(item_id)
-            for item_id in snapshot.get("pending_ids", [])
-            if str(item_id).strip()
-        }
-        urgent_ids = {
-            str(item_id)
-            for item_id in snapshot.get("urgent_item_ids", [])
-            if str(item_id).strip()
-        }
-        primary_id = str(snapshot.get("primary_active_item_id") or "").strip()
+        # A read-only diagnostic/ownership view. Legacy queues below are never
+        # populated from the Native queue.
         with self.lock:
-            self.native_cache_snapshot = dict(snapshot)
-            if self.download_source == DOWNLOAD_SOURCE_NATIVE:
-                python_owned_ids = set(self.python_worker_download_sources)
-                python_active_id = (
-                    self.active_item_id
-                    if self.active_item_id in python_owned_ids
-                    else None
-                )
-                python_urgent_ids = self.urgent_cache_ids & python_owned_ids
-                self.active_item_id = python_active_id or primary_id or None
-                self.pending_ids = pending_ids | active_ids | python_owned_ids
-                self.urgent_cache_ids = urgent_ids | python_urgent_ids
-    def _mark_native_cache_failed(
-        self,
-        item_id: str,
-        message: str,
-        *,
-        cache_attempt_token: int | None = None,
-        expected_item_incarnation_id: str | None = None,
-    ) -> None:
-        if cache_attempt_token is None and (
-            not isinstance(expected_item_incarnation_id, str)
-            or not expected_item_incarnation_id
-        ):
-            raise ValueError(
-                "tokenless Native failure requires the observed item incarnation"
-            )
-        item = self.store.get_item(item_id)
-        if item is None:
-            return
-        if cache_attempt_token is None:
-            if item.item_incarnation_id != expected_item_incarnation_id:
-                return
-            try:
-                token = self._begin_cache_attempt_for_item(item)
-            except PlaylistStoreCommandError as exc:
-                if exc.kind in {"item_not_found", "item_incarnation_mismatch"}:
-                    return
-                raise
-        else:
-            token = self._require_cache_attempt_token(cache_attempt_token)
-        self._clear_item_download_progress(
-            item_id,
-            cache_attempt_token=token,
-        )
-        self._project_cache_event(
-            item_id,
-            "failed",
-            cache_attempt_token=token,
-            message=f"缓存失败: {message}",
-        )
-        self._record_item_activity(item_id)
+            if snapshot.get("last_event_sequence", 0) >= self.native_cache_snapshot.get("last_event_sequence", 0):
+                self.native_cache_snapshot = dict(snapshot)
 
-    def _native_cache_job(self, item) -> dict[str, Any]:
-        selected_pages = self._selected_pages_for_item(item)
-        video_page = (
-            int(item.video_page)
-            if int(item.video_page or 0) in selected_pages
-            else selected_pages[0]
-        )
-        pages = [
-            {
-                "page": page,
-                "cid": self._cid_for_page(item, page),
-                "duration_seconds": self._duration_for_page(item, page),
-                "label": self._part_label_for_page(item, page),
-            }
-            for page in selected_pages
-        ]
-        existing_variants: list[dict[str, Any]] = []
-        for variant in item.audio_variants:
-            if not isinstance(variant, dict):
-                continue
-            path = self._cache_path_from_media_url(variant.get("audio_url"))
-            if path is None:
-                continue
-            try:
-                relative_path = path.relative_to(CACHE_DIR).as_posix()
-            except ValueError:
-                continue
-            existing_variants.append(
-                {
-                    "id": str(variant.get("id") or ""),
-                    "label": str(variant.get("label") or ""),
-                    "page": max(1, int(variant.get("page") or 1)),
-                    "relative_path": relative_path,
-                }
-            )
+    def _native_orchestration(self, command: str = "reconcile", **fields: Any) -> dict[str, Any]:
+        if self.stop_event.is_set():
+            return {}
+        self._ensure_native_cache_runtime()
         with self.lock:
-            video_quality = self.video_quality
-            audio_hires = self.audio_hires
-            avc_quality_cap = self.avc_quality_cap if self._should_force_avc_locked() else ""
-        return {
-            "schema_version": 1,
-            "item_id": item.id,
-            "item_incarnation_id": str(item.item_incarnation_id or ""),
-            "bvid": item.bvid,
-            "aid": max(0, int(item.aid or 0)),
-            "video_page": video_page,
-            "pages": pages,
-            "cache_root": str(CACHE_DIR.resolve()),
-            "log_file": str(
-                self._item_log_path(item.id, DOWNLOAD_SOURCE_NATIVE).resolve()
-            ),
-            "cookie": effective_bilibili_cookie(),
-            "user_agent": str(BILIBILI_HEADERS.get("User-Agent") or ""),
-            "referer": str(BILIBILI_HEADERS.get("Referer") or ""),
-            "timeout_ms": 15_000,
-            "video_quality": video_quality,
-            "avc_quality_cap": avc_quality_cap,
-            "audio_hires": audio_hires,
-            "selected_audio_variant_id": str(item.selected_audio_variant_id or ""),
-            "reported_ready": item.cache_status == "ready",
-            "existing_video_relative_path": str(item.video_relative_path or ""),
-            "existing_audio_variants": existing_variants,
-        }
+            if self.stop_event.is_set() and command != "stop":
+                return {}
+            # Capture facts and deliver external-worker handoffs against the same
+            # retry-window lock. Rust performs no waits, callbacks or network I/O.
+            facts = {
+                "cache_root": str(CACHE_DIR.resolve()),
+                "log_dir": str(self.log_dir.resolve()),
+                "max_cache_items": self.max_cache_items,
+                "download_source": self.download_source,
+                "video_quality": self.video_quality,
+                "audio_hires": self.audio_hires,
+                "hevc_supported": self.hevc_supported,
+                "avc_quality_cap": self.avc_quality_cap,
+                "cookie": effective_bilibili_cookie(),
+                "user_agent": str(BILIBILI_HEADERS.get("User-Agent") or ""),
+                "referer": str(BILIBILI_HEADERS.get("Referer") or ""),
+                "external_attempts": [
+                    {"item_id": item_id, "cache_attempt_token": token,
+                     "retry_open": self._python_retry_window_open_locked(item_id),
+                     "primary": self.active_item_id == item_id,
+                     "urgent": item_id in self.urgent_cache_ids}
+                    for item_id, token in self.python_cache_attempt_tokens.items()
+                    if item_id in self.python_worker_download_sources
+                ],
+            }
+            result = rust_runtime.native_cache_request(
+                command, owner=self._artifact_owner, facts=facts, **fields
+            )
+            self._apply_native_cache_snapshot(result["snapshot"])
+            # These are decided views used by retained external workers and UI.
+            if self.download_source == DOWNLOAD_SOURCE_NATIVE:
+                self.desired_ids = set(result["desired_ids"])
+                self.ordered_desired_ids = list(result["ordered_ids"])
+            processes = []
+            for handoff in result["external_retries"]:
+                self.retry_requested_ids.add(handoff["item_id"])
+                processes.extend(self._active_processes_locked(handoff["item_id"]))
+            self.native_cache_error = ""
+        self._terminate_processes(processes)
+        return result
+
+    def _sync_native_with_playlist(self, *, wake: bool = False) -> None:
+        try:
+            result = self._native_orchestration("wake" if wake else "reconcile")
+            self._drain_native_cache_events()
+            self.collect_retired_artifacts()
+            native_log_dir = self.log_dir / DOWNLOAD_SOURCE_NATIVE
+            if result and native_log_dir.is_dir():
+                current_ids = set(result["current_ids"])
+                for log_file in native_log_dir.glob("*.log"):
+                    if log_file.stem not in current_ids:
+                        self._safe_unlink(log_file)
+        except Exception as exc:  # noqa: BLE001
+            with self.lock:
+                self.native_cache_error = str(exc)
 
     def status(self, metrics: dict[str, Any] | None = None) -> dict:
         cache_metrics = metrics or self.cache_metrics()
@@ -750,9 +671,9 @@ class CacheManager:
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
         with self.lock:
-            active_item_id = self.active_item_id or ""
-            urgent_item_ids = list(self.urgent_cache_ids)
-            pending_ids = list(self.pending_ids)
+            active_item_id = self.active_item_id or self.native_cache_snapshot.get("primary_active_item_id") or ""
+            urgent_item_ids = list(self.urgent_cache_ids | set(self.native_cache_snapshot.get("urgent_item_ids", [])))
+            pending_ids = list(self.pending_ids | set(self.native_cache_snapshot.get("pending_ids", [])))
             desired_ids = list(self.ordered_desired_ids)
             binary_state = self.binary_state
             binary_version = self.binary_version
@@ -1017,7 +938,9 @@ class CacheManager:
                 )
             )
 
-        if should_recache:
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self._sync_native_with_playlist()
+        elif should_recache:
             self._request_desired_recaching("HEVC unsupported; switching video cache to AVC")
 
         return self.media_capabilities_snapshot()
@@ -1461,11 +1384,11 @@ class CacheManager:
         }
 
     def prepare_session(self) -> None:
-        items = self.store.list_items()
+        native = self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
+        items = [] if native else self.store.list_items()
         cache_attempt_tokens = self._begin_live_cache_attempts(items)
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
-            self._ensure_native_cache_runtime()
-            self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
+        if native:
+            self._native_orchestration("prepare")
             self._drain_native_cache_events()
             self._clear_log_root()
         else:
@@ -1511,7 +1434,11 @@ class CacheManager:
                 self.native_cache_event_stop.set()
                 self._terminate_processes(self._active_processes_locked(), wait=True)
                 return
-            items = self.store.list_items()
+            if self.native_cache_started:
+                self._native_orchestration("stop")
+                items = []
+            else:
+                items = self.store.list_items()
             cache_attempt_tokens = self._begin_live_cache_attempts(items)
             self.stop_event.set()
             processes = self._active_processes_locked()
@@ -1530,7 +1457,9 @@ class CacheManager:
             native_cache_event_worker.join(timeout=5.0)
         if native_cache_started:
             try:
-                self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
+                self.store.process_runtime_cache_events(
+                    self._native_cache_request, max_cache_items=self.max_cache_items
+                )
             except Exception as exc:  # noqa: BLE001
                 _debug_print(f"[bilikara-cache] Rust cache clear during shutdown failed: {exc}")
             try:
@@ -1571,21 +1500,15 @@ class CacheManager:
         self.collect_retired_artifacts()
 
     def clear_runtime_cache(self) -> None:
-        items = self.store.list_items()
-        cache_attempt_tokens = self._begin_live_cache_attempts(items)
         native_cache = (
             self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
             or self.native_cache_started
         )
+        items = [] if native_cache else self.store.list_items()
+        cache_attempt_tokens = self._begin_live_cache_attempts(items)
         if native_cache:
-            self._ensure_native_cache_runtime()
-            for item in items:
-                try:
-                    self._native_cache_request("cancel", item_id=item.id)
-                except Exception as exc:  # noqa: BLE001
-                    _debug_print(
-                        f"[bilikara-cache] Rust cache cancel failed for item={item.id}: {exc}"
-                    )
+            self._native_orchestration("clear")
+            self._drain_native_cache_events()
         with self.lock:
             processes = self._active_processes_locked()
             urgent_workers = list(self.urgent_workers.values())
@@ -1646,6 +1569,23 @@ class CacheManager:
             raise ValueError(
                 "expected item incarnation must be a non-empty Rust identity"
             )
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            try:
+                self._native_orchestration(
+                    "retry", item_id=item_id,
+                    expected_item_incarnation_id=expected_item_incarnation_id,
+                    force=bool(force),
+                )
+            except rust_runtime.RustRuntimeServiceError as exc:
+                if exc.kind in {"item_not_found", "item_incarnation_mismatch"}:
+                    raise PlaylistStoreCommandError(exc) from exc
+                if exc.kind == "retry_not_allowed":
+                    raise ValueError(str(exc)) from exc
+                raise
+            self._drain_native_cache_events()
+            self._append_log_line(self._item_log_path(item_id, DOWNLOAD_SOURCE_NATIVE),
+                                  f"[{self._log_timestamp()}] manual retry requested")
+            return
         item = self.store.get_item(item_id)
         if (
             not item
@@ -1670,54 +1610,19 @@ class CacheManager:
             raise ValueError(login_error)
         log_path = self._item_log_path(item_id, download_source)
 
-        if download_source == DOWNLOAD_SOURCE_NATIVE:
-            snapshot = dict(self.native_cache_snapshot)
-            primary_active_item_id = str(
-                snapshot.get("primary_active_item_id") or ""
-            ).strip()
-            urgent = bool(
-                force
-                and self.store.is_current_item(item_id)
-                and primary_active_item_id
-                and primary_active_item_id != item_id
-            )
-            job = self._native_cache_job(item)
-            job["item_incarnation_id"] = expected_item_incarnation_id
-            try:
-                self._ensure_native_cache_runtime()
-                self._native_cache_request(
-                    "retry", job=job, urgent=urgent
-                )
-                self._drain_native_cache_events()
-            except Exception as exc:  # noqa: BLE001
-                if self._cache_incarnation_mismatch(exc):
-                    raise
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] manual retry requested",
-                )
-                self._mark_native_cache_failed(
-                    item_id,
-                    str(exc),
-                    expected_item_incarnation_id=expected_item_incarnation_id,
-                )
-                return
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] manual retry requested",
-            )
-            return
-
         is_current_item = self.store.is_current_item(item_id)
-        refresh_token = self._begin_cache_attempt(
-            item_id,
-            expected_item_incarnation_id,
-        )
         self._append_log_line(
             log_path,
             f"[{self._log_timestamp()}] manual retry requested",
         )
         with self.lock:
+            if self.native_cache_started:
+                result = rust_runtime.native_cache_request(
+                    "handoff", owner=self._artifact_owner, item_id=item_id,
+                    expected_item_incarnation_id=expected_item_incarnation_id,
+                )
+                self.native_cache_snapshot = dict(result["snapshot"])
+            refresh_token = self._begin_cache_attempt(item_id, expected_item_incarnation_id)
             active_processes = self._active_processes_locked(item_id)
             target_is_primary_active = self.active_item_id == item_id
             target_is_urgent_active = item_id in self.urgent_cache_ids
@@ -1891,59 +1796,14 @@ class CacheManager:
                     retained_ids.add(item.id)
         return retained_ids
 
-    def _sync_native_with_playlist(self, items: list[Any], plan: CachePlan) -> None:
-        desired_ids = set(plan.desired_ids)
-        retained_ids = set(plan.retained_ids)
-        with self.lock:
-            python_owned_ids = set(self.python_worker_download_sources)
-        jobs: list[dict[str, Any]] = []
-        for item in items:
-            if (
-                item.id not in desired_ids
-                or item.cache_status == "failed"
-                or item.id in python_owned_ids
-            ):
-                continue
-            try:
-                jobs.append(self._native_cache_job(item))
-            except Exception as exc:  # noqa: BLE001
-                self._mark_native_cache_failed(
-                    item.id,
-                    str(exc),
-                    expected_item_incarnation_id=item.item_incarnation_id,
-                )
-
-        try:
-            self._ensure_native_cache_runtime()
-            result = self._native_cache_request(
-                "sync",
-                cache_root=str(CACHE_DIR.resolve()),
-                current_ids=[item.id for item in items],
-                current_item_incarnations={
-                    item.id: item.item_incarnation_id for item in items
-                },
-                retained_ids=[item.id for item in items if item.id in retained_ids],
-                jobs=jobs,
-                ordered_ids=list(plan.pending_order),
-                preempt_item_id=plan.preempt_ids[0] if plan.preempt_ids else "",
-            )
-        except Exception as exc:  # noqa: BLE001
-            with self.lock:
-                self.native_cache_error = str(exc)
-            return
-
-        snapshot = result.get("snapshot")
-        if isinstance(snapshot, dict):
-            self._apply_native_cache_snapshot(snapshot)
-        native_log_dir = self.log_dir / DOWNLOAD_SOURCE_NATIVE
-        if native_log_dir.is_dir():
-            current_ids = {item.id for item in items}
-            for log_file in native_log_dir.glob("*.log"):
-                if log_file.stem not in current_ids:
-                    self._safe_unlink(log_file)
-        self._drain_native_cache_events()
-
     def sync_with_playlist(self) -> None:
+        if self.stop_event.is_set():
+            return
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self._sync_native_with_playlist()
+            return
+        if self.native_cache_started:
+            self._sync_native_with_playlist()
         items = self.store.list_items()
         plan, priority_state = self._stable_cache_plan_snapshot(items)
         desired_ids = set(plan.desired_ids)
@@ -1954,10 +1814,6 @@ class CacheManager:
             self.ordered_desired_ids = list(plan.pending_order)
 
         self._cleanup_orphan_cache_dirs(current_ids)
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
-            self._sync_native_with_playlist(items, plan)
-            return
-
         self._stop_active_if_not_desired(desired_ids)
 
         for item in items:
@@ -1982,6 +1838,8 @@ class CacheManager:
             if download_source != DOWNLOAD_SOURCE_NATIVE:
                 if (
                     item_id in self.pending_ids
+                    or item_id in self.native_cache_snapshot.get("active_item_ids", [])
+                    or item_id in self.native_cache_snapshot.get("pending_ids", [])
                     or item_id in self.urgent_cache_ids
                     or self.stop_event.is_set()
                 ):
@@ -1997,19 +1855,7 @@ class CacheManager:
                     self.python_worker_download_sources[item_id] = download_source
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
         if download_source == DOWNLOAD_SOURCE_NATIVE:
-            try:
-                self._ensure_native_cache_runtime()
-                self._native_cache_request(
-                    "submit", job=self._native_cache_job(item), priority="normal"
-                )
-                self._drain_native_cache_events()
-            except Exception as exc:  # noqa: BLE001
-                if not self._cache_incarnation_mismatch(exc):
-                    self._mark_native_cache_failed(
-                        item_id,
-                        str(exc),
-                        expected_item_incarnation_id=item.item_incarnation_id,
-                    )
+            self._sync_native_with_playlist()
             return
         if missing_download_login:
             self._project_cache_event(
@@ -2112,7 +1958,17 @@ class CacheManager:
                     owned_attempt_tokens,
                     release_ownership=True,
                 )
-        if should_resync and not self.stop_event.is_set():
+        self._after_external_cache_attempt(should_resync)
+
+    def _after_external_cache_attempt(self, should_resync: bool) -> None:
+        if self.stop_event.is_set():
+            return
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            # A closed retry window may have deferred a Native replacement, even
+            # when the external attempt failed. Wake Rust after ownership drains;
+            # a clear/stop operation remains closed to these background wakeups.
+            self._sync_native_with_playlist(wake=True)
+        elif should_resync:
             self.sync_with_playlist()
 
     def _enqueue_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
@@ -2315,8 +2171,7 @@ class CacheManager:
                         release_ownership=not requeued,
                     )
                 self.tasks.task_done()
-            if should_resync and not self.stop_event.is_set():
-                self.sync_with_playlist()
+            self._after_external_cache_attempt(should_resync)
 
     def _cache_item(
         self,
@@ -4994,6 +4849,9 @@ class CacheManager:
         return self.hevc_supported is False
 
     def _request_desired_recaching(self, message: str) -> None:
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self._sync_native_with_playlist()
+            return
         with self.lock:
             item_ids = set(self.desired_ids)
             active_item_id = self.active_item_id if self.active_item_id in item_ids else None
@@ -5010,32 +4868,6 @@ class CacheManager:
             for item in self.store.list_items()
             if item.id in item_ids
         }
-        if download_source == DOWNLOAD_SOURCE_NATIVE:
-            # Give every desired item exactly one replacement executor.  The
-            # choice is made under self.lock against the same bookkeeping an
-            # external-tool worker closes its retry window with, so a request
-            # either lands while that worker can still consume it or is routed
-            # to the Rust runtime; neither side can miss the other and no
-            # unconsumable Python retry is left behind.  Accepted items keep the
-            # source that actually started them and mint their replacement
-            # attempt inside the worker's own retry lifecycle, so nothing is
-            # written to the Python ownership maps here.
-            with self.lock:
-                handed_to_worker = {
-                    item_id
-                    for item_id in observed_items
-                    if self._python_retry_window_open_locked(item_id)
-                }
-                self.retry_requested_ids.update(handed_to_worker)
-            self._request_native_desired_recaching(
-                {
-                    item_id: item
-                    for item_id, item in observed_items.items()
-                    if item_id not in handed_to_worker
-                }
-            )
-            self._terminate_processes(active_processes)
-            return
         refresh_tokens = {
             item_id: self._begin_cache_attempt_for_item(item)
             for item_id, item in observed_items.items()
@@ -5061,65 +4893,6 @@ class CacheManager:
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
-
-    def _request_native_desired_recaching(
-        self,
-        observed_items: dict[str, PlaylistItem],
-    ) -> None:
-        """Re-request the Rust-owned Native cache work for the desired items.
-
-        Native jobs belong to the Rust CacheRuntime: it reserves the cache
-        attempt, generation and artifact set itself, and
-        ``_sync_native_with_playlist`` deliberately keeps every item listed in
-        ``python_worker_download_sources`` out of the Native ``jobs``
-        inventory.  Registering Native items there therefore made every later
-        sync report an empty desired set, which Rust answers by cancelling the
-        whole Native queue.  Ask the runtime to replace the affected jobs
-        instead, the same way ``retry_item`` already re-requests Native work,
-        and leave the Python ownership maps untouched.  The recaching reason is
-        not projected from here because Rust publishes its own ``queued`` event
-        for the replacement attempt.
-
-        ``observed_items`` must already exclude items a Python external-tool
-        worker owns; the caller performs that split so ownership is decided in
-        one place.
-        """
-        with self.lock:
-            planned_order = list(self.ordered_desired_ids)
-        ordered_ids: list[str] = []
-        seen: set[str] = set()
-        for item_id in planned_order + sorted(observed_items):
-            if item_id in seen or item_id not in observed_items:
-                continue
-            seen.add(item_id)
-            ordered_ids.append(item_id)
-        if not ordered_ids:
-            return
-        # A replaced Rust job is re-queued at the front of the normal queue, so
-        # walking the planned order backwards leaves it in the planned order.
-        for item_id in reversed(ordered_ids):
-            item = observed_items[item_id]
-            try:
-                self._ensure_native_cache_runtime()
-                self._native_cache_request(
-                    "retry",
-                    job=self._native_cache_job(item),
-                    urgent=False,
-                )
-            except Exception as exc:  # noqa: BLE001
-                if not self._cache_incarnation_mismatch(exc):
-                    self._mark_native_cache_failed(
-                        item_id,
-                        str(exc),
-                        expected_item_incarnation_id=item.item_incarnation_id,
-                    )
-        try:
-            self._drain_native_cache_events()
-        except Exception as exc:  # noqa: BLE001
-            # The background Rust cache event worker keeps draining, so record
-            # the failure the same way it does instead of failing the caller.
-            with self.lock:
-                self.native_cache_error = str(exc)
 
     @staticmethod
     def _py_video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
@@ -8899,7 +8672,9 @@ class CacheManager:
             return
 
         with self.lock:
-            already_in_flight = item.id in self.pending_ids or self.active_item_id == item.id
+            already_in_flight = (item.id in self.pending_ids or self.active_item_id == item.id
+                or item.id in self.native_cache_snapshot.get("active_item_ids", [])
+                or item.id in self.native_cache_snapshot.get("pending_ids", []))
         if already_in_flight:
             return
 

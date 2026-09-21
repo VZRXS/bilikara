@@ -5147,6 +5147,49 @@ pub(crate) fn with_cache_application<T>(
 }
 
 impl AppState {
+    pub(crate) fn current_cache_item_id(&self) -> Option<&str> {
+        self.data
+            .as_ref()?
+            .current_item
+            .as_ref()
+            .map(|item| item.id.as_str())
+    }
+
+    pub(crate) fn cache_items(&self) -> Result<Vec<PlaylistItem>, AppStateError> {
+        let data = self.data.as_ref().ok_or_else(|| AppStateError {
+            kind: "uninitialized".into(),
+            message: "AppState is not initialized".into(),
+            details: None,
+        })?;
+        Ok(data
+            .current_item
+            .iter()
+            .chain(data.playlist.iter())
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) fn reserve_runtime_attempt(
+        &mut self,
+        item_id: &str,
+        incarnation: &str,
+    ) -> Result<CacheAttemptReservation, AppStateError> {
+        match self.execute(AppStateRequest::BeginCacheAttempt {
+            schema_version: SCHEMA_VERSION,
+            item_id: item_id.into(),
+            expected_item_incarnation_id: incarnation.into(),
+        }) {
+            AppStateResponse::Failure(failure) => Err(failure.error),
+            AppStateResponse::Success(_) => Ok(self
+                .data
+                .as_ref()
+                .expect("initialized")
+                .active_cache_attempts[item_id]
+                .reservation
+                .clone()),
+        }
+    }
+
     pub(crate) fn cache_runtime_item(
         &self,
         item_id: &str,

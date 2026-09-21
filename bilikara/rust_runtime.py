@@ -430,6 +430,23 @@ def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
     return _call_runtime_service("cache_runtime", request)
 
 
+def native_cache_request(command: str, **fields: Any) -> dict[str, Any]:
+    if (_runtime_lib is not None and _media_startup_error
+        and command not in {"stop", "clear", "prepare", "handoff"}):
+        raise RustRuntimeServiceError("invalid_request", _media_startup_error, response={})
+    result = _call_runtime_service("native_cache", {"command": command, **fields})
+    if (not isinstance(result.get("snapshot"), dict)
+        or any(not isinstance(result.get(key), list) for key in
+               ("desired_ids", "ordered_ids", "current_ids", "external_retries"))
+        or any(not isinstance(value, str) for key in ("desired_ids", "ordered_ids", "current_ids")
+               for value in result[key])
+        or any(not isinstance(value, dict) or not isinstance(value.get("item_id"), str)
+               or type(value.get("cache_attempt_token")) is not int
+               or value["cache_attempt_token"] <= 0 for value in result["external_retries"])):
+        raise RustRuntimeServiceError("invalid_response", "Invalid Native cache observation", response={})
+    return result
+
+
 def artifact_lifetime_request(command: str, **fields: Any) -> dict[str, Any]:
     try:
         result = _call_runtime_service("artifact_lifetime", {"command": command, **fields})

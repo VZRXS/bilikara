@@ -134,6 +134,12 @@ impl AppState {
         !owner.is_empty() && self.artifact_lifetime.owner == owner
     }
 
+    pub(crate) fn artifact_admission(&self, owner: &str, root: &Path) -> bool {
+        self.artifact_owner(owner)
+            && !self.artifact_lifetime.closed
+            && self.artifact_lifetime.root.as_deref() == Some(root)
+    }
+
     pub(crate) fn artifact_drain_pending(&self) -> bool {
         !self.artifact_lifetime.readers.is_empty()
             || !self.artifact_lifetime.retired.is_empty()
