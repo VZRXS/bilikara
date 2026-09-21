@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 mod native_persistence;
 #[cfg(feature = "native-host")]
 pub(crate) use native_persistence::prepare_import;
+pub(crate) mod artifact_lifetime;
 mod player_control;
 pub use player_control::PlayerControlInput;
 #[cfg(feature = "native-host")]
@@ -983,6 +984,7 @@ pub struct AppState {
     internet_remote_peers: InternetRemotePeers,
     player_controls: player_control::PlayerControls,
     catalog: crate::shared_catalog::CatalogState,
+    artifact_lifetime: artifact_lifetime::ArtifactLifetime,
     #[cfg(feature = "native-host")]
     native_session: native_session::NativeSession,
 }
@@ -1030,6 +1032,7 @@ impl Default for AppState {
             internet_remote_peers: InternetRemotePeers::default(),
             player_controls: player_control::PlayerControls::default(),
             catalog: crate::shared_catalog::CatalogState::default(),
+            artifact_lifetime: artifact_lifetime::ArtifactLifetime::default(),
             #[cfg(feature = "native-host")]
             native_session: native_session::NativeSession::default(),
         }
@@ -4377,8 +4380,77 @@ impl AppState {
         {
             return execute_error_response(error);
         }
+        let terminal = match &request {
+            AppStateRequest::ApplyCacheEvent {
+                item_id,
+                cache_attempt_token,
+                event:
+                    CacheEvent::Ready { .. }
+                    | CacheEvent::Failed { .. }
+                    | CacheEvent::Cancelled { .. }
+                    | CacheEvent::Evicted { .. }
+                    | CacheEvent::Reset { .. },
+                ..
+            } => Some((item_id.clone(), *cache_attempt_token)),
+            _ => None,
+        };
+        // Registration and terminal settlement precede every visible observation,
+        // even for rejected/stale completion. Collection cannot enter this lock.
+        if let AppStateRequest::ApplyCacheEvent {
+            item_id,
+            cache_attempt_token,
+            event:
+                CacheEvent::Ready {
+                    item_incarnation_id,
+                    artifact_set_id,
+                    artifact_relative_directory,
+                    ..
+                },
+            ..
+        } = &request
+        {
+            self.register_ready_artifact(
+                item_id,
+                *cache_attempt_token,
+                item_incarnation_id,
+                artifact_set_id,
+                artifact_relative_directory,
+            );
+        }
+        let response = if let AppStateRequest::ApplyCacheEvent {
+            event:
+                CacheEvent::Ready {
+                    item_incarnation_id,
+                    artifact_set_id,
+                    ..
+                },
+            ..
+        } = &request
+            && !self.artifact_ready_registered(item_incarnation_id, artifact_set_id)
+        {
+            execute_error_response(rejected(
+                "artifact_unregistered",
+                "ready artifact is not registered with the Runtime",
+            ))
+        } else {
+            self.execute_inner(request)
+        };
+        if let Some((item, token)) = terminal {
+            self.settle_artifact_attempt(&item, token);
+        }
+        self.observe_artifact_program();
+        response
+    }
+
+    fn execute_inner(&mut self, request: AppStateRequest) -> AppStateResponse {
         match request {
             AppStateRequest::Initialize { state, .. } => {
+                if self.artifact_drain_pending() {
+                    return execute_error_response(rejected(
+                        "artifact_drain_pending",
+                        "media resources must drain before reinitialization",
+                    ));
+                }
                 if self.native_storage.is_some() && self.data.is_some() {
                     return invalid_request_response(
                         "native_storage_conflict",
@@ -4401,6 +4473,7 @@ impl AppState {
                             return storage_error_response(error);
                         }
                         self.data = Some(data);
+                        self.artifact_lifetime = artifact_lifetime::ArtifactLifetime::default();
                         self.next_item_incarnation_id = next_item_incarnation_id;
                         self.internet_remote_peers.clear();
                         self.player_controls.clear();
@@ -4634,6 +4707,7 @@ impl AppState {
                 };
                 self.next_cache_attempt_token = cache_attempt_token;
                 self.next_artifact_set_id = next_artifact_set_id;
+                self.track_artifact_attempt(&reservation);
                 let data = self
                     .data
                     .as_mut()
@@ -4711,6 +4785,7 @@ impl AppState {
                 self.native_storage = None;
                 self.internet_remote_peers.clear();
                 self.player_controls.clear();
+                self.shutdown_artifact_lifetime();
                 #[cfg(feature = "native-host")]
                 {
                     self.native_session = native_session::NativeSession::default();
@@ -5128,11 +5203,17 @@ impl AppStateResponse {
 }
 
 pub fn execute_app_state(request: AppStateRequest) -> AppStateResponse {
+    let shutdown = matches!(request, AppStateRequest::Shutdown { .. });
     let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
     let Ok(mut state) = state.lock() else {
         return internal_error_response("Rust AppState lock is poisoned");
     };
-    state.execute(request)
+    let response = state.execute(request);
+    drop(state);
+    if shutdown {
+        let _ = artifact_lifetime::collect_artifacts(None);
+    }
+    response
 }
 
 /// Bootstrap an in-process Host without replacing already initialized AppState.

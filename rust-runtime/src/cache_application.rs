@@ -50,7 +50,7 @@ struct Track {
 #[derive(Serialize)]
 pub(crate) struct ArtifactSettlement {
     cache_attempt_token: u64,
-    // Identity only: Python's existing collector remains the deleting authority.
+    // Observation only; resource settlement already occurred under AppState.
     artifact: Option<ArtifactIdentity>,
 }
 
@@ -96,6 +96,18 @@ impl CacheApplication {
             let attempt = self.attempts.entry(event.item_id.clone()).or_default();
             // Clean stale publications too, but never make them current.
             if terminal && self.settled_sequences.insert(event.sequence) {
+                if event.kind == "ready"
+                    && let Some(artifact) = artifact_identity(&event.payload)
+                {
+                    app.register_ready_artifact(
+                        &event.item_id,
+                        event.cache_attempt_token,
+                        &artifact.item_incarnation_id,
+                        &artifact.artifact_set_id,
+                        &artifact.artifact_relative_directory,
+                    );
+                }
+                app.settle_artifact_attempt(&event.item_id, event.cache_attempt_token);
                 effects.settlements.push(ArtifactSettlement {
                     cache_attempt_token: event.cache_attempt_token,
                     artifact: if event.kind == "ready" {

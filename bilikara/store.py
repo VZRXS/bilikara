@@ -840,7 +840,6 @@ class PlaylistStore:
         request: Callable[..., dict[str, Any]],
         *,
         max_cache_items: int,
-        register_artifact: Callable[[dict[str, Any]], object],
     ) -> dict[str, Any]:
         """Observe an already-applied Rust batch without replaying its mutations.
 
@@ -880,12 +879,8 @@ class PlaylistStore:
                 response = effects.get("observation")
                 if not isinstance(response, dict):
                     raise RuntimeError("Rust cache application omitted authoritative observation")
-                # Readers must know the artifacts before Ready becomes visible,
-                # including when persistence fails and this batch is retried.
-                # Registration follows the collector's store -> artifact lock order.
-                for settlement in effects["settlements"]:
-                    if settlement["artifact"] is not None:
-                        register_artifact(settlement["artifact"])
+                # Rust has already registered and settled resources under the
+                # same AppState lock, before this persistence/observer boundary.
                 self._accept_response_unlocked(response)
                 self._pending_cache_observation = result
             response = result["effects"]["observation"]

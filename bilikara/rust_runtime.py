@@ -430,6 +430,28 @@ def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
     return _call_runtime_service("cache_runtime", request)
 
 
+def artifact_lifetime_request(command: str, **fields: Any) -> dict[str, Any]:
+    try:
+        result = _call_runtime_service("artifact_lifetime", {"command": command, **fields})
+    except RustRuntimeServiceError as exc:
+        if "invalid Host" in str(exc):
+            raise ValueError(str(exc)) from exc
+        raise
+    key = {"open": "owner", "acquire": "handle", "collect": "collected"}.get(command, "accepted")
+    value = result.get(key)
+    if key == "owner":
+        valid = isinstance(value, str) and len(value) == 64
+    elif key == "handle":
+        valid = value is None or (isinstance(value, str) and len(value) == 64)
+    elif key == "collected":
+        valid = type(value) is int and value >= 0
+    else:
+        valid = type(value) is bool
+    if not valid:
+        raise RustRuntimeServiceError("invalid_response", "Invalid Rust artifact lifetime response", response={})
+    return result
+
+
 def json_http_request(
     method: str,
     url: str,

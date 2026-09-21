@@ -356,6 +356,8 @@ class PlaybackCapabilityWorkerTest(unittest.TestCase):
         manager._item_log_path = lambda *args: Path("worker.log")
         manager._append_log_line = lambda *args: None
         manager._project_cache_event = lambda *args, **kwargs: None
+        finished_attempts = []
+        manager._finish_artifact_attempts = lambda item, tokens: finished_attempts.append((item, tokens))
         processed = []
         good_processed = threading.Event()
 
@@ -379,6 +381,7 @@ class PlaybackCapabilityWorkerTest(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(processed, ["good"])
+        self.assertEqual(finished_attempts, [("bad", {1}), ("good", {2})])
 
 
 if __name__ == "__main__":

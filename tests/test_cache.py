@@ -521,11 +521,15 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def project_missing_ready(self, item_id: str) -> None:
         token = begin_cache_attempt(self.store, item_id)
         payload = self.ready_payload(item_id, token)
+        directory = self.cache_dir / payload["artifact_relative_directory"]
+        directory.mkdir(parents=True)
+        (directory / "synthetic-media").write_bytes(b"published fixture")
         self.store.apply_cache_event(
             item_id,
             cache_attempt_token=token,
             event={"kind": "ready", "progress": 100.0, "message": "缓存已完成", **payload},
         )
+        shutil.rmtree(directory)
 
     def staged_cache_result(
         self,
@@ -991,7 +995,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_shutdown_skips_items_removed_before_attempt_reservation(self):
+    def test_stale_manager_shutdown_does_not_clear_reinitialized_owner(self):
         item = self.make_item("song-removed-before-shutdown")
         self.store.add_item(item, requester_name="cache-test-user")
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
@@ -1001,10 +1005,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 backup_file=Path(self.temp_dir.name) / "replacement-backup.json",
             )
             try:
+                before = replacement_store.snapshot()
                 with patch.object(manager, "_clear_cache_root") as clear_cache:
                     manager.shutdown()
 
-                clear_cache.assert_called_once_with()
+                clear_cache.assert_not_called()
+                self.assertEqual(replacement_store.snapshot(), before)
                 self.assertTrue(manager.stop_event.is_set())
             finally:
                 replacement_store.shutdown()
@@ -7543,6 +7549,10 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                     f"/media/{expected_audio_relative_path}",
                 )
                 self.assertEqual(self.store.get_item(item.id).cache_status, "pending")
+                # This fixture ends the publisher without a Ready projection;
+                # report the same worker completion used by production finally.
+                manager._finish_artifact_attempts(item.id, {token})
+                self.assertFalse(committed.exists())
             finally:
                 manager.shutdown()
 
@@ -8219,7 +8229,7 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         observe_cache_projection(self.manager, "song-native", token, projection, artifact=payload)
         observe_cache_projection(self.manager, "song-native", token, projection, artifact=payload)
 
-        self.assertNotIn(token, self.manager.active_artifact_attempts)
+        self.assertFalse(self.manager._artifact_request("publish", cache_attempt_token=token)["accepted"])
         snapshot = self.store.snapshot()
         self.assertEqual(
             snapshot["current_item"]["artifact_set_id"],
@@ -8267,6 +8277,13 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         )
         self.assertIsNotNone(video_reader)
         self.assertIsNotNone(audio_reader)
+        self.assertFalse(rust_runtime.artifact_lifetime_request(
+            "release", owner=self.manager._artifact_owner, handle="0" * 64,
+        )["accepted"])
+        with self.assertRaises(rust_runtime.RustRuntimeServiceError):
+            rust_runtime.artifact_lifetime_request(
+                "release", owner=self.manager._artifact_owner, handle=123,
+            )
 
         self._evict("song-a")
         self.assertTrue(artifact["directory"].is_dir())
@@ -8308,7 +8325,6 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         snapshot = self.store.snapshot()
         self.assertTrue(self._claim(snapshot))
         self.assertTrue(self._claim(snapshot))
-        self.assertEqual(len(self.manager.host_playback_artifacts), 1)
         self.assertTrue(
             self.manager.retire_host_playback_program(
                 host_client_id="host-client",
@@ -8445,19 +8461,105 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         malformed.mkdir(parents=True)
 
         self.manager.collect_retired_artifacts()
-        with self.assertRaisesRegex(ValueError, "identity is invalid"):
-            self.manager._record_committed_artifact(
-                {
-                    "item_incarnation_id": unknown_incarnation,
-                    "artifact_set_id": unknown_artifact,
-                    "artifact_relative_directory": (
-                        f"artifacts/{unknown_incarnation}/wrong-artifact"
-                    ),
-                }
-            )
+        self.assertFalse(self.manager._artifact_request("publish", cache_attempt_token=2**32)["accepted"])
+        self.assertIsNone(self.manager.acquire_media_reader(f"artifacts/{unknown_incarnation}/{unknown_artifact}/video.mp4"))
+        self.assertIsNone(self.manager.acquire_media_reader("artifacts/../user-file"))
 
         self.assertTrue(unknown.is_dir())
         self.assertTrue(malformed.is_dir())
+
+    def test_real_rust_leases_cover_host_stream_completion_errors_head_and_early_return(self):
+        from bilikara.server import BilikaraHandler
+
+        class AbortedWriter:
+            def write(self, _payload):
+                raise BrokenPipeError("synthetic disconnect")
+
+        for mode in ("full", "range", "head", "abort", "failure", "missing", "invalid-range"):
+            with self.subTest(mode=mode):
+                item_id = f"http-{mode}"
+                self.store.add_item(self._item(item_id), requester_name="retirement-user", allow_repeat=True)
+                published = self._publish(item_id, b"http-body")
+                relative = f"{published['artifact_relative_directory']}/video-p1.mp4"
+                handler = BilikaraHandler.__new__(BilikaraHandler)
+                handler.headers = {"Range": "bytes=1-3"} if mode in {"range", "head", "abort"} else {}
+                if mode == "invalid-range":
+                    handler.headers = {"Range": "bytes=99999-"}
+                handler.wfile = AbortedWriter() if mode == "abort" else io.BytesIO()
+                statuses = []
+                handler.send_response = statuses.append
+                handler.send_header = lambda *_args: None
+                handler._write_json = lambda _body, *, status: statuses.append(status)
+
+                def reduce_references():
+                    self._evict(item_id)
+                    self.assertTrue(published["directory"].is_dir())
+
+                handler.end_headers = reduce_references
+                if mode == "failure":
+                    def fail_stream(*_args, **_kwargs):
+                        reduce_references()
+                        raise OSError("synthetic read failure")
+                    handler._stream_file = fail_stream
+                if mode == "missing":
+                    (published["directory"] / "video-p1.mp4").unlink()
+                    # The file-existence early return still owns a real lease.
+                    handler._write_json = lambda _body, *, status: (statuses.append(status), reduce_references())
+
+                with patch("bilikara.server.CACHE_DIR", self.cache_dir), patch(
+                    "bilikara.server.CONTEXT", SimpleNamespace(cache_manager=self.manager)
+                ):
+                    if mode == "failure":
+                        with self.assertRaisesRegex(OSError, "synthetic read failure"):
+                            handler._serve_media(f"/media/{relative}")
+                    else:
+                        handler._serve_media(f"/media/{relative}", head_only=mode == "head")
+                self.assertFalse(published["directory"].exists(), "Rust lease leaked after response")
+                if mode == "full":
+                    self.assertEqual(statuses, [200])
+                    self.assertEqual(handler.wfile.getvalue(), b"video-http-body")
+                elif mode == "range":
+                    self.assertEqual(statuses, [206])
+                    self.assertEqual(handler.wfile.getvalue(), b"ide")
+                elif mode == "head":
+                    self.assertEqual(statuses, [206])
+                    self.assertEqual(handler.wfile.getvalue(), b"")
+                elif mode == "missing":
+                    self.assertEqual(statuses, [404])
+                elif mode == "invalid-range":
+                    self.assertEqual(statuses, [416])
+
+    def test_reader_handles_and_owner_are_invalid_after_app_state_reinitialization(self):
+        self.store.add_item(self._item("before"), requester_name="retirement-user")
+        old = self._publish("before", b"before")
+        old_owner = self.manager._artifact_owner
+        reader = self.manager.acquire_media_reader(f"{old['artifact_relative_directory']}/video-p1.mp4")
+        self.assertIsNotNone(reader)
+        with self.assertRaises(rust_runtime.RustAppStateRejectedError) as blocked:
+            rust_runtime.app_state_request("initialize", state={
+                "session_started_at": 1.0, "session_played_file": "restart.json", "updated_at": 1.0,
+            })
+        self.assertEqual(blocked.exception.kind, "artifact_drain_pending")
+        self.manager.shutdown()
+        self.store.shutdown()
+        self.assertTrue(old["directory"].is_dir())
+        self.assertTrue(self.manager.release_media_reader(reader))
+        self.assertFalse(old["directory"].exists())
+        # Initialize is the real restart boundary; persisted media identities are
+        # invalidated there. Old ABI handles cannot operate on the next owner.
+        self.store = PlaylistStore(self.log_path.parent / "restart.json", self.log_path.parent / "restart-backup.json")
+        self.store.add_session_user("retirement-user")
+        self.manager = CacheManager(self.store, max_cache_items=2)
+        self.store.add_item(self._item("after"), requester_name="retirement-user")
+        new = self._publish("after", b"after")
+        new_reader = self.manager.acquire_media_reader(f"{new['artifact_relative_directory']}/video-p1.mp4")
+        self._evict("after")
+        self.assertFalse(rust_runtime.artifact_lifetime_request("release", owner=old_owner, handle=new_reader)["accepted"])
+        self.assertFalse(self.manager.release_media_reader(reader))
+        self.assertTrue(new["directory"].is_dir())
+        self.assertTrue(self.manager.release_media_reader(new_reader))
+        self.assertFalse(new["directory"].exists())
+        self.assertFalse(old["directory"].exists())
 
     def test_deletion_failure_remains_pending_for_one_later_trigger(self):
         self.store.add_item(
@@ -8467,19 +8569,20 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         self.assertTrue(self._claim(self.store.snapshot()))
         replacement = self._publish("song-a", b"replacement")
 
-        with patch(
-            "bilikara.cache.shutil.rmtree", side_effect=PermissionError
-        ) as remove_tree:
-            self.assertTrue(
-                self.manager.retire_host_playback_program(
-                    host_client_id="host-client",
-                    playback_generation=old["generation"],
-                    item_incarnation_id=old["item_incarnation_id"],
-                    artifact_set_id=old["artifact_set_id"],
-                )
+        # A real Rust retirement failure, not a mock of removed Python policy.
+        blocked = self.cache_dir / ".retired"
+        blocked.write_bytes(b"unrelated file")
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=old["generation"],
+                item_incarnation_id=old["item_incarnation_id"],
+                artifact_set_id=old["artifact_set_id"],
             )
-            self.assertEqual(remove_tree.call_count, 1)
+        )
         self.assertTrue(old["directory"].is_dir())
+        self.assertEqual(blocked.read_bytes(), b"unrelated file")
+        blocked.unlink()
 
         self.manager.collect_retired_artifacts()
         self.assertFalse(old["directory"].exists())

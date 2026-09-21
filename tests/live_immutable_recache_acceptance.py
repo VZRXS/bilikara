@@ -535,6 +535,44 @@ def _worker(args: argparse.Namespace) -> int:
         }
     )
     events: list[dict[str, Any]] = []
+    # Observe supported call/handle boundaries. These are test observations only;
+    # eligibility and collection continue to execute exclusively in Rust.
+    observed_lock = threading.Lock()
+    observed_readers: dict[str, str] = {}
+    observed_claims: dict[tuple[object, ...], str] = {}
+    observed_attempts: dict[int, str] = {}
+    original_artifact_request = manager._artifact_request
+
+    def observed_artifact_request(command: str, **fields: Any) -> dict[str, Any]:
+        result = original_artifact_request(command, **fields)
+        with observed_lock:
+            if command == "acquire" and result.get("handle"):
+                observed_readers[result["handle"]] = "/".join(fields["relative_path"].split("/")[:3])
+            elif command == "release" and result.get("accepted"):
+                observed_readers.pop(fields["handle"], None)
+            elif command in {"claim", "retire"} and result.get("accepted"):
+                key = tuple(fields[name] for name in ("host_client_id", "playback_generation", "item_incarnation_id", "artifact_set_id"))
+                if command == "claim":
+                    observed_claims[key] = f"artifacts/{fields['item_incarnation_id']}/{fields['artifact_set_id']}"
+                else:
+                    observed_claims.pop(key, None)
+            elif command == "finish_attempts":
+                for token in fields["cache_attempt_tokens"]:
+                    observed_attempts.pop(token, None)
+        return result
+
+    manager._artifact_request = observed_artifact_request  # type: ignore[method-assign]
+    original_project = manager._project_cache_event
+
+    def observed_project(item_id: str, kind: str, *, cache_attempt_token: int, **fields: Any) -> bool:
+        try:
+            return original_project(item_id, kind, cache_attempt_token=cache_attempt_token, **fields)
+        finally:
+            if kind in {"ready", "failed", "cancelled", "evicted", "reset"}:
+                with observed_lock:
+                    observed_attempts.pop(cache_attempt_token, None)
+
+    manager._project_cache_event = observed_project  # type: ignore[method-assign]
     acquisition = DeterministicAcquisition(fixture_payload, plans, events)
     ffmpeg = Path(args.ffmpeg).resolve()
     ffprobe = Path(args.ffprobe).resolve()
@@ -573,6 +611,8 @@ def _worker(args: argparse.Namespace) -> int:
     def traced_begin(item_id: str, expected_item_incarnation_id: str) -> int:
         token = original_begin(item_id, expected_item_incarnation_id)
         reservation = context.store.cache_attempt_reservation(token)
+        with observed_lock:
+            observed_attempts[token] = reservation["artifact_relative_directory"]
         events.append(
             {
                 "event": "attempt_reserved",
@@ -745,12 +785,10 @@ def _worker(args: argparse.Namespace) -> int:
                 else:
                     raise RuntimeError("replacement artifact was not Ready")
                 replacement_path = manager_cache_root() / replacement_directory
-                with manager.artifact_retirement_lock:
+                with observed_lock:
                     active_readers = sum(
-                        count
-                        for artifact, count in manager.artifact_reader_counts.items()
-                        if artifact.relative_directory
-                        == initial_artifact_relative_directory
+                        relative == initial_artifact_relative_directory
+                        for relative in observed_readers.values()
                     )
                 held_range_evidence.update(
                     {
@@ -853,15 +891,8 @@ def _worker(args: argparse.Namespace) -> int:
         for event in published_events
         if event.get("artifact_relative_directory")
     }
-    with manager.artifact_retirement_lock:
-        operationally_pinned_directories = {
-            artifact.relative_directory
-            for artifact in [
-                *manager.active_artifact_attempts.values(),
-                *manager.host_playback_artifacts.values(),
-                *manager.artifact_reader_counts.keys(),
-            ]
-        }
+    with observed_lock:
+        operationally_pinned_directories = set(observed_attempts.values()) | set(observed_claims.values()) | set(observed_readers.values())
     live_directories_exist = all(
         published_directory_states.get(relative_directory, False)
         for relative_directory in live_artifact_directories

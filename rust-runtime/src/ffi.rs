@@ -107,6 +107,7 @@ enum RuntimeServiceCommand {
     DesktopLogin(crate::desktop_login::LoginCommand),
     BilibiliRedirect(BilibiliRedirectRequest),
     CacheRuntime(CacheRuntimeCommand),
+    ArtifactLifetime(crate::artifact_service::ArtifactCommand),
     Cloudflare(CloudflareServiceRequest),
     SharedCatalog(crate::shared_catalog::CatalogRequest),
     GatchaRepository(GatchaRepositoryRequest),
@@ -415,6 +416,11 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
             }
             RuntimeServiceCommand::CacheRuntime(request) => {
                 service_result(execute_cache_runtime(request))
+            }
+            RuntimeServiceCommand::ArtifactLifetime(request) => {
+                service_result(crate::artifact_service::execute(request).map_err(
+                    |error| json!({"kind": "artifact_lifetime", "message": error.to_string()}),
+                ))
             }
             RuntimeServiceCommand::SharedCatalog(request) => {
                 service_result(crate::shared_catalog::execute_catalog(&request))

@@ -3,80 +3,21 @@
 use super::*;
 use std::fs;
 
-fn directories(parent: &Path) -> Vec<PathBuf> {
-    if !fs::symlink_metadata(parent).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
-        return Vec::new();
-    }
-    fs::read_dir(parent)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_type()
-                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
-        })
-        .map(|entry| entry.path())
-        .collect()
-}
-
 pub(super) fn collect(root: &Path, include_staging: bool) -> std::io::Result<usize> {
-    let root = root.canonicalize()?;
-    let retired = root.join(".retired");
-    fs::create_dir_all(&retired)?;
-    if fs::symlink_metadata(&retired)?.file_type().is_symlink()
-        || retired.canonicalize()?.parent() != Some(root.as_path())
-    {
-        return Err(std::io::Error::other("unsafe retired cache directory"));
-    }
-    let mut count = 0;
-    for name in [".retired", "artifacts", ".staging"] {
-        if name == ".staging" && !include_staging {
-            continue;
+    if include_staging {
+        with_app(|app| {
+            app.open_artifact_lifetime(root).map_err(storage_error)?;
+            Ok(())
+        })
+        .map_err(|_| std::io::Error::other("native cache recovery failed"))?;
+        let mut collected = 0;
+        for area in [".retired", "artifacts", ".staging"] {
+            crate::app_state::artifact_lifetime::recover_native_artifacts(root, area)?;
+            collected += crate::app_state::artifact_lifetime::collect_artifacts(None)?;
         }
-        let parent = root.join(name);
-        for incarnation in directories(&parent) {
-            for artifact in directories(&incarnation) {
-                let Some(i) = incarnation.file_name().and_then(|v| v.to_str()) else {
-                    continue;
-                };
-                let Some(a) = artifact.file_name().and_then(|v| v.to_str()) else {
-                    continue;
-                };
-                let destination = retired.join(i).join(a);
-                let moved = with_app(|app| {
-                    if !app.native_can_retire_artifact(i, a) {
-                        return Ok(false);
-                    }
-                    // Pin admission and this rename are serialized. Delete outside
-                    // the lock; the old HTTP path can no longer be opened.
-                    if name != ".retired" {
-                        fs::create_dir_all(retired.join(i)).map_err(storage_error)?;
-                        if fs::symlink_metadata(retired.join(i))
-                            .map_err(storage_error)?
-                            .file_type()
-                            .is_symlink()
-                            || artifact.canonicalize().map_err(storage_error)? != artifact
-                            || !artifact.starts_with(&root)
-                        {
-                            return Err(ApiError::invalid("缓存路径无效"));
-                        }
-                        fs::rename(&artifact, &destination).map_err(storage_error)?;
-                    }
-                    Ok(true)
-                })
-                .map_err(|_| std::io::Error::other("native cache retirement failed"))?;
-                if moved {
-                    // Exact checked two-identity descendant, never the root.
-                    fs::remove_dir_all(&destination)?;
-                    let _ = fs::remove_dir(retired.join(i));
-                    count += 1;
-                }
-            }
-            let _ = fs::remove_dir(&incarnation); // Only succeeds when empty.
-        }
+        return Ok(collected);
     }
-    Ok(count)
+    crate::app_state::artifact_lifetime::collect_artifacts(None)
 }
 
 fn storage_error(_: std::io::Error) -> ApiError {

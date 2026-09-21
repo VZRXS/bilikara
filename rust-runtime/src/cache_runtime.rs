@@ -463,13 +463,14 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
         CacheRuntimeCommand::Clear { cache_root } => {
             validate_cache_root(&cache_root)?;
             let runtime = active_runtime()?;
-            runtime.cancel_all("cache cleared");
+            let reservations = runtime.cancel_all("cache cleared");
             if !runtime.wait_until_idle(SHUTDOWN_WAIT) {
                 return Err(CacheRuntimeError::new(
                     "busy",
                     "Rust cache workers did not stop before the clear deadline",
                 ));
             }
+            settle_drained_artifacts(&reservations);
             clear_directory(&cache_root)?;
             Ok(runtime.snapshot())
         }
@@ -955,8 +956,9 @@ impl CacheRuntime {
         cancelled
     }
 
-    fn cancel_all(&self, reason: &str) {
+    fn cancel_all(&self, reason: &str) -> Vec<CacheAttemptReservation> {
         let mut state = lock_state(&self.shared);
+        let reservations = resource_reservations(&state);
         let active: Vec<(String, u64)> = state
             .active
             .iter()
@@ -988,6 +990,7 @@ impl CacheRuntime {
             }
         }
         self.shared.wake.notify_all();
+        reservations
     }
 
     fn wait_until_idle(&self, timeout: Duration) -> bool {
@@ -1104,8 +1107,9 @@ impl CacheRuntime {
     }
 
     fn shutdown(&self) {
-        {
+        let reservations = {
             let mut state = lock_state(&self.shared);
+            let reservations = resource_reservations(&state);
             state.stopping = true;
             let active: Vec<(String, u64)> = state
                 .active
@@ -1124,7 +1128,8 @@ impl CacheRuntime {
             state.jobs.clear();
             state.completed.clear();
             self.shared.wake.notify_all();
-        }
+            reservations
+        };
         let handles = std::mem::take(
             &mut *self
                 .workers
@@ -1134,7 +1139,29 @@ impl CacheRuntime {
         for handle in handles {
             let _ = handle.join();
         }
+        settle_drained_artifacts(&reservations);
     }
+}
+
+fn resource_reservations(state: &RuntimeState) -> Vec<CacheAttemptReservation> {
+    state
+        .jobs
+        .values()
+        .map(|job| &job.reservation)
+        .chain(state.active.values().map(|job| &job.reservation))
+        .chain(state.completed.values().map(|job| &job.reservation))
+        .cloned()
+        .collect()
+}
+
+fn settle_drained_artifacts(reservations: &[CacheAttemptReservation]) {
+    // No cache-worker mutex is held while entering AppState. Only reservations
+    // captured before cancellation and settled after the drain can be released.
+    let _ = crate::app_state::with_cache_application(|app| {
+        for reservation in reservations {
+            app.settle_artifact_reservation(reservation);
+        }
+    });
 }
 
 fn lock_state(shared: &SharedRuntime) -> std::sync::MutexGuard<'_, RuntimeState> {
@@ -1833,10 +1860,23 @@ fn publish_tracks_for_attempt(
     reservation: &CacheAttemptReservation,
     tracks: Vec<TrackResult>,
 ) -> Result<CacheReadyResult, CacheRuntimeError> {
-    publish_tracks_with_authorizer(job, reservation, tracks, |item_id, reservation| {
-        authorize_cache_publication_for_runtime(item_id, reservation)
-            .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
+    let result =
+        publish_tracks_with_authorizer(job, reservation, tracks, |item_id, reservation| {
+            authorize_cache_publication_for_runtime(item_id, reservation)
+                .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
+        })?;
+    let registered = crate::app_state::with_cache_application(|app| {
+        app.register_runtime_publication(reservation, &job.cache_root)
     })
+    .map_err(|e| CacheRuntimeError::new(&e.kind, e.message))?
+    .map_err(|e| CacheRuntimeError::new("artifact_registration", e.to_string()))?;
+    if !registered {
+        return Err(CacheRuntimeError::new(
+            "artifact_registration",
+            "published artifact owner changed",
+        ));
+    }
+    Ok(result)
 }
 
 fn publish_tracks_with_authorizer<F>(
@@ -2248,6 +2288,11 @@ fn clear_directory(root: &Path) -> Result<(), CacheRuntimeError> {
     for entry in entries {
         let entry = entry.map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
         let path = entry.path();
+        // Workers have drained, but live HTTP bodies and Host programs may
+        // still own immutable artifacts. Only staging belongs to this cleanup.
+        if entry.file_name() != ".staging" {
+            continue;
+        }
         if path.is_dir() {
             fs::remove_dir_all(path)
                 .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;

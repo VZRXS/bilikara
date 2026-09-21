@@ -505,7 +505,6 @@ class AppContextArtifactOwnershipBoundaryTest(unittest.TestCase):
         audio_relative_path = f"{relative_directory}/audio.m4a"
         (self.cache_dir / video_relative_path).write_bytes(b"video")
         (self.cache_dir / audio_relative_path).write_bytes(b"audio")
-        self.manager._record_committed_artifact(reservation)
         self.assertTrue(
             self.manager._project_cache_event(
                 "song-a",

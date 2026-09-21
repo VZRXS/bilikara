@@ -39,7 +39,6 @@ pub(crate) struct NativeSession {
     remote_connection_diagnostics: VecDeque<Value>,
     login_diagnostics: VecDeque<crate::native_host::LoginDiagnostic>,
     library_diagnostics: VecDeque<crate::native_host::LibraryDiagnostic>,
-    media_readers: HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for NativeSession {
@@ -469,6 +468,7 @@ impl AppState {
             return Err(ApiError::invalid("缺少播放器身份"));
         }
         if retire {
+            self.retire_native_program(&identity.client, generation, &incarnation, &artifact);
             let released = self.native_session.claim.as_ref().is_some_and(|claim| {
                 claim.client == identity.client
                     && claim.generation == generation
@@ -482,7 +482,8 @@ impl AppState {
         }
         let snapshot = self.native_core_snapshot()?;
         let current = snapshot.playback_program.as_ref();
-        let matches = snapshot.playback_generation == generation
+        let matches = !self.artifact_program_retired(&identity.client, generation)
+            && snapshot.playback_generation == generation
             && current.is_some_and(|p| {
                 p.item_incarnation_id == incarnation
                     && p.artifact_set_id.as_deref() == Some(&artifact)

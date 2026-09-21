@@ -1,4 +1,5 @@
 mod app_state;
+mod artifact_service;
 mod bilibili_service;
 mod cache_application;
 mod cache_runtime;

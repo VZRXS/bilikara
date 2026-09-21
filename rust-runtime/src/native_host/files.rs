@@ -137,9 +137,9 @@ pub(super) async fn media(
         return Err(ApiError::new(404, "not_found", "媒体不存在"));
     }
     let route = path.to_owned();
-    with_app(|app| app.native_pin_media(&route))?;
+    let handle = with_app(|app| app.native_pin_media(&route))?;
     // Released on every early error/HEAD and when the streaming body is dropped.
-    let lease = MediaLease(route);
+    let lease = MediaLease(handle);
     let root = context
         .cache_root
         .canonicalize()
@@ -221,6 +221,146 @@ pub(super) async fn media(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_body_owns_rust_lease_until_eof_drop_head_or_error() {
+        use crate::{AppStateRequest, execute_app_state};
+        let _serial = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });
+        let seed = serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1.0,"session_played_file":"test.json","updated_at":1.0})).unwrap();
+        assert!(
+            execute_app_state(AppStateRequest::Initialize {
+                schema_version: 1,
+                state: Box::new(seed)
+            })
+            .error()
+            .is_none()
+        );
+        let directory = std::env::temp_dir().join(format!("bilikara-body-{}", token().unwrap()));
+        let context = HostContext {
+            cache_root: directory.join("media"),
+            directory: directory.clone(),
+            assets: Arc::new(|_| None),
+            stop: Arc::new(AtomicBool::new(false)),
+            api_slots: Arc::new(Semaphore::new(1)),
+            event_slots: Arc::new(Semaphore::new(1)),
+            export_slots: Arc::new(Semaphore::new(1)),
+            export_renderer: std::sync::OnceLock::new(),
+            port: 0,
+            desktop: false,
+            bbdown: None,
+            shutdown_token: None,
+            workers: std::sync::Mutex::new(Vec::new()),
+        };
+        crate::app_state::with_cache_application(|app| {
+            app.open_artifact_lifetime(&context.cache_root)
+        })
+        .unwrap()
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for mode in ["full", "range", "drop", "head", "missing", "bad-range"] {
+            let item = serde_json::from_value(json!({"id":mode,"original_url":"https://example.test/video","resolved_url":"https://example.test/video","bvid":mode,"aid":1,"cid":2,"page":1,"title":mode,"part_title":"P1","display_title":mode,"cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[120],"available_parts":["P1"]})).unwrap();
+            assert!(
+                execute_app_state(AppStateRequest::AddItem {
+                    schema_version: 1,
+                    item,
+                    position: "tail".into(),
+                    requester_name: "Alice".into(),
+                    reset_av_delay: false,
+                    allow_repeat: true,
+                    now: 2.0
+                })
+                .error()
+                .is_none()
+            );
+            let item =
+                with_app(|app| Ok(app.native_core_snapshot()?.current_item.unwrap())).unwrap();
+            let r =
+                crate::app_state::begin_cache_attempt_for_runtime(mode, &item.item_incarnation_id)
+                    .unwrap();
+            let path = context.cache_root.join(&r.artifact_relative_directory);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("video.mp4"), b"0123456789").unwrap();
+            std::fs::write(path.join("audio.m4a"), b"audio").unwrap();
+            let route = format!("/media/{}/video.mp4", r.artifact_relative_directory);
+            let event = serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{}/video.mp4",r.artifact_relative_directory),"video_media_url":route,"audio_variants":[{"id":"p1","page":1,"label":"P1","audio_url":format!("/media/{}/audio.m4a",r.artifact_relative_directory)}],"selected_audio_variant_id":"p1","item_incarnation_id":r.item_incarnation_id,"artifact_set_id":r.artifact_set_id,"artifact_relative_directory":r.artifact_relative_directory})).unwrap();
+            assert!(
+                execute_app_state(AppStateRequest::ApplyCacheEvent {
+                    schema_version: 1,
+                    item_id: mode.into(),
+                    cache_attempt_token: r.cache_attempt_token,
+                    event,
+                    now: 3.0
+                })
+                .error()
+                .is_none()
+            );
+            if mode == "missing" {
+                std::fs::remove_file(path.join("video.mp4")).unwrap();
+            }
+            let mut headers = HeaderMap::new();
+            if mode == "range" {
+                headers.insert("range", "bytes=2-4".parse().unwrap());
+            }
+            if mode == "bad-range" {
+                headers.insert("range", "bytes=999-".parse().unwrap());
+            }
+            let response = runtime.block_on(media(&context, &route, &headers, mode == "head"));
+            assert!(
+                execute_app_state(AppStateRequest::RemoveItem {
+                    schema_version: 1,
+                    item_id: mode.into(),
+                    now: 4.0
+                })
+                .error()
+                .is_none()
+            );
+            let reader_count = || with_app(|app| Ok(app.artifact_reader_count())).unwrap();
+            if matches!(mode, "full" | "range" | "drop") {
+                assert_eq!(reader_count(), 1);
+                assert_eq!(maintenance::collect(&context.cache_root, false).unwrap(), 0);
+                assert!(path.is_dir());
+                if mode == "drop" {
+                    drop(response.unwrap());
+                } else {
+                    let response = response.unwrap();
+                    assert_eq!(
+                        response.status().as_u16(),
+                        if mode == "range" { 206 } else { 200 }
+                    );
+                    let bytes = runtime
+                        .block_on(axum::body::to_bytes(response.into_body(), 100))
+                        .unwrap();
+                    assert_eq!(
+                        bytes.as_ref(),
+                        if mode == "range" {
+                            &b"234"[..]
+                        } else {
+                            &b"0123456789"[..]
+                        }
+                    );
+                }
+            } else if mode == "missing" {
+                assert_eq!(response.unwrap_err().status, 404);
+            } else {
+                assert_eq!(
+                    response.unwrap().status().as_u16(),
+                    if mode == "head" { 200 } else { 416 }
+                );
+            }
+            assert_eq!(reader_count(), 0);
+            assert_eq!(maintenance::collect(&context.cache_root, false).unwrap(), 1);
+            assert!(!path.exists());
+        }
+        execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn ranges_cover_android_seek_and_suffix_requests() {
         assert_eq!(byte_range(None, 100).unwrap(), (0, 99, false));

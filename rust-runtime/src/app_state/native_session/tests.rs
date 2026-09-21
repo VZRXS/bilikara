@@ -49,6 +49,10 @@ fn setup() -> (AppState, Identity) {
 }
 
 fn ready(app: &mut AppState) -> (AppSnapshot, Value) {
+    ready_at(app, None)
+}
+
+fn ready_at(app: &mut AppState, cache_root: Option<&Path>) -> (AppSnapshot, Value) {
     let item:PlaylistItem=serde_json::from_value(json!({"id":"first","original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[120],"available_parts":["P1"]})).unwrap();
     app.native_execute(AppStateRequest::AddItem {
         schema_version: 1,
@@ -69,6 +73,12 @@ fn ready(app: &mut AppState) -> (AppSnapshot, Value) {
         })
         .unwrap();
     let directory = reservation["artifact_relative_directory"].as_str().unwrap();
+    if let Some(root) = cache_root {
+        let path = root.join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("video.mp4"), b"video").unwrap();
+        std::fs::write(path.join("audio.m4a"), b"audio").unwrap();
+    }
     let event:CacheEvent=serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{directory}/video.mp4"),"video_media_url":format!("/media/{directory}/video.mp4"),"audio_variants":[{"id":"p1_p1","label":"P1","page":1,"audio_url":format!("/media/{directory}/audio.m4a")}],"selected_audio_variant_id":"p1_p1","item_incarnation_id":reservation["item_incarnation_id"],"artifact_set_id":reservation["artifact_set_id"],"artifact_relative_directory":directory})).unwrap();
     app.native_execute(AppStateRequest::ApplyCacheEvent {
         schema_version: 1,
@@ -268,13 +278,15 @@ fn native_and_ffi_controls_share_one_fifo_and_host_only_ack() {
 #[test]
 fn cache_retirement_waits_for_queue_player_and_all_media_readers() {
     let (mut app, host) = setup();
-    let (snapshot, claim) = ready(&mut app);
+    let root = std::env::temp_dir().join(format!("bilikara-native-readers-{}", std::process::id()));
+    app.open_artifact_lifetime(&root).unwrap();
+    let (snapshot, claim) = ready_at(&mut app, Some(&root));
     let item = snapshot.current_item.unwrap();
     let i = &item.item_incarnation_id;
     let a = &item.artifact_set_id;
-    assert!(!app.native_can_retire_artifact(i, a));
-    app.native_pin_media(&item.video_media_url).unwrap();
-    app.native_pin_media(&item.video_media_url).unwrap();
+    assert!(!app.can_retire_artifact(i, a));
+    let first = app.native_pin_media(&item.video_media_url).unwrap();
+    let second = app.native_pin_media(&item.video_media_url).unwrap();
     app.native_claim(&host, &claim, false).unwrap();
     app.native_execute(AppStateRequest::RemoveItem {
         schema_version: 1,
@@ -283,13 +295,14 @@ fn cache_retirement_waits_for_queue_player_and_all_media_readers() {
     })
     .unwrap();
     assert!(app.native_pin_media(&item.video_media_url).is_err());
-    assert!(!app.native_can_retire_artifact(i, a));
+    assert!(!app.can_retire_artifact(i, a));
     app.native_release_claim();
-    app.native_unpin_media(&item.video_media_url);
-    assert!(!app.native_can_retire_artifact(i, a));
-    app.native_unpin_media(&item.video_media_url);
-    assert!(app.native_can_retire_artifact(i, a));
-    assert!(!app.native_can_retire_artifact("../credentials", a));
+    app.native_unpin_media(&first);
+    assert!(!app.can_retire_artifact(i, a));
+    app.native_unpin_media(&second);
+    assert!(app.can_retire_artifact(i, a));
+    assert!(!app.can_retire_artifact("../credentials", a));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -306,14 +319,19 @@ fn cache_retirement_preserves_inflight_publication_reservations() {
         .unwrap();
     let artifact = reservation["artifact_set_id"].as_str().unwrap();
     assert_ne!(artifact, item.artifact_set_id);
-    assert!(!app.native_can_retire_artifact(&item.item_incarnation_id, artifact));
+    assert!(!app.can_retire_artifact(&item.item_incarnation_id, artifact));
     app.native_execute(AppStateRequest::RemoveItem {
         schema_version: 1,
-        item_id: item.id,
+        item_id: item.id.clone(),
         now: 5.0,
     })
     .unwrap();
-    assert!(app.native_can_retire_artifact(&item.item_incarnation_id, artifact));
+    assert!(!app.can_retire_artifact(&item.item_incarnation_id, artifact));
+    app.settle_artifact_attempt(
+        &item.id,
+        reservation["cache_attempt_token"].as_u64().unwrap(),
+    );
+    assert!(app.can_retire_artifact(&item.item_incarnation_id, artifact));
 }
 
 #[test]
