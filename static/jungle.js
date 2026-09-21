@@ -27,6 +27,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// Legacy Jungle implementation retained for reference and local comparisons.
+// Host playback uses Signalsmith Stretch through pitch-player.js. This file is
+// not loaded by the player and is not an automatic or low-performance fallback.
+
 function createFadeBuffer(context, activeTime, fadeTime) {
     var length1 = activeTime * context.sampleRate;
     var length2 = (activeTime - 2*fadeTime) * context.sampleRate;

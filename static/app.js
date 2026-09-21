@@ -11626,6 +11626,7 @@ function stopMountedPlayerForAdvanceDelay(itemId) {
   clearLocalPlayerSeekState();
 
   const { video, audio } = activeLocalPlayerElements();
+  audio?.bilikaraPitch?.reset();
   if (audio && !audio.paused) {
     audio.pause();
   }
@@ -12092,6 +12093,7 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
     return false;
   }
 
+  audio.bilikaraPitch?.reset();
   clearLocalPlayerSeekState(session);
 
   if (session.readyCommitted && ["starting", "start-retry-wait"].includes(session.phase)) {
@@ -12249,13 +12251,14 @@ function splitVideoFrameStats(video) {
 function splitSyncSnapshot(video, audio, offsetSeconds, action) {
   const audioTime = Number(audio?.currentTime || 0);
   const videoTime = Number(video?.currentTime || 0);
-  const targetVideoTime = clampMediaTime(video, audioTime + offsetSeconds);
+  const targetVideoTime = clampMediaTime(video, audioTime - (audio?.bilikaraPitch?.delay() || 0) + offsetSeconds);
   return {
     audio_current_time: audioTime,
     video_current_time: videoTime,
     target_video_time: targetVideoTime,
     drift_seconds: videoTime - targetVideoTime,
     effective_av_delay_seconds: offsetSeconds,
+    pitch: audio?.bilikaraPitch?.snapshot() || null,
     audio_playback_rate: Number(audio?.playbackRate || 1),
     video_playback_rate: Number(video?.playbackRate || 1),
     audio_ready_state: Number(audio?.readyState || 0),
@@ -12402,6 +12405,16 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   ) {
     return;
   }
+  const endingSession = state.hostPlaybackSession;
+  if (endingSession.pitchDraining) return;
+  endingSession.pitchDraining = true;
+  if (audio.bilikaraPitch && !await audio.bilikaraPitch.drain()) {
+    endingSession.pitchDraining = false;
+    return;
+  }
+  endingSession.pitchDraining = false;
+  if (!isActiveSplitPlayer(video, audio) || state.localPlaybackEndHandled || !audio.ended
+    || shouldHoldCurrentItemForTransition(currentItem)) return;
   state.localPlaybackEndHandled = true;
   state.localShouldBePlaying = false;
   state.hostPlaybackSession.seekResumePending = false;
@@ -12410,7 +12423,7 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
     video.pause();
   }
   reportStatus();
-  await handleLocalPlaybackEnded("media-ended", state.hostPlaybackSession);
+  await handleLocalPlaybackEnded("media-ended", endingSession);
   return true;
 }
 
@@ -12755,6 +12768,7 @@ function setSplitPlaybackIntent(
   const nextIntent = Boolean(shouldPlay);
   session.logicalPlayIntent = nextIntent;
   if (!nextIntent) {
+    audio.bilikaraPitch?.reset();
     clearAndroidAudioClockRecovery(session);
   }
   if (!session.readyCommitted) {
@@ -13608,6 +13622,18 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     state.localAudioPlaybackBlocked = false;
   }
 
+  const pitch = audio.bilikaraPitch;
+  if (pitch?.sync({
+    video, offset: offsetSeconds, rate: requestedRate,
+    hold: () => holdVideoForAudio(video),
+    play: () => playMediaBestEffort(audio, { video, audio, mediaKind: "audio" }),
+    // A route change deliberately pauses media. Retire pending play promises
+    // before that pause so their AbortError cannot fail the new prime.
+    beforePrime: () => { state.localPlaybackStartGeneration += 1; },
+  })) {
+    scheduleAndroidAudioClockRecovery(video, audio);
+    return reportAction("pitch-priming");
+  }
   const videoTime = Number(video.currentTime || 0);
   if (video.ended) {
     if (audio.readyState >= 2 && !state.localAudioPlaybackBlocked) {
@@ -13624,7 +13650,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("wait-for-video");
   }
 
-  const rawTargetAudioTime = videoTime - offsetSeconds;
+  const rawTargetAudioTime = videoTime - offsetSeconds + (audio.bilikaraPitch?.delay(requestedRate) || 0);
   if (rawTargetAudioTime < 0) {
     if (!audio.paused) {
       audio.pause();
@@ -13701,6 +13727,13 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   let action = "none";
   let correction = null;
   if (!recoveringFromWebKitVideoStarvation && absoluteDrift >= seekThreshold && seekAllowed) {
+    if (audio.bilikaraPitch?.phase === "active") {
+      audio.bilikaraPitch.reset();
+      holdVideoForAudio(video);
+      audio.pause();
+      state.localPlayerSyncLastSeekAt = now;
+      return reportAction("pitch-reprime");
+    }
     if (setMediaCurrentTime(audio, targetAudioTime)) {
       state.localPlayerSyncLastSeekAt = now;
       action = "audio-drift-correction";
@@ -13743,6 +13776,7 @@ function resyncMountedLocalPlayerForOffsetChange() {
   if (!video || !audio) {
     return;
   }
+  audio.bilikaraPitch?.reset();
   const rawTargetAudioTime = Number(video.currentTime || 0) - currentAvOffsetSeconds();
   const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
   const audioRepositioned = audio.readyState >= 1
@@ -13864,7 +13898,18 @@ function renderKeyShiftControls(playbackMode) {
   }
 
   if (elements.keyShiftResetButton) {
-    elements.keyShiftResetButton.disabled = keyShift === 0;
+    elements.keyShiftResetButton.disabled = keyShift === 0
+      || elements.keyShiftResetButton.getAttribute("aria-busy") === "true";
+  }
+  const pitchStatus = document.getElementById("pitch-status");
+  const { audio } = activeLocalPlayerElements();
+  const pitch = audio?.bilikaraPitch;
+  if (pitchStatus) {
+    const failed = audio?.bilikaraPitchFailure || pitch?.failure;
+    const pending = keyShift !== 0 && (!pitch || pitch.phase !== "active" || pitch.applied !== keyShift);
+    pitchStatus.textContent = keyShift && failed ? t("player.pitchUnavailable")
+      : pending ? t("player.pitchPending") : "";
+    pitchStatus.hidden = !pitchStatus.textContent;
   }
   globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
 }
@@ -13901,17 +13946,23 @@ async function setLocalPlayerKeyShift(keyShift) {
   }
 }
 
-function disposeAudioPitchProcessor(audio) {
-  if (!audio?.jungle) {
-    return;
-  }
+async function applyKeyShiftControl(control, keyShift) {
+  if (control.disabled || control.getAttribute("aria-busy") === "true") return;
+  const disabled = control.disabled;
+  control.disabled = true;
+  control.setAttribute("aria-busy", "true");
   try {
-    audio.jungle.dispose();
-  } catch {
-    // A partially initialized or already-disposed graph must not block playback cleanup.
+    await setLocalPlayerKeyShift(keyShift);
+  } finally {
+    control.disabled = disabled;
+    control.removeAttribute("aria-busy");
+    renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
   }
-  audio.jungle = null;
-  audio.bilikaraPitchRoute = "";
+}
+
+function disposeAudioPitchProcessor(audio) {
+  audio?.bilikaraPitch?.dispose();
+  if (audio) audio.bilikaraPitch = null;
 }
 
 function disconnectAudioPitchSource(audio) {
@@ -13932,7 +13983,8 @@ function disposeAudioPitchShifter(audio) {
   }
   disposeAudioPitchProcessor(audio);
   disconnectAudioPitchSource(audio);
-  audio.bilikaraPitchSource = null;
+  // Retain the source identity: an element cannot be wrapped a second time.
+  audio.bilikaraPitchRetired = true;
   audio.bilikaraVolumeGain?.disconnect();
   audio.bilikaraVolumeGain = null;
 }
@@ -13965,6 +14017,7 @@ function resumeAudioContextBestEffort() {
 }
 
 function ensureAudioPitchSource(audio) {
+  if (audio.bilikaraPitchRetired) return null;
   if (audio.bilikaraPitchSource) {
     return audio.bilikaraPitchSource;
   }
@@ -14003,6 +14056,7 @@ function applyMediaVolume(media) {
   media.muted = state.localPlayerMuted;
   if (volume > 1 && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
     try {
+      if (state.pitchContextFailure === "media-clock") throw new Error("Media source clock unavailable");
       if (!ensureAudioPitchSource(media)) throw new Error("Web Audio unavailable");
       if (media.paused === false) resumeAudioContextBestEffort();
     } catch (error) {
@@ -14027,62 +14081,72 @@ function setupAudioPitchShifter(audio) {
   applyKeyShiftToAudio(audio);
 }
 
+function recoverAudioPitchOutput(audio, kind) {
+  state.pitchContextFailure = kind;
+  const session = state.hostPlaybackSession;
+  queueMicrotask(() => {
+    if (!isCurrentHostPlaybackSession(session, session?.video, audio)) return;
+    const item = state.data?.current_item;
+    state.pendingPlaybackRestore = {
+      itemId: item.id, itemIncarnationId: item.item_incarnation_id,
+      variantId: session.playbackProgram.selected_audio_variant_id,
+      currentTime: Number(session.video.currentTime || 0),
+      wasPlaying: Boolean(session.logicalPlayIntent),
+    };
+    // A captured element cannot regain native output by disconnecting its source.
+    // Use the existing session restore path when its context/clock is unusable.
+    if (state.audioContext?.state === "closed") state.audioContext = null;
+    retireHostPlaybackSession(session, { preserveAdvanceDelayOverlay: true });
+    renderPlayer(item, frontendPlaybackMode(state.data?.playback_mode));
+  });
+}
+
 function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
-  if (!audio) {
-    return;
-  }
-  const rawKeyShift = overrideKeyShift !== null
-    ? Number(overrideKeyShift)
-    : Number(state.data?.player_settings?.key_shift ?? 0);
+  if (!audio || audio.bilikaraPitchRetired) return;
+  const rawKeyShift = Number(overrideKeyShift ?? state.data?.player_settings?.key_shift ?? 0);
   const keyShift = Number.isFinite(rawKeyShift) ? Math.max(-6, Math.min(6, rawKeyShift)) : 0;
-
-  if (keyShift === 0) {
-    if (!audio.jungle) {
+  if (!keyShift && !audio.bilikaraPitch) return; // native zero-shift path
+  const unavailable = (kind) => {
+    audio.bilikaraPitchFailure = kind;
+    if (!audio.bilikaraPitchErrorReported) {
+      audio.bilikaraPitchErrorReported = true;
+      setAppMessage(t("player.pitchUnavailable"), true);
+    }
+    renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+    if (kind === "context-closed" || kind === "media-clock") recoverAudioPitchOutput(audio, kind);
+  };
+  if (!audio.bilikaraPitch) {
+    if (audio.bilikaraPitchFailure) return;
+    if (state.pitchContextFailure || !globalThis.BilikaraPitch || !globalThis.isSecureContext
+      || typeof WebAssembly !== "object" || typeof AudioWorkletNode !== "function") {
+      unavailable("unsupported-context");
       return;
     }
-    disposeAudioPitchProcessor(audio);
-    const source = audio.bilikaraPitchSource;
-    if (!source || !state.audioContext) {
-      return;
-    }
-    disconnectAudioPitchSource(audio);
-    source.connect(audio.bilikaraVolumeGain);
-    audio.bilikaraPitchRoute = "direct";
-    return;
-  }
-
-  try {
-    const source = ensureAudioPitchSource(audio);
-    if (!source || !state.audioContext) {
-      return;
-    }
-    if (!audio.jungle) {
-      disconnectAudioPitchSource(audio);
-      const jungle = new Jungle(state.audioContext);
-      audio.jungle = jungle;
-      source.connect(jungle.input);
-      jungle.output.connect(audio.bilikaraVolumeGain);
-      audio.bilikaraPitchRoute = "processor";
-      if (audio.paused === false) {
-        resumeAudioContextBestEffort();
+    try {
+      if (!state.audioContext) {
+        state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
+      const session = state.hostPlaybackSession;
+      audio.bilikaraPitch = new BilikaraPitch.PlayerPitch({
+        audio, context: state.audioContext,
+        source: audio.bilikaraPitchSource, destination: audio.bilikaraVolumeGain,
+        connectInput: () => {
+          const source = ensureAudioPitchSource(audio);
+          if (!source) throw new Error("media-source");
+          return { source, destination: audio.bilikaraVolumeGain };
+        },
+        current: () => isCurrentHostPlaybackSession(session, session.video, audio),
+        changed: () => renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode)),
+        unavailable,
+      });
+    } catch {
+      unavailable("initialization");
+      return;
     }
-    const ratio = Math.pow(2, keyShift / 12);
-    audio.jungle.setPitchOffset(ratio - 1);
-  } catch (error) {
-    disposeAudioPitchProcessor(audio);
-    const source = audio.bilikaraPitchSource;
-    if (source && state.audioContext) {
-      disconnectAudioPitchSource(audio);
-      try {
-        source.connect(audio.bilikaraVolumeGain);
-        audio.bilikaraPitchRoute = "direct";
-      } catch {
-        // If Web Audio setup failed, leave the native media lifecycle intact.
-      }
-    }
-    console.error("Failed to setup Web Audio pitch shifter:", error);
   }
+  const previousShift = audio.bilikaraPitch.requested;
+  audio.bilikaraPitch.setShift(keyShift);
+  if (!audio.paused && previousShift !== keyShift) resumeAudioContextBestEffort();
 }
 
 function persistLocalVolumePreferences() {
@@ -15189,6 +15253,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "ratechange", () => {
+    audio.bilikaraPitch?.reset();
     state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
     audio.playbackRate = state.localPlayerRequestedRate;
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
@@ -19741,22 +19806,22 @@ elements.volumeMuteButton?.addEventListener("click", () => {
   toggleLocalPlayerMute();
 });
 
-elements.keyShiftDecButton?.addEventListener("click", () => {
+elements.keyShiftDecButton?.addEventListener("click", (event) => {
   const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
-  setLocalPlayerKeyShift(currentKey - 1);
+  applyKeyShiftControl(event.currentTarget, currentKey - 1);
 });
 
-elements.keyShiftIncButton?.addEventListener("click", () => {
+elements.keyShiftIncButton?.addEventListener("click", (event) => {
   const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
-  setLocalPlayerKeyShift(currentKey + 1);
+  applyKeyShiftControl(event.currentTarget, currentKey + 1);
 });
 
-elements.keyShiftResetButton?.addEventListener("click", () => {
-  setLocalPlayerKeyShift(0);
+elements.keyShiftResetButton?.addEventListener("click", (event) => {
+  applyKeyShiftControl(event.currentTarget, 0);
 });
 
 elements.keyShiftInput?.addEventListener("change", async (event) => {
-  await setLocalPlayerKeyShift(event.target.value);
+  await applyKeyShiftControl(event.currentTarget, event.target.value);
 });
 
 elements.keyShiftInput?.addEventListener("keydown", async (event) => {
@@ -19764,7 +19829,7 @@ elements.keyShiftInput?.addEventListener("keydown", async (event) => {
     return;
   }
   event.preventDefault();
-  await setLocalPlayerKeyShift(event.target.value);
+  await applyKeyShiftControl(event.currentTarget, event.target.value);
 });
 
 document.addEventListener("click", () => {

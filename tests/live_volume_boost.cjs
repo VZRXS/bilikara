@@ -345,9 +345,9 @@ async function main() {
     await remote.locator("#remote-volume-mute-button").click();
     await hostPage.waitForFunction(() => state.localPlayerVolume === 5 && !state.hostPlaybackSession.audio.muted);
     await hostPage.locator("#key-shift-inc-button").click();
-    await hostPage.waitForFunction(() => state.hostPlaybackSession.audio.jungle && state.hostPlaybackSession.audio.bilikaraVolumeGain.bilikaraTarget === 5);
+    await hostPage.waitForFunction(() => state.hostPlaybackSession.audio.bilikaraPitch?.applied === 1 && state.hostPlaybackSession.audio.bilikaraVolumeGain.bilikaraTarget === 5);
     await hostPage.locator("#key-shift-reset-button").click();
-    await hostPage.waitForFunction(() => !state.hostPlaybackSession.audio.jungle && state.hostPlaybackSession.audio.bilikaraVolumeGain.bilikaraTarget === 5);
+    await hostPage.waitForFunction(() => state.hostPlaybackSession.audio.bilikaraPitch?.applied === 0 && state.hostPlaybackSession.audio.bilikaraVolumeGain.bilikaraTarget === 5);
     if (await hostPage.locator("#stage-control-backdrop").isVisible()) await hostPage.locator("#stage-control-backdrop").click();
     await hostPage.evaluate(() => { window.previousVolumeAudio = state.hostPlaybackSession.audio; });
     await hostPage.locator('#audio-variant-bar [data-variant-id="p2_instrumental"]').click();

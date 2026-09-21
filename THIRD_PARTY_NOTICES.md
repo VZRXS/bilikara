@@ -23,6 +23,15 @@ The existing `png` and `zip` crates encode sequential image pages and archives.
 The independent `zxing-cpp` decoder in `requirements-test-qr.txt` is test-only
 (Apache-2.0) and is not included in packaging requirements.
 
+## Signalsmith Stretch (Host playback pitch)
+
+- Official Web release 1.3.2, commit `57b93f4e9206a089a45387eaa39bdc9f310d3308`.
+- Upstream: https://github.com/Signalsmith-Audio/signalsmith-stretch
+- MIT, Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd.
+- Local embedded-WASM module and license: `static/vendor/signalsmith-stretch/`.
+- The adjacent README and `scripts/vendor_signalsmith.py` identify and reproduce
+  the JavaScript lifecycle adaptation. The compiled DSP is unchanged.
+
 ## 1. bilikara
 
 - Project: bilikara

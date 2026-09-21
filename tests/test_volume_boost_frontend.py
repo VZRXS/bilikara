@@ -81,11 +81,15 @@ class Context {
     return node;
   }
 }
-class Jungle {
-  constructor() { this.input = new Node("pitch-in"); this.output = new Node("pitch-out"); }
-  setPitchOffset() {}
-  dispose() { this.input.disconnect(); this.output.disconnect(); }
+class Pitch {
+  constructor({source, destination}) { this.source = source; this.destination = destination; this.requested = 0; }
+  setShift(value) { this.requested = value; this.source.disconnect(); this.source.connect(this.destination); }
+  dispose() { this.source.disconnect(); }
 }
+globalThis.BilikaraPitch = {PlayerPitch: Pitch};
+globalThis.isSecureContext = true;
+globalThis.AudioWorkletNode = function() {};
+function renderKeyShiftControls() {}
 const window = {AudioContext: Context};
 const state = {localPlayerVolume: .5, localPlayerMuted: false, data: {player_settings: {key_shift: 0}}};
 const errors = [];
@@ -117,7 +121,8 @@ syncSplitPlayerVolumeFromVideo(video, audio);
 assert.equal(state.localPlayerVolume, 5);
 assert.equal(audio.muted, true);
 applyKeyShiftToAudio(audio, 3);
-assert.equal(audio.jungle.output.connections[0], audio.bilikaraVolumeGain);
+assert.equal(audio.bilikaraPitch.destination, audio.bilikaraVolumeGain);
+assert.equal(audio.bilikaraPitch.requested, 3);
 applyKeyShiftToAudio(audio, 0);
 assert.deepEqual(audio.bilikaraPitchSource.connections, [audio.bilikaraVolumeGain]);
 const gain = audio.bilikaraVolumeGain;

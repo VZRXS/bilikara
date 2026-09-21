@@ -1634,6 +1634,8 @@ console.log(JSON.stringify({{
   function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
   function renderKeyShiftControls() {{}}
   function frontendPlaybackMode() {{ return "local"; }}
+  function setAppMessage() {{}}
+  function t(key) {{ return key; }}
   function ensureAudioPitchSource() {{ return null; }}
   function disposeAudioPitchProcessor() {{}}
   function disconnectAudioPitchSource() {{}}
