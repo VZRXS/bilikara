@@ -767,11 +767,14 @@ function tauriInvoke() {{
   await Promise.all([publishPresentationPlaybackState(), publishPresentationPlaybackState()]);
   video.currentTime = 13.6;
   await publishPresentationPlaybackState();
+  audio.volume = 1;
+  audio.bilikaraVolume = 5;
+  await publishPresentationPlaybackState();
   process.stdout.write(JSON.stringify({{ calls }}));
 }})();
 """
         result = self.run_node(script)
-        self.assertEqual(len(result["calls"]), 2)
+        self.assertEqual(len(result["calls"]), 3)
         first = result["calls"][0]
         self.assertEqual(first[0], "publish_presentation_playback_state")
         self.assertEqual(first[1]["generation"], 9)
@@ -797,6 +800,8 @@ function tauriInvoke() {{
         self.assertEqual(snapshot["volumePercent"], 42)
         self.assertTrue(snapshot["muted"])
         self.assertEqual(result["calls"][1][1]["playbackState"]["revision"], 2)
+        self.assertEqual(result["calls"][2][1]["playbackState"]["revision"], 3)
+        self.assertEqual(result["calls"][2][1]["playbackState"]["volumePercent"], 500)
 
     def test_committed_pair_observation_drives_external_playback_state(self):
         legacy_view = self.source_slice(

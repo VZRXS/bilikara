@@ -102,6 +102,7 @@ async function apiPost(_url, payload) {{
   return {{ current_item: nextItem, playlist: [], player_settings: {{ song_advance_delay_seconds: 3 }} }};
 }}
 function maybeShowSongTransitionOverlay() {{}}
+function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function render() {{ renders += 1; }}
 function syncMountedLocalPlayer() {{}}
 function setAppMessage() {{}}
@@ -597,6 +598,7 @@ const state = {{
   manualTransitionHoldGeneration: 0,
   lastSongTransitionOverlayKey: "",
 }};
+function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 let responseSnapshotAccepted = false;
 let reconciliationCount = 0;
 let nextRequests = 0;
@@ -834,6 +836,7 @@ function frontendPlaybackMode(mode) {{ return mode || "local"; }}
 function clearLocalAdvanceDelay() {{}}
 function registerManualTransitionHold() {{ return 0; }}
 function maybeShowSongTransitionOverlay() {{}}
+function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function syncMountedLocalPlayer() {{}}
 {freshness}
 {playlist_action}

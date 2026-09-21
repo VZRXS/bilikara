@@ -489,6 +489,7 @@ mod tests {
         let changed = snapshot(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 35,
+            expected_item_incarnation_id: None,
             now: 20.0,
         }));
         let bytes = directory.bytes();

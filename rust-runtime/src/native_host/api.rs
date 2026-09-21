@@ -334,13 +334,14 @@ pub(super) fn dispatch(
             "/api/player/volume" => {
                 // Parse both inputs before committing either existing core command.
                 let settings = app.native_core_snapshot()?.player_settings;
-                let volume =
-                    body.get("volume_percent")
-                        .cloned()
-                        .unwrap_or(json!(settings.volume_percent))
-                        .as_i64()
-                        .filter(|v| (0..=100).contains(v))
-                        .ok_or_else(|| ApiError::invalid("音量无效"))? as i32;
+                let volume = body
+                    .get("volume_percent")
+                    .cloned()
+                    .unwrap_or(json!(settings.volume_percent))
+                    .as_i64()
+                    .filter(|v| (0..=i64::from(crate::app_state::MAX_VOLUME_PERCENT)).contains(v))
+                    .ok_or_else(|| ApiError::invalid("音量无效"))?
+                    as i32;
                 let muted = body
                     .get("is_muted")
                     .cloned()
@@ -350,6 +351,15 @@ pub(super) fn dispatch(
                 app.native_execute(AppStateRequest::SetVolume {
                     schema_version: 1,
                     volume_percent: volume,
+                    expected_item_incarnation_id: body
+                        .get("expected_item_incarnation_id")
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| ApiError::invalid("歌曲标识无效"))
+                        })
+                        .transpose()?,
                     now,
                 })?;
                 app.native_execute(AppStateRequest::SetMuted {

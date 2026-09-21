@@ -34,7 +34,9 @@ $files = @(
     "search-result-media.js",
     "song-detail.css",
     "song-detail.js",
-    "status-indicators.css"
+    "status-indicators.css",
+    "volume-control.css",
+    "volume-control.js"
 )
 
 New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null

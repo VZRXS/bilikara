@@ -334,6 +334,7 @@ function renderQueueCacheStatus() {{}}
 function frontendPlaybackMode() {{ return "local"; }}
 function currentPlayerStatus() {{ return null; }}
 function clearCurrentPlaybackClock() {{}}
+function clearRemoteVolumeCommitTimer() {{ state.remoteVolumeCommitTimer = null; }}
 function syncRemoteIdentityWithSnapshot() {{}}
 function scheduleFavlistBrowseReloadFromState() {{}}
 function render() {{
@@ -1243,6 +1244,7 @@ function renderSignatureForSnapshot(snapshot) {{
 }}
 function currentPlayerStatus() {{ return null; }}
 function clearCurrentPlaybackClock() {{}}
+function clearRemoteVolumeCommitTimer() {{ state.remoteVolumeCommitTimer = null; }}
 function syncRemoteIdentityWithSnapshot() {{}}
 function scheduleFavlistBrowseReloadFromState() {{}}
 function scheduleRender() {{}}
@@ -1376,6 +1378,7 @@ function currentStateRevision(snapshot) {{ return Number(snapshot?.state_revisio
 function renderSignatureForSnapshot(snapshot) {{ return JSON.stringify(snapshot); }}
 function currentPlayerStatus() {{ return null; }}
 function clearCurrentPlaybackClock() {{}}
+function clearRemoteVolumeCommitTimer() {{ state.remoteVolumeCommitTimer = null; }}
 function syncRemoteIdentityWithSnapshot() {{}}
 function scheduleFavlistBrowseReloadFromState() {{}}
 function scheduleRender() {{}}

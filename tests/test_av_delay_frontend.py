@@ -75,11 +75,11 @@ class AvDelayFrontendTest(unittest.TestCase):
             self.remote_html.index('id="playback-sheet"') :
             self.remote_html.index('id="remote-identity-modal"')
         ]
-        self.assertEqual(playback_sheet.count('class="remote-info-button"'), 2)
-        self.assertEqual(playback_sheet.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
-        self.assertEqual(playback_sheet.count('data-i18n-aria-label="common.moreInfo"'), 2)
-        self.assertEqual(playback_sheet.count('aria-describedby="remote-'), 2)
-        self.assertEqual(playback_sheet.count('role="tooltip"'), 3)
+        self.assertEqual(playback_sheet.count('class="remote-info-button"'), 3)
+        self.assertEqual(playback_sheet.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 3)
+        self.assertEqual(playback_sheet.count('data-i18n-aria-label="common.moreInfo"'), 3)
+        self.assertEqual(playback_sheet.count('aria-describedby="remote-'), 3)
+        self.assertEqual(playback_sheet.count('role="tooltip"'), 4)
         self.assertEqual(playback_sheet.count('id="playback-metadata-popover"'), 1)
         metadata_popover = playback_sheet[playback_sheet.index('id="playback-metadata-popover"') :]
         self.assertNotIn('aria-modal="true"', metadata_popover)
@@ -87,22 +87,24 @@ class AvDelayFrontendTest(unittest.TestCase):
             playback_sheet.index('id="remote-volume-panel"') :
             playback_sheet.index('id="remote-key-shift-panel"')
         ]
-        self.assertNotIn("remote-info-button", volume_panel)
-        self.assertNotIn("remote-volume-info", volume_panel)
+        self.assertIn("remote-info-button", volume_panel)
+        self.assertIn('aria-describedby="remote-volume-info"', volume_panel)
+        self.assertIn('data-i18n="player.volumeBoostHelp"', volume_panel)
 
         playback_controls = self.host_html[
             self.host_html.index('id="av-sync-panel"') :
             self.host_html.index('id="host-workspace-settings"')
         ]
-        self.assertEqual(playback_controls.count('class="playback-contextual-info-button'), 2)
-        self.assertEqual(playback_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
+        self.assertEqual(playback_controls.count('class="playback-contextual-info-button'), 3)
+        self.assertEqual(playback_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 3)
         self.assertNotIn('aria-hidden="true">?</span>', playback_controls)
         self.assertNotIn('class="av-sync-hint"', playback_controls)
         self.assertNotIn('class="volume-hint"', playback_controls)
         self.assertNotIn('id="volume-panel" class="volume-panel cache-contextual-info-region"', playback_controls)
         self.assertIn('aria-describedby="host-av-sync-info"', playback_controls)
         self.assertIn('aria-describedby="host-key-shift-info"', playback_controls)
-        self.assertEqual(playback_controls.count('role="tooltip"'), 2)
+        self.assertIn('aria-describedby="host-volume-info"', playback_controls)
+        self.assertEqual(playback_controls.count('role="tooltip"'), 3)
 
     def test_contextual_info_styles_cover_fine_and_coarse_pointers(self):
         self.assertIn("@media (hover: hover) and (pointer: fine)", self.host_css)

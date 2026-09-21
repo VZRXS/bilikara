@@ -508,6 +508,33 @@ class InternetRemoteFrontendTest(unittest.TestCase):
                     self.remote_css,
                 )
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_volume_transport_preserves_song_guard_and_stops_after_rejection(self):
+        start = self.remote_transport.index('url.pathname === "/api/player/volume"')
+        start = self.remote_transport.index("if (body.volume_percent", start)
+        end = self.remote_transport.index('\n      } else if', start)
+        body = self.remote_transport[start:end]
+        script = '''
+const assert = require("node:assert/strict");
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\\nreturn response;");
+(async () => {
+  const calls = [];
+  const id = "i-0123456789abcdef0123456789abcdef-0000000000000001";
+  await send({volume_percent:500, expected_item_incarnation_id:id, is_muted:false}, async (kind, payload) => {
+    calls.push({kind, payload}); return {};
+  });
+  assert.deepEqual(calls[0], {kind:"player.set_volume", payload:{volume_percent:500, expected_item_incarnation_id:id}});
+  calls.length = 0;
+  await assert.rejects(send({volume_percent:500, expected_item_incarnation_id:id, is_muted:false}, async (kind) => {
+    calls.push(kind); throw new Error("item_incarnation_mismatch");
+  }), /item_incarnation_mismatch/);
+  assert.deepEqual(calls, ["player.set_volume"]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''.replace("BODY", json.dumps(body))
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_internet_adapter_maps_shared_browse_and_gatcha_endpoints(self):
         expected_routes = {
             "/api/d1/browse",

@@ -770,8 +770,12 @@ class AppContext:
     def apply_av_delay_action(self, action: dict[str, object]) -> dict[str, object]:
         return self.store.apply_av_delay_action(action)
 
-    def set_volume_percent(self, volume_percent: int) -> int:
-        return self.store.set_volume_percent(volume_percent)
+    def set_volume_percent(
+        self, volume_percent: int, *, expected_item_incarnation_id: str | None = None
+    ) -> int:
+        return self.store.set_volume_percent(
+            volume_percent, expected_item_incarnation_id=expected_item_incarnation_id
+        )
 
     def set_muted(self, is_muted: bool) -> bool:
         return self.store.set_muted(is_muted)
@@ -2271,7 +2275,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if volume_percent is not None:
                     if not isinstance(volume_percent, int):
                         raise ValueError("volume_percent must be an integer")
-                    CONTEXT.set_volume_percent(volume_percent)
+                    if "expected_item_incarnation_id" in body:
+                        expected = body["expected_item_incarnation_id"]
+                        if not isinstance(expected, str):
+                            raise ValueError("expected_item_incarnation_id must be a string")
+                        CONTEXT.set_volume_percent(volume_percent, expected_item_incarnation_id=expected)
+                    else:
+                        CONTEXT.set_volume_percent(volume_percent)
                 if is_muted is not None:
                     if not isinstance(is_muted, bool):
                         raise ValueError("is_muted must be a boolean")

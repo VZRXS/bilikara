@@ -321,7 +321,11 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "playback.next")]
     PlaybackNext { playback_generation: u64 },
     #[serde(rename = "player.set_volume")]
-    PlayerSetVolume { volume_percent: u8 },
+    PlayerSetVolume {
+        volume_percent: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_item_incarnation_id: Option<String>,
+    },
     #[serde(rename = "player.set_muted")]
     PlayerSetMuted { is_muted: bool },
     #[serde(rename = "player.set_key_shift")]
@@ -611,7 +615,9 @@ struct PlaybackGenerationBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VolumeBody {
-    volume_percent: u8,
+    volume_percent: u16,
+    #[serde(default)]
+    expected_item_incarnation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -892,7 +898,15 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::PlaybackNext {
             playback_generation,
         } => valid_playback_generation(*playback_generation),
-        RemoteRequestV1::PlayerSetVolume { volume_percent } => *volume_percent <= 100,
+        RemoteRequestV1::PlayerSetVolume {
+            volume_percent,
+            expected_item_incarnation_id,
+        } => {
+            i32::from(*volume_percent) <= crate::MAX_VOLUME_PERCENT
+                && expected_item_incarnation_id
+                    .as_ref()
+                    .is_none_or(|id| id.is_empty() || valid_item_incarnation_id(id))
+        }
         RemoteRequestV1::PlayerSetMuted { .. } => true,
         RemoteRequestV1::PlayerSetKeyShift { key_shift } => (-6..=6).contains(key_shift),
         RemoteRequestV1::PlayerSetAudioVariant {
@@ -1174,6 +1188,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: VolumeBody = body(value)?;
             RemoteRequestV1::PlayerSetVolume {
                 volume_percent: body.volume_percent,
+                expected_item_incarnation_id: body.expected_item_incarnation_id,
             }
         }
         "player.set_muted" => {
@@ -1339,7 +1354,7 @@ pub struct RemotePlayerSettingsV1 {
     pub av_delay_lock_button_enabled: bool,
     #[serde(default)]
     pub av_delay_has_local_adjustment: bool,
-    pub volume_percent: u8,
+    pub volume_percent: u16,
     pub is_muted: bool,
     pub key_shift: i8,
 }
@@ -1902,6 +1917,46 @@ mod tests {
     }
 
     #[test]
+    fn volume_boost_round_trips_beyond_byte_range() {
+        for volume in [0, 100, 101, 255, 256, 375, 500] {
+            let envelope = decode_remote_request_v1(
+                &request("player.set_volume", json!({"volume_percent": volume})),
+                context(RemoteProfile::Controller),
+            )
+            .expect("supported gain");
+            assert_eq!(
+                envelope.request,
+                RemoteRequestV1::PlayerSetVolume {
+                    volume_percent: volume,
+                    expected_item_incarnation_id: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn volume_request_preserves_optional_song_guard() {
+        let id = "i-0123456789abcdef0123456789abcdef-0000000000000001";
+        for expected in [id, ""] {
+            let envelope = decode_remote_request_v1(
+                &request(
+                    "player.set_volume",
+                    json!({"volume_percent": 500, "expected_item_incarnation_id": expected}),
+                ),
+                context(RemoteProfile::Controller),
+            )
+            .expect("guarded volume");
+            assert_eq!(
+                envelope.request,
+                RemoteRequestV1::PlayerSetVolume {
+                    volume_percent: 500,
+                    expected_item_incarnation_id: Some(expected.into()),
+                }
+            );
+        }
+    }
+
+    #[test]
     fn request_bodies_reject_unknown_fields_and_unsafe_bounds() {
         let cases = [
             request("connection.health", json!({"extra": true})),
@@ -1916,7 +1971,7 @@ mod tests {
                     "target_seconds": -1,
                 }),
             ),
-            request("player.set_volume", json!({"volume_percent": 101})),
+            request("player.set_volume", json!({"volume_percent": 501})),
             request("player.set_key_shift", json!({"key_shift": 7})),
             request("rating.submit", json!({"play_id": "p", "score": 0})),
         ];

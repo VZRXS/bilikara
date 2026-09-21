@@ -3223,6 +3223,14 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
+    clearRemoteVolumeCommitTimer();
+    state.remoteVolumeSaveSeq += 1;
+    state.remoteSettingsEchoSuppressUntil = 0;
+    state.remoteLocalVolumePercent = null;
+    state.remoteLocalMuted = null;
+    globalThis.BilikaraVolumeControl?.resetForSong(elements.remoteVolumeSlider, snapshot.player_settings.volume_percent);
+  }
   const programChanged = Boolean(
     previousSnapshot
     && previousSnapshot.playback_generation !== snapshot.playback_generation
@@ -6604,7 +6612,7 @@ function boundedRemoteVolumePercent(volumePercent) {
   if (!Number.isFinite(numeric)) {
     return null;
   }
-  return Math.max(0, Math.min(100, Math.round(numeric)));
+  return Math.max(0, Math.min(500, Math.round(numeric)));
 }
 
 function serverRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
@@ -6662,7 +6670,7 @@ async function setRemoteKeyShift(keyShift) {
 }
 
 function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
-  return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
+  return Math.max(0, Math.min(500, Number(playerSettings?.volume_percent ?? 100)));
 }
 
 function currentRemoteVolumePercent(playerSettings = state.data?.player_settings) {
@@ -6757,9 +6765,7 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumePanel.classList.toggle("hidden", !isLocalMode);
   const volumePercent = currentRemoteVolumePercent(playerSettings);
   const isMuted = currentRemoteMuted(playerSettings);
-  elements.remoteVolumeSlider.value = String(volumePercent);
-  setRangeFillPercent(elements.remoteVolumeSlider, volumePercent);
-  elements.remoteVolumeValue.textContent = `${Math.round(volumePercent)}%`;
+  globalThis.BilikaraVolumeControl?.render(elements.remoteVolumeSlider, elements.remoteVolumeValue, volumePercent);
   const muteLabel = isMuted ? t("player.unmute") : t("player.mute");
   setRemoteIconVisibility(
     elements.remoteVolumeMuteButton,
@@ -7442,6 +7448,7 @@ async function commitRemoteVolumeSettings(payload, requestSeq) {
       return;
     }
     applyStateSnapshot(nextData);
+    return true;
   } catch (error) {
     if (requestSeq !== state.remoteVolumeSaveSeq) {
       return;
@@ -7451,6 +7458,7 @@ async function commitRemoteVolumeSettings(payload, requestSeq) {
     state.remoteSettingsEchoSuppressUntil = 0;
     setFormMessage(error.message, true);
     renderRemoteVolumeControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+    return false;
   }
 }
 
@@ -7462,6 +7470,7 @@ async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}, options 
       return;
     }
     payload.volume_percent = boundedVolumePercent;
+    payload.expected_item_incarnation_id = state.data?.current_item?.item_incarnation_id || "";
   }
   if (isMuted !== undefined) {
     payload.is_muted = Boolean(isMuted);
@@ -7482,7 +7491,7 @@ async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}, options 
   }
 
   clearRemoteVolumeCommitTimer();
-  await commitRemoteVolumeSettings(payload, requestSeq);
+  return commitRemoteVolumeSettings(payload, requestSeq);
 }
 
 function hasLocalSplitMedia(item) {
@@ -9532,14 +9541,19 @@ elements.remoteAvOffsetInput?.addEventListener("keydown", async (event) => {
   await setRemoteAvOffset(event.target.value);
 });
 
-elements.remoteVolumeSlider?.addEventListener("input", async (event) => {
-  setRangeFillPercent(event.target, event.target.value);
-  await setRemoteVolumeSettings({
-    volumePercent: event.target.value,
-    isMuted: currentRemoteMuted(state.data?.player_settings),
-  }, {
-    debounce: true,
-  });
+globalThis.BilikaraVolumeControl?.bind({
+  slider: elements.remoteVolumeSlider,
+  value: elements.remoteVolumeValue,
+  t,
+  getValue: () => currentRemoteVolumePercent(),
+  onInput: (percent) => setRemoteVolumeSettings({
+    volumePercent: percent,
+    isMuted: currentRemoteMuted(),
+  }, { debounce: true }),
+  onCommit: (percent) => setRemoteVolumeSettings({
+    volumePercent: percent,
+    isMuted: currentRemoteMuted(),
+  }),
 });
 
 elements.remoteVolumeMuteButton?.addEventListener("click", async () => {

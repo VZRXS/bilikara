@@ -83,6 +83,11 @@ class MockAudioContext {{
     this.state = "running";
     this.destination = new MockNode("destination");
   }}
+  createGain() {{
+    const node = new MockNode("volume-gain");
+    node.gain = {{ value: 1, setTargetAtTime(value) {{ this.value = value; }} }};
+    return node;
+  }}
   createMediaElementSource() {{
     sourceCreates += 1;
     return new MockNode(`media-source-${{sourceCreates}}`);
@@ -270,7 +275,7 @@ console.log(JSON.stringify({{
                 "processorDisposals": 1,
                 "activeProcessors": 0,
                 "route": "direct",
-                "sourceConnections": ["destination"],
+                "sourceConnections": ["volume-gain"],
             },
         )
         self.assertEqual(
@@ -428,6 +433,11 @@ class MockAudioContext {{
     this.state = "suspended";
     this.destination = new MockNode("destination");
   }}
+  createGain() {{
+    const node = new MockNode("volume-gain");
+    node.gain = {{ value: 1, setTargetAtTime(value) {{ this.value = value; }} }};
+    return node;
+  }}
   createMediaElementSource() {{
     sourceCreates += 1;
     return new MockNode("media-source-" + sourceCreates);
@@ -540,7 +550,7 @@ console.log(JSON.stringify({{
                 "processorCleared": True,
                 "sourceCreates": 1,
                 "route": "direct",
-                "sourceConnections": ["destination"],
+                "sourceConnections": ["volume-gain"],
             },
         )
 

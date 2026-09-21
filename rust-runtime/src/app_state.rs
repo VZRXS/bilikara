@@ -31,7 +31,7 @@ const MAX_SESSION_USERS: usize = 32;
 const MAX_SESSION_USER_NAME_CHARS: usize = 24;
 const MAX_ITEM_ID_BYTES: usize = 512;
 const MAX_STRING_BYTES: usize = 1_048_576;
-const MAX_VOLUME_PERCENT: i32 = 100;
+pub(crate) use bilikara_rust::MAX_VOLUME_PERCENT;
 const DEFAULT_SONG_ADVANCE_DELAY_SECONDS: i32 = 3;
 const MAX_SONG_ADVANCE_DELAY_SECONDS: i32 = 30;
 const MIN_KEY_SHIFT: i32 = -6;
@@ -59,7 +59,7 @@ fn default_cache_message() -> String {
 }
 
 fn default_volume_percent() -> i32 {
-    MAX_VOLUME_PERCENT
+    100
 }
 
 fn default_song_advance_delay_seconds() -> i32 {
@@ -480,6 +480,8 @@ pub enum AppStateRequest {
     SetVolume {
         schema_version: u32,
         volume_percent: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_item_incarnation_id: Option<String>,
         now: f64,
     },
     SetMuted {
@@ -3062,7 +3064,25 @@ fn apply_mutation(
             }
             Ok(MutationResult::changed(result, true))
         }
-        AppStateRequest::SetVolume { volume_percent, .. } => {
+        AppStateRequest::SetVolume {
+            volume_percent,
+            expected_item_incarnation_id,
+            ..
+        } => {
+            if let Some(expected) = expected_item_incarnation_id {
+                let actual = data
+                    .current_item
+                    .as_ref()
+                    .map(|item| item.item_incarnation_id.as_str())
+                    .unwrap_or("");
+                if expected != actual {
+                    return Err(rejected_with_details(
+                        "item_incarnation_mismatch",
+                        "current song changed before volume adjustment",
+                        json!({"expected_item_incarnation_id": expected, "actual_item_incarnation_id": actual}),
+                    ));
+                }
+            }
             let value = volume_percent.clamp(0, MAX_VOLUME_PERCENT);
             if data.player_settings.volume_percent == value {
                 return Ok(MutationResult::unchanged(json!({"value": value})));
@@ -4115,10 +4135,14 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::PlayerSetVolume { volume_percent } => (
+            RemoteRequestV1::PlayerSetVolume {
+                volume_percent,
+                expected_item_incarnation_id,
+            } => (
                 AppStateRequest::SetVolume {
                     schema_version: SCHEMA_VERSION,
                     volume_percent: i32::from(volume_percent),
+                    expected_item_incarnation_id,
                     now,
                 },
                 None,
@@ -4774,6 +4798,20 @@ impl AppState {
                         next.updated_at = now;
                     }
                     let mut effects = mutation.effects;
+                    // A boost belongs to this song, not to the next item's playback.
+                    // Incarnations also distinguish replacements that reuse an item ID.
+                    let song_changed = current
+                        .current_item
+                        .as_ref()
+                        .map(|item| &item.item_incarnation_id)
+                        != next
+                            .current_item
+                            .as_ref()
+                            .map(|item| &item.item_incarnation_id);
+                    if song_changed && next.player_settings.volume_percent > 100 {
+                        next.player_settings.volume_percent = 100;
+                        effects.write_core = true;
+                    }
                     if effects.write_backup {
                         update_backup_from_state(&mut next);
                         if next.backup.is_none() {
@@ -5862,6 +5900,7 @@ mod tests {
         success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 50,
+            expected_item_incarnation_id: None,
             now: 12.0,
         }));
 
@@ -5917,6 +5956,7 @@ mod tests {
         success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 50,
+            expected_item_incarnation_id: None,
             now: 11.0,
         }));
 
@@ -6322,12 +6362,188 @@ mod tests {
     }
 
     #[test]
+    fn volume_boost_preserves_defaults_and_remote_state() {
+        let mut state = AppState::default();
+        let initial = initialize(&mut state, seed());
+        assert_eq!(initial.player_settings.volume_percent, 100);
+        for (requested, expected) in [(275, 275), (500, 500), (501, 500), (-1, 0)] {
+            let result = success(state.execute(AppStateRequest::SetVolume {
+                schema_version: 1,
+                volume_percent: requested,
+                expected_item_incarnation_id: None,
+                now: 11.0,
+            }));
+            let snapshot = result.snapshot.expect("volume snapshot");
+            assert_eq!(snapshot.player_settings.volume_percent, expected);
+            assert_eq!(
+                i32::from(
+                    project_remote_state(&snapshot)
+                        .player_settings
+                        .volume_percent
+                ),
+                expected
+            );
+        }
+        let peer = "volume-peer";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer.to_owned(),
+            epoch: epoch.to_owned(),
+            profile: RemoteProfile::Controller,
+        }));
+        let result = remote_message(
+            &mut state,
+            peer,
+            epoch,
+            1,
+            "player.set_volume",
+            json!({"volume_percent": 500}),
+            12.0,
+        );
+        assert_eq!(
+            result.result["data"]["player_settings"]["volume_percent"],
+            500
+        );
+        let reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 13.0,
+        }));
+        assert_eq!(reset.snapshot.unwrap().player_settings.volume_percent, 100);
+        let mut restored = seed();
+        restored.player_settings.volume_percent = 500;
+        assert_eq!(
+            initialize(&mut state, restored)
+                .player_settings
+                .volume_percent,
+            500
+        );
+    }
+
+    #[test]
+    fn delayed_volume_write_cannot_restore_boost_after_song_change() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV1", "Alice"));
+        initial.playlist = vec![item("b", "BV2", "Bob")];
+        let first = initialize(&mut state, initial);
+        let incarnation = first
+            .current_item
+            .as_ref()
+            .unwrap()
+            .item_incarnation_id
+            .clone();
+        success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 375,
+            expected_item_incarnation_id: Some(incarnation.clone()),
+            now: 11.0,
+        }));
+        let next = success(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: first.playback_generation,
+            reset_av_delay: false,
+            now: 12.0,
+        }))
+        .snapshot
+        .unwrap();
+        assert_eq!(next.player_settings.volume_percent, 100);
+        let late = failure(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 500,
+            expected_item_incarnation_id: Some(incarnation.clone()),
+            now: 13.0,
+        }));
+        assert_eq!(late.error.kind, "item_incarnation_mismatch");
+        let after = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .unwrap();
+        assert_eq!(after, next);
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: "volume-guard".into(),
+            epoch: "abcdefghijklmnopqrstuv".into(),
+            profile: RemoteProfile::Controller,
+        }));
+        let remote_late = failure(
+            state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+                schema_version: 1,
+                peer_id: "volume-guard".into(),
+                lane: RemoteLane::Control,
+                message: json!({"v":1,"lane":"control","epoch":"abcdefghijklmnopqrstuv","seq":1,
+                "id":"123e4567-e89b-42d3-a456-000000000001","kind":"player.set_volume",
+                "body":{"volume_percent":500,"expected_item_incarnation_id":incarnation}})
+                .to_string(),
+                reset_av_delay: false,
+                now: 13.0,
+            }),
+        );
+        assert_eq!(remote_late.error.kind, "item_incarnation_mismatch");
+        let accepted = success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 250,
+            expected_item_incarnation_id: Some(next.current_item.unwrap().item_incarnation_id),
+            now: 14.0,
+        }));
+        assert_eq!(
+            accepted.snapshot.unwrap().player_settings.volume_percent,
+            250
+        );
+    }
+
+    #[test]
+    fn song_change_caps_boost_preserves_mute_and_normal_volume() {
+        for volume in [45, 100, 375, 500] {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            initial.current_item = Some(item("a", "BV1", "Alice"));
+            initial.playlist = vec![item("b", "BV2", "Bob")];
+            initial.player_settings.volume_percent = volume;
+            initial.player_settings.is_muted = true;
+            let snapshot = initialize(&mut state, initial);
+            let restarted = success(
+                state.execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 }),
+            )
+            .snapshot
+            .unwrap();
+            assert_eq!(restarted.player_settings.volume_percent, volume);
+            let rejected = failure(state.execute(AppStateRequest::AdvanceToNext {
+                schema_version: 1,
+                expected_playback_generation: snapshot.playback_generation,
+                reset_av_delay: false,
+                now: 12.0,
+            }));
+            assert_eq!(rejected.error.kind, "playback_generation_mismatch");
+            let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
+                schema_version: 1,
+                expected_playback_generation: restarted.playback_generation,
+                reset_av_delay: false,
+                now: 13.0,
+            }));
+            assert!(advanced.effects.write_core);
+            let settings = advanced.snapshot.unwrap().player_settings;
+            assert_eq!(settings.volume_percent, volume.min(100));
+            assert!(settings.is_muted);
+            let unmuted = success(state.execute(AppStateRequest::SetMuted {
+                schema_version: 1,
+                is_muted: false,
+                now: 14.0,
+            }))
+            .snapshot
+            .unwrap();
+            assert_eq!(unmuted.player_settings.volume_percent, volume.min(100));
+            assert!(!unmuted.player_settings.is_muted);
+        }
+    }
+
+    #[test]
     fn revisions_increment_once_and_rejections_or_reads_do_not_increment() {
         let mut state = AppState::default();
         initialize(&mut state, seed());
         let changed = success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 35,
+            expected_item_incarnation_id: None,
             now: 11.0,
         }));
         assert!(changed.committed);
@@ -6336,6 +6552,7 @@ mod tests {
         let unchanged = success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 35,
+            expected_item_incarnation_id: None,
             now: 12.0,
         }));
         assert!(!unchanged.committed);
@@ -6371,6 +6588,7 @@ mod tests {
         let volume = success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 50,
+            expected_item_incarnation_id: None,
             now: 12.0,
         }))
         .snapshot
@@ -6751,6 +6969,7 @@ mod tests {
         assert_no_program_bump!(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 50,
+            expected_item_incarnation_id: None,
             now: 11.0,
         });
         assert_no_program_bump!(AppStateRequest::SetMuted {
@@ -6937,6 +7156,7 @@ mod tests {
         let no_op = assert_no_program_bump!(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 50,
+            expected_item_incarnation_id: None,
             now: 12.7,
         });
         assert!(!no_op.committed);
@@ -6984,6 +7204,7 @@ mod tests {
         success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 42,
+            expected_item_incarnation_id: None,
             now: 13.2,
         }));
         success(state.execute(AppStateRequest::SetMuted {
@@ -7073,6 +7294,7 @@ mod tests {
         success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 42,
+            expected_item_incarnation_id: None,
             now: 11.1,
         }));
         let before_settings_reset =
@@ -7435,6 +7657,7 @@ mod tests {
         let metadata_only = success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
             volume_percent: 37,
+            expected_item_incarnation_id: None,
             now: 13.0,
         }))
         .snapshot
@@ -8713,6 +8936,7 @@ mod tests {
                     .execute(AppStateRequest::SetVolume {
                         schema_version: 1,
                         volume_percent: value,
+                        expected_item_incarnation_id: None,
                         now: 10.0 + f64::from(value),
                     })
             }));

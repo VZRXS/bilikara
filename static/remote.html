@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="/remote-queue.css" />
     <link rel="stylesheet" href="/status-indicators.css" />
     <link rel="stylesheet" href="/result-pagination.css" />
+  <link rel="stylesheet" href="/volume-control.css" />
 </head>
   <body>
     <main class="remote-shell" id="remote-shell">
@@ -994,8 +995,16 @@
               </section>
               <section id="remote-volume-panel" class="remote-setting-panel">
                 <div class="remote-setting-copy">
-                  <div class="remote-setting-header">
+                  <div class="remote-setting-header remote-contextual-info-region">
                     <p class="panel-tag" data-i18n="player.volumeTag">播放音量</p>
+                    <div class="info-trigger-wrap">
+                      <button type="button" class="remote-info-button" aria-expanded="false"
+                        aria-describedby="remote-volume-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <div class="remote-tooltip-bubble" id="remote-volume-info" role="tooltip"
+                        data-i18n="player.volumeBoostHelp">100% 后再次右滑，可放大至 500%。
+切歌恢复 100% 上限。</div>
+                    </div>
                   </div>
                 </div>
                 <div class="remote-setting-controls">
@@ -1018,7 +1027,7 @@
                     step="1"
                     value="100"
                   />
-                  <strong id="remote-volume-value" class="remote-volume-value">100%</strong>
+                  <button type="button" class="remote-volume-value" id="remote-volume-value">100%</button>
                 </div>
               </section>
               <section id="remote-key-shift-panel" class="remote-setting-panel">
@@ -1094,6 +1103,7 @@
     <script src="/qrcode-generator.js" defer></script>
     <script src="/result-pagination.js" defer></script>
     <script src="/browse-search.js" defer></script>
+    <script src="/volume-control.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

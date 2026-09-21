@@ -26,6 +26,7 @@ const PLAYBACK_STATE_EVENT: &str = "bilikara-presentation-playback-state";
 const MAX_PENDING_COMMANDS: usize = 32;
 const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_MEDIA_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+const MAX_VOLUME_PERCENT: u16 = 500;
 const CONTROLLER_WIDTH: f64 = 1200.0;
 const CONTROLLER_HEIGHT: f64 = 800.0;
 const ACTIVATION_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -259,7 +260,7 @@ pub enum ControllerCommand {
         expected_playback_generation: u64,
     },
     SetVolume {
-        volume_percent: u8,
+        volume_percent: u16,
         muted: bool,
     },
 }
@@ -298,7 +299,7 @@ pub struct ControllerPlaybackState {
     pub paused: bool,
     pub current_time_seconds: f64,
     pub duration_seconds: Option<f64>,
-    pub volume_percent: u8,
+    pub volume_percent: u16,
     pub muted: bool,
     pub can_skip: bool,
 }
@@ -1030,7 +1031,9 @@ fn validate_controller_command(command: &ControllerCommand) -> Result<(), String
         {
             Err("controller Next playback target is invalid".to_string())
         }
-        ControllerCommand::SetVolume { volume_percent, .. } if *volume_percent > 100 => {
+        ControllerCommand::SetVolume { volume_percent, .. }
+            if *volume_percent > MAX_VOLUME_PERCENT =>
+        {
             Err("controller volume is out of bounds".to_string())
         }
         _ => Ok(()),
@@ -1052,7 +1055,7 @@ fn validate_playback_state(candidate: &ControllerPlaybackState) -> Result<(), St
         || candidate.duration_seconds.is_some_and(|duration| {
             !duration.is_finite() || !(0.0..=MAX_MEDIA_SECONDS).contains(&duration)
         })
-        || candidate.volume_percent > 100
+        || candidate.volume_percent > MAX_VOLUME_PERCENT
     {
         return Err("controller playback state is invalid".to_string());
     }
@@ -3810,6 +3813,13 @@ mod tests {
     fn controller_payloads_are_bounded_and_finite() {
         assert!(validate_controller_command(&ControllerCommand::Play).is_ok());
         assert!(
+            validate_controller_command(&ControllerCommand::SetVolume {
+                volume_percent: 500,
+                muted: false,
+            })
+            .is_ok()
+        );
+        assert!(
             validate_controller_command(&ControllerCommand::SeekAbsolute {
                 target_seconds: 12.5,
                 expected_playback_generation: 41,
@@ -3832,7 +3842,7 @@ mod tests {
         );
         assert!(
             validate_controller_command(&ControllerCommand::SetVolume {
-                volume_percent: 101,
+                volume_percent: 501,
                 muted: false,
             })
             .is_err()
@@ -3876,11 +3886,11 @@ mod tests {
             (
                 serde_json::json!({
                     "type": "setVolume",
-                    "volumePercent": 75,
+                    "volumePercent": 375,
                     "muted": false
                 }),
                 ControllerCommand::SetVolume {
-                    volume_percent: 75,
+                    volume_percent: 375,
                     muted: false,
                 },
             ),
@@ -3926,11 +3936,14 @@ mod tests {
             paused: false,
             current_time_seconds: 1.5,
             duration_seconds: Some(120.0),
-            volume_percent: 80,
+            volume_percent: 500,
             muted: false,
             can_skip: true,
         };
         assert!(validate_playback_state(&candidate).is_ok());
+        let mut invalid = candidate.clone();
+        invalid.volume_percent = 501;
+        assert!(validate_playback_state(&invalid).is_err());
         state
             .publish_playback_state(generation, candidate.clone())
             .expect("first state should publish");

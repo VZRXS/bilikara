@@ -415,7 +415,10 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
             av_delay_locked: snapshot.player_settings.av_delay.locked,
             av_delay_lock_button_enabled: snapshot.player_settings.av_delay.lock_button_enabled,
             av_delay_has_local_adjustment: snapshot.player_settings.av_delay.has_local_adjustment,
-            volume_percent: snapshot.player_settings.volume_percent.clamp(0, 100) as u8,
+            volume_percent: snapshot
+                .player_settings
+                .volume_percent
+                .clamp(0, bilikara_rust::MAX_VOLUME_PERCENT) as u16,
             is_muted: snapshot.player_settings.is_muted,
             key_shift: snapshot.player_settings.key_shift.clamp(-6, 6) as i8,
         },

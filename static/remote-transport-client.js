@@ -796,7 +796,10 @@
       } else if (method === "POST" && url.pathname === "/api/player/key-shift") {
         response = await request("player.set_key_shift", { key_shift: Number(body.key_shift || 0) });
       } else if (method === "POST" && url.pathname === "/api/player/volume") {
-        if (body.volume_percent !== undefined) await request("player.set_volume", { volume_percent: Number(body.volume_percent) });
+        if (body.volume_percent !== undefined) await request("player.set_volume", {
+          volume_percent: Number(body.volume_percent),
+          ...(body.expected_item_incarnation_id === undefined ? {} : { expected_item_incarnation_id: body.expected_item_incarnation_id }),
+        });
         if (body.is_muted !== undefined) response = await request("player.set_muted", { is_muted: Boolean(body.is_muted) });
         else response = await request("state.get", { since_revision: null }, "bulk");
       } else if (method === "POST" && url.pathname === "/api/player/av-delay-action") {

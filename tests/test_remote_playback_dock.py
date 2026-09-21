@@ -347,8 +347,9 @@ console.log(JSON.stringify({{
             self.markup.index('id="remote-volume-panel"') :
             self.markup.index('id="remote-key-shift-panel"')
         ]
-        self.assertNotIn("remote-info-button", volume_panel)
-        self.assertNotIn("remote-volume-info", volume_panel)
+        self.assertIn("remote-info-button", volume_panel)
+        self.assertIn('aria-describedby="remote-volume-info"', volume_panel)
+        self.assertIn('data-i18n="player.volumeBoostHelp"', volume_panel)
 
         cache_label_source = self.script[
             self.script.index("function currentCacheStateLabel") :

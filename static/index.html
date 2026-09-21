@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/remote-access.css" />
   <link rel="stylesheet" href="/android-host.css" />
   <link rel="stylesheet" href="/status-indicators.css" />
+  <link rel="stylesheet" href="/volume-control.css" />
 </head>
 
 <body>
@@ -737,7 +738,18 @@
           </section>
           <section class="volume-panel" id="volume-panel">
             <div class="volume-copy">
-              <p class="section-tag" data-i18n="player.volumeTag">播放音量</p>
+              <div class="cache-advanced-label-row cache-contextual-info-region playback-contextual-info-region">
+                <p class="section-tag" data-i18n="player.volumeTag">播放音量</p>
+                <span class="cache-advanced-info">
+                  <button type="button" class="playback-contextual-info-button cache-advanced-info-button"
+                    aria-expanded="false" aria-describedby="host-volume-info"
+                    data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span
+                      class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <span class="cache-advanced-tooltip" id="host-volume-info" role="tooltip"
+                    data-i18n="player.volumeBoostHelp">100% 后再次右滑，可放大至 500%。
+切歌恢复 100% 上限。</span>
+                </span>
+              </div>
             </div>
             <div class="volume-controls">
               <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button"
@@ -752,7 +764,7 @@
                     </svg>
                   </button>
               <input id="volume-slider" class="volume-slider" type="range" min="0" max="100" step="1" value="100" />
-              <strong class="volume-value" id="volume-value">100%</strong>
+              <button type="button" class="volume-value" id="volume-value">100%</button>
             </div>
           </section>
           <section class="av-sync-panel" id="key-shift-panel">
@@ -1837,6 +1849,7 @@
   <script src="/internet-remote-transport.js" defer></script>
   <script src="/internet-remote-host.js" defer></script>
   <script src="/host-language.js" defer></script>
+  <script src="/volume-control.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/android-platform.js" defer></script>
   <script src="/android-export.js" defer></script>

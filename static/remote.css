@@ -1509,13 +1509,13 @@ h1 {
   align-items: center;
 }
 
-#remote-av-sync-panel .remote-step-button,
-#remote-av-sync-panel .remote-reset-button,
+:is(#remote-av-sync-panel, .volume-adjust-popover) .remote-step-button,
+:is(#remote-av-sync-panel, .volume-adjust-popover) .remote-reset-button,
 #remote-av-sync-panel .remote-lock-button {
   width: 100%;
   min-width: 0;
   padding-inline: 8px;
-  border: 1px solid rgba(67, 53, 41, 0.08);
+  border: var(--player-btn-border);
   border-radius: 14px;
 }
 
@@ -4918,7 +4918,10 @@ body.remote-identity-modal-open {
 .playback-sheet .remote-step-button,
 .playback-sheet .remote-reset-button,
 .playback-sheet .remote-lock-button,
-.playback-sheet .remote-mute-button {
+.playback-sheet .remote-mute-button,
+.volume-adjust-popover .remote-step-button,
+.volume-adjust-popover .remote-reset-button,
+.volume-adjust-popover .remote-input-wrap {
   min-height: 44px;
 }
 

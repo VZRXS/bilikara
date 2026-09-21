@@ -23,6 +23,9 @@ mod url_utils;
 mod version;
 mod video_stream_ranking;
 
+/// Maximum linear playback gain, expressed as a percentage of the source level.
+pub const MAX_VOLUME_PERCENT: i32 = 500;
+
 pub use asset_selection::{
     UpdateAssetCandidate, UpdateAssetSelection, UpdateAssetTarget, select_update_asset,
 };

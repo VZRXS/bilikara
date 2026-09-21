@@ -2792,7 +2792,7 @@ async function applyControllerCommand(candidate) {
         if (
           !Number.isInteger(volumePercent)
           || volumePercent < 0
-          || volumePercent > 100
+          || volumePercent > 500
           || typeof envelope.command.muted !== "boolean"
         ) {
           throw new Error("Invalid Controller volume command");
@@ -2859,7 +2859,7 @@ function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
     currentTimeSeconds: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : 0,
     durationSeconds: Number.isFinite(duration) && duration >= 0 ? duration : null,
     volumePercent: Math.round(
-      Math.max(0, Math.min(1, Number(volumeSource?.volume ?? state.localPlayerVolume))) * 100,
+      Math.max(0, Math.min(5, Number(volumeSource?.bilikaraVolume ?? volumeSource?.volume ?? state.localPlayerVolume))) * 100,
     ),
     muted: Boolean(volumeSource?.muted ?? state.localPlayerMuted),
     canSkip: Boolean(currentItem) && !state.localAdvanceInFlight,
@@ -3648,7 +3648,7 @@ function writeLocalPreference(key, value) {
 function hydrateLocalPreferences() {
   state.localPlayerVolume = Math.max(
     0,
-    Math.min(1, readLocalNumber(storageKeys.playerVolume, state.localPlayerVolume)),
+    Math.min(5, readLocalNumber(storageKeys.playerVolume, state.localPlayerVolume)),
   );
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.updateAutomaticEnabled = readLocalBoolean(
@@ -5332,7 +5332,7 @@ function initializeHostShell() {
 }
 
 function rememberedVolumePercent() {
-  return Math.max(0, Math.min(100, Math.round(readLocalNumber(storageKeys.playerVolume, 1) * 100)));
+  return Math.max(0, Math.min(500, Math.round(readLocalNumber(storageKeys.playerVolume, 1) * 100)));
 }
 
 function rememberedMuted() {
@@ -5343,7 +5343,7 @@ function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
   if (Date.now() < state.playerSettingsEchoSuppressUntil) {
     return;
   }
-  const volumePercent = Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
+  const volumePercent = Math.max(0, Math.min(500, Number(playerSettings?.volume_percent ?? 100)));
   state.localPlayerVolume = volumePercent / 100;
   state.localPlayerMuted = Boolean(playerSettings?.is_muted);
   persistLocalVolumePreferences();
@@ -10872,6 +10872,12 @@ function acceptHostStateSnapshot(snapshot) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
+    state.playerSettingsEchoSuppressUntil = 0;
+    state.volumeSaveSeq += 1;
+    syncLocalPlayerSettingsFromSnapshot(snapshot.player_settings);
+    globalThis.BilikaraVolumeControl?.resetForSong(elements.volumeSlider, snapshot.player_settings.volume_percent);
+  }
   if (readinessOnly) {
     return true;
   }
@@ -11988,9 +11994,9 @@ function captureLocalPlayerPreferences() {
   const primaryVideo = video || activePrimaryVideoElement();
   const mediaWithVolume = audio || primaryVideo;
   if (mediaWithVolume) {
-    const volume = Number(mediaWithVolume.volume);
+    const volume = Number(mediaWithVolume.bilikaraVolume ?? mediaWithVolume.volume);
     if (Number.isFinite(volume)) {
-      state.localPlayerVolume = Math.max(0, Math.min(1, volume));
+      state.localPlayerVolume = Math.max(0, Math.min(5, volume));
     }
     state.localPlayerMuted = Boolean(mediaWithVolume.muted);
     persistLocalVolumePreferences();
@@ -12008,17 +12014,21 @@ function applyStoredVolumeToSplitPlayer(video, audio) {
   if (!video || !audio) {
     return;
   }
-  video.volume = state.localPlayerVolume;
+  // The video carries the native controls; only the selected audio is amplified.
+  video.bilikaraVolume = state.localPlayerVolume;
+  video.volume = Math.min(1, state.localPlayerVolume);
   video.muted = state.localPlayerMuted;
-  audio.volume = state.localPlayerVolume;
-  audio.muted = state.localPlayerMuted;
+  applyMediaVolume(audio);
 }
 
 function syncSplitPlayerVolumeFromVideo(video, audio) {
   if (!video || !audio) {
     return;
   }
-  const nextVolume = Number.isFinite(video.volume)
+  const appliedVolume = Math.min(1, Number(video.bilikaraVolume ?? state.localPlayerVolume));
+  const nextVolume = Math.abs(video.volume - appliedVolume) <= 0.001
+    ? state.localPlayerVolume
+    : Number.isFinite(video.volume)
     ? Math.max(0, Math.min(1, Number(video.volume)))
     : state.localPlayerVolume;
   const nextMuted = Boolean(video.muted);
@@ -12032,12 +12042,8 @@ function syncSplitPlayerVolumeFromVideo(video, audio) {
     renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   }
 
-  if (Math.abs(audio.volume - state.localPlayerVolume) > 0.001) {
-    audio.volume = state.localPlayerVolume;
-  }
-  if (audio.muted !== state.localPlayerMuted) {
-    audio.muted = state.localPlayerMuted;
-  }
+  video.bilikaraVolume = state.localPlayerVolume;
+  applyMediaVolume(audio);
 }
 
 function syncSplitSeekAudioTarget(video, audio) {
@@ -13785,8 +13791,7 @@ function applyStoredVolumeToSinglePlayer(video) {
   if (!video) {
     return;
   }
-  video.volume = state.localPlayerVolume;
-  video.muted = state.localPlayerMuted;
+  applyMediaVolume(video);
 }
 
 function applyStoredVolumeToMountedPlayer() {
@@ -13836,11 +13841,7 @@ function renderVolumeControls(playbackMode) {
   state.volumeControlsRenderSignature = signature;
 
   setClassToggle(elements.volumePanel, "hidden", !isLocalMode);
-  if (elements.volumeSlider.value !== String(volumePercent)) {
-    elements.volumeSlider.value = String(volumePercent);
-  }
-  setRangeFillPercent(elements.volumeSlider, volumePercent);
-  setTextContent(elements.volumeValue, label);
+  globalThis.BilikaraVolumeControl?.render(elements.volumeSlider, elements.volumeValue, volumePercent);
   elements.volumeMuteButton.querySelectorAll("[data-volume-icon]").forEach((icon) => {
     icon.classList.toggle("hidden", icon.dataset.volumeIcon !== (state.localPlayerMuted ? "muted" : "unmuted"));
   });
@@ -13888,6 +13889,9 @@ async function setLocalPlayerKeyShift(keyShift) {
     if (requestSeq !== state.volumeSaveSeq) {
       return;
     }
+    // Once this write is acknowledged, newer Remote volume/mute settings
+    // must no longer be hidden by the optimistic-update suppression window.
+    state.playerSettingsEchoSuppressUntil = 0;
     if (accepted) {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
@@ -13929,6 +13933,8 @@ function disposeAudioPitchShifter(audio) {
   disposeAudioPitchProcessor(audio);
   disconnectAudioPitchSource(audio);
   audio.bilikaraPitchSource = null;
+  audio.bilikaraVolumeGain?.disconnect();
+  audio.bilikaraVolumeGain = null;
 }
 
 function disposeSharedAudioContext() {
@@ -13970,8 +13976,51 @@ function ensureAudioPitchSource(audio) {
   }
 
   addMountedPlayerListener(audio, "play", resumeAudioContextBestEffort);
-  audio.bilikaraPitchSource = state.audioContext.createMediaElementSource(audio);
+  const gain = state.audioContext.createGain();
+  gain.gain.value = state.localPlayerVolume;
+  gain.bilikaraTarget = gain.gain.value;
+  gain.connect(state.audioContext.destination);
+  try {
+    audio.bilikaraPitchSource = state.audioContext.createMediaElementSource(audio);
+  } catch (error) {
+    gain.disconnect();
+    throw error;
+  }
+  audio.bilikaraVolumeGain = gain;
+  // Once routed through Web Audio, gain owns the full level. This also avoids
+  // relying on writable HTMLMediaElement.volume in mobile WebKit.
+  audio.volume = 1;
+  audio.bilikaraPitchSource.connect(gain);
+  audio.bilikaraPitchRoute = "direct";
   return audio.bilikaraPitchSource;
+}
+
+function applyMediaVolume(media) {
+  if (!media) return;
+  const volume = Math.max(0, Math.min(5, state.localPlayerVolume));
+  media.bilikaraVolume = volume;
+  media.volume = media.bilikaraVolumeGain ? 1 : Math.min(1, volume);
+  media.muted = state.localPlayerMuted;
+  if (volume > 1 && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
+    try {
+      if (!ensureAudioPitchSource(media)) throw new Error("Web Audio unavailable");
+      if (media.paused === false) resumeAudioContextBestEffort();
+    } catch (error) {
+      if (!media.bilikaraGainErrorReported) {
+        media.bilikaraGainErrorReported = true;
+        console.error("Failed to enable playback gain:", error);
+        setAppMessage(t("player.volumeUnavailable"), true);
+      }
+    }
+  }
+  const gain = media.bilikaraVolumeGain;
+  if (gain) {
+    const target = volume;
+    if (gain.bilikaraTarget !== target) {
+      gain.gain.setTargetAtTime(target, state.audioContext.currentTime, 0.015);
+      gain.bilikaraTarget = target;
+    }
+  }
 }
 
 function setupAudioPitchShifter(audio) {
@@ -13997,7 +14046,7 @@ function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
       return;
     }
     disconnectAudioPitchSource(audio);
-    source.connect(state.audioContext.destination);
+    source.connect(audio.bilikaraVolumeGain);
     audio.bilikaraPitchRoute = "direct";
     return;
   }
@@ -14012,7 +14061,7 @@ function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
       const jungle = new Jungle(state.audioContext);
       audio.jungle = jungle;
       source.connect(jungle.input);
-      jungle.output.connect(state.audioContext.destination);
+      jungle.output.connect(audio.bilikaraVolumeGain);
       audio.bilikaraPitchRoute = "processor";
       if (audio.paused === false) {
         resumeAudioContextBestEffort();
@@ -14026,7 +14075,7 @@ function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
     if (source && state.audioContext) {
       disconnectAudioPitchSource(audio);
       try {
-        source.connect(state.audioContext.destination);
+        source.connect(audio.bilikaraVolumeGain);
         audio.bilikaraPitchRoute = "direct";
       } catch {
         // If Web Audio setup failed, leave the native media lifecycle intact.
@@ -14046,7 +14095,7 @@ async function setLocalPlayerVolumeAndMuted(
   nextMuted,
   { reportError = true } = {},
 ) {
-  const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
+  const normalizedVolume = Math.max(0, Math.min(5, Number(nextVolume || 0)));
   const normalizedMuted = Boolean(nextMuted);
   const previousVolume = state.localPlayerVolume;
   const previousMuted = state.localPlayerMuted;
@@ -14060,11 +14109,14 @@ async function setLocalPlayerVolumeAndMuted(
     const nextData = await apiPost("/api/player/volume", {
       volume_percent: Math.round(normalizedVolume * 100),
       is_muted: state.localPlayerMuted,
+      expected_item_incarnation_id: state.data?.current_item?.item_incarnation_id || "",
     });
     const accepted = acceptHostStateSnapshot(nextData);
     if (requestSeq !== state.volumeSaveSeq) {
       return;
     }
+    state.playerSettingsEchoSuppressUntil = 0;
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     if (accepted) {
       render();
     }
@@ -14086,7 +14138,7 @@ async function setLocalPlayerVolumeAndMuted(
 }
 
 async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
-  const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
+  const normalizedVolume = Math.max(0, Math.min(5, Number(nextVolume || 0)));
   const nextMuted = unmute && normalizedVolume > 0 ? false : state.localPlayerMuted;
   try {
     await setLocalPlayerVolumeAndMuted(normalizedVolume, nextMuted);
@@ -19676,9 +19728,13 @@ elements.avOffsetInput?.addEventListener("keydown", async (event) => {
   await setAvOffset(event.target.value);
 });
 
-elements.volumeSlider?.addEventListener("input", (event) => {
-  setRangeFillPercent(event.target, event.target.value);
-  setLocalPlayerVolume(Number(event.target.value || "0") / 100);
+globalThis.BilikaraVolumeControl?.bind({
+  slider: elements.volumeSlider,
+  value: elements.volumeValue,
+  t,
+  getValue: () => Math.round(state.localPlayerVolume * 100),
+  onInput: (percent) => setLocalPlayerVolume(percent / 100),
+  onCommit: (percent) => setLocalPlayerVolumeAndMuted(percent / 100, percent > 0 ? false : state.localPlayerMuted),
 });
 
 elements.volumeMuteButton?.addEventListener("click", () => {

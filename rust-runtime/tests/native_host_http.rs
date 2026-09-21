@@ -603,6 +603,35 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         post("/api/player/volume", json!({"volume_percent":40}), &cookie).status(),
         200
     );
+    let boosted: Value = post(
+        "/api/player/volume",
+        json!({"volume_percent":500}),
+        &remote_cookie,
+    )
+    .json()
+    .unwrap();
+    assert_eq!(boosted["data"]["player_settings"]["volume_percent"], 500);
+    let stale_volume = post(
+        "/api/player/volume",
+        json!({"volume_percent": 400, "expected_item_incarnation_id": "i-00000000000000000000000000000000-0000000000000001"}),
+        &remote_cookie,
+    );
+    assert_eq!(stale_volume.status(), 409);
+    let after_stale: Value = client
+        .get(format!("{base}/api/state"))
+        .header("Cookie", &cookie)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(
+        after_stale["data"]["player_settings"]["volume_percent"],
+        500
+    );
+    assert_eq!(
+        post("/api/player/volume", json!({"volume_percent":501}), &cookie).status(),
+        400
+    );
     let delay: Value = post(
         "/api/player/av-delay-action",
         json!({"type":"adjust","delta_ms":100}),

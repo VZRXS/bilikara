@@ -16,7 +16,7 @@ from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
 MAX_SESSION_USERS = 32
 MAX_SESSION_USER_NAME_LENGTH = 24
 MAX_AV_OFFSET_MS = 5000
-MAX_VOLUME_PERCENT = 100
+MAX_VOLUME_PERCENT = 500
 DEFAULT_SONG_ADVANCE_DELAY_SECONDS = 3
 MAX_SONG_ADVANCE_DELAY_SECONDS = 30
 MIN_KEY_SHIFT = -6
@@ -753,8 +753,13 @@ class PlaylistStore:
     def reset_av_delay_for_track_change(self) -> dict[str, object]:
         return self.apply_av_delay_action({"type": "reset_local"})
 
-    def set_volume_percent(self, volume_percent: int) -> int:
-        result = self._request("set_volume", volume_percent=int(volume_percent))
+    def set_volume_percent(
+        self, volume_percent: int, *, expected_item_incarnation_id: str | None = None
+    ) -> int:
+        fields = {"volume_percent": int(volume_percent)}
+        if expected_item_incarnation_id is not None:
+            fields["expected_item_incarnation_id"] = expected_item_incarnation_id
+        result = self._request("set_volume", **fields)
         return int(result["value"])
 
     def set_muted(self, is_muted: bool) -> bool:

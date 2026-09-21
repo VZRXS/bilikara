@@ -94,6 +94,20 @@ class RustAppStateStoreTest(unittest.TestCase):
         )
         self.assertGreaterEqual(restored["revision"], 2)
 
+    def test_boosted_volume_persists_and_notifies_without_changing_default(self):
+        changes = []
+        store = self.store(on_change=lambda: changes.append(True))
+        self.assertEqual(store.volume_percent, 100)
+        store.set_volume_percent(375)
+        self.assertEqual(store.volume_percent, 375)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(self.store().volume_percent, 375)
+        store.set_volume_percent(501)
+        self.assertEqual(store.volume_percent, 500)
+        self.assertEqual(self.store().volume_percent, 500)
+        store.reset_player_state()
+        self.assertEqual(store.volume_percent, 100)
+
     def test_revision_rejection_and_snapshot_contract(self):
         store = self.store()
         initial = store.revision
@@ -108,6 +122,22 @@ class RustAppStateStoreTest(unittest.TestCase):
         snapshot = store.authoritative_snapshot()
         self.assertEqual(snapshot["revision"], before_rejection)
         self.assertEqual(store.revision, before_rejection)
+
+    def test_late_guarded_volume_does_not_override_song_reset_or_persistence(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        store.add_item(item("b"), requester_name="Alice")
+        identity = store.snapshot()["current_item"]["item_incarnation_id"]
+        store.set_volume_percent(375, expected_item_incarnation_id=identity)
+        self.assertTrue(advance_to_next(store))
+        before = store.snapshot()
+        self.assertEqual(before["player_settings"]["volume_percent"], 100)
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.set_volume_percent(500, expected_item_incarnation_id=identity)
+        self.assertEqual(rejected.exception.kind, "item_incarnation_mismatch")
+        self.assertEqual(store.snapshot(), before)
+        self.assertEqual(self.store().volume_percent, 100)
 
     def test_player_status_observation_adapter_preserves_exact_generation_rejection(self):
         changes: list[str] = []

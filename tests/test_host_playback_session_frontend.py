@@ -114,6 +114,7 @@ function snapshot(revision, currentItem) {{
   }};
 }}
 function maybeShowSongTransitionOverlay() {{}}
+function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function frontendPlaybackMode() {{ return "local"; }}
 function renderPlayer() {{
   reconciliations += 1;

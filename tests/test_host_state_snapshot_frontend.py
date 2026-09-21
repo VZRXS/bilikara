@@ -42,6 +42,7 @@ let renderPlayerImpl = () => {{}};
 function renderPlayer(...args) {{ return renderPlayerImpl(...args); }}
 let transitionImpl = () => {{}};
 function maybeShowSongTransitionOverlay(...args) {{ return transitionImpl(...args); }}
+function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function frontendPlaybackMode(mode) {{ return mode || "local"; }}
 function isCurrentHostPlaybackSession() {{ return false; }}
 {functions}
@@ -103,6 +104,23 @@ function snapshot({{
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
+
+    def test_song_change_applies_volume_reset_before_media_mount(self):
+        result = self.run_node("""
+acceptHostStateSnapshot(snapshot({settings: {volume_percent: 500, is_muted: true}}));
+state.playerSettingsEchoSuppressUntil = Date.now() + 10000;
+state.volumeSaveSeq = 2;
+acceptHostStateSnapshot(snapshot({stateRevision: 11, revision: 11, generation: 11,
+  item: currentItem({variantId: "original"}), settings: {volume_percent: 500, is_muted: true}}));
+const variantKeptSuppression = state.playerSettingsEchoSuppressUntil > Date.now();
+acceptHostStateSnapshot(snapshot({stateRevision: 12, revision: 12, generation: 12,
+  item: currentItem({incarnation: "i-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000002"}),
+  settings: {volume_percent: 100, is_muted: true}}));
+console.log(JSON.stringify({variantKeptSuppression, suppression: state.playerSettingsEchoSuppressUntil,
+  sequence: state.volumeSaveSeq, settings: state.syncedPlayerSettings}));
+""")
+        self.assertEqual(result, {"variantKeptSuppression": True, "suppression": 0,
+                                  "sequence": 3, "settings": {"volume_percent": 100, "is_muted": True}})
 
     def run_slider_contract(self, control: str) -> dict:
         configs = {
