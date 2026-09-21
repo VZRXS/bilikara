@@ -72,10 +72,6 @@ ARIA2_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 ARIA2_HTTP_STATUS_RE = re.compile(r"\bstatus=(401|402|403)\b", re.IGNORECASE)
-BBDOWN_HTTP_STATUS_RE = re.compile(
-    r"(?:net_http_message_not_success_statuscode_reason[, :]+|Response status code does not indicate success: )(4\d{2}|5\d{2})\b",
-    re.IGNORECASE,
-)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
@@ -344,6 +340,8 @@ class CacheManager:
         self.native_cache_error = ""
         self.native_cache_call_lock = threading.Lock()
         self.native_cache_observation_lock = threading.Lock()
+        self.bbdown_configuration_lock = threading.Lock()
+        self.bbdown_configuration: dict[str, Any] | None = None
         rust_runtime.reset_bilibili_login_status()
         self._load_cache_policy()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
@@ -578,10 +576,23 @@ class CacheManager:
             if snapshot.get("last_event_sequence", 0) >= self.native_cache_snapshot.get("last_event_sequence", 0):
                 self.native_cache_snapshot = dict(snapshot)
 
-    def _native_orchestration(self, command: str = "reconcile", **fields: Any) -> dict[str, Any]:
+    def _native_orchestration(self, command: str = "reconcile", *, captured_source: str | None = None, **fields: Any) -> dict[str, Any]:
         if self.stop_event.is_set():
             return {}
         self._ensure_native_cache_runtime()
+        cookie = effective_bilibili_cookie()
+        with self.lock:
+            configuration = {
+                "download_source": captured_source or self.download_source,
+                "video_quality": self.video_quality,
+                "audio_hires": self.audio_hires,
+                "hevc_supported": self.hevc_supported,
+                "avc_quality_cap": self.avc_quality_cap,
+            }
+        if (command in {"reconcile", "wake", "retry"}
+            and configuration["download_source"] == DOWNLOAD_SOURCE_BBDOWN
+            and not self._download_login_error(DOWNLOAD_SOURCE_BBDOWN, cookie=cookie)):
+            self._configure_bbdown_executor()
         with self.lock:
             if self.stop_event.is_set() and command != "stop":
                 return {}
@@ -591,12 +602,8 @@ class CacheManager:
                 "cache_root": str(CACHE_DIR.resolve()),
                 "log_dir": str(self.log_dir.resolve()),
                 "max_cache_items": self.max_cache_items,
-                "download_source": self.download_source,
-                "video_quality": self.video_quality,
-                "audio_hires": self.audio_hires,
-                "hevc_supported": self.hevc_supported,
-                "avc_quality_cap": self.avc_quality_cap,
-                "cookie": effective_bilibili_cookie(),
+                **configuration,
+                "cookie": cookie,
                 "user_agent": str(BILIBILI_HEADERS.get("User-Agent") or ""),
                 "referer": str(BILIBILI_HEADERS.get("Referer") or ""),
                 "external_attempts": [
@@ -613,15 +620,37 @@ class CacheManager:
             )
             self._apply_native_cache_snapshot(result["snapshot"])
             # These are decided views used by retained external workers and UI.
-            if self.download_source == DOWNLOAD_SOURCE_NATIVE:
+            if self.download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
                 self.desired_ids = set(result["desired_ids"])
                 self.ordered_desired_ids = list(result["ordered_ids"])
             processes = []
             for handoff in result["external_retries"]:
-                self.retry_requested_ids.add(handoff["item_id"])
+                if handoff.get("handoff"):
+                    self.cache_interrupted_messages[handoff["item_id"]] = "等待共享 Rust 缓存"
+                else:
+                    self.retry_requested_ids.add(handoff["item_id"])
                 processes.extend(self._active_processes_locked(handoff["item_id"]))
             self.native_cache_error = ""
         self._terminate_processes(processes)
+        return result
+
+    def _configure_bbdown_executor(self) -> dict[str, Any]:
+        # Preparation/probing must precede the configuration/worker handoff lock.
+        # Cache even unavailability; observing progress never repeats tool I/O.
+        with self.bbdown_configuration_lock:
+            if self.bbdown_configuration is None:
+                try:
+                    prepared = self._ensure_bbdown()
+                except Exception:  # Preparation status is kept by the existing service.
+                    prepared = None
+                self.bbdown_configuration = rust_runtime.configure_bbdown(
+                    owner=self._artifact_owner, prepared_path=prepared,
+                )
+            result = dict(self.bbdown_configuration)
+        with self.lock:
+            if self.download_source == DOWNLOAD_SOURCE_BBDOWN:
+                self.binary_state = "ready" if result["ready"] else "failed"
+                self.binary_message = result["message"]
         return result
 
     def _sync_native_with_playlist(self, *, wake: bool = False) -> None:
@@ -629,12 +658,12 @@ class CacheManager:
             result = self._native_orchestration("wake" if wake else "reconcile")
             self._drain_native_cache_events()
             self.collect_retired_artifacts()
-            native_log_dir = self.log_dir / DOWNLOAD_SOURCE_NATIVE
-            if result and native_log_dir.is_dir():
+            if result:
                 current_ids = set(result["current_ids"])
-                for log_file in native_log_dir.glob("*.log"):
-                    if log_file.stem not in current_ids:
-                        self._safe_unlink(log_file)
+                for source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+                    for log_file in (self.log_dir / source).glob("*.log"):
+                        if log_file.stem not in current_ids:
+                            self._safe_unlink(log_file)
         except Exception as exc:  # noqa: BLE001
             with self.lock:
                 self.native_cache_error = str(exc)
@@ -938,7 +967,7 @@ class CacheManager:
                 )
             )
 
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             self._sync_native_with_playlist()
         elif should_recache:
             self._request_desired_recaching("HEVC unsupported; switching video cache to AVC")
@@ -1080,7 +1109,7 @@ class CacheManager:
         items = self.store.list_items()
         if not items:
             return
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             self.sync_with_playlist()
             return
         invalidated_ids: list[str] = []
@@ -1244,6 +1273,10 @@ class CacheManager:
         normalized_source = self._normalize_download_source(download_source)
         if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
             return self._aria2c_status()
+        if normalized_source == DOWNLOAD_SOURCE_BBDOWN:
+            self._ensure_native_cache_runtime()
+            return {"download_source": normalized_source, "tool": "BBDown",
+                    "requires_prepare": False, **self._configure_bbdown_executor()}
         if normalized_source != DOWNLOAD_SOURCE_NATIVE:
             return {
                 "download_source": normalized_source,
@@ -1262,6 +1295,11 @@ class CacheManager:
 
     def prepare_downloader(self, download_source: object) -> dict[str, Any]:
         normalized_source = self._normalize_download_source(download_source)
+        if normalized_source == DOWNLOAD_SOURCE_BBDOWN:
+            with self.bbdown_configuration_lock:
+                if self.bbdown_configuration and not self.bbdown_configuration["ready"]:
+                    self.bbdown_configuration = None
+            return self.downloader_status(normalized_source)
         if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
             status = self._aria2c_status()
             if status.get("ready"):
@@ -1384,7 +1422,7 @@ class CacheManager:
         }
 
     def prepare_session(self) -> None:
-        native = self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
+        native = self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN)
         items = [] if native else self.store.list_items()
         cache_attempt_tokens = self._begin_live_cache_attempts(items)
         if native:
@@ -1501,7 +1539,7 @@ class CacheManager:
 
     def clear_runtime_cache(self) -> None:
         native_cache = (
-            self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
+            self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN)
             or self.native_cache_started
         )
         items = [] if native_cache else self.store.list_items()
@@ -1569,10 +1607,12 @@ class CacheManager:
             raise ValueError(
                 "expected item incarnation must be a non-empty Rust identity"
             )
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        download_source = self._current_download_source()
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             try:
                 self._native_orchestration(
                     "retry", item_id=item_id,
+                    captured_source=download_source,
                     expected_item_incarnation_id=expected_item_incarnation_id,
                     force=bool(force),
                 )
@@ -1583,7 +1623,7 @@ class CacheManager:
                     raise ValueError(str(exc)) from exc
                 raise
             self._drain_native_cache_events()
-            self._append_log_line(self._item_log_path(item_id, DOWNLOAD_SOURCE_NATIVE),
+            self._append_log_line(self._item_log_path(item_id),
                                   f"[{self._log_timestamp()}] manual retry requested")
             return
         item = self.store.get_item(item_id)
@@ -1605,7 +1645,6 @@ class CacheManager:
         if not self._is_in_cache_window(item_id):
             raise ValueError("当前不在自动缓存窗口中")
 
-        download_source = self._current_download_source()
         if login_error := self._download_login_error(download_source, item_id):
             raise ValueError(login_error)
         log_path = self._item_log_path(item_id, download_source)
@@ -1799,7 +1838,7 @@ class CacheManager:
     def sync_with_playlist(self) -> None:
         if self.stop_event.is_set():
             return
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             self._sync_native_with_playlist()
             return
         if self.native_cache_started:
@@ -1834,8 +1873,8 @@ class CacheManager:
             return
         missing_download_login = False
         with self.lock:
-            download_source = self.download_source
-            if download_source != DOWNLOAD_SOURCE_NATIVE:
+            download_source = self.python_worker_download_sources.get(item_id, self.download_source)
+            if download_source not in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
                 if (
                     item_id in self.pending_ids
                     or item_id in self.native_cache_snapshot.get("active_item_ids", [])
@@ -1854,7 +1893,7 @@ class CacheManager:
                     self.pending_ids.add(item_id)
                     self.python_worker_download_sources[item_id] = download_source
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
-        if download_source == DOWNLOAD_SOURCE_NATIVE:
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             self._sync_native_with_playlist()
             return
         if missing_download_login:
@@ -1883,6 +1922,13 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _start_urgent_cache(self, item_id: str) -> None:
+        with self.lock:
+            download_source = self.python_worker_download_sources.get(item_id, self.download_source)
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+            item = self.store.get_item(item_id)
+            if item is not None:
+                self.retry_item(item_id, expected_item_incarnation_id=item.item_incarnation_id, force=True)
+            return
         item = self.store.get_item(item_id)
         if item is None:
             return
@@ -1890,7 +1936,7 @@ class CacheManager:
             if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
                 return
             download_source = self.python_worker_download_sources.setdefault(
-                item_id, self.download_source
+                item_id, download_source
             )
             if login_error := self._download_login_error(download_source, item_id):
                 cache_attempt_token = self._begin_cache_attempt_for_item(item)
@@ -1963,7 +2009,7 @@ class CacheManager:
     def _after_external_cache_attempt(self, should_resync: bool) -> None:
         if self.stop_event.is_set():
             return
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             # A closed retry window may have deferred a Native replacement, even
             # when the external attempt failed. Wake Rust after ownership drains;
             # a clear/stop operation remains closed to these background wakeups.
@@ -1978,6 +2024,12 @@ class CacheManager:
         requeue_item = self.store.get_item(requeue_after) if requeue_after else None
         with self.lock:
             if self.stop_event.is_set():
+                return
+            # A stale retained-source priority plan cannot create a shared job
+            # in the Python queue after configuration changed.
+            if self.python_worker_download_sources.get(item_id, self.download_source) in (
+                DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN
+            ):
                 return
             download_source = self.python_worker_download_sources.setdefault(
                 item_id, self.download_source
@@ -2025,7 +2077,9 @@ class CacheManager:
         if item is None:
             return
         with self.lock:
-            download_source = self.download_source
+            download_source = self.python_worker_download_sources.get(item_id, self.download_source)
+            if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+                return
             if login_error := self._download_login_error(download_source, item_id):
                 raise ValueError(login_error)
             self.python_worker_download_sources[item_id] = download_source
@@ -2177,7 +2231,6 @@ class CacheManager:
         self,
         item_id: str,
         cache_attempt_token: int,
-        allow_refresh_retry: bool = True,
     ) -> bool:
         cache_attempt_token = self._require_cache_attempt_token(
             cache_attempt_token
@@ -2202,7 +2255,6 @@ class CacheManager:
             item_id,
             item,
             cache_attempt_token=cache_attempt_token,
-            allow_refresh_retry=allow_refresh_retry,
         )
 
     def _replacement_cache_attempt_token(
@@ -2226,7 +2278,6 @@ class CacheManager:
         item_id: str,
         previous_token: int,
         *,
-        allow_refresh_retry: bool,
         item_dir: Path | None = None,
         log_path: Path | None = None,
     ) -> bool:
@@ -2248,7 +2299,6 @@ class CacheManager:
             item_id,
             fresh_item,
             cache_attempt_token=retry_token,
-            allow_refresh_retry=allow_refresh_retry,
         )
 
     def _cache_item_multi(
@@ -2257,7 +2307,6 @@ class CacheManager:
         item,
         *,
         cache_attempt_token: int | None = None,
-        allow_refresh_retry: bool,
     ) -> bool:
         if item.id != item_id:
             raise RuntimeError("cache item owner changed before downloader preparation")
@@ -2265,6 +2314,8 @@ class CacheManager:
             self._cache_attempt_reservation_for_item(item, cache_attempt_token)
         with self.lock:
             download_source = self.python_worker_download_sources[item_id]
+        if download_source == DOWNLOAD_SOURCE_BBDOWN:
+            raise RuntimeError("BBDown is owned by the shared Rust runtime")
         if login_error := self._download_login_error(download_source, item_id):
             token = (
                 self._begin_cache_attempt_for_item(item)
@@ -2276,7 +2327,6 @@ class CacheManager:
                 return self._restart_cache_after_retry_request(
                     item_id,
                     token,
-                    allow_refresh_retry=allow_refresh_retry,
                 )
             self._clear_item_download_progress(
                 item_id,
@@ -2330,7 +2380,6 @@ class CacheManager:
                     return self._restart_cache_after_retry_request(
                         item_id,
                         token,
-                        allow_refresh_retry=allow_refresh_retry,
                         item_dir=item_dir,
                         log_path=log_path,
                     )
@@ -2352,7 +2401,6 @@ class CacheManager:
                     return self._restart_cache_after_retry_request(
                         item_id,
                         token,
-                        allow_refresh_retry=allow_refresh_retry,
                         item_dir=item_dir,
                         log_path=log_path,
                     )
@@ -2375,7 +2423,6 @@ class CacheManager:
                     return self._restart_cache_after_retry_request(
                         item_id,
                         token,
-                        allow_refresh_retry=allow_refresh_retry,
                         item_dir=item_dir,
                         log_path=log_path,
                     )
@@ -2447,7 +2494,6 @@ class CacheManager:
                 return self._restart_cache_after_retry_request(
                     item_id,
                     token,
-                    allow_refresh_retry=allow_refresh_retry,
                     item_dir=item_dir,
                     log_path=log_path,
                 )
@@ -2472,48 +2518,13 @@ class CacheManager:
                 return self._restart_cache_after_retry_request(
                     item_id,
                     token,
-                    allow_refresh_retry=allow_refresh_retry,
                     log_path=log_path,
                 )
             last_message = str(exc)
-            if (
-                download_source == DOWNLOAD_SOURCE_BBDOWN
-                and allow_refresh_retry
-                and self._should_force_refresh_bbdown(last_message)
-            ):
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
-                )
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
-                )
-                try:
-                    self._ensure_bbdown(force_refresh=True)
-                    retry_token = self._replacement_cache_attempt_token(
-                        item, token
-                    )
-                    self._clear_item_download_progress(
-                        item_id,
-                        cache_attempt_token=retry_token,
-                    )
-                    return self._cache_item_multi(
-                        item_id,
-                        item,
-                        cache_attempt_token=retry_token,
-                        allow_refresh_retry=False,
-                    )
-                except Exception as refresh_exc:  # noqa: BLE001
-                    self._append_log_line(
-                        log_path,
-                        f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
-                    )
             if self._close_python_retry_window(item_id, token):
                 return self._restart_cache_after_retry_request(
                     item_id,
                     token,
-                    allow_refresh_retry=allow_refresh_retry,
                     log_path=log_path,
                 )
             self._clear_item_download_progress(
@@ -2536,7 +2547,6 @@ class CacheManager:
                 return self._restart_cache_after_retry_request(
                     item_id,
                     token,
-                    allow_refresh_retry=allow_refresh_retry,
                     log_path=log_path,
                 )
             last_message = str(exc)
@@ -2855,56 +2865,7 @@ class CacheManager:
                 validate_tracks=True,
             )
         else:
-            result_paths = {}
-            max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
-            executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
-            future_to_track = {
-                executor.submit(
-                    self._download_page_stream,
-                    item,
-                    binary_path,
-                    ffmpeg_path,
-                    item_dir,
-                    log_path,
-                    page=int(track["page"]),
-                    stream_kind=str(track["stream_kind"]),
-                    track_key=str(track["key"]),
-                    cache_attempt_token=cache_attempt_token,
-                    download_source=download_source,
-                ): track
-                for track in download_tracks
-            }
-            try:
-                done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
-                exceptions: list[Exception] = []
-                for future in done:
-                    if future.cancelled():
-                        continue
-                    try:
-                        future.result()
-                    except Exception as exc:  # noqa: BLE001
-                        exceptions.append(exc)
-
-                if exceptions:
-                    for future in pending:
-                        future.cancel()
-                    self._terminate_item_processes(item.id)
-                    still_running = [future for future in pending if not future.cancelled()]
-                    if still_running:
-                        wait(still_running)
-                        for future in still_running:
-                            if future.cancelled():
-                                continue
-                            try:
-                                future.result()
-                            except Exception as exc:  # noqa: BLE001
-                                exceptions.append(exc)
-                    raise self._preferred_download_exception(exceptions)
-
-                for future, track in future_to_track.items():
-                    result_paths[str(track["key"])] = future.result()
-            finally:
-                executor.shutdown(wait=True)
+            raise RuntimeError("source must be executed by the shared Rust runtime")
 
         video_file = result_paths[str(video_track["key"])]
         audio_files: list[tuple[int, Path, str]] = []
@@ -3128,8 +3089,6 @@ class CacheManager:
             target_dir=target_dir,
         )
 
-        if download_source == DOWNLOAD_SOURCE_BBDOWN:
-            self._append_log_line(log_path, "download_credentials_loaded source=bbdown (current login; credentials redacted)")
         label = "视频轨" if stream_kind == "video" else "音轨"
         stage_label = f"下载{label} P{page}"
         self._raise_if_priority_shift(item.id)
@@ -3194,14 +3153,7 @@ class CacheManager:
                 stream_kind=stream_kind,
                 target_dir=target_dir,
             )
-        return self._bbdown_download_command(
-            binary_path,
-            ffmpeg_path,
-            page_url,
-            page=page,
-            stream_kind=stream_kind,
-            target_dir=target_dir,
-        )
+        raise RuntimeError("source must be executed by the shared Rust runtime")
 
     def _download_login_error(
         self, source: str, item_id: str | None = None, *, cookie: str | None = None
@@ -3216,41 +3168,6 @@ class CacheManager:
                 f"download_login_required source={source}: {message}",
             )
         return message
-
-    def _bbdown_download_command(
-        self,
-        binary_path: Path,
-        ffmpeg_path: Path,
-        page_url: str,
-        *,
-        page: int,
-        stream_kind: str,
-        target_dir: Path,
-    ) -> list[str]:
-        command = [
-            self._tool_arg_path(binary_path),
-            page_url,
-            "-p",
-            str(page),
-            *self._bbdown_stream_preference_args(stream_kind),
-            "--work-dir",
-            self._tool_arg_path(target_dir),
-            *([] if media_cli.DISABLED else ["--ffmpeg-path", self._bbdown_ffmpeg_path_arg(ffmpeg_path)]),
-            "--file-pattern",
-            f"{stream_kind}-p{page}",
-            "--skip-mux",
-            "--skip-subtitle",
-            "--skip-cover",
-            "--skip-ai",
-            "--video-only" if stream_kind == "video" else "--audio-only",
-        ]
-        cookie = effective_bilibili_cookie()
-        if message := self._download_login_error(DOWNLOAD_SOURCE_BBDOWN, cookie=cookie):
-            error = DownloadCommandError(message)
-            error.kind = "authentication_required"
-            raise error
-        command.extend(["-c", cookie])
-        return command
 
     def _ytdlp_download_command(
         self,
@@ -4818,38 +4735,11 @@ class CacheManager:
     ) -> list[str]:
         raise DownloadCommandError("Downkyi 模式不使用 URL 下载命令，请使用 _download_dash_streams_with_aria2c")
 
-    def _bbdown_stream_preference_args(
-        self,
-        stream_kind: str,
-    ) -> list[str]:
-        with self.lock:
-            video_quality = self.video_quality
-            audio_hires = self.audio_hires
-            force_avc = self._should_force_avc_locked()
-            avc_quality_cap = self.avc_quality_cap if force_avc else ""
-        if stream_kind == "video":
-            args = [
-                "-q",
-                self._video_quality_priority(
-                    video_quality,
-                    avc_quality_cap,
-                ),
-            ]
-            if force_avc:
-                args.extend(["-e", "avc"])
-            return args
-        if stream_kind == "audio" and not audio_hires:
-            # BBDown 1.6.x does not expose a direct "highest non-Hi-Res"
-            # selector. The closest safe fallback is to prefer the smaller
-            # audio stream when Hi-Res is disabled.
-            return ["--audio-ascending"]
-        return []
-
     def _should_force_avc_locked(self) -> bool:
         return self.hevc_supported is False
 
     def _request_desired_recaching(self, message: str) -> None:
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
             self._sync_native_with_playlist()
             return
         with self.lock:
@@ -4992,7 +4882,7 @@ class CacheManager:
                 status_match = (
                     ARIA2_HTTP_STATUS_RE.search(line)
                     if progress_from_output
-                    else BBDOWN_HTTP_STATUS_RE.search(line)
+                    else None
                 )
                 if status_match is not None:
                     classified_http_status = int(status_match.group(1))
@@ -5017,7 +4907,7 @@ class CacheManager:
                 else:
                     downloaded_bytes = None
                     progress = self._extract_progress(line)
-                    target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
+                    target_bytes = 0
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
                 self._update_download_track_progress(
@@ -5066,15 +4956,7 @@ class CacheManager:
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            if classified_http_status is not None and not progress_from_output:
-                message = f"{stage_label}: BBDown 请求被 Bilibili 拒绝 (HTTP {classified_http_status})"
-                if classified_http_status == 412:
-                    message += "；请检查 Host 的 Bilibili 登录状态，稍后重试或更换网络"
-                error = DownloadCommandError(message)
-                error.kind = "upstream_http"
-                error.http_status = classified_http_status
-                error.status_code = classified_http_status
-            elif classified_http_status == 401:
+            if classified_http_status == 401:
                 error = DownloadCommandError(
                     "DownKyi/aria2c Bilibili login/Cookie is invalid or expired "
                     "(HTTP 401)"
@@ -6365,6 +6247,7 @@ class CacheManager:
             return f"{stage_label}: {line}"
         return stage_label
 
+    # Frozen output reference for compatibility tests; not a downloader dependency.
     @staticmethod
     def _selected_stream_size_hint_bytes(line: str, stream_kind: str) -> int:
         normalized_line = str(line or "").strip()
@@ -6888,19 +6771,22 @@ class CacheManager:
             return self._ensure_ytdlp()
         if download_source == DOWNLOAD_SOURCE_DOWNKYI:
             return self._ensure_aria2c()
-        return self._ensure_bbdown(force_refresh=force_refresh)
+        raise RuntimeError("source must be executed by the shared Rust runtime")
 
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         media_cli.require_media_cli("BBDown")
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else None
             override_exists = bool(override and override.exists())
+            if override is not None and not override.is_file():
+                raise RuntimeError("BB_DOWN_PATH does not name an installed BBDown executable")
             current_binary = self._local_binary_path()
             if PACKAGED_RUNTIME:
                 if override_exists:
+                    version = self._read_bbdown_version(override)
                     with self.lock:
                         self.binary_state = "ready"
-                        self.binary_version = self._read_bbdown_version(override)
+                        self.binary_version = version
                         self.binary_message = f"使用外部 BBDown: {override}"
                     return override
                 return self._ensure_packaged_bbdown(
@@ -8235,6 +8121,7 @@ class CacheManager:
             return line
         return f"缓存中 {round(progress)}%"
 
+    # Frozen output reference for compatibility tests; not a downloader dependency.
     @staticmethod
     def _should_force_refresh_bbdown(message: str) -> bool:
         text = str(message or "")
@@ -8440,6 +8327,8 @@ class CacheManager:
         output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
         match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
         return match.group(1) if match else ""
+
+    # Frozen path-format reference; no live BBDown execution uses a muxer.
     @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
@@ -8820,6 +8709,7 @@ class CacheManager:
         self.pending_ids.discard(item_id)
         self.retry_requested_ids.discard(item_id)
         self.python_worker_download_sources.pop(item_id, None)
+        self.cache_interrupted_messages.pop(item_id, None)
         if current_attempt_token is not None:
             self.python_cache_attempt_tokens.pop(item_id, None)
 
@@ -8882,6 +8772,8 @@ class CacheManager:
     def _should_cache(self, item_id: str) -> bool:
         with self.lock:
             if self.stop_event.is_set():
+                return False
+            if self.cache_interrupted_messages.get(item_id) == "等待共享 Rust 缓存":
                 return False
             if item_id in self.urgent_cache_ids:
                 return item_id in self.desired_ids

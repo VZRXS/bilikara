@@ -26,7 +26,6 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "native-host")]
 pub(crate) mod bbdown;
 
 pub(crate) mod orchestration;
@@ -37,23 +36,24 @@ pub(crate) mod orchestration;
 pub(crate) enum Executor {
     #[default]
     Native,
-    #[cfg(feature = "native-host")]
-    Bbdown(bbdown::Executable),
+    Bbdown {
+        executable: bbdown::Executable,
+        force_avc: bool,
+        default_host: bool,
+    },
 }
 
 impl Executor {
     fn source(&self) -> &'static str {
         match self {
             Self::Native => "native",
-            #[cfg(feature = "native-host")]
-            Self::Bbdown(_) => "bbdown",
+            Self::Bbdown { .. } => "bbdown",
         }
     }
     fn attempts(&self) -> u32 {
         match self {
             Self::Native => TRACK_ATTEMPTS,
-            #[cfg(feature = "native-host")]
-            Self::Bbdown(_) => 1,
+            Self::Bbdown { .. } => 1,
         }
     }
 }
@@ -319,7 +319,29 @@ struct TrackResult {
     spec: TrackSpec,
     temporary_path: PathBuf,
     final_name: String,
-    probe: MediaProbe,
+    probe: TrackValidation,
+}
+
+enum TrackValidation {
+    Normalized(MediaProbe),
+    Inspected(crate::media_routing::Metadata),
+}
+
+impl TrackValidation {
+    fn file_bytes(&self) -> u64 {
+        match self {
+            Self::Normalized(probe) => probe.file_bytes,
+            Self::Inspected(metadata) => metadata.size,
+        }
+    }
+
+    #[cfg(test)]
+    fn codec(&self) -> Option<&str> {
+        match self {
+            Self::Normalized(probe) => Some(&probe.codec),
+            Self::Inspected(metadata) => metadata.streams.first()?.codec.as_deref(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1439,8 +1461,7 @@ fn run_track(
     track: &TrackSpec,
     cancel: &Arc<AtomicBool>,
 ) -> Result<TrackResult, CacheRuntimeError> {
-    #[cfg(feature = "native-host")]
-    if let Executor::Bbdown(executable) = &job.spec.executor {
+    if let Executor::Bbdown { executable, .. } = &job.spec.executor {
         // BBDown owns its internal transfer retry budget. Do not wrap it in
         // Native's ten-attempt resolver/download loop.
         return bbdown::run_track(executable, shared, job, track, cancel);
@@ -1540,7 +1561,7 @@ fn run_track(
                     spec: track.clone(),
                     temporary_path: normalized_path,
                     final_name,
-                    probe,
+                    probe: TrackValidation::Normalized(probe),
                 });
             }
             Err(error) => {
@@ -1740,6 +1761,17 @@ fn resolve_track_stream(
     })?;
     match track.kind {
         ExpectedMediaKind::Video => select_video(&dash.video, job),
+        ExpectedMediaKind::Audio
+            if matches!(
+                job.executor,
+                Executor::Bbdown {
+                    default_host: true,
+                    ..
+                }
+            ) =>
+        {
+            bbdown::preflight_audio(&dash)
+        }
         ExpectedMediaKind::Audio => select_audio(&dash.audio, dash.flac.as_ref(), job.audio_hires),
     }
 }
@@ -1763,9 +1795,16 @@ fn select_video(
             codec: VideoCodec::from_name(stream.codec_name.as_deref().unwrap_or("")),
         })
         .collect();
+    let force_avc = !matches!(
+        job.executor,
+        Executor::Bbdown {
+            force_avc: false,
+            ..
+        }
+    );
     let selection = select_video_stream(&VideoStreamSelectionRequest {
         max_quality_id: quality.dash_max_quality_id,
-        codec_filter: Some(VideoCodec::Avc),
+        codec_filter: force_avc.then_some(VideoCodec::Avc),
         max_avc_quality_id: quality.optional_cap.map(|cap| cap.dash_quality_id()),
         streams: descriptors,
     })
@@ -1780,7 +1819,7 @@ fn select_video(
         .get(selected_index)
         .cloned()
         .ok_or_else(|| CacheRuntimeError::new("selection", "invalid selected video stream"))?;
-    if stream.codec_name.as_deref() != Some("avc") {
+    if force_avc && stream.codec_name.as_deref() != Some("avc") {
         return Err(CacheRuntimeError::new(
             "selection",
             "Rust Native found no compatible AVC video stream",
@@ -1931,7 +1970,7 @@ where
         .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
     let mut final_names = HashSet::with_capacity(tracks.len());
     for track in &tracks {
-        if track.probe.file_bytes == 0
+        if track.probe.file_bytes() == 0
             || !track.temporary_path.is_file()
             || !final_names.insert(track.final_name.clone())
         {
@@ -2615,7 +2654,7 @@ mod tests {
                         .join(&reservation.artifact_set_id)
                 )
             );
-            assert_eq!(result.probe.codec, codec);
+            assert_eq!(result.probe.codec(), Some(codec));
             if codec != "aac" {
                 tracks.push(result);
             }
@@ -2862,7 +2901,7 @@ mod tests {
                     page: job.pages[0].clone(),
                     kind,
                 },
-                probe: MediaProbe {
+                probe: TrackValidation::Normalized(MediaProbe {
                     path: temporary_path.clone(),
                     kind,
                     codec: if kind == ExpectedMediaKind::Video {
@@ -2876,7 +2915,7 @@ mod tests {
                     file_bytes,
                     fragmented: false,
                     fast_start: true,
-                },
+                }),
                 temporary_path,
                 final_name: final_name.to_owned(),
             }
@@ -3023,7 +3062,6 @@ mod tests {
         assert!(validate_job(&duplicate).is_err());
     }
 
-    #[cfg(feature = "native-host")]
     #[test]
     fn queued_bbdown_attempt_keeps_source_and_settings_until_explicit_replacement() {
         let root = publication_root("captured-bbdown");
@@ -3036,7 +3074,11 @@ mod tests {
             ))
         }));
         let mut selected = job(&root);
-        selected.executor = Executor::Bbdown(bbdown::Executable::fixture(root.join("BBDown 空")));
+        selected.executor = Executor::Bbdown {
+            executable: bbdown::Executable::fixture(root.join("BBDown 空")),
+            force_avc: true,
+            default_host: false,
+        };
         selected.cookie = "synthetic-old-cookie".into();
         selected.audio_hires = true;
         let first = runtime

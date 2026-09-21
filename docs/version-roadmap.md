@@ -292,6 +292,28 @@ a replacement. Reader leases still govern collection. Missing/incompatible
 executables and unsupported outputs fail explicitly without Native substitution
 or Python/media-CLI fallback.
 
+### BBDown in the default Python Desktop Host
+
+The default Python desktop Host also admits explicit BBDown work through the
+shared Rust cache orchestration and the same executor. The ordinary desktop
+Runtime build includes it without enabling the native HTTP Host; mobile does
+not admit sidecar executables. Python transports its trusted preparation result
+to an owner-scoped offline capability check; generic jobs and public requests
+cannot provide programs or arguments. Invalid overrides fail closed.
+
+Default Host attempts retain its selected-page/CID and audio-variant order,
+quality/Hi-Res settings, credentials and conditional AVC preference. Source
+changes affect future admissions; explicit retries drain a different owner
+before replacement. Default Host HEVC/AV1 video and Dolby E-AC-3 audio retain
+the existing libav MP4/packet validation and publish those validated bytes; this does not expand
+the H.264/AAC/FLAC normalization profiles. Rust owns BBDown supervision,
+validation, immutable publication and artifact lifetime. Python retains preparation, login/status,
+coarse service calls and persistence/HTTP/SSE observations, plus the other
+explicit-source workers. BBDown progress uses structured stages and measured
+bytes; raw child text and its upgrade hints are not parsed or logged, and tool
+failure does not trigger an automatic installer/update retry. This does not
+switch the default Host or retire the Python distribution dependency.
+
 ### Update checking in the Rust Desktop Host
 
 v0.8.0-preview.1 is published and development continues on `work/v0.8.0`. Step

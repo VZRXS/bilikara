@@ -430,6 +430,17 @@ def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
     return _call_runtime_service("cache_runtime", request)
 
 
+def configure_bbdown(*, owner: str, prepared_path: Path | None) -> dict[str, Any]:
+    """Transport a trusted Host preparation result, never public request fields."""
+    result = _call_runtime_service("native_cache", {
+        "command": "configure_bbdown", "owner": owner,
+        "prepared_path": str(prepared_path.resolve()) if prepared_path is not None else None,
+    })
+    if type(result.get("ready")) is not bool or not isinstance(result.get("message"), str):
+        raise RustRuntimeServiceError("invalid_response", "Invalid BBDown readiness", response={})
+    return result
+
+
 def native_cache_request(command: str, **fields: Any) -> dict[str, Any]:
     if (_runtime_lib is not None and _media_startup_error
         and command not in {"stop", "clear", "prepare", "handoff"}):
@@ -442,7 +453,8 @@ def native_cache_request(command: str, **fields: Any) -> dict[str, Any]:
                for value in result[key])
         or any(not isinstance(value, dict) or not isinstance(value.get("item_id"), str)
                or type(value.get("cache_attempt_token")) is not int
-               or value["cache_attempt_token"] <= 0 for value in result["external_retries"])):
+               or value["cache_attempt_token"] <= 0
+               or type(value.get("handoff", False)) is not bool for value in result["external_retries"])):
         raise RustRuntimeServiceError("invalid_response", "Invalid Native cache observation", response={})
     return result
 

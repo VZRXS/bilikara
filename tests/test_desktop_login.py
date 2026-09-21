@@ -64,14 +64,11 @@ class DesktopLoginTest(unittest.TestCase):
 
     def test_bbdown_new_commands_read_login_and_logout_without_restart(self):
         def command():
-            return self.manager._bbdown_download_command(
-                self.root / "BBDown", self.root / "unused-ffmpeg",
-                "https://www.bilibili.com/video/BV1tPC2BEEjq", page=1,
-                stream_kind="audio", target_dir=self.root / "track",
-            )
-        with patch("bilikara.bilibili.cfg.COOKIE", ""), patch.object(
-            self.manager, "_bbdown_stream_preference_args", return_value=[]
-        ):
+            cookie = bilibili.effective_bilibili_cookie()
+            if message := self.manager._download_login_error("bbdown", cookie=cookie):
+                raise RuntimeError(message)
+            return cookie
+        with patch("bilikara.bilibili.cfg.COOKIE", ""):
             with self.assertRaisesRegex(RuntimeError, "BBDown 下载需要登录"):
                 command()
             with LoginFixture():
@@ -81,8 +78,7 @@ class DesktopLoginTest(unittest.TestCase):
             for source in ["bbdown", "downkyi"]:
                 self.assertEqual(self.manager._download_login_error(source), "")
             authenticated = command()
-            self.assertEqual(authenticated[authenticated.index("-c") + 1], bilibili.effective_bilibili_cookie())
-            self.assertIn("-c", authenticated)  # A running child keeps its admitted argv.
+            self.assertEqual(authenticated, bilibili.effective_bilibili_cookie())
             self.manager.logout_bbdown()
             for source in ["bbdown", "downkyi"]:
                 self.assertIn("下载需要登录", self.manager._download_login_error(source))
@@ -196,8 +192,9 @@ class DesktopLoginTest(unittest.TestCase):
                             ):
                                 setattr(self.manager, name, {})
                             with ExitStack() as cleanup:
+                                cleanup.enter_context(patch.object(self.manager, "_artifact_request", return_value={"accepted": True, "collected": 0}))
                                 for name in ("_begin_live_cache_attempts", "_active_processes_locked",
-                                             "_terminate_processes", "_clear_cache_root", "_reset_artifact_retirement_state"):
+                                             "_terminate_processes", "_clear_cache_root"):
                                     cleanup.enter_context(patch.object(self.manager, name, return_value=[]))
                                 self.manager.shutdown()
                         else:

@@ -256,15 +256,17 @@ fn job(
 ) -> Result<CacheJobSpec, ApiError> {
     let executor = match policy.download_source.as_str() {
         "native" => crate::cache_runtime::Executor::Native,
-        "bbdown" if context.desktop => {
-            crate::cache_runtime::Executor::Bbdown(context.bbdown.clone().ok_or_else(|| {
+        "bbdown" if context.desktop => crate::cache_runtime::Executor::Bbdown {
+            executable: context.bbdown.clone().ok_or_else(|| {
                 ApiError::new(
                     501,
                     "bbdown_unavailable",
                     "BBDown executable unavailable; configure BB_DOWN_PATH and restart Host",
                 )
-            })?)
-        }
+            })?,
+            force_avc: true,
+            default_host: false,
+        },
         _ => {
             return Err(ApiError::new(
                 501,

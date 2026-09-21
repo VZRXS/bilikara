@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from bilikara import rust_runtime
 from bilikara.store import PlaylistStoreCommandError
-from bilikara.cache import CacheManager, DownloadCommandError, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_NATIVE
+from bilikara.cache import CacheManager, DownloadCommandError, DOWNLOAD_SOURCE_YTDLP, DOWNLOAD_SOURCE_NATIVE
 from tests import test_cache as fixtures
 
 
@@ -88,7 +88,7 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
     def test_stale_retry_and_stale_external_attempt_cannot_own_reused_id(self):
         old = self.add("same")
         token = self.store.begin_cache_attempt(old.id, old.item_incarnation_id)
-        self.manager.python_worker_download_sources[old.id] = DOWNLOAD_SOURCE_BBDOWN
+        self.manager.python_worker_download_sources[old.id] = DOWNLOAD_SOURCE_YTDLP
         self.manager.python_cache_attempt_tokens[old.id] = token
         self.store.remove_item(old.id)
         new = self.add("same")
@@ -163,14 +163,14 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
         item = self.add("song")
         self.manager.sync_with_playlist()
         old = rust_runtime.cache_runtime_request("snapshot")["terminal_events"][0]["cache_attempt_token"]
-        self.manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_BBDOWN)
+        self.manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_YTDLP)
         original = rust_runtime.native_cache_request
         with patch("bilikara.cache.rust_runtime.native_cache_request", wraps=original) as service:
             self.manager.retry_item(item.id, expected_item_incarnation_id=item.item_incarnation_id)
         service.assert_called_once_with("handoff", owner=self.manager._artifact_owner,
                                        item_id=item.id, expected_item_incarnation_id=item.item_incarnation_id)
         self.assertGreater(self.manager.python_cache_attempt_tokens[item.id], old)
-        self.assertEqual(self.manager.python_worker_download_sources[item.id], DOWNLOAD_SOURCE_BBDOWN)
+        self.assertEqual(self.manager.python_worker_download_sources[item.id], DOWNLOAD_SOURCE_YTDLP)
         self.assertEqual(self.manager.tasks.get_nowait(), item.id)
         self.manager.tasks.task_done()
 
@@ -194,14 +194,14 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
     def test_python_queue_captures_source_before_native_switch(self):
         item = self.add("external")
         self.add("native")
-        self.manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+        self.manager.download_source = DOWNLOAD_SOURCE_YTDLP
         self.manager.enqueue(item.id)
         token = self.manager.python_cache_attempt_tokens[item.id]
         self.manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_NATIVE)
         self.manager.sync_with_playlist()
         self.assertEqual(self.manager.tasks.get_nowait(), item.id)
         self.manager.tasks.task_done()
-        self.assertEqual(self.manager.python_worker_download_sources, {item.id: DOWNLOAD_SOURCE_BBDOWN})
+        self.assertEqual(self.manager.python_worker_download_sources, {item.id: DOWNLOAD_SOURCE_YTDLP})
         self.assertEqual(self.manager.python_cache_attempt_tokens[item.id], token)
         self.assertEqual(self.store.cache_attempt_reservation(token)["item_incarnation_id"], item.item_incarnation_id)
         self.assertEqual(self.store.get_item("native").cache_status, "failed")
@@ -213,7 +213,7 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
         previous = self.store.get_item(item.id)
         # A reader keeps the previous publication observable through replacement.
         lease = self.reader(previous.video_relative_path)
-        self.manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+        self.manager.download_source = DOWNLOAD_SOURCE_YTDLP
         self.manager.desired_ids = {item.id}
         self.manager.ordered_desired_ids = [item.id]
         self.manager.enqueue(item.id)
@@ -233,7 +233,7 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
                 return close(item_id, token) if handoff else result
             return close(item_id, token)
         def download(observed, _binary, _media, staging, _log, *, cache_attempt_token, download_source):
-            attempts.append((cache_attempt_token, download_source, self.manager._bbdown_stream_preference_args("video")))
+            attempts.append((cache_attempt_token, download_source, self.manager._ytdlp_format_selector("video")))
             if len(attempts) == 1 and outcome == "download_error":
                 raise DownloadCommandError("synthetic download failure")
             if len(attempts) == 1 and outcome == "generic_error":
@@ -283,10 +283,10 @@ class NativeCacheOrchestrationTest(unittest.TestCase):
         terminal = rust_runtime.cache_runtime_request("snapshot")["terminal_events"]
         if handoff:
             self.assertEqual(len(attempts), 2)
-            self.assertTrue(all(attempt[1] == DOWNLOAD_SOURCE_BBDOWN for attempt in attempts))
+            self.assertTrue(all(attempt[1] == DOWNLOAD_SOURCE_YTDLP for attempt in attempts))
             self.assertGreater(attempts[1][0], attempts[0][0])
-            self.assertNotIn("-e", attempts[0][2])
-            self.assertIn("avc", attempts[1][2])
+            self.assertNotIn("vcodec^=avc", attempts[0][2])
+            self.assertIn("vcodec^=avc", attempts[1][2])
             self.assertEqual(terminal, [])
         else:
             self.assertEqual(len(terminal), 1)

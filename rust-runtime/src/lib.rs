@@ -40,6 +40,10 @@ pub use bilibili_service::{
     BilibiliDashRequest, BilibiliDashResult, BilibiliServiceError, BilibiliStream,
     fetch_dash_playurl,
 };
+pub use cache_runtime::orchestration::{
+    Command as CacheOrchestrationCommand, ExternalAttempt as ExternalCacheAttempt,
+    Facts as CacheOrchestrationFacts, execute as execute_cache_orchestration,
+};
 pub use cache_runtime::{CacheRuntimeCommand, CacheRuntimeError, execute_cache_runtime};
 pub use diagnostics::{DiagnosticError, DiagnosticRequest, DiagnosticResult};
 pub use ffi::{

@@ -15,6 +15,7 @@ impl Executable {
     }
 
     /// Trusted Host configuration only; never deserialize this from an API/FFI.
+    #[cfg(feature = "native-host")]
     pub(crate) fn discover(directory: &Path) -> Option<Self> {
         if let Some(path) = std::env::var_os("BB_DOWN_PATH").filter(|v| !v.is_empty()) {
             return Self::check(PathBuf::from(path)); // explicit missing override fails closed
@@ -43,7 +44,14 @@ impl Executable {
         candidates.into_iter().find_map(Self::check)
     }
 
-    fn check(path: PathBuf) -> Option<Self> {
+    pub(super) fn check(path: PathBuf) -> Option<Self> {
+        if !cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
+            return None; // Mobile never admits a sidecar executable.
+        }
         if !path.is_absolute() || !path.is_file() {
             return None;
         }
@@ -103,9 +111,16 @@ fn arguments(job: &CacheJobSpec, track: &TrackSpec, directory: &Path) -> Vec<OsS
                 .collect::<Vec<_>>()
                 .join(",")
                 .into(),
-            "-e".into(),
-            "avc".into(),
         ]);
+        if !matches!(
+            job.executor,
+            Executor::Bbdown {
+                force_avc: false,
+                ..
+            }
+        ) {
+            args.extend(["-e".into(), "avc".into()]);
+        }
     } else if !job.audio_hires {
         args.push("--audio-ascending".into());
     }
@@ -377,15 +392,23 @@ pub(super) fn run_track(
         "m4a"
     };
     let final_name = format!("{}.{}", track.key, extension);
-    let destination = directory.join(format!("normalized-{final_name}"));
-    let probe = normalize_track(&job.spec, track, &source, &destination, cancel)?;
+    let (destination, probe) = if default_passthrough(&job.spec, track.kind, codec.as_deref()) {
+        // Preserve default Host's accepted MP4 codecs outside the copy-remux
+        // profiles, using its existing validator and unchanged track bytes.
+        let metadata = validate_default_track(&job.spec, track, &source, cancel)?;
+        (source, TrackValidation::Inspected(metadata))
+    } else {
+        let destination = directory.join(format!("normalized-{final_name}"));
+        let probe = normalize_track(&job.spec, track, &source, &destination, cancel)?;
+        (destination, TrackValidation::Normalized(probe))
+    };
     emit_track_progress(
         shared,
         job,
         track,
         "ready",
         1,
-        (probe.file_bytes, probe.file_bytes),
+        (probe.file_bytes(), probe.file_bytes()),
     );
     Ok(TrackResult {
         spec: track.clone(),
@@ -393,6 +416,111 @@ pub(super) fn run_track(
         final_name,
         probe,
     })
+}
+
+pub(super) fn preflight_audio(
+    dash: &crate::bilibili_service::BilibiliDashResult,
+) -> Result<BilibiliStream, CacheRuntimeError> {
+    use bilikara_rust::{
+        PreferredAudioSource, PreferredAudioSourceRequest, PreferredAudioSourceSelection,
+        PreferredRegularAudioCandidate, select_preferred_audio_source,
+    };
+    // Establish supported DASH input only. BBDown owns its bandwidth ordering
+    // and the captured --audio-ascending preference, including Dolby-only input.
+    let selection = select_preferred_audio_source(&PreferredAudioSourceRequest {
+        audio_hires: true,
+        regular_candidates: (0..dash.audio.len())
+            .map(|original_index| PreferredRegularAudioCandidate { original_index })
+            .collect(),
+        flac_available: dash.flac.is_some(),
+        dolby_available: dash.dolby.is_some(),
+    })
+    .map_err(|_| CacheRuntimeError::new("selection", "invalid audio stream selection"))?;
+    let selected = match selection {
+        PreferredAudioSourceSelection::Selected {
+            preferred_source: PreferredAudioSource::Dolby,
+            ..
+        } => dash.dolby.as_ref(),
+        PreferredAudioSourceSelection::Selected {
+            preferred_source: PreferredAudioSource::Flac,
+            ..
+        } => dash.flac.as_ref(),
+        PreferredAudioSourceSelection::Selected {
+            selected_regular_index: Some(index),
+            ..
+        } => dash.audio.get(index),
+        _ => None,
+    };
+    selected
+        .cloned()
+        .ok_or_else(|| CacheRuntimeError::new("selection", "no audio stream is available"))
+}
+
+fn default_passthrough(job: &CacheJobSpec, kind: ExpectedMediaKind, codec: Option<&str>) -> bool {
+    let Executor::Bbdown {
+        default_host: true,
+        force_avc,
+        ..
+    } = job.executor
+    else {
+        return false;
+    };
+    match kind {
+        ExpectedMediaKind::Video => !force_avc && matches!(codec, Some("hevc" | "av1")),
+        ExpectedMediaKind::Audio => codec == Some("eac3"),
+    }
+}
+
+fn validate_default_track(
+    job: &CacheJobSpec,
+    track: &TrackSpec,
+    source: &Path,
+    cancel: &AtomicBool,
+) -> Result<crate::media_routing::Metadata, CacheRuntimeError> {
+    use crate::media_routing::{InspectRequest, Inspection, Operation};
+    let inspection = crate::media_routing::inspect(
+        &InspectRequest {
+            schema_version: 1,
+            operation: Operation::Validate,
+            source: source.into(),
+            expected_kind: track.kind,
+            container_hint: Some("mp4".into()),
+            compatibility: None,
+        },
+        cancel,
+        &|| false,
+    )
+    .map_err(|e| CacheRuntimeError::new(e.kind, e.message))?;
+    let Inspection::Completed {
+        metadata,
+        diagnostic,
+    } = inspection
+    else {
+        return Err(CacheRuntimeError::new(
+            "unavailable",
+            "BBDown track requires the packaged media validator",
+        ));
+    };
+    append_log(
+        &job.log_file,
+        &format!("media_diagnostic: {}", json!(diagnostic)),
+    );
+    let stream = metadata.streams.first();
+    let duration = stream
+        .and_then(|s| s.duration_seconds)
+        .or(metadata.duration_seconds);
+    if metadata.inspection_level != "packet_scan"
+        || metadata.container != "mov,mp4,m4a,3gp,3g2,mj2"
+        || metadata.size == 0
+        || !default_passthrough(job, track.kind, stream.and_then(|s| s.codec.as_deref()))
+        || !duration.is_some_and(|d| d.is_finite() && d >= 1.0)
+    {
+        return Err(CacheRuntimeError::new(
+            "invalid_media",
+            "BBDown output failed the validated MP4 track contract",
+        ));
+    }
+    Ok(metadata)
 }
 
 #[cfg(test)]
@@ -452,6 +580,64 @@ mod tests {
         let mut wire = json!({"item_id":"a","item_incarnation_id":"b","bvid":"BV1xx411c7mD","video_page":1,"pages":[],"cache_root":"/tmp/c","log_file":"/tmp/l"});
         wire["executor"] = json!({"bbdown":"/arbitrary/program"});
         assert!(serde_json::from_value::<CacheJobSpec>(wire).is_err());
+    }
+    #[test]
+    fn default_host_codec_intent_is_captured_without_changing_native_host_defaults() {
+        let mut spec = job();
+        let tracks = track_specs(&spec).unwrap();
+        let directory = PathBuf::from("/owned/track");
+        // Native Host keeps its existing AVC behavior.
+        assert!(arguments(&spec, &tracks[0], &directory).contains(&"avc".into()));
+        spec.executor = Executor::Bbdown {
+            executable: Executable::fixture(PathBuf::from("/trusted/BBDown")),
+            force_avc: false,
+            default_host: true,
+        };
+        assert!(!arguments(&spec, &tracks[0], &directory).contains(&"-e".into()));
+        assert!(default_passthrough(
+            &spec,
+            ExpectedMediaKind::Video,
+            Some("hevc")
+        ));
+        assert!(default_passthrough(
+            &spec,
+            ExpectedMediaKind::Video,
+            Some("av1")
+        ));
+        assert!(default_passthrough(
+            &spec,
+            ExpectedMediaKind::Audio,
+            Some("eac3")
+        ));
+        assert!(!default_passthrough(
+            &spec,
+            ExpectedMediaKind::Audio,
+            Some("unknown")
+        ));
+        if let Executor::Bbdown { force_avc, .. } = &mut spec.executor {
+            *force_avc = true;
+        }
+        assert!(!default_passthrough(
+            &spec,
+            ExpectedMediaKind::Video,
+            Some("hevc")
+        ));
+        assert!(default_passthrough(
+            &spec,
+            ExpectedMediaKind::Audio,
+            Some("eac3")
+        ));
+        spec.executor = Executor::Bbdown {
+            executable: Executable::fixture(PathBuf::from("/trusted/BBDown")),
+            force_avc: true,
+            default_host: false,
+        };
+        assert!(arguments(&spec, &tracks[0], &directory).contains(&"avc".into()));
+        assert!(!default_passthrough(
+            &spec,
+            ExpectedMediaKind::Audio,
+            Some("eac3")
+        ));
     }
     #[test]
     fn output_requires_one_owned_nonempty_file() {

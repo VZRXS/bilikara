@@ -16,7 +16,7 @@ Bilikara is a Bilibili-based Karaoke system consisting of a Host (PC display & d
 The architecture consists of the following primary layers:
 
 - `static/`: Frontend Host and Remote user interfaces built with vanilla JavaScript, HTML5, and CSS3. UI components use state-driven re-rendering and subscribe to real-time state updates via Server-Sent Events (SSE) at `/api/events`. Bundled and served by the Host server or packaged into the Tauri desktop shell.
-- `bilikara/`: Python Host transport and compatibility adapter. Handles HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, external-tool orchestration (`BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`), version checks/updates, and frozen Python compatibility references created during earlier migration work. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
+- `bilikara/`: Python Host transport and compatibility adapter. Handles HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, external-tool preparation and retained orchestration (`yt-dlp`, `aria2c`, source-mode media CLI compatibility), version checks/updates, and frozen Python compatibility references created during earlier migration work. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
 - `rust/`: Shared typed Rust domain core crate (`bilikara_rust`), compiled as both `cdylib` (for CFFI loading in Python) and `rlib` (for native Rust crate callers). Implements pure, deterministic business logic domains.
 - `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, Rust Native cache/runtime services, operational I/O such as the independent HTTP media downloader, and a temporary C ABI for the Python Host adapter.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
@@ -87,11 +87,11 @@ or UI (JavaScript) layers, except for this explicitly opted-in Rust Host path:
 - DOM event handling, button states, modal behavior, toast notifications, and UI rendering (`static/`).
 - HTTP request/response routing, SSE connection lifecycle, cookies, URL fetching, and API endpoints (`bilikara/`).
 - Retained Host filesystem I/O, archive extraction, and system paths. Export font discovery/rendering and archive assembly belong to Rust Runtime.
-- Subprocess execution and management for `BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`, or `ffprobe`.
+- Retained subprocess execution and management for `yt-dlp`, `aria2c` and existing source-mode media CLI compatibility. BBDown download execution is shared Rust-owned; Python retains its tool preparation and login/status adapters. Packaged FFmpeg/ffprobe executables remain retired.
 - Host runtime capability detection and environment variable evaluation.
 - Real-time clock acquisition and timestamping.
 - Atomic state-file reads/writes, legacy-shape loading, backup/archive file handling, and persistence-error reporting. All semantic data written by Python is derived from Rust snapshots.
-- Cache scheduling, retries, cancellation, and external-tool execution for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. Their queued/started/progress/terminal projections are committed through Rust AppState. Rust Native cache jobs remain owned by `rust-runtime` and use the same AppState projection boundary.
+- Retained cache scheduling, retries, cancellation, and execution for explicit yt-dlp and aria2c modes and their existing media CLI compatibility. Their projections are committed through Rust AppState. Native and BBDown admissions, execution and publication are owned by shared `rust-runtime` services.
 - Tauri application lifecycle, native menus, and OS shell integrations (`src-tauri/`).
 
 These are retained adapter and I/O responsibilities, not Python application-core
@@ -197,7 +197,7 @@ When completing a task, agents must report:
 | `server.py` | HTTP Server, API endpoints, SSE event hub (`AppContext`). |
 | `store.py` | `PlaylistStore` AppState/FFI adapter, defensive read-only projection, and atomic JSON persistence derived from Rust snapshots. |
 | `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper; DASH is a thin adapter to the Rust Bilibili service for DownKyi too. Shared Gatcha/maintenance WBI helpers remain. |
-| `cache.py` | Rust CacheRuntime adapter/state projection plus compatibility orchestration for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. |
+| `cache.py` | Rust CacheRuntime adapter/state projection plus BBDown preparation/login adapters, retained yt-dlp/aria2c orchestration and existing source-mode media CLI compatibility. |
 | `rust_backend.py` | Native FFI loader, JSON payload validation, frozen compatibility fallbacks for older domains, and fail-closed adapters for new Rust-authoritative capabilities. |
 | `updater.py` | GitHub release checking, semver comparison, update asset resolution. |
 | `config.py` | Global settings, path resolution, runtime tool discovery. |

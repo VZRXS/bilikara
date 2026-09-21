@@ -12,38 +12,43 @@ mod tests;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ExternalAttempt {
-    item_id: String,
-    cache_attempt_token: u64,
-    retry_open: bool,
+pub struct ExternalAttempt {
+    pub item_id: String,
+    pub cache_attempt_token: u64,
+    pub retry_open: bool,
     #[serde(default)]
-    primary: bool,
+    pub primary: bool,
     #[serde(default)]
-    urgent: bool,
+    pub urgent: bool,
 }
 
 /// Trusted adapter facts only: no playlist, desired jobs or queue decisions.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Facts {
-    cache_root: PathBuf,
-    log_dir: PathBuf,
-    max_cache_items: usize,
-    download_source: String,
-    video_quality: String,
-    audio_hires: bool,
-    hevc_supported: Option<bool>,
-    avc_quality_cap: String,
-    cookie: String,
-    user_agent: String,
-    referer: String,
+pub struct Facts {
+    pub cache_root: PathBuf,
+    pub log_dir: PathBuf,
+    pub max_cache_items: usize,
+    pub download_source: String,
+    pub video_quality: String,
+    pub audio_hires: bool,
+    pub hevc_supported: Option<bool>,
+    pub avc_quality_cap: String,
+    pub cookie: String,
+    pub user_agent: String,
+    pub referer: String,
     #[serde(default)]
-    external_attempts: Vec<ExternalAttempt>,
+    pub external_attempts: Vec<ExternalAttempt>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum Command {
+pub enum Command {
+    /// Trusted Host preparation result, never forwarded from HTTP request data.
+    ConfigureBbdown {
+        owner: String,
+        prepared_path: Option<PathBuf>,
+    },
     Handoff {
         owner: String,
         item_id: String,
@@ -84,9 +89,11 @@ pub(crate) struct Orchestration {
     stopped: bool,
     paused: bool,
     capability: Option<(bool, String)>,
+    bbdown: Option<bbdown::Executable>,
     // Pending replacement intent, keyed by existing identities, while a retained
     // external worker finishes publication. This is not a second work queue.
     replacements: HashSet<(String, String)>,
+    external_handoffs: HashMap<(String, String), bool>, // captured urgent intent
 }
 
 pub(crate) enum JobContract {
@@ -257,7 +264,14 @@ fn reserve(
         .map_err(app_error)
 }
 
-pub(crate) fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
+pub fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
+    if let Command::ConfigureBbdown {
+        owner,
+        prepared_path,
+    } = command
+    {
+        return configure_bbdown(&owner, prepared_path);
+    }
     if let Command::Handoff {
         owner,
         item_id,
@@ -267,7 +281,7 @@ pub(crate) fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
         return handoff(&owner, &item_id, &expected_item_incarnation_id);
     }
     let (owner, mut facts, action) = match command {
-        Command::Handoff { .. } => unreachable!(),
+        Command::Handoff { .. } | Command::ConfigureBbdown { .. } => unreachable!(),
         Command::Reconcile { owner, facts } => (owner, facts, Action::Reconcile),
         Command::Wake { owner, facts } => (owner, facts, Action::Wake),
         Command::Retry {
@@ -335,6 +349,69 @@ pub(crate) fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
     result
 }
 
+fn configure_bbdown(
+    owner: &str,
+    prepared_path: Option<PathBuf>,
+) -> Result<Value, CacheRuntimeError> {
+    let runtime = runtime_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| CacheRuntimeError::new("stopped", "cache runtime has not started"))?;
+    let mut orchestration = runtime
+        .orchestration
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    with_cache_application(|app| {
+        if !app.artifact_owner(owner) {
+            return Err(CacheRuntimeError::new("stopped", "cache owner changed"));
+        }
+        Ok(())
+    })
+    .map_err(app_error)??;
+    {
+        let state = lock_state(&runtime.shared);
+        if state.stopping || orchestration.stopped && orchestration.owner == owner {
+            return Err(CacheRuntimeError::new(
+                "stopped",
+                "cache orchestration stopped",
+            ));
+        }
+        if state
+            .jobs
+            .values()
+            .any(|job| matches!(job.spec.executor, Executor::Bbdown { .. }))
+            || state.active.iter().any(|(id, active)| {
+                state
+                    .jobs
+                    .get(id)
+                    .is_none_or(|job| job.cache_attempt_token != active.cache_attempt_token)
+            })
+            || (orchestration.owner != owner && !state.active.is_empty())
+        {
+            return Err(CacheRuntimeError::new(
+                "busy",
+                "BBDown attempts must drain before configuring its executable",
+            ));
+        }
+    }
+    // Only the admission gate is held across the bounded offline probe. Never
+    // invoke a tool while holding AppState, worker state or Python store locks.
+    let executable = prepared_path.and_then(bbdown::Executable::check);
+    if orchestration.owner != owner {
+        *orchestration = Orchestration {
+            owner: owner.into(),
+            ..Default::default()
+        };
+    }
+    let ready = executable.is_some();
+    orchestration.bbdown = executable;
+    Ok(
+        json!({"ready":ready, "message": if ready { "BBDown 1.6.3 ready" } else { "BBDown unavailable: prepare a compatible executable or correct BB_DOWN_PATH" }}),
+    )
+}
+
 /// An explicit retained-source retry drains this item's old Native executor
 /// before Python reserves its replacement. The submission gate stays closed;
 /// AppState and worker locks are released while the existing worker unwinds.
@@ -384,6 +461,9 @@ fn handoff(owner: &str, id: &str, incarnation: &str) -> Result<Value, CacheRunti
     let snapshot = wait_for_item_drain(&runtime, id)?;
     orchestration
         .replacements
+        .remove(&(id.into(), incarnation.into()));
+    orchestration
+        .external_handoffs
         .remove(&(id.into(), incarnation.into()));
     settle_drained_artifacts(&reservations);
     Ok(
@@ -465,7 +545,11 @@ fn default_job(item: &PlaylistItem, facts: &Facts) -> Result<CacheJobSpec, Cache
             cache_root: facts.cache_root.clone(),
             log_file: facts
                 .log_dir
-                .join("native")
+                .join(if facts.download_source == "bbdown" {
+                    "bbdown"
+                } else {
+                    "native"
+                })
                 .join(format!("{}.log", item.id)),
             cookie: facts.cookie.clone(),
             user_agent: facts.user_agent.clone(),
@@ -538,6 +622,8 @@ impl Orchestration {
         };
         self.replacements
             .retain(|(id, incarnation)| live(id, incarnation));
+        self.external_handoffs
+            .retain(|(id, incarnation), _| live(id, incarnation));
         let external: HashMap<_, _> = facts
             .external_attempts
             .iter()
@@ -582,7 +668,7 @@ impl Orchestration {
             Action::Stop => "缓存已在退出时清空",
             _ => "",
         };
-        let native = facts.download_source == "native";
+        let native = matches!(facts.download_source.as_str(), "native" | "bbdown");
         let cap = (
             facts.hevc_supported == Some(false),
             facts.avc_quality_cap.clone(),
@@ -593,7 +679,23 @@ impl Orchestration {
         let recache = native && cap.0 && self.capability.as_ref().is_none_or(|old| old != &cap);
         let jobs: HashMap<_, _> = items
             .iter()
-            .map(|item| (item.id.clone(), default_job(item, facts)))
+            .map(|item| {
+                let job = default_job(item, facts).and_then(|mut job| {
+                    if facts.download_source == "bbdown" {
+                        if let Some(message) = crate::desktop_login::download_login_error("bbdown", &facts.cookie) {
+                            return Err(CacheRuntimeError::new("authentication", message));
+                        }
+                        job.executor = Executor::Bbdown {
+                            executable: self.bbdown.clone().ok_or_else(|| CacheRuntimeError::new(
+                                "unavailable", "BBDown unavailable: prepare a compatible executable or correct BB_DOWN_PATH"))?,
+                            force_avc: facts.hevc_supported == Some(false),
+                            default_host: true,
+                        };
+                    }
+                    Ok(job)
+                });
+                (item.id.clone(), job)
+            })
             .collect();
         let plan = plan_cache_window(CachePlanRequest {
             items: items
@@ -648,12 +750,24 @@ impl Orchestration {
                     "当前缓存状态不能重新下载",
                 ));
             }
+            if facts.download_source == "bbdown"
+                && let Some(message) =
+                    crate::desktop_login::download_login_error("bbdown", &facts.cookie)
+            {
+                return Err(CacheRuntimeError::new("retry_not_allowed", message));
+            }
             manual_urgent = (*force
                 && app.current_cache_item_id() == Some(item_id.as_str())
                 && primary.as_ref().is_some_and(|id| id != item_id))
             .then(|| item_id.clone());
             self.replacements
                 .insert((item_id.clone(), incarnation.clone()));
+            if facts.download_source == "bbdown" && external.contains_key(item_id.as_str()) {
+                self.external_handoffs.insert(
+                    (item_id.clone(), incarnation.clone()),
+                    manual_urgent.as_ref() == Some(item_id),
+                );
+            }
         }
         self.paused = matches!(action, Action::Prepare | Action::Clear);
         self.capability = Some(cap);
@@ -661,6 +775,7 @@ impl Orchestration {
             // A retained source now owns future work; do not replay a deferred
             // Native capability replacement when the user switches back later.
             self.replacements.clear();
+            self.external_handoffs.clear();
         }
         if matches!(action, Action::Stop) {
             self.stopped = true;
@@ -704,6 +819,7 @@ impl Orchestration {
             let key = (item.id.clone(), item.item_incarnation_id.clone());
             if !plan.retained_ids.contains(&item.id) {
                 self.replacements.remove(&key);
+                self.external_handoffs.remove(&key);
                 if (!native && !clearing) || external.contains_key(item.id.as_str()) && !clearing {
                     continue;
                 }
@@ -738,8 +854,15 @@ impl Orchestration {
             }
             if let Some(attempt) = external.get(item.id.as_str()) {
                 if self.replacements.contains(&key) && attempt.retry_open {
-                    external_retries.push(json!({"item_id": item.id, "cache_attempt_token": attempt.cache_attempt_token}));
-                    self.replacements.remove(&key);
+                    let handoff = self.external_handoffs.contains_key(&key);
+                    let mut effect = json!({"item_id": item.id, "cache_attempt_token": attempt.cache_attempt_token});
+                    if handoff {
+                        effect["handoff"] = json!(true);
+                    }
+                    external_retries.push(effect);
+                    if !handoff {
+                        self.replacements.remove(&key);
+                    }
                 }
                 continue;
             }
@@ -754,9 +877,43 @@ impl Orchestration {
             if failed && !replace {
                 continue;
             }
+            let preempt = plan.preempt_ids.contains(&item.id)
+                && state
+                    .active
+                    .get(&item.id)
+                    .is_some_and(|a| !a.cancel.load(Ordering::Acquire));
+            // Future source availability cannot invalidate or relabel an already
+            // captured attempt (nor an existing readable publication).
+            if !replace
+                && !preempt
+                && (reuse.ready(item)
+                    || state.jobs.get(&item.id).is_some_and(|job| {
+                        job.spec.item_incarnation_id == item.item_incarnation_id
+                    })
+                    || state.active.get(&item.id).is_some_and(|job| {
+                        job.reservation.item_incarnation_id == item.item_incarnation_id
+                    }))
+            {
+                continue;
+            }
             let job = match &jobs[&item.id] {
                 Ok(job) => job.clone(),
                 Err(error) => {
+                    // A failed replacement still supersedes/cancels the old
+                    // executor. Keep its readable artifact under AppState/leases.
+                    let queued = state
+                        .jobs
+                        .get(&item.id)
+                        .filter(|job| {
+                            state.active.get(&item.id).is_none_or(|active| {
+                                active.cache_attempt_token != job.cache_attempt_token
+                            })
+                        })
+                        .map(|job| job.reservation.clone());
+                    CacheRuntime::cancel_item_locked(state, &item.id, "replacement unavailable");
+                    if let Some(reservation) = queued {
+                        app.settle_artifact_reservation(&reservation);
+                    }
                     let generation = state.next_generation.checked_add(1).ok_or_else(|| {
                         CacheRuntimeError::new(
                             "generation_exhausted",
@@ -774,6 +931,7 @@ impl Orchestration {
                         json!({"message":error.message}),
                     );
                     self.replacements.remove(&key);
+                    self.external_handoffs.remove(&key);
                     continue;
                 }
             };
@@ -786,12 +944,9 @@ impl Orchestration {
             {
                 continue;
             }
-            let preempt = plan.preempt_ids.contains(&item.id)
-                && state
-                    .active
-                    .get(&item.id)
-                    .is_some_and(|a| !a.cancel.load(Ordering::Acquire));
-            let priority = if manual_urgent.as_ref() == Some(&item.id) {
+            let priority = if manual_urgent.as_ref() == Some(&item.id)
+                || self.external_handoffs.get(&key) == Some(&true)
+            {
                 CacheJobPriority::Urgent
             } else {
                 CacheJobPriority::Normal
@@ -814,6 +969,7 @@ impl Orchestration {
                 app.settle_artifact_reservation(&reservation);
             }
             self.replacements.remove(&key);
+            self.external_handoffs.remove(&key);
         }
         CacheRuntime::reorder_locked(state, &plan.pending_order);
         Ok(

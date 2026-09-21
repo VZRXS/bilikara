@@ -78,18 +78,6 @@ for name in ['ffmpeg', 'FFPROBE.EXE', 'C:\\\\absent\\\\ffmpeg.exe']:
                 media_cli.require_media_cli(tool)
                 media_cli._audit("subprocess.Popen", (None, tool + " --version", None, None))
 
-    def test_bbdown_command_keeps_download_only_mode_without_ffmpeg_dependency(self):
-        manager = CacheManager.__new__(CacheManager)
-        with patch.object(media_cli, "DISABLED", True), \
-             patch.object(manager, "_bbdown_stream_preference_args", return_value=[]), \
-             patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=synthetic; bili_jct=csrf"):
-            command = manager._bbdown_download_command(Path("BBDown"), Path("ffmpeg"),
-                "https://example.invalid/video", page=1, stream_kind="video", target_dir=Path("cache"))
-        self.assertIn("--skip-mux", command)
-        self.assertIn("--video-only", command)
-        self.assertNotIn("--ffmpeg-path", command)
-        self.assertNotIn("ffmpeg", command)
-
     def test_normal_source_mode_remains_available_for_baseline_tests(self):
         with patch.object(media_cli, "DISABLED", False):
             media_cli.require_media_cli()

@@ -3,6 +3,141 @@ use crate::app_state::{AppStateRequest, CacheEvent};
 use crate::cache_application::{CacheApplication, HostContract};
 use std::sync::Barrier;
 
+#[test]
+fn failed_bbdown_replacement_cancels_the_superseded_executor() {
+    let mut f = Fixture::new();
+    let item = f.add("a");
+    f.run(Action::Reconcile).unwrap();
+    f.flush();
+    let active = f.activate("a");
+    f.facts.download_source = "bbdown".into();
+    f.facts.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+    f.run(Action::Retry {
+        item_id: item.id,
+        incarnation: item.item_incarnation_id,
+        force: true,
+    })
+    .unwrap();
+    assert!(f.state.active["a"].cancel.load(Ordering::Acquire));
+    assert!(!f.state.jobs.contains_key("a"));
+    assert_ne!(
+        f.state.terminal_events["a"].cache_attempt_token,
+        active.cache_attempt_token
+    );
+    f.flush();
+    assert_eq!(f.item("a").cache_status, "failed");
+}
+
+#[test]
+fn explicit_external_to_bbdown_handoff_retains_urgent_intent_until_drain() {
+    let mut f = Fixture::new();
+    let current = f.add("a");
+    f.add("b");
+    f.ready("a");
+    f.run(Action::Reconcile).unwrap();
+    f.activate("b");
+    let external = f
+        .app
+        .reserve_runtime_attempt("a", &current.item_incarnation_id)
+        .unwrap();
+    f.facts.external_attempts.push(ExternalAttempt {
+        item_id: "a".into(),
+        cache_attempt_token: external.cache_attempt_token,
+        retry_open: true,
+        primary: false,
+        urgent: true,
+    });
+    f.orchestration.bbdown = Some(bbdown::Executable::fixture(
+        f.facts.cache_root.join("BBDown"),
+    ));
+    f.facts.download_source = "bbdown".into();
+    f.facts.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+    let result = f
+        .run(Action::Retry {
+            item_id: current.id,
+            incarnation: current.item_incarnation_id,
+            force: true,
+        })
+        .unwrap();
+    assert_eq!(result["external_retries"][0]["handoff"], true);
+    assert!(!f.state.jobs.contains_key("a"));
+    f.run(Action::Reconcile).unwrap();
+    assert!(!f.state.jobs.contains_key("a"));
+    assert!(!f.state.active["b"].cancel.load(Ordering::Acquire));
+    f.app.settle_artifact_reservation(&external);
+    f.facts.external_attempts.clear();
+    f.run(Action::Wake).unwrap();
+    assert_eq!(f.state.jobs["a"].spec.executor.source(), "bbdown");
+    assert!(matches!(
+        f.state.queued_priorities["a"],
+        CacheJobPriority::Urgent
+    ));
+    assert!(!f.state.active["b"].cancel.load(Ordering::Acquire));
+}
+
+#[test]
+fn bbdown_default_admission_captures_source_cookie_and_codec_until_replacement() {
+    let mut f = Fixture::new();
+    let item = f.add("bbdown");
+    f.orchestration.owner = f.owner.clone();
+    f.orchestration.bbdown = Some(bbdown::Executable::fixture(
+        f.facts.cache_root.join("BBDown"),
+    ));
+    f.facts.download_source = "bbdown".into();
+    f.facts.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+    f.run(Action::Reconcile).unwrap();
+    let first = f.state.jobs[&item.id].clone();
+    assert!(matches!(
+        first.spec.executor,
+        Executor::Bbdown {
+            force_avc: false,
+            ..
+        }
+    ));
+    assert_eq!(first.spec.cookie, f.facts.cookie);
+    assert_eq!(first.spec.executor.attempts(), 1);
+    f.facts.download_source = "native".into();
+    f.facts.cookie.clear();
+    f.run(Action::Reconcile).unwrap();
+    assert_eq!(
+        f.state.jobs[&item.id].cache_attempt_token,
+        first.cache_attempt_token
+    );
+    assert_eq!(f.state.jobs[&item.id].spec.executor.source(), "bbdown");
+    assert_eq!(f.state.jobs[&item.id].spec.cookie, first.spec.cookie);
+    f.run(Action::Retry {
+        item_id: item.id.clone(),
+        incarnation: item.item_incarnation_id,
+        force: true,
+    })
+    .unwrap();
+    assert_eq!(f.state.jobs[&item.id].spec.executor.source(), "native");
+    assert_ne!(
+        f.state.jobs[&item.id].cache_attempt_token,
+        first.cache_attempt_token
+    );
+}
+
+#[test]
+fn unavailable_bbdown_cannot_settle_captured_native_and_failure_is_not_retried() {
+    let mut f = Fixture::new();
+    let old = f.add("native");
+    f.run(Action::Reconcile).unwrap();
+    let token = f.state.jobs[&old.id].cache_attempt_token;
+    let new = f.add("unavailable");
+    f.facts.download_source = "bbdown".into();
+    f.facts.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+    f.run(Action::Reconcile).unwrap();
+    f.flush();
+    assert_eq!(f.state.jobs[&old.id].cache_attempt_token, token);
+    assert_eq!(f.state.jobs[&old.id].spec.executor.source(), "native");
+    assert_eq!(f.item(&new.id).cache_status, "failed");
+    assert!(f.item(&new.id).cache_message.contains("BBDown unavailable"));
+    let sequence = f.state.next_generation;
+    f.run(Action::Reconcile).unwrap();
+    assert_eq!(f.state.next_generation, sequence);
+}
+
 struct Fixture {
     app: AppState,
     state: RuntimeState,
