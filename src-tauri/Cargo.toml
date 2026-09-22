@@ -25,6 +25,9 @@ tauri-plugin-clipboard-manager = "2"
 [target.'cfg(target_os = "android")'.dependencies]
 bilikara_runtime = { path = "../rust-runtime", features = ["native-host"] }
 jni = "0.21"
+# Match the JNI ABI used by the already-locked Android platform verifier.
+jni_platform = { package = "jni", version = "=0.22.4" }
+rustls-platform-verifier = "=0.7.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"

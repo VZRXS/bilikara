@@ -139,7 +139,59 @@ async fn android_alpha_status(
     })
 }
 
+fn initialize_platform_tls(app: &tauri::App) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Android main WebView is unavailable".to_owned())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _| {
+                let result = (|| {
+                    // Retain the Application context, never the Activity, in the verifier.
+                    let context = env
+                        .call_method(
+                            activity,
+                            "getApplicationContext",
+                            "()Landroid/content/Context;",
+                            &[],
+                        )
+                        .and_then(|value| value.l())
+                        .map_err(|_| "Android TLS application context is unavailable")?;
+                    // Tauri and the verifier use different jni crate versions. Both
+                    // wrappers borrow the same valid JNI frame only during this callback.
+                    let mut platform_env =
+                        unsafe { jni_platform::EnvUnowned::from_raw(env.get_raw().cast()) };
+                    let context = context.into_raw();
+                    match platform_env
+                        .with_env(|env| {
+                            let context = unsafe {
+                                jni_platform::objects::JObject::from_raw(env, context.cast())
+                            };
+                            rustls_platform_verifier::android::init_with_env(env, context)
+                        })
+                        .into_outcome()
+                    {
+                        jni_platform::Outcome::Ok(()) => Ok(()),
+                        _ => Err("Android platform TLS initialization failed"),
+                    }
+                })();
+                if result.is_err() {
+                    let _ = env.exception_clear();
+                }
+                let _ = sender.send(result);
+            });
+        })
+        .map_err(|_| "Cannot initialize Android platform TLS".to_owned())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "Android platform TLS initialization timed out".to_owned())?
+        .map_err(str::to_owned)
+}
+
 fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
+    // Reqwest's platform verifier must be ready before any Host worker can use HTTPS.
+    initialize_platform_tls(app)?;
     let directory = app
         .path()
         .app_data_dir()

@@ -1,4 +1,5 @@
 import java.util.Properties
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -10,6 +11,25 @@ val tauriProperties = Properties().apply {
     val propFile = file("tauri.properties")
     if (propFile.exists()) {
         propFile.inputStream().use { load(it) }
+    }
+}
+
+// The verifier's JVM bridge ships in the Cargo dependency, not a public Maven
+// repository. Resolve its exact locked version and location with Cargo.
+val rustlsAndroid = run {
+    val metadata = providers.exec {
+        commandLine("cargo", "metadata", "--format-version", "1", "--locked",
+            "--filter-platform", "aarch64-linux-android",
+            "--manifest-path", file("../../../Cargo.toml").absolutePath)
+    }.standardOutput.asText.get()
+    val packages = (JsonSlurper().parseText(metadata) as Map<*, *>)["packages"] as List<*>
+    packages.map { it as Map<*, *> }.single { it["name"] == "rustls-platform-verifier-android" }
+}
+
+repositories {
+    maven {
+        url = uri(file(rustlsAndroid["manifest_path"] as String).parentFile.resolve("maven"))
+        content { includeModule("rustls", "rustls-platform-verifier") }
     }
 }
 
@@ -72,6 +92,7 @@ rust {
 }
 
 dependencies {
+    implementation("rustls:rustls-platform-verifier:${rustlsAndroid["version"]}")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

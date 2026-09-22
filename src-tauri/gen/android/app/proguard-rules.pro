@@ -1,3 +1,6 @@
+# Called by Rust through JNI; the shrinker cannot see these references.
+-keep, includedescriptorclasses class org.rustls.platformverifier.** { *; }
+
 # Add project specific ProGuard rules here.
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
