@@ -51,7 +51,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
     const errors=[];
     page.on("pageerror", e=>errors.push(e.message));
     await page.goto(bootstrap);
-    await page.waitForFunction(()=>window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
+    await page.waitForFunction(()=>window.BilikaraHostLayout?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     await page.waitForFunction(()=>document.querySelector("video")?.currentTime>0.3);
     const originalVideo=await page.locator("video").elementHandle();
     const originalAudio=await page.locator("audio").first().elementHandle();

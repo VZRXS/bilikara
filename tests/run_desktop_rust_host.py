@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    shared_ui = "--shared-ui" in sys.argv
     cache_policy = "--cache-policy" in sys.argv
     bbdown_real = "--bbdown-real" in sys.argv
     bbdown = "--bbdown" in sys.argv or bbdown_real
@@ -33,7 +34,7 @@ def main():
         if cache_policy or bbdown:
             subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","90","-c:a","flac","-strict","-2",str(media/"audio-flac.mp4")],check=True)
         fixture = LoginFixture()
-        fixture.extra_hosts = ["api.bilibili.com", "fixture.bilivideo.com", "api.kevinx96.icu", "www.bilibili.com"]
+        fixture.extra_hosts = ["api.bilibili.com", "fixture.bilivideo.com", "api.kevinx96.icu", "www.bilibili.com", "api.github.com", "github.com"]
         delayed = threading.Event()
         release = threading.Event()
         counts = {}
@@ -112,10 +113,9 @@ def main():
                     status = 206
                 headers["Accept-Ranges"] = "bytes"
             elif name in ["/bilikara/releases", "/bilikara/releases/latest"]:
-                # Desktop release metadata only. api.github.com is deliberately
-                # absent from the fixture certificate, so the desktop check has
-                # to fall back from its primary source to this mirror.
-                release = {
+                # Desktop release metadata only. The primary endpoint receives
+                # the fixture's 503 response, exercising this configured mirror.
+                release_metadata = {
                     "tag_name": "v0.8.1", "draft": False, "prerelease": False,
                     "name": "bilikara v0.8.1",
                     "html_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.1",
@@ -128,7 +128,7 @@ def main():
                          "browser_download_url": "https://github.com/VZRXS/bilikara/releases/download/v0.8.1/bilikara-v0.8.1-android-arm64.apk"},
                     ],
                 }
-                body = release if name.endswith("/latest") else [release]
+                body = release_metadata if name.endswith("/latest") else [release_metadata]
             elif name in ["/api/catalog/search", "/search", "/api/search"]:
                 body = [{"title":"Desktop fixture catalog","bvid":"BV1xx411c7mD","url":"https://www.bilibili.com/video/BV1xx411c7mD"}]
             else:
@@ -171,6 +171,7 @@ def main():
                 env.update(BILIKARA_BBDOWN_FIXTURE=str(executable), BILIKARA_BBDOWN_FIXTURE_ROOT=str(fixture_dir), BILIKARA_BBDOWN_MEDIA=str(media))
                 (fixture_dir / "mode").write_text("slow")
             driver="tests/live_desktop_import.js" if cache_policy or bbdown else "tests/live_desktop_rust_host.js"
+            if shared_ui: driver = "tests/browser/shared_native_host.cjs"
             result = subprocess.run(["node", driver, str(evidence)], cwd=ROOT, env=env, timeout=240)
         if cache_policy or bbdown_real: assert not fixture.stages, "Cache policy tests must not run login"
         else: assert "generate" in fixture.stages and "poll" in fixture.stages

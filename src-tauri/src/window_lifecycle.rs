@@ -40,10 +40,21 @@ const APPLICATION_EXITING: u8 = 2;
 
 static GEOMETRY_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum HostLayout {
+    #[default]
+    Auto,
+    Desktop,
+    Phone,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredMainWindowGeometry {
     schema_version: u8,
+    #[serde(default)]
+    layout: HostLayout,
     normal: StoredNormalGeometry,
     maximized: bool,
 }
@@ -114,6 +125,7 @@ struct RequestedMainWindowGeometry {
 
 struct MainWindowGeometryState {
     path: Option<PathBuf>,
+    native_directory: Option<PathBuf>,
     cached: Mutex<Option<StoredMainWindowGeometry>>,
     restoring: AtomicBool,
 }
@@ -173,13 +185,18 @@ impl MainWindowGeometryState {
     fn new(path: Option<PathBuf>, cached: Option<StoredMainWindowGeometry>) -> Self {
         Self {
             path,
+            native_directory: None,
             cached: Mutex::new(cached),
             restoring: AtomicBool::new(false),
         }
     }
 
-    fn replace_cached(&self, geometry: StoredMainWindowGeometry) {
+    fn replace_cached(&self, mut geometry: StoredMainWindowGeometry) {
         if let Ok(mut cached) = self.cached.lock() {
+            geometry.layout = cached
+                .as_ref()
+                .map(|value| value.layout)
+                .unwrap_or_default();
             *cached = Some(geometry);
         }
     }
@@ -192,21 +209,54 @@ impl MainWindowGeometryState {
         }
     }
 
-    fn persist(&self) -> Result<(), String> {
-        let path = self
-            .path
-            .as_ref()
-            .ok_or_else(|| "the app configuration directory is unavailable".to_string())?;
-        let geometry = self
+    fn set_layout(&self, mode: HostLayout) -> Result<HostLayout, String> {
+        let path = self.storage_path()?;
+        let mut cached = self
             .cached
             .lock()
-            .map_err(|_| "the geometry cache is unavailable".to_string())?
+            .map_err(|_| "window preferences unavailable")?;
+        let geometry = cached.as_ref().ok_or("window geometry unavailable")?;
+        let mut next = geometry.clone();
+        next.layout = mode;
+        atomic_write_geometry(&path, &next).map_err(|error| error.to_string())?;
+        *cached = Some(next);
+        Ok(mode)
+    }
+
+    fn storage_path(&self) -> Result<PathBuf, String> {
+        self.path
             .clone()
-            .ok_or_else(|| "no valid normal geometry has been captured".to_string())?;
-        if !stored_geometry_is_valid(&geometry) {
+            .or_else(|| {
+                // The shell is initialized before the backend. A fresh isolated
+                // root becomes writable only after Rust has initialized its marker.
+                self.native_directory
+                    .as_ref()
+                    .filter(|root| {
+                        fs::read(root.join(".bilikara-desktop-rust-preview"))
+                            .ok()
+                            .as_deref()
+                            == Some(b"desktop-rust-preview-v1\n")
+                    })
+                    .map(|root| root.join(GEOMETRY_FILENAME))
+            })
+            .ok_or_else(|| "the app configuration directory is unavailable".into())
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let path = self.storage_path()?;
+        // Serialize the tiny window preference write with layout changes so a
+        // late geometry save cannot overwrite the user's new mode.
+        let cached = self
+            .cached
+            .lock()
+            .map_err(|_| "the geometry cache is unavailable")?;
+        let geometry = cached
+            .as_ref()
+            .ok_or("no valid normal geometry has been captured")?;
+        if !stored_geometry_is_valid(geometry) {
             return Err("the cached geometry is invalid".to_string());
         }
-        atomic_write_geometry(path, &geometry).map_err(|error| error.to_string())
+        atomic_write_geometry(&path, geometry).map_err(|error| error.to_string())
     }
 }
 
@@ -541,6 +591,7 @@ fn stored_from_resolved(
 ) -> StoredMainWindowGeometry {
     StoredMainWindowGeometry {
         schema_version: GEOMETRY_SCHEMA_VERSION,
+        layout: HostLayout::Auto,
         normal: StoredNormalGeometry {
             offset_x: resolved.offset_x,
             offset_y: resolved.offset_y,
@@ -662,10 +713,10 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         geometry_diagnostic("hide_before_restore", "error_ignored");
     }
 
-    let path = if let Some(root) = std::env::var_os("BILIKARA_NATIVE_DATA_DIR")
+    let native_directory = std::env::var_os("BILIKARA_NATIVE_DATA_DIR")
         .or_else(|| std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR"))
-    {
-        let root = PathBuf::from(root);
+        .map(PathBuf::from);
+    let path = if let Some(root) = native_directory.as_ref() {
         // A rejected/uninitialized preview must not touch a supplied normal directory.
         (fs::read(root.join(".bilikara-desktop-rust-preview"))
             .ok()
@@ -709,14 +760,17 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
             .and_then(|(monitors, preferred, primary)| {
                 resolve_main_window_geometry(&monitors, preferred, primary, frame, saved.as_ref())
                     .map(|resolved| {
-                        let stored =
+                        let mut stored =
                             stored_from_resolved(resolved, &monitors[resolved.monitor_index]);
+                        stored.layout =
+                            saved.as_ref().map(|value| value.layout).unwrap_or_default();
                         (resolved, stored)
                     })
             });
 
-    let state =
+    let mut state =
         MainWindowGeometryState::new(path, decision.as_ref().map(|(_, stored)| stored.clone()));
+    state.native_directory = native_directory;
     state.restoring.store(true, Ordering::Release);
     if !app.manage(state) {
         geometry_diagnostic("initialize", "state_already_managed");
@@ -793,6 +847,7 @@ fn captured_normal_geometry(window: &tauri::Window) -> Option<StoredMainWindowGe
     };
     let geometry = StoredMainWindowGeometry {
         schema_version: GEOMETRY_SCHEMA_VERSION,
+        layout: HostLayout::Auto,
         normal,
         maximized: false,
     };
@@ -820,6 +875,38 @@ fn refresh_cached_main_window_geometry(window: &tauri::Window) {
     if let Some(geometry) = captured_normal_geometry(window) {
         state.replace_cached(geometry);
     }
+}
+
+// Device-local presentation only. No AppState/media mutation or arbitrary path.
+#[tauri::command]
+pub(crate) fn get_host_layout(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+) -> Result<HostLayout, String> {
+    presentation::authorize_window(&window, &backend, &["main"])?;
+    let state = window
+        .try_state::<MainWindowGeometryState>()
+        .ok_or("window preferences unavailable")?;
+    Ok(state
+        .cached
+        .lock()
+        .map_err(|_| "window preferences unavailable")?
+        .as_ref()
+        .map(|value| value.layout)
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub(crate) async fn set_host_layout(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+    mode: HostLayout,
+) -> Result<HostLayout, String> {
+    presentation::authorize_window(&window, &backend, &["main"])?;
+    let state = window
+        .try_state::<MainWindowGeometryState>()
+        .ok_or("window preferences unavailable")?;
+    state.set_layout(mode)
 }
 
 pub(crate) fn save_main_window_geometry(window: &tauri::Window) -> Result<(), String> {
@@ -1057,6 +1144,7 @@ mod tests {
     ) -> StoredMainWindowGeometry {
         StoredMainWindowGeometry {
             schema_version: GEOMETRY_SCHEMA_VERSION,
+            layout: HostLayout::Auto,
             normal: StoredNormalGeometry {
                 offset_x,
                 offset_y,
@@ -1290,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_schema_contains_only_normal_geometry_and_maximized_state() {
+    fn persisted_schema_contains_window_geometry_and_local_layout() {
         let work_area = monitor("desktop", 0, 0, 1920, 1040, 1.0);
         let geometry = saved_geometry(&work_area, 100.0, 80.0, 1300.0, 800.0, true);
         let value = serde_json::to_value(geometry).expect("serialize geometry");
@@ -1298,7 +1386,7 @@ mod tests {
 
         assert_eq!(
             object.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["maximized", "normal", "schema_version"]
+            ["layout", "maximized", "normal", "schema_version"]
         );
         let encoded = value.to_string();
         for forbidden in [
@@ -1322,6 +1410,61 @@ mod tests {
             "bilikara-window-geometry-{test_name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn local_layout_survives_geometry_updates_and_failed_saves() {
+        let directory = temporary_test_directory("layout");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(GEOMETRY_FILENAME);
+        let work_area = monitor("desktop", 0, 0, 1920, 1040, 1.0);
+        let initial = saved_geometry(&work_area, 20.0, 20.0, 1100.0, 700.0, false);
+        let mut legacy = serde_json::to_value(&initial).unwrap();
+        legacy.as_object_mut().unwrap().remove("layout");
+        assert_eq!(
+            serde_json::from_value::<StoredMainWindowGeometry>(legacy)
+                .unwrap()
+                .layout,
+            HostLayout::Auto
+        );
+        assert!(serde_json::from_str::<HostLayout>("\"arbitrary-command\"").is_err());
+        let state = MainWindowGeometryState::new(Some(path.clone()), Some(initial.clone()));
+        state.set_layout(HostLayout::Phone).unwrap();
+        state.replace_cached(initial); // Resize must not overwrite the layout.
+        state.persist().unwrap();
+        assert_eq!(
+            load_geometry(&path).unwrap().unwrap().layout,
+            HostLayout::Phone
+        );
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap(); // A failed write preserves the last choice.
+        assert!(state.set_layout(HostLayout::Desktop).is_err());
+        assert_eq!(
+            state.cached.lock().unwrap().as_ref().unwrap().layout,
+            HostLayout::Phone
+        );
+        let mut fresh = MainWindowGeometryState::new(
+            None,
+            Some(saved_geometry(&work_area, 20.0, 20.0, 1100.0, 700.0, false)),
+        );
+        fresh.native_directory = Some(directory.join("isolated"));
+        assert!(fresh.set_layout(HostLayout::Phone).is_err());
+        assert!(!directory.join("isolated").exists());
+        fs::create_dir(directory.join("isolated")).unwrap();
+        fs::write(
+            directory.join("isolated/.bilikara-desktop-rust-preview"),
+            b"desktop-rust-preview-v1\n",
+        )
+        .unwrap();
+        fresh.set_layout(HostLayout::Phone).unwrap();
+        assert_eq!(
+            load_geometry(&directory.join("isolated").join(GEOMETRY_FILENAME))
+                .unwrap()
+                .unwrap()
+                .layout,
+            HostLayout::Phone
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

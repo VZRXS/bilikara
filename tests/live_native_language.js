@@ -35,7 +35,7 @@ async function withHost(browser, profile, locale, check) {
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(bootstrap);
-    await page.waitForFunction(() => state.translationsLoaded && state.data && BilikaraAndroidHost.isPortrait());
+    await page.waitForFunction(() => state.translationsLoaded && state.data && BilikaraHostLayout.isPortrait());
     await check(page, context);
     assert.deepEqual(errors, []);
   } finally {

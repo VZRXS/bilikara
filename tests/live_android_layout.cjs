@@ -50,7 +50,7 @@ const [exe,directory,video,audio,executablePath]=process.argv.slice(2);
     const metrics=[];
     for(const [width,height,layout] of [[412,250,"portrait"],[844,390,"landscape"],[1024,768,"landscape"],[1280,800,"landscape"],[800,1280,"landscape"],[600,960,"portrait"],[412,850,"portrait"]]) {
       await page.setViewportSize({width,height});
-      await page.waitForFunction(mode=>document.documentElement.dataset.androidLayout===mode,layout);
+      await page.waitForFunction(mode=>document.documentElement.dataset.hostLayout===mode,layout);
       assert.equal(await dock.isVisible(),layout==="portrait");
       assert.equal(await page.locator("#work-rail").isVisible(),layout!=="portrait");
       assert.equal(await page.locator("#url-input").inputValue(),"saved layout search draft");
@@ -70,7 +70,7 @@ const [exe,directory,video,audio,executablePath]=process.argv.slice(2);
     await dock.locator('[data-android-page="my"]').click();await page.locator("#android-open-settings").click();
     const choose=async mode=>{
       const button=page.locator(`button[data-android-layout-mode="${mode}"]`);
-      await button.click();await page.waitForFunction(mode=>document.documentElement.dataset.androidLayoutMode===mode,mode);
+      await button.click();await page.waitForFunction(mode=>document.documentElement.dataset.hostLayoutMode===mode,mode);
       assert.equal(await button.getAttribute("aria-pressed"),"true");await assertMedia();
     };
     await choose("desktop");assert.equal(await dock.isVisible(),false);
@@ -89,7 +89,7 @@ const [exe,directory,video,audio,executablePath]=process.argv.slice(2);
     await choose("auto");assert.equal(await dock.isVisible(),false);
     await page.locator("#work-rail-users").click();
     await page.setViewportSize({width:412,height:850});
-    await page.waitForFunction(()=>document.documentElement.dataset.androidPage==="users");
+    await page.waitForFunction(()=>document.documentElement.dataset.hostPage==="users");
     await assertMedia();
     assert.deepEqual(errors,[]);
     const result={passed:true,metrics,manualModes:true,translations:3,persistentMedia:true,persistentDraft:true,workspaceRestored:true};

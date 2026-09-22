@@ -8,7 +8,15 @@
     return call(...args);
   };
   const activating = new Set();
+  const windowPreferences = {
+    async load() { return {layout: await invoke("get_host_layout"), orientation: "system"}; },
+    async saveLayout(mode) {
+      if (!["auto", "desktop", "phone"].includes(mode)) throw new Error("invalid_layout");
+      return {layout: await invoke("set_host_layout", {mode}), orientation: "system"};
+    },
+  };
   window.BilikaraDesktopPlatform = Object.freeze({
+    windowPreferences,
     startUpdate(includePreview) { return invoke("start_desktop_update", { includePreview }); },
     cancelUpdate() { return invoke("cancel_desktop_update"); },
     openExternal(url) { return invoke("open_external_web_url", { url }); },

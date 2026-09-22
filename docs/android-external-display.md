@@ -25,7 +25,7 @@ unsupported phone/adapter/ROM combination. Continue using system mirroring;
 this feature does not implement DLNA, Cast receiver playback or a custom stream.
 
 If activation fails, the app returns to single-screen. Copy diagnostic Markdown
-from Settings. The **Android UI → external_display** section contains numeric
+from Settings. The **Host UI → external_display** section contains numeric
 display capabilities, window generation/phase, a bounded event history and stage
 telemetry (media clock difference, readiness, dropped frames, error code). It
 does not include receiver names, media URLs, cookies or QR credentials.

@@ -26,6 +26,8 @@
     "allow-set-window-chrome-theme",
     "allow-restart-application",
     "allow-apply-desktop-update",
+    "allow-get-host-layout",
+    "allow-set-host-layout",
     "allow-start-desktop-update",
     "allow-cancel-desktop-update",
     "allow-open-external-web-url",

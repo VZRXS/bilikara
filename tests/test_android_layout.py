@@ -16,11 +16,13 @@ class AndroidLayoutTest(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_shared_host_preferences_are_translated_and_android_only(self):
+    def test_shared_host_layout_and_android_orientation_preferences_are_translated(self):
         host = (ROOT / "static/index.html").read_text(encoding="utf-8")
         remote = (ROOT / "static/remote.html").read_text(encoding="utf-8")
-        self.assertLess(host.index('/android-layout.js'), host.index('/android-host.js'))
+        self.assertLess(host.index('/android-layout.js'), host.index('/host-layout.js'))
         self.assertNotIn('/android-layout.js', remote)
+        self.assertIn('/host-layout-preferences.js', host)
+        self.assertNotIn('/host-layout.js', remote)
         translations = json.loads((ROOT / "static/i18n.json").read_text(encoding="utf-8"))["languages"]
         for language in ("zh", "ja", "en"):
             for key in ("layout", "layoutAuto", "layoutDesktop", "layoutPhone", "layoutHint",

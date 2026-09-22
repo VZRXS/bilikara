@@ -68,7 +68,7 @@ const installState = value => {
     nativeBrowser=await attachNative();
     const host = nativeBrowser;
     await host.waitForFunction(()=>typeof state!=='undefined' && state.data?.capabilities?.playlist_export);
-    await host.waitForFunction(()=>Boolean(window.BilikaraAndroidHost));
+    await host.waitForFunction(()=>Boolean(window.BilikaraHostLayout));
     const environment=await host.evaluate(()=>BilikaraAndroidPlatform.environment());
     assert.ok(environment.sdk>=24 && environment.version_code>0);
     assert.equal(environment.version_name,'0.8.0-preview.0');

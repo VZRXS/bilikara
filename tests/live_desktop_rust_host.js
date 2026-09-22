@@ -63,6 +63,7 @@ async function capture(name, target) {
   assert.equal(await page.locator("html").getAttribute("data-host-platform"),"desktop");
   assert.equal(await page.evaluate(()=>Boolean(window.BilikaraAndroidHost || window.BilikaraAndroidExport || window.BilikaraAndroidPlatform || window.BilikaraAndroidPlayback)),false);
   assert.equal(await page.locator("#android-host-dock").isVisible(),false);
+  assert.equal(await page.evaluate(()=>BilikaraHostLayout.isPortrait()),false);
   assert.equal((await okay("/api/state")).capabilities.native_android_beta,false);
   await page.locator("#work-rail-users").click();
   await page.locator("#session-user-input").fill("Desktop Fixture");
@@ -107,7 +108,11 @@ async function capture(name, target) {
   const before=await page.evaluate(()=>document.querySelector("video").currentTime);
   await remote.locator('[data-control-action="seek-relative"][data-delta="15"]').click();
   await page.waitForFunction(v=>document.querySelector("video").currentTime>v+10,before);
-  await remote.locator('[data-action="toggle-audio-variants"]').click();
+  const variantToggle=remote.locator('[data-action="toggle-audio-variants"]');
+  // Short variant lists use the existing inline buttons; only overflow needs
+  // the popover. In either layout, perform and verify the actual track change.
+  if(await variantToggle.isVisible()) await variantToggle.click();
+  else assert.match(await remote.locator("#audio-variant-bar").getAttribute("class"),/\bis-inline\b/);
   const variant=first.current_item.audio_variants[1].id;
   await remote.locator(`[data-variant-id="${variant}"]`).click();
   await page.waitForFunction(id=>state.data.current_item.selected_audio_variant_id===id,variant);
@@ -175,7 +180,7 @@ async function capture(name, target) {
   assert.equal(catalog.items[0].bvid,"BV1xx411c7mD");
   // Check-only desktop updates: a real request reaches the shared release
   // decision through the trusted-source fallback and installs nothing.
-  assert.equal((await api("/api/app/update/check",{})).status,400);
+  assert.equal((await host.request.post(ready.baseUrl+"/api/app/update/check",{data:{}})).status(),400);
   const checked=await okay("/api/app/update/check",{include_preview:false});
   assert.equal(checked.state,"available");
   assert.equal(checked.update_action,"normal_upgrade");
@@ -192,7 +197,9 @@ async function capture(name, target) {
   await page.waitForFunction(()=>state.data?.app_update?.state==="available");
   assert.match(await page.locator("#update-check-button").textContent(),/v0\.8\.1/);
   // Known unsupported actions report unavailable rather than fake readiness.
-  for(const route of ["/api/app/update/install","/api/app/update/finish","/api/rating/submit"])
+  // The shared Host cookie does not carry the shell's private install capability.
+  assert.equal((await host.request.post(ready.baseUrl+"/api/app/update/install",{data:{include_preview:false}})).status(),403);
+  for(const route of ["/api/app/update/finish","/api/rating/submit"])
     assert.equal((await api(route,{include_preview:false})).status,501,route);
   await remoteContext.close(); await host.close();
   await stop(ready);

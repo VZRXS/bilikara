@@ -21,6 +21,7 @@ const [packageDir,evidenceDir]=process.argv.slice(2);
    localStorage.setItem("bilikara.update.automatic","false");
    window.updateBridgeCalls=[];
    window.__TAURI__={core:{invoke:async(name,args)=>{
+    if(name === "get_host_layout") return "auto";
     updateBridgeCalls.push({name,args});
     if(name==="start_desktop_update") return {state:"downloading",operation:7,cancellable:true,include_preview:false};
     if(name==="cancel_desktop_update") return {state:"idle",requires_recheck:true,message:"Fixture update cancelled"};

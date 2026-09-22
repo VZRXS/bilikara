@@ -38,6 +38,12 @@ class AppUpdateFrontendTest(unittest.TestCase):
         start_index = self.source.index(start)
         return self.source[start_index : self.source.index(end, start_index)]
 
+    def test_shared_update_actions_keep_platform_installers_separate(self):
+        self.assertIsNotNone(self.node, "Node.js is required")
+        result = subprocess.run([self.node, "tests/host_updates.cjs"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_update_preferences_and_marker_live_in_settings_workspace(self):
         self.assertIn('updateAutomatic: "bilikara.update.automatic"', self.source)
         self.assertIn("updateAutomaticEnabled: true", self.source)

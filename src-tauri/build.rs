@@ -12,6 +12,8 @@ fn main() {
         "set_window_chrome_theme",
         "restart_application",
         "apply_desktop_update",
+        "get_host_layout",
+        "set_host_layout",
         "start_desktop_update",
         "cancel_desktop_update",
         "open_external_web_url",

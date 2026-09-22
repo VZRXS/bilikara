@@ -1,6 +1,7 @@
 "use strict";
 const assert=require("node:assert/strict");
-const {resolveLayout,createClient}=require("../static/android-layout.js");
+const {createClient}=require("../static/android-layout.js");
+const {resolveLayout,browserClient}=require("../static/host-layout-preferences.js");
 
 function fixture() {
   const requests=[],timers=new Map();let sequence=0;
@@ -18,6 +19,11 @@ function fixture() {
     assert.equal(resolveLayout("phone",width),"phone");
     assert.equal(resolveLayout("desktop",width),"desktop");
   }
+  const storage=new Map();
+  const local=browserClient({getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)});
+  assert.equal((await local.load()).layout,"auto");
+  await local.saveLayout("phone");assert.equal((await local.load()).layout,"phone");
+  await assert.rejects(local.saveLayout("arbitrary"),/invalid_layout/);
   const f=fixture();
   const read=f.client.load();
   assert.equal(f.requests[0].action,"get-preferences");

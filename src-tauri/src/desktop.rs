@@ -37,6 +37,8 @@ pub(crate) fn run() {
             window_lifecycle::set_window_fullscreen,
             window_lifecycle::restart_application,
             window_lifecycle::apply_desktop_update,
+            window_lifecycle::get_host_layout,
+            window_lifecycle::set_host_layout,
             backend_process::start_desktop_update,
             backend_process::cancel_desktop_update,
             platform::open_external_web_url,

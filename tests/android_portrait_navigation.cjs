@@ -2,8 +2,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const source = fs.readFileSync("static/android-host.js", "utf8");
-const {resolveLayout} = require("../static/android-layout.js");
+const source = fs.readFileSync("static/host-layout.js", "utf8");
+const {resolveLayout} = require("../static/host-layout-preferences.js");
 
 function setup(native = true, orientationType = "portrait-primary", width = 412, client = null, platform = "android") {
   class Node {
@@ -18,7 +18,7 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
     before(node) { node.detach(); node.parentElement=this.parentElement; if(this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this),0,node); }
     after(node) { node.detach(); node.parentElement=this.parentElement; if(this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this)+1,0,node); }
     contains(node) { return node===this || this.children.some(child=>child.contains(node)); }
-    querySelectorAll(selector) { return this.children.filter(n=>selector==="button" || (selector.includes("data-request-view") ? n.dataset.requestView : selector.includes("workspace") ? n.dataset.androidWorkspace : n.dataset.androidPage)); }
+    querySelectorAll(selector) { if (selector === ".session-user-badge") return []; return this.children.filter(n=>selector==="button" || (selector.includes("data-request-view") ? n.dataset.requestView : selector.includes("workspace") ? n.dataset.androidWorkspace : n.dataset.androidPage)); }
     closest(selector) { return selector==="button" ? this : selector.includes("workspace") ? (this.dataset.androidWorkspace || this.dataset.requestView ? this:null) : (this.dataset.androidPage ? this:null); }
   }
   const nodes=new Map();
@@ -45,13 +45,13 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   const orientation={type:orientationType,addEventListener:(k,fn)=>{listeners.orientation=fn;}};
   const history={state:null,entries:[],replaceState(s){this.state=s;this.entries[this.entries.length-1]=s;},pushState(s){this.state=s;this.entries.push(s);}};
   const calls=[];
-  const window={innerWidth:width,innerHeight:850,screen:{orientation},BilikaraAndroidLayout:{resolveLayout,client},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
+  const window={innerWidth:width,innerHeight:850,screen:{orientation},BilikaraLayoutPolicy:{resolveLayout},BilikaraHostWindowPreferences:{client,orientation:platform === "android"},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},t:key=>key,
-    document:{documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    document:{querySelectorAll:()=>[],documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     setAppMessage:message=>calls.push(message),
-    renderHostWorkspaceSelection:()=>window.BilikaraAndroidHost?.syncVisibility(),
-    activateHostWorkspace:(name,{inputOrigin}={})=>{state.activeHostWorkspace=name;calls.push(name);window.BilikaraAndroidHost?.workspaceActivated(name,inputOrigin);window.BilikaraAndroidHost?.syncVisibility();},
+    renderHostWorkspaceSelection:()=>window.BilikaraHostLayout?.syncVisibility(),
+    activateHostWorkspace:(name,{inputOrigin}={})=>{state.activeHostWorkspace=name;calls.push(name);window.BilikaraHostLayout?.workspaceActivated(name,inputOrigin);window.BilikaraHostLayout?.syncVisibility();},
   };
   vm.runInNewContext(source,context);
   const clickPage=name=>dock.listeners.click({target:dock.children.find(n=>n.dataset.androidPage===name)});
@@ -60,17 +60,18 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
 }
 
 const desktop=setup(false);
-assert.equal(desktop.window.BilikaraAndroidHost,undefined);
+assert.equal(desktop.window.BilikaraHostLayout,undefined);
 assert.equal(desktop.get("cache-settings").parentElement.id,"top-controls");
 assert.deepEqual(desktop.calls,[]);
 const nativeDesktop=setup(true,"landscape-primary",1280,null,"desktop");
-assert.equal(nativeDesktop.window.BilikaraAndroidHost,undefined);
+assert.equal(nativeDesktop.window.BilikaraHostLayout.isPortrait(),false);
 assert.equal(nativeDesktop.get("presentation-settings").parentElement.id,"top-controls");
-assert.equal(nativeDesktop.get("android-layout-settings").hidden,true);
+assert.equal(nativeDesktop.get("android-layout-settings").hidden,false);
+assert.equal(nativeDesktop.get("android-orientation-settings").hidden,true);
 const mobile=setup();
 assert.equal(mobile.get("presentation-settings").parentElement.className,"settings-section android-display-settings");
 assert.equal(mobile.get("presentation-settings").parentElement.parentElement.id,"settings-body");
-assert.equal(mobile.root.dataset.androidPage,"playback");
+assert.equal(mobile.root.dataset.hostPage,"playback");
 assert.equal(mobile.elements.hostWorkspaceRegion.hidden,true);
 assert.equal(mobile.get("cache-settings").parentElement.id,"android-settings-slot");
 mobile.clickPage("queue");
@@ -89,25 +90,25 @@ assert.equal(mobile.state.activeHostWorkspace,"history");
 // active workspace behind the player/My home on every state update.
 mobile.clickPage("playback");
 mobile.context.renderHostWorkspaceSelection();
-assert.equal(mobile.root.dataset.androidPage,"playback");
+assert.equal(mobile.root.dataset.hostPage,"playback");
 mobile.context.activateHostWorkspace("users");
-assert.equal(mobile.root.dataset.androidPage,"users");
+assert.equal(mobile.root.dataset.hostPage,"users");
 mobile.clickPage("my");
-assert.equal(mobile.window.BilikaraAndroidHost.settingsEmbedded(),true);
+assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),true);
 assert.equal(mobile.state.cacheSettingsOpen,true);
 assert.equal(mobile.get("bbdown-status-row").parentElement.id,"android-account-slot");
 mobile.get("android-open-settings").listeners.click();
-assert.equal(mobile.window.BilikaraAndroidHost.settingsEmbedded(),false);
+assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),false);
 assert.equal(mobile.state.cacheSettingsOpen,false);
 assert.equal(mobile.elements.hostWorkspaceRegion.hidden,false);
 mobile.get("android-settings-back").listeners.click();
 assert.equal(mobile.get("android-my-page").hidden,false);
 assert.equal(mobile.state.cacheSettingsOpen,true);
-assert.equal(mobile.history.state.androidHost.settings,false);
+assert.equal(mobile.history.state.hostLayout.settings,false);
 // Typing resizes the viewport, not the physical screen orientation.
 mobile.window.innerWidth=412; mobile.window.innerHeight=220;
 mobile.listeners.resize();
-assert.equal(mobile.root.dataset.androidLayout,"portrait");
+assert.equal(mobile.root.dataset.hostLayout,"portrait");
 mobile.window.innerWidth=850;
 mobile.orientation.type="landscape-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,true);
@@ -120,13 +121,13 @@ assert.equal(mobile.get("presentation-settings").parentElement.id,"top-controls"
 mobile.window.innerWidth=412;
 mobile.orientation.type="portrait-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,false);
-assert.equal(mobile.root.dataset.androidPage,"my");
+assert.equal(mobile.root.dataset.hostPage,"my");
 assert.equal(mobile.get("cache-settings").parentElement.id,"android-settings-slot");
-mobile.listeners.popstate({state:{androidHost:{page:"request",requestView:"random",queueView:"history"}}});
-assert.equal(mobile.root.dataset.androidPage,"request");
+mobile.listeners.popstate({state:{hostLayout:{page:"request",requestView:"random",queueView:"history"}}});
+assert.equal(mobile.root.dataset.hostPage,"request");
 assert.equal(mobile.state.activeHostWorkspace,"random");
-mobile.listeners.popstate({state:{androidHost:{page:"invalid"}}});
-assert.equal(mobile.root.dataset.androidPage,"request");
+mobile.listeners.popstate({state:{hostLayout:{page:"invalid"}}});
+assert.equal(mobile.root.dataset.hostPage,"request");
 
 (async()=>{
   // Tablet portrait is wide enough for shared desktop UI. Split-window width,
@@ -135,7 +136,7 @@ assert.equal(mobile.root.dataset.androidPage,"request");
   assert.equal(tablet.dock.hidden,true);
   tablet.context.activateHostWorkspace("users");
   tablet.window.innerWidth=600;tablet.listeners.resize();
-  assert.equal(tablet.root.dataset.androidPage,"users");
+  assert.equal(tablet.root.dataset.hostPage,"users");
   assert.equal(tablet.dock.hidden,false);
   let saved={layout:"desktop",orientation:"portrait"};
   let finish,fail;
@@ -160,7 +161,7 @@ assert.equal(mobile.root.dataset.androidPage,"request");
   assert.equal(manual.dock.hidden,false,"Manual phone layout survives wide windows");
   const auto=group.children.find(b=>b.id==="auto");
   const failed=group.listeners.click({target:auto});fail(new Error("disk"));await failed;
-  assert.equal(manual.root.dataset.androidLayoutMode,"phone","Failed save retains last good preference");
+  assert.equal(manual.root.dataset.hostLayoutMode,"phone","Failed save retains last good preference");
   assert.ok(group.children.every(button=>!button.disabled));
   assert.ok(manual.calls.includes("mobile.windowPreferenceFailed"));
   const orientation=manual.get("android-orientation-switch");

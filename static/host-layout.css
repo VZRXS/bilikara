@@ -1,5 +1,5 @@
-/* Native Android phone shell; the desktop layout keeps styles.css. The legacy
-   data-android-layout="portrait" marker now means phone UI, not device rotation. */
+/* Shared compact Host layout. Portrait means phone UI, not device rotation.
+   Existing android-* DOM hooks remain stable for native adapters and fixtures. */
 .android-host-only { display: none; }
 .android-fullscreen-remote-button { display: none; }
 .android-window-preferences[hidden], .android-display-settings[hidden] { display: none !important; }
@@ -8,7 +8,7 @@
 .android-window-preferences .mode-button { min-height: 44px; padding: 8px 12px; }
 .android-window-preferences .cache-panel-hint { flex-basis: 100%; margin: 0; line-height: 1.6; }
 
-html[data-host-platform="android"] .android-display-settings #presentation-settings {
+html[data-native-host="true"] .android-display-settings #presentation-settings {
   display: block;
   width: 100%;
   min-width: 0;
@@ -16,14 +16,14 @@ html[data-host-platform="android"] .android-display-settings #presentation-setti
   flex: none;
   box-sizing: border-box;
 }
-html[data-host-platform="android"] .android-display-settings .status-chip-toggle {
+html[data-native-host="true"] .android-display-settings .status-chip-toggle {
   width: 100%;
   min-height: 48px;
   height: auto;
   text-align: start;
 }
-html[data-host-platform="android"] .android-display-settings .control-label { display: inline; }
-html[data-host-platform="android"] .android-display-settings .presentation-output-panel {
+html[data-native-host="true"] .android-display-settings .control-label { display: inline; }
+html[data-native-host="true"] .android-display-settings .presentation-output-panel {
   position: static !important;
   transform: none !important;
   width: 100% !important;
@@ -34,26 +34,26 @@ html[data-host-platform="android"] .android-display-settings .presentation-outpu
   padding: 12px;
   box-shadow: none;
 }
-html[data-host-platform="android"] .android-display-settings .presentation-display-list {
+html[data-native-host="true"] .android-display-settings .presentation-display-list {
   grid-template-columns: minmax(0, 1fr);
   max-height: 260px;
   overflow-y: auto;
 }
-html[data-host-platform="android"] .android-display-settings .presentation-display-option {
+html[data-native-host="true"] .android-display-settings .presentation-display-option {
   grid-template-columns: 20px 28px minmax(0, 1fr);
   gap: 6px;
 }
-html[data-host-platform="android"] .android-display-settings .presentation-display-state {
+html[data-native-host="true"] .android-display-settings .presentation-display-state {
   grid-column: 3;
   text-align: start;
   font-size: 12px;
 }
 .android-display-hint { font-size: 13px; line-height: 1.6; color: var(--muted); }
-html[data-android-layout="portrait"] body.is-presentation-control-host #player-frame {
+html[data-host-layout="portrait"] body.is-presentation-control-host #player-frame {
   aspect-ratio: 16 / 9;
   height: auto;
 }
-html[data-android-layout="portrait"] body.is-presentation-control-host .presentation-host-transport-row {
+html[data-host-layout="portrait"] body.is-presentation-control-host .presentation-host-transport-row {
   grid-template-columns: auto minmax(0, 1fr) 44px;
   gap: 8px;
 }
@@ -82,8 +82,8 @@ html[data-android-layout="portrait"] body.is-presentation-control-host .presenta
 .android-session-choice-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .android-session-choice-actions button { flex: 1; min-height: 44px; }
 
-html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-list { padding: 0 0 10px; }
-html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-badge {
+html[data-host-touch-users="true"] .session-user-list { padding: 0 0 10px; }
+html[data-host-touch-users="true"] .session-user-badge {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   height: auto;
@@ -95,7 +95,7 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-
   cursor: pointer;
   -webkit-touch-callout: none;
 }
-html[data-native-host="true"]:not([data-host-platform="desktop"]) .session-user-badge.is-actions-open { min-width: 184px; }
+html[data-host-touch-users="true"] .session-user-badge.is-actions-open { min-width: 184px; }
 .android-user-toggle {
   min-height: 36px;
   padding: 4px 2px;
@@ -136,21 +136,21 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) .fullscreen-ac
   pointer-events: none;
 }
 
-html[data-android-layout="portrait"] {
+html[data-host-layout="portrait"] {
   --mobile-dock-height: 68px;
 }
 
-html[data-android-layout="portrait"] body {
+html[data-host-layout="portrait"] body {
   margin: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-html[data-android-layout="portrait"] :where(.android-host-only):not([hidden]) {
+html[data-host-layout="portrait"] :where(.android-host-only):not([hidden]) {
   display: block;
 }
 
-html[data-android-layout="portrait"] .app-shell {
+html[data-host-layout="portrait"] .app-shell {
   width: 100%;
   max-width: none;
   height: 100dvh;
@@ -167,7 +167,7 @@ html[data-android-layout="portrait"] .app-shell {
   --host-peer-request-head-padding: 14px;
 }
 
-html[data-android-layout="portrait"] .topbar {
+html[data-host-layout="portrait"] .topbar {
   grid-row: 1;
   height: 56px;
   min-height: 56px;
@@ -176,20 +176,20 @@ html[data-android-layout="portrait"] .topbar {
 }
 
 /* Only Play needs the brand/invite bar; reclaim its row on every other page. */
-html[data-android-layout="portrait"]:not([data-android-page="playback"]) .app-shell {
+html[data-host-layout="portrait"]:not([data-host-page="playback"]) .app-shell {
   grid-template-rows: 0 auto minmax(0, 1fr) var(--mobile-dock-height);
 }
-html[data-android-layout="portrait"]:not([data-android-page="playback"]) .topbar {
+html[data-host-layout="portrait"]:not([data-host-page="playback"]) .topbar {
   display: none;
 }
 
-html[data-android-layout="portrait"] .host-brand h1 { font-size: 27px; }
-html[data-android-layout="portrait"] .critical-banner-region { grid-row: 2; padding: 0 12px; }
-html[data-android-layout="portrait"] .shell-body { grid-row: 3; padding: 0 12px 8px; }
-html[data-android-layout="portrait"] .layout { display: block; }
-html[data-android-layout="portrait"] .layout > .work-rail { display: none; }
+html[data-host-layout="portrait"] .host-brand h1 { font-size: 27px; }
+html[data-host-layout="portrait"] .critical-banner-region { grid-row: 2; padding: 0 12px; }
+html[data-host-layout="portrait"] .shell-body { grid-row: 3; padding: 0 12px 8px; }
+html[data-host-layout="portrait"] .layout { display: block; }
+html[data-host-layout="portrait"] .layout > .work-rail { display: none; }
 
-html[data-android-layout="portrait"] .host-content-region {
+html[data-host-layout="portrait"] .host-content-region {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -198,7 +198,7 @@ html[data-android-layout="portrait"] .host-content-region {
   overflow: hidden;
 }
 
-html[data-android-layout="portrait"] .app-shell .host-workspace-region {
+html[data-host-layout="portrait"] .app-shell .host-workspace-region {
   position: relative;
   inset: auto;
   z-index: auto;
@@ -214,9 +214,9 @@ html[data-android-layout="portrait"] .app-shell .host-workspace-region {
   border-radius: 18px;
 }
 
-html[data-android-layout="portrait"] .app-shell .host-workspace-region[hidden] { display: none; }
+html[data-host-layout="portrait"] .app-shell .host-workspace-region[hidden] { display: none; }
 
-html[data-android-layout="portrait"] .left-column {
+html[data-host-layout="portrait"] .left-column {
   position: relative;
   flex: 1 1 0;
   width: 100%;
@@ -228,14 +228,14 @@ html[data-android-layout="portrait"] .left-column {
 }
 
 /* Keep a full-sized live media tree offscreen, not display:none or remounted. */
-html[data-android-layout="portrait"] .left-column.android-stage-away {
+html[data-host-layout="portrait"] .left-column.android-stage-away {
   position: absolute;
   left: -10000px;
   top: 0;
   pointer-events: none;
 }
 
-html[data-android-layout="portrait"] .left-column > .player-panel:not(:fullscreen):not(.is-tauri-fullscreen) {
+html[data-host-layout="portrait"] .left-column > .player-panel:not(:fullscreen):not(.is-tauri-fullscreen) {
   height: auto;
   min-height: 100%;
   grid-template-rows: auto;
@@ -245,7 +245,7 @@ html[data-android-layout="portrait"] .left-column > .player-panel:not(:fullscree
   overflow: visible;
 }
 
-html[data-android-layout="portrait"] #current-title {
+html[data-host-layout="portrait"] #current-title {
   white-space: normal;
   font-size: 18px;
   line-height: 1.4;
@@ -256,39 +256,39 @@ html[data-android-layout="portrait"] #current-title {
   -webkit-box-orient: vertical;
 }
 
-html[data-android-layout="portrait"] #current-title-text {
+html[data-host-layout="portrait"] #current-title-text {
   white-space: normal;
   overflow-wrap: anywhere;
   animation: none;
   transform: none;
 }
 
-html[data-android-layout="portrait"] .left-column .player-frame { width: 100%; }
-html[data-android-layout="portrait"] .app-shell .stage-control-tray {
+html[data-host-layout="portrait"] .left-column .player-frame { width: 100%; }
+html[data-host-layout="portrait"] .app-shell .stage-control-tray {
   min-width: 0;
   max-width: 100%;
 }
 
-html[data-android-layout="portrait"] .stage-extended-controls { padding: 0 10px; }
-html[data-android-layout="portrait"] .stage-control-tray .playback-primary-row { flex-wrap: wrap; }
+html[data-host-layout="portrait"] .stage-extended-controls { padding: 0 10px; }
+html[data-host-layout="portrait"] .stage-control-tray .playback-primary-row { flex-wrap: wrap; }
 
 /* Inline controls are not a modal. Their desktop z-index trapped fixed
    tooltips below the neighbouring part bar (7 versus 10). Let the tooltip's
    own shared overlay layer participate; keep popup/fullscreen layers intact. */
-html[data-android-layout="portrait"] .app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
+html[data-host-layout="portrait"] .app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
   z-index: auto;
 }
 
 /* Fit the complete delay row without hiding operations or changing their order. */
-html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
+html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(52px, 1.6fr) repeat(4, minmax(0, 1fr));
   gap: 3px;
 }
-html[data-android-layout="portrait"] .app-shell #key-shift-panel .av-sync-controls {
+html[data-host-layout="portrait"] .app-shell #key-shift-panel .av-sync-controls {
   grid-template-columns: minmax(0, 1fr) minmax(72px, 2fr) repeat(2, minmax(0, 1fr));
 }
-html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > :is(button, .av-sync-input-wrap) {
+html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > :is(button, .av-sync-input-wrap) {
   grid-column: auto;
   min-width: 0;
   width: 100%;
@@ -299,8 +299,8 @@ html[data-android-layout="portrait"] .app-shell .stage-extended-controls .av-syn
   border-radius: 10px;
   white-space: nowrap;
 }
-html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap { justify-content: center; }
-html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
+html[data-host-layout="portrait"] .app-shell .av-sync-input-wrap { justify-content: center; }
+html[data-host-layout="portrait"] .app-shell .av-sync-input-wrap input {
   min-width: 0;
   width: calc(var(--android-value-chars, 1) * 1ch);
   padding: 0;
@@ -309,25 +309,25 @@ html[data-android-layout="portrait"] .app-shell .av-sync-input-wrap input {
   text-align: center;
   flex: 0 1 auto;
 }
-html[data-android-layout="portrait"] .av-sync-step-symbol { display: none; }
-html[data-android-layout="portrait"] .app-shell .audio-variant-button {
+html[data-host-layout="portrait"] .av-sync-step-symbol { display: none; }
+html[data-host-layout="portrait"] .app-shell .audio-variant-button {
   min-height: 44px;
   padding: 8px 12px;
   font-size: 14px;
 }
 /* Desktop's 38px collapsed row otherwise cuts through the touch targets. */
-html[data-android-layout="portrait"] .audio-variant-bar.is-collapsed .audio-variant-list {
+html[data-host-layout="portrait"] .audio-variant-bar.is-collapsed .audio-variant-list {
   max-height: none;
 }
-html[data-android-layout="portrait"] .audio-variant-toggle {
+html[data-host-layout="portrait"] .audio-variant-toggle {
   width: 44px;
   height: 44px;
 }
-html[data-android-layout="portrait"] .audio-variant-bar.is-expanded {
+html[data-host-layout="portrait"] .audio-variant-bar.is-expanded {
   min-width: 0;
   max-width: calc(100vw - 24px);
 }
-html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .history-title) {
+html[data-host-layout="portrait"] :is(.queue-current-title, .song-title, .history-title) {
   font-size: 16px;
   line-height: 1.4;
   display: -webkit-box;
@@ -338,16 +338,16 @@ html[data-android-layout="portrait"] :is(.queue-current-title, .song-title, .his
   overflow-wrap: anywhere;
   white-space: normal;
 }
-html[data-android-layout="portrait"] .queue-current {
+html[data-host-layout="portrait"] .queue-current {
   padding: 12px;
   grid-template-columns: var(--queue-badge-column-width) minmax(0, 1fr) auto;
   grid-template-rows: auto minmax(44px, auto);
   gap: 6px 8px;
 }
-html[data-android-layout="portrait"] :is(.queue-current-main, .queue-current-meta) { display: contents; }
-html[data-android-layout="portrait"] .queue-current-side { grid-column: 1; grid-row: 1 / span 2; }
-html[data-android-layout="portrait"] .queue-current-title { grid-column: 2 / 4; grid-row: 1; }
-html[data-android-layout="portrait"] .queue-current-requester {
+html[data-host-layout="portrait"] :is(.queue-current-main, .queue-current-meta) { display: contents; }
+html[data-host-layout="portrait"] .queue-current-side { grid-column: 1; grid-row: 1 / span 2; }
+html[data-host-layout="portrait"] .queue-current-title { grid-column: 2 / 4; grid-row: 1; }
+html[data-host-layout="portrait"] .queue-current-requester {
   grid-column: 2;
   grid-row: 2;
   font-size: 12px;
@@ -361,7 +361,7 @@ html[data-android-layout="portrait"] .queue-current-requester {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-html[data-android-layout="portrait"] .queue-current-next {
+html[data-host-layout="portrait"] .queue-current-next {
   position: relative;
   inset: auto;
   grid-column: 3;
@@ -373,7 +373,7 @@ html[data-android-layout="portrait"] .queue-current-next {
   font-size: 12px;
 }
 /* Match the requester's visual height without shrinking the touch target. */
-html[data-android-layout="portrait"] .queue-current-next::before {
+html[data-host-layout="portrait"] .queue-current-next::before {
   content: "";
   position: absolute;
   inset: -8px 0;
@@ -381,9 +381,9 @@ html[data-android-layout="portrait"] .queue-current-next::before {
 
 /* Anchor the queue menu to the whole card, not the 44px ellipsis button.
    All five actions fit; translated labels may wrap within their own cell. */
-html[data-android-layout="portrait"] .song-item { position: relative; }
-html[data-android-layout="portrait"] .song-actions-wrap { position: static; }
-html[data-android-layout="portrait"] .song-actions.menu-content {
+html[data-host-layout="portrait"] .song-item { position: relative; }
+html[data-host-layout="portrait"] .song-actions-wrap { position: static; }
+html[data-host-layout="portrait"] .song-actions.menu-content {
   inset: auto 54px 8px 6px;
   width: auto;
   display: grid;
@@ -394,7 +394,7 @@ html[data-android-layout="portrait"] .song-actions.menu-content {
   transform: none;
   animation: none;
 }
-html[data-android-layout="portrait"] .song-actions.menu-content button {
+html[data-host-layout="portrait"] .song-actions.menu-content button {
   grid-area: auto;
   width: 100%;
   min-width: 0;
@@ -406,11 +406,11 @@ html[data-android-layout="portrait"] .song-actions.menu-content button {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-html[data-android-layout="portrait"] .queue-current-cache-detail { grid-column: 2 / 4; grid-row: 3; }
+html[data-host-layout="portrait"] .queue-current-cache-detail { grid-column: 2 / 4; grid-row: 3; }
 
 /* Give each binding choice readable line length; only the choices scroll. */
-html[data-android-layout="portrait"] #binding-modal { padding: 12px; }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-card {
+html[data-host-layout="portrait"] #binding-modal { padding: 12px; }
+html[data-host-layout="portrait"] #binding-modal .selection-modal-card {
   width: 100%;
   max-width: 480px;
   max-height: calc(100dvh - 24px);
@@ -418,9 +418,9 @@ html[data-android-layout="portrait"] #binding-modal .selection-modal-card {
   border-radius: 20px;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-head h2 { font-size: 20px; }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-head .section-tag { font-size: 10px; }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-grid {
+html[data-host-layout="portrait"] #binding-modal .selection-modal-head h2 { font-size: 20px; }
+html[data-host-layout="portrait"] #binding-modal .selection-modal-head .section-tag { font-size: 10px; }
+html[data-host-layout="portrait"] #binding-modal .selection-modal-grid {
   grid-template-columns: minmax(0, 1fr);
   grid-auto-rows: max-content;
   align-content: start;
@@ -429,16 +429,16 @@ html[data-android-layout="portrait"] #binding-modal .selection-modal-grid {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-column { display: block; padding: 10px; overflow: visible; }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-column h3 { font-size: 15px; }
-html[data-android-layout="portrait"] #binding-modal .selection-option-list {
+html[data-host-layout="portrait"] #binding-modal .selection-modal-column { display: block; padding: 10px; overflow: visible; }
+html[data-host-layout="portrait"] #binding-modal .selection-modal-column h3 { font-size: 15px; }
+html[data-host-layout="portrait"] #binding-modal .selection-option-list {
   grid-auto-rows: max-content;
   overflow: visible;
   padding: 0;
   margin-top: 8px;
   gap: 6px;
 }
-html[data-android-layout="portrait"] #binding-modal .selection-option {
+html[data-host-layout="portrait"] #binding-modal .selection-option {
   grid-template-columns: 20px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
@@ -446,18 +446,18 @@ html[data-android-layout="portrait"] #binding-modal .selection-option {
   min-height: 44px;
   border-radius: 12px;
 }
-html[data-android-layout="portrait"] #binding-modal .selection-option input { width: 18px; height: 18px; margin: 0; }
-html[data-android-layout="portrait"] #binding-modal .selection-option-title { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
-html[data-android-layout="portrait"] #binding-modal .selection-option-meta { font-size: 11px; margin-top: 2px; }
-html[data-android-layout="portrait"] #binding-modal .selection-modal-actions { padding-top: 12px; margin-top: 12px; }
-html[data-android-layout="portrait"] #binding-modal :is(.selection-modal-actions button, .banner-close) { min-height: 44px; min-width: 44px; }
+html[data-host-layout="portrait"] #binding-modal .selection-option input { width: 18px; height: 18px; margin: 0; }
+html[data-host-layout="portrait"] #binding-modal .selection-option-title { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+html[data-host-layout="portrait"] #binding-modal .selection-option-meta { font-size: 11px; margin-top: 2px; }
+html[data-host-layout="portrait"] #binding-modal .selection-modal-actions { padding-top: 12px; margin-top: 12px; }
+html[data-host-layout="portrait"] #binding-modal :is(.selection-modal-actions button, .banner-close) { min-height: 44px; min-width: 44px; }
 
-html[data-android-layout="portrait"] .android-page-tools {
+html[data-host-layout="portrait"] .android-page-tools {
   flex: 0 0 auto;
   padding: 4px 0;
 }
 
-html[data-android-layout="portrait"] .android-page-tabs {
+html[data-host-layout="portrait"] .android-page-tabs {
   display: flex;
   gap: 4px;
   padding: 4px;
@@ -466,8 +466,8 @@ html[data-android-layout="portrait"] .android-page-tabs {
   background: var(--panel);
 }
 
-html[data-android-layout="portrait"] .android-page-tabs[hidden],
-html[data-android-layout="portrait"] .android-settings-back[hidden] { display: none; }
+html[data-host-layout="portrait"] .android-page-tabs[hidden],
+html[data-host-layout="portrait"] .android-settings-back[hidden] { display: none; }
 
 .android-page-tabs button,
 .android-settings-back {
@@ -489,7 +489,7 @@ html[data-android-layout="portrait"] .android-settings-back[hidden] { display: n
 
 .android-settings-back { color: var(--accent); }
 
-html[data-android-layout="portrait"] .android-host-dock {
+html[data-host-layout="portrait"] .android-host-dock {
   grid-row: 4;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -540,7 +540,7 @@ html[data-android-layout="portrait"] .android-host-dock {
 .android-page-tabs button:focus-visible,
 .android-settings-back:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-html[data-android-layout="portrait"] .android-my-page {
+html[data-host-layout="portrait"] .android-my-page {
   flex: 1;
   min-height: 0;
   padding: 22px 16px;
@@ -554,7 +554,7 @@ html[data-android-layout="portrait"] .android-my-page {
 
 /* Single random pick, with the same metadata as the search feed. */
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card { width: min(100%, 360px); text-align: left; }
-html[data-native-host="true"][data-android-layout="portrait"] #gatcha-candidate-card { width: min(100%, 280px); }
+html[data-native-host="true"][data-host-layout="portrait"] #gatcha-candidate-card { width: min(100%, 280px); }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover img { position: absolute; inset: 0; }
@@ -564,11 +564,11 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candid
 html[data-native-host="true"]:not([data-host-platform="desktop"])[data-native-export-ready="true"] #history-export-button { display: inline-flex !important; }
 .android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
 .android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
-html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
-html[data-android-layout="portrait"] #android-account-slot #bbdown-status-row > span:first-child { display: none; }
-html[data-android-layout="portrait"] #android-account-slot .bbdown-login-badge { padding: 8px 16px; min-height: 44px; }
-html[data-android-layout="portrait"] #android-account-slot .bbdown-login-panel { padding: 12px 0 0; }
-html[data-android-layout="portrait"] #android-account-slot .bbdown-login-copy { display: none; }
+html[data-host-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
+html[data-host-layout="portrait"] #android-account-slot #bbdown-status-row > span:first-child { display: none; }
+html[data-host-layout="portrait"] #android-account-slot .bbdown-login-badge { padding: 8px 16px; min-height: 44px; }
+html[data-host-layout="portrait"] #android-account-slot .bbdown-login-panel { padding: 12px 0 0; }
+html[data-host-layout="portrait"] #android-account-slot .bbdown-login-copy { display: none; }
 .android-login-hint, .android-login-persistence { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
 .android-my-card.is-logged .android-login-hint { display: none; }
 .android-my-page #android-settings-slot { margin-bottom: 18px; }
@@ -591,7 +591,7 @@ html[data-android-layout="portrait"] #android-account-slot .bbdown-login-copy { 
 .android-menu-row strong { display: block; font-size: 16px; font-weight: 700; }
 .android-menu-row small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.5; }
 
-html[data-android-layout="portrait"] #android-settings-slot #cache-settings {
+html[data-host-layout="portrait"] #android-settings-slot #cache-settings {
   position: static;
   display: block;
   height: auto;
@@ -608,8 +608,8 @@ html[data-android-layout="portrait"] #android-settings-slot #cache-settings {
   backdrop-filter: none;
 }
 
-html[data-android-layout="portrait"] #android-settings-slot #cache-settings-toggle { display: none; }
-html[data-android-layout="portrait"] #android-settings-slot #cache-panel {
+html[data-host-layout="portrait"] #android-settings-slot #cache-settings-toggle { display: none; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-panel {
   position: static;
   inset: auto !important;
   display: flex;
@@ -627,28 +627,28 @@ html[data-android-layout="portrait"] #android-settings-slot #cache-panel {
   transform: none;
 }
 
-html[data-android-layout="portrait"] #android-settings-slot .cache-panel-row { flex-wrap: wrap; gap: 12px; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
-html[data-android-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; order: -3; border-top: 0; padding-top: 0; }
-html[data-android-layout="portrait"] #android-settings-slot #cache-capacity-row { display: block; order: -2; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-panel-row { flex-direction: row; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-limit-slider { width: 100%; min-height: 32px; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-quality-select { min-height: 40px; }
-html[data-android-layout="portrait"] #android-settings-slot #cache-usage-row { order: -1; border-top: 1px solid var(--line); padding-top: 14px; }
-html[data-android-layout="portrait"] #android-settings-slot .cache-panel-tool-list { display: none; }
-html[data-android-layout="portrait"] .settings-workspace-body { min-height: 0; overflow-y: auto; }
-html[data-android-layout="portrait"] .settings-workspace-body .cache-panel-row { flex-wrap: wrap; gap: 12px; }
-html[data-android-layout="portrait"] .settings-workspace-body .diagnostic-panel-actions { width: 100%; }
-html[data-android-layout="portrait"] #diagnostic-copy-button { min-height: 44px; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex-wrap: wrap; gap: 12px; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; order: -3; border-top: 0; padding-top: 0; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-capacity-row { display: block; order: -2; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex-direction: row; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-limit-slider { width: 100%; min-height: 32px; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-quality-select { min-height: 40px; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-usage-row { order: -1; border-top: 1px solid var(--line); padding-top: 14px; }
+html[data-host-layout="portrait"] #android-settings-slot .cache-panel-tool-list { display: none; }
+html[data-host-layout="portrait"] .settings-workspace-body { min-height: 0; overflow-y: auto; }
+html[data-host-layout="portrait"] .settings-workspace-body .cache-panel-row { flex-wrap: wrap; gap: 12px; }
+html[data-host-layout="portrait"] .settings-workspace-body .diagnostic-panel-actions { width: 100%; }
+html[data-host-layout="portrait"] #diagnostic-copy-button { min-height: 44px; }
 
 /* The request header must not compete with four mode tabs on one phone row. */
-html[data-android-layout="portrait"] .request-workspace-head {
+html[data-host-layout="portrait"] .request-workspace-head {
   display: none;
 }
 
-html[data-android-layout="portrait"] .request-workspace-head .host-peer-heading { display: block; }
-html[data-android-layout="portrait"] .request-subview-tabs {
+html[data-host-layout="portrait"] .request-workspace-head .host-peer-heading { display: block; }
+html[data-host-layout="portrait"] .request-subview-tabs {
   width: 100%;
   max-width: 100%;
   display: flex;
@@ -658,26 +658,26 @@ html[data-android-layout="portrait"] .request-subview-tabs {
   scrollbar-width: none;
 }
 
-html[data-android-layout="portrait"] .request-subview-tabs button { flex: 0 0 auto; min-height: 44px; }
-html[data-android-layout="portrait"] #android-request-tabs .request-subview-tabs {
+html[data-host-layout="portrait"] .request-subview-tabs button { flex: 0 0 auto; min-height: 44px; }
+html[data-host-layout="portrait"] #android-request-tabs .request-subview-tabs {
   padding: 3px;
   gap: 0;
 }
-html[data-android-layout="portrait"] #android-request-tabs .request-subview-tabs button {
+html[data-host-layout="portrait"] #android-request-tabs .request-subview-tabs button {
   flex: 1 0 auto;
   padding: 6px 8px;
   font-size: 12px;
 }
-html[data-android-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
-html[data-android-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
-html[data-android-layout="portrait"] .category-browser-grid {
+html[data-host-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
+html[data-host-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
+html[data-host-layout="portrait"] .category-browser-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-html[data-android-layout="portrait"] .category-browser-card-name { font-size: 20px; padding: 10px; }
+html[data-host-layout="portrait"] .category-browser-card-name { font-size: 20px; padding: 10px; }
 /* Only the in-category switcher is text-only; the category home keeps artwork. */
-html[data-android-layout="portrait"] .category-browser-tab-media { display: none; }
-html[data-android-layout="portrait"] .category-browser-tab {
+html[data-host-layout="portrait"] .category-browser-tab-media { display: none; }
+html[data-host-layout="portrait"] .category-browser-tab {
   aspect-ratio: auto;
   height: 40px;
   padding: 0 12px;
@@ -685,8 +685,8 @@ html[data-android-layout="portrait"] .category-browser-tab {
   border: 1px solid var(--line);
   border-radius: 12px;
 }
-html[data-android-layout="portrait"] .category-browser-tab { flex: 0 0 auto; }
-html[data-android-layout="portrait"] .category-browser-tab-name {
+html[data-host-layout="portrait"] .category-browser-tab { flex: 0 0 auto; }
+html[data-host-layout="portrait"] .category-browser-tab-name {
   position: static;
   padding: 0;
   color: var(--ink);
@@ -695,55 +695,55 @@ html[data-android-layout="portrait"] .category-browser-tab-name {
   text-shadow: none;
   -webkit-text-stroke: 0;
 }
-html[data-android-layout="portrait"] .category-browser-tab.active { background: var(--accent-soft); border-color: var(--accent); }
-html[data-android-layout="portrait"] .category-browser-tab.active .category-browser-tab-name { color: var(--accent-deep); text-shadow: none; }
-html[data-native-host="true"]:not([data-host-platform="desktop"])[data-android-layout="portrait"] .app-shell .category-browser-tab-name {
+html[data-host-layout="portrait"] .category-browser-tab.active { background: var(--accent-soft); border-color: var(--accent); }
+html[data-host-layout="portrait"] .category-browser-tab.active .category-browser-tab-name { color: var(--accent-deep); text-shadow: none; }
+html[data-native-host="true"][data-host-layout="portrait"] .app-shell .category-browser-tab-name {
   -webkit-text-stroke: 0;
   text-shadow: none;
 }
-html[data-native-host="true"]:not([data-host-platform="desktop"])[data-android-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
-html[data-android-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
-html[data-android-layout="portrait"] .request-mode-head { padding: 8px 10px; }
-html[data-android-layout="portrait"] :is(.request-discover-view, .request-search-view) > .request-mode-panel { padding: 8px 10px; }
-html[data-android-layout="portrait"] .category-browser-detail { gap: 8px; }
-html[data-android-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+html[data-native-host="true"][data-host-layout="portrait"] .app-shell .category-browser-tab.active .category-browser-tab-name { text-shadow: none; }
+html[data-host-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
+html[data-host-layout="portrait"] .request-mode-head { padding: 8px 10px; }
+html[data-host-layout="portrait"] :is(.request-discover-view, .request-search-view) > .request-mode-panel { padding: 8px 10px; }
+html[data-host-layout="portrait"] .category-browser-detail { gap: 8px; }
+html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 /* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
    Keep one renderer for category/search/source cards, including missing art. */
-html[data-android-layout="portrait"] #host-workspace-request .search-result-item {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-item {
   gap: 5px;
   padding: 0 0 6px;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-cover {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-cover {
   flex: 0 0 auto;
   min-height: 0;
   height: auto;
   aspect-ratio: 16 / 9;
   font-size: 11px;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-cover img {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-cover img {
   /* Intrinsic portrait/square artwork must not expand the aspect-ratio box. */
   position: absolute;
   inset: 0;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-meta {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-meta {
   gap: 3px;
   padding: 0 7px;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-title {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-title {
   font-size: 14px;
   line-height: 1.35;
   min-height: 2.7em;
   max-height: 2.7em;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-url {
+html[data-host-layout="portrait"] #host-workspace-request .search-result-url {
   gap: 4px;
   font-size: 11px;
   line-height: 1.35;
 }
-html[data-android-layout="portrait"] #host-workspace-request .search-result-owner { flex: 1; }
-html[data-android-layout="portrait"] .tag-browser-message { font-size: 11px; padding: 4px 8px; }
-html[data-android-layout="portrait"] .native-alpha-notice { font-size: 12px; }
-html[data-android-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }
+html[data-host-layout="portrait"] #host-workspace-request .search-result-owner { flex: 1; }
+html[data-host-layout="portrait"] .tag-browser-message { font-size: 11px; padding: 4px 8px; }
+html[data-host-layout="portrait"] .native-alpha-notice { font-size: 12px; }
+html[data-host-layout="portrait"] .app-toast { bottom: calc(var(--mobile-dock-height) + 12px); }
 
 /* A phone in landscape has desktop width but not desktop height. Keep the
    countdown and next songs visible without scaling the player/video itself. */

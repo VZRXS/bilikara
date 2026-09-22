@@ -20,7 +20,7 @@ function fixture({android = true, webkit = false, pending = false} = {}) {
   const session = {video, audio, frameClickTimer: null};
   let timerId = 0;
   const context = {
-    BilikaraAndroidHost: android ? {} : undefined,
+    isAndroidNativePlaybackRuntime: () => android,
     state: {hostPlaybackSession: session, data: {current_item: {id: "song"}}},
     playerClickDelayMs: 220,
     elements: {playerFrame: {addEventListener: (name, handler) => { listeners[name] = handler; }}},
@@ -62,7 +62,7 @@ function nativePause({android, seeking, playing}) {
   let handler;
   const video = {dataset: {}, paused: true, ended: false, seeking};
   const context = {
-    BilikaraAndroidHost: android ? {} : undefined,
+    isAndroidNativePlaybackRuntime: () => android,
     video, audio: {ended: false}, session: {seekResumePending: false},
     state: {localShouldBePlaying: playing}, document: {hidden: false},
     addMountedPlayerListener(target, name, callback) {handler = callback;},

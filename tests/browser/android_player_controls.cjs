@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
   const root = path.resolve(__dirname, '../..');
   const markup = fs.readFileSync(path.join(root, 'static/index.html'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'static/styles.css'), 'utf8');
-  const mobileStyles = fs.readFileSync(path.join(root, 'static/android-host.css'), 'utf8');
+  const mobileStyles = fs.readFileSync(path.join(root, 'static/host-layout.css'), 'utf8');
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.BILIKARA_BROWSER_EXECUTABLE
@@ -24,7 +24,7 @@ const { chromium } = require('playwright');
         await page.setContent('<html data-native-host="true"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body></body></html>');
         await page.addStyleTag({ content: styles });
         await page.addStyleTag({ content: mobileStyles });
-        if (height > width) await page.evaluate(() => { document.documentElement.dataset.androidLayout = 'portrait'; });
+        if (height > width) await page.evaluate(() => { document.documentElement.dataset.hostLayout = 'portrait'; });
         await page.evaluate(({ markup, density }) => {
           const source = new DOMParser().parseFromString(markup, 'text/html');
           const tray = source.querySelector('#stage-control-tray');

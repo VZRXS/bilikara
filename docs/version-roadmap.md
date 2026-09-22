@@ -49,6 +49,11 @@ rules. The first AppState cutover is now established:
   this architecture; feature parity and release acceptance remain separate.
   See [native desktop launch and bundles](native-desktop.md) for the installed
   layout, build requirements, data roots and explicit legacy import.
+- v0.8 also converges the desktop and Android Host frontend on shared content,
+  actions and responsive layouts, with narrow native adapters. Android ships as
+  a forward-looking preview; full device stability, casting maturity and iOS
+  completion are not v0.8 desktop acceptance gates. Remote and audience roles
+  retain separate privileges. See [shared Host UI](shared-host-ui.md).
 - The current application-service slice in `rust-runtime` owns the Bilibili
   QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
   I/O, Rust Native cache queues/retries/cancellation/validated publication,
@@ -141,7 +146,7 @@ explicitly acceptable.
 
 ### v0.9.0 candidate direction
 
-- Android Host Alpha capable of complete Host operation without a computer.
+- Android Host follow-on work beyond the v0.8 shared-frontend preview.
 - Local playback, Remote serving, download/cache operation, a foreground
   service, notification and MediaSession integration, and Android local-network
   permissions.

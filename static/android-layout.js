@@ -3,11 +3,6 @@
   "use strict";
   const layouts = ["auto", "desktop", "phone"];
   const orientations = ["system", "landscape", "portrait"];
-  // Match the shared desktop shell's supported narrow-window floor. Use CSS
-  // window width, not screen resolution or height reduced by the keyboard.
-  function resolveLayout(mode, width) {
-    return mode === "phone" || (mode !== "desktop" && (!Number.isFinite(Number(width)) || Number(width) < 700)) ? "phone" : "desktop";
-  }
   function createClient(bridge, timers = root) {
     const pending = new Map();
     let sequence = 0;
@@ -52,10 +47,10 @@
       },
     };
   }
-  if (typeof module === "object" && module.exports) module.exports = {resolveLayout, createClient};
+  if (typeof module === "object" && module.exports) module.exports = {createClient};
   if (root.document?.documentElement?.dataset?.hostPlatform === "android") {
     const client = root.BilikaraHostWindow?.postMessage ? createClient(root.BilikaraHostWindow) : null;
-    root.BilikaraAndroidLayout = {resolveLayout, client};
+    root.BilikaraHostWindowPreferences = {orientation: true, client};
     root.addEventListener("pagehide", () => client?.close());
   }
 })(globalThis);

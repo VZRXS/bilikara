@@ -48,7 +48,7 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     });
     const host=await context.newPage();
     await host.goto(bootstrap);
-    await host.waitForFunction(()=>state.data?.capabilities?.gatcha && window.BilikaraAndroidHost?.isPortrait());
+    await host.waitForFunction(()=>state.data?.capabilities?.gatcha && window.BilikaraHostLayout?.isPortrait());
     const invite=await host.evaluate(()=>state.data.remote_access.local_url);
     const check=async(name,fn)=>{
       try { await fn(); measurements[name]={...measurements[name],passed:true}; }

@@ -3435,7 +3435,7 @@ function scheduleMountedPlayerControlsHide() {
   // Android's UA-shadow controls consume thumb events before the page sees
   // them. Let the WebView fade its own controls instead of removing the entire
   // controls attribute on a timer and aborting an in-progress native drag.
-  if (globalThis.BilikaraAndroidHost) return;
+  if (isAndroidNativePlaybackRuntime()) return;
   const hideGeneration = state.localPlayerControlsHideGeneration;
   const hideTimer = window.setTimeout(() => {
     if (
@@ -3971,7 +3971,7 @@ function syncRequestSubviewSelection() {
     syncSourcesModeSelection();
   }
   syncRequestSessionUserNoticePlacement();
-  globalThis.BilikaraAndroidHost?.syncRequestTabs?.();
+  globalThis.BilikaraHostLayout?.syncRequestTabs?.();
 }
 
 function closeRequestDetailForNavigation() {
@@ -4129,7 +4129,10 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
     && hostRequestWorkspaceUsesOverlay();
   const narrowToolSheet = hostNarrowToolSheetUsesOverlay();
   if (narrowToolSheet && !state.hostNarrowToolSheetActive) {
-    state.hostWorkspaceOverlayOpen = false;
+    // Resizing while editing must not hide/inert the active form. Keep the
+    // shared tool drawer open for that focus owner; idle layouts still fold.
+    state.hostWorkspaceOverlayOpen = typeof document !== "undefined"
+      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement));
   } else if (!narrowToolSheet) {
     state.hostWorkspaceOverlayOpen = false;
   }
@@ -4201,7 +4204,7 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
   if (typeof scheduleQueueScrollOwnershipSync === "function") {
     scheduleQueueScrollOwnershipSync();
   }
-  globalThis.BilikaraAndroidHost?.syncVisibility();
+  globalThis.BilikaraHostLayout?.syncVisibility();
   if (
     previousNarrowToolLayout
     && previousNarrowToolLayout !== nextNarrowToolLayout
@@ -4361,7 +4364,7 @@ function syncNarrowToolLayout() {
   if (!elements.appShell) {
     return "wide";
   }
-  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+  if (globalThis.BilikaraHostLayout?.isPortrait()) {
     elements.appShell.dataset.narrowToolLayout = "portrait";
     elements.appShell.style?.removeProperty?.("--narrow-stage-resident-height");
     return "portrait";
@@ -4477,7 +4480,7 @@ function syncNarrowToolLayout() {
 }
 
 function hostNarrowToolSheetUsesOverlay() {
-  if (globalThis.BilikaraAndroidHost?.isPortrait()) return false;
+  if (globalThis.BilikaraHostLayout?.isPortrait()) return false;
   return narrowHostViewport()
     && elements.appShell?.dataset.narrowToolLayout !== "resident";
 }
@@ -4566,7 +4569,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     });
   }
   restoreHostWorkspaceScrollPosition(nextWorkspace);
-  globalThis.BilikaraAndroidHost?.workspaceActivated(nextWorkspace, inputOrigin);
+  globalThis.BilikaraHostLayout?.workspaceActivated(nextWorkspace, inputOrigin);
 
   const trigger = hostWorkspaceButton(nextWorkspace);
   if (inputOrigin === "pointer") {
@@ -4963,7 +4966,7 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
-  if (globalThis.BilikaraAndroidHost?.isPortrait()) {
+  if (globalThis.BilikaraHostLayout?.isPortrait()) {
     const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
     elements.appShell.dataset.stageMode = "portrait";
     elements.appShell.dataset.stageControlsLayout = "inline";
@@ -9474,7 +9477,7 @@ function renderSessionUsers(sessionUsers) {
 
     elements.sessionUserList.appendChild(item);
   });
-  window.BilikaraAndroidHost?.syncSessionUsers();
+  window.BilikaraHostLayout?.syncSessionUsers();
 }
 
 
@@ -9604,7 +9607,7 @@ function syncTopControlPopoverPositions() {
     if (!trigger || !popup) {
       return;
     }
-    if (popup === elements.cachePanel && globalThis.BilikaraAndroidHost?.isPortrait()) return;
+    if (popup === elements.cachePanel && globalThis.BilikaraHostLayout?.isPortrait()) return;
     if (popup === elements.presentationSettingsPanel && popup.closest(".android-display-settings")) return;
     if (popup === elements.cachePanel && popup.offsetWidth > 0) {
       const style = window.getComputedStyle(popup);
@@ -10272,7 +10275,7 @@ function maybeReportManualUpdateCheckOutcome(update) {
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
   if (update.state === "prepared") {
-    globalThis.BilikaraDesktopPlatform?.applyUpdate(update).catch((error) => setAppMessage(error.message, true));
+    globalThis.BilikaraHostUpdates?.applyPrepared?.(update).catch((error) => setAppMessage(error.message, true));
   }
   const cancelButton = elements.updateCancelButton;
   if (cancelButton) cancelButton.hidden = update.cancellable !== true;
@@ -10384,7 +10387,7 @@ function renderBBDownLogin(login) {
     }
   }
 
-  globalThis.BilikaraAndroidHost?.syncAccount?.();
+  globalThis.BilikaraHostLayout?.syncAccount?.();
   if (loggedIn) {
     return;
   }
@@ -10396,7 +10399,7 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
-  if (!force && globalThis.BilikaraAndroidHost?.isPortrait?.()) return;
+  if (!force && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
   const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -10976,7 +10979,7 @@ async function apiPostExactStateCommand(url, payload = {}, options = {}) {
 }
 
 function syncCachePanelVisibility(options = {}) {
-  if (globalThis.BilikaraAndroidHost?.settingsEmbedded()) state.cacheSettingsOpen = true;
+  if (globalThis.BilikaraHostLayout?.settingsEmbedded()) state.cacheSettingsOpen = true;
   const expanded = String(state.cacheSettingsOpen);
   if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
@@ -13917,7 +13920,7 @@ function renderKeyShiftControls(playbackMode) {
       : pending ? t("player.pitchPending") : "";
     pitchStatus.hidden = !pitchStatus.textContent;
   }
-  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
+  globalThis.BilikaraHostLayout?.syncPlayerFieldWidths?.();
 }
 
 async function setLocalPlayerKeyShift(keyShift) {
@@ -14504,7 +14507,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
     elements.avOffsetInput.value = String(offsetMs);
   }
-  globalThis.BilikaraAndroidHost?.syncPlayerFieldWidths?.();
+  globalThis.BilikaraHostLayout?.syncPlayerFieldWidths?.();
 }
 
 function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback) {
@@ -15145,7 +15148,7 @@ function renderPlayer(currentItem, playbackMode) {
     // Android's native timeline pauses before dispatching `seeking`. That
     // temporary pause is not a new user intent: the existing seek lifecycle
     // must retain whether playback should resume when the seek settles.
-    if (globalThis.BilikaraAndroidHost && video.seeking) {
+    if (isAndroidNativePlaybackRuntime() && video.seeking) {
       return;
     }
     if (video.ended && !audio.ended) {
@@ -15278,7 +15281,7 @@ function renderPlayer(currentItem, playbackMode) {
   addMountedPlayerListener(video, "pointerleave", (event) => {
     // Touch pointers leave at finger-up (and when entering a UA seek control),
     // unlike a desktop hover. Removing controls here cancels native scrubbing.
-    if (globalThis.BilikaraAndroidHost && event.pointerType === "touch") return;
+    if (isAndroidNativePlaybackRuntime() && event.pointerType === "touch") return;
     hideMountedPlayerControls();
   });
 
@@ -17833,7 +17836,7 @@ async function generateDiagnosticsMarkdown() {
   const response = await diagnosticResponse("/api/diagnostics/markdown");
   const payload = await response.json();
   return typeof payload?.data?.markdown === "string"
-    ? payload.data.markdown + (globalThis.BilikaraAndroidHost?.diagnosticsMarkdown?.() || "")
+    ? payload.data.markdown + (globalThis.BilikaraHostLayout?.diagnosticsMarkdown?.() || "")
     : "";
 }
 
@@ -17996,7 +17999,7 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
     return false;
   }
   const currentUpdate = appUpdateStatus();
-  if (["downloading", "installing", "restarting"].includes(String(currentUpdate?.state || ""))) {
+  if (isAppUpdateBusy(currentUpdate)) {
     return false;
   }
 
@@ -18012,8 +18015,8 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
   try {
     await apiPost("/api/app/update/check", {
       include_preview: includePreview,
-      native_environment: await globalThis.BilikaraAndroidPlatform?.environment?.().catch(() => ({})),
-    }, { timeoutMs: globalThis.BilikaraAndroidPlatform ? 30_000 : appUpdateCheckTimeoutMs });
+      native_environment: await globalThis.BilikaraHostUpdates?.environment(),
+    }, { timeoutMs: appUpdateCheckTimeoutMs });
     return true;
   } catch (error) {
     if (!automatic) {
@@ -18044,23 +18047,12 @@ async function installAppUpdate(includePreview = false) {
   if (state.updateInstallRequestInFlight || isAppUpdateBusy()) return;
   state.updateInstallRequestInFlight = true;
   renderUpdatePreviewControl();
+  closeConfirm();
   try {
-    const updateStatus = globalThis.BilikaraDesktopPlatform
-      ? await globalThis.BilikaraDesktopPlatform.startUpdate(Boolean(includePreview))
+    const updateStatus = globalThis.BilikaraHostUpdates
+      ? await globalThis.BilikaraHostUpdates.install(Boolean(includePreview))
       : await apiPost("/api/app/update/install", { include_preview: Boolean(includePreview) });
     if (state.data) state.data.app_update = updateStatus;
-    if (updateStatus.android_package && document.documentElement?.dataset?.nativeHost === "true") {
-      closeConfirm();
-      let result = "failed";
-      try {
-        const outcome = await window.BilikaraAndroidPlatform.installUpdate(updateStatus.android_package);
-        result = outcome.result;
-      } finally {
-        const finished = await apiPost("/api/app/update/finish", {operation:updateStatus.operation,result});
-        setAppMessage(finished.message, result === "failed");
-      }
-      return;
-    }
     closeConfirm();
     renderUpdatePreviewControl();
     const stateValue = String(updateStatus?.state || "");
@@ -18087,7 +18079,7 @@ async function checkAppUpdate(event) {
   }
 
   if (!update?.auto_update_supported) {
-    if (globalThis.BilikaraAndroidPlatform) {
+    if (globalThis.BilikaraHostUpdates?.manualRelease === false) {
       setAppMessage(update.message || "当前测试包暂不支持正式签名包覆盖更新。");
       return;
     }
@@ -19896,7 +19888,7 @@ elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
 elements.playerFullscreenButton?.addEventListener("click", async (event) => {
   if (
     isPlayerPanelFullscreen()
-    && !globalThis.BilikaraAndroidHost
+    && !isAndroidNativePlaybackRuntime()
     && playerFullscreenActivationUsesTouch(event)
     && !state.playerFullscreenRemotePinned
   ) {
@@ -19922,7 +19914,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
   if (!event.target.closest("video")) {
     return;
   }
-  if (globalThis.BilikaraAndroidHost) {
+  if (isAndroidNativePlaybackRuntime()) {
     // A tap reveals the native controls; it must not enqueue the desktop
     // playback toggle while the user is trying to grab the seekbar. Leave
     // default actions intact so native play/seek controls still work.
@@ -19955,7 +19947,7 @@ elements.playerFrame?.addEventListener("dblclick", (event) => {
   if (event.target.closest("button, input, select, textarea, a")) {
     return;
   }
-  if (globalThis.BilikaraAndroidHost) {
+  if (isAndroidNativePlaybackRuntime()) {
     if (!event.target.closest("video")) return;
     event.preventDefault();
     clearPlayerFrameClickTimer();
@@ -21669,15 +21661,15 @@ async function startPolling() {
   initSearchDetailController();
   await initializeLocalPresentation();
   try {
-    await reportMediaCapabilities();
-  } catch {
-    // Playback capability reporting should not block the host UI from loading.
-  }
-  try {
     await fetchState();
   } catch (error) {
     if (shouldReportStateFetchError(error)) {
       setAppMessage(error.message, true);
+    }
+  }
+  if (!state.data?.session_flags?.startup_choice_pending) {
+    try { await reportMediaCapabilities(); } catch {
+      // Capability reporting must not block the Host UI; the Rust limits remain.
     }
   }
   await restartHostPlaybackAfterBootstrap();
@@ -21813,7 +21805,7 @@ document.getElementById("update-cancel-button")?.addEventListener("click", async
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
-    const result = await globalThis.BilikaraDesktopPlatform.cancelUpdate();
+    const result = await globalThis.BilikaraHostUpdates.cancel();
     if (state.data) state.data.app_update = result;
     renderUpdatePreviewControl();
     setAppMessage(result.message);

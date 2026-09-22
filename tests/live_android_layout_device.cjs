@@ -101,7 +101,7 @@ async function connect() {
       await page.waitForFunction(({field,value})=>document.querySelector(`button[data-android-${field}-mode="${value}"]`).getAttribute("aria-pressed")==="true",{field,value});
     };
     await choose("orientation","landscape");
-    await page.waitForFunction(()=>innerWidth>innerHeight && document.documentElement.dataset.androidLayout==="landscape");
+    await page.waitForFunction(()=>innerWidth>innerHeight && document.documentElement.dataset.hostLayout==="landscape");
     await verifySame();
     assert.equal(await page.locator("#presentation-settings").evaluate(el=>!!el.closest(".topbar")),true);
     await settings();await choose("layout","phone");
@@ -115,11 +115,11 @@ async function connect() {
     adb("shell","am","start","-W","-n",`${app}/com.bilikara.app.MainActivity`);
     phase="restart";
     ({browser,page}=await connect());page.on("pageerror",pageError);
-    await page.waitForFunction(()=>window.BilikaraAndroidLayout?.client && document.documentElement.dataset.androidLayoutMode==="phone");
+    await page.waitForFunction(()=>window.BilikaraAndroidLayout?.client && document.documentElement.dataset.hostLayoutMode==="phone");
     assert.deepEqual(await page.evaluate(()=>BilikaraAndroidLayout.client.load()),persisted);
     assert.equal(await page.evaluate(()=>innerWidth>innerHeight),true);
     await settings();await choose("layout","auto");await settings();await choose("orientation","portrait");
-    await page.waitForFunction(()=>innerWidth<innerHeight && document.documentElement.dataset.androidLayout==="portrait");
+    await page.waitForFunction(()=>innerWidth<innerHeight && document.documentElement.dataset.hostLayout==="portrait");
     await page.locator('[data-android-page="playback"]').click();
     phase="fullscreen-playback";
     await installMedia(browser.contexts()[0],page);

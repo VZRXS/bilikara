@@ -32,7 +32,7 @@ const [exe, directory, videoPath, audioPath, executablePath] = process.argv.slic
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(bootstrap);
-    await page.waitForFunction(() => document.querySelector("video")?.currentTime > 0.3 && window.BilikaraAndroidHost);
+    await page.waitForFunction(() => document.querySelector("video")?.currentTime > 0.3 && window.BilikaraHostLayout);
     assert.equal(await page.evaluate(() => isAndroidNativePlaybackRuntime() && !!window.BilikaraAndroidPlayback), true,
       "The fixture must exercise Android playback, not merely a narrow desktop window");
     await page.evaluate(() => {

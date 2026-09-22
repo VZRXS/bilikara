@@ -37,7 +37,9 @@ class AndroidPortraitTest(unittest.TestCase):
         host = (ROOT / "static/index.html").read_text(encoding="utf-8")
         remote = (ROOT / "static/remote.html").read_text(encoding="utf-8")
         self.assertIn('/android-host.js', host)
-        self.assertIn('/android-host.css', host)
+        self.assertIn('/host-layout.css', host)
+        self.assertIn('/host-layout.js', host)
+        self.assertIn('/native-session.js', host)
         self.assertNotIn('/android-host.js', remote)
         for page in ("playback", "queue", "request", "users", "my"):
             self.assertEqual(host.count(f'data-android-page="{page}"'), 1)

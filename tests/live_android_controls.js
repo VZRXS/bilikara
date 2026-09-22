@@ -39,7 +39,7 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(bootstrap);
-    await page.waitForFunction(() => window.BilikaraAndroidHost?.isPortrait() && state.data?.current_item?.cache_status === "ready");
+    await page.waitForFunction(() => window.BilikaraHostLayout?.isPortrait() && state.data?.current_item?.cache_status === "ready");
     const navigate = async name => {
       await page.locator(`#android-host-dock [data-android-page="${name}"]`).click();
       // The app correctly remembers History within this dock page. Each queue

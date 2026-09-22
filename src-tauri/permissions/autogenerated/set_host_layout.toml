@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-host-layout"
+description = "Enables the set_host_layout command without any pre-configured scope."
+commands.allow = ["set_host_layout"]
+
+[[permission]]
+identifier = "deny-set-host-layout"
+description = "Denies the set_host_layout command without any pre-configured scope."
+commands.deny = ["set_host_layout"]
