@@ -38,17 +38,17 @@ rules. The first AppState cutover is now established:
 - Python `PlaylistStore` is now a strict AppState/FFI and persistence adapter.
   Its projection is read-only and all persisted semantic state is derived from
   Rust snapshots.
-- The Python HTTP/SSE Host, external-tool orchestration, filesystem I/O, and
-  compatibility payload adapter remain packaged. Python is not an alternate
-  application core.
+- The desktop product launches the native Rust HTTP/SSE Host. Python source
+  remains for compatibility/build tests and the legacy Host, but is not shipped
+  in native desktop bundles or used as an alternate application core.
 - Rust AppState capability and initialization are startup requirements. There
   is no whole-application Python Core fallback, no startup selection between
   Rust and Python state authorities, and no per-operation stateful fallback.
-- The D0 compiled-only desktop build/launch contract remains separate work;
-  this cutover does not remove Python or rewrite the release launch contract.
-  Preview 2 targets the default Rust Host and removal of Python production
-  dependencies; native desktop distribution and default launch follow the
-  shared-service convergence.
+- The D0 compiled-only desktop launch/distribution contract uses the existing
+  native Host by default and excludes Python runtime payloads. Preview 2 targets
+  this architecture; feature parity and release acceptance remain separate.
+  See [native desktop launch and bundles](native-desktop.md) for the installed
+  layout, build requirements, data roots and explicit legacy import.
 - The current application-service slice in `rust-runtime` owns the Bilibili
   QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
   I/O, Rust Native cache queues/retries/cancellation/validated publication,
@@ -58,10 +58,9 @@ rules. The first AppState cutover is now established:
   Python still supplies configuration facts, commits external-worker cache
   events through AppState, starts explicit external-tool workers, and adapts
   the temporary C ABI.
-- Continue converging application services behind the Rust authority. The
-  default product retains Python HTTP/SSE transport. The explicitly authorized
-  desktop Step 1 development opt-in below reuses the merged native Rust Host;
-  it does not switch the default backend or finish distribution retirement.
+- Continue converging application services behind the Rust authority. Desktop
+  launch reuses the native Host and existing Tauri process boundary; it does not
+  add another AppState or expand the remaining feature-parity scope.
 - Do not permit split-brain state or reintroduce a Python state authority.
 - Reduce repeated JSON FFI transport and duplicate Python recomputation in
   normal Rust mode.
@@ -167,28 +166,30 @@ later releases.
 The desktop preview keeps Tauri's backend-process boundary and runs
 `bilikara-desktop-host` with one authoritative Rust AppState. It reuses the
 native HTTP/SSE/media service, login, catalog, cache, player and export services.
-The default launcher and release distribution still use Python; opting into
-this preview does not remove Python from the product or complete desktop parity.
+The default launcher and native distribution now use this Host without Python.
+This launch contract does not imply complete desktop feature parity.
 
 ### Launch and storage
 
 ```sh
-cargo build --manifest-path rust-runtime/Cargo.toml --locked --features native-host --bin bilikara-desktop-host
-BILIKARA_DESKTOP_RUST_PREVIEW_DIR=/absolute/path/to/new-preview cargo run --manifest-path src-tauri/Cargo.toml --locked
+npm ci
+npm run dev
 ```
 
-Use an empty/new directory or a valid marked preview directory. An unmarked
-nonempty directory is refused without converting or deleting its contents.
-Credentials, checkpoints, preferences, local library, media and export scratch
-remain inside this isolated root. Production credentials, records and window
-geometry are not automatically imported. Remove the preview environment variable
-to return to the default launcher. The preview binary is not in default bundles.
+The build hook stages the matching native backend and resources beside the
+shell. Installed applications resolve those resources from their bundle, never
+from a checkout or working directory. `BILIKARA_NATIVE_DATA_DIR` selects an
+absolute isolated native root; `BILIKARA_DESKTOP_RUST_PREVIEW_DIR` remains an
+alias. Without an override, platform application-data conventions apply.
+Existing native markers/checkpoints are reused. Unmarked nonempty or malformed
+roots fail without overwrite. See [the launch guide](native-desktop.md) for
+product builds, data locations and non-destructive import instructions.
 
 The parent receives a same-origin bootstrap capability over its private child
 pipe. Tauri retains the Host cookie for restricted native export transport;
 JavaScript cannot supply that cookie. Shutdown cancels work, retires the listener,
 joins workers and reaps the backend. Native HTTP uses Content-Length framing;
-the default Python transport retains its existing write-half-close convention.
+the legacy Python transport retains its existing write-half-close convention.
 
 ### Import existing desktop records
 
@@ -197,7 +198,7 @@ exist, and source/destination cannot overlap. Source files and path components
 cannot be symlinks.
 
 ```sh
-BILIKARA_DESKTOP_RUST_PREVIEW_DIR=/absolute/new-native-destination \
+BILIKARA_NATIVE_DATA_DIR=/absolute/new-native-destination \
 BILIKARA_DESKTOP_RUST_IMPORT_FROM=/absolute/legacy-app-home \
 ./src-tauri/target/debug/bilikara
 ```
@@ -252,17 +253,18 @@ HEVC support does not add a backend codec capability. Effective quality/Hi-Res
 changes replace jobs through the existing scheduler. Cache-window changes use
 existing cancellation, reader leases and artifact collection.
 
-Frozen default bundles exclude and deny FFmpeg/ffprobe programs while retaining
-in-process libav, its companion and dependency/license assets. BBDown, yt-dlp and
-aria2c remain permitted in the default product. `BILIKARA_DISABLE_MEDIA_CLI=1`
+Native desktop bundles exclude FFmpeg/ffprobe programs while retaining
+in-process libav, its companion and dependency/license assets. BBDown and
+DownKyi/aria2c remain explicit supported sources; yt-dlp is retained only in the
+legacy Python Host. `BILIKARA_DISABLE_MEDIA_CLI=1`
 exercises that bundle policy in source launches. Unsupported media operations
 fail explicitly; missing companion support does not authorize installing or
 falling back to a media CLI. Corruption remains distinct from unsupported media.
 
 Update checking is covered below. Update installation, remaining
-maintenance/rating/catalog-publication features, external-tool provisioning,
-full desktop lifecycle parity, default backend cutover and Python packaging
-retirement remain separate work. Physical
+maintenance/rating/catalog-publication features and full desktop lifecycle
+parity remain separate work. Native default launch and Python-free distribution
+use the contract above; this does not establish those feature completions. Physical
 multi-display, native dialogs and platform-specific process behavior require
 their own Windows/macOS/device validation.
 
@@ -276,7 +278,7 @@ locations. It neither searches PATH nor downloads/installs a binary. A bounded
 offline help check verifies the version and required arguments. Configure a
 trusted executable and restart to change availability. Public requests cannot
 supply executable paths or commands. DownKyi/aria2c uses the shared executor
-described below; yt-dlp remains a default Python Host source.
+described below; yt-dlp remains a legacy Python Host source.
 
 Each accepted attempt captures its source, effective preferences and P02
 credentials. BBDown uses typed arguments, owned staging, separate tracks and

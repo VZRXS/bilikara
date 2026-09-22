@@ -1,8 +1,10 @@
-//! Desktop development entry: one Runtime/AppState, PR109 transport, P02/P03 services.
+//! Desktop product entry: one Runtime/AppState, PR109 transport, P02/P03 services.
 //! Legacy desktop data is read only through an explicit one-time import.
 use super::*;
 use crate::{AppStateRequest, AppStateSeed, execute_app_state, initialize_native_host};
 use std::io::Write;
+#[path = "desktop_paths.rs"]
+mod paths;
 
 #[cfg(unix)]
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -17,7 +19,7 @@ pub(super) fn unavailable() -> ApiError {
     ApiError::new(
         501,
         "desktop_preview_unavailable",
-        "Desktop Rust preview: this action is unavailable; use the default desktop product for external tools, updates and maintenance",
+        "This action is not yet available in the native desktop product",
     )
 }
 
@@ -26,7 +28,7 @@ pub(super) fn unavailable() -> ApiError {
 /// concurrent authorities; its checkpoint validation remains authoritative.
 pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
-        return Err("--data-dir must be an absolute isolated development directory".into());
+        return Err("--data-dir must be an absolute native data directory".into());
     }
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
@@ -76,6 +78,7 @@ pub fn asset_source(root: &Path) -> Result<AssetSource, String> {
         "remote.html",
         "remote.js",
         "fonts/SourceHanSans-VF.ttf",
+        "vendor/signalsmith-stretch/SignalsmithStretch.js",
     ] {
         if !root.join(file).is_file() {
             return Err(format!("Missing shared desktop asset: {file}"));
@@ -97,6 +100,7 @@ pub fn asset_source(root: &Path) -> Result<AssetSource, String> {
             "webp" => "image/webp",
             "woff2" => "font/woff2",
             "ttf" => "font/ttf",
+            "wasm" => "application/wasm",
             _ => "application/octet-stream",
         };
         Some(Asset {
@@ -150,7 +154,7 @@ impl NativeHost {
                     font_path: desktop_font_path()?,
                     title: "bilikara 歌单".into(),
                     page_size: spec["pageSize"].as_u64().ok_or("Missing page size")? as usize,
-                    app_version: env!("CARGO_PKG_VERSION").into(),
+                    app_version: update_facts().version,
                 })
             }
             .map_err(|e| e.message)?;
@@ -270,23 +274,31 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let mut args = arguments;
     let mut directory = None;
     let mut assets = None;
-    let mut import_from = None;
+    let mut import_from = std::env::var_os("BILIKARA_DESKTOP_RUST_IMPORT_FROM")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--data-dir" => directory = args.next().map(PathBuf::from),
+            "--data-dir" => directory = Some(PathBuf::from(args.next().ok_or("--data-dir requires an absolute native directory")?)),
             "--import-from" => import_from = Some(PathBuf::from(args.next().ok_or("--import-from requires an explicit legacy app-home")?)),
-            "--static-dir" => assets = args.next().map(PathBuf::from),
+            "--static-dir" => assets = Some(PathBuf::from(args.next().ok_or("--static-dir requires an explicit asset directory")?)),
             "--no-browser" | "--headless" => {},
             "--port" if args.next().as_deref() == Some("0") => {},
-            _ => return Err("Usage: bilikara-desktop-host --data-dir ABSOLUTE_EMPTY_OR_PREVIEW_DIR --static-dir SHARED_STATIC_DIR [--import-from ABSOLUTE_LEGACY_APP_HOME] [--port 0 --headless --no-browser]".into()),
+            _ => return Err("Usage: bilikara-desktop-host [--data-dir ABSOLUTE_NATIVE_DIR] [--import-from ABSOLUTE_LEGACY_APP_HOME] [--static-dir ABSOLUTE_DEVELOPMENT_STATIC_DIR] [--port 0 --headless --no-browser]".into()),
         }
     }
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let resources = paths::resource_root(&executable)?;
     let assets = assets
-        .ok_or("Explicit --static-dir is required")?
+        .map(Ok)
+        .unwrap_or_else(|| paths::package_assets(&resources))?
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let source = asset_source(&assets)?;
-    let directory = directory.ok_or("Explicit --data-dir is required")?;
+    paths::configure_media(assets.parent().ok_or("Missing resource root")?)?;
+    let directory = paths::data_root(directory, &executable, PLATFORM, |key| {
+        std::env::var_os(key)
+    })?;
     if let Some(source) = import_from {
         super::desktop_import::restore(
             &source,

@@ -11,7 +11,7 @@ from pathlib import Path
 EMBEDDED_BACKEND_RELATIVE_PATH = Path(
     "Contents/Frameworks/bilikara-backend.app"
 )
-BACKEND_EXECUTABLE_RELATIVE_PATH = Path("Contents/MacOS/bilikara")
+BACKEND_EXECUTABLE_RELATIVE_PATH = Path("Contents/MacOS/bilikara-desktop-host")
 DESKTOP_EXECUTABLE_RELATIVE_PATH = Path("Contents/MacOS/bilikara")
 
 
@@ -107,7 +107,7 @@ def embed_backend(backend_app: Path, desktop_app: Path) -> Path:
     if _architectures(embedded_executable) != backend_architectures:
         raise RuntimeError("Embedded backend architecture changed while copying the bundle")
 
-    # The PyInstaller bundle has already signed every nested Mach-O object. The
+    # The native backend bundle has already signed every nested Mach-O object. The
     # copy preserves those signatures; re-sign the nested app envelope, then the
     # Desktop envelope, and make no further bundle changes after this point.
     _resign_app(destination)
@@ -119,7 +119,7 @@ def embed_backend(backend_app: Path, desktop_app: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Embed and sign the frozen backend inside a macOS Tauri app"
+        description="Embed and sign the native backend inside a macOS Tauri app"
     )
     parser.add_argument("backend_app", type=Path)
     parser.add_argument("desktop_app", type=Path)

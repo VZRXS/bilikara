@@ -199,16 +199,6 @@ jobs:
             ./src-tauri -> target
           shared-key: ci-bundle
 
-      - name: Build Rust Backend Library
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd rust
-          cargo build --release --locked
-          cd ../rust-runtime
-          cargo build --release --locked
-          cd ..
-
       - name: Setup native MSVC environment
         if: runner.os == 'Windows'
         shell: pwsh
@@ -269,7 +259,7 @@ jobs:
         shell: pwsh
         run: |
           $files = Get-ChildItem -Path dist/bilikara -Recurse -File
-          foreach ($library in @('bilikara_rust.dll', 'bilikara_runtime.dll')) {
+          foreach ($library in @('bilikara-desktop-host.exe', 'native-desktop.json')) {
             if (-not ($files | Where-Object Name -eq $library)) {
               throw "Packaged Rust library was not found: $library"
             }
@@ -292,8 +282,8 @@ jobs:
       - name: Verify native backend and bundled tools on macOS
         if: runner.os == 'macOS'
         run: |
-          test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_rust.dylib
-          test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_runtime.dylib
+          test -x dist/bilikara.app/Contents/MacOS/bilikara-desktop-host
+          test -f dist/bilikara.app/Contents/Resources/native-desktop.json
           bbdown_vendor="$(find dist/bilikara.app -type f -name BBDown -path '*/vendor/*' -print -quit)"
           test -n "$bbdown_vendor"
           "$bbdown_vendor" --help
@@ -309,14 +299,13 @@ jobs:
         run: |
           npm ci
           npm exec -- tauri icon static/pic/icon.png
-          npm run build
+          npm exec -- tauri build --no-bundle -- --locked
 
       - name: Build Tauri App on macOS
         if: runner.os == 'macOS'
         run: |
           npm ci
           npm exec -- tauri icon static/pic/icon.png
-          npm run build:rust
           npm exec -- tauri build --bundles app -- --locked
 
       - name: Inject Tauri into Windows Bundle
@@ -345,7 +334,7 @@ jobs:
           python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara.app", "隐私与安全性", "仍要打开"))'
 
           echo "=== Verifying staged bilikara.app ==="
-          test -x dist_release/bilikara.app/Contents/MacOS/bilikara
+          test -x dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
           plutil -lint dist_release/bilikara.app/Contents/Info.plist
           codesign --verify --deep --strict --verbose=4 dist_release/bilikara.app
           codesign -dv --verbose=4 dist_release/bilikara.app
@@ -353,7 +342,7 @@ jobs:
           echo "=== Verifying staged Bilikara-Desktop.app ==="
           test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
           embedded_backend="dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
-          test -x "$embedded_backend/Contents/MacOS/bilikara"
+          test -x "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
           plutil -lint dist_release/Bilikara-Desktop.app/Contents/Info.plist
           plutil -lint "$embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$embedded_backend"
@@ -361,10 +350,10 @@ jobs:
           codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
 
           echo "=== Architecture checks ==="
-          file dist_release/bilikara.app/Contents/MacOS/bilikara
+          file dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
           file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
-          file "$embedded_backend/Contents/MacOS/bilikara"
-          test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara")"
+          file "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
+          test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara-desktop-host")"
 
           echo "=== Locked aria2c metadata-only checks ==="
           aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
@@ -391,12 +380,12 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          foreach ($required in @('bilikara.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll')) {
+          foreach ($required in @('bilikara-desktop-host.exe', 'bilikara-desktop.exe', 'vendor/bilikara_media_libav.dll', 'native-desktop.json')) {
             if (-not (Test-Path (Join-Path $package $required))) {
               throw "Extracted bundle is missing $required"
             }
           }
-          foreach ($buildOnly in @('preview', 'libav-smoke.ps1', 'libav-smoke-result.json', '_internal/vendor/bilikara_media_libav_test.dll')) {
+          foreach ($buildOnly in @('preview', 'libav-smoke.ps1', 'libav-smoke-result.json', 'vendor/bilikara_media_libav_test.dll')) {
             if (Test-Path (Join-Path $package $buildOnly)) {
               throw "Build-only validation payload leaked into archive: $buildOnly"
             }
@@ -419,7 +408,7 @@ jobs:
           test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
 
           echo "=== Verifying extracted bilikara.app ==="
-          test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
+          test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
           plutil -lint test_extract/dist_release/bilikara.app/Contents/Info.plist
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/bilikara.app
           codesign -dv --verbose=4 test_extract/dist_release/bilikara.app
@@ -427,13 +416,13 @@ jobs:
           echo "=== Verifying extracted Bilikara-Desktop.app ==="
           test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
           extracted_embedded_backend="test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
-          test -x "$extracted_embedded_backend/Contents/MacOS/bilikara"
+          test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host"
           plutil -lint test_extract/dist_release/Bilikara-Desktop.app/Contents/Info.plist
           plutil -lint "$extracted_embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$extracted_embedded_backend"
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
-          test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara")"
+          test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host")"
 
           extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
           test -f "$extracted_aria2_metadata"
@@ -446,18 +435,18 @@ jobs:
           fi
 
 
-      - name: Verify extracted no-media-CLI experiment on Windows
+      - name: Verify extracted native desktop and no-media-CLI layout on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/bilikara.exe'
-          python scripts/check_no_media_cli_bundle.py "$backend"
+          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/bilikara-desktop-host.exe'
+          python scripts/check_native_desktop_bundle.py "$backend"
 
-      - name: Verify extracted no-media-CLI experiment on macOS
+      - name: Verify extracted native desktop and no-media-CLI layout on macOS
         if: runner.os == 'macOS'
         run: |
-          python scripts/check_no_media_cli_bundle.py test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
-          python scripts/check_no_media_cli_bundle.py test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara
+          python scripts/check_native_desktop_bundle.py test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
+          python scripts/check_native_desktop_bundle.py test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
 
       - name: Upload native bundle
         uses: actions/upload-artifact@v7

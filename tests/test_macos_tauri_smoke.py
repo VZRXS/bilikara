@@ -228,7 +228,7 @@ class MacOSTauriSmokeTest(unittest.TestCase):
             self.fail(f"Tauri executable is not executable: {executable}")
         source_app = executable.parent.parent.parent
         embedded_relative = Path(
-            "Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara"
+            "Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host"
         )
         source_embedded_backend = source_app / embedded_relative
         if not source_embedded_backend.is_file():

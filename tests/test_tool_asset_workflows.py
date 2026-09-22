@@ -181,7 +181,7 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
         for script in ("build-windows.sh", "build-posix.sh"):
             self.assertIn("--disable-programs", (ROOT / "media-libav" / script).read_text())
-        self.assertIn("check_no_media_cli_bundle.py", self.bundle_workflow)
+        self.assertIn("check_native_desktop_bundle.py", self.bundle_workflow)
         self.assertNotIn("ilammy/msvc-dev-cmd", self.bundle_workflow)
         self.assertNotIn("for ($attempt", self.bundle_workflow)
         self.assertNotIn("Start-Sleep", self.bundle_workflow)
@@ -203,8 +203,8 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertNotIn("Running extracted portable FFmpeg checks", self.bundle_workflow)
         for tool in ("BBDown", "bilikara_media_libav.dll"):
             self.assertIn(tool, self.bundle_workflow)
-        self.assertIn("bilikara_runtime.dll", self.bundle_workflow)
-        self.assertIn("libbilikara_runtime.dylib", self.bundle_workflow)
+        self.assertIn("bilikara-desktop-host.exe", self.bundle_workflow)
+        self.assertIn("native-desktop.json", self.bundle_workflow)
 
     def test_macos_desktop_embedding_is_part_of_final_signing_and_smoke_gate(self):
         self.assertIn("scripts/embed_macos_backend.py", self.bundle_workflow)

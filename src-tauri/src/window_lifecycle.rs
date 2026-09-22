@@ -662,7 +662,9 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         geometry_diagnostic("hide_before_restore", "error_ignored");
     }
 
-    let path = if let Some(root) = std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR") {
+    let path = if let Some(root) = std::env::var_os("BILIKARA_NATIVE_DATA_DIR")
+        .or_else(|| std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR"))
+    {
         let root = PathBuf::from(root);
         // A rejected/uninitialized preview must not touch a supplied normal directory.
         (fs::read(root.join(".bilikara-desktop-rust-preview"))

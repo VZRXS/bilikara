@@ -16,7 +16,7 @@ TEST_COMPANION = "bilikara_media_libav_test.dll"
 
 
 def pe_info(path: Path) -> dict:
-    import pefile  # PyInstaller's Windows packaging dependency; build-time only.
+    import pefile  # Explicit Windows packaging dependency; build-time only.
     with pefile.PE(str(path), fast_load=True) as pe:
         expected = 0xAA64 if TARGET.startswith("aarch64") else 0x8664
         if pe.FILE_HEADER.Machine != expected:
@@ -91,12 +91,12 @@ def collect(prefix: Path, redist: Path, system: Path) -> dict:
     return data
 
 
-def stage(prefix: Path, bundle: Path) -> None:
-    """Post-PyInstaller staging avoids its implicit DLL search/collection."""
-    vendor = bundle / "_internal/vendor"
+def stage(prefix: Path, bundle: Path, *, native: bool = False) -> None:
+    """Stage the explicit dependency closure without implicit DLL search."""
+    vendor = bundle / ("vendor" if native else "_internal/vendor")
     vendor.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((prefix / "bin" / MANIFEST).read_text(encoding="utf-8"))
-    for name in manifest["pe"]:
+    for name in (manifest["runtime_files"] if native else manifest["pe"]):
         if name == TEST_COMPANION:
             continue
         shutil.copy2(prefix / "bin" / name, vendor / name)
@@ -107,10 +107,12 @@ def stage(prefix: Path, bundle: Path) -> None:
     }
     (vendor / MANIFEST).write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(prefix / "licenses", bundle / "THIRD_PARTY_LICENSES/libav-preview", dirs_exist_ok=True)
+    (bundle / "THIRD_PARTY_SOURCES").mkdir(exist_ok=True)
     for source in (prefix / "source").glob("*.asc"):
         shutil.copy2(source, bundle / "THIRD_PARTY_SOURCES" / source.name)
-    for name in ("bilikara_rust.dll", "bilikara_runtime.dll"):
-        mandatory = pe_info(bundle / "_internal/rust" / name)
+    executables = [bundle / "bilikara-desktop-host.exe"] if native else [bundle / "_internal/rust" / name for name in ("bilikara_rust.dll", "bilikara_runtime.dll")]
+    for executable in executables:
+        mandatory = pe_info(executable)
         if any(n.startswith(("bilikara_media_libav", "avformat-", "avcodec-", "avutil-")) for n in mandatory["imports"]):
             raise RuntimeError("Mandatory Runtime acquired a libav import")
     # Ship rebuild sources, not historical Linux acceptance notes containing

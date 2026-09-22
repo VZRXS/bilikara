@@ -22,7 +22,7 @@ class MacFinalizationTest(unittest.TestCase):
         self.info_plist = self.contents / "Info.plist"
         self.info_plist.write_text("<plist></plist>", encoding="utf-8")
 
-        self.executable = self.macos / "bilikara"
+        self.executable = self.macos / "bilikara-desktop-host"
         self.executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         self.executable.chmod(0o755)
 

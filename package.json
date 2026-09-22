@@ -12,8 +12,9 @@
     "android:dev": "tauri android dev",
     "android:build:debug": "tauri android build --debug --apk --target aarch64 --ci",
     "dev": "tauri dev",
-    "dev:rust": "npm run build:rust && tauri dev",
-    "build": "npm run build:rust && tauri build -- --locked"
+    "dev:rust": "tauri dev",
+    "build": "python build_bundle.py --desktop",
+    "prepare:desktop": "python build_bundle.py --dev"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"

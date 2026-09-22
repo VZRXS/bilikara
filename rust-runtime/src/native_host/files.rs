@@ -55,11 +55,6 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
         let html = String::from_utf8(asset.bytes).map_err(|_| ApiError::invalid("页面编码无效"))?;
         // This marker comes from the native server, not from query parameters.
         // Reuse the shared UI and signaling; no desktop IPC is exposed.
-        let html = if context.desktop {
-            html.replace("<p class=\"native-alpha-notice\">", "<p class=\"desktop-rust-preview-notice\">Desktop Rust preview · Isolated development data · Native downloader only.</p><p class=\"native-alpha-notice\">")
-        } else {
-            html
-        };
         asset.bytes = html
             .replacen(
                 "<html ",

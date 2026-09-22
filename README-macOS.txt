@@ -7,10 +7,13 @@ bilikara for macOS
 
 Bilikara-Desktop.app
 
-压缩包中的 bilikara.app 是后端／浏览器模式入口，通常不需要单独运行。
-为减小体积，它是指向 Bilikara-Desktop.app 内嵌后端的相对符号链接。
+压缩包中的 bilikara.app 是指向 Bilikara-Desktop.app 内嵌原生后端的相对符号链接，
+用于命令行诊断及显式旧数据导入，不是第二个桌面启动入口。
 请完整解压后使用；安装桌面版时只需移动 Bilikara-Desktop.app。
-若需要单独保留浏览器模式，请复制桌面应用内 Contents/Frameworks/bilikara-backend.app 的实际应用，而非只移动外层链接。
+后端命令位于 Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host。
+程序不需要 Python。原生数据保存在 ~/Library/Application Support/bilikara/native。
+若检测到旧数据，启动提示会要求显式导入到新的独立目录；不会覆盖旧数据。
+导入及构建命令见 docs/native-desktop.md。
 
 
 【首次启动被 macOS 阻止时】

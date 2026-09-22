@@ -553,7 +553,7 @@ class RealAria2Test(DownKyiFixture, unittest.TestCase):
         self.assertIn("403", self.store.get_item(item.id).cache_message)
         self.assertFalse(list(self.cache_dir.rglob("aria2.cookies")))
 
-@unittest.skipUnless(os.environ.get("BILIKARA_TEST_NATIVE_HOST"), "set the compiled native desktop Host binary")
+@unittest.skipUnless(os.environ.get("BILIKARA_TEST_NATIVE_HOST") or os.environ.get("BILIKARA_TEST_NATIVE_PACKAGE"), "set the compiled native desktop Host binary or package")
 class NativeDesktopDownKyiTest(unittest.TestCase):
     def test_native_desktop_http_uses_shared_executor_and_keeps_source_and_media(self):
         import http.cookiejar
@@ -585,9 +585,12 @@ class NativeDesktopDownKyiTest(unittest.TestCase):
                        BILIKARA_ARIA2_FIXTURE_ROOT=str(control),
                        BILIKARA_ARIA2_MEDIA=str(Path(__file__).parent / "fixtures" / "bbdown"))
             log = stack.enter_context((root / "host.log").open("wb"))
-            process = subprocess.Popen([os.environ["BILIKARA_TEST_NATIVE_HOST"], "--data-dir", str(home),
-                "--static-dir", str(Path(__file__).parents[1] / "static"), "--port", "0", "--headless", "--no-browser"],
-                env=env, stdout=subprocess.PIPE, stderr=log)
+            packaged = os.environ.get("BILIKARA_TEST_NATIVE_PACKAGE")
+            command = [packaged or os.environ["BILIKARA_TEST_NATIVE_HOST"], "--data-dir", str(home)]
+            if not packaged:
+                command.extend(["--static-dir", str(Path(__file__).parents[1] / "static")])
+            process = subprocess.Popen([*command, "--port", "0", "--headless", "--no-browser"],
+                cwd=root, env=env, stdout=subprocess.PIPE, stderr=log)
             try:
                 self.assertTrue(select.select([process.stdout], [], [], 30)[0], "native Host startup timeout")
                 line = process.stdout.readline()

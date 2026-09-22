@@ -4,9 +4,8 @@
   "version": "0.8.0",
   "identifier": "com.bilikara.app",
   "build": {
-    "beforeDevCommand": "",
+    "beforeDevCommand": "python build_bundle.py --dev",
     "beforeBuildCommand": "",
-    "devUrl": "http://127.0.0.1:8080",
     "frontendDist": "../static"
   },
   "app": {

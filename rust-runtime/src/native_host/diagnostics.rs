@@ -74,11 +74,20 @@ pub(super) fn markdown(
             "artifact_set_id":item.artifact_set_id})
         })
         .collect::<Vec<_>>();
+    let mut system = environment(body, now());
+    if context.desktop {
+        let version = desktop::update_facts().version;
+        system["app_version"] = json!(if version.is_empty() {
+            "dev".to_owned()
+        } else {
+            version
+        });
+    }
     let request = DiagnosticRequest {
         app_home: context.directory.clone(),
         log_dir: context.directory.join("logs"),
         config_files: Vec::new(),
-        system: environment(body, now()),
+        system,
         tools_and_tasks: json!({"tools":{"rust_native":{"installed":true,"version":env!("CARGO_PKG_VERSION"),"state":"ready","message":"In-process media downloader and normalizer"}}}),
         cache_policy,
         runtime_state: json!({"revision":snapshot.revision,"playback_generation":snapshot.playback_generation,"items":items,"diagnostics":events}),

@@ -106,69 +106,27 @@ enum BackendStdoutLine {
 }
 
 fn resolve_backend_command() -> Result<BackendCommandResolution, PackagedBackendMissing> {
-    if let Some(directory) = std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR") {
-        return resolve_rust_preview(Path::new(&directory));
-    }
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let unavailable = || PackagedBackendMissing {
+        command_path: PathBuf::new(),
+        candidate_type: "current-executable-unavailable",
+        candidate_exists: false,
+        candidate_executable: false,
+    };
+    let current_exe = std::env::current_exe().map_err(|_| unavailable())?;
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
-    let current_dir = current_exe
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let current_dir = current_exe.parent().ok_or_else(unavailable)?;
     let packaged_macos =
         cfg!(target_os = "macos") && platform::is_macos_app_bundle_executable(&current_exe);
     resolve_backend_command_from(&current_exe, current_dir, packaged_macos)
 }
 
-// A single development opt-in. Packaged/default resolution is unchanged.
-fn resolve_rust_preview(
-    directory: &Path,
-) -> Result<BackendCommandResolution, PackagedBackendMissing> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repository root");
-    let executable = root
-        .join("rust-runtime/target/debug")
-        .join(if cfg!(windows) {
-            "bilikara-desktop-host.exe"
-        } else {
-            "bilikara-desktop-host"
-        });
-    if !directory.is_absolute() || !path_has_executable_bit(&executable) {
-        return Err(PackagedBackendMissing {
-            command_path: executable.clone(),
-            candidate_type: "desktop-rust-preview-requires-absolute-data-dir-and-built-binary",
-            candidate_exists: executable.is_file(),
-            candidate_executable: path_has_executable_bit(&executable),
-        });
-    }
-    let mut args = vec![
-        "--data-dir".into(),
-        directory.to_string_lossy().into_owned(),
-        "--static-dir".into(),
-        root.join("static").to_string_lossy().into_owned(),
-    ];
-    if let Some(source) = std::env::var_os("BILIKARA_DESKTOP_RUST_IMPORT_FROM") {
-        args.extend([
-            "--import-from".into(),
-            source.to_string_lossy().into_owned(),
-        ]);
-    }
-    Ok(BackendCommandResolution {
-        command: executable.to_string_lossy().into_owned(),
-        args,
-        candidate_type: "desktop-rust-preview",
-    })
-}
-
-// Validate the optional capability handoff without logging its contents.
+// Require the native capability handoff without logging its contents.
 fn ready_navigation(ready: &ReadyEvent) -> Option<(String, Option<String>)> {
     let address = parse_local_http_url(&ready.base_url)?;
     if address.connect_host != "127.0.0.1" && address.connect_host != "::1" {
         return None;
     }
-    let Some(bootstrap) = ready.bootstrap_url.as_ref() else {
-        return Some((ready.base_url.clone(), None));
-    };
+    let bootstrap = ready.bootstrap_url.as_ref()?;
     if !window_origin_authorized(bootstrap, &ready.base_url) {
         return None;
     }
@@ -191,128 +149,41 @@ fn resolve_backend_command_from(
     current_dir: &Path,
     packaged_macos: bool,
 ) -> Result<BackendCommandResolution, PackagedBackendMissing> {
-    if packaged_macos {
-        let embedded_backend = embedded_macos_backend_path(current_exe).unwrap_or_else(|| {
+    // The builder stages this exact layout for development and distribution.
+    // Never search ancestors, the checkout, PATH, or a legacy Python package.
+    let (executable, candidate_type) = if packaged_macos {
+        (
             current_dir
-                .join("..")
-                .join("Frameworks")
-                .join("bilikara-backend.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("bilikara")
-        });
-        if is_backend_candidate(&embedded_backend, current_exe) {
-            return Ok(BackendCommandResolution {
-                command: embedded_backend.to_string_lossy().to_string(),
-                args: vec![],
-                candidate_type: "macos-embedded-backend",
-            });
-        }
+                .join("../Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host"),
+            "macos-embedded-backend",
+        )
+    } else {
+        (
+            current_dir.join(if cfg!(windows) {
+                "bilikara-desktop-host.exe"
+            } else {
+                "bilikara-desktop-host"
+            }),
+            "native-adjacent",
+        )
+    };
+    if !is_backend_candidate(&executable, current_exe) {
         return Err(PackagedBackendMissing {
-            candidate_exists: embedded_backend.is_file(),
-            candidate_executable: path_has_executable_bit(&embedded_backend),
-            command_path: embedded_backend,
-            candidate_type: "macos-embedded-backend",
+            candidate_exists: executable.is_file(),
+            candidate_executable: path_has_executable_bit(&executable),
+            command_path: executable,
+            candidate_type,
         });
     }
-
-    // Windows packaged path
-    let win_path = current_dir.join("bilikara").join("bilikara.exe");
-    if is_backend_candidate(&win_path, current_exe) {
-        return Ok(BackendCommandResolution {
-            command: win_path.to_string_lossy().to_string(),
-            args: vec![],
-            candidate_type: "windows-bundle-directory",
-        });
-    }
-
-    let win_path2 = current_dir.join("bilikara.exe");
-    if is_backend_candidate(&win_path2, current_exe) {
-        return Ok(BackendCommandResolution {
-            command: win_path2.to_string_lossy().to_string(),
-            args: vec![],
-            candidate_type: "windows-adjacent",
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let backend = current_dir.join("bilikara");
-        if is_backend_candidate(&backend, current_exe) {
-            return Ok(BackendCommandResolution {
-                command: backend.to_string_lossy().to_string(),
-                args: vec![],
-                candidate_type: "linux-adjacent",
-            });
-        }
-    }
-
-    // macOS packaged paths (dedicated backend candidate preferred over standalone app)
-    let mac_dedicated = current_dir
-        .join("bilikara-backend")
-        .join("bilikara-backend");
-    if is_backend_candidate(&mac_dedicated, current_exe) {
-        return Ok(BackendCommandResolution {
-            command: mac_dedicated.to_string_lossy().to_string(),
-            args: vec![],
-            candidate_type: "macos-dedicated-backend",
-        });
-    }
-
-    let mac_path = current_dir
-        .join("bilikara.app")
-        .join("Contents")
-        .join("MacOS")
-        .join("bilikara");
-    if is_backend_candidate(&mac_path, current_exe) {
-        return Ok(BackendCommandResolution {
-            command: mac_path.to_string_lossy().to_string(),
-            args: vec![],
-            candidate_type: "macos-sibling-app",
-        });
-    }
-
-    if let Some(script_path) = find_dev_launcher(current_dir) {
-        return Ok(BackendCommandResolution {
-            command: "python".to_string(),
-            args: vec![script_path.to_string_lossy().to_string()],
-            candidate_type: "development-python-script",
-        });
-    }
-
-    // Default to Python script for development
     Ok(BackendCommandResolution {
-        command: "python".to_string(),
-        args: vec!["start_bilikara.py".to_string()],
-        candidate_type: "python-fallback",
+        command: executable
+            .canonicalize()
+            .unwrap_or(executable)
+            .to_string_lossy()
+            .into_owned(),
+        args: vec![],
+        candidate_type,
     })
-}
-
-fn embedded_macos_backend_path(current_exe: &Path) -> Option<PathBuf> {
-    if !platform::is_macos_app_bundle_executable(current_exe) {
-        return None;
-    }
-    let contents_dir = current_exe.parent()?.parent()?;
-    Some(
-        contents_dir
-            .join("Frameworks")
-            .join("bilikara-backend.app")
-            .join("Contents")
-            .join("MacOS")
-            .join("bilikara"),
-    )
-}
-
-fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
-    let mut cursor = Some(start_dir);
-    while let Some(dir) = cursor {
-        let candidate = dir.join("start_bilikara.py");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        cursor = dir.parent();
-    }
-    None
 }
 
 fn is_backend_candidate(path: &Path, current_exe: &Path) -> bool {
@@ -545,7 +416,7 @@ pub(crate) fn launch(
         Ok(resolution) => resolution,
         Err(missing) => {
             let detail = format!(
-                "candidate_type={} command_path={} candidate_exists={} candidate_executable={}",
+                "candidate_type={} command_path={} candidate_exists={} candidate_executable={}. Reinstall the complete native bundle, or run npm run prepare:desktop before cargo run.",
                 missing.candidate_type,
                 missing.command_path.display(),
                 missing.candidate_exists,
@@ -587,7 +458,6 @@ pub(crate) fn launch(
     let mut command = Command::new(&resolution.command);
     command
         .args(resolution.args)
-        .env("PYTHONUNBUFFERED", "1")
         .env("BILIKARA_STARTUP_LOG", "1")
         .env("BILIKARA_LAUNCH_MODE", "tauri")
         .env("BILIKARA_DESKTOP_PID", std::process::id().to_string())
@@ -921,13 +791,7 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn desktop_preview_command_and_capability_handoff_are_explicit() {
-        assert!(resolve_rust_preview(Path::new("relative")).is_err());
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let default =
-            resolve_backend_command_from(&root.join("unused/bilikara-app"), root, false).unwrap();
-        assert_eq!(default.command, "python");
-        assert_eq!(default.candidate_type, "development-python-script");
+    fn desktop_native_capability_handoff_is_explicit() {
         let token = "a".repeat(43);
         let mut ready: ReadyEvent = serde_json::from_value(serde_json::json!({"event":"bilikara.ready","host":"127.0.0.1","port":4567,"baseUrl":"http://127.0.0.1:4567","bootstrapUrl":format!("http://127.0.0.1:4567/bootstrap/{token}")})).unwrap();
         let (url, cookie) = ready_navigation(&ready).unwrap();
@@ -936,10 +800,7 @@ mod tests {
         ready.bootstrap_url = Some(format!("http://192.168.1.2:4567/bootstrap/{token}"));
         assert!(ready_navigation(&ready).is_none());
         ready.bootstrap_url = None;
-        assert_eq!(
-            ready_navigation(&ready),
-            Some((ready.base_url.clone(), None))
-        );
+        assert!(ready_navigation(&ready).is_none());
     }
 
     #[test]
@@ -1180,12 +1041,12 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let desktop = directory.join("bilikara-desktop");
-        let backend = directory.join("bilikara");
+        let backend = directory.join("bilikara-desktop-host");
         fs::write(&desktop, b"desktop").unwrap();
         fs::write(&backend, b"backend").unwrap();
         fs::set_permissions(&backend, fs::Permissions::from_mode(0o755)).unwrap();
         let resolution = resolve_backend_command_from(&desktop, &directory, false).unwrap();
-        assert_eq!(resolution.candidate_type, "linux-adjacent");
+        assert_eq!(resolution.candidate_type, "native-adjacent");
         assert_eq!(PathBuf::from(resolution.command), backend);
         assert!(resolution.args.is_empty());
         fs::remove_dir_all(directory).unwrap();
@@ -1212,7 +1073,7 @@ mod tests {
             .join("bilikara-backend.app")
             .join("Contents")
             .join("MacOS")
-            .join("bilikara");
+            .join("bilikara-desktop-host");
         fs::create_dir_all(desktop_exe.parent().expect("desktop parent"))
             .expect("create desktop directory");
         fs::create_dir_all(embedded_backend.parent().expect("backend parent"))
@@ -1273,14 +1134,14 @@ mod tests {
         assert!(
             missing
                 .command_path
-                .ends_with("bilikara-backend.app/Contents/MacOS/bilikara")
+                .ends_with("bilikara-backend.app/Contents/MacOS/bilikara-desktop-host")
         );
 
         fs::remove_dir_all(temp_dir).expect("remove missing backend test directory");
     }
 
     #[test]
-    fn source_tree_resolution_preserves_development_python_launcher() {
+    fn missing_native_backend_never_uses_a_development_or_legacy_launcher() {
         let temp_dir = std::env::temp_dir().join(format!(
             "bilikara_dev_backend_test_{}_{}",
             std::process::id(),
@@ -1293,11 +1154,11 @@ mod tests {
         let launcher = temp_dir.join("start_bilikara.py");
         fs::write(&launcher, b"print('dev')").expect("write development launcher");
 
-        let resolution = resolve_backend_command_from(&desktop_exe, &target_dir, false)
-            .expect("development resolution");
-        assert_eq!(resolution.candidate_type, "development-python-script");
-        assert_eq!(resolution.command, "python");
-        assert_eq!(resolution.args, [launcher.to_string_lossy().to_string()]);
+        fs::write(target_dir.join("bilikara.exe"), b"legacy frozen backend").unwrap();
+        let missing = resolve_backend_command_from(&desktop_exe, &target_dir, false)
+            .expect_err("missing native backend fails closed, even in a checkout");
+        assert_eq!(missing.candidate_type, "native-adjacent");
+        assert!(!missing.candidate_exists);
 
         fs::remove_dir_all(temp_dir).expect("remove development backend test directory");
     }

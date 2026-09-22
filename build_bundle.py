@@ -63,59 +63,22 @@ MACOS_SYSTEM_DEPENDENCY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
 def main() -> None:
-    from scripts.libav_bundle import package_prefix, stage
-    prefix = package_prefix()
-    if prefix is None:
-        raise RuntimeError("BILIKARA_LIBAV_PREFIX is required for native libav bundles")
-    data_separator = ";" if platform.system() == "Windows" else ":"
-    static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
-    version_arg = f"{VERSION_FILE}{data_separator}."
-    bundle_version = _bundle_version()
-    VERSION_FILE.write_text(bundle_version, encoding="utf-8")
-    spec_dir = ROOT_DIR / "build"
-    spec_dir.mkdir(exist_ok=True)
-
-    command = [
-        sys.executable,
-        "-m",
-        "PyInstaller",
-        "--noconfirm",
-        "--clean",
-        "--windowed",
-        "--name",
-        APP_NAME,
-        "--specpath",
-        str(spec_dir),
-        "--add-data",
-        static_arg,
-        "--add-data",
-        version_arg,
-        str(ROOT_DIR / "start_bilikara.py"),
-    ]
-    command.extend(_python_https_args(data_separator, verbose=True))
-    command.extend(_python_certifi_args(data_separator, verbose=True))
-    command.extend(
-        _bundled_binary_args(data_separator, verbose=True, validate=True)
-    )
-    command.extend(_macos_aria2_metadata_args(data_separator, verbose=True))
-    command.extend(_rust_library_args(data_separator, verbose=True))
-
-    if platform.system() == "Windows":
-        version_info_file = _write_windows_version_info(bundle_version, spec_dir)
-        command.extend(["--version-file", str(version_info_file)])
-
-    if platform.system() == "Darwin":
-        command.extend(["--osx-bundle-identifier", "com.bilikara.app"])
-
-    subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-        command, shell=False, check=True, cwd=ROOT_DIR
-    )
-    _write_release_compliance_files()
-    stage(prefix, ROOT_DIR / "dist" / (f"{APP_NAME}.app" if platform.system() == "Darwin" else APP_NAME))
-    if platform.system() == "Darwin":
-        finalize_macos_app_bundle(ROOT_DIR / "dist" / f"{APP_NAME}.app")
-    print()
-    print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
+    """Build-only Python entry; the staged product contains native code only."""
+    import argparse
+    from scripts.native_desktop_bundle import build_backend, build_desktop
+    parser = argparse.ArgumentParser(description="Build the native desktop backend/resources")
+    parser.add_argument("--dev", action="store_true", help="Prepare adjacent debug backend for Tauri development")
+    parser.add_argument("--prepare-shell", action="store_true", help="Prepare the matching backend beside the Cargo shell output")
+    parser.add_argument("--desktop", action="store_true", help="Also build Tauri and assemble the final desktop layout")
+    parser.add_argument("--target", help="Rust target triple; requires a matching native libav prefix")
+    args = parser.parse_args()
+    if args.dev and os.environ.get("TAURI_ENV_PLATFORM") in {"android", "ios"}:
+        return  # Mobile retains its in-process backend; no desktop tools.
+    development = args.dev and os.environ.get("TAURI_ENV_DEBUG", "true") not in {"false", "0"}
+    bundle = build_backend(development=development, prepare_shell=args.prepare_shell or args.dev, target=args.target)
+    if args.desktop:
+        build_desktop(bundle, target=args.target)
+    print(f"Native build complete: {bundle}")
 
 
 MACHO_MAGICS = {
@@ -194,7 +157,7 @@ def _sign_nested_macho_objects(app_path: Path) -> None:
             p = Path(root) / name
             # Signing the outer executable also seals its bundle. Defer it
             # until every newly staged helper/library has been signed.
-            if p != contents_dir / "MacOS/bilikara" and _is_macho_file(p):
+            if (p.name not in {"bilikara", "bilikara-desktop-host"} or p.parent != contents_dir / "MacOS") and _is_macho_file(p):
                 print(f"Signing nested Mach-O code object: {p}")
                 _sign_path(p)
 
@@ -204,13 +167,13 @@ def finalize_macos_app_bundle(app_path: Path) -> None:
         return
 
     info_plist = app_path / "Contents" / "Info.plist"
-    executable = app_path / "Contents" / "MacOS" / "bilikara"
+    executable = app_path / "Contents" / "MacOS" / "bilikara-desktop-host"
 
     if not info_plist.is_file():
         raise RuntimeError(f"Missing Contents/Info.plist in bundle: {app_path}")
 
     if not executable.is_file():
-        raise RuntimeError(f"Missing Contents/MacOS/bilikara executable in bundle: {app_path}")
+        raise RuntimeError(f"Missing Contents/MacOS/bilikara-desktop-host executable in bundle: {app_path}")
 
     if not os.access(executable, os.X_OK):
         raise RuntimeError(f"Main executable is not executable: {executable}")

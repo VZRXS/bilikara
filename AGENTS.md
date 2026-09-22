@@ -69,20 +69,19 @@ may cache defensive read-only projections and persist Rust snapshots, but it
 must not independently mutate or recompute this state.
 
 Rust AppState availability and initialization are startup requirements. There
-is no whole-application Python Core fallback and no per-operation stateful
-Rust-to-Python fallback. Python remains packaged for the retained work below;
-the separate D0 compiled-only build/launch contract has not been implemented.
+is no whole-application Python Core fallback. The default desktop launcher uses
+one supervised `bilikara-desktop-host` Rust process. Native desktop bundles ship
+no Python runtime, PyInstaller payload or temporary Python FFI libraries.
+`BILIKARA_NATIVE_DATA_DIR` (and the earlier preview-directory alias) overrides
+the native data root; it does not select a different backend. See
+`docs/native-desktop.md` for layouts, builds, storage and explicit legacy import.
+This establishes the D0 launch/distribution slice, not full Preview 2 feature
+parity or update installation.
 
-Desktop Rust Host Step 1 adds an explicitly opt-in development exception:
-`BILIKARA_DESKTOP_RUST_PREVIEW_DIR` selects a separate Rust backend process using
-`rust-runtime/src/native_host` for HTTP/SSE/media and its authoritative AppState.
-It requires isolated preview storage and bypasses Python in that serving path.
-The default desktop launcher and release packaging still use Python; this is
-neither the default cutover nor completion of the D0 distribution contract.
-See the current Step 1 handoff in `docs/version-roadmap.md`.
-
-Keep the following operations in their respective default Host (Python / Tauri)
-or UI (JavaScript) layers, except for this explicitly opted-in Rust Host path:
+The retained legacy Python Host has the following adapter responsibilities.
+They are not dependencies of normal native desktop launch or packaging; the
+native product uses the shared Rust services and native Host adapters. Keep UI
+and shell responsibilities in their existing layers:
 
 - DOM event handling, button states, modal behavior, toast notifications, and UI rendering (`static/`).
 - HTTP request/response routing, SSE connection lifecycle, cookies, URL fetching, and API endpoints (`bilikara/`).

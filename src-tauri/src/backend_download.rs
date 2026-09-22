@@ -1019,20 +1019,21 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let executable = root
-            .join("rust-runtime/target/debug")
-            .join(if cfg!(windows) {
-                "bilikara-desktop-host.exe"
-            } else {
-                "bilikara-desktop-host"
-            });
-        let mut child = Command::new(executable)
-            .args([
-                "--data-dir",
-                directory.to_str().unwrap(),
-                "--static-dir",
-                root.join("static").to_str().unwrap(),
-            ])
+        let packaged = std::env::var_os("BILIKARA_TEST_NATIVE_PACKAGE").map(PathBuf::from);
+        let executable = packaged.clone().unwrap_or_else(|| {
+            root.join("rust-runtime/target/debug")
+                .join(if cfg!(windows) {
+                    "bilikara-desktop-host.exe"
+                } else {
+                    "bilikara-desktop-host"
+                })
+        });
+        let mut command = Command::new(executable);
+        command.arg("--data-dir").arg(&directory);
+        if packaged.is_none() {
+            command.arg("--static-dir").arg(root.join("static"));
+        }
+        let mut child = command
             .env("BILIKARA_SHUTDOWN_TOKEN", "synthetic-transport-stop")
             .env_remove("BILIKARA_DESKTOP_PID")
             .stdout(Stdio::piped())

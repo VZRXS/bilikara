@@ -131,18 +131,19 @@ def collect_posix(prefix: Path) -> None:
     (bindir / "ffmpeg-runtime.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def stage(prefix: Path, bundle: Path) -> None:
+def stage(prefix: Path, bundle: Path, *, native: bool = False, macos_app: bool | None = None) -> None:
     if platform.system() == "Windows":
         from scripts.windows_libav_preview import stage as stage_windows
-        stage_windows(prefix, bundle)
+        stage_windows(prefix, bundle, native=native)
         return
-    contents = bundle / "Contents" if platform.system() == "Darwin" else bundle
-    resources = contents / "Resources" if platform.system() == "Darwin" else bundle
-    vendor = contents / ("Frameworks/vendor" if platform.system() == "Darwin" else "_internal/vendor")
+    macos_app = platform.system() == "Darwin" if macos_app is None else macos_app
+    contents = bundle / "Contents" if macos_app else bundle
+    resources = contents / "Resources" if macos_app else bundle
+    vendor = contents / ("Frameworks/vendor" if macos_app else ("vendor" if native else "_internal/vendor"))
     vendor.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((prefix / "bin/ffmpeg-runtime.json").read_text(encoding="utf-8"))
     test_companion = COMPANIONS[platform.system()].replace("libav.", "libav_test.")
-    for name in manifest["binaries"]:
+    for name in (manifest["runtime_files"] if native else manifest["binaries"]):
         if name == test_companion:
             continue
         destination = vendor / name
@@ -156,8 +157,8 @@ def stage(prefix: Path, bundle: Path) -> None:
         for key in ("schema_version", "kind", "version", "target", "runtime_files", "build_run", "build_attempt")
         if key in manifest
     }
-    if platform.system() == "Darwin":
-        # Frameworks contains code. Match PyInstaller's data layout: the real
+    if macos_app:
+        # Frameworks contains code. Preserve the existing data layout: the real
         # manifest is a resource, with a relative link beside the native files.
         resource_vendor = resources / "vendor"
         resource_vendor.mkdir(parents=True, exist_ok=True)
@@ -166,6 +167,14 @@ def stage(prefix: Path, bundle: Path) -> None:
         if manifest_path.exists() or manifest_path.is_symlink():
             manifest_path.unlink()
         manifest_path.symlink_to(os.path.relpath(resource_manifest, vendor))
+        if native:
+            for path in vendor.iterdir():
+                if path.name == manifest_path.name:
+                    continue
+                link = resource_vendor / path.name
+                if link.is_symlink() or link.exists():
+                    link.unlink()
+                link.symlink_to(os.path.relpath(path, resource_vendor))
     else:
         manifest_path.write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(prefix / "licenses", resources / "THIRD_PARTY_LICENSES/libav", dirs_exist_ok=True)
@@ -178,7 +187,8 @@ def stage(prefix: Path, bundle: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "media-libav" / name, destination)
     shutil.copy2(ROOT / "media-libav/PACKAGING.md", resources / "LIBAV_PACKAGING.md")
-    for library in (contents / ("Frameworks/rust" if platform.system() == "Darwin" else "_internal/rust")).iterdir():
+    libraries = [contents / "MacOS/bilikara-desktop-host" if macos_app else bundle / "bilikara-desktop-host"] if native else (contents / ("Frameworks/rust" if macos_app else "_internal/rust")).iterdir()
+    for library in libraries:
         if library.is_file() and any(Path(dep).name.startswith(("libav", "libbilikara_media_libav")) for dep in binary_info(library)["imports"]):
             raise RuntimeError("Mandatory Rust library acquired a libav import")
 

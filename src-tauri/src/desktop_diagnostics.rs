@@ -271,21 +271,22 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
 
     // Preview startup diagnostics remain on stdout unless an explicit test/dev
     // log path is supplied; do not open the normal product's persistent log.
-    if std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR").is_some() {
+    if std::env::var_os("BILIKARA_NATIVE_DATA_DIR").is_some()
+        || std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR").is_some()
+    {
         return None;
     }
 
     #[cfg(target_os = "windows")]
     {
-        let install_dir = current_exe.parent()?;
-        let packaged_layout =
-            install_dir.join("bilikara.exe").is_file() || install_dir.join("_internal").is_dir();
-        if packaged_layout {
+        if current_exe
+            .parent()?
+            .join("bilikara-desktop-host.exe")
+            .is_file()
+        {
             return Some(
-                install_dir
-                    .join("runtime")
-                    .join("data")
-                    .join("logs")
+                PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+                    .join("bilikara/logs")
                     .join(DESKTOP_STARTUP_LOG_NAME),
             );
         }
@@ -303,7 +304,6 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
             .join("Library")
             .join("Application Support")
             .join("bilikara")
-            .join("data")
             .join("logs")
             .join(DESKTOP_STARTUP_LOG_NAME),
     )

@@ -34,11 +34,10 @@ def aria2_metadata(arch: str) -> dict[str, object]:
 
 
 class BuildBundleTest(unittest.TestCase):
-    def test_main_bundles_rust_runtime_and_required_media_tools(self):
-        source = inspect.getsource(build_bundle.main)
-        self.assertIn("_rust_library_args", source)
-        self.assertIn("_bundled_binary_args", source)
-        self.assertIn("_macos_aria2_metadata_args", source)
+    def test_main_builds_native_backend_without_freezing_python(self):
+        with patch("sys.argv", ["build_bundle.py"]), patch("scripts.native_desktop_bundle.build_backend", return_value=Path("dist/bilikara")) as build:
+            build_bundle.main()
+        build.assert_called_once_with(development=False, prepare_shell=False, target=None)
 
     def test_rust_library_args_includes_release_library(self):
         with TemporaryDirectory() as temp_dir:
