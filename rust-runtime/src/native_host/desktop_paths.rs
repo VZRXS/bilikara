@@ -24,6 +24,7 @@ pub(super) fn package_assets(root: &Path) -> Result<PathBuf, String> {
     ).map_err(|_| "Invalid native desktop layout manifest")?;
     if manifest["schema_version"] != 1
         || manifest["backend"] != "rust"
+        || manifest["resource_layout"] != "internal-v1"
         || manifest["platform"] != PLATFORM
         || manifest["arch"] != machine_arch()
         || manifest["version"]
@@ -116,6 +117,15 @@ pub(super) fn data_root(
         }
         return Ok(path);
     }
+    if platform == "windows" {
+        let installed = windows_installation_root(executable)
+            .filter(|root| root.is_absolute())
+            .ok_or("Desktop installation directory is unavailable")?;
+        // Windows is portable. External legacy/native roots must neither
+        // redirect this installation nor prevent a new one from starting.
+        // Storage still validates this exact destination before opening it.
+        return Ok(compatible_data_root(&installed.join("runtime")));
+    }
     let home = || {
         env("HOME")
             .filter(|v| !v.is_empty())
@@ -123,11 +133,6 @@ pub(super) fn data_root(
             .ok_or("HOME is unavailable")
     };
     let base = match platform {
-        "windows" => env("LOCALAPPDATA")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .ok_or("LOCALAPPDATA is unavailable")?
-            .join("bilikara"),
         "macos" => home()?.join("Library/Application Support/bilikara"),
         _ => env("XDG_DATA_HOME")
             .filter(|v| !v.is_empty())
@@ -139,28 +144,41 @@ pub(super) fn data_root(
     if !base.is_absolute() {
         return Err("Platform application data directory must be absolute".into());
     }
-    let native = base.join("native");
-    // A present native directory is validated by storage, never replaced from
-    // legacy data. Only known previous install locations are inspected.
-    if !native.join(MARKER).is_file() {
-        let mut legacy = vec![base];
-        if platform == "windows"
-            && let Some(parent) = executable.parent()
-        {
-            legacy.push(parent.join("runtime"));
-        }
-        for source in legacy {
-            if source.join("data").exists() || source.join("state.json").exists() {
-                return Err(format!(
-                    "Legacy desktop records found at {}. Choose an explicit import: bilikara-desktop-host --import-from \"{}\" --data-dir \"{}\". The source will remain unchanged.",
-                    source.display(),
-                    source.display(),
-                    native.display()
-                ));
-            }
-        }
+    let data = compatible_data_root(&base);
+    // macOS/Linux retain their system data roots and explicit legacy import.
+    if !data.join("host-state.json").is_file()
+        && !data.join(MARKER).is_file()
+        && (base.join("data").exists() || base.join("state.json").exists())
+    {
+        return Err(format!(
+            "Legacy desktop records found at {}. Choose an explicit import: bilikara-desktop-host --import-from \"{}\" --data-dir ABSOLUTE_NEW_DIRECTORY. The destination must be outside the source; the source will remain unchanged.",
+            base.display(),
+            base.display(),
+        ));
     }
-    Ok(native)
+    Ok(data)
+}
+
+// Existing native previews remain reopenable without moving or merging user
+// data. New installations use the historical data/ layout. A closed preview's
+// native/ directory can be renamed to data/ when that destination is absent.
+fn compatible_data_root(base: &Path) -> PathBuf {
+    let data = base.join("data");
+    let previous = base.join("native");
+    if !data.join("host-state.json").exists() && previous.exists() {
+        previous
+    } else {
+        data
+    }
+}
+
+fn windows_installation_root(executable: &Path) -> Option<&Path> {
+    let parent = executable.parent()?;
+    if parent.ends_with("_internal") || parent.ends_with("backend") {
+        parent.parent()
+    } else {
+        Some(parent)
+    }
 }
 
 #[cfg(test)]
@@ -175,15 +193,15 @@ mod tests {
         };
         assert_eq!(
             data_root(None, Path::new("/installed/host"), "linux", env).unwrap(),
-            home.join(".local/share/bilikara/native")
+            home.join(".local/share/bilikara/data")
         );
         assert_eq!(
             data_root(None, Path::new("/installed/host"), "macos", env).unwrap(),
-            home.join("Library/Application Support/bilikara/native")
+            home.join("Library/Application Support/bilikara/data")
         );
         assert_eq!(
-            data_root(None, Path::new("/installed/host"), "windows", env).unwrap(),
-            home.join("bilikara/native")
+            data_root(None, &home.join("installed/_internal/host"), "windows", env).unwrap(),
+            home.join("installed/runtime/data")
         );
         assert!(data_root(Some("relative".into()), Path::new("/host"), "linux", env).is_err());
         assert_eq!(
@@ -223,6 +241,60 @@ mod tests {
             })
             .unwrap(),
             base.join("native")
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn existing_preview_reopens_until_explicit_directory_rename() {
+        let root = std::env::temp_dir().join(format!("desktop-compatible-{}", token().unwrap()));
+        std::fs::create_dir_all(root.join("native")).unwrap();
+        std::fs::write(root.join("native/host-state.json"), b"preserved checkpoint").unwrap();
+        assert_eq!(compatible_data_root(&root), root.join("native"));
+        std::fs::rename(root.join("native"), root.join("data")).unwrap();
+        assert_eq!(compatible_data_root(&root), root.join("data"));
+        assert_eq!(
+            std::fs::read(root.join("data/host-state.json")).unwrap(),
+            b"preserved checkpoint"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_portable_layout_ignores_external_and_legacy_records() {
+        let home = std::env::temp_dir().join(format!("desktop-portable-{}", token().unwrap()));
+        let installed = home.join("Installed 空");
+        let executable = installed.join("_internal/bilikara-desktop-host.exe");
+        let portable = installed.join("runtime/data");
+        let system = home.join("bilikara");
+        for relative in ["data/player_state.json", "native/state.json"] {
+            let record = system.join(relative);
+            std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+            std::fs::write(record, b"external records must not be opened").unwrap();
+        }
+        let legacy = installed.join("runtime/data/player_state.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, b"unchanged legacy").unwrap();
+        let env = |key: &str| (key == "LOCALAPPDATA").then(|| home.clone().into_os_string());
+        assert_eq!(
+            data_root(None, &executable, "windows", env).unwrap(),
+            portable
+        );
+        // A portable installation neither requires nor reads a user-data root.
+        assert_eq!(
+            data_root(None, &executable, "windows", |_| None).unwrap(),
+            portable
+        );
+        assert!(portable.exists());
+        std::fs::write(portable.join("unmarked"), b"storage must reject this").unwrap();
+        assert_eq!(
+            data_root(None, &executable, "windows", env).unwrap(),
+            portable
+        );
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"unchanged legacy");
+        assert_eq!(
+            std::fs::read(system.join("native/state.json")).unwrap(),
+            b"external records must not be opened"
         );
         std::fs::remove_dir_all(home).unwrap();
     }

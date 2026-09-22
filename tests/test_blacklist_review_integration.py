@@ -68,16 +68,18 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
             with self.subTest(locale=locale):
                 self.assertTrue(required.issubset(payload["languages"][locale]))
 
-    def test_tauri_packages_the_shared_frontend_and_python_backend(self):
+    def test_tauri_packages_the_shared_frontend_and_native_backend(self):
         tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
         backend_source = (
             ROOT / "src-tauri" / "src" / "backend_process.rs"
         ).read_text(encoding="utf-8")
-        bundle_source = (ROOT / "build_bundle.py").read_text(encoding="utf-8")
+        bundle_source = (ROOT / "scripts" / "native_desktop_bundle.py").read_text(encoding="utf-8")
 
         self.assertEqual(tauri["build"]["frontendDist"], "../static")
-        self.assertIn('join("bilikara").join("bilikara.exe")', backend_source)
-        self.assertIn("ROOT_DIR / 'static'", bundle_source)
+        self.assertIn('"bilikara-desktop-host.exe"', backend_source)
+        self.assertIn('"bilikara-desktop-host"', backend_source)
+        self.assertIn('source_static = bundle.ROOT_DIR / "static"', bundle_source)
+        self.assertIn('shutil.copytree(source_static, static,', bundle_source)
 
 
 if __name__ == "__main__":

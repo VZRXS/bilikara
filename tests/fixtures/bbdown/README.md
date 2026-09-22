@@ -14,3 +14,13 @@ metadata deliberately reports a different duration to guard against restoring
 metadata-duration completeness checks. Tests copy these local bytes through the
 controlled child in `tests/bbdown_fixture.rs`, then use real Runtime inspection,
 normalization and publication. No media CLI is invoked by these tests.
+
+The DownKyi HEVC/Dolby passthrough test needs the packaged libav validator.
+Build the libraries with `bash media-libav/build-posix-libraries.sh`, then run
+`python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test`
+(using an absolute `BILIKARA_LIBAV_PREFIX`), and set
+`BILIKARA_TEST_LIBAV_COMPANION` to the resulting
+`bin/libbilikara_media_libav.so` when running the Linux Python suite. The test
+loads that library in a subprocess so the other tests retain their independent
+pure-Rust/legacy fallback configuration. CI provisions this prerequisite from
+the existing signed source and verified cache.

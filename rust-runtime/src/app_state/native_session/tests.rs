@@ -536,3 +536,46 @@ fn desktop_next_consumes_reset_preference_without_resetting_global_delay() {
         );
     }
 }
+
+#[test]
+fn public_titles_use_legacy_cleanup_without_changing_raw_records() {
+    let (mut app, _) = setup();
+    ready(&mut app);
+    let mut seed: AppStateSeed = serde_json::from_value(
+        json!({"session_started_at":1.0,"session_played_file":"titles.json","updated_at":1.0}),
+    )
+    .unwrap();
+    let mut item = app.native_core_snapshot().unwrap().current_item.unwrap();
+    item.title = "【ニコカラ】Song [on vocal]".into();
+    item.display_title = "【ニコカラ】Song [on vocal] - P1".into();
+    seed.current_item = Some(item.clone());
+    let mut queued = item.clone();
+    queued.id = "queued".into();
+    seed.playlist.push(queued);
+    let entry: HistoryEntry = serde_json::from_value(json!({"key":"song:1", "title":item.title,
+        "display_title":item.display_title,"part_title":"P1", "original_url":item.original_url,
+        "resolved_url":item.resolved_url,"requested_at":1.0}))
+    .unwrap();
+    seed.history.push(entry.clone());
+    seed.session_history.push(entry);
+    app.execute(AppStateRequest::Initialize {
+        schema_version: 1,
+        state: Box::new(seed),
+    });
+    for host in [true, false] {
+        let public = app.native_snapshot(host).unwrap();
+        assert_eq!(public["current_item"]["display_title"], "Song [on vocal]");
+        for key in ["playlist", "history", "session_history"] {
+            assert_eq!(public[key][0]["display_title"], "Song [on vocal]", "{key}");
+            assert_eq!(public[key][0]["title"], item.title);
+        }
+    }
+    assert_eq!(
+        app.native_core_snapshot()
+            .unwrap()
+            .current_item
+            .unwrap()
+            .display_title,
+        item.display_title
+    );
+}

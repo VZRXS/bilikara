@@ -60,13 +60,25 @@
       const dy = Math.abs(y - gesture.y);
       if (dx < -8 || dy > 16) { gesture = null; return; }
       gesture.ready = dx >= 16 && dx > dy * 1.5;
+      // Commit the outward gesture while it is still inside this WebView.
+      // On a second display the release may land in the output window, where
+      // this page cannot receive mouseup/touchend.
+      if (gesture.ready) endGesture();
     }
     function endGesture() {
       const open = gesture?.ready;
       gesture = null;
       if (open) openDialog();
     }
-    // Native range drags do not consistently emit Pointer Events in all engines.
+    slider.addEventListener("pointerdown", (event) => {
+      if (event.isPrimary !== false && event.button === 0) beginGesture(event.clientX, event.clientY);
+    });
+    window.addEventListener("pointermove", (event) => moveGesture(event.clientX, event.clientY), true);
+    window.addEventListener("pointerup", endGesture);
+    window.addEventListener("pointercancel", () => { gesture = null; });
+    // Keep mouse/touch support for WebViews whose native range drag omits
+    // Pointer Events. Opening clears the gesture, so compatibility events
+    // cannot open a second editor.
     slider.addEventListener("mousedown", (event) => {
       if (event.button === 0) beginGesture(event.clientX, event.clientY);
     });
@@ -119,6 +131,7 @@
     const heading = dialog.querySelector("h2");
     const close = dialog.querySelector("[data-volume-close]");
     const reset = dialog.querySelector("[data-volume-reset]");
+    if (isRemote) close.autofocus = true;
     const errorMessage = dialog.querySelector(".volume-adjust-error");
     let busy = false;
     let closing = false;
@@ -133,15 +146,19 @@
     });
     const position = () => {
       if (!dialog.open) return;
-      const anchor = value.getBoundingClientRect();
+      const anchor = (isRemote ? slider : value).getBoundingClientRect();
       const viewport = window.visualViewport;
       const width = viewport?.width || window.innerWidth;
       const height = viewport?.height || window.innerHeight;
       const left = viewport?.offsetLeft || 0;
       const top = viewport?.offsetTop || 0;
       const box = { width: dialog.offsetWidth, height: dialog.offsetHeight };
-      const x = isRemote ? left + (width - box.width) / 2 : anchor.right - box.width;
-      const y = isRemote ? top + (height - box.height) / 2 : anchor.top - box.height - 8;
+      const thumbX = anchor.left + 10 + Math.max(0, anchor.width - 20) * toPosition(getValue()) / 100;
+      const x = (isRemote ? thumbX + 20 : anchor.right) - box.width;
+      let y = anchor.top - box.height - 8;
+      if (isRemote && y < top + 12 && anchor.bottom + box.height + 8 <= top + height - 12) {
+        y = anchor.bottom + 8;
+      }
       dialog.style.left = `${Math.max(left + 12, Math.min(x, left + width - box.width - 12))}px`;
       dialog.style.top = `${Math.max(top + 12, Math.min(y, top + height - box.height - 12))}px`;
     };
@@ -166,9 +183,14 @@
       errorMessage.hidden = true;
       input.value = String(bounded(getValue()));
       reset.disabled = bounded(getValue()) === 100;
+      // showModal performs native autofocus before our anchored positioning.
+      // Preserve the underlying sheet's scroll offset across that focus step.
+      const scrollers = isRemote ? [...document.querySelectorAll('.playback-sheet-body')]
+        .map(element => [element, element.scrollTop, element.scrollLeft]) : [];
       dialog.showModal();
       value.setAttribute("aria-expanded", "true");
       position();
+      for (const [element, top, left] of scrollers) element.scrollTo({top, left, behavior: "instant"});
       // Opening the mobile editor should not immediately summon its keyboard.
       if (isRemote) close.focus({ preventScroll: true });
       else {
@@ -211,7 +233,7 @@
     // Keep a button click from first blurring/submitting the numeric draft.
     // The step/reset action applies its final value in one request.
     form.addEventListener("pointerdown", (event) => {
-      if (document.activeElement === input && event.target.closest("button")) event.preventDefault();
+      if ((isRemote || document.activeElement === input) && event.target.closest("button")) event.preventDefault();
     });
     dialog.querySelectorAll("[data-volume-step]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -273,6 +295,7 @@
       }
     }
     window.addEventListener("resize", position);
+    document.addEventListener("scroll", position, true);
     window.visualViewport?.addEventListener("resize", position);
     window.visualViewport?.addEventListener("scroll", position);
     render(slider, value, getValue());

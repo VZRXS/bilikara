@@ -29,6 +29,28 @@ Both sources share checked BVID/Bilibili URL normalization and deduplication.
 Sheets search matches all case-insensitive whitespace-separated tokens against
 BVID, title, owner MID/name and tags, preserving snapshot order.
 
+## Search pagination
+
+Native local search returns `items`, `offset`, `next_offset`, `has_more` and the
+filtered `matched_count`. The shared service preserves the provider's
+`matched_count` (also accepting `total` or `total_count`) instead of discarding it.
+A paged `/search` response must echo the requested `offset`; `has_more` may be
+supplied explicitly or derived from the returned total. Totals describe the
+keyword matches, not all records in a table. Invalid/ignored later offsets fail
+explicitly rather than showing the first page again.
+
+Host scrolling and Remote page navigation request only the needed range. Reads
+stay within the existing per-request limit, cache, concurrency and outage bounds;
+there is no polling, separate count request or growing-prefix/full-table query.
+Remote keeps its current page while loading and reuses cached pages when going
+back. The read-only Sheets fallback counts the already cached, filtered snapshot
+without another network read.
+
+Older providers that return only a list still expose their returned prefix.
+The UI labels it as returned results; it cannot infer a complete match count or
+fetch later pages from a provider that ignores `offset`. Those deployments need
+the paged `/search` response above to enable shared searches beyond the prefix.
+
 ## Configuration and cache
 
 The default D1 installation (`https://api.kevinx96.icu`) enables the verified

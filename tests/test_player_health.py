@@ -150,9 +150,14 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
         self.assertIn("state.localPlaybackEndHandled", handler)
         self.assertEqual(
             handler.count(
-                'handleLocalPlaybackEnded("media-ended", state.hostPlaybackSession)'
+                'handleLocalPlaybackEnded("media-ended", endingSession)'
             ),
             1,
+        )
+        self.assertIn("const endingSession = state.hostPlaybackSession;", handler)
+        self.assertLess(
+            handler.index("const endingSession = state.hostPlaybackSession;"),
+            handler.index("await audio.bilikaraPitch.drain()"),
         )
         self.assertNotIn("audio.pause()", handler)
         self.assertNotIn("cache/retry", handler)

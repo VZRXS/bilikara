@@ -27,7 +27,6 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
                 if maintenance::collect(&context.cache_root, false).is_err() {
                     let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-cleanup-failed"}),now());Ok(())});
                 }
-                maintenance::trim_log(&context.directory);
                 last_cleanup=std::time::Instant::now();
             }
             if last_metrics.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
@@ -251,6 +250,22 @@ fn tick(
     Ok(())
 }
 
+fn item_log_path(directory: &Path, item_id: &str) -> Result<PathBuf, ApiError> {
+    // Imported identifiers must never turn a per-song log into a path outside logs.
+    if item_id.is_empty()
+        || item_id.len() > 160
+        || item_id.contains(['/', '\\', ':'])
+        || matches!(item_id, "." | "..")
+        || item_id.chars().any(char::is_control)
+    {
+        return Err(ApiError::invalid("缓存歌曲标识无效"));
+    }
+    let root = directory.join("logs/native");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| ApiError::new(503, "cache_log", "无法创建缓存日志目录"))?;
+    Ok(root.join(format!("{item_id}.log")))
+}
+
 fn job(
     context: &HostContext,
     item: &PlaylistItem,
@@ -289,7 +304,7 @@ fn job(
         item,
         crate::cache_runtime::orchestration::JobInputs {
             cache_root: context.cache_root.clone(),
-            log_file: context.directory.join("logs/native-cache.log"),
+            log_file: item_log_path(&context.directory, &item.id)?,
             cookie: cookie.into(),
             user_agent: crate::native_video::USER_AGENT.into(),
             referer: "https://www.bilibili.com/".into(),
@@ -325,7 +340,7 @@ pub(super) fn retry(
         if let Ok(mut log) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(context.directory.join("logs/native-cache.log"))
+            .open(item_log_path(&context.directory, &item.id)?)
         {
             let _ = writeln!(
                 log,
@@ -362,4 +377,30 @@ pub(super) fn retry(
     })
     .map_err(cache_error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+    #[test]
+    fn song_logs_are_separate_append_only_and_reject_path_components() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-song-logs-{}-{}",
+            std::process::id(),
+            (now() * 1e9) as u64
+        ));
+        let first = item_log_path(&root, "first").unwrap();
+        let second = item_log_path(&root, "second").unwrap();
+        assert_eq!(first, root.join("logs/native/first.log"));
+        let content = vec![b'x'; 1024 * 1024 + 1];
+        std::fs::write(&first, &content).unwrap();
+        std::fs::write(&second, b"second task").unwrap();
+        assert_eq!(item_log_path(&root, "first").unwrap(), first);
+        assert_eq!(std::fs::read(first).unwrap(), content);
+        assert_eq!(std::fs::read(second).unwrap(), b"second task");
+        for id in ["", "../outside", "a/b", "a\\b", "C:outside", ".."] {
+            assert!(item_log_path(&root, id).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

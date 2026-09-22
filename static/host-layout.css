@@ -64,54 +64,6 @@ html[data-host-layout="portrait"] body.is-presentation-control-host .presentatio
   html[data-host-platform="android"] .presentation-host-progress-wrap { grid-column: 1 / -1; grid-row: 2; }
 }
 
-#android-session-choice {
-  width: min(440px, calc(100vw - 32px));
-  box-sizing: border-box;
-  padding: 22px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  background: var(--panel);
-  color: var(--ink);
-  max-height: calc(100dvh - 32px);
-  overflow: auto;
-}
-#android-session-choice::backdrop { background: rgb(0 0 0 / 45%); }
-#android-session-choice h2 { margin: 0 0 12px; font-size: 21px; }
-#android-session-choice p { line-height: 1.6; }
-#android-session-choice-error { color: var(--danger, #b33); }
-.android-session-choice-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.android-session-choice-actions button { flex: 1; min-height: 44px; }
-
-html[data-host-touch-users="true"] .session-user-list { padding: 0 0 10px; }
-html[data-host-touch-users="true"] .session-user-badge {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  height: auto;
-  min-height: 44px;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 4px 12px;
-  border-radius: 20px;
-  cursor: pointer;
-  -webkit-touch-callout: none;
-}
-html[data-host-touch-users="true"] .session-user-badge.is-actions-open { min-width: 184px; }
-.android-user-toggle {
-  min-height: 36px;
-  padding: 4px 2px;
-  border: none;
-  background: none;
-  font: inherit;
-  color: inherit;
-  text-align: start;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.android-user-actions:not([hidden]) { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; padding: 4px 0; }
-.android-user-actions button { min-width: 40px; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--panel); }
-.android-user-actions button[data-user-action="remove"] { color: var(--red); }
-
 /* Two distinct hit targets on Android; desktop keeps its hover affordance. */
 html[data-native-host="true"]:not([data-host-platform="desktop"]) .player-panel:is(:fullscreen, .is-tauri-fullscreen) .fullscreen-action-control {
   display: flex;
@@ -564,13 +516,13 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candid
 html[data-native-host="true"]:not([data-host-platform="desktop"])[data-native-export-ready="true"] #history-export-button { display: inline-flex !important; }
 .android-my-page h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
 .android-my-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--bottom-panel-bg); margin-bottom: 18px; }
-html[data-host-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; gap: 12px; margin: 0; }
+html[data-host-layout="portrait"] #android-account-slot #bbdown-status-row { display: flex; align-items: center; justify-content: flex-start; gap: 12px; margin: 0; }
 html[data-host-layout="portrait"] #android-account-slot #bbdown-status-row > span:first-child { display: none; }
 html[data-host-layout="portrait"] #android-account-slot .bbdown-login-badge { padding: 8px 16px; min-height: 44px; }
 html[data-host-layout="portrait"] #android-account-slot .bbdown-login-panel { padding: 12px 0 0; }
 html[data-host-layout="portrait"] #android-account-slot .bbdown-login-copy { display: none; }
 .android-login-hint, .android-login-persistence { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
-.android-my-card.is-logged .android-login-hint { display: none; }
+.android-my-card:has(.host-account-settings.is-logged) .android-login-hint { display: none; }
 .android-my-page #android-settings-slot { margin-bottom: 18px; }
 .android-menu-row {
   display: flex;
@@ -611,7 +563,7 @@ html[data-host-layout="portrait"] #android-settings-slot #cache-settings {
 html[data-host-layout="portrait"] #android-settings-slot #cache-settings-toggle { display: none; }
 html[data-host-layout="portrait"] #android-settings-slot #cache-panel {
   position: static;
-  inset: auto !important;
+  inset: auto;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -630,13 +582,10 @@ html[data-host-layout="portrait"] #android-settings-slot #cache-panel {
 html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex-wrap: wrap; gap: 12px; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
-html[data-host-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; order: -3; border-top: 0; padding-top: 0; }
-html[data-host-layout="portrait"] #android-settings-slot #cache-capacity-row { display: block; order: -2; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex-direction: row; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-limit-slider { width: 100%; min-height: 32px; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-quality-select { min-height: 40px; }
-html[data-host-layout="portrait"] #android-settings-slot #cache-usage-row { order: -1; border-top: 1px solid var(--line); padding-top: 14px; }
-html[data-host-layout="portrait"] #android-settings-slot .cache-panel-tool-list { display: none; }
 html[data-host-layout="portrait"] .settings-workspace-body { min-height: 0; overflow-y: auto; }
 html[data-host-layout="portrait"] .settings-workspace-body .cache-panel-row { flex-wrap: wrap; gap: 12px; }
 html[data-host-layout="portrait"] .settings-workspace-body .diagnostic-panel-actions { width: 100%; }
@@ -658,17 +607,13 @@ html[data-host-layout="portrait"] .request-subview-tabs {
   scrollbar-width: none;
 }
 
-html[data-host-layout="portrait"] .request-subview-tabs button { flex: 0 0 auto; min-height: 44px; }
-html[data-host-layout="portrait"] #android-request-tabs .request-subview-tabs {
-  padding: 3px;
-  gap: 0;
+/* Compact navigation reuses request-tabs.css; only hierarchy lives here. */
+html[data-host-layout="portrait"] .request-mode-head { flex-wrap: nowrap; gap: 0; border-bottom: 0; }
+html[data-host-layout="portrait"] .request-mode-tabs { flex: 1 1 auto; }
+html[data-host-layout="portrait"] .request-mode-back svg {
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
 }
-html[data-host-layout="portrait"] #android-request-tabs .request-subview-tabs button {
-  flex: 1 0 auto;
-  padding: 6px 8px;
-  font-size: 12px;
-}
-html[data-host-layout="portrait"] .request-mode-head { flex-wrap: wrap; }
 html[data-host-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
 html[data-host-layout="portrait"] .category-browser-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));

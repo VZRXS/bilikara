@@ -25,7 +25,7 @@ const initial = (extra = {}) => ({key: 'uploader', items: items(0, 100),
   total: 612, hasMore: true, ...extra});
 (async () => {
 """ + source + "\n})().catch(error => { console.error(error); process.exitCode = 1; });\n",
-            cwd=ROOT, capture_output=True, text=True, timeout=10,
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -73,6 +73,22 @@ await pages.goTo(2);
 assert.equal(pages.items[0].id, 6);
 await pages.goTo(84);
 assert.equal(calls.length, 1);
+""")
+
+    def test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize(self):
+        self.run_case("""
+const pages = new Pages();
+const options = initial({items:items(0, 450), total:450, hasMore:false, pageSize:24});
+pages.update(options);
+assert.equal(pages.items.length, 24);
+assert.equal(pages.pageCount, 19);
+assert.equal(pages.peek(2)[0].id, 24);
+await pages.goTo(3);
+pages.update({...options,pageSize:12});
+assert.equal(pages.page, 5);
+assert.equal(pages.items[0].id, 48);
+assert.equal(pages.items.length, 12);
+assert.equal(pages.peek(4)[0].id, 36);
 """)
 
     def test_pending_and_failed_navigation_preserve_current_page_and_allow_retry(self):
@@ -215,6 +231,24 @@ assert.equal(pages.items[0].id,510);
 await assert.rejects(pages.goTo(maximumPage+1), RangeError);
 """)
 
+    def test_search_batches_cache_twelve_pages_without_background_reads(self):
+        self.run_case("""
+const calls = [];
+const pages = new Pages();
+pages.update(initial({items:items(0,80), total:221, readSize:72, load:async range=>{
+  calls.push(range);
+  return {items:items(range.offset,72),offset:range.offset,matched_count:221,
+    has_more:true,next_offset:range.offset+72};
+}}));
+await pages.goTo(14);
+for(let page=15;page<=25;page++)await pages.goTo(page);
+assert.deepEqual(calls,[{offset:78,limit:72}]);
+assert.equal(pages.items[0].id,144);
+assert.ok(pages.cache.size<=12);
+await pages.goTo(14);
+assert.equal(calls.length,1);
+""")
+
     def test_shared_terminal_batch_preserves_short_last_page_and_stops_reading(self):
         self.run_case("""
 let calls = 0;
@@ -235,7 +269,59 @@ await pages.goTo(5);
 assert.equal(calls,1);
 """)
 
-    def test_real_remote_adapter_preserves_source_filters_and_distinguishes_capped_search(self):
+    def test_prefetch_warms_next_window_and_navigation_shares_pending_read(self):
+        self.run_case("""
+const calls = [];
+let finish;
+const pages = new Pages();
+pages.update(initial({items:items(0,18), total:null, readAhead:2, prefetch:true,
+  load:range => { calls.push(range); return new Promise(resolve => {finish = resolve}); }}));
+assert.equal(calls.length,0);
+await pages.goTo(2);
+assert.deepEqual(calls,[{offset:18,limit:18}]);
+assert.equal(pages.loading,false); // Speculation doesn't block the current page.
+const navigation = pages.goTo(4);
+assert.equal(calls.length,1); // Navigating joins the speculative request.
+finish({items:items(18,18),offset:18,has_more:true,next_offset:36});
+assert.equal(await navigation,true);
+assert.equal(pages.items[0].id,18);
+assert.equal(pages.peek(5)[0].id,24);
+assert.equal(calls.length,1); // No recursive scan after the prefetch resolves.
+""")
+
+    def test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded(self):
+        self.run_case("""
+for (const fail of [false,true]) {
+  let finish, reject, calls = 0;
+  const pages = new Pages();
+  const input = initial({items:items(0,6),total:null,readAhead:2,prefetch:true,
+    load:() => {calls++; return new Promise((yes,no) => {finish=yes;reject=no});}});
+  pages.update(input);
+  const pending = pages.prefetchPending.promise;
+  pages.update({...input,key:'new',items:items(800,6),total:6,hasMore:false});
+  if (fail) reject(new Error('offline'));
+  else finish({items:items(6,18),offset:6,has_more:false,next_offset:24});
+  await pending;
+  assert.equal(pages.items[0].id,800);
+  assert.equal(pages.total,6);
+  assert.equal(calls,1);
+}
+let calls = 0;
+const pages = new Pages();
+const input = initial({items:items(0,6),total:null,readAhead:2,prefetch:true,
+  load:async () => {calls++;throw new Error('offline');}});
+pages.update(input);
+await pages.prefetchPending.promise;
+for(let i=0;i<10;i++) pages.update(input);
+assert.equal(calls,1);
+assert.equal(pages.loading,false);
+assert.equal(pages.page,1);
+const hidden = new Pages();
+hidden.update({...input,shouldPrefetch:()=>false});
+assert.equal(calls,1);
+""")
+
+    def test_real_remote_adapter_preserves_source_filters_counts_and_legacy_limits(self):
         self.run_case(r"""
 const fs = require('node:fs');
 const script = fs.readFileSync('static/remote.js', 'utf8');
@@ -246,7 +332,10 @@ const state = {language: 'zh', followBrowseData: {query: 'song', matched_count: 
   favlistBrowseData: {query: 'favorite', matched_count: 214, has_more: true},
   favlistBrowseSelectedFolderId: '7', favlistBrowseSeq: 6, favlistBrowseLoading: false};
 const requestDetailOwnerForContainer = owner => owner;
-const canonicalBilikaraSearch = {seq: 9, loading: false};
+const canonicalBilikaraSearch = {seq: 9, loading: false, query:'song', data:{has_more:true, matched_count:221}};
+const localLibrarySearch = {seq:2,loading:false,query:'local song',data:{has_more:true,matched_count:612}};
+const searchCatalog = (...args) => args;
+const searchGatchaCache = (...args) => args;
 const fetchGatchaBrowse = (...args) => args;
 const fetchGatchaFavlistBrowse = (...args) => args;
 const fetchD1Browse = args => args;
@@ -269,7 +358,17 @@ assert.equal(uploader.readAhead, 0);
 mode.data = {};
 assert.equal(remoteResultPaginationOptions('artist', items(0, 450), '').limited, true);
 const shared = remoteResultPaginationOptions('shared', items(0, 80), '');
-assert.equal(shared.total, 80);
-assert.equal(shared.limited, true);
-assert.equal(shared.load, null);
+assert.equal(shared.total, 221);
+assert.equal(shared.limited, false);
+assert.deepEqual(shared.load(range), ['song', range]);
+const local = remoteResultPaginationOptions('local', items(0,18), '');
+assert.equal(local.total,612);
+assert.deepEqual(local.load(range), ['local song', range]);
+canonicalBilikaraSearch.data = {has_more:true};
+assert.equal(remoteResultPaginationOptions('shared',items(0,80),'').total,null);
+canonicalBilikaraSearch.data = {};
+const legacy = remoteResultPaginationOptions('shared',items(0,80),'');
+assert.equal(legacy.total,80);
+assert.equal(legacy.limited,true);
+assert.equal(legacy.load,null);
 """)

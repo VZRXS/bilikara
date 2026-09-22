@@ -91,7 +91,8 @@ def collect(prefix: Path, redist: Path, system: Path) -> dict:
     return data
 
 
-def stage(prefix: Path, bundle: Path, *, native: bool = False) -> None:
+def stage(prefix: Path, bundle: Path, *, native: bool = False,
+          documentation: Path | None = None) -> None:
     """Stage the explicit dependency closure without implicit DLL search."""
     vendor = bundle / ("vendor" if native else "_internal/vendor")
     vendor.mkdir(parents=True, exist_ok=True)
@@ -106,10 +107,11 @@ def stage(prefix: Path, bundle: Path, *, native: bool = False) -> None:
         if key in manifest
     }
     (vendor / MANIFEST).write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
-    shutil.copytree(prefix / "licenses", bundle / "THIRD_PARTY_LICENSES/libav-preview", dirs_exist_ok=True)
-    (bundle / "THIRD_PARTY_SOURCES").mkdir(exist_ok=True)
+    documentation = bundle if documentation is None else documentation
+    shutil.copytree(prefix / "licenses", documentation / "THIRD_PARTY_LICENSES/libav", dirs_exist_ok=True)
+    (documentation / "THIRD_PARTY_SOURCES").mkdir(exist_ok=True)
     for source in (prefix / "source").glob("*.asc"):
-        shutil.copy2(source, bundle / "THIRD_PARTY_SOURCES" / source.name)
+        shutil.copy2(source, documentation / "THIRD_PARTY_SOURCES" / source.name)
     executables = [bundle / "bilikara-desktop-host.exe"] if native else [bundle / "_internal/rust" / name for name in ("bilikara_rust.dll", "bilikara_runtime.dll")]
     for executable in executables:
         mandatory = pe_info(executable)
@@ -118,11 +120,10 @@ def stage(prefix: Path, bundle: Path, *, native: bool = False) -> None:
     # Ship rebuild sources, not historical Linux acceptance notes containing
     # workstation paths. This also excludes developer outputs/private fixtures.
     for name in ("probe.h", "probe.c", "remux.c", "test_shim.c", "windows_io.h", "build.py",
-                 "build-windows.sh", "prepare-windows.ps1", "fixtures/synthetic.h264"):
-        destination = bundle / "THIRD_PARTY_SOURCES/media-libav" / name
+                 "build-windows.sh", "build-windows-libraries.sh", "prepare-windows.ps1", "fixtures/synthetic.h264"):
+        destination = documentation / "THIRD_PARTY_SOURCES/media-libav" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "media-libav" / name, destination)
-    shutil.copy2(ROOT / "media-libav/PACKAGING.md", bundle / "LIBAV_PACKAGING.md")
 
 
 if __name__ == "__main__":

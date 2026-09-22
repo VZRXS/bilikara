@@ -158,6 +158,7 @@ pub(super) fn read(context: &HostContext, path: &str, query: &str) -> Result<Val
         "/api/gatcha/pool-config" => return pool(&context.directory),
         "/api/gatcha/search" => GatchaOperation::Search {
             query: search,
+            offset,
             limit: limit.min(500),
         },
         "/api/gatcha/browse" => GatchaOperation::BrowseUid {

@@ -12,20 +12,21 @@
   gap: 0;
   box-sizing: border-box;
   padding: 14px 16px;
-  border: var(--settings-panel-border);
-  border-radius: 20px;
+  border: var(--modal-card-border);
+  border-radius: 18px;
   color: var(--ink);
-  background: var(--settings-panel-bg);
-  box-shadow: var(--shadow);
+  background: var(--modal-card-bg);
+  box-shadow: var(--rating-card-shadow);
   user-select: text;
 }
 
 /* The Host's legacy .remote-card theme rule intentionally keeps ordinary
    page cards translucent. Remote-access cards are floating menus, so keep
    all three owners (Host, fullscreen, and presentation output) on the same
-   opaque settings surface instead of allowing content to show through. */
+   shared dialog surface instead of allowing content to show through. */
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-access-card {
-  background: var(--settings-panel-bg);
+  background: var(--modal-card-bg);
+  border: var(--modal-card-border);
 }
 
 /* A compact surface without an active public room uses the same local-entry

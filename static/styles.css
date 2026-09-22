@@ -180,12 +180,10 @@
   --theme-preview-active-border: var(--on-accent);
 
   --modal-backdrop-bg: rgba(29, 26, 24, 0.24);
-  --modal-backdrop-blur: 6px;
+  --modal-backdrop-blur: 0px;
   --rating-card-bg: rgba(255, 250, 244, 0.96);
   --rating-card-border: 1px solid rgba(87, 63, 43, 0.12);
   --rating-card-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
-  --rating-close-bg: rgba(109, 98, 88, 0.16);
-  --rating-close-hover-bg: rgba(109, 98, 88, 0.28);
   --rating-tab-bg: rgba(67, 53, 41, 0.05);
   --rating-tab-border: 1px solid var(--line);
   --rating-tab-color: var(--muted);
@@ -361,11 +359,20 @@ p {
   overflow-y: auto;
   overscroll-behavior: contain;
   border-radius: 18px;
-  border: 1px solid rgba(208, 90, 63, 0.16);
-  background: var(--settings-panel-bg);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(16px);
+  border: var(--modal-card-border);
+  background: var(--modal-card-bg);
+  box-shadow: var(--rating-card-shadow);
   z-index: var(--host-layer-confirm);
+  animation: scale-from-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.confirm-popover.closing {
+  pointer-events: none;
+  animation: scale-to-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-popover, .confirm-popover.closing { animation-duration: 1ms; }
 }
 
 .confirm-popover.confirm-popover-wide {
@@ -405,10 +412,10 @@ p {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   padding: 22px;
-  border-radius: 24px;
+  border-radius: 18px;
   border: var(--modal-card-border);
   background: var(--modal-card-bg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--rating-card-shadow);
 }
 
 /* Binding has a header, a bounded scrolling body, and an always-visible footer. */
@@ -593,7 +600,7 @@ p {
   padding-top: 14px;
   padding-bottom: 2px;
   border-top: 1px solid rgba(87, 63, 43, 0.08);
-  background: #fffaf4;
+  background: transparent;
 }
 
 .gatcha-pool-config-card .selection-modal-actions {
@@ -633,7 +640,6 @@ p {
 .export-field { min-width: 0; display: grid; gap: 8px; }
 .export-field.hidden { display: none; }
 .export-field label { font-size: 13px; font-weight: 700; }
-.confirm-popover .cache-advanced-info:not(.is-visible) .cache-advanced-tooltip { display: none; }
 .cache-advanced-tooltip[popover] {
   position: fixed;
   inset: auto;
@@ -730,6 +736,17 @@ p {
   font-size: 14px;
 }
 
+#native-session-choice-error:not(:empty) {
+  margin-top: 6px;
+  color: var(--red);
+  font-size: 14px;
+}
+
+#native-session-dismiss:not(.is-close-glyph) .close-icon,
+#native-session-dismiss.is-close-glyph [data-session-countdown] {
+  display: none;
+}
+
 .backup-actions {
   display: flex;
   gap: 10px;
@@ -792,11 +809,11 @@ p {
 }
 
 .banner-close {
+  background: var(--close-control-bg);
+  color: var(--ink);
   font: 400 20px/0 sans-serif;
   padding: 0;
-  transform-origin: center;
   transition:
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
     background 180ms ease,
     color 180ms ease,
     box-shadow 180ms ease;
@@ -804,8 +821,8 @@ p {
 
 .banner-close:hover,
 .banner-close:focus-visible {
-  background: rgba(208, 90, 63, 0.14);
-  color: var(--accent-deep);
+  background: var(--close-control-hover-bg);
+  color: var(--ink);
 }
 
 .icon-button:hover,
@@ -817,14 +834,6 @@ p {
 .compact-form button:hover,
 .mode-button:hover {
   transform: translateY(-1px);
-}
-
-.banner-close:hover {
-  transform: scale(1.04);
-}
-
-.banner-close:active:not(:disabled) {
-  transform: scale(0.96);
 }
 
 .banner-close:focus-visible {
@@ -1096,8 +1105,13 @@ h2 {
   right: 0;
   left: auto;
   visibility: hidden;
-  transform: translateY(0);
-  transition: visibility 0s linear 0s;
+  opacity: 0;
+  transform: scale(0.96);
+  transform-origin: top right;
+  transition:
+    opacity 200ms ease-out,
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 200ms;
   pointer-events: none;
   z-index: 130;
 }
@@ -1106,7 +1120,9 @@ h2 {
 .remote-mini-control:not(.is-qr-dismissed):focus-within .remote-mini-popover,
 .remote-mini-control.is-qr-pinned .remote-mini-popover {
   visibility: visible;
-  transform: translateY(0);
+  opacity: 1;
+  transform: scale(1);
+  transition-delay: 0s;
   pointer-events: auto;
 }
 
@@ -1542,22 +1558,6 @@ h2 {
   text-align: right;
 }
 
-.cache-panel-tool-list {
-  display: grid;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.cache-panel-tool-list p {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--muted);
-}
-
 .bbdown-login-badge {
   display: inline-grid;
   place-items: center;
@@ -1610,10 +1610,17 @@ h2 {
   opacity: 1;
 }
 
-.cache-panel-tool-indicator {
-  width: 18px;
-  height: 18px;
-  flex-basis: 18px;
+.host-account-settings { min-width: 0; }
+#cache-panel > .host-account-settings.is-logged { display: none; }
+#bbdown-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .bbdown-login-panel {
@@ -2047,12 +2054,13 @@ h2 {
 
 .cache-panel-row-double {
   display: flex;
+  flex-wrap: wrap;
   gap: 20px;
   width: 100%;
 }
 
 .cache-double-col {
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2303,11 +2311,12 @@ h2 {
   overflow: hidden;
   visibility: hidden;
   opacity: 0;
-  transform: translateY(-5px);
+  transform: scale(0.96);
+  transform-origin: top right;
   transition:
-    opacity 130ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    transform 130ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    visibility 0s linear 130ms;
+    opacity 200ms ease-out,
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 200ms;
   pointer-events: none;
   z-index: 12;
 }
@@ -3103,7 +3112,12 @@ body.is-tauri-fullscreen-active {
   border-radius: 16px;
   background: var(--settings-panel-bg);
   box-shadow: 0 18px 46px rgba(35, 26, 20, 0.24);
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 200ms ease-out, transform 200ms cubic-bezier(0.16, 1, 0.3, 1), display 200ms allow-discrete;
 }
+.audio-variant-popover[hidden] { opacity: 0; transform: scale(0.96); }
+@starting-style { .audio-variant-popover { opacity: 0; transform: scale(0.96); } }
 .audio-variant-popover .audio-variant-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3601,6 +3615,7 @@ select:disabled {
 .session-user-list {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   align-content: flex-start;
   gap: 10px;
   max-height: 340px;
@@ -3636,6 +3651,44 @@ select:disabled {
   cursor: grab;
   user-select: none;
   transition: opacity 0.2s, transform 0.2s;
+}
+
+/* One session-user subtree and action surface for pointer and touch layouts. */
+.session-user-name {
+  min-width: 0;
+  min-height: var(--session-user-row-height);
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.session-user-badge.is-actions-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  height: auto;
+  min-width: 184px;
+  border-radius: 20px;
+}
+.android-user-actions:not([hidden]) { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; padding: 4px 0; }
+.android-user-actions button { min-width: 40px; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--panel); }
+.android-user-actions button[data-user-action="remove"] { color: var(--red); }
+html[data-host-touch-users="true"] .session-user-list { padding: 0 0 10px; }
+html[data-host-touch-users="true"] .session-user-badge {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  height: auto;
+  min-height: 44px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 12px;
+  cursor: pointer;
+  -webkit-touch-callout: none;
 }
 
 .session-user-badge:active {
@@ -4240,8 +4293,15 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.queue-current-next {
+.queue-current-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-current-rating,
+.queue-current-next {
   flex-shrink: 0;
   width: fit-content;
   height: 32px;
@@ -6471,7 +6531,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 .category-browser-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
   gap: 16px;
   align-content: start;
 }
@@ -6907,25 +6967,18 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   display: grid;
   place-items: center;
   padding: 0;
-  background: var(--rating-close-bg);
+  background: var(--close-control-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
   cursor: pointer;
-  transform-origin: center;
   transition:
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
     background 180ms ease,
     color 180ms ease,
     box-shadow 180ms ease;
 }
 
 .rating-close:hover {
-  background: var(--rating-close-hover-bg);
-  transform: scale(1.04);
-}
-
-.rating-close:active:not(:disabled) {
-  transform: scale(0.96);
+  background: var(--close-control-hover-bg);
 }
 
 .rating-close:focus-visible {
@@ -7440,8 +7493,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --rating-card-bg: rgba(8, 18, 32, 0.96);
   --rating-card-border: 1px solid rgba(125, 211, 252, 0.2);
   --rating-card-shadow: 0 24px 90px rgba(2, 8, 23, 0.72), 0 0 36px rgba(56, 189, 248, 0.14);
-  --rating-close-bg: rgba(148, 202, 233, 0.14);
-  --rating-close-hover-bg: rgba(148, 202, 233, 0.24);
   --rating-tab-bg: rgba(2, 6, 23, 0.44);
   --rating-tab-border: 1px solid rgba(125, 211, 252, 0.22);
   --rating-tab-color: #93a9bd;
@@ -7660,7 +7711,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 :root:is([data-theme="dark"], [data-theme="blue"]) .selection-modal-actions {
-  background: var(--dark-surface-strong-bg);
   border-top-color: var(--dark-surface-border-color);
 }
 
@@ -7669,7 +7719,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   border-top-color: transparent;
 }
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .banner-close,
 :root:is([data-theme="dark"], [data-theme="blue"]) .icon-button:not(.danger),
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-toggle,
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .secondary-button,
@@ -7683,7 +7732,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   color: var(--ink);
 }
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .banner-close:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .icon-button:not(.danger):hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-toggle:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .secondary-button:hover,
@@ -8380,6 +8428,8 @@ body {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.request-mode-back { display: none; }
+
 .request-mode-head {
   min-width: 0;
   display: flex;
@@ -8665,11 +8715,6 @@ body {
   border-radius: 18px;
 }
 
-.request-workspace .song-detail-close {
-  /* Keep the scaled hover/focus target inside the view's 14px side padding. */
-  right: -8px;
-}
-
 .request-workspace .song-detail-hero {
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
@@ -8695,11 +8740,6 @@ body {
   .request-workspace .song-detail-facts {
     padding: 2px 0;
   }
-}
-
-:root:is([data-theme="dark"], [data-theme="blue"]) .request-subview-tabs,
-:root:is([data-theme="dark"], [data-theme="blue"]) .request-mode-tabs {
-  background: rgba(5, 8, 16, 0.42);
 }
 
 .bottom-grid {
@@ -8885,6 +8925,7 @@ body {
   .topbar .remote-mini-trigger,
   .topbar .status-chip-toggle,
   .queue-view-tab,
+  .queue-current-rating,
   .queue-current-next,
   .menu-toggle,
   .menu-content .queue-move-button {
@@ -9274,12 +9315,12 @@ body[data-tauri-platform="linux"] .app-shell {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translate(-8px, 8px) scale(0.96);
-  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+  transform: scale(0.96);
+  transition: opacity 200ms ease-out, transform 200ms cubic-bezier(0.16, 1, 0.3, 1), visibility 200ms ease-out;
 }
 
 .stage-control-tray[data-popover-direction="down"] {
-  transform: translate(-8px, -8px) scale(0.96);
+  transform: scale(0.96);
 }
 
 .stage-control-tray[hidden] {
@@ -9536,6 +9577,18 @@ body[data-tauri-platform="linux"] .app-shell {
 .host-workspace-region .session-user-stage {
   min-height: 0;
   overflow: hidden;
+}
+
+/* With an on-screen keyboard, let the user section scroll as one region
+   instead of squeezing its badge list beneath the fixed form and help rows. */
+@media (max-height: 480px) {
+  .host-workspace-region .session-users-panel {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .host-workspace-region .session-users-panel > * { flex: 0 0 auto; }
+  .host-workspace-region .session-user-list { max-height: none; overflow: visible; }
 }
 
 .work-rail {
@@ -10019,6 +10072,7 @@ body.is-presentation-stage-only .left-column {
 .player-panel > .panel-head .stage-actions {
   position: static;
   inset: auto;
+  align-self: start;
   width: auto;
   height: auto;
 }
@@ -10038,7 +10092,8 @@ body.is-presentation-stage-only .left-column {
 }
 
 :root:not([data-android-layout="portrait"]) .request-workspace-head > .host-peer-heading {
-  display: block;
+  display: grid;
+  gap: 3px;
   flex: 0 0 auto;
   max-width: 100%;
 }
@@ -10085,6 +10140,7 @@ body.is-presentation-stage-only .left-column {
 }
 
 .critical-banner-region .backup-actions .banner-action,
+.critical-banner-region .backup-actions .next-button,
 .critical-banner-region .backup-actions .banner-close,
 .selection-modal-actions .toolbar-button,
 .selection-modal-actions .next-button,
@@ -10299,75 +10355,28 @@ body.is-presentation-stage-only .left-column {
   justify-self: end;
 }
 
-/* The session-user prerequisite is inserted after the query form. Pin every
-   child to its semantic row so the extra notice cannot take the results row. */
-.request-discover-view .tag-browser > .tag-browser-search {
-  grid-row: 1;
+/* Browse search shares its navigation row. Keep the session-user notice
+   outside that animated row and reserve the remaining height for results. */
+.request-discover-view .tag-browser {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
-
-.request-discover-view .tag-browser > .tag-browser-alphabet {
-  grid-row: 2;
-}
-
-.request-discover-view .tag-browser > .tag-browser-nav {
-  grid-row: 3;
-}
-
-.request-discover-view .tag-browser > :is(.tag-browser-tags, [data-d1-browse-results]) {
-  grid-row: 4;
-}
-
-.request-discover-view .tag-browser > .tag-browser-message {
-  grid-row: 5;
-}
-
+.request-discover-view .tag-browser > .tag-browser-alphabet { grid-row: 1; }
+.request-discover-view .tag-browser > .browse-search-bar { grid-row: 2; }
+.request-discover-view .tag-browser > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 3; }
 .request-discover-view .tag-browser.has-request-session-user-notice {
-  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
-
-.request-discover-view .tag-browser.has-request-session-user-notice > .request-session-user-notice {
-  grid-row: 2;
-}
-
-.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-alphabet {
-  grid-row: 3;
-}
-
-.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-nav {
-  grid-row: 4;
-}
-
-.request-discover-view .tag-browser.has-request-session-user-notice > :is(.tag-browser-tags, [data-d1-browse-results]) {
-  grid-row: 5;
-}
-
-.request-discover-view .tag-browser.has-request-session-user-notice > .tag-browser-message {
-  grid-row: 6;
-}
-
+.request-discover-view .tag-browser.has-request-session-user-notice > .request-session-user-notice { grid-row: 3; }
+.request-discover-view .tag-browser.has-request-session-user-notice > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 4; }
+.request-discover-view .category-browser-detail,
+.request-sources-view .follow-up-items-view { grid-template-rows: auto minmax(0, 1fr); }
+.request-discover-view .category-browser-detail > .browse-search-bar { grid-row: 1; }
+.request-discover-view .category-browser-detail > .category-browser-results { grid-row: 2; }
 .request-discover-view .category-browser-detail.has-request-session-user-notice {
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
-
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-search {
-  grid-row: 1;
-}
-
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .request-session-user-notice {
-  grid-row: 2;
-}
-
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-tabs {
-  grid-row: 3;
-}
-
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-results {
-  grid-row: 4;
-}
-
-.request-discover-view .category-browser-detail.has-request-session-user-notice > .tag-browser-message {
-  grid-row: 5;
-}
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .request-session-user-notice { grid-row: 2; }
+.request-discover-view .category-browser-detail.has-request-session-user-notice > .category-browser-results { grid-row: 3; }
 
 /* In an UP detail, only the card list scrolls; its title and query controls
    remain fixed and the outer Sources scrollbar is suppressed. */
@@ -10604,17 +10613,9 @@ body.is-presentation-stage-only .left-column {
   font-size: 18px;
 }
 
-.service-status-wrap .tool-status-indicator.is-ready,
-.cache-panel-tool-indicator.is-ready {
+.service-status-wrap .tool-status-indicator.is-ready {
   background: var(--tool-ready-bg);
   color: var(--green);
-}
-
-.topbar .cache-panel .cache-panel-tool-indicator {
-  width: 18px;
-  height: 18px;
-  flex-basis: 18px;
-  font-size: 12px;
 }
 
 /* v0.8 Windows application frame: Tauri/DWM owns the external shadow,
@@ -10672,6 +10673,11 @@ body[data-tauri-platform="windows"] .window-controls {
   height: 32px;
   align-self: stretch;
   justify-self: end;
+}
+
+body[data-tauri-platform="windows"] .window-control-button {
+  min-height: 0;
+  max-height: 100%;
 }
 
 body[data-tauri-platform="windows"] .host-brand {
@@ -11129,7 +11135,6 @@ body.is-tauri-fullscreen-active .left-column {
   height: 18px;
 }
 
-.topbar .cache-panel .cache-panel-tool-indicator,
 .topbar .service-status-wrap .tool-status-indicator {
   width: 18px;
   height: 18px;
@@ -11713,7 +11718,7 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) .native-alpha-
    Keep the shared UI and supported queue/player/login controls intact. */
 html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
   #application-restart-row, #diagnostic-package-button,
-  #developer-mode-trigger, #ffmpeg-status-row
+  #developer-mode-trigger
 ) { display: none !important; }
 
 /* The desktop tray's fixed, non-wrapping rows can start off-screen on a
@@ -11858,7 +11863,45 @@ body[data-window-focused="false"] .window-control-button { color: var(--muted); 
 body[data-window-focused="false"] .window-close-button:hover { color: #fff; }
 
 /* Desktop preview keeps the desktop layout; these actions await parity. */
-html[data-host-platform="desktop"] :is(#developer-mode-trigger, #diagnostic-package-button, #application-restart-row) { display: none !important; }
+html[data-host-platform="desktop"] #application-restart-row { display: none !important; }
+
+/* Host floating surfaces share the volume editor's treatment in every theme.
+   Embedded controls and the startup banner retain their page/banner layout. */
+:root :is(.confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
+  .rating-card, .volume-adjust-popover, .audio-variant-popover,
+  .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
+  border: var(--modal-card-border);
+  border-radius: 18px;
+  background: var(--modal-card-bg);
+  box-shadow: var(--rating-card-shadow);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root :is(.selection-modal-head h2, .app-shell .song-detail-title, .rating-title, .volume-adjust-heading h2) {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: normal;
+  white-space: normal;
+}
+html .song-detail-view, html .selection-modal-backdrop, html .rating-modal-backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html .volume-adjust-popover::backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cache-advanced-tooltip { transition-duration: 1ms; transition-delay: 0s; }
+  :root :is(.remote-mini-popover, .fullscreen-remote-popover, .audio-variant-popover, .stage-control-tray) {
+    transition-duration: 1ms;
+    transition-delay: 0s;
+  }
+}
 
 .desktop-rust-preview-notice { color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
 
@@ -11866,4 +11909,31 @@ html[data-host-platform="desktop"] :is(#developer-mode-trigger, #diagnostic-pack
 
 :root[data-host-input-modality="pointer"] input[type="range"]:not(.cache-limit-slider):focus {
   outline: none;
+}
+
+/* The summary belongs to the card, outside its scrolling results. */
+.request-search-view > .request-mode-panel { position: relative; }
+.request-search-view > .request-mode-panel:has(> .host-search-summary:not([hidden])) { padding-bottom: 42px; }
+.host-search-summary {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.host-search-summary[hidden] { display: none; }
+
+.queue-current-actions .queue-current-rating {
+  background: #fff;
+  color: #211d19;
+  border-color: transparent;
+}
+
+/* The badge owns its size; the name is an accessible action, not a second pill. */
+.session-user-badge .session-user-name {
+  min-height: 0; padding: 0; border: 0; border-radius: 0;
+  background: transparent; box-shadow: none; color: inherit; font: inherit;
+  transform: none; cursor: inherit;
 }

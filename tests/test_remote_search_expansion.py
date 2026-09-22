@@ -38,6 +38,7 @@ class RemoteSearchExpansionTest(unittest.TestCase):
         script = f"""
 const searchResultItemByElement = new WeakMap();
 const remoteResultPagers = new WeakMap();
+const window = {{}}; // Optional field presentation runs in the installed browser test.
 {self.hide_pager_source}
 
 function mockElement(id) {{
@@ -124,7 +125,8 @@ const item2 = { bvid: "BV2", title: "anime 2" };
 elements.larkSearchQuery.value = "anime";
 await elements.larkSearchQuery.dispatch("input");
 const searchPromise = elements.larkSearchForm.dispatch("submit");
-resolvers.get("anime").resolve([item1, item2]);
+await elements.larkSearchForm.dispatch("submit"); // Duplicate while pending must not read again.
+resolvers.get("anime").resolve({items:[item1, item2]});
 await searchPromise;
 console.log(JSON.stringify({
   requests,
@@ -153,7 +155,7 @@ const pending = {
   emptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
   hidden: elements.larkSearchResults.classList.contains("hidden"),
 };
-resolvers.get("anime").resolve([]);
+resolvers.get("anime").resolve({items:[]});
 await searchPromise;
 console.log(JSON.stringify({
   pending,
@@ -181,9 +183,9 @@ elements.larkSearchQuery.value = "query A";
 const requestA = elements.larkSearchForm.dispatch("submit");
 elements.larkSearchQuery.value = "query B";
 const requestB = elements.larkSearchForm.dispatch("submit");
-resolvers.get("query B").resolve([itemB]);
+resolvers.get("query B").resolve({items:[itemB]});
 await requestB;
-resolvers.get("query A").resolve([itemA]);
+resolvers.get("query A").resolve({items:[itemA]});
 await requestA;
 console.log(JSON.stringify({
   canonicalQuery: canonicalBilikaraSearch.query,

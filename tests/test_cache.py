@@ -1025,64 +1025,44 @@ class CacheManagerPolicyTest(unittest.TestCase):
             manager.shutdown()
 
 
-    def test_macos_direct_metadata_enables_prepare_without_homebrew_or_path(self):
-        root = Path(self.temp_dir.name) / "macos-direct-status"
-        executable = root / "bilikara.app" / "Contents" / "MacOS" / "bilikara"
-        metadata_path = (
-            executable.parent.parent / "Resources" / "vendor" / "aria2-macos.json"
-        )
-        metadata_path.parent.mkdir(parents=True)
-        revision = "a" * 40
-        asset_name = f"aria2-1.37.0-macos-arm64-{revision}.tar.gz"
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "tool": "aria2c",
-                    "provider": "bilikara-r2",
-                    "platform": "darwin",
-                    "arch": "arm64",
-                    "name": asset_name,
-                    "url": f"https://download.example/bilikara/tools/aria2/1.37.0/{revision}/{asset_name}",
-                    "sha256": "b" * 64,
-                    "version": "1.37.0",
-                    "source_url": (
-                        "https://github.com/aria2/aria2/releases/download/"
-                        "release-1.37.0/aria2-1.37.0.tar.xz"
-                    ),
-                    "source_sha256": (
-                        "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
-                    ),
-                    "recipe_revision": revision,
-                }
-            ),
-            encoding="utf-8",
-        )
+    def test_native_aria2_prepare_status_does_not_use_python_platform_discovery(self):
+        root = Path(self.temp_dir.name)
         aria2_dir = root / "tools" / "aria2c"
+        vendor = root / "vendor"
+        internal = root / "internal-vendor"
+        decision = {
+            "ready": False, "auto_prepare_supported": True,
+            "path": str(aria2_dir / "aria2c"), "version": "",
+            "message": "Pinned native preparation is available", "kind": "unavailable",
+        }
+        # Platform/metadata/PATH policy now belongs to Rust. A Python platform
+        # mock cannot change the compiled runtime or the runner's installed tools.
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.ARIA2C_DIR", aria2_dir
         ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
-            "bilikara.cache.ARIA2_MACOS_METADATA_PATH",
-            root / "missing-vendor" / "aria2-macos.json",
-        ), patch("bilikara.cache.INTERNAL_VENDOR_DIR", root / "missing-internal"), patch(
-            "bilikara.cache.TOOL_ASSET_BASE_URL",
-            "https://download.example/bilikara/tools",
-        ), patch("bilikara.cache.PACKAGED_RUNTIME", True), patch(
-            "bilikara.cache.sys.executable", str(executable)
-        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None), patch.object(
-            CacheManager, "_brew_executable", return_value=None
+            "bilikara.cache.VENDOR_DIR", vendor
+        ), patch("bilikara.cache.INTERNAL_VENDOR_DIR", internal), patch(
+            "bilikara.cache.rust_runtime.configure_aria2", return_value=decision
+        ) as configure, patch.object(
+            CacheManager, "_system_aria2c_path", side_effect=AssertionError("Python PATH policy")
         ), patch.object(
-            CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")
+            CacheManager, "_brew_executable", side_effect=AssertionError("Python platform policy")
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+                configure.assert_called_once_with(
+                    owner=manager._artifact_owner, directory=aria2_dir,
+                    override_path=None, vendor_roots=[vendor, internal], install=False,
+                )
             finally:
                 manager.shutdown()
 
         self.assertFalse(status["ready"])
         self.assertTrue(status["auto_prepare_supported"])
         self.assertTrue(status["requires_prepare"])
+        for key, value in decision.items():
+            self.assertEqual(status[key], value)
 
     def test_macos_direct_prepare_downloads_validates_and_publishes_atomically(self):
         root = Path(self.temp_dir.name) / "macos-direct-install"

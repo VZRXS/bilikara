@@ -325,6 +325,21 @@ class BuildBundleTest(unittest.TestCase):
                 clear=False,
             ):
                 build_bundle._write_release_compliance_files()
+                native_dir = root_dir / "native/license"
+                native_licenses = native_dir / "THIRD_PARTY_LICENSES"
+                (native_licenses / "libav").mkdir(parents=True)
+                (native_licenses / "libav/COPYING.LGPLv2.1").write_text("staged LGPL text\n")
+                with patch("build_bundle._resolved_bundle_binary_paths", return_value=({"BBDown": bbdown}, [])):
+                    build_bundle._write_release_compliance_files(native_dir, native=True)
+
+            self.assertEqual((native_dir / "THIRD_PARTY_SOURCES" / source_archive.name).read_bytes(), source_archive.read_bytes())
+            self.assertEqual((native_licenses / "libav/COPYING.LGPLv2.1").read_text(), "staged LGPL text\n")
+            self.assertEqual((native_licenses / "BBDown-LICENSE.txt").read_text(), "BBDown MIT text\n")
+            native_notice = (native_licenses / "libav-source.txt").read_text()
+            self.assertIn("FFmpeg and ffprobe executables are not bundled", native_notice)
+            self.assertIn(source_archive.name, native_notice)
+            for obsolete in ("ffmpeg-source.txt", "ffmpeg-version.txt", "ffprobe-version.txt", "FFmpeg-COPYING.LGPLv2.1.txt"):
+                self.assertFalse((native_licenses / obsolete).exists(), obsolete)
 
             self.assertTrue((dist_dir / "LICENSE").exists())
             self.assertTrue((dist_dir / "LEGAL.md").exists())

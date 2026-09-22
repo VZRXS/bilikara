@@ -713,9 +713,7 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         geometry_diagnostic("hide_before_restore", "error_ignored");
     }
 
-    let native_directory = std::env::var_os("BILIKARA_NATIVE_DATA_DIR")
-        .or_else(|| std::env::var_os("BILIKARA_DESKTOP_RUST_PREVIEW_DIR"))
-        .map(PathBuf::from);
+    let native_directory = crate::desktop_storage::native_data_override();
     let path = if let Some(root) = native_directory.as_ref() {
         // A rejected/uninitialized preview must not touch a supplied normal directory.
         (fs::read(root.join(".bilikara-desktop-rust-preview"))
@@ -724,11 +722,20 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
             == Some(b"desktop-rust-preview-v1\n"))
         .then(|| root.join(GEOMETRY_FILENAME))
     } else {
-        app.path()
-            .app_config_dir()
-            .map(|directory| directory.join(GEOMETRY_FILENAME))
-            .map_err(|_| ())
-            .ok()
+        #[cfg(windows)]
+        {
+            crate::desktop_storage::webview_directory(app.config())
+                .ok()
+                .and_then(|directory| directory.parent().map(|root| root.join(GEOMETRY_FILENAME)))
+        }
+        #[cfg(not(windows))]
+        {
+            app.path()
+                .app_config_dir()
+                .map(|directory| directory.join(GEOMETRY_FILENAME))
+                .map_err(|_| ())
+                .ok()
+        }
     };
     let saved = path.as_deref().and_then(|path| match load_geometry(path) {
         Ok(Some(geometry)) if stored_geometry_is_valid(&geometry) => Some(geometry),

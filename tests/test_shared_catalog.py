@@ -161,6 +161,45 @@ class CatalogFixtureTest(unittest.TestCase):
         self.assertNotIn("Authorization",self.calls[0][3])
         self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(self.calls[0][1]).query)["keyword"],["日本語"])
 
+    def test_search_pages_preserve_server_count_and_cache_without_count_probes(self):
+        items = [{"bvid": f"BV{index:010}", "title": f"Song {index}"} for index in range(221)]
+        def reply(method, path, *_):
+            self.assertEqual(method, "GET")
+            parsed = urllib.parse.urlsplit(path)
+            self.assertEqual(parsed.path, "/search", "No count endpoint or full-table scan")
+            params = urllib.parse.parse_qs(parsed.query)
+            offset = int(params.get("offset", [0])[0])
+            limit = int(params["limit"][0])
+            self.assertLessEqual(limit, 80, "Never expand the requested page to a ranked prefix")
+            return 200, {"data": {"items": items[offset:offset + limit], "offset": offset, "total": 221}}
+        self.reply = reply
+        for offset in [0, 80, 160, 80, 0]:
+            page = catalog.read_catalog("/api/catalog/search", f"q=Song&offset={offset}&limit=80")
+            self.assertEqual(page["matched_count"], 221)
+            self.assertEqual(page["offset"], offset)
+            self.assertEqual(len(page["items"]), min(80, 221 - offset))
+            self.assertEqual(page["items"][0]["bvid"], items[offset]["bvid"])
+            self.assertEqual(page["has_more"], offset < 160)
+        self.assertEqual(len(self.calls), 3, "Back navigation reuses cached pages")
+        catalog.read_catalog("/api/lark/search", "q=Song&limit=80")
+        self.assertEqual(len(self.calls), 3, "Default and explicit zero offset share the cache")
+
+    def test_search_rejects_ignored_offset_without_repeating_or_growing_reads(self):
+        self.reply = lambda *_: (200, [self.item])
+        page = catalog.read_catalog("/api/catalog/search", "q=legacy&offset=0&limit=80")
+        self.assertNotIn("has_more", page)
+        self.assertNotIn("matched_count", page)
+        with self.assertRaises(catalog.CatalogError) as error:
+            catalog.read_catalog("/api/catalog/search", "q=legacy&offset=80&limit=80")
+        self.assertEqual(error.exception.code, "catalog_pagination_unavailable")
+        self.assertEqual(len(self.calls), 2, "No automatic prefix retry or Sheets fallback")
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.calls[-1][1]).query)
+        self.assertEqual(params["limit"], ["80"])
+        self.assertEqual(params["offset"], ["80"])
+        with self.assertRaises(catalog.CatalogError):
+            catalog.read_catalog("/api/catalog/search", "q=legacy&offset=100001")
+        self.assertEqual(len(self.calls), 2)
+
     def test_empty_primary_result_is_success_without_fallback(self):
         self.assertEqual(catalog.search_catalog("missing"),[])
         self.assertEqual(catalog.search_catalog("missing"),[])

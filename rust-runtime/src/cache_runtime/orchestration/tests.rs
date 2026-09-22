@@ -264,6 +264,9 @@ impl Fixture {
             .is_none()
         );
         let owner = app.open_artifact_lifetime(&root).unwrap();
+        // apply() receives the same canonical root as the production adapter.
+        // macOS temp aliases and Windows extended paths otherwise fail admission.
+        let root = root.canonicalize().unwrap();
         Self {
             app,
             state: RuntimeState::default(),
@@ -476,6 +479,7 @@ fn window_retains_three_ready_items_and_progress_sync_reserves_nothing() {
                 item_id: "a".into(),
                 cache_attempt_token: token,
                 event: CacheEvent::Progress {
+                    download: None,
                     message: Some("progress".into()),
                     progress: 25.0
                 },
@@ -699,13 +703,7 @@ fn captured_reuse_cannot_override_replacement_and_stop_wins_late_admission() {
     f.add("a");
     f.ready("a");
     let reuse = Reuse::inspect(&f.app.cache_items().unwrap(), &[], &f.facts);
-    let gate = Arc::new(Barrier::new(2));
-    let next = gate.clone();
-    let shared = Arc::new(Mutex::new(f));
-    let actor = shared.clone();
     let thread = thread::spawn(move || {
-        next.wait();
-        let mut f = actor.lock().unwrap();
         f.app.execute(AppStateRequest::RemoveItem {
             schema_version: 1,
             item_id: "a".into(),
@@ -713,11 +711,11 @@ fn captured_reuse_cannot_override_replacement_and_stop_wins_late_admission() {
         });
         f.add("a");
         f.run(Action::Stop).unwrap();
-        next.wait();
+        f
     });
-    gate.wait();
-    gate.wait();
-    let mut f = shared.lock().unwrap();
+    // Join preserves capture -> replacement/stop -> late admission ordering,
+    // and propagates a worker panic instead of stranding a barrier participant.
+    let mut f = thread.join().unwrap();
     let Fixture {
         app,
         state,
@@ -725,7 +723,7 @@ fn captured_reuse_cannot_override_replacement_and_stop_wins_late_admission() {
         facts,
         owner,
         ..
-    } = &mut *f;
+    } = &mut f;
     assert_eq!(
         orchestration
             .apply(state, app, owner, facts, Action::Reconcile, &reuse)
@@ -734,8 +732,6 @@ fn captured_reuse_cannot_override_replacement_and_stop_wins_late_admission() {
         "stopped"
     );
     assert!(state.jobs.is_empty());
-    drop(f);
-    thread.join().unwrap();
 }
 
 #[test]

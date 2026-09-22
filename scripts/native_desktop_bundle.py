@@ -37,10 +37,12 @@ def selected_target(explicit: str | None) -> str | None:
 
 def stage_resources(destination: Path, executable: Path, *, development: bool,
                     macos_app: bool, prefix: Path | None) -> None:
-    resources = destination / "Contents/Resources" if macos_app else destination
-    code = destination / "Contents/MacOS" if macos_app else destination
-    vendor = destination / "Contents/Frameworks/vendor" if macos_app else destination / "vendor"
-    for directory in (resources, code, vendor):
+    resources = destination / "Contents/Resources" if macos_app else destination / "_internal"
+    code = destination / "Contents/MacOS" if macos_app else resources
+    vendor = destination / "Contents/Frameworks" if macos_app else resources / "vendor"
+    resource_vendor = resources / "vendor"
+    documentation = (resources if macos_app else destination) / "license"
+    for directory in (resources, code, vendor, resource_vendor):
         directory.mkdir(parents=True, exist_ok=True)
     name = "bilikara-desktop-host.exe" if platform.system() == "Windows" else "bilikara-desktop-host"
     if executable.resolve() != (code / name).resolve():
@@ -48,13 +50,27 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
     static = resources / "static"
     if static.exists():
         shutil.rmtree(static)
-    shutil.copytree(bundle.ROOT_DIR / "static", static)
+    source_static = bundle.ROOT_DIR / "static"
+    shutil.copytree(source_static, static,
+                    ignore=lambda directory, names: {"vendor"} if Path(directory) == source_static else set())
+    if (source_static / "vendor").is_dir():
+        shutil.copytree(source_static / "vendor", resource_vendor, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("LICENSE.txt", "README.md"))
+        for document_name in ("LICENSE.txt", "README.md"):
+            source = source_static / "vendor/signalsmith-stretch" / document_name
+            if source.is_file():
+                target = documentation / "THIRD_PARTY_LICENSES/signalsmith-stretch" / document_name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                # Development staging may reuse an earlier destination.
+                (resource_vendor / "signalsmith-stretch" / document_name).unlink(missing_ok=True)
     version = bundle._bundle_version()
     if not re.fullmatch(r"[A-Za-z0-9.+_-]{1,80}", version):
         raise RuntimeError("Invalid trusted build version")
     (resources / "APP_VERSION").write_text(version + "\n", encoding="utf-8")
     (resources / "native-desktop.json").write_text(json.dumps({
         "schema_version": 1, "backend": "rust", "version": version,
+        "resource_layout": "internal-v1",
         "platform": {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()],
         "arch": "arm64" if libav_bundle.native_target().startswith("aarch64") else "x64",
         "development": development,
@@ -70,14 +86,18 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
         raise RuntimeError("Prepare the pinned BBDown vendor before packaging")
     if not development:
         bundle._validate_bbdown_redistribution_metadata(tools)
-    for path in tools.values():
-        shutil.copy2(path, vendor / path.name)
-    resource_vendor = resources / "vendor"
-    resource_vendor.mkdir(exist_ok=True)
-    if macos_app:
-        for source in tools.values():
-            path = vendor / source.name
-            link = resource_vendor / path.name
+    for tool_name, source in tools.items():
+        # Windows PATH lookup may return BBDown.EXE via PATHEXT. Preserve the
+        # published filename independently of that lookup spelling, including
+        # when reusing a development staging directory.
+        filename = tool_name + (".exe" if platform.system() == "Windows" else "")
+        for previous in vendor.iterdir():
+            if previous.name != filename and previous.name.casefold() == filename.casefold():
+                previous.unlink()
+        path = vendor / filename
+        shutil.copy2(source, path)
+        if macos_app:
+            link = resource_vendor / filename
             if link.is_symlink() or link.exists():
                 link.unlink()
             link.symlink_to(os.path.relpath(path, resource_vendor))
@@ -85,7 +105,9 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
     if metadata:
         shutil.copy2(metadata[1].rsplit(";", 1)[0], resource_vendor / "aria2-macos.json")
     if prefix:
-        libav_bundle.stage(prefix, destination, native=True, macos_app=macos_app)
+        libav_bundle.stage(prefix, destination if macos_app else resources,
+                           native=True, macos_app=macos_app,
+                           documentation=documentation)
     elif not development:
         raise RuntimeError("BILIKARA_LIBAV_PREFIX is required for a complete native bundle")
 
@@ -113,7 +135,8 @@ def build_backend(*, development: bool, prepare_shell: bool, target: str | None)
         shutil.rmtree(destination)  # Generated product only; never a user data root.
     stage_resources(destination, executable, development=development, macos_app=macos_app, prefix=prefix)
     if not prepare_shell:
-        bundle._write_release_compliance_files()
+        documentation = (destination / "Contents/Resources" if macos_app else destination) / "license"
+        bundle._write_release_compliance_files(documentation, native=True)
         if macos_app:
             bundle.finalize_macos_app_bundle(destination)
     return destination

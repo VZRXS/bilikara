@@ -7,6 +7,7 @@ fn restart_item(item: &mut PlaylistItem) {
     clear_committed_artifact(item, true);
     item.cache_status = default_cache_status();
     item.cache_progress = 0.0;
+    item.cache_activity_at = 0.0;
     item.cache_message = default_cache_message();
 }
 
@@ -673,6 +674,7 @@ mod tests {
             item_id: "playing".into(),
             cache_attempt_token: active.token,
             event: CacheEvent::Progress {
+                download: None,
                 progress: 0.5,
                 message: Some("Downloading".into()),
             },

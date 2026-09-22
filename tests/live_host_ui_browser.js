@@ -10018,7 +10018,6 @@ async function run() {
     await titlebarPage.locator("#cache-settings-toggle").click();
     const ultraServiceEvidence = await titlebarPage.evaluate(() => {
       syncToolIndicator(elements.serviceStatusIndicator, "ready");
-      syncToolIndicator(elements.ffmpegPanelStatusIndicator, "ready");
       const panel = document.querySelector("#cache-panel");
       const panelRect = panel.getBoundingClientRect();
       const serviceWrap = document.querySelector(".service-status-wrap");
@@ -10057,10 +10056,7 @@ async function run() {
         && ultraServiceEvidence.serviceMark.height === 18
         && ultraServiceEvidence.serviceMarkText === ""
         && ultraServiceEvidence.serviceMarkFontSize === 12
-        && ultraServiceEvidence.rowMarks.every((mark) => mark.text === ""
-          && mark.width === ultraServiceEvidence.serviceMark.width
-          && mark.height === ultraServiceEvidence.serviceMark.height
-          && mark.background === ultraServiceEvidence.serviceMarkBackground)
+        && ultraServiceEvidence.rowMarks.length === 0
         && !ultraServiceEvidence.horizontalPageScroll,
       "ultra-narrow Service settings stacked its desktop rows or diverged from the Web-style ready marks",
       ultraServiceEvidence,

@@ -28,8 +28,10 @@ The independent `zxing-cpp` decoder in `requirements-test-qr.txt` is test-only
 - Official Web release 1.3.2, commit `57b93f4e9206a089a45387eaa39bdc9f310d3308`.
 - Upstream: https://github.com/Signalsmith-Audio/signalsmith-stretch
 - MIT, Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd.
-- Local embedded-WASM module and license: `static/vendor/signalsmith-stretch/`.
-- The adjacent README and `scripts/vendor_signalsmith.py` identify and reproduce
+- Source checkout: embedded-WASM module and license in `static/vendor/signalsmith-stretch/`.
+- Native bundles: module in the internal `vendor/signalsmith-stretch/`; license
+  and README in `license/THIRD_PARTY_LICENSES/signalsmith-stretch/`.
+- The source README and `scripts/vendor_signalsmith.py` identify and reproduce
   the JavaScript lifecycle adaptation. The compiled DSP is unchanged.
 
 ## 1. bilikara
@@ -58,39 +60,24 @@ It does not apply to third-party tools, platform content, downloaded media, cach
   - BBDown's README includes its own usage notice. Users and redistributors should review the upstream repository before use or redistribution.
   - Account data such as `BBDown.data`, cookies, or tokens may contain sensitive user information and must not be shared, committed, uploaded, or published.
 
-## 3. FFmpeg and FFprobe
+## 3. FFmpeg libraries (libav)
 
-- Project: FFmpeg
-- Website: https://ffmpeg.org/
-- Legal information: https://ffmpeg.org/legal.html
-- Description: Multimedia framework used for audio/video processing and media inspection
-- License: Depends on build configuration
+- Project: FFmpeg, https://ffmpeg.org/
+- License: LGPL-2.1-or-later for the selected library build; see https://ffmpeg.org/legal.html
+- Native desktop bundles use FFmpeg 9.0.1 libraries and Bilikara's dynamically
+  loaded companion. They do not ship or invoke the `ffmpeg` or `ffprobe` programs.
+- The native build disables programs and external-library autodetection, and
+  does not enable GPL or nonfree components. The private dependency closure is
+  checked for each platform and architecture before staging.
+- Packaged `license/THIRD_PARTY_LICENSES/libav/` contains the upstream license
+  texts. `libav-source.txt` identifies the library build and its corresponding
+  archive in `license/THIRD_PARTY_SOURCES/`; the same directory contains the
+  companion source and build scripts.
+- The library license and source obligations remain applicable when the CLI
+  programs are omitted. The project's MIT license does not replace them.
 
-Important notes:
-
-- FFmpeg is generally licensed under LGPL when built with LGPL-compatible options.
-- Some optional components and build flags may cause a distributed FFmpeg binary to be licensed under GPL.
-- Builds using nonfree components may have additional redistribution restrictions.
-- Windows release bundles may include `ffmpeg` and `ffprobe` binaries from the build environment. The exact binary and license obligations depend on that build.
-- macOS release bundles build FFmpeg and FFprobe from a versioned, SHA-256-pinned official FFmpeg source archive with external-library autodetection disabled. The exact source archive, applicable FFmpeg license text, source URL/hash, and generated `-version` configuration output are retained in the packaged compliance material.
-- The bilikara build script rejects FFmpeg / FFprobe binaries whose version output contains `--enable-nonfree`.
-- If the version output contains `--enable-gpl`, the build script prints a notice so the release maintainer can verify GPL redistribution obligations.
-- The macOS build also rejects non-system Mach-O dependencies, including Homebrew Cellar paths and unresolved `@rpath` dependencies, before PyInstaller packaging.
-
-If you bundle or redistribute FFmpeg / FFprobe with bilikara, you must verify the exact binaries you ship.
-
-Recommended checks before publishing a release:
-
-```bash
-ffmpeg -version
-ffprobe -version
-```
-
-Recommended release notes:
-
-- Record where the bundled FFmpeg / FFprobe binaries came from, such as Homebrew, Chocolatey, a system package, or an official/static build.
-- Preserve or link the relevant FFmpeg license and source information required by the FFmpeg build you redistribute.
-- Do not assume that the MIT License for bilikara covers FFmpeg / FFprobe.
+Legacy source-mode CLI helpers are retained for compatibility tests. Their
+presence in this repository does not make them native product dependencies.
 
 ## 4. aria2c
 
@@ -125,33 +112,20 @@ distributed under their respective licenses.
 - Description: Rust MP4 parser and writer used by the native media backend
 - License: MIT License
 
-## 7. PyInstaller
+## 7. Legacy Python packaging tools
 
-- Project: PyInstaller
-- Website: https://pyinstaller.org/
-- Description: Packaging tool used to build executable bundles
-- License: GPL 2.0 or later with the PyInstaller bootloader exception, plus Apache-licensed portions as documented by PyInstaller
-
-Notes:
-
-- PyInstaller is used only for packaging bilikara releases.
-- PyInstaller's bootloader exception allows distributing executable bundles generated from your own code under your chosen license, provided you comply with the licenses of your dependencies.
-- If you modify PyInstaller itself, review PyInstaller's own license terms.
-
-## 8. Truststore
-
-- Project: truststore
-- Repository: https://github.com/sethmlarson/truststore
-- Description: Native operating-system certificate-store integration for packaged macOS HTTPS
-- License: MIT License
-
-The packaged macOS backend uses truststore so strict Python HTTPS validation follows the effective macOS system trust configuration. It does not disable certificate or hostname verification.
+PyInstaller (GPL with its bootloader exception) and truststore (MIT) remain
+referenced by the legacy Python build/compatibility paths. Native desktop
+packages contain no Python runtime, PyInstaller payload or truststore module.
+Native HTTPS uses the Rust platform certificate-verification implementation.
+These historical tools' licenses apply if distributing the corresponding
+legacy product, rather than making them dependencies of the native package.
 
 ## 9. Bilibili and External Services
 
 - Bilibili: bilikara can parse Bilibili URLs, use Bilibili embedded playback, interact with Bilibili APIs, and rely on user-provided account login data.
 - GitHub: non-packaged development mode may use GitHub Releases to acquire BBDown; packaged builds do not poll for BBDown updates. aria2 release metadata is checked for an official matching asset before the project mirror is used.
-- QR code generation: bilikara may use an external QR-code generation endpoint for LAN remote-control links.
+- QR code generation for native LAN and Internet Remote access is local; it does not send private invitation links to an external QR service.
 
 These services are independent third parties. bilikara is not affiliated with, endorsed by, sponsored by, or officially associated with them.
 

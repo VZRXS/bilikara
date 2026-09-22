@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HostBuildReviewRepairTest(unittest.TestCase):
-    def test_runtime_settings_account_and_disabled_cli_presentation(self):
+    def test_runtime_settings_account_and_media_status_presentation(self):
         subprocess.run(
             ["node", "tests/runtime_settings_status.cjs"], cwd=ROOT, check=True,
             capture_output=True, text=True,
@@ -99,8 +99,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("transform 360ms", banner_rule)
         self.assertIn(".backup-banner.is-visible", self.styles)
 
-        self.assertIn("function showBackupBanner()", self.script)
-        self.assertIn("function hideBackupBanner({ immediate = false } = {})", self.script)
+        self.assertIn("function showBackupBanner(banner = elements.backupBanner, motion = state)", self.script)
+        self.assertIn("function hideBackupBanner({ immediate = false, banner = elements.backupBanner, motion = state } = {})", self.script)
         self.assertIn('banner.setAttribute("aria-hidden", "false")', self.script)
         self.assertIn('banner.setAttribute("aria-hidden", "true")', self.script)
 
@@ -186,9 +186,9 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.script.index("function renderConfirmPopover") :
             self.script.index("function anchorPointForEvent")
         ]
-        self.assertIn("getBoundingClientRect()", confirm_render)
+        self.assertIn("elements.confirmPopover.offsetWidth", confirm_render)
         self.assertIn('style.visibility = "hidden"', confirm_render)
-        self.assertIn("measuredRect.height", confirm_render)
+        self.assertIn("elements.confirmPopover.offsetHeight", confirm_render)
         confirm_rule = re.search(r"\.confirm-popover\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("max-height: calc(100dvh - 24px)", confirm_rule)
         self.assertIn("overflow-y: auto", confirm_rule)
@@ -212,6 +212,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("#dismiss-backup-button.is-close-glyph", self.styles)
         self.assertIn(
             ".critical-banner-region .backup-actions .banner-action,\n"
+            ".critical-banner-region .backup-actions .next-button,\n"
             ".critical-banner-region .backup-actions .banner-close",
             self.styles,
         )
@@ -220,8 +221,9 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             ".selection-modal-actions .next-button",
             self.styles,
         )
-        self.assertIn("transform: scale(1.04)", self.styles)
-        self.assertIn("transform: scale(0.96)", self.styles)
+        self.assertIn("background: var(--close-control-bg)", self.styles)
+        self.assertNotIn(".banner-close:active:not(:disabled)", self.styles)
+        self.assertNotIn(".rating-close:active:not(:disabled)", self.styles)
 
         secret_input_rule = re.search(
             r"\.bilikara-secret-form \.input-group input\s*\{([^}]*)\}",
@@ -302,7 +304,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "border-radius: var(--remote-form-control-radius)", form_action_rule
         )
 
-    def test_remote_sheets_are_centered_dismissible_dialogs_with_shared_blur(self):
+    def test_remote_sheets_remain_centered_dismissible_with_separate_host_backdrop_policy(self):
         for dialog_id in (
             "binding-sheet",
             "gatcha-favlist-sheet",
@@ -339,8 +341,12 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("border-radius: 20px", panel_rule)
         self.assertNotIn("bottom: 0", panel_rule)
 
-        self.assertIn("--modal-backdrop-blur: 6px", self.styles)
-        self.assertIn("--modal-backdrop-blur: 6px", self.remote_styles)
+        surface_styles = (ROOT / "static" / "ui-surfaces.css").read_text(encoding="utf-8")
+        self.assertIn("--modal-surface-blur: 12px", surface_styles)
+        self.assertIn("--modal-card-bg: rgba(var(--modal-surface-rgb), 0.90)", surface_styles)
+        self.assertIn("border-radius: 18px", surface_styles)
+        self.assertIn("--modal-backdrop-blur: 0px", self.styles)
+        self.assertIn("--modal-backdrop-blur: 0px", self.remote_styles)
         self.assertIn(
             "backdrop-filter: blur(var(--modal-backdrop-blur))",
             self.styles,
@@ -1220,8 +1226,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertTrue(toolbar_indicator)
         self.assertIn("font-size: 12px", toolbar_indicator[-1])
         shared_ready = re.search(
-            r"\.service-status-wrap \.tool-status-indicator\.is-ready,\s*"
-            r"\.cache-panel-tool-indicator\.is-ready\s*\{([^}]*)\}",
+            r"\.service-status-wrap \.tool-status-indicator\.is-ready\s*\{([^}]*)\}",
             self.styles,
         ).group(1)
         self.assertIn("background: var(--tool-ready-bg)", shared_ready)

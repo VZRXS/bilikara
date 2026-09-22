@@ -71,6 +71,27 @@ fn default_playback_mode() -> String {
     "local".to_owned()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheDownloadTrack {
+    pub key: String,
+    pub label: String,
+    pub current_bytes: u64,
+    pub target_bytes: u64,
+    pub done: bool,
+    pub phase: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheDownloadProgress {
+    pub current_bytes: u64,
+    pub total_bytes: u64,
+    pub tracks: Vec<CacheDownloadTrack>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlaylistItem {
@@ -125,6 +146,14 @@ pub struct PlaylistItem {
     pub cache_status: String,
     #[serde(default)]
     pub cache_progress: f64,
+    #[serde(default)]
+    pub cache_activity_at: f64,
+    #[serde(default)]
+    pub cache_download_current_bytes: u64,
+    #[serde(default)]
+    pub cache_download_total_bytes: u64,
+    #[serde(default)]
+    pub cache_download_tracks: Vec<CacheDownloadTrack>,
     #[serde(default = "default_cache_message")]
     pub cache_message: String,
     #[serde(default)]
@@ -329,6 +358,8 @@ pub enum CacheEvent {
         message: String,
     },
     Progress {
+        #[serde(default)]
+        download: Option<CacheDownloadProgress>,
         progress: f64,
         #[serde(default)]
         message: Option<String>,
@@ -1215,7 +1246,14 @@ fn derive_playback_program(item: &PlaylistItem) -> Result<PlaybackProgram, Execu
     })
 }
 
+fn clear_download_progress(item: &mut PlaylistItem) {
+    item.cache_download_current_bytes = 0;
+    item.cache_download_total_bytes = 0;
+    item.cache_download_tracks.clear();
+}
+
 fn clear_committed_artifact(item: &mut PlaylistItem, clear_selected_audio_variant: bool) {
+    clear_download_progress(item);
     item.video_relative_path.clear();
     item.video_media_url.clear();
     item.audio_variants.clear();
@@ -1263,6 +1301,7 @@ fn assign_new_item_incarnation(
     clear_committed_artifact(item, true);
     item.cache_status = "pending".to_owned();
     item.cache_progress = 0.0;
+    item.cache_activity_at = 0.0;
     Ok(())
 }
 
@@ -1536,6 +1575,7 @@ fn validate_item(item: &PlaylistItem) -> Result<(), ExecuteError> {
         || item.page <= 0
         || item.video_page <= 0
         || !item.cache_progress.is_finite()
+        || !item.cache_activity_at.is_finite()
         || !matches!(
             item.queue_slot_type.as_str(),
             "cycle" | "priority" | "manual"
@@ -2532,6 +2572,7 @@ fn apply_cache_event(
     cache_attempt_token: u64,
     issued_through: u64,
     event: &CacheEvent,
+    now: f64,
 ) -> Result<MutationResult, ExecuteError> {
     let active =
         validate_cache_attempt_ownership(data, item_id, cache_attempt_token, issued_through)?;
@@ -2617,6 +2658,9 @@ fn apply_cache_event(
     let item = data
         .find_item_mut(item_id)
         .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
+    if !matches!(event, CacheEvent::Progress { .. }) {
+        clear_download_progress(item);
+    }
     match event {
         CacheEvent::Queued { message } => {
             if !active.refresh {
@@ -2635,7 +2679,11 @@ fn apply_cache_event(
                 clear_committed_artifact(item, false);
             }
         }
-        CacheEvent::Progress { progress, message } => {
+        CacheEvent::Progress {
+            progress,
+            message,
+            download,
+        } => {
             if !progress.is_finite() {
                 return Err(rejected(
                     "invalid_cache_progress",
@@ -2646,6 +2694,11 @@ fn apply_cache_event(
                 item.cache_status = "downloading".to_owned();
             }
             item.cache_progress = progress.clamp(0.0, 100.0);
+            if let Some(download) = download {
+                item.cache_download_current_bytes = download.current_bytes;
+                item.cache_download_total_bytes = download.total_bytes;
+                item.cache_download_tracks.clone_from(&download.tracks);
+            }
             if let Some(message) = message {
                 item.cache_message.clone_from(message);
             }
@@ -2703,6 +2756,7 @@ fn apply_cache_event(
             );
         }
     }
+    item.cache_activity_at = now;
     validate_item(item)?;
     let changed = before != *item;
     let terminal = terminal_cache_event(event);
@@ -3679,6 +3733,7 @@ fn apply_mutation(
             item_id,
             cache_attempt_token,
             event,
+            now,
             ..
         } => apply_cache_event(
             data,
@@ -3686,6 +3741,7 @@ fn apply_mutation(
             cache_attempt_token,
             issued_cache_attempt_tokens,
             &event,
+            now,
         ),
         AppStateRequest::Initialize { .. }
         | AppStateRequest::Snapshot { .. }
@@ -3778,12 +3834,18 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::CatalogSearch { query, limit } => {
+            RemoteRequestV1::CatalogSearch {
+                query,
+                limit,
+                offset,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "catalog_search", "query": query, "limit": limit})),
+                    Some(
+                        json!({"kind": "catalog_search", "query": query, "limit": limit, "offset": offset}),
+                    ),
                     false,
                 );
             }
@@ -3847,12 +3909,18 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::GatchaSearch { query, limit } => {
+            RemoteRequestV1::GatchaSearch {
+                query,
+                limit,
+                offset,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "gatcha_search", "query": query, "limit": limit})),
+                    Some(
+                        json!({"kind": "gatcha_search", "query": query, "limit": limit, "offset": offset}),
+                    ),
                     false,
                 );
             }
@@ -5419,6 +5487,10 @@ mod tests {
             queue_slot_type: "cycle".to_owned(),
             cache_status: "pending".to_owned(),
             cache_progress: 0.0,
+            cache_activity_at: 0.0,
+            cache_download_current_bytes: 0,
+            cache_download_total_bytes: 0,
+            cache_download_tracks: Vec::new(),
             cache_message: "等待缓存".to_owned(),
             video_relative_path: String::new(),
             video_media_url: String::new(),
@@ -6874,6 +6946,7 @@ mod tests {
                 message: "started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 50.0,
                 message: Some("progress".to_owned()),
             },
@@ -6939,6 +7012,7 @@ mod tests {
                 message: "refresh started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 75.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -7222,6 +7296,7 @@ mod tests {
                 message: "started refresh".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 80.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -8314,6 +8389,7 @@ mod tests {
                 message: "refresh started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 64.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -8496,6 +8572,7 @@ mod tests {
                 "a",
                 token,
                 CacheEvent::Progress {
+                    download: None,
                     progress: 50.0,
                     message: Some("stale".to_owned()),
                 },
@@ -8518,6 +8595,7 @@ mod tests {
             "a",
             current,
             CacheEvent::Progress {
+                download: None,
                 progress: 50.0,
                 message: Some("current".to_owned()),
             },
@@ -8731,6 +8809,7 @@ mod tests {
             ),
             (
                 CacheEvent::Progress {
+                    download: None,
                     progress: 60.0,
                     message: None,
                 },
@@ -8818,6 +8897,10 @@ mod tests {
             "selected_audio_variant_id",
             "cache_status",
             "cache_progress",
+            "cache_activity_at",
+            "cache_download_current_bytes",
+            "cache_download_total_bytes",
+            "cache_download_tracks",
             "cache_message",
             "video_relative_path",
             "video_media_url",

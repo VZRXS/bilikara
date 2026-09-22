@@ -23,6 +23,7 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    pub monthly_refresh_active: bool,
     pub ratings: crate::native_host::ratings::RatingLedger,
     pub remote_export_ready: bool,
     pub updates: crate::native_host::updates::UpdateState,
@@ -308,7 +309,38 @@ impl AppState {
     }
 
     pub(crate) fn native_snapshot(&self, host: bool) -> Result<Value, ApiError> {
-        let snapshot = self.native_core_snapshot()?;
+        let mut snapshot = self.native_core_snapshot()?;
+        // Python's to_dict cleaned only the public projection. Preserve the raw
+        // titles in authoritative records and apply the same Rust policy here.
+        for item in snapshot
+            .current_item
+            .iter_mut()
+            .chain(snapshot.playlist.iter_mut())
+        {
+            item.display_title = bilikara_rust::clean_display_title(
+                &item.title,
+                &item.display_title,
+                &item.part_title,
+            );
+        }
+        for item in snapshot
+            .history
+            .iter_mut()
+            .chain(snapshot.session_history.iter_mut())
+        {
+            item.display_title = bilikara_rust::clean_display_title(
+                &item.title,
+                &item.display_title,
+                &item.part_title,
+            );
+        }
+        for item in &mut snapshot.session_played {
+            item.display_title = bilikara_rust::clean_display_title(
+                &item.title,
+                &item.display_title,
+                &item.part_title,
+            );
+        }
         let mut value = serde_json::to_value(&snapshot)
             .map_err(|_| ApiError::invalid("无法序列化 Host 状态"))?;
         let session = &self.native_session;
@@ -334,7 +366,7 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"song_rating":true,"catalog_write":!session.desktop,"maintenance":!session.desktop});
+        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"song_rating":true,"catalog_write":true,"maintenance":true});
         value["app"] = json!({"version":session.updates.version_label().unwrap_or_else(|| "0.8.0-preview.0".to_owned()),
             "releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,

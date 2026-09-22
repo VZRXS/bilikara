@@ -1,0 +1,72 @@
+/* Shared panel surfaces; Remote modal backgrounds provide extra separation. */
+:root {
+  --modal-surface-rgb: 255, 250, 244;
+  --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
+  --modal-card-border: 1px solid var(--line);
+  --modal-surface-blur: 12px;
+  --modal-backdrop-blur: 0px;
+  --rating-card-shadow: 0 18px 48px rgba(35, 26, 20, 0.24);
+}
+:root[data-theme="dark"] {
+  --modal-surface-rgb: 30, 26, 23;
+  --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
+  --modal-card-border: 1px solid var(--line);
+  --rating-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+}
+:root[data-theme="blue"] {
+  --modal-surface-rgb: 17, 25, 40;
+  --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
+  --modal-card-border: 1px solid var(--line);
+  --rating-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+}
+:root :is(.confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
+  .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
+  .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
+  .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
+  .app-shell[data-stage-controls-layout="popup"] .stage-control-tray,
+  .cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble) {
+  background: var(--modal-card-bg);
+  border: var(--modal-card-border);
+  border-radius: 18px;
+  box-shadow: var(--rating-card-shadow);
+  backdrop-filter: blur(var(--modal-surface-blur));
+  -webkit-backdrop-filter: blur(var(--modal-surface-blur));
+}
+/* Flat fills inside a floating panel must not stack its translucency twice. */
+.playback-sheet-status-header { background: transparent; }
+:root .remote-menu-panel .remote-access-card.remote-share-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* Host and small anchored controls keep invisible click-away targets. */
+:root, :root[data-theme] { --modal-backdrop-bg: transparent; }
+:root :is(.selection-modal-backdrop, .rating-modal-backdrop, .binding-sheet-backdrop,
+  .remote-identity-backdrop, .song-detail-backdrop, .playback-sheet-backdrop,
+  .stage-control-backdrop, .audio-variant-backdrop, .host-workspace-backdrop,
+  .song-detail-view),
+:root .history-export-dialog::backdrop,
+:root .volume-adjust-popover::backdrop {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.song-detail-backdrop { position: absolute; inset: 0; }
+.song-detail-surface { position: relative; z-index: 1; pointer-events: none; }
+.song-detail-card { pointer-events: auto; }
+
+/* Blur the stacked Remote page behind large panels; anchored controls keep shadow only. */
+:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+  .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
+:root[data-ui-client="remote"] .history-export-dialog::backdrop {
+  background: transparent;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+:root[data-ui-client="remote"] .playback-sheet .playback-sheet-panel {
+  border-radius: 18px 18px 0 0;
+  border-bottom: 0;
+}

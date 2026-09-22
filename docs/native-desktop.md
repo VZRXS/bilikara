@@ -16,7 +16,7 @@ npm run dev
 ```
 
 Tauri's development hook runs `python build_bundle.py --dev`, builds the native
-backend with `native-host`, and stages its resources beside the debug shell.
+backend with `native-host`, and stages it and its resources in `_internal/` beside the debug shell.
 For direct `cargo run --manifest-path src-tauri/Cargo.toml --locked`, run
 `npm run prepare:desktop` first. There is no runtime search through the checkout
 or fallback to Python. A development layout may report external tools/libav as
@@ -40,14 +40,42 @@ used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
 matching runner target; foreign tool/libav architectures fail closed.
 `CARGO_TARGET_DIR` and the selected debug/release profile are respected.
 
-The Windows archive keeps the `bilikara/` directory, with
-`bilikara-desktop.exe`, `bilikara-desktop-host.exe`, `static/`, `vendor/`,
-`APP_VERSION` and `native-desktop.json`. macOS installs `Bilikara-Desktop.app`;
+The Windows archive keeps the `bilikara/` directory. Its only top-level executable
+is `bilikara-desktop.exe`; `_internal/` contains `bilikara-desktop-host.exe`, `static/`,
+`vendor/`, `APP_VERSION` and `native-desktop.json`. Licenses, notices, rebuild
+sources and guides are together in `license/`. macOS installs `Bilikara-Desktop.app`;
 its `Contents/Frameworks/bilikara-backend.app` contains the backend under
 `Contents/MacOS/`, static/version resources under `Contents/Resources/`, and
-native libraries/tools under `Contents/Frameworks/vendor/` with relative resource
-links. The Linux local development layout follows the Windows directory shape,
+native libraries/tools under `Contents/Frameworks/` with relative resource
+links. Its documentation lives in the embedded backend's `Contents/Resources/license/`.
+The archive exposes that directory through a relative `license/` link and keeps
+`README-macOS.txt` outside the app; it has no separate backend app shortcut.
+The Linux local development layout follows the Windows directory shape,
 without `.exe`; this does not establish a new supported release target.
+
+The private `vendor/` is the single third-party resource directory: Signalsmith,
+BBDown, libav and its dependency inventory. macOS keeps signed executable code
+in `Frameworks/` and exposes it through safe relative links in that resource
+`vendor/`; there is no second `Frameworks/vendor/` or `static/vendor/`. The
+backend serves only Signalsmith's frontend files from `/vendor/`; native tools
+and libraries are not HTTP assets. Own frontend files remain under internal
+`static/`, which is not a top-level package directory.
+
+Preview 1 already used `_internal/static/` and `_internal/vendor/`. Its
+`_internal/rust/bilikara_rust.dll` and `bilikara_runtime.dll` were Python FFI
+libraries; the native backend links the Rust crates directly and does not load
+those DLLs. The Python/PyInstaller payload and its app-local API-set/UCRT copies
+are not restored. Native packaging retains the actual private DLL dependency
+closure in `vendor/` and uses Windows system API sets/UCRT. The pinned Windows
+downloader keeps the published filename `vendor/BBDown.exe`, independent of
+`PATH`/`PATHEXT` capitalization during discovery.
+
+`_internal/` groups installed program files with the native Rust backend and no
+Python payload. Windows again creates a writable `runtime/` beside it, with
+native records/cache/managed tools in `runtime/data/`, shell startup logs
+in `runtime/logs/`, WebView browser storage in `runtime/webview/`, and window
+preferences in `runtime/main-window-geometry-v1.json`. This directory is created on use, never shipped in an update
+archive. macOS retains the system user-data directory outside the signed app.
 
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
 FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
@@ -62,20 +90,44 @@ Default writable native roots are:
 
 | Platform | Native root |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\bilikara\native` |
-| macOS | `~/Library/Application Support/bilikara/native` |
-| Linux | `$XDG_DATA_HOME/bilikara/native`, or `~/.local/share/bilikara/native` |
+| Windows | `runtime\data` beside `bilikara-desktop.exe` |
+| macOS | `~/Library/Application Support/bilikara/data` |
+| Linux | `$XDG_DATA_HOME/bilikara/data`, or `~/.local/share/bilikara/data` |
+
+New Windows installations select `runtime/data` beside the launcher and keep media
+in `runtime/data/cache`. macOS/Linux keep their existing application-home location
+and use its `data/` child. An existing earlier native preview's `native/` root is
+still reopened when `data/` has no native checkpoint; data is never silently
+merged or discarded. With the application closed, that native-format directory
+can be renamed to `data/` if the destination does not exist. Its old `media/`
+cache is renamed to `cache/` under the storage lock on desktop startup.
+
+New installations do not create `.bilikara-desktop-rust-preview`. The versioned
+`host-state.json` checkpoint identifies native data and is strictly validated
+before startup; old preview markers are accepted only for compatibility.
+`desktop-import.pending` exists only during explicit import. An interrupted
+import is rejected, and successful import removes it. Legacy split-file records
+still require explicit read-only import into a new destination.
+
+Keep the installation in a writable directory and move its complete `runtime`
+directory with it. Read-only installations fail rather than falling back to
+AppData. macOS retains its user-data location outside the signed app.
+The application controls these data paths; Windows and the installed WebView2
+runtime may still maintain their own system-level files.
 
 Use an absolute `BILIKARA_NATIVE_DATA_DIR` for isolated development.
 The earlier `BILIKARA_DESKTOP_RUST_PREVIEW_DIR` remains a data override alias;
 it no longer switches backends. Trusted `BILIKARA_HOME` is also accepted as a
-native root override. The direct backend's `--data-dir` takes precedence.
-The existing native marker/checkpoint format remains valid.
+native root override. The direct backend's `--data-dir` takes precedence. For an
+explicit Windows shell override, WebView storage uses an adjacent `<native-directory>.desktop`
+directory so it cannot contaminate a new import destination before enrollment.
+Existing native checkpoints remain valid; the old preview marker is no longer required.
 
-Existing native records take precedence. An unmarked nonempty or malformed
-native directory is refused, never treated as an empty library. Known legacy
-data without native records produces an explicit import instruction. The
-installer does not silently merge, overwrite or delete legacy files.
+Existing native records take precedence. A nonempty directory without a native checkpoint (or an old valid preview marker),
+or a malformed checkpoint, is refused, never treated as an empty library. On macOS/Linux,
+known legacy data without native records produces an explicit import instruction.
+Windows starts independently in its portable directory; importing older records
+is optional. The installer does not silently merge, overwrite or delete legacy files.
 
 Choose a **new, nonexisting** destination with an existing parent. It cannot
 overlap the legacy source. From the installed backend's directory:
@@ -85,7 +137,8 @@ overlap the legacy source. From the installed backend's directory:
   --import-from /absolute/legacy-app-home
 ```
 
-On Windows use `bilikara-desktop-host.exe`; on macOS use the executable inside
+On Windows run `_internal/bilikara-desktop-host.exe` from the installation root;
+on macOS use the executable inside
 the embedded backend app. Packaged assets resolve automatically, independent of
 the working directory. For shell launch, set `BILIKARA_NATIVE_DATA_DIR` and
 `BILIKARA_DESKTOP_RUST_IMPORT_FROM` to those paths. Import reads the old source
@@ -94,6 +147,34 @@ session choice. Media is re-cached through fresh native identities. Subsequent
 launches reopen native records without reimporting, even if the old source has
 changed or disappeared. No login, catalog upload or automatic refresh is caused
 by import. More elaborate automatic upgrade selection remains separate work.
+
+### Optional Windows import from an earlier installation
+
+Normal startup does not require importing AppData. If older records should be
+retained, choose their location explicitly. For an old
+`%LOCALAPPDATA%\bilikara` root, open PowerShell in a **new extracted installation**
+whose `runtime/data` does not yet exist:
+
+```powershell
+$env:BILIKARA_NATIVE_DATA_DIR = Join-Path (Get-Location) "runtime\data"
+$env:BILIKARA_DESKTOP_RUST_IMPORT_FROM = Join-Path $env:LOCALAPPDATA "bilikara"
+try {
+    Start-Process -FilePath .\bilikara-desktop.exe -Wait
+} finally {
+    Remove-Item Env:BILIKARA_NATIVE_DATA_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:BILIKARA_DESKTOP_RUST_IMPORT_FROM -ErrorAction SilentlyContinue
+}
+```
+
+The source is read-only. Afterwards, double-click the launcher to reopen the
+portable records without overrides. If the source is another installation's
+`runtime`, substitute that absolute source path. Source and destination must
+not overlap. Existing native checkpoints can instead be copied, with both
+applications closed, into a new installation's `runtime/data`; never merge
+them with another native directory.
+
+This engineering guide stays in the source repository. It is not shipped in
+`license/`, and startup errors do not direct users to a bundled copy.
 
 The private bootstrap capability is delivered only over the supervised child
 pipe. Direct backend execution prints that private readiness message for a
@@ -116,8 +197,13 @@ installation, preserves the previous application as `.previous-update-*`, and
 launches the new Tauri entry. A copy/replacement failure retains or restores the
 old installation; this is not a general crash-rollback guarantee. After checking
 the new installation, the user may remove that previous application directory.
-Native data remains in its separate application-data directory. An explicit
-native data override inside the installation makes automatic update unavailable.
+Data remains separate from immutable program resources. On Windows the helper
+preserves the existing `runtime/` only after both processes exit; its own
+workspace stays outside the installation being replaced. An archive containing
+`runtime/` data is rejected. External application-data roots remain in place.
+Inside the Windows installation only the documented `runtime/data` root is
+supported for automatic updates; other nested data overrides require manual
+replacement with explicit data preservation.
 The audience window, Remote and ordinary HTTP cookies cannot initiate or commit
 a desktop installation. Manual release links open a validated web URL through
 the shell, without navigating the player away.
@@ -126,9 +212,35 @@ Preview 1's Windows Tauri archive extraction/relaunch names remain compatible
 with the native archive; legacy data still requires the explicit import above.
 Preview 1's macOS extractor does not preserve bundle symlinks, so that transition
 requires manual replacement with the intact native app and explicit data import.
-Native-to-native macOS updates preserve safe relative bundle links. Real package
+Native-to-native macOS updates preserve safe relative bundle links. The current
+native installer recognizes the current `_internal/` layout and the earlier
+flat and `backend/` Windows native layouts. Earlier development candidates
+whose validator rejects `_internal/` as a Python directory require manual
+replacement to reach this layout; they cannot acquire new validation rules
+before installing it. Their existing native data can reopen
+without importing it again. Real package
 installation and platform acceptance remain necessary before a Preview 2 release;
 this launch/update contract does not establish full product parity.
+
+New native data roots default to 1080P high frame rate with Hi-Res preferred;
+saved or explicitly imported quality preferences remain unchanged. Settings
+also offers a Host-only diagnostic ZIP through the existing native save dialog
+(or browser download). It uses the shared sanitized diagnostic renderer and
+bounded connectivity probes; it does not include login checkpoints or credentials.
+
+## Shared Catalog pagination
+
+The Rust Catalog reader explicitly requests `format=paged` for search,
+category-song windows and songs within a selected name/artist group. A compatible
+Worker returns `matched_count`, `offset`, `next_offset` and `has_more`; the existing
+Host and Remote views use those fields without requesting a separate count or
+downloading the entire library. An older Worker may ignore the opt-in and still
+return a capped array; the client retains that limited-result behavior and does
+not invent a total or treat repeated first-page data as a subsequent search page.
+
+Unselected name/artist group lists stay on the legacy protocol until their
+client data loading supports server-side group windows and counts. Enabling song
+pagination does not deploy the Worker or apply its database migrations.
 
 ## Song ratings and request contributions
 
@@ -143,7 +255,29 @@ Each successfully committed explicit song request can enqueue its seven public
 metadata fields through the existing bounded Catalog append worker. Failed,
 duplicate or stale adds do not enqueue. A full queue or delivery failure does
 not undo the local request. Neither login, startup nor library import triggers
-bulk publication. `song_rating` describes this ordinary action; desktop
-`catalog_write` and `maintenance` remain false and grant no server authority.
-Administrator review, blacklist/tag mutation, monthly maintenance and automatic
-library publication remain separate product decisions.
+bulk publication. `song_rating` describes this ordinary action.
+
+## Administrator operations and cache diagnostics
+
+The native Host retains review, blacklist restore, tag reset, video/UP deletion
+and explicit maintenance routes through the shared Rust Catalog service.
+`catalog_write` and `maintenance` describe available operations, not authorization:
+requests require the local Host identity and administrator-secret verification.
+LAN and Internet Remote identities cannot invoke them, even with an admin secret.
+`tagger-yomi` starts the existing Worker job. `monthly-d1-refresh` is a supervised
+Rust task: it exports Catalog once, combines configured and exported UP IDs,
+probes first pages, skips UPs above 8000 submissions, and uploads only missing
+karaoke entries in authenticated batches of at most 500. It reuses probe pages,
+waits between subsequent page/UP requests, retries failed pages at most three
+times, and rejects duplicate local starts. Shutdown stops further work after
+in-flight bounded network calls return; no Python runner is launched. This job
+is never scheduled by startup, login or ordinary local-library refresh.
+Summary-only progress and outcomes are recorded in `logs/monthly-d1-refresh.log`;
+credentials and upstream bodies are excluded.
+
+Native cache tasks append to `logs/native/<item_id>.log` under the data directory;
+logs are not merged or automatically truncated at 1 MiB. AppState snapshots and
+typed Internet Remote projections include aggregate downloaded/total bytes and
+ordered per-track progress. An unknown total remains zero until all track sizes
+are known. These transient fields are reset with a new attempt, terminal event
+or data reopen; Host and Remote do not reconstruct them from diagnostic text.

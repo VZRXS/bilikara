@@ -27,6 +27,12 @@ int32_t bm_fd_from_handle_v1(void *handle) {
 void bm_fd_close_v1(int32_t fd) { _close(fd); }
 
 static int bm_absolute_path(const char *p) {
+    /* Rust canonicalize() supplies extended local drive paths. Accept only
+     * that namespace; UNC/device paths and alternate streams stay forbidden. */
+    if (strncmp(p, "\\\\?\\", 4) == 0) {
+        p += 4;
+        if (strlen(p) < 3 || p[2] != '\\') return 0;
+    }
     return strlen(p) >= 3 && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) &&
         p[1] == ':' && (p[2] == '\\' || p[2] == '/') && !strchr(p + 2, ':');
 }
@@ -36,7 +42,7 @@ static wchar_t *bm_wide(const char *p) {
     if (!n) return NULL;
     wchar_t *w = malloc((size_t)n * sizeof(*w));
     if (w && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, p, -1, w, n)) { free(w); return NULL; }
-    if (w && n >= MAX_PATH) {
+    if (w && n >= MAX_PATH && strncmp(p, "\\\\?\\", 4) != 0) {
         /* Deep Native cache staging must not depend on the caller executable's
          * longPathAware manifest. Normalize before adding the internal prefix;
          * the public input still accepts only absolute local drive paths. */

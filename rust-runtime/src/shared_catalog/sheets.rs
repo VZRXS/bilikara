@@ -228,7 +228,8 @@ pub(super) fn search(
     let keyword = query_value(query, "q").to_lowercase();
     let tokens: Vec<_> = keyword.split_whitespace().collect();
     let limit = query_number(query, "limit", 80, 500)?.clamp(1, 100);
-    let items: Vec<_> = rows
+    let offset = query_number(query, "offset", 0, 100_000)?;
+    let matches: Vec<_> = rows
         .iter()
         .filter(|item| {
             !["bvid", "mid"].iter().any(|field| {
@@ -258,6 +259,11 @@ pub(super) fn search(
             .to_lowercase();
             tokens.iter().all(|token| searchable.contains(token))
         })
+        .collect();
+    let matched_count = matches.len();
+    let items: Vec<_> = matches
+        .into_iter()
+        .skip(offset)
         .take(limit)
         .cloned()
         .collect();
@@ -271,9 +277,11 @@ pub(super) fn search(
         }
         Ok(())
     })?;
+    let next_offset = offset + items.len();
+    let has_more = next_offset < matched_count;
     // Exclusions made elsewhere cannot be inferred from this public snapshot.
     Ok(
-        json!({"items":items,"source":"sheets","snapshot_max_age_seconds":60,
+        json!({"items":items,"matched_count":matched_count,"offset":offset,"next_offset":next_offset,"has_more":has_more,"source":"sheets","snapshot_max_age_seconds":60,
         "exclusion_coverage":"process_local_only; upstream_snapshot_sync_unverified"}),
     )
 }

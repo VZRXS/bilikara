@@ -450,6 +450,10 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertNotIn("remote-search-stage", self.styles + self.script)
 
     def test_remote_controls_share_mobile_geometry_with_distinct_tab_selection(self):
+        shared_tabs = (ROOT / "static" / "request-tabs.css").read_text(encoding="utf-8")
+        for markup in (self.markup, self.host_markup):
+            self.assertIn('/request-tabs.css', markup)
+        shared_root = re.search(r":root\s*\{([^}]*)\}", shared_tabs).group(1)
         root_rule = re.search(r":root\s*\{([^}]*)\}", self.styles)
         tabs_rule = re.search(
             r"\.remote-request-tab,\s*"
@@ -471,7 +475,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
             "--remote-segmented-control-active-bg: rgba(255, 255, 255, 0.95)",
             "--remote-segmented-control-active-color: var(--accent-deep)",
         ):
-            self.assertIn(declaration, root_rule.group(1))
+            self.assertIn(declaration, shared_root if "segmented-control" in declaration else root_rule.group(1))
         self.assertNotIn(':root[lang="en"]', self.styles)
         self.assertIn(
             "font-size: var(--remote-segmented-control-font-size)",
@@ -506,7 +510,7 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIn("var(--remote-form-control-radius)", source_refresh_rule)
 
         dark_rules = re.findall(
-            r':root\[data-theme="dark"\]\s*\{([^}]*)\}', self.styles
+            r':root\[data-theme="dark"\]\s*\{([^}]*)\}', shared_tabs
         )
         self.assertEqual(len(dark_rules), 1)
         self.assertIn(
@@ -519,16 +523,12 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         )
 
         blue_rules = re.findall(
-            r':root\[data-theme="blue"\]\s*\{([^}]*)\}', self.styles
+            r':root\[data-theme="blue"\]\s*\{([^}]*)\}', shared_tabs
         )
-        self.assertEqual(len(blue_rules), 2)
-        self.assertIn(
-            "--remote-segmented-control-active-bg: rgba(56, 189, 248, 0.18)",
-            blue_rules[0],
-        )
+        self.assertEqual(len(blue_rules), 1)
         self.assertIn(
             "--remote-segmented-control-active-bg: rgba(0, 210, 255, 0.18)",
-            blue_rules[1],
+            blue_rules[0],
         )
         for declarations in blue_rules:
             self.assertIn(

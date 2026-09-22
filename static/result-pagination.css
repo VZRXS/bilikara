@@ -6,8 +6,11 @@
   overflow: visible;
 }
 
-.remote-shell .request-panel[data-request-size="browse-deep"] {
-  padding-bottom: 8px;
+/* Match the 4px gap above a visible page footer; other views keep their padding. */
+.remote-shell .request-panel:has(> .remote-request-view:not([hidden])
+  :is(.remote-search-mode-panel, .remote-discover-mode-panel, .remote-sources-mode-panel):not([hidden])
+  .result-pager:not([hidden])) {
+  padding-bottom: 4px;
 }
 
 .request-panel :is(
@@ -31,10 +34,29 @@
   overscroll-behavior-y: auto;
 }
 
+.result-page-viewport,
 .has-result-pages,
-.has-result-pages .search-result-item {
+.has-result-pages .search-result-item,
+.has-result-pages .tag-browser-tag {
   touch-action: pan-y pinch-zoom;
 }
+.result-page-viewport {
+  --result-page-gap: 32px;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  isolation: isolate;
+  overflow-anchor: none;
+}
+.result-page-viewport:has(> .hidden) { display: none; }
+.result-page-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+}
+.is-page-dragging { will-change: transform; user-select: none; }
 
 .request-panel :is(#sources-follow-count, #favlist-browse-count) {
   display: none;
@@ -44,7 +66,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
   /* The containing grid already contributes 12px; leave 4px above the footer. */
   margin-top: -8px;
@@ -60,9 +82,16 @@
   overflow-wrap: anywhere;
   line-height: 1.4;
 }
-.result-pager-count { justify-self: start; }
-.result-pager-items-total { justify-self: end; text-align: right; }
+/* Keep one layout at every width, including a 360px Remote viewport. Equal
+   side columns center the page controls independently of the item total. */
+.result-pager-count { grid-column: 1; justify-self: start; font-size: 12px; }
+.result-pager-items-total { grid-column: 3; justify-self: end; text-align: right; font-size: 12px; }
 .result-pager-controls {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+}
+.result-pager-position {
   display: grid;
   align-items: center;
   justify-items: center;
@@ -80,6 +109,9 @@
   touch-action: manipulation;
 }
 .result-pager button:disabled { cursor: default; }
+.result-pager [data-page-action] { width: 24px; display: grid; place-items: center; }
+.result-pager [data-page-action] svg { width: 20px; height: 20px; }
+.result-pager [data-page-action]:disabled { opacity: .3; }
 .result-pager:focus-visible, .result-pager button:focus-visible, .result-pager input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -115,19 +147,17 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--ink);
+  background: var(--accent);
   opacity: .28;
 }
 .result-pager-dots [aria-current="page"] > span { opacity: 1; }
-.result-pager.is-interacting .result-pager-dots,
-.result-pager.is-wide .result-pager-dots { opacity: 1; }
-.result-pager.is-interacting:not(.is-wide) .result-pager-editor:not(:focus-within) {
+.result-pager.is-interacting:not(:focus-within) .result-pager-dots { opacity: 1; }
+.result-pager.is-interacting:not(:focus-within) .result-pager-editor {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
 }
-.result-pager.is-wide .result-pager-controls { display: flex; gap: 8px; }
-.result-pager.is-wide .result-pager-dots { pointer-events: auto; }
 .result-pager-editor {
   display: flex;
   align-items: center;
@@ -157,7 +187,7 @@
   text-align: center;
 }
 .result-pager-total, .result-pager [data-page-go] {
-  min-width: 44px;
+  min-width: 32px;
   width: var(--page-total-width);
   white-space: nowrap;
 }
@@ -172,16 +202,6 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.result-pager-measure {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: max-content;
-  transform: scale(0);
-  visibility: hidden;
-  pointer-events: none;
-  white-space: nowrap;
-}
 @media (prefers-reduced-motion: reduce) {
-  .result-pager-editor, .result-pager-dots { transition: none; }
+  .result-pager .result-pager-editor, .result-pager .result-pager-dots { transition: none; }
 }

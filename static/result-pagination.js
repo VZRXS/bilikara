@@ -34,16 +34,26 @@
       this.busy = false;
       this.externalBusy = false;
       this.total = null;
+      this.pageSize = pageSize;
     }
 
     update(options) {
-      const changed = this.sourceKey !== options.key || this.initialItems !== options.items;
+      const size = [6, 12, 18, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
+      const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
+      const firstItem = (this.page - 1) * this.pageSize;
+      const changed = !sameSource || this.pageSize !== size;
+      this.pageSize = size;
       this.load = options.load;
       this.readAhead = options.readAhead === 2 ? 2 : 0;
+      this.readSize = options.readSize === 72 ? 72 : Math.min(96, size * (1 + this.readAhead));
       this.limited = Boolean(options.limited);
+      this.prefetchEnabled = Boolean(options.prefetch);
+      this.shouldPrefetch = options.shouldPrefetch;
       if (changed || (options.loading && !this.externalBusy)) {
         this.version += 1;
         this.busy = false;
+        this.prefetchPending = null;
+        this.prefetchAttempt = null;
       }
       this.externalBusy = Boolean(options.loading);
       if (changed) {
@@ -52,19 +62,20 @@
         this.total = count(options.total);
         this.hasMore = Boolean(options.hasMore);
         this.initialHasMore = this.hasMore;
-        this.page = 1;
-        this.items = options.items.slice(0, pageSize);
+        this.page = sameSource ? Math.floor(firstItem / size) + 1 : 1;
+        this.items = options.items.slice((this.page - 1) * size, this.page * size);
         this.cache.clear();
-        for (let start = 0; start < options.items.length; start += pageSize) {
-          const items = options.items.slice(start, start + pageSize);
-          if (items.length === pageSize || !this.hasMore) {
-            this.remember(start / pageSize + 1, items);
+        for (let start = 0; start < options.items.length; start += size) {
+          const items = options.items.slice(start, start + size);
+          if (items.length === size || !this.hasMore) {
+            this.remember(start / size + 1, items);
           }
         }
         // The first page stays available even when a provider returns a short page.
-        this.remember(1, this.items);
+        this.remember(this.page, this.items);
       }
       this.onChange();
+      void this.prefetch();
     }
 
     remember(page, items) {
@@ -76,22 +87,87 @@
     }
 
     get pageCount() {
-      return this.total === null ? null : Math.max(1, Math.ceil(this.total / pageSize));
+      return this.total === null ? null : Math.max(1, Math.ceil(this.total / this.pageSize));
     }
 
     get loading() { return this.busy || this.externalBusy; }
 
-    get lastPage() { return Math.min(this.pageCount ?? maximumPage, maximumPage); }
+    get lastPage() { return Math.min(this.pageCount ?? maximumPage, Math.floor(100000 / this.pageSize) + 1); }
+
+    peek(page) {
+      if (this.cache.has(page)) return this.cache.get(page);
+      const start = (page - 1) * this.pageSize;
+      return start >= 0 && start < this.initialItems.length
+        && (start + this.pageSize <= this.initialItems.length || !this.initialHasMore)
+        ? this.initialItems.slice(start, start + this.pageSize) : null;
+    }
 
     get canNext() {
       return this.page < this.lastPage
         && (this.pageCount !== null || this.cache.has(this.page + 1) || this.hasMore);
     }
 
+    validatePage(data, offset, limit) {
+      if (!Array.isArray(data?.items) || data.items.length > limit
+        || (data.offset !== undefined && data.offset !== offset)
+        || (data.has_more && (!Number.isSafeInteger(data.next_offset) || data.next_offset <= offset))) {
+        throw new Error("invalid_result_page");
+      }
+      if (!data.items.length) throw new RangeError("page_out_of_range");
+    }
+
+    async prefetch() {
+      if (!this.prefetchEnabled || !this.readAhead || this.loading || this.prefetchPending
+        || typeof this.load !== "function" || this.shouldPrefetch?.() === false) return;
+      const page = Array.from({length:this.readAhead}, (_, index) => this.page + index + 1)
+        .find(next => next <= this.lastPage && this.peek(next) === null
+          && (this.total !== null || this.hasMore));
+      if (!page) return;
+      const version = this.version;
+      const attempt = `${version}:${this.page}:${page}`;
+      if (this.prefetchAttempt === attempt) return;
+      this.prefetchAttempt = attempt;
+      const offset = (page - 1) * this.pageSize;
+      const limit = this.readSize;
+      const pending = {page, end:page + Math.ceil(limit / this.pageSize), promise:null};
+      this.prefetchPending = pending;
+      pending.promise = (async () => {
+        try {
+          const data = await this.load({offset, limit});
+          if (version !== this.version) return;
+          this.validatePage(data, offset, limit);
+          this.total = count(data.matched_count)
+            ?? (data.has_more === false ? offset + data.items.length : this.total);
+          this.hasMore = Boolean(data.has_more);
+          for (let start = 0; start < data.items.length; start += this.pageSize) {
+            const items = data.items.slice(start, start + this.pageSize);
+            if (items.length === this.pageSize || !this.hasMore) this.remember(page + start / this.pageSize, items);
+          }
+          this.onChange();
+        } catch (_) {
+          // A speculative failure leaves the current page usable. Navigation
+          // may retry, but SSE renders must not repeatedly hit the provider.
+        } finally {
+          if (this.prefetchPending === pending) this.prefetchPending = null;
+        }
+      })();
+      await pending.promise;
+    }
+
     async goTo(page) {
+      const pageSize = this.pageSize;
       if (this.loading || page === this.page) return false;
       if (!Number.isSafeInteger(page) || page < 1 || page > this.lastPage) {
         throw new RangeError("page_out_of_range");
+      }
+      const pending = this.prefetchPending;
+      if (pending && page >= pending.page && page < pending.end) {
+        const version = this.version;
+        this.busy = true;
+        this.onChange();
+        await pending.promise;
+        if (version !== this.version) return false;
+        this.busy = false;
       }
       const start = (page - 1) * pageSize;
       if (!this.cache.has(page) && start < this.initialItems.length
@@ -102,6 +178,7 @@
         this.page = page;
         this.items = this.cache.get(page);
         this.onChange();
+        void this.prefetch();
         return true;
       }
       if (typeof this.load !== "function") throw new RangeError("page_out_of_range");
@@ -110,18 +187,12 @@
       this.busy = true;
       this.onChange();
       try {
-        // A shared-catalog read includes this page and at most its next two.
-        // Cached page turns do not start another read or a background worker.
-        const limit = pageSize * (1 + this.readAhead);
+        // Search batches fill the twelve-page cache within the 80-item cap.
+        // Browse keeps its smaller window. Cached turns never start a read.
+        const limit = this.readSize;
         const data = await this.load({ offset, limit });
         if (version !== this.version) return false;
-        if (!Array.isArray(data?.items)
-          || (data.offset !== undefined && data.offset !== offset)
-          || (data.has_more && (!Number.isSafeInteger(data.next_offset) || data.next_offset <= offset))) {
-          throw new Error("invalid_result_page");
-        }
-        if (!data.items.length) throw new RangeError("page_out_of_range");
-        if (data.items.length > limit) throw new Error("invalid_result_page");
+        this.validatePage(data, offset, limit);
         const total = count(data.matched_count);
         this.total = total ?? (data.has_more === false ? offset + data.items.length : this.total);
         this.hasMore = Boolean(data.has_more);
@@ -142,6 +213,7 @@
         if (version === this.version) {
           this.busy = false;
           this.onChange();
+          void this.prefetch();
         }
       }
     }
@@ -163,20 +235,30 @@
     return Array.from({ length }, (_, index) => start + index);
   }
 
-  function create(container, { translate, renderItems, reportError }) {
+  function create(container, { translate, renderItems, reportError, rows = 0 }) {
+    const viewport = document.createElement("div");
+    viewport.className = "result-page-viewport";
+    container.before(viewport);
+    viewport.append(container);
     const pager = document.createElement("nav");
     pager.className = "result-pager";
     pager.tabIndex = 0;
+    // Font chevrons follow the text baseline and appear below the page number.
+    // Center actual icon geometry in the same 44px control row instead.
+    const arrow = (action, path) => `<button type="button" data-page-action="${action}">`
+      + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="${path}"/></svg></button>`;
     pager.innerHTML = '<span class="result-pager-count"></span>'
-      + '<div class="result-pager-controls"><button type="button" class="result-pager-dots" data-page-dots></button>'
+      + '<div class="result-pager-controls">'
+      + arrow("first", "M11 6 5 12 11 18 M19 6 13 12 19 18") + arrow("previous", "M15 6 9 12 15 18")
+      + '<div class="result-pager-position"><span class="result-pager-dots" aria-hidden="true"></span>'
       + '<form class="result-pager-editor"><label class="result-pager-input"><input type="text" inputmode="numeric"'
       + ' pattern="[0-9]*" maxlength="5" enterkeyhint="go" data-page-input></label><span class="result-pager-total">'
       + '<span aria-hidden="true"></span><span class="result-pager-exact"></span></span>'
       + '<button type="submit" data-page-go>✓</button></form></div>'
+      + arrow("next", "M9 6 15 12 9 18") + arrow("last", "M5 6 11 12 5 18 M13 6 19 12 13 18") + '</div>'
       + '<span class="result-pager-items-total"><span aria-hidden="true"></span><span class="result-pager-exact"></span></span>'
-      + '<span class="result-pager-measure" aria-hidden="true"></span>'
       + '<span class="result-pager-announcement" role="status" aria-live="polite"></span>';
-    container.after(pager);
+    viewport.after(pager);
     container.classList.add("has-result-pages");
     const editor = pager.querySelector("form");
     const submit = pager.querySelector("[data-page-go]");
@@ -186,35 +268,33 @@
     const dots = pager.querySelector(".result-pager-dots");
     const totalLabel = pager.querySelector(".result-pager-total");
     const announcement = pager.querySelector(".result-pager-announcement");
-    const measure = pager.querySelector(".result-pager-measure");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let options = {}, renderedItems = null, renderedLanguage = "", renderedEmpty = "";
-    let drag = null, suppressClick = false, idleTimer = null;
-    let visibleDots = [], dotPage = 1, dotLanguage = "", wide = false;
+    let drag = null, suppressClick = false, idleTimer = null, preview = null, settling = false;
+    let swipeAnimations = [];
+    let visibleDots = [], dotPage = 1, dotLanguage = "";
     let navigationVersion = 0;
     let inputDraft = false;
-
-    function textWidth(text) {
-      measure.textContent = text;
-      return measure.offsetWidth;
-    }
+    let viewportWidth = 0;
 
     function layout() {
       if (!pager.getClientRects().length) return;
-      // Wrapped side labels cannot tell us whether the wider layout fits.
-      // Measure their intrinsic widths with the same inherited font instead.
-      wide = pager.clientWidth >= editor.offsetWidth + 56
-        + 2 * Math.max(textWidth(summary.textContent), textWidth(itemTotal.firstChild.textContent)) + 17;
-      pager.classList.toggle("is-wide", wide);
-      dots.setAttribute("aria-hidden", String(!wide));
-      dots.tabIndex = wide ? 0 : -1;
-      dots.disabled = !wide || model.loading || !model.items.length;
+      if (viewportWidth !== viewport.clientWidth) {
+        viewportWidth = viewport.clientWidth;
+        viewport.style.minHeight = "";
+      }
+      if (rows) {
+        const columns = getComputedStyle(container).gridTemplateColumns.split(" ").length;
+        const size = Math.max(1, Math.min(8, columns)) * rows;
+        if (model.pageSize !== size) {
+          cancelNavigation();
+          model.update({...options, pageSize:size});
+          return;
+        }
+      }
     }
     const resizeObserver = new ResizeObserver(layout);
     resizeObserver.observe(pager);
-    resizeObserver.observe(summary);
-    resizeObserver.observe(itemTotal);
-    resizeObserver.observe(editor);
 
     function animate(element, frames, duration = 220) {
       if (reducedMotion.matches) return null;
@@ -312,7 +392,14 @@
       pager.dataset.page = String(model.page);
       input.setAttribute("aria-label", translate("pagination.pageInput"));
       submit.setAttribute("aria-label", translate("pagination.go"));
-      dots.setAttribute("aria-label", translate("pagination.turnPage", { page: model.page }));
+      for (const button of pager.querySelectorAll("[data-page-action]")) {
+        const action = button.dataset.pageAction;
+        button.setAttribute("aria-label", translate(`pagination.${action}`));
+        button.title = translate(`pagination.${action}`);
+        button.disabled = model.loading || !model.items.length || (
+          action === "first" || action === "previous" ? model.page === 1
+            : action === "last" ? model.pageCount === null || model.page === model.lastPage : !model.canNext);
+      }
       const pages = compactCount(model.pageCount, options.language);
       setCountLabel(totalLabel, `/ ${pages}`, translate("pagination.totalPages", { count: model.pageCount ?? "?" }));
       editor.style.setProperty("--page-total-width", `${pages.length + 3}ch`);
@@ -321,17 +408,17 @@
         inputDraft = false;
       }
       sizeInput();
-      const start = model.items.length ? (model.page - 1) * pageSize + 1 : 0;
+      const start = model.items.length ? (model.page - 1) * model.pageSize + 1 : 0;
       const end = start ? start + model.items.length - 1 : 0;
       // Keep the input and range exact: compacting both ends could show 10万–10万.
       summary.textContent = `${start}–${end}`;
       summary.setAttribute("aria-label", translate("pagination.range", { start, end }));
       const countKey = model.total === null ? "pagination.countUnknown"
         : model.limited ? "pagination.countReturned" : "pagination.countTotal";
-      setCountLabel(itemTotal, translate(countKey, { count: compactCount(model.total, options.language) }),
+      setCountLabel(itemTotal, translate("pagination.countShort", { count: compactCount(model.total, options.language) }),
         translate(countKey, { count: model.total }));
       drawDots();
-      for (const control of [input, submit, dots]) {
+      for (const control of [input, submit]) {
         control.disabled = model.loading || !model.items.length;
         if (model.loading) control.setAttribute("aria-busy", "true");
         else control.removeAttribute("aria-busy");
@@ -342,26 +429,85 @@
         renderedEmpty = options.emptyText;
         renderItems(model.items, options.emptyText);
       }
-      pager.hidden = container.classList.contains("hidden") || (!model.items.length && model.loading);
+      pager.hidden = container.classList.contains("hidden") || !model.items.length;
       layout();
     });
 
-    async function navigate(page) {
-      if (model.loading || page === model.page) return;
+    function clearSwipe() {
+      swipeAnimations.forEach(animation => animation.cancel());
+      swipeAnimations = [];
+      preview?.remove();
+      preview = null;
+      container.style.transform = "";
+      container.classList.remove("is-page-dragging");
+    }
+
+    function cancelNavigation() {
+      navigationVersion += 1;
+      drag = null;
+      settling = false;
+      clearSwipe();
+    }
+
+    function pageStride() {
+      const gap = parseFloat(getComputedStyle(viewport).getPropertyValue("--result-page-gap")) || 0;
+      return container.clientWidth + gap;
+    }
+
+    function dragPreview(direction, distance) {
+      const next = model.page + direction;
+      if (!preview || Number(preview.dataset.previewPage) !== next) {
+        preview?.remove();
+        preview = container.cloneNode(false);
+        preview.removeAttribute("id");
+        preview.classList.remove("has-result-pages", "is-page-dragging", "hidden");
+        preview.classList.add("result-page-preview");
+        preview.dataset.previewPage = String(next);
+        preview.inert = true;
+        preview.setAttribute("aria-hidden", "true");
+        const items = model.peek(next);
+        renderItems(items || [], items ? options.emptyText : translate("search.browseLoading"), preview);
+        viewport.append(preview);
+      }
+      preview.style.transform = `translateX(${direction * pageStride() + distance}px)`;
+    }
+
+    async function settleSwipe(distance, target, ticket) {
+      const animations = [animate(container, [{transform:`translateX(${distance}px)`}, {transform:`translateX(${target}px)`}], 180)];
+      if (preview) {
+        const offset = Math.sign(Number(preview.dataset.previewPage) - model.page) * pageStride();
+        animations.push(animate(preview, [{transform:`translateX(${offset + distance}px)`}, {transform:`translateX(${offset + target}px)`}], 180));
+      }
+      swipeAnimations = animations.filter(Boolean);
+      await Promise.all(swipeAnimations.map(animation=>animation.finished.catch(()=>{})));
+      if (ticket !== navigationVersion) return false;
+      swipeAnimations = [];
+      container.style.transform = `translateX(${target}px)`;
+      if (preview) preview.style.transform = `translateX(${Math.sign(Number(preview.dataset.previewPage) - model.page) * pageStride() + target}px)`;
+      return true;
+    }
+
+    async function navigate(page, distance = null) {
+      if (settling || model.loading || page === model.page) return;
+      settling = true;
       closeEditor();
       const ticket = ++navigationVersion;
       const direction = Math.sign(page - model.page);
       showDots();
       try {
-        if (await model.goTo(page)) {
+        if (distance !== null && !await settleSwipe(distance, -direction * pageStride(), ticket)) return;
+        if (!container.getClientRects().length) return;
+        // Preserve document height on shorter pages, including the last page.
+        viewport.style.minHeight = `${viewport.getBoundingClientRect().height}px`;
+        if (await model.goTo(page) && ticket === navigationVersion) {
+          clearSwipe();
           if (!pager.getClientRects().length) return;
-          const top = container.getBoundingClientRect().top + window.scrollY - 8;
-          window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
-          animate(container, [{ opacity: .5, transform: `translateX(${direction * 16}px)` },
+          if (distance === null) animate(container, [{ opacity: .5, transform: `translateX(${direction * 16}px)` },
             { opacity: 1, transform: "translateX(0)" }]);
           announcement.textContent = translate("pagination.changed", { page: model.page });
         }
       } catch (error) {
+        if (ticket !== navigationVersion) return;
         input.value = String(model.page);
         if (!pager.getClientRects().length) return;
         const message = error instanceof RangeError
@@ -370,18 +516,23 @@
             ? translate("pagination.invalidResponse") : error.message;
         reportError(message);
       } finally {
-        if (ticket === navigationVersion) rest();
+        if (ticket === navigationVersion) {
+          clearSwipe();
+          settling = false;
+          rest();
+        }
       }
     }
     input.addEventListener("focus", openEditor);
+    pager.addEventListener("click", event => {
+      const button = event.target.closest("[data-page-action]");
+      if (!button || button.disabled) return;
+      const target = {first: 1, previous: model.page - 1, next: model.page + 1, last: model.lastPage};
+      navigate(target[button.dataset.pageAction]);
+    });
     input.addEventListener("input", () => {
       inputDraft = input.value !== String(model.page);
       sizeInput();
-    });
-    dots.addEventListener("click", event => {
-      const rect = dots.getBoundingClientRect();
-      const direction = event.detail === 0 || event.clientX >= rect.left + rect.width / 2 ? 1 : -1;
-      if (direction < 0 ? model.page > 1 : model.canNext) navigate(model.page + direction);
     });
     editor.addEventListener("submit", event => {
       event.preventDefault();
@@ -407,42 +558,69 @@
       if (target >= 1 && (target <= model.page || model.canNext)) navigate(target);
     });
 
+    async function restoreDrag(displacement) {
+      settling = true;
+      const ticket = ++navigationVersion;
+      try { await settleSwipe(displacement, 0, ticket); }
+      finally {
+        if (ticket === navigationVersion) {
+          clearSwipe();
+          settling = false;
+        }
+      }
+    }
+
     function finishDrag(event, cancelled = false) {
       if (!drag || drag.id !== event.pointerId) return;
       const direction = cancelled ? 0 : swipeDirection(event.clientX - drag.x, event.clientY - drag.y);
       const horizontal = drag.horizontal;
+      const displacement = drag.displacement || 0;
       drag = null;
-      if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
       if (horizontal) rest();
-      if (!direction) return;
+      if (!direction) {
+        if (horizontal) void restoreDrag(displacement);
+        else clearSwipe();
+        return;
+      }
       suppressClick = true;
-      if ((direction > 0 && model.canNext) || (direction < 0 && model.page > 1)) navigate(model.page + direction);
+      if ((direction > 0 && model.canNext) || (direction < 0 && model.page > 1)) navigate(model.page + direction, displacement);
+      else void restoreDrag(displacement);
     }
-    container.addEventListener("pointerdown", event => {
+    viewport.addEventListener("pointerdown", event => {
       suppressClick = false;
-      if (!event.isPrimary || model.loading || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (!event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, horizontal: false };
     }, { passive: true });
-    container.addEventListener("pointermove", event => {
+    viewport.addEventListener("pointermove", event => {
       if (!drag || drag.id !== event.pointerId) return;
       const dx = Math.abs(event.clientX - drag.x), dy = Math.abs(event.clientY - drag.y);
       if (!drag.horizontal && dy > 12 && dy >= dx) { drag = null; return; }
       if (!drag.horizontal && dx > 12 && dx > dy * 1.6) {
         drag.horizontal = true;
         suppressClick = true;
-        container.setPointerCapture(event.pointerId);
+        viewport.setPointerCapture(event.pointerId);
         showDots();
       }
+      if (drag.horizontal) {
+        const distance = event.clientX - drag.x;
+        const canTurn = distance < 0 ? model.canNext : model.page > 1;
+        drag.displacement = canTurn ? Math.sign(distance) * Math.min(Math.abs(distance), pageStride()) : distance * .2;
+        container.classList.add("is-page-dragging");
+        container.style.transform = `translateX(${drag.displacement}px)`;
+        if (canTurn) dragPreview(distance < 0 ? 1 : -1, drag.displacement);
+        else { preview?.remove();preview=null; }
+      }
     }, { passive: true });
-    container.addEventListener("pointercancel", event => finishDrag(event, true));
-    container.addEventListener("lostpointercapture", event => {
+    viewport.addEventListener("pointercancel", event => finishDrag(event, true));
+    viewport.addEventListener("lostpointercapture", event => {
       // Touch starts with implicit capture on the card's child. Transferring
-      // it to the grid emits a bubbling loss on that child, not a cancellation.
-      if (event.target === container && !container.hasPointerCapture(event.pointerId)) finishDrag(event, true);
+      // it to the viewport emits a bubbling loss on that child, not a cancellation.
+      if (event.target === viewport && !viewport.hasPointerCapture(event.pointerId)) finishDrag(event, true);
     });
-    container.addEventListener("pointerup", event => finishDrag(event));
-    container.addEventListener("dragstart", event => event.preventDefault());
-    container.addEventListener("click", event => {
+    viewport.addEventListener("pointerup", event => finishDrag(event));
+    viewport.addEventListener("dragstart", event => event.preventDefault());
+    viewport.addEventListener("click", event => {
       if (!suppressClick || event.detail === 0) return;
       suppressClick = false;
       event.preventDefault();
@@ -451,15 +629,16 @@
     return {
       update(value) {
         if (options.key !== value.key || options.items !== value.items) {
-          navigationVersion += 1;
+          cancelNavigation();
+          viewport.style.minHeight = "";
           clearTimeout(idleTimer);
           pager.classList.remove("is-interacting");
           closeEditor();
-          drag = null;
           visibleDots = [];
         }
         options = value;
-        model.update(value);
+        const columns = rows ? getComputedStyle(container).gridTemplateColumns.split(" ").length : 1;
+        model.update({...value, shouldPrefetch:() => Boolean(viewport.getClientRects().length), pageSize:rows ? Math.max(1, Math.min(8, columns)) * rows : value.pageSize});
       },
       localize(language) {
         options.language = language;
@@ -467,10 +646,9 @@
       },
       hide() {
         model.version += 1;
-        navigationVersion += 1;
+        cancelNavigation();
         model.busy = false;
         renderedItems = null;
-        drag = null;
         clearTimeout(idleTimer);
         pager.classList.remove("is-interacting");
         closeEditor();

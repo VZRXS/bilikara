@@ -60,6 +60,8 @@ pub enum GatchaOperation {
     },
     Search {
         query: String,
+        #[serde(default)]
+        offset: usize,
         #[serde(default = "default_search_limit")]
         limit: usize,
     },
@@ -219,7 +221,11 @@ fn execute_gatcha_operation(
         GatchaOperation::Candidate { cookie_available } => {
             draw_candidate(&request.paths, *cookie_available)
         }
-        GatchaOperation::Search { query, limit } => search(&request.paths, query, *limit),
+        GatchaOperation::Search {
+            query,
+            offset,
+            limit,
+        } => search(&request.paths, query, *offset, *limit),
         GatchaOperation::BrowseUid {
             uid,
             query,
@@ -1161,37 +1167,7 @@ fn fetch_uid_entries_controlled(
         }
         let reached_checkpoint =
             stop_bvid.is_some_and(|checkpoint| page_contains_bvid(videos, checkpoint));
-        for video in videos.iter().filter_map(Value::as_object) {
-            let bvid = first_text(video, &["bvid"]).unwrap_or_default();
-            let title = first_text(video, &["title"]).unwrap_or_default();
-            if bvid.is_empty()
-                || title.is_empty()
-                || (!keywords.is_empty()
-                    && !keywords
-                        .iter()
-                        .any(|keyword| !keyword.is_empty() && title.contains(keyword)))
-                || !seen.insert(bvid.clone())
-            {
-                continue;
-            }
-            let owner_name = first_text(video, &["author", "owner_name"]).unwrap_or_default();
-            let mut entry = json!({
-                "mid": uid,
-                "bvid": bvid,
-                "title": title,
-                "url": format!("https://www.bilibili.com/video/{bvid}"),
-            });
-            let object = entry.as_object_mut().expect("entry object");
-            if !owner_name.is_empty() {
-                object.insert("owner_name".to_owned(), Value::String(owner_name));
-                object.insert(
-                    "owner_url".to_owned(),
-                    Value::String(format!("https://space.bilibili.com/{uid}")),
-                );
-            }
-            add_video_extras(object, video);
-            output.push(entry);
-        }
+        output.extend(uid_page_entries(uid, videos, keywords, &mut seen));
         if reached_checkpoint || videos.len() < page_size {
             break;
         }
@@ -1201,6 +1177,84 @@ fn fetch_uid_entries_controlled(
         entries: output,
         first_bvid,
     })
+}
+
+fn uid_page_entries(
+    uid: &str,
+    videos: &[Value],
+    keywords: &[String],
+    seen: &mut HashSet<String>,
+) -> Vec<Value> {
+    let mut output = Vec::new();
+    for video in videos.iter().filter_map(Value::as_object) {
+        let bvid = first_text(video, &["bvid"]).unwrap_or_default();
+        let title = first_text(video, &["title"]).unwrap_or_default();
+        if bvid.is_empty()
+            || title.is_empty()
+            || (!keywords.is_empty()
+                && !keywords
+                    .iter()
+                    .any(|keyword| !keyword.is_empty() && title.contains(keyword)))
+            || !seen.insert(bvid.clone())
+        {
+            continue;
+        }
+        let owner_name = first_text(video, &["author", "owner_name"]).unwrap_or_default();
+        let mut entry = json!({
+            "mid": uid,
+            "bvid": bvid,
+            "title": title,
+            "url": format!("https://www.bilibili.com/video/{bvid}"),
+        });
+        let object = entry.as_object_mut().expect("entry object");
+        if !owner_name.is_empty() {
+            object.insert("owner_name".to_owned(), Value::String(owner_name));
+            object.insert(
+                "owner_url".to_owned(),
+                Value::String(format!("https://space.bilibili.com/{uid}")),
+            );
+        }
+        add_video_extras(object, video);
+        output.push(entry);
+    }
+    output
+}
+
+/// One page for the explicit monthly catalog job; uses the same WBI client and
+/// entry interpretation as configured-library refresh, without changing local caches.
+#[cfg(feature = "native-host")]
+pub(crate) fn catalog_uid_page(
+    client: &BilibiliHttpClient,
+    uid: &str,
+    page: usize,
+    keywords: &[String],
+) -> Result<(Vec<Value>, usize, usize), BilibiliServiceError> {
+    let payload = client.get_wbi_json(
+        SPACE_ARC_URL,
+        BTreeMap::from([
+            ("mid".into(), uid.into()),
+            ("ps".into(), "50".into()),
+            ("tid".into(), "0".into()),
+            ("pn".into(), page.to_string()),
+            ("order".into(), "pubdate".into()),
+            ("platform".into(), "web".into()),
+        ]),
+        "稿件列表拉取失败",
+    )?;
+    let videos = payload
+        .pointer("/data/list/vlist")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let total = payload
+        .pointer("/data/page/count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    Ok((
+        uid_page_entries(uid, videos, keywords, &mut HashSet::new()),
+        total,
+        videos.len(),
+    ))
 }
 
 fn page_contains_bvid(videos: &[Value], checkpoint: &str) -> bool {
@@ -1654,7 +1708,15 @@ fn draw_candidate(
     Ok(candidate_payload(chosen, "cache", Some(uid)))
 }
 
-fn search(paths: &GatchaPaths, query: &str, limit: usize) -> Result<Value, GatchaRepositoryError> {
+fn search(
+    paths: &GatchaPaths,
+    query: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Value, GatchaRepositoryError> {
+    if offset > 100_000 {
+        return Err(error("invalid_offset", "Search offset is out of range"));
+    }
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Ok(json!({"items": []}));
@@ -1663,7 +1725,7 @@ fn search(paths: &GatchaPaths, query: &str, limit: usize) -> Result<Value, Gatch
     let favlist = load_favlist(&paths.favlist_file);
     let mut values = all_cache_entries(&cache);
     values.extend(array(&favlist, "items").iter().cloned());
-    let items: Vec<Value> = values
+    let matches: Vec<_> = values
         .iter()
         .filter_map(Value::as_object)
         .filter(|entry| {
@@ -1672,10 +1734,19 @@ fn search(paths: &GatchaPaths, query: &str, limit: usize) -> Result<Value, Gatch
                 .to_lowercase()
                 .contains(&needle)
         })
-        .map(entry_payload)
-        .take(limit.clamp(1, 500))
         .collect();
-    Ok(json!({"items": items}))
+    let matched_count = matches.len();
+    let items: Vec<_> = matches
+        .into_iter()
+        .skip(offset)
+        .take(limit.clamp(1, 500))
+        .map(entry_payload)
+        .collect();
+    let next_offset = offset + items.len();
+    Ok(
+        json!({"items": items, "matched_count": matched_count, "offset": offset,
+        "next_offset": next_offset, "has_more": next_offset < matched_count}),
+    )
 }
 
 fn browse_uid(
@@ -2301,6 +2372,47 @@ mod tests {
             request.operation,
             GatchaOperation::Candidate { .. }
         ));
+    }
+
+    #[test]
+    fn local_search_counts_matches_and_pages_beyond_eighty() {
+        let root = temp_root("search-pages");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).unwrap();
+        let items: Vec<_> = (0..221)
+            .map(|n| {
+                json!({
+                    "bvid":format!("BV{n:010}"), "title":format!("Offline song {n}")
+                })
+            })
+            .collect();
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({"schema_version":3,"uids":{"42":items},"profiles":{}}),
+        )
+        .unwrap();
+        for offset in [0, 80, 160, 216, 221] {
+            let result = search(&paths, "Offline", offset, 80).unwrap();
+            assert_eq!(result["matched_count"], 221);
+            assert_eq!(
+                result["items"].as_array().unwrap().len(),
+                (221 - offset).min(80)
+            );
+            assert_eq!(result["has_more"], offset + 80 < 221);
+            if offset < 221 {
+                assert_eq!(result["items"][0]["bvid"], format!("BV{offset:010}"));
+            }
+        }
+        assert_eq!(
+            search(&paths, "song 220", 0, 80).unwrap()["matched_count"],
+            1
+        );
+        assert_eq!(
+            search(&paths, "missing", 0, 80).unwrap()["matched_count"],
+            0
+        );
+        assert!(search(&paths, "Offline", 100_001, 80).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

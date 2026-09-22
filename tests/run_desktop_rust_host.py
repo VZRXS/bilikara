@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zipfile
 from urllib.parse import urlsplit, parse_qs
 from login_service_fixture import LoginFixture
 
@@ -183,6 +184,17 @@ def main():
         else: assert "generate" in fixture.stages and "poll" in fixture.stages
         forbidden = [name for name in counts if any(word in name for word in ["rating", "space/wbi", "gviz", "d1/"])]
         assert not forbidden, forbidden
+        diagnostic_package = evidence / "diagnostics.zip"
+        if diagnostic_package.exists():
+            with zipfile.ZipFile(diagnostic_package) as archive:
+                assert archive.testzip() is None
+                required = {"diagnostics.md", "runtime-state.json", "system.json", "download-policy.json", "connectivity.json"}
+                assert required <= set(archive.namelist())
+                payload = b"\n".join(archive.read(name) for name in archive.namelist())
+                assert b"synthetic-session" not in payload and b"Desktop Fixture" not in payload
+                assert b"BBDown.data" not in payload and b"/bootstrap/" not in payload
+                policy = json.loads(archive.read("download-policy.json"))
+                assert policy["video_quality"] == "1080P 高帧率" and policy["audio_hires"] is True
         (evidence / "fixture-summary.json").write_text(json.dumps({"request_counts": counts, "login_stages": fixture.stages, "forwarded_external_requests": 0}, indent=2))
         return result.returncode
 

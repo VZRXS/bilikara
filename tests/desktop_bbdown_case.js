@@ -55,7 +55,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   assert.equal((await api("/api/cache/retry",{item_id:guest.id,expected_item_incarnation_id:guest.item_incarnation_id})).status,403);
   for(let n=0;n<4;n++)await okay("/api/state");
   assert.equal((await starts()).length,guestStarts);
-  assert.match(await fs.readFile(path.join(directory,"logs/native-cache.log"),"utf8"),/download_login_required source=bbdown/);
+  assert.match(await fs.readFile(path.join(directory,"logs/native",guest.id+".log"),"utf8"),/download_login_required source=bbdown/);
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-ready");
   await okay("/api/bbdown/login/start",{});
   await until(async()=> (await okay("/api/state")).bbdown.logged_in);
@@ -122,7 +122,10 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   assert.equal((await okay("/api/state")).cache_policy.enabled,false);
   await until(async()=> !(await current()).video_media_url);
   await mode("late");await caps(true);await until(async()=> (await running()).length>=2);
-  await page.waitForFunction(()=>state.data.current_item.cache_status==="downloading" && state.data.current_item.cache_message.includes("BBDown"));
+  await page.waitForFunction(()=>state.data.cache_policy.download_source==="bbdown"
+    && state.data.current_item.cache_status==="downloading"
+    && state.data.current_item.cache_download_tracks.length===2
+    && state.data.current_item.cache_message.includes("总计"));
   await capture("bbdown-active-download.png",page);
   await mode("success");await retry();await ready();
   // Window shrink cancels queued-item work; re-entry gets a fresh attempt.
@@ -156,7 +159,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await restart();page=getPage();watch();
   const unavailable=await okay("/api/state");assert.equal(unavailable.cache_policy.download_source,"bbdown");assert.equal(unavailable.cache_policy.enabled,false);
   assert.equal((await api("/api/cache/retry",{item_id:unavailable.current_item.id,expected_item_incarnation_id:unavailable.current_item.item_incarnation_id})).status,501);
-  const log=await fs.readFile(path.join(directory,"logs/native-cache.log"),"utf8");assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(log));
+  const log=(await Promise.all((await fs.readdir(path.join(directory,"logs/native"))).map(name=>fs.readFile(path.join(directory,"logs/native",name),"utf8")))).join("\n");assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(log));
   assert.deepEqual(errors,[]);
   await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,fixtureChild:true,providerDownloadTested:false,pythonBackend:false,applicationPathEmpty:true,choices,success:true,hiresFlac:true,multiPageAudio:true,sourceReplacement:true,lateOldStagingResult:true,nonDashRejectedBeforeChild:true,userRetry:true,disablement:true,windowShrink:true,removal:true,shutdown:true,unavailable:true,outcomes,consoleErrors:errors,browserWarnings:warnings},null,2));
 };

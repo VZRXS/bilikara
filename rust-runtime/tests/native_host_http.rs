@@ -176,6 +176,15 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .header("cookie", cookie)
             .header("x-bilikara-client", "test-host")
             .json(&body)
+            // Diagnostic probes have their own five-second deadline. Allow
+            // the renderer to return the bounded offline result afterwards.
+            .timeout(Duration::from_secs(
+                if path.starts_with("/api/diagnostics/") {
+                    10
+                } else {
+                    5
+                },
+            ))
             .send()
             .unwrap()
     };

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-client="remote">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -10,6 +10,7 @@
     <title data-i18n="document.remoteTitle">bilikara remote</title>
     <link rel="icon" href="/pic/icon.png" />
     <link rel="stylesheet" href="/remote.css" />
+    <link rel="stylesheet" href="/browse-search.css" />
     <link rel="stylesheet" href="/search-result-media.css" />
     <script src="/search-result-media.js" defer></script>
     <link rel="stylesheet" href="/remote-access.css" />
@@ -18,6 +19,8 @@
     <link rel="stylesheet" href="/status-indicators.css" />
     <link rel="stylesheet" href="/result-pagination.css" />
   <link rel="stylesheet" href="/volume-control.css" />
+  <link rel="stylesheet" href="/request-tabs.css" />
+  <link rel="stylesheet" href="/ui-surfaces.css" />
 </head>
   <body>
     <main class="remote-shell" id="remote-shell">
@@ -1085,8 +1088,7 @@
         <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
         <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用须填写用户名，登记后本设备将始终使用该身份点歌。</p>
         <form id="remote-identity-form" class="remote-identity-form">
-          <label for="remote-identity-input" data-i18n="remoteIdentity.inputLabel">用户名</label>
-          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入用户名" />
+          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" aria-label="用户名" data-i18n-aria-label="remoteIdentity.inputLabel" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="输入用户名" />
           <div class="remote-identity-actions">
             <button type="button" id="remote-identity-cancel" class="ghost-button hidden" data-i18n="common.cancel">取消</button>
             <button type="submit" id="remote-identity-submit" class="primary-button" data-i18n="remoteIdentity.registerSubmit">添加并开始使用</button>
@@ -1098,6 +1100,7 @@
     <script src="/internet-remote-transport.js" defer></script>
     <script src="/remote-transport-client.js" defer></script>
     <script src="/export-guard.js" defer></script>
+    <script src="/source-status.js" defer></script>
     <script src="/export-download.js" defer></script>
     <script src="/song-detail.js" defer></script>
     <script src="/qrcode-generator.js" defer></script>

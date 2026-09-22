@@ -72,6 +72,12 @@ Rust AppState availability and initialization are startup requirements. There
 is no whole-application Python Core fallback. The default desktop launcher uses
 one supervised `bilikara-desktop-host` Rust process. Native desktop bundles ship
 no Python runtime, PyInstaller payload or temporary Python FFI libraries.
+Windows desktop builds keep application data in `runtime/data/`, media cache in
+`runtime/data/cache/`, and shell logs, window preferences and WebView storage
+inside the installation's `runtime/` by default. Do not rename these user-facing
+directories merely to reflect the backend implementation language. Do not scan or
+automatically reopen AppData records; explicit data/import overrides remain
+available for isolated tests or a deliberate import.
 `BILIKARA_NATIVE_DATA_DIR` (and the earlier preview-directory alias) overrides
 the native data root; it does not select a different backend. See
 `docs/native-desktop.md` for layouts, builds, storage and explicit legacy import.
@@ -118,6 +124,23 @@ For UI actions that trigger asynchronous operations or backend side-effects:
 6. **No Fixed Timers**: Do **not** use short `setTimeout` timers to prematurely re-enable controls while the backend request is still active.
 
 *Exemption*: Do **not** apply busy guards to immediate UI actions such as modal open/close, accordion expand/collapse, tab switching, fullscreen toggle, mute, or local-only view toggles.
+
+### Desktop Baseline for Shared Host Work
+
+- Use the shipped **v0.8.0-preview.1 Python desktop Host** as the behavior baseline, together with the user's subsequently approved changes. The Rust/Android preview implementation is not a replacement acceptance baseline.
+- Android should reuse established desktop components, actions and base styles. Adopt a more complete Android implementation into the shared component only when it preserves desktop workflows and adds a demonstrated improvement (for example, accessible touch actions alongside desktop dragging).
+- Treat available space, input method and platform capabilities separately. A narrow desktop viewport must not acquire Android-only workflow restrictions, lose mouse/keyboard operations, or hide supported desktop features. Touch-target rules must not overflow native desktop window chrome.
+- Share layout definitions without copying whole platform screens. Keep essential platform adaptations narrow, preserve existing media nodes and state, and retain user-approved responsive navigation and Host/Remote styling changes.
+- Validate shared changes against desktop behavior first, including narrow windows and mixed mouse/touch input, then validate Android adaptations. Record intentional behavior changes explicitly; do not remove desktop functionality merely because an Android or Rust preview omitted it.
+
+### Shared Host / Remote Visual Rules
+
+- Floating panels use the shared `static/ui-surfaces.css` surface: **18px corners**, a theme-aware translucent fill, shadow, and background blur confined to the panel. Keep opacity in the shared token; do not add per-dialog or per-client opacity overrides.
+- Host dialogs do not dim or blur the surrounding page or source card. Remote's large modal panels (identity/room entry, details, ratings, selection/export dialogs and playback sheet) use a page-wide blurred backdrop without dimming to distinguish them from its stacked cards. Small anchored controls such as menus, tooltips and volume editors use shadow without an additional blurred layer. Remote modals and the playback sheet lock background scrolling (the top menu is exempt); the playback sheet slides up from the bottom edge with square bottom corners. Keep these client-specific backdrop rules in `static/ui-surfaces.css`; preserve keyboard focus, Escape/close behavior, and protection against clicks reaching the page beneath an open modal.
+- Where a panel has an icon close action, place its single close button inside the panel's upper-right corner. Use the shared opaque, contrasting close surface so it remains recognizable over cover art without hovering. Clicking must not scale the button; Remote close buttons have no hover effect. Preserve keyboard focus indicators and existing non-dismissible entry gates.
+- Keep motion consistent within each component type and respect reduced-motion settings. Panel entry/exit motion is separate from button feedback; do not add button scaling to emphasize a close action.
+- Request navigation on Host and Remote shares `static/request-tabs.css`, including typography, selected states, spacing, and theme colors. Wide Host layouts may retain primary and secondary rows; portrait layouts use the compact contextual row with a back action. Reuse the same visual rules in both arrangements.
+- These presentation changes must not recreate or reparent media elements, rebuild the pitch graph, reset drafts, or attach duplicate event handlers.
 
 ## 6. Change Discipline
 

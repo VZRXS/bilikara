@@ -9,6 +9,7 @@ const MAX_CACHE_ENTRIES: usize = 48;
 struct Query {
     path: String,
     limit: usize,
+    search_offset: Option<usize>,
     defaults: Value,
     empty: bool,
 }
@@ -27,8 +28,21 @@ fn plan(path: &str, query: &str) -> Result<Query, CatalogError> {
     }
     let limit = query_number(query, "limit", 80, 500)?
         .clamp(1, if path == "/api/d1/browse" { 500 } else { 100 });
+    let search_offset = if matches!(path, "/api/catalog/search" | "/api/lark/search") {
+        Some(query_number(query, "offset", 0, 100_000)?)
+    } else {
+        None
+    };
     let mut params = url::form_urlencoded::Serializer::new(String::new());
     params.append_pair("limit", &limit.to_string());
+    // Opt in song windows only. Group lists stay legacy until Host/Remote
+    // consume server-side group counts and fetch subsequent windows.
+    if path != "/api/d1/browse" || !query_value(query, "tag").is_empty() {
+        params.append_pair("format", "paged");
+    }
+    if let Some(offset) = search_offset.filter(|offset| *offset > 0) {
+        params.append_pair("offset", &offset.to_string());
+    }
     let (endpoint, defaults, empty) = match path {
         "/api/catalog/search" | "/api/lark/search" => {
             params.append_pair("keyword", &keyword);
@@ -107,6 +121,7 @@ fn plan(path: &str, query: &str) -> Result<Query, CatalogError> {
     Ok(Query {
         path: format!("{endpoint}?{}", params.finish()),
         limit,
+        search_offset,
         defaults,
         empty,
     })
@@ -208,13 +223,37 @@ fn normalize(query: &Query, payload: &Value) -> Result<Value, CatalogError> {
             break;
         }
     }
+    // A legacy array is a capped prefix, not evidence of pagination or a total.
+    // Never grow LIMIT or scan more pages to manufacture a count.
+    if query.search_offset.is_some_and(|offset| offset > 0)
+        && data.get("offset").and_then(Value::as_u64)
+            != query.search_offset.map(|offset| offset as u64)
+    {
+        return Err(CatalogError::new(
+            502,
+            "catalog_pagination_unavailable",
+            "共享曲库未返回请求的分页位置",
+        ));
+    }
+    for key in ["matched_count", "total", "total_count"] {
+        if let Some(total) = data[key]
+            .as_u64()
+            .filter(|total| *total <= 9_007_199_254_740_991)
+        {
+            result["matched_count"] = json!(total);
+            break;
+        }
+    }
     result["items"] = json!(normalized);
     if query.path.starts_with("/browse?") {
         result["tags"] = json!(data["tags"].as_array().into_iter().flatten().filter(|v| !field(&v["tag"]).is_empty()).take(query.limit).map(|v| json!({
             "tag":field(&v["tag"]),"letter":field(&v["letter"]),"locale":field(&v["locale"]),"yomi":field(&v["yomi"]),"count":v["count"].as_u64().unwrap_or(0)
         })).collect::<Vec<_>>());
     }
-    if query.path.starts_with("/browse-category?") || data.get("has_more").is_some() {
+    if query.path.starts_with("/browse-category?")
+        || data.get("has_more").is_some()
+        || (data.get("offset").is_some() && result.get("matched_count").is_some())
+    {
         let offset = query_number(
             query.path.split_once('?').map_or("", |(_, q)| q),
             "offset",
@@ -225,7 +264,20 @@ fn normalize(query: &Query, payload: &Value) -> Result<Value, CatalogError> {
         let next = data["next_offset"].as_u64().unwrap_or(offset + count);
         result["offset"] = json!(offset);
         result["next_offset"] = json!(next.max(offset));
-        result["has_more"] = json!(data["has_more"].as_bool().unwrap_or(false) && next > offset);
+        result["has_more"] = json!(
+            data["has_more"]
+                .as_bool()
+                .unwrap_or_else(|| result["matched_count"]
+                    .as_u64()
+                    .is_some_and(|total| next < total))
+                && next > offset
+        );
+        // Search pagination must explicitly echo its position. Old providers
+        // may ignore offset; repeating their first page would duplicate songs.
+        if query.search_offset.is_some() && data["offset"].as_u64() != Some(offset) {
+            result.as_object_mut().unwrap().remove("has_more");
+            result.as_object_mut().unwrap().remove("next_offset");
+        }
     }
     Ok(result)
 }
@@ -250,7 +302,10 @@ pub(super) fn read_with(
     if query.empty {
         return Ok(query.defaults);
     }
-    let key = format!("{}\n{}", request.base_url, query.path);
+    let key = format!(
+        "{}\n{}\n{:?}:{}",
+        request.base_url, query.path, query.search_offset, query.limit
+    );
     let (cached, generation) = with_catalog(|state| {
         let now = Instant::now();
         // Expired data is never served on error, including a D1 outage.
@@ -347,7 +402,10 @@ mod tests {
             "q=%E9%AB%98%E8%BE%BE&limit=80&path=/batch-add",
         )
         .unwrap();
-        assert_eq!(query.path, "/search?limit=80&keyword=%E9%AB%98%E8%BE%BE");
+        assert_eq!(
+            query.path,
+            "/search?limit=80&format=paged&keyword=%E9%AB%98%E8%BE%BE"
+        );
         assert!(plan("/api/lark/search", "q=%20").unwrap().empty);
         assert!(plan("/api/d1/category-browse", "q=x").unwrap().empty);
         assert!(plan("/api/admin", "").is_err());
@@ -356,7 +414,19 @@ mod tests {
             plan("/api/d1/category-browse", "tag=z&tag=a&tag=z&offset=100")
                 .unwrap()
                 .path,
-            "/browse-category?limit=80&offset=100&tag=a&tag=z"
+            "/browse-category?limit=80&format=paged&offset=100&tag=a&tag=z"
+        );
+        assert!(
+            !plan("/api/d1/browse", "kind=name")
+                .unwrap()
+                .path
+                .contains("format=paged")
+        );
+        assert!(
+            plan("/api/d1/browse", "kind=artist&tag=Singer")
+                .unwrap()
+                .path
+                .contains("format=paged")
         );
     }
     #[test]

@@ -35,7 +35,8 @@ This project does not grant permission to bypass access controls, technical rest
 
 ## 4. Third-Party Download and Processing Tools
 
-This project may call external tools such as BBDown and FFmpeg.
+Native desktop builds invoke BBDown and dynamically load FFmpeg libraries
+(libav). Retained legacy source builds may also invoke the FFmpeg programs.
 
 These tools are independent third-party projects. They are not owned by this project unless explicitly stated.
 

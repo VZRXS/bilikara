@@ -5029,6 +5029,7 @@ function isCurrentHostPlaybackSession(session, video, audio) {{
 function addMountedPlayerListener(target, name, listener) {{ target.addEventListener(name, listener); }}
 function shouldHoldCurrentItemForTransition() {{ return false; }}
 function syncSplitPlayer(video) {{ effects.push(`hidden-sync:${{video.dataset.playerItemId}}`); }}
+function isAndroidNativePlaybackRuntime() {{ return false; }}
 function currentAvOffsetSeconds() {{ return 0; }}
 function setSplitPlaybackIntent() {{ effects.push("intent"); }}
 function registerPause(session, currentItem, video, audio) {{

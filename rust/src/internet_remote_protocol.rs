@@ -197,7 +197,12 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "state.get")]
     StateGet { since_revision: Option<u64> },
     #[serde(rename = "catalog.search")]
-    CatalogSearch { query: String, limit: u16 },
+    CatalogSearch {
+        query: String,
+        limit: u16,
+        #[serde(default)]
+        offset: u32,
+    },
     #[serde(rename = "catalog.browse")]
     CatalogBrowse {
         kind: RemoteCatalogBrowseKindV1,
@@ -220,7 +225,12 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "catalog.song_detail")]
     SongDetail { catalog_item_id: String },
     #[serde(rename = "gatcha.search")]
-    GatchaSearch { query: String, limit: u16 },
+    GatchaSearch {
+        query: String,
+        limit: u16,
+        #[serde(default)]
+        offset: u32,
+    },
     #[serde(rename = "gatcha.browse")]
     GatchaBrowse {
         uid: String,
@@ -460,6 +470,8 @@ struct StateGetBody {
 struct CatalogSearchBody {
     query: String,
     limit: u16,
+    #[serde(default)]
+    offset: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -764,10 +776,19 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         | RemoteRequestV1::GatchaCandidate
         | RemoteRequestV1::GatchaRefresh => true,
         RemoteRequestV1::StateGet { since_revision } => since_revision.is_none_or(valid_revision),
-        RemoteRequestV1::CatalogSearch { query, limit }
-        | RemoteRequestV1::GatchaSearch { query, limit } => {
+        RemoteRequestV1::CatalogSearch {
+            query,
+            limit,
+            offset,
+        }
+        | RemoteRequestV1::GatchaSearch {
+            query,
+            limit,
+            offset,
+        } => {
             valid_text(query, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_QUERY_CHARS)
                 && (1..=MAX_SEARCH_RESULTS).contains(limit)
+                && *offset <= 100_000
         }
         RemoteRequestV1::CatalogBrowse {
             letter,
@@ -1007,6 +1028,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::CatalogSearch {
                 query: body.query,
                 limit: body.limit,
+                offset: body.offset,
             }
         }
         "catalog.browse" => {
@@ -1042,6 +1064,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::GatchaSearch {
                 query: body.query,
                 limit: body.limit,
+                offset: body.offset,
             }
         }
         "gatcha.browse" => {
@@ -1312,6 +1335,19 @@ pub struct RemoteAudioVariantV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RemoteCacheDownloadTrackV1 {
+    pub key: String,
+    pub label: String,
+    pub current_bytes: u64,
+    pub target_bytes: u64,
+    pub done: bool,
+    pub phase: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemotePlaylistItemV1 {
     pub id: String,
     pub item_incarnation_id: String,
@@ -1324,6 +1360,14 @@ pub struct RemotePlaylistItemV1 {
     pub requester_name: String,
     pub cache_status: RemoteCacheStatusV1,
     pub cache_progress: f32,
+    #[serde(default)]
+    pub cache_activity_at: f64,
+    #[serde(default)]
+    pub cache_download_current_bytes: u64,
+    #[serde(default)]
+    pub cache_download_total_bytes: u64,
+    #[serde(default)]
+    pub cache_download_tracks: Vec<RemoteCacheDownloadTrackV1>,
     pub selected_pages: Vec<u32>,
     pub selected_durations: Vec<u32>,
     pub selected_parts: Vec<String>,
@@ -1477,6 +1521,30 @@ mod tests {
             RemoteProfile::Viewer,
             RemoteOperation::SongDetail
         ));
+    }
+
+    #[test]
+    fn search_offsets_are_optional_bounded_and_remain_read_only() {
+        for kind in ["catalog.search", "gatcha.search"] {
+            for offset in [0, 80, 216, 100_000] {
+                let decoded = decode_remote_request_v1(
+                    &request(kind, json!({"query":"song", "limit":80, "offset":offset})),
+                    context(RemoteProfile::Viewer),
+                )
+                .unwrap();
+                let encoded = serde_json::to_value(decoded).unwrap();
+                assert_eq!(encoded["body"]["offset"], offset);
+            }
+            for offset in [json!(-1), json!(1.5), json!(100_001), json!("80")] {
+                assert!(
+                    decode_remote_request_v1(
+                        &request(kind, json!({"query":"song", "limit":80, "offset":offset})),
+                        context(RemoteProfile::Viewer),
+                    )
+                    .is_err()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2102,6 +2170,10 @@ mod tests {
                 requester_name: "Guest".into(),
                 cache_status: RemoteCacheStatusV1::Ready,
                 cache_progress: 1.0,
+                cache_activity_at: 0.0,
+                cache_download_current_bytes: 0,
+                cache_download_total_bytes: 0,
+                cache_download_tracks: Vec::new(),
                 selected_pages: vec![1],
                 selected_durations: vec![180],
                 selected_parts: vec!["伴奏".into()],

@@ -9,6 +9,8 @@ mod desktop;
 #[cfg(desktop)]
 mod desktop_diagnostics;
 #[cfg(desktop)]
+mod desktop_storage;
+#[cfg(desktop)]
 mod platform;
 #[cfg(desktop)]
 mod presentation;

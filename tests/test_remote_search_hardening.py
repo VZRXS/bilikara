@@ -205,6 +205,7 @@ class MockResults {{
   appendChild(child) {{ this.children.push(child); return child; }}
 }}
 const sharedResults = new MockResults();
+const window = {{}}; // Optional search-field presentation is exercised in the browser suite.
 const elements = {{
   larkSearchQuery: {{ value: "pending query" }},
   larkSearchResults: sharedResults,

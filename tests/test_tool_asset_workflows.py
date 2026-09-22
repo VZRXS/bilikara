@@ -26,6 +26,99 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             ROOT / "scripts" / "build_portable_macos_aria2.sh"
         ).read_text(encoding="utf-8")
 
+    @unittest.skipIf(os.name == "nt", "Requires POSIX executable permissions and bundle symlinks")
+    def test_macos_tool_gate_executes_resource_symlink_and_rejects_missing_tool(self):
+        block = self.bundle_workflow.split(
+            "      - name: Verify native backend and bundled tools on macOS\n", 1
+        )[1].split("      - name:", 1)[0]
+        script = textwrap.dedent(block.split("run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory(prefix="macos bundle gate ") as temporary:
+            root = Path(temporary)
+            contents = root / "dist/bilikara.app/Contents"
+            for directory in ("MacOS", "Frameworks", "Resources/vendor"):
+                (contents / directory).mkdir(parents=True)
+            backend = contents / "MacOS/bilikara-desktop-host"
+            backend.write_text("#!/bin/sh\nexit 0\n")
+            backend.chmod(0o755)
+            (contents / "Resources/native-desktop.json").write_text("{}")
+            tool = contents / "Frameworks/BBDown"
+            tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n')
+            tool.chmod(0o755)
+            (contents / "Resources/vendor/BBDown").symlink_to("../../Frameworks/BBDown")
+
+            def run_gate():
+                return subprocess.run(["bash", "-e", "-c", script], cwd=root,
+                                      capture_output=True, text=True, timeout=10)
+
+            result = run_gate()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((root / "calls.log").read_text(), "--help\n")
+            tool.chmod(0o644)
+            self.assertNotEqual(run_gate().returncode, 0)
+            tool.unlink()
+            self.assertNotEqual(run_gate().returncode, 0)
+
+    def test_test_and_bundle_do_not_compete_for_an_immutable_rust_cache(self):
+        test_job = self.bundle_workflow.split("\n  test:\n", 1)[1].split("\n  bundle:\n", 1)[0]
+        bundle_job = self.bundle_workflow.split("\n  bundle:\n", 1)[1].split("\n  android-bundle:\n", 1)[0]
+        def cache_namespace(job):
+            return job.split("shared-key:", 1)[1].splitlines()[0].strip()
+        self.assertNotEqual(cache_namespace(test_job), cache_namespace(bundle_job))
+        # Only CI test debug information is reduced; optimized product builds
+        # and their assertions keep the repository's release profile.
+        self.assertIn('CARGO_PROFILE_DEV_DEBUG: "line-tables-only"', test_job)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_", self.bundle_workflow)
+
+    def test_media_drivers_and_packaged_backend_share_runtime_features(self):
+        backend = (ROOT / "scripts/native_desktop_bundle.py").read_text(encoding="utf-8")
+        self.assertIn('"--features", "native-host"', backend)
+        for filename in ("build-posix.sh", "prepare-windows.ps1"):
+            script = (ROOT / "media-libav" / filename).read_text(encoding="utf-8")
+            builds = [line for line in script.splitlines()
+                      if "cargo " in line and "rust-runtime/Cargo.toml" in line]
+            self.assertEqual(len(builds), 2, filename)
+            for command in builds:
+                self.assertIn("--features native-host", command, filename)
+                self.assertIn("--release", command)
+                self.assertIn("--locked", command)
+
+    @unittest.skipIf(os.name == "nt", "Exercises the Linux-only prerequisite step")
+    def test_linux_media_prerequisite_builds_only_the_consumed_companion_and_fails_closed(self):
+        block = self.bundle_workflow.split(
+            "      - name: Build libav prerequisite for packaged media tests\n", 1
+        )[1].split("      - name:", 1)[0]
+        script = textwrap.dedent(block.split("run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = {**os.environ, "BILIKARA_LIBAV_PREFIX": str(root / "prefix"),
+                   "GITHUB_ENV": str(root / "environment"), "FAIL_AT": ""}
+            stub = '''bash() {
+  printf 'bash:%s\\n' "$*" >> calls.log
+  test "$FAIL_AT" != libraries
+}
+python() {
+  printf 'python:%s\\n' "$*" >> calls.log
+  test "$FAIL_AT" != companion
+}
+'''
+            expected = ["bash:media-libav/build-posix-libraries.sh",
+                        f"python:media-libav/build.py --prefix {root / 'prefix'} --out {root / 'prefix/bin'} --test"]
+            for failure in ("", "libraries", "companion"):
+                with self.subTest(failure=failure):
+                    (root / "calls.log").unlink(missing_ok=True)
+                    (root / "environment").unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-e", "-c", stub + script], cwd=root,
+                                            env={**env, "FAIL_AT": failure}, capture_output=True, text=True, timeout=10)
+                    self.assertEqual((root / "calls.log").read_text().splitlines(),
+                                     expected[:1] if failure == "libraries" else expected)
+                    if failure:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse((root / "environment").exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual((root / "environment").read_text().strip(),
+                                         f"BILIKARA_TEST_LIBAV_COMPANION={root / 'prefix/bin/libbilikara_media_libav.so'}")
+
     def test_rust_gate_stops_before_later_commands_can_hide_a_failure(self):
         block = self.bundle_workflow.split("      - name: Rust Checks and Build\n", 1)[1].split(
             "      - name:", 1
@@ -180,7 +273,9 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertIn("Build Windows libav libraries and companion", self.bundle_workflow)
         self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
         for script in ("build-windows.sh", "build-posix.sh"):
-            self.assertIn("--disable-programs", (ROOT / "media-libav" / script).read_text())
+            recipe = script.replace(".sh", "-libraries.sh")
+            self.assertIn(f'/{recipe}"', (ROOT / "media-libav" / script).read_text())
+            self.assertIn("--disable-programs", (ROOT / "media-libav" / recipe).read_text())
         self.assertIn("check_native_desktop_bundle.py", self.bundle_workflow)
         self.assertNotIn("ilammy/msvc-dev-cmd", self.bundle_workflow)
         self.assertNotIn("for ($attempt", self.bundle_workflow)

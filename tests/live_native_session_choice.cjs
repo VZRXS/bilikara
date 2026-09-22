@@ -1,5 +1,5 @@
 "use strict";
-// Offline process restarts, real modal actions and Host-only authorization.
+// Offline process restarts, real banner actions and Host-only authorization.
 const assert=require("node:assert/strict");
 const {spawn}=require("node:child_process");
 const {once}=require("node:events");
@@ -29,12 +29,12 @@ const [exe,directory,executablePath]=process.argv.slice(2);
   }
   try {
     await boot();
-    assert.equal(await host.locator("#android-session-choice").isVisible(),false);
+    assert.equal(await host.locator("#native-session-choice").isVisible(),false);
     await host.evaluate(()=>apiPostStateSnapshot("/api/session-users/add",{name:"Saved singer"}));
     await stop();await boot();
-    await host.locator("#android-session-choice").waitFor({state:"visible"});
+    await host.locator("#native-session-choice").waitFor({state:"visible"});
     await host.keyboard.press("Escape");
-    assert.equal(await host.locator("#android-session-choice").isVisible(),true);
+    assert.equal(await host.locator("#native-session-choice").isVisible(),true);
     assert.equal(await host.evaluate(async()=>{
       const r=await fetch("/api/session-users/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Must not enter old session"})});return r.status;
     }),409);
@@ -42,7 +42,7 @@ const [exe,directory,executablePath]=process.argv.slice(2);
     await host.waitForFunction(()=>!state.data.session_flags.startup_choice_pending);
     assert.deepEqual(await host.evaluate(()=>state.data.session_users),["Saved singer"]);
     await host.reload();await host.waitForFunction(()=>state.data?.session_flags);
-    assert.equal(await host.locator("#android-session-choice").isVisible(),false);
+    assert.equal(await host.locator("#native-session-choice").isVisible(),false);
     await stop();await boot();
     await host.locator('[data-session-choice="new"]').click();
     await host.waitForFunction(()=>!state.data.session_flags.startup_choice_pending);
@@ -56,7 +56,7 @@ const [exe,directory,executablePath]=process.argv.slice(2);
     await host.locator("#session-user-form button").tap();
     const badge=host.locator('.session-user-badge[data-name="Tap singer"]');
     assert.equal(await badge.getAttribute("draggable"),"false");
-    await badge.locator(".android-user-toggle").tap();
+    await badge.locator(".session-user-name").tap();
     await badge.locator('[data-user-action="up"]').tap();
     await host.waitForFunction(()=>state.data.session_users[0]==="Tap singer");
     const remove=badge.locator('[data-user-action="remove"]');

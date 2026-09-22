@@ -1,54 +1,18 @@
 #!/usr/bin/env bash
-# Native Linux/macOS build from the same signed source used on Windows.
+# Build/cache the upstream C libraries independently of companion/Rust changes.
+# Sourcing keeps the verified source and toolchain variables for packaging below.
 set -euo pipefail
-repo="$(pwd)"
-prefix="${BILIKARA_LIBAV_PREFIX:?Explicit private build prefix required}"
-work="${RUNNER_TEMP:-/tmp}/bilikara-ffmpeg-source"
-version=9.0.1
-url="https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz"
-if [ "${BILIKARA_LIBAV_CACHE_HIT:-false}" = true ]; then
-  python "$repo/scripts/libav_cache.py" restore "$BILIKARA_LIBAV_CACHE" "$prefix"
-else
-  mkdir -p "$prefix/source" "$prefix/licenses" "$prefix/records" "$prefix/driver" "$work/keyring"
-  chmod 700 "$work/keyring"
-  curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
-  curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
-  curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
-  gpg --homedir "$work/keyring" --batch --import "$prefix/source/ffmpeg-devel.asc"
-  gpg --homedir "$work/keyring" --batch --status-fd 1 --verify \
-    "$prefix/source/ffmpeg-${version}.tar.xz.asc" "$prefix/source/ffmpeg-${version}.tar.xz" \
-    > "$prefix/records/signature.log" 2>&1
-  grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$prefix/records/signature.log"
-  tar -xf "$prefix/source/ffmpeg-${version}.tar.xz" -C "$work"
-  cd "$work/ffmpeg-${version}"
-  trap 'test ! -f ffbuild/config.log || cp ffbuild/config.log "$prefix/records/config.log"' EXIT
-  extra=()
-  if [ "$(uname -s)" = Darwin ]; then
-    extra+=(--install-name-dir=@rpath "--extra-ldflags=-Wl,-rpath,$prefix/lib -Wl,-headerpad_max_install_names")
-  else
-    extra+=("--extra-ldflags=-Wl,-rpath,$prefix/lib")
-  fi
-  ./configure --prefix="$prefix" --disable-autodetect --disable-debug --disable-doc \
-    --disable-programs --disable-static --enable-shared --disable-x86asm --disable-avdevice \
-    --disable-swscale --enable-swresample --disable-network "${extra[@]}" \
-    2>&1 | tee "$prefix/records/configure.log"
-  make -j4 2>&1 | tee "$prefix/records/build.log"
-  make install 2>&1 | tee "$prefix/records/install.log"
-  cp COPYING* LICENSE.md "$prefix/licenses/"
-  cp config.h config_components.h ffbuild/config.mak "$prefix/records/"
-  if [ -n "${BILIKARA_LIBAV_CACHE:-}" ]; then
-    python "$repo/scripts/libav_cache.py" snapshot "$prefix" "$BILIKARA_LIBAV_CACHE"
-  fi
-fi
+source "$(dirname "${BASH_SOURCE[0]}")/build-posix-libraries.sh"
 
 cd "$repo"
 mkdir -p "$prefix/driver"
 python media-libav/build.py --prefix "$prefix" --out "$prefix/bin" --test 2>&1 | tee "$prefix/records/companion.log"
 cp "$prefix/bin/build-info.json" "$prefix/build-info.json"
 cp "$prefix/bin/build_config.h" "$prefix/records/companion-build-config.h"
-cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --example libav_metadata
+# Match the packaged backend so its optimized Runtime library can be reused.
+cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --example libav_metadata
 cp rust-runtime/target/release/examples/libav_metadata "$prefix/driver/"
-cargo test --manifest-path rust-runtime/Cargo.toml --release --locked --lib --no-run --message-format=json > "$prefix/records/runtime-test-build.jsonl"
+cargo test --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --lib --no-run --message-format=json > "$prefix/records/runtime-test-build.jsonl"
 python - <<'PY'
 import json, os, shutil
 from pathlib import Path

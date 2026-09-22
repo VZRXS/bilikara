@@ -131,15 +131,16 @@ def collect_posix(prefix: Path) -> None:
     (bindir / "ffmpeg-runtime.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def stage(prefix: Path, bundle: Path, *, native: bool = False, macos_app: bool | None = None) -> None:
+def stage(prefix: Path, bundle: Path, *, native: bool = False, macos_app: bool | None = None,
+          documentation: Path | None = None) -> None:
     if platform.system() == "Windows":
         from scripts.windows_libav_preview import stage as stage_windows
-        stage_windows(prefix, bundle, native=native)
+        stage_windows(prefix, bundle, native=native, documentation=documentation)
         return
     macos_app = platform.system() == "Darwin" if macos_app is None else macos_app
     contents = bundle / "Contents" if macos_app else bundle
     resources = contents / "Resources" if macos_app else bundle
-    vendor = contents / ("Frameworks/vendor" if macos_app else ("vendor" if native else "_internal/vendor"))
+    vendor = contents / (("Frameworks" if native else "Frameworks/vendor") if macos_app else ("vendor" if native else "_internal/vendor"))
     vendor.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((prefix / "bin/ffmpeg-runtime.json").read_text(encoding="utf-8"))
     test_companion = COMPANIONS[platform.system()].replace("libav.", "libav_test.")
@@ -177,16 +178,16 @@ def stage(prefix: Path, bundle: Path, *, native: bool = False, macos_app: bool |
                 link.symlink_to(os.path.relpath(path, resource_vendor))
     else:
         manifest_path.write_text(json.dumps(runtime_manifest, indent=2) + "\n", encoding="utf-8")
-    shutil.copytree(prefix / "licenses", resources / "THIRD_PARTY_LICENSES/libav", dirs_exist_ok=True)
-    sources = resources / "THIRD_PARTY_SOURCES"
+    documentation = resources if documentation is None else documentation
+    shutil.copytree(prefix / "licenses", documentation / "THIRD_PARTY_LICENSES/libav", dirs_exist_ok=True)
+    sources = documentation / "THIRD_PARTY_SOURCES"
     sources.mkdir(exist_ok=True)
     for source in (prefix / "source").iterdir():
         shutil.copy2(source, sources / source.name)
-    for name in ("probe.h", "probe.c", "remux.c", "test_shim.c", "windows_io.h", "build.py", "build-posix.sh", "fixtures/synthetic.h264"):
+    for name in ("probe.h", "probe.c", "remux.c", "test_shim.c", "windows_io.h", "build.py", "build-posix.sh", "build-posix-libraries.sh", "fixtures/synthetic.h264"):
         destination = sources / "media-libav" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "media-libav" / name, destination)
-    shutil.copy2(ROOT / "media-libav/PACKAGING.md", resources / "LIBAV_PACKAGING.md")
     libraries = [contents / "MacOS/bilikara-desktop-host" if macos_app else bundle / "bilikara-desktop-host"] if native else (contents / ("Frameworks/rust" if macos_app else "_internal/rust")).iterdir()
     for library in libraries:
         if library.is_file() and any(Path(dep).name.startswith(("libav", "libbilikara_media_libav")) for dep in binary_info(library)["imports"]):

@@ -13,28 +13,35 @@ import sys
 
 def cache_key() -> str:
     root = Path(__file__).resolve().parents[1]
+    system = platform.system()
+    arch = platform.machine()
+    # Only the selected C recipe produces this cache. Companion/Rust builds
+    # run after restore/snapshot and must never invalidate upstream libraries.
+    recipe = "windows" if system == "Windows" else "posix"
     inputs = {
-        "schema": 1,
-        "system": platform.system(),
-        "arch": platform.machine(),
+        "schema": 2,
+        "system": system,
+        "arch": arch,
+        # Keep the OS generation and actual toolchain/SDK identity, not the
+        # runner image revision: unrelated preinstalled tools also change it.
         "environment": {name: os.environ.get(name, "") for name in (
-            "ImageOS", "ImageVersion", "VCToolsVersion", "WindowsSDKVersion",
+            "ImageOS", "VCToolsVersion", "WindowsSDKVersion",
             "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "SDKROOT", "DEVELOPER_DIR",
             "VSCMD_ARG_TGT_ARCH", "VSCMD_ARG_HOST_ARCH", "MACOSX_DEPLOYMENT_TARGET", "BILIKARA_LIBAV_PREFIX",
         )},
         "scripts": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-                    for name in ("media-libav/build-windows.sh", "media-libav/build-posix.sh",
+                    for name in (f"media-libav/build-{recipe}-libraries.sh",
                                  "scripts/libav_cache.py")},
     }
-    commands = [["cl.exe"]] if os.name == "nt" else [["cc", "--version"]]
-    if platform.system() == "Darwin":
+    commands = [["cl.exe"]] if system == "Windows" else [["cc", "--version"]]
+    if system == "Darwin":
         commands.append(["xcrun", "--show-sdk-version"])
     inputs["compiler"] = []
     for command in commands:
         result = subprocess.run(command, capture_output=True, text=True, errors="replace")
         inputs["compiler"].append(result.stdout + result.stderr)
     digest = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
-    return f"libav-v1-{platform.system()}-{platform.machine()}-{digest}"
+    return f"libav-v2-{system}-{arch}-{digest}"
 
 
 def snapshot(prefix: Path, cache: Path) -> None:

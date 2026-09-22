@@ -14,7 +14,9 @@ mod library;
 pub(crate) use library::LibraryDiagnostic;
 mod login;
 pub(crate) use login::LoginDiagnostic;
+mod admin;
 mod maintenance;
+mod monthly;
 mod network;
 pub(crate) mod preferences;
 pub(crate) mod ratings;
@@ -217,10 +219,13 @@ pub(crate) fn token() -> Result<String, ApiError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 pub(crate) fn qr_image(value: &str) -> Result<String, ApiError> {
+    // Match the Preview 1 Rust Host: the SVG carries its four-module quiet
+    // zone. The access card's 3px CSS padding is only an outer visual frame.
     let code = qrcode::QrCode::new(value).map_err(|_| ApiError::invalid("无法生成二维码"))?;
     let svg = code
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(256, 256)
+        .quiet_zone(true)
         .build();
     Ok(format!(
         "data:image/svg+xml;base64,{}",
@@ -237,7 +242,21 @@ fn start(
     let directory = directory
         .canonicalize()
         .map_err(|_| ApiError::new(503, "storage", "Host 私有目录不可用"))?;
-    let cache_root = directory.join("media");
+    let cache_root = directory.join(if desktop { "cache" } else { "media" });
+    let previous_cache = directory.join("media");
+    if desktop && !cache_root.exists() && previous_cache.exists() {
+        // AppState already holds the data-root lock. Preserve old preview cache
+        // files when restoring the historical desktop directory name.
+        if !std::fs::symlink_metadata(&previous_cache).is_ok_and(|m| m.is_dir()) {
+            return Err(ApiError::new(
+                503,
+                "cache_storage",
+                "旧缓存目录不是普通目录",
+            ));
+        }
+        std::fs::rename(&previous_cache, &cache_root)
+            .map_err(|_| ApiError::new(503, "cache_storage", "无法恢复缓存目录名称"))?;
+    }
     std::fs::create_dir_all(&cache_root)
         .map_err(|_| ApiError::new(503, "storage", "无法创建媒体缓存目录"))?;
     std::fs::create_dir_all(directory.join("logs"))
@@ -632,13 +651,23 @@ async fn handle_inner(
     } else {
         json!({})
     };
-    let result = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        api::dispatch(&context, &identity, host, &method, &path, &query, body)
+        if context.desktop && method == Method::POST && path == "/api/diagnostics/package" {
+            return diagnostics::package(&context, &identity, &body);
+        }
+        let result = api::dispatch(&context, &identity, host, &method, &path, &query, body)?;
+        Ok(json_response(
+            if path == "/api/admin-maintenance/trigger" {
+                202
+            } else {
+                200
+            },
+            json!({"ok":true,"data":result}),
+        ))
     })
     .await
-    .map_err(|_| ApiError::new(500, "task", "原生请求处理失败"))??;
-    Ok(json_response(200, json!({"ok":true,"data":result})))
+    .map_err(|_| ApiError::new(500, "task", "原生请求处理失败"))?
 }
 
 enum EntryPage {

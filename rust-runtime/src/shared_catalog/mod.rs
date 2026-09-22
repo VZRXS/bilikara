@@ -105,7 +105,16 @@ impl Default for CatalogRequest {
 impl CatalogRequest {
     /// Host-owned configuration; never supplied by an HTTP/Internet client.
     pub fn for_host() -> Self {
-        let mut request = Self::default();
+        let mut request = Self {
+            review_keywords: [
+                "卡拉", "カラ", "投屏", "KTV", "纯K", "纯k", "kara", "Kara", "karaoke", "Karaoke",
+                "vocal", "Vocal", "伴奏",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ..Self::default()
+        };
         if let Ok(base) = std::env::var("BILIKARA_CF_API_URL")
             && !base.trim().is_empty()
         {

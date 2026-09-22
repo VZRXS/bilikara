@@ -27,8 +27,11 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   dock.children=["playback","queue","request","users","my"].map(p=>{const n=new Node(p);n.dataset.androidPage=p;return n;});
   tools.children=["queue","history","request","random"].map(p=>{const n=new Node(p);n.dataset.androidWorkspace=p;return n;});
   get("top-controls").append(get("cache-settings"),get("presentation-settings"));
-  get("tool-list").append(get("bbdown-status-row"));
-  get("cache-panel").append(get("bbdown-login-panel"));
+  get("cache-panel").append(get("host-account-settings"));
+  get("cache-usage-side").append(get("bbdown-status-row"));
+  get("host-account-settings").append(get("bbdown-login-panel"));
+  const workspaceButtons = Object.entries({queue:"queue",history:"queue",request:"request",random:"request",users:"users",settings:"my"})
+    .map(([workspace,page])=>{const n=get("work-rail-"+workspace);n.dataset.hostWorkspace=workspace;n.dataset.compactPage=page;return n;});
   for(const [id,attr,modes] of [["android-layout-switch","androidLayoutMode",["auto","desktop","phone"]],["android-orientation-switch","androidOrientationMode",["system","landscape","portrait"]]]) {
     get(id).append(...modes.map(mode=>{const button=new Node(mode);button.dataset[attr]=mode;return button;}));
   }
@@ -47,7 +50,8 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   const calls=[];
   const window={innerWidth:width,innerHeight:850,screen:{orientation},BilikaraLayoutPolicy:{resolveLayout},BilikaraHostWindowPreferences:{client,orientation:platform === "android"},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},t:key=>key,
-    document:{querySelectorAll:()=>[],documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    document:{querySelectorAll:selector=>selector==='[data-host-workspace]'?workspaceButtons:[],documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    syncSessionUserControls:()=>{},syncHostAccountPresentation:()=>{},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     setAppMessage:message=>calls.push(message),
     renderHostWorkspaceSelection:()=>window.BilikaraHostLayout?.syncVisibility(),
@@ -66,7 +70,7 @@ assert.deepEqual(desktop.calls,[]);
 const nativeDesktop=setup(true,"landscape-primary",1280,null,"desktop");
 assert.equal(nativeDesktop.window.BilikaraHostLayout.isPortrait(),false);
 assert.equal(nativeDesktop.get("presentation-settings").parentElement.id,"top-controls");
-assert.equal(nativeDesktop.get("android-layout-settings").hidden,false);
+assert.equal(nativeDesktop.get("android-layout-settings").hidden,true);
 assert.equal(nativeDesktop.get("android-orientation-settings").hidden,true);
 const mobile=setup();
 assert.equal(mobile.get("presentation-settings").parentElement.className,"settings-section android-display-settings");
@@ -96,7 +100,9 @@ assert.equal(mobile.root.dataset.hostPage,"users");
 mobile.clickPage("my");
 assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),true);
 assert.equal(mobile.state.cacheSettingsOpen,true);
-assert.equal(mobile.get("bbdown-status-row").parentElement.id,"android-account-slot");
+assert.equal(mobile.get("host-account-settings").parentElement.id,"android-account-slot");
+assert.equal(mobile.get("bbdown-status-row").parentElement.id,"host-account-settings");
+assert.equal(mobile.get("bbdown-login-panel").parentElement.id,"host-account-settings");
 mobile.get("android-open-settings").listeners.click();
 assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),false);
 assert.equal(mobile.state.cacheSettingsOpen,false);
@@ -114,8 +120,9 @@ mobile.orientation.type="landscape-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,true);
 assert.equal(mobile.elements.leftColumn.inert,false);
 assert.equal(mobile.get("cache-settings").parentElement.id,"top-controls");
-assert.equal(mobile.get("bbdown-status-row").parentElement.id,"tool-list");
-assert.equal(mobile.get("bbdown-login-panel").parentElement.id,"cache-panel");
+assert.equal(mobile.get("host-account-settings").parentElement.id,"cache-panel");
+assert.equal(mobile.get("bbdown-status-row").parentElement.id,"cache-usage-side");
+assert.equal(mobile.get("bbdown-login-panel").parentElement.id,"host-account-settings");
 assert.equal(mobile.get("shared-request-tabs").parentElement.id,"request-header");
 assert.equal(mobile.get("presentation-settings").parentElement.id,"top-controls");
 mobile.window.innerWidth=412;
@@ -141,34 +148,34 @@ assert.equal(mobile.root.dataset.hostPage,"request");
   let saved={layout:"desktop",orientation:"portrait"};
   let finish,fail;
   const saves=[];
-  const client={load:async()=>saved,saveLayout:mode=>{saves.push(mode);return new Promise((resolve,reject)=>{finish=resolve;fail=reject;});},saveOrientation:async mode=>(saved={...saved,orientation:mode})};
+  const client={load:async()=>saved,saveLayout:()=>{throw Error('Retired layout selector must not write');},saveOrientation:mode=>{saves.push(mode);return new Promise((resolve,reject)=>{finish=resolve;fail=reject;});}};
   const manual=setup(true,"portrait-primary",412,client);
-  const group=manual.get("android-layout-switch");
+  const group=manual.get("android-orientation-switch");
   assert.ok(group.children.every(button=>button.disabled),"Pending initial read cannot overwrite saved settings");
   await Promise.resolve();
-  assert.equal(manual.dock.hidden,true,"Persisted desktop override is applied on launch");
-  const phone=group.children.find(b=>b.id==="phone");
-  const pending=group.listeners.click({target:phone});
-  assert.equal(phone.attrs["aria-busy"],"true");
+  assert.equal(manual.dock.hidden,false,"Earlier manual desktop preference does not pin Preview 2 layout");
+  const landscape=group.children.find(b=>b.id==="landscape");
+  const pending=group.listeners.click({target:landscape});
+  assert.equal(landscape.attrs["aria-busy"],"true");
   assert.ok(group.children.every(button=>button.disabled));
-  await group.listeners.click({target:phone});
-  assert.deepEqual(saves,["phone"],"No duplicate native preference writes");
-  saved={...saved,layout:"phone"};finish(saved);await pending;
-  assert.equal(phone.attrs["aria-busy"],undefined);
-  assert.equal(phone.attrs["aria-pressed"],"true");
+  await group.listeners.click({target:landscape});
+  assert.deepEqual(saves,["landscape"],"No duplicate native preference writes");
+  saved={...saved,orientation:"landscape"};finish(saved);await pending;
+  assert.equal(landscape.attrs["aria-busy"],undefined);
+  assert.equal(landscape.attrs["aria-pressed"],"true");
   assert.equal(manual.dock.hidden,false);
   manual.window.innerWidth=1280;manual.listeners.resize();
-  assert.equal(manual.dock.hidden,false,"Manual phone layout survives wide windows");
-  const auto=group.children.find(b=>b.id==="auto");
-  const failed=group.listeners.click({target:auto});fail(new Error("disk"));await failed;
-  assert.equal(manual.root.dataset.hostLayoutMode,"phone","Failed save retains last good preference");
+  assert.equal(manual.dock.hidden,true,"Wide windows use the responsive desktop layout");
+  const system=group.children.find(b=>b.id==="system");
+  const failed=group.listeners.click({target:system});fail(new Error("disk"));await failed;
+  assert.equal(landscape.attrs["aria-pressed"],"true","Failed save retains last good orientation");
+  assert.equal(manual.root.dataset.hostLayoutMode,"auto");
   assert.ok(group.children.every(button=>!button.disabled));
   assert.ok(manual.calls.includes("mobile.windowPreferenceFailed"));
-  const orientation=manual.get("android-orientation-switch");
-  await orientation.listeners.click({target:orientation.children.find(b=>b.id==="landscape")});
   assert.equal(saved.orientation,"landscape");
-  assert.equal(manual.dock.hidden,false,"Rotation preference does not change explicit layout");
+  assert.equal(manual.dock.hidden,true,"Rotation preference does not override window width");
   const reload=setup(true,"landscape-primary",1280,client);await Promise.resolve();
-  assert.equal(reload.dock.hidden,false,"Layout survives next WebView/native-origin load");
-  console.log("PASS portrait navigation, shared settings, window adaptation, manual preferences, async guards and restoration");
+  assert.equal(reload.dock.hidden,true,"Reload remains responsive despite the stored legacy layout");
+  assert.equal(reload.get('android-orientation-switch').children.find(b=>b.id==='landscape').attrs['aria-pressed'],'true');
+  console.log("PASS portrait navigation, shared settings, responsive layout, orientation persistence and async guards");
 })().catch(error=>{console.error(error);process.exitCode=1;});

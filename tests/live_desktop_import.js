@@ -134,7 +134,9 @@ async function openHost(ready) {
   assert.deepEqual(changed.session_users,["Bob","Alice"]);
   await capture("desktop-mutated.png",page);await host.close();await stop(ready);
   assert.deepEqual(await sourceBytes(),original);
-  assert.equal((await fs.readdir(directory)).includes("cache"),false);
+  // The native runtime now creates data/cache itself; import must still never
+  // copy the legacy cache payload into that directory.
+  await assert.rejects(fs.stat(path.join(directory,"cache/source-only.txt")),{code:"ENOENT"});
   const preferences=JSON.parse(await fs.readFile(path.join(directory,"native-preferences.json"),"utf8"));assert.equal(preferences.cache.retained_settings.cache_policy.future_option,"keep");
   // No second import is possible: restart receives the original, now absent path.
   await fs.rename(source,source+"-preserved");
@@ -165,7 +167,7 @@ async function openHost(ready) {
   console.log("Actual desktop import, exports, native mutations and no-reimport restart passed");
 })().catch(async error=>{console.error(error,stderr);if(process.env.BILIKARA_BBDOWN_FIXTURE){
     if(page)await fs.writeFile(path.join(evidence,"failure-state.json"),JSON.stringify(await api("/api/state"),null,2)).catch(()=>{});
-    await fs.copyFile(path.join(directory,"logs/native-cache.log"),path.join(evidence,"failure-cache.log")).catch(()=>{});
+    await fs.cp(path.join(directory,"logs/native"),path.join(evidence,"failure-cache-logs"),{recursive:true}).catch(()=>{});
     const fixtureRoot=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
     if(fixtureRoot)for(const file of await fs.readdir(fixtureRoot))if(file.endsWith(".started"))await fs.copyFile(path.join(fixtureRoot,file),path.join(evidence,file));
   }if(page)await capture("failure.png",page).catch(()=>{});process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}if(proxy)proxy.close();if(temporary)await fs.rm(temporary,{recursive:true,force:true});});

@@ -119,6 +119,8 @@ const state = {
   listHeaderRenderSignature: "",
   requesterSelectRenderSignature: "",
   sessionUsersRenderSignature: "",
+  sessionUserActionsName: "",
+  sessionUserActionPending: null,
   remoteAccessRenderSignature: "",
   internetRemoteDisplay: null,
   cacheSettingsRenderSignature: "",
@@ -453,8 +455,8 @@ const state = {
   presentationHostProgressScrubbing: false,
   presentationHostAnnouncementKey: "",
   presentationHostAnnouncementModel: null,
-  activeHostWorkspace: "queue",
-  focusedHostWorkspace: "queue",
+  activeHostWorkspace: "request",
+  focusedHostWorkspace: "request",
   hostWorkspaceOverlayOpen: false,
   hostNarrowToolSheetActive: false,
   hostWorkspaceTransition: null,
@@ -539,8 +541,6 @@ const elements = {
   bbdownLoginQrText: document.getElementById("bbdown-login-qr-text"),
   bbdownLoginMessage: document.getElementById("bbdown-login-message"),
   bbdownLoginRefresh: document.getElementById("bbdown-login-refresh"),
-  ffmpegStatusRow: document.getElementById("ffmpeg-status-row"),
-  ffmpegPanelStatusIndicator: document.getElementById("ffmpeg-panel-status-indicator"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
   advanceDelaySlider: document.getElementById("advance-delay-slider"),
@@ -724,7 +724,6 @@ const elements = {
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
   remotePopoverCopyLink: document.getElementById("remote-popover-copy-link"),
-  remotePopoverLocalAddressDetail: document.getElementById("internet-remote-local-address-detail"),
   internetRemoteUrlLink: document.getElementById("internet-remote-url"),
   internetRemoteCopyLink: document.getElementById("internet-remote-copy-link"),
   windowDragRegion: document.getElementById("window-drag-region"),
@@ -1724,7 +1723,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
       connected_count: Math.max(0, Math.trunc(Number(state.internetRemoteDisplay?.connected_count) || 0)),
       password: String(state.internetRemoteDisplay?.password || "").slice(0, 32),
       qr_image: (internetQrImage.startsWith("data:image/png;base64,")
-        || (window.BilikaraAndroidPresentation && internetQrImage.startsWith("data:image/svg+xml;base64,")))
+        || internetQrImage.startsWith("data:image/svg+xml;base64,"))
         ? internetQrImage.slice(0, 524_288)
         : "",
     },
@@ -3838,7 +3837,8 @@ function requestSessionUserNoticePlacement() {
     }
     const mode = normalizeDiscoverMode(state.discoverMode);
     const panel = elements.requestWorkspace?.querySelector(`[data-discover-panel="${mode}"]`);
-    const anchor = panel?.querySelector("[data-category-browse-search], [data-d1-browse-search]");
+    const form = panel?.querySelector("[data-category-browse-search], [data-d1-browse-search]");
+    const anchor = form?.closest(".browse-search-bar") || form;
     return anchor ? { anchor } : panel ? { container: panel } : null;
   }
   if (subview === "sources") {
@@ -3871,7 +3871,22 @@ function syncRequestSessionUserNoticePlacement() {
   }
 }
 
+function syncHostSearchCounts() {
+  for (const mode of ["shared", "local"]) {
+    const summary = document.querySelector(`[data-search-summary="${mode}"]`);
+    if (!summary) continue;
+    const search = state.searchModeState[mode];
+    const data = search.pageData;
+    summary.hidden = !data || Boolean(search.error);
+    const known = Number.isSafeInteger(data?.matched_count) && data.matched_count >= 0;
+    const total = known ? data.matched_count : search.items.length;
+    const label = known ? "pagination.countTotal" : "pagination.countReturned";
+    summary.textContent = t(label, {count: total});
+  }
+}
+
 function syncSearchModeSelection() {
+  syncHostSearchCounts();
   const activeMode = normalizeSearchMode(state.searchMode);
   const focusedMode = normalizeSearchMode(state.focusedSearchMode, activeMode);
   state.searchMode = activeMode;
@@ -3884,6 +3899,8 @@ function syncSearchModeSelection() {
   elements.searchModePanels?.forEach((panel) => {
     setRequestPanelVisibility(panel, panel.dataset.searchPanel === activeMode);
   });
+  window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
   syncRequestSessionUserNoticePlacement();
 }
 
@@ -4001,7 +4018,6 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
     closeRequestDetailForNavigation();
   }
   state.requestSubview = nextSubview;
-  try { window.sessionStorage?.setItem("bilikara.host.requestView", nextSubview); } catch { /* Optional view memory. */ }
   state.focusedRequestSubview = nextSubview;
   syncRequestSubviewSelection();
   if (nextSubview === "sources") {
@@ -5313,13 +5329,11 @@ function initializeWindowChrome() {
 }
 
 function initializeHostShell() {
-  state.activeHostWorkspace = "queue";
-  state.focusedHostWorkspace = "queue";
+  state.activeHostWorkspace = "request";
+  state.focusedHostWorkspace = "request";
   state.hostWorkspaceOverlayOpen = false;
   state.requestSubview = "quick";
-  try {
-    state.requestSubview = normalizeRequestSubview(window.sessionStorage?.getItem("bilikara.host.requestView"));
-  } catch { /* A new page session starts with Quick if storage is unavailable. */ }
+
   state.focusedRequestSubview = state.requestSubview;
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
@@ -6088,23 +6102,24 @@ function hasDownloadingItems(data) {
   return items.some((item) => item?.cache_status === "downloading");
 }
 
-async function searchGatchaCache(query) {
+async function searchGatchaCache(query, {offset = 0, limit = 80} = {}) {
   const normalizedQuery = String(query || "").trim();
-  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}`, {
+  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}&offset=${offset}&limit=${limit}`, {
     headers: clientHeaders(),
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.searchFailed"));
   }
-  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+  return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
 
-async function searchCatalog(query) {
+async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
   const normalizedQuery = String(query || "").trim();
   const params = new URLSearchParams();
   params.set("q", normalizedQuery);
-  params.set("limit", "80");
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
   const response = await fetch(`/api/catalog/search?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
@@ -6113,7 +6128,7 @@ async function searchCatalog(query) {
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
-  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+  return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
 
 
@@ -7569,7 +7584,6 @@ function renderD1BrowseView() {
   const level = normalizedD1BrowseLevel(mode.level);
   state.d1BrowseLevel = level;
   const queryInput = view.querySelector("[data-d1-browse-query]");
-  const submitButton = view.querySelector("[data-d1-browse-submit]");
   const alphabet = view.querySelector("[data-d1-browse-alphabet]");
   const backButton = view.querySelector("[data-d1-browse-back]");
   const current = view.querySelector("[data-d1-browse-current]");
@@ -7583,11 +7597,6 @@ function renderD1BrowseView() {
   }
   if (queryInput) {
     queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
-  }
-  if (submitButton) {
-    submitButton.textContent = t("search.submit");
-    submitButton.disabled = state.d1BrowseLoading;
-    submitButton.toggleAttribute("aria-busy", state.d1BrowseLoading);
   }
   if (alphabet) {
     alphabet.innerHTML = "";
@@ -7675,6 +7684,11 @@ function renderD1BrowseView() {
     message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
     message.classList.remove("is-error");
   }
+  window.BilikaraBrowseSearch?.sync(view.querySelector("[data-d1-browse-search]"), navigation, {
+    key: JSON.stringify([kind, mode.letter, mode.tag, mode.locale]),
+    title: mode.tag || [d1BrowseTitle(kind), mode.letter].filter(Boolean).join(" / "),
+    query: mode.query, loading: mode.loading, translate: t, available: level !== "alphabet",
+  });
 }
 
 async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "" } = {}) {
@@ -8331,7 +8345,6 @@ function renderCategoryBrowseView() {
   const grid = view.querySelector("[data-category-browser-grid]");
   const tabs = view.querySelector("[data-category-browser-tabs]");
   const queryInput = view.querySelector("[data-category-browse-query]");
-  const submitButton = view.querySelector("[data-category-browse-submit]");
   const results = view.querySelector("[data-category-browse-results]");
   const message = view.querySelector("[data-category-browse-message]");
 
@@ -8344,6 +8357,7 @@ function renderCategoryBrowseView() {
     });
   }
   if (!selected) {
+    window.BilikaraBrowseSearch?.reset(view.querySelector("[data-category-browse-search]"));
     return;
   }
   if (queryInput && document.activeElement !== queryInput) {
@@ -8351,10 +8365,6 @@ function renderCategoryBrowseView() {
   }
   if (queryInput) {
     queryInput.placeholder = t("search.browseItemPlaceholder");
-  }
-  if (submitButton) {
-    submitButton.textContent = t("search.submit");
-    submitButton.disabled = state.categoryBrowseLoading;
   }
   if (tabs) {
     tabs.innerHTML = "";
@@ -8381,6 +8391,10 @@ function renderCategoryBrowseView() {
     message.textContent = text;
     message.classList.remove("is-error");
   }
+  window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
+    key: selected.id, title: selected.name, query: state.categoryBrowseQuery,
+    loading: state.categoryBrowseLoading, translate: t,
+  });
 }
 
 async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
@@ -8451,7 +8465,7 @@ function maybeLoadMoreCategoryBrowse(scrollContainer) {
     return;
   }
   const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
-  if (remaining <= 160) {
+  if (remaining <= Math.max(160, scrollContainer.clientHeight)) {
     loadCategoryBrowse({ append: true });
   }
 }
@@ -8497,13 +8511,6 @@ function renderFollowBrowse() {
   if (!elements.followUpGrid || !elements.followSongResults) {
     return;
   }
-  if (elements.followSearchButton) {
-    elements.followSearchButton.disabled = state.followBrowseLoading;
-    elements.followSearchButton.toggleAttribute("aria-busy", state.followBrowseLoading);
-    elements.followSearchButton.textContent = state.followBrowseLoading
-      ? t("follow.loadingItems")
-      : t("search.submit");
-  }
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
@@ -8514,6 +8521,7 @@ function renderFollowBrowse() {
     owners,
     items,
     language: state.language,
+    query: state.followBrowseQuery,
   });
   if (signature === state.followBrowseRenderSignature) {
     return;
@@ -8524,6 +8532,7 @@ function renderFollowBrowse() {
   elements.followUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
 
   if (!hasSelectedUid) {
+    window.BilikaraBrowseSearch?.reset(elements.followSearchForm);
     elements.followUpGrid.innerHTML = "";
     elements.followSongResults.innerHTML = "";
     if (!owners.length) {
@@ -8590,6 +8599,11 @@ function renderFollowBrowse() {
     state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
   );
   setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+  window.BilikaraBrowseSearch?.sync(elements.followSearchForm,
+    elements.followUpItemsView.querySelector(".follow-browser-head"), {
+      key:state.followBrowseSelectedUid, title:elements.followBrowseTitle.textContent,
+      query:state.followBrowseQuery, loading:state.followBrowseLoading, translate:t,
+    });
 }
 
 async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
@@ -8618,6 +8632,7 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
     if (state.followBrowseSeq === seq) {
       state.followBrowseLoading = false;
       renderFollowBrowse();
+      window.BilikaraSourceStatus?.flush("uids");
     }
   }
 }
@@ -8640,13 +8655,6 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
-  if (elements.favlistSearchButton) {
-    elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
-    elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
-    elements.favlistSearchButton.textContent = state.favlistBrowseLoading
-      ? t("favlist.loadingItems")
-      : t("search.submit");
-  }
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const signature = JSON.stringify({
@@ -8655,6 +8663,7 @@ function renderFavlistBrowse() {
     folders,
     items,
     language: state.language,
+    query: state.favlistBrowseQuery,
   });
   if (signature === state.favlistBrowseRenderSignature) {
     return;
@@ -8666,6 +8675,7 @@ function renderFavlistBrowse() {
   elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
 
   if (!hasSelectedFolder) {
+    window.BilikaraBrowseSearch?.reset(elements.favlistSearchForm);
     elements.favlistGrid.innerHTML = "";
     elements.favlistSongResults.innerHTML = "";
     if (!folders.length) {
@@ -8733,6 +8743,11 @@ function renderFavlistBrowse() {
     state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
   );
   setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+  window.BilikaraBrowseSearch?.sync(elements.favlistSearchForm,
+    elements.favlistItemsView.querySelector(".follow-browser-head"), {
+      key: state.favlistBrowseSelectedFolderId, title: elements.favlistBrowseTitle.textContent,
+      query: state.favlistBrowseQuery, loading: state.favlistBrowseLoading, translate: t,
+    });
 }
 
 async function loadFavlistBrowse({
@@ -8767,6 +8782,7 @@ async function loadFavlistBrowse({
     if (state.favlistBrowseSeq === seq) {
       state.favlistBrowseLoading = false;
       renderFavlistBrowse();
+      window.BilikaraSourceStatus?.flush("favorites");
       if (caughtError) {
         setFavlistBrowseMessage("");
         setAppMessage(caughtError.message, true);
@@ -9217,7 +9233,7 @@ function clearGatchaUidFlowInput(inputId) {
 }
 
 function gatchaTaskBusy() {
-  return Boolean(state.data?.gatcha?.busy);
+  return Boolean(state.data?.gatcha?.busy || state.data?.gatcha?.background_busy);
 }
 
 function localizedGatchaTaskMessage(message, status = "") {
@@ -9289,27 +9305,30 @@ function syncGatchaTaskTerminalMessage() {
   const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
   if (status !== "failed") {
-    if (state.followBrowseData && !state.followBrowseLoading) {
+    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
       state.followBrowseRenderSignature = "";
       void loadFollowBrowse({
         uid: state.followBrowseSelectedUid,
         query: state.followBrowseQuery,
         keepQuery: true,
       });
-    }
-    if (state.favlistBrowseData && !state.favlistBrowseLoading) {
+    });
+    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
       state.favlistBrowseRenderSignature = "";
       void loadFavlistBrowse({
         folderId: state.favlistBrowseSelectedFolderId,
         query: state.favlistBrowseQuery,
         keepQuery: true,
       });
-    }
+    });
   }
 }
 
 function renderGatchaUidFace() {
   syncGatchaTaskTerminalMessage();
+  window.BilikaraSourceStatus?.sync([document.getElementById("request-sources-uids"), document.getElementById("request-sources-favorites")], {
+    task:state.data?.gatcha, loading:state.gatchaUidSaving || state.gatchaFavlistSaving || state.gatchaRefreshSaving, translate:t,
+  });
   const taskBusy = gatchaTaskBusy();
   const signature = JSON.stringify({
     saving: state.gatchaUidSaving,
@@ -9339,28 +9358,28 @@ function renderGatchaUidFace() {
   }
   if (elements.modalAddFollowUidButton) {
     elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    elements.modalAddFollowUidButton.toggleAttribute("aria-busy", state.gatchaUidSaving);
+    window.BilikaraSourceStatus.setBusy(elements.modalAddFollowUidButton, state.gatchaUidSaving || taskBusy);
     elements.modalAddFollowUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
-    elements.refreshGatchaCacheButton.toggleAttribute("aria-busy", state.gatchaRefreshSaving);
+    window.BilikaraSourceStatus.setBusy(elements.refreshGatchaCacheButton, state.gatchaRefreshSaving || taskBusy);
     elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
   }
   if (elements.modalPullFavlistButton) {
     elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    elements.modalPullFavlistButton.toggleAttribute("aria-busy", state.gatchaFavlistSaving);
+    window.BilikaraSourceStatus.setBusy(elements.modalPullFavlistButton, state.gatchaFavlistSaving || taskBusy);
     elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
-      elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
+      elements.refreshGatchaCacheButton.textContent = t("gatcha.pulling");
     }
     if (elements.modalAddFollowUidButton) {
-      elements.modalAddFollowUidButton.textContent = t("gatcha.globalCooldown");
+      elements.modalAddFollowUidButton.textContent = t("gatcha.pulling");
     }
     if (elements.modalPullFavlistButton) {
-      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
+      elements.modalPullFavlistButton.textContent = t("gatcha.pulling");
     }
   }
 }
@@ -9486,15 +9505,21 @@ function renderRequesterSelect(sessionUsers) {
   }
 }
 
+const SESSION_USER_ACTIONS = [
+  {id: "up", label: "common.moveUp", glyph: "↑"},
+  {id: "down", label: "common.moveDown", glyph: "↓"},
+  {id: "remove", label: "common.delete"},
+];
+
 function renderSessionUsers(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
   const signature = JSON.stringify(users);
   if (signature === state.sessionUsersRenderSignature) {
+    syncSessionUserControls();
     return;
   }
   state.sessionUsersRenderSignature = signature;
 
-  elements.sessionUserList.innerHTML = "";
   elements.sessionUserList.classList.toggle("is-empty", !users.length);
 
   if (!users.length) {
@@ -9502,22 +9527,97 @@ function renderSessionUsers(sessionUsers) {
     return;
   }
 
+  const focused = elements.sessionUserList.contains(document.activeElement) ? document.activeElement : null;
+  const badges = new Map(Array.from(elements.sessionUserList.querySelectorAll(".session-user-badge"), item => [item.dataset.name, item]));
+  for (const child of Array.from(elements.sessionUserList.children)) {
+    if (!users.includes(child.dataset.name)) child.remove();
+  }
   users.forEach((userName, index) => {
-    const item = document.createElement("div");
-    item.className = "session-user-badge";
-    item.draggable = true;
+    let item = badges.get(userName);
+    if (!item) {
+      item = document.createElement("div");
+      item.className = "session-user-badge";
+      item.dataset.name = userName;
+      item.innerHTML = `
+        <span class="session-user-order-number"></span>
+        <span class="session-user-name android-user-toggle" role="button" tabindex="0" aria-expanded="false">${escapeHtml(userName)}</span>
+        <div class="android-user-actions" hidden>${SESSION_USER_ACTIONS.map(action => `
+          <button type="button" data-user-action="${action.id}" aria-label="${escapeHtml(t(action.label))}">${action.glyph || htmlT(action.label)}</button>
+        `).join("")}</div>
+      `;
+    }
     item.dataset.index = index;
-    item.dataset.name = userName;
-    item.innerHTML = `
-      <span class="session-user-order-number">${index + 1}</span>
-      <span class="session-user-name">${escapeHtml(userName)}</span>
-    `;
-
+    item.querySelector(".session-user-order-number").textContent = String(index + 1);
     elements.sessionUserList.appendChild(item);
   });
-  window.BilikaraHostLayout?.syncSessionUsers();
+  syncSessionUserControls();
+  if (focused?.isConnected && !focused.disabled) focused.focus({preventScroll: true});
 }
 
+function syncSessionUserControls() {
+  const users = state.data?.session_users || [];
+  if (!users.includes(state.sessionUserActionsName)) state.sessionUserActionsName = "";
+  const touch = Boolean(window.matchMedia?.("(pointer: coarse)").matches
+    && !window.matchMedia?.("(any-pointer: fine)").matches);
+  document.documentElement.dataset.hostTouchUsers = String(touch);
+  const help = document.querySelector('[data-i18n="session.help"], [data-i18n="mobile.sessionHelp"]');
+  if (help) {
+    help.dataset.i18n = touch ? "mobile.sessionHelp" : "session.help";
+    help.textContent = t(help.dataset.i18n);
+  }
+  for (const badge of elements.sessionUserList.querySelectorAll(".session-user-badge")) {
+    const pending = state.sessionUserActionPending;
+    const open = badge.dataset.name === state.sessionUserActionsName;
+    badge.draggable = !touch && !pending;
+    badge.classList.toggle("is-actions-open", open);
+    badge.querySelector(".android-user-toggle").setAttribute("aria-expanded", String(open));
+    badge.querySelector(".android-user-actions").hidden = !open;
+    for (const button of badge.querySelectorAll("[data-user-action]")) {
+      const action = button.dataset.userAction;
+      const definition = SESSION_USER_ACTIONS.find(entry => entry.id === action);
+      const active = pending?.name === badge.dataset.name && pending.action === action;
+      const index = Number(badge.dataset.index);
+      button.disabled = Boolean(pending) || (action === "up" && index === 0)
+        || (action === "down" && index === users.length - 1);
+      if (active) button.setAttribute("aria-busy", "true");
+      else button.removeAttribute("aria-busy");
+      button.textContent = active ? t("remoteIdentity.saving") : definition.glyph || t(definition.label);
+      button.setAttribute("aria-label", t(definition.label));
+    }
+  }
+}
+
+async function handleSessionUserAction(event) {
+  const badge = event.target.closest(".session-user-badge");
+  if (!badge || state.sessionUserActionPending) return;
+  const button = event.target.closest("[data-user-action]");
+  if (!button) {
+    state.sessionUserActionsName = state.sessionUserActionsName === badge.dataset.name ? "" : badge.dataset.name;
+    syncSessionUserControls();
+    return;
+  }
+  if (button.disabled) return;
+  const action = button.dataset.userAction;
+  state.sessionUserActionPending = {name: badge.dataset.name, action};
+  syncSessionUserControls();
+  try {
+    if (action === "remove") await removeSessionUser(badge.dataset.name);
+    else await moveSessionUser(badge.dataset.name, Number(badge.dataset.index) + (action === "up" ? -1 : 1));
+  } finally {
+    state.sessionUserActionPending = null;
+    syncSessionUserControls();
+  }
+}
+
+function syncHostAccountPresentation() {
+  const login = state.data?.bbdown?.login;
+  const compact = Boolean(window.BilikaraHostLayout?.isPortrait());
+  const idle = !login?.state || login.state === "idle";
+  // One account component owns its QR visibility in either placement. Visiting
+  // Android compact account page must not start login; active QR/polling stays shared.
+  elements.bbdownLoginPanel.classList.toggle("hidden", Boolean(login?.logged_in) || (compact && idle));
+  document.getElementById("host-account-settings")?.classList.toggle("is-logged", Boolean(login?.logged_in));
+}
 
 function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
   const nextPinned = Boolean(pinned);
@@ -9694,11 +9794,18 @@ function resetContextualTooltipPosition(info) {
   if (!tooltip) {
     return;
   }
-  if (typeof tooltip.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
-  for (const property of ["left", "right", "top", "bottom", "width", "max-width", "--contextual-tooltip-arrow-left"]) {
-    tooltip.style.removeProperty(property);
-  }
-  delete tooltip.dataset.tooltipDirection;
+  // Keep the top-layer bubble and its anchor until the exit transition ends.
+  // A quick reopen owns the same node and must not be hidden by a stale close.
+  const animations = tooltip.getAnimations?.() || [];
+  const closing = tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
+  Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
+    if (info.classList.contains("is-visible") || tooltip.__bilikaraCloseSequence !== closing) return;
+    if (typeof tooltip.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
+    for (const property of ["left", "right", "top", "bottom", "width", "max-width", "--contextual-tooltip-arrow-left"]) {
+      tooltip.style.removeProperty(property);
+    }
+    delete tooltip.dataset.tooltipDirection;
+  });
 }
 
 function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
@@ -9713,14 +9820,18 @@ function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
     candidate.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
     resetContextualTooltipPosition(candidate);
   });
-  info.classList.add("is-visible");
-  info.classList.toggle("is-pinned", pinned);
-  info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
   const tooltip = info.querySelector(".cache-advanced-tooltip");
+  if (tooltip) tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
   if (typeof tooltip?.showPopover === "function") {
     tooltip.setAttribute("popover", "manual");
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
   }
+  // Establish the hidden style after showPopover's display change so the
+  // existing opacity/transform transition also runs inside export dialogs.
+  if (tooltip) getComputedStyle(tooltip).opacity;
+  info.classList.add("is-visible");
+  info.classList.toggle("is-pinned", pinned);
+  info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
   positionContextualTooltip(info);
   return true;
 }
@@ -9811,7 +9922,8 @@ function renderPlayerFullscreenRemoteAccess({
   const normalizedLocalDisplayUrl = String(localDisplayUrl || "").trim();
   elements.playerFullscreenRemotePopover?.querySelector(".remote-access-card")
     ?.classList.toggle("is-local-only-preview", !internetActive);
-  setTextContent(elements.playerFullscreenRemoteUrl, normalizedLocalDisplayUrl);
+  setTextContent(elements.playerFullscreenRemoteUrl,
+    normalizedLocalDisplayUrl ? new URL(normalizedLocalDisplayUrl).origin : "");
   elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
   setTextContent(
@@ -9926,13 +10038,13 @@ function renderRemoteAccess(remoteAccess) {
     if (link.getAttribute("href") !== displayUrl) {
       link.href = displayUrl;
     }
-    setTextContent(link, displayUrl);
+    setTextContent(link, new URL(displayUrl).origin);
   });
   if (elements.remotePopoverUrlLink) {
     elements.remotePopoverUrlLink.href = popoverTargetUrl || "";
     elements.remotePopoverUrlLink.dataset.shareable = String(Boolean(shareableUrl));
     elements.remotePopoverUrlLink.classList.toggle("hidden", !popoverTargetUrl);
-    elements.remotePopoverUrlLink.textContent = popoverTargetUrl;
+    elements.remotePopoverUrlLink.textContent = popoverTargetUrl ? new URL(popoverTargetUrl).origin : "";
     elements.remotePopoverUrlLink.title = shareableUrl
       ? popoverTargetUrl
       : t("internetRemote.openOnThisDevice");
@@ -9942,12 +10054,6 @@ function renderRemoteAccess(remoteAccess) {
   setTextContent(
     elements.remotePopoverUrlHint,
     t("internetRemote.localSameNetwork"),
-  );
-  setTextContent(
-    elements.remotePopoverLocalAddressDetail,
-    shareableUrl
-      ? t("internetRemote.localAddressDetail", { url: shareableUrl })
-      : t("internetRemote.localNoLanDetail"),
   );
   elements.remotePopoverCopyLink?.classList.toggle("hidden", !shareableUrl);
   if (elements.remotePopoverCopyLink) elements.remotePopoverCopyLink.disabled = !shareableUrl;
@@ -10112,14 +10218,16 @@ function renderListHeader(playlist, history) {
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const login = bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) };
-  const showFFmpeg = ffmpeg?.state !== "disabled";
+  // Legacy Host transports can still report an actual media-tool failure.
+  // Native libav is checked before Host startup; it has no separate UI lamp.
+  const mediaStatus = ffmpeg?.state === "disabled" ? { state: "ready" } : ffmpeg;
   const native = (cachePolicy?.download_source || bbdown?.download_source) === "native";
   const nativeReady = bbdown?.native_runtime_ready ?? bbdown?.ready;
   const downloadState = native
     ? (nativeReady === true ? "ready" : nativeReady === false ? "failed" : "idle")
     : bbdown?.state;
   const serviceState = aggregateToolStatusState(
-    { state: downloadState }, showFFmpeg ? ffmpeg : { state: "ready" },
+    { state: downloadState }, mediaStatus,
     // Login is optional for ordinary playback. QR expiry is never a runtime failure.
     { state: login.logged_in ? "ready" : "warning" },
   );
@@ -10128,15 +10236,11 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
   const bbdownTitle = `Bilibili ${localizedBBDownLoginMessage(login.message) || t(login.logged_in ? "service.loggedIn" : "service.notLoggedIn")}`;
-  const ffmpegTitle = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
   const signature = JSON.stringify({
     serviceState,
     playbackModeText,
     downloadState,
-    showFFmpeg,
-    ffmpegState: ffmpeg?.state,
     bbdownTitle,
-    ffmpegTitle,
     login: bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) },
     language: state.language,
   });
@@ -10147,14 +10251,9 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
     syncToolIndicator(elements.serviceStatusIndicator, serviceState);
     setTextContent(elements.playbackModeSummary, playbackModeText);
     setTextContent(elements.playbackModeCurrent, playbackModeText);
-    setClassToggle(elements.ffmpegStatusRow, "hidden", !showFFmpeg);
-    syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
     renderBBDownLogin(bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) });
     if (elements.bbdownStatusRow && elements.bbdownStatusRow.title !== bbdownTitle) {
       elements.bbdownStatusRow.title = bbdownTitle;
-    }
-    if (elements.ffmpegStatusRow && elements.ffmpegStatusRow.title !== ffmpegTitle) {
-      elements.ffmpegStatusRow.title = ffmpegTitle;
     }
   }
 
@@ -10425,7 +10524,7 @@ function renderBBDownLogin(login) {
     }
   }
 
-  globalThis.BilikaraHostLayout?.syncAccount?.();
+  syncHostAccountPresentation();
   if (loggedIn) {
     return;
   }
@@ -10437,7 +10536,10 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
-  if (!force && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
+  // Android's compact account page requires an explicit login action. Window
+  // width alone must not disable the desktop Settings login workflow.
+  if (!force && document.documentElement.dataset.hostPlatform === "android"
+    && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
   const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -16066,19 +16168,6 @@ function formatBBDownHint(bbdown) {
   return labelMap[bbdown.state] || bbdown.state || t("status.unknown");
 }
 
-function formatFFmpegHint(ffmpeg) {
-  if (!ffmpeg) {
-    return t("status.unknown");
-  }
-  const labelMap = {
-    idle: t("status.idle"),
-    checking: t("status.checking"),
-    ready: t("status.ready"),
-    failed: t("status.error"),
-  };
-  return labelMap[ffmpeg.state] || ffmpeg.state || t("status.unknown");
-}
-
 function formatCacheChipMeta(cachePolicy) {
   const limit = Number(cachePolicy?.max_cache_items || 0);
   return t("service.cacheChipMeta", { usage: formatBytes(cachePolicy?.usage_bytes || 0), limit });
@@ -16272,60 +16361,58 @@ function renderBackupBanner(
   }
 }
 
-function clearBackupBannerMotionFrame() {
-  if (state.backupBannerMotionFrame !== null) {
-    window.cancelAnimationFrame(state.backupBannerMotionFrame);
-    state.backupBannerMotionFrame = null;
+function clearBackupBannerMotionFrame(motion = state) {
+  if (motion.backupBannerMotionFrame !== null) {
+    window.cancelAnimationFrame(motion.backupBannerMotionFrame);
+    motion.backupBannerMotionFrame = null;
   }
 }
 
-function clearBackupBannerMotionTimer() {
-  if (state.backupBannerMotionTimer !== null) {
-    window.clearTimeout(state.backupBannerMotionTimer);
-    state.backupBannerMotionTimer = null;
+function clearBackupBannerMotionTimer(motion = state) {
+  if (motion.backupBannerMotionTimer !== null) {
+    window.clearTimeout(motion.backupBannerMotionTimer);
+    motion.backupBannerMotionTimer = null;
   }
 }
 
-function showBackupBanner() {
-  const banner = elements.backupBanner;
-  clearBackupBannerMotionTimer();
+function showBackupBanner(banner = elements.backupBanner, motion = state) {
+  clearBackupBannerMotionTimer(motion);
   banner.inert = false;
   banner.setAttribute("aria-hidden", "false");
 
   if (!banner.classList.contains("hidden")) {
-    if (state.backupBannerMotionFrame === null) {
+    if (motion.backupBannerMotionFrame === null) {
       banner.classList.add("is-visible");
     }
     return;
   }
 
-  clearBackupBannerMotionFrame();
+  clearBackupBannerMotionFrame(motion);
   banner.classList.remove("is-visible");
   banner.classList.remove("hidden");
-  state.backupBannerMotionFrame = window.requestAnimationFrame(() => {
-    state.backupBannerMotionFrame = null;
-    if (!state.backupBannerDismissed && !banner.classList.contains("hidden")) {
+  motion.backupBannerMotionFrame = window.requestAnimationFrame(() => {
+    motion.backupBannerMotionFrame = null;
+    if (!motion.backupBannerDismissed && !banner.classList.contains("hidden")) {
       banner.classList.add("is-visible");
     }
   });
 }
 
-function hideBackupBanner({ immediate = false } = {}) {
-  const banner = elements.backupBanner;
-  clearBackupBannerMotionFrame();
+function hideBackupBanner({ immediate = false, banner = elements.backupBanner, motion = state } = {}) {
+  clearBackupBannerMotionFrame(motion);
   banner.classList.remove("is-visible");
   banner.inert = true;
   banner.setAttribute("aria-hidden", "true");
 
   if (banner.classList.contains("hidden")) {
-    clearBackupBannerMotionTimer();
+    clearBackupBannerMotionTimer(motion);
     return;
   }
-  if (state.backupBannerMotionTimer !== null && !immediate) {
+  if (motion.backupBannerMotionTimer !== null && !immediate) {
     return;
   }
 
-  clearBackupBannerMotionTimer();
+  clearBackupBannerMotionTimer(motion);
   const reduceMotion = Boolean(
     window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
   );
@@ -16334,8 +16421,8 @@ function hideBackupBanner({ immediate = false } = {}) {
     return;
   }
 
-  state.backupBannerMotionTimer = window.setTimeout(() => {
-    state.backupBannerMotionTimer = null;
+  motion.backupBannerMotionTimer = window.setTimeout(() => {
+    motion.backupBannerMotionTimer = null;
     if (!banner.classList.contains("is-visible")) {
       banner.classList.add("hidden");
     }
@@ -16526,9 +16613,24 @@ function renderConfirmPopover() {
   const intent = state.confirmIntent;
   if (!intent) {
     state.confirmPopoverRenderSignature = "";
-    elements.confirmPopover.classList.add("hidden");
+    const popover = elements.confirmPopover;
+    if (!popover.classList.contains("hidden") && !popover.classList.contains("closing")) {
+      const closing = popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
+      popover.classList.add("closing");
+      popover.inert = true;
+      Promise.allSettled((popover.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+        if (state.confirmIntent || popover.__bilikaraCloseSequence !== closing) return;
+        popover.classList.add("hidden");
+        popover.classList.remove("closing");
+        popover.inert = false;
+      });
+    }
     return;
   }
+
+  elements.confirmPopover.classList.remove("closing");
+  elements.confirmPopover.inert = false;
+  elements.confirmPopover.__bilikaraCloseSequence = (elements.confirmPopover.__bilikaraCloseSequence || 0) + 1;
 
   const renderSignature = confirmPopoverRenderSignature(intent);
   if (
@@ -16588,8 +16690,9 @@ function renderConfirmPopover() {
   elements.confirmPopover.style.top = "0px";
   elements.confirmPopover.style.visibility = "hidden";
   elements.confirmPopover.classList.remove("hidden");
-  const measuredRect = elements.confirmPopover.getBoundingClientRect();
-  const { left, top } = confirmPopoverPlacement(intent, measuredRect.width, measuredRect.height);
+  // Animation transforms must not shrink the dimensions used to clamp the
+  // finished card inside the viewport.
+  const { left, top } = confirmPopoverPlacement(intent, elements.confirmPopover.offsetWidth, elements.confirmPopover.offsetHeight);
   elements.confirmPopover.style.left = `${left}px`;
   elements.confirmPopover.style.top = `${top}px`;
   elements.confirmPopover.style.removeProperty("visibility");
@@ -17838,6 +17941,8 @@ function setDiagnosticsBusy(busy) {
   }
   if (elements.diagnosticPackageButton) {
     elements.diagnosticPackageButton.disabled = state.diagnosticsBusy;
+    if (state.diagnosticsBusy) elements.diagnosticPackageButton.setAttribute("aria-busy", "true");
+    else elements.diagnosticPackageButton.removeAttribute("aria-busy");
   }
 }
 
@@ -18821,10 +18926,12 @@ elements.searchForm?.addEventListener("submit", async (event) => {
   elements.searchButton.setAttribute("aria-busy", "true");
   setSearchMessage(modeState.message);
   try {
-    const items = await searchGatchaCache(query);
+    const page = await searchGatchaCache(query);
+    const items = page.items;
     if (modeState.seq !== seq) {
       return;
     }
+    modeState.pageData = page;
     modeState.items = items;
     modeState.message = items.length ? "" : t("search.localNotFound");
     if (items.length) {
@@ -18846,6 +18953,7 @@ elements.searchForm?.addEventListener("submit", async (event) => {
       modeState.loading = false;
       elements.searchButton.disabled = false;
       elements.searchButton.removeAttribute("aria-busy");
+      syncHostSearchCounts();
     }
   }
 });
@@ -19019,7 +19127,8 @@ async function handleLarkSearchSubmit(event) {
   }
   setLarkSearchMessage(t("search.larkSearching"));
   try {
-    const poolItems = await searchCatalog(query);
+    const page = await searchCatalog(query);
+    const poolItems = page.items;
     if (state.larkSearchSeq !== searchSeq) {
       return;
     }
@@ -19041,6 +19150,7 @@ async function handleLarkSearchSubmit(event) {
     if (!collectedItems.length) {
       hideLarkSearchResults();
     }
+    modeState.pageData = page;
     modeState.items = collectedItems;
     modeState.message = collectedItems.length
       ? (partialFailure ? t("search.larkFoundPartial", { count: collectedItems.length }) : "")
@@ -19069,9 +19179,41 @@ async function handleLarkSearchSubmit(event) {
         elements.larkSearchButton.disabled = false;
         elements.larkSearchButton.removeAttribute("aria-busy");
       }
+      syncHostSearchCounts();
     }
   }
 }
+
+async function loadMoreHostSearchResults() {
+  for (const [source, container] of [["local", elements.searchResults], ["shared", elements.larkSearchResults]]) {
+    const mode = state.searchModeState[source];
+    const data = mode.pageData;
+    if (!container?.getClientRects().length || container.closest("[hidden], .hidden")
+      || mode.loading || mode.pageLoading || !data?.has_more) continue;
+    const bottom = container.lastElementChild?.getBoundingClientRect().bottom;
+    if (!Number.isFinite(bottom) || bottom > Math.min(container.getBoundingClientRect().bottom, window.innerHeight) + 200) continue;
+    const query = mode.submitted;
+    const sequence = source === "shared" ? state.larkSearchSeq : mode.seq;
+    mode.pageLoading = true;
+    try {
+      const page = await (source === "shared" ? searchCatalog : searchGatchaCache)(query,
+        {offset:data.next_offset, limit:80});
+      if (sequence !== (source === "shared" ? state.larkSearchSeq : mode.seq)) continue;
+      if (page.has_more && (!Number.isSafeInteger(page.next_offset) || page.next_offset <= data.next_offset)) {
+        throw new Error(t("pagination.invalidResponse"));
+      }
+      mode.pageData = page;
+      const seen = new Set(mode.items.map(item => item.bvid));
+      const fresh = page.items.filter(item => !seen.has(item.bvid));
+      mode.items.push(...fresh);
+      appendSearchResultItems(container, fresh);
+    } catch (error) {
+      if (sequence === (source === "shared" ? state.larkSearchSeq : mode.seq)) setAppMessage(error.message, true);
+    } finally { mode.pageLoading = false; syncHostSearchCounts(); }
+  }
+}
+elements.requestWorkspace?.addEventListener("scroll", loadMoreHostSearchResults, true);
+window.addEventListener("scroll", loadMoreHostSearchResults, {passive:true});
 
 elements.larkSearchForm?.addEventListener("submit", handleLarkSearchSubmit);
 elements.larkSearchQuery?.addEventListener("input", () => {
@@ -19189,9 +19331,27 @@ document.addEventListener("drop", (e) => {
 });
 
 // 3. Handle drag start for badge items.
+elements.sessionUserList.addEventListener("click", handleSessionUserAction);
+elements.sessionUserList.addEventListener("keydown", event => {
+  if (event.target.matches('.android-user-toggle') && ['Enter', ' '].includes(event.key)) {
+    event.preventDefault();
+    handleSessionUserAction(event);
+  }
+});
+elements.sessionUserList.addEventListener("contextmenu", event => {
+  if (document.documentElement.dataset.hostTouchUsers === "true") event.preventDefault();
+});
+document.addEventListener("click", event => {
+  if (event.target.closest("#session-user-list") || state.sessionUserActionPending || !state.sessionUserActionsName) return;
+  state.sessionUserActionsName = "";
+  syncSessionUserControls();
+});
+for (const query of ["(pointer: coarse)", "(any-pointer: fine)"]) {
+  window.matchMedia?.(query)?.addEventListener?.("change", syncSessionUserControls);
+}
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
-  if (!badge) return;
+  if (!badge || !badge.draggable) { e.preventDefault(); return; }
   draggedSessionUser = badge;
   e.dataTransfer.effectAllowed = "move";
   e.dataTransfer.setData("text/plain", badge.dataset.name);

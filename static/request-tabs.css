@@ -1,0 +1,92 @@
+/* Shared request navigation: one visual contract, independent of hierarchy. */
+:root {
+  --remote-segmented-control-bg: rgba(67, 53, 41, 0.06);
+  --remote-segmented-control-idle-color: var(--muted);
+  --remote-segmented-control-active-bg: rgba(255, 255, 255, 0.95);
+  --remote-segmented-control-active-color: var(--accent-deep);
+  --remote-segmented-control-active-shadow: none;
+  --remote-segmented-control-font-size: 16px;
+}
+:root[data-theme="dark"] {
+  --remote-segmented-control-bg: rgba(246, 241, 235, 0.06);
+  --remote-segmented-control-active-bg: rgba(246, 241, 235, 0.15);
+  --remote-segmented-control-active-color: var(--accent);
+}
+:root[data-theme="blue"] {
+  --remote-segmented-control-bg: rgba(255, 255, 255, 0.06);
+  --remote-segmented-control-active-bg: rgba(0, 210, 255, 0.18);
+  --remote-segmented-control-active-color: var(--ink);
+}
+:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+  .remote-request-secondary-nav, .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) {
+  gap: 0;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--remote-segmented-control-bg);
+}
+:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+  .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) > button {
+  box-sizing: border-box;
+  flex: 1 0 auto;
+  min-width: max-content;
+  height: 48px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0 solid transparent;
+  border-block-width: 4px;
+  border-radius: 16px;
+  background: transparent;
+  background-clip: padding-box;
+  color: var(--remote-segmented-control-idle-color);
+  font-size: var(--remote-segmented-control-font-size);
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: none;
+  animation: none;
+  transition: background 180ms ease, color 180ms ease;
+}
+:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+  .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) > button[aria-selected="true"] {
+  background-color: var(--remote-segmented-control-active-bg);
+  color: var(--remote-segmented-control-active-color);
+  box-shadow: var(--remote-segmented-control-active-shadow);
+}
+:root :is(.request-subview-tabs, .request-mode-tabs) > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+:root :is(.request-mode-back, .remote-request-secondary-back) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 64px;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--remote-segmented-control-idle-color);
+  font-size: var(--remote-segmented-control-font-size);
+  font-weight: 700;
+  line-height: 1.3;
+}
+:root :is(.request-mode-back svg, .remote-request-secondary-back-icon) {
+  width: 18px;
+  height: 18px;
+}
+:root:not([data-host-layout="portrait"]) .request-mode-back { display: none; }
+html[data-host-layout="portrait"] .request-mode-head {
+  margin: 8px 10px;
+  padding: 0 4px;
+  border-radius: 18px;
+  background: var(--remote-segmented-control-bg);
+}
+:root .remote-request-secondary-slot > :is(.remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs),
+html[data-host-layout="portrait"] .request-mode-tabs {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}

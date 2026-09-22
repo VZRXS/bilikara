@@ -26,9 +26,9 @@ impl Default for CachePolicy {
             max_cache_items: 3,
             download_source: "native".into(),
             retained_settings: serde_json::Map::new(),
-            video_quality: "720P 高清".into(),
-            audio_hires: false,
-            reset_offset_on_next: false,
+            video_quality: "1080P 高帧率".into(),
+            audio_hires: true,
+            reset_offset_on_next: true,
         }
     }
 }
@@ -462,6 +462,18 @@ mod tests {
     #[test]
     fn validates_entire_patch_and_defaults_to_native_choices() {
         let original = CachePolicy::default();
+        assert!(original.reset_offset_on_next);
+        assert!(
+            serde_json::from_value::<CachePolicy>(json!({}))
+                .unwrap()
+                .reset_offset_on_next
+        );
+        // Explicit saved/imported choices remain authoritative.
+        assert!(
+            !serde_json::from_value::<CachePolicy>(json!({"reset_offset_on_next":false}))
+                .unwrap()
+                .reset_offset_on_next
+        );
         for patch in [
             json!({"max_cache_items":0}),
             json!({"max_cache_items":6}),
@@ -519,7 +531,7 @@ mod tests {
             }
         }
         let policy = original
-            .updated(&json!({"video_quality":"1080P 高清"}))
+            .updated(&json!({"video_quality":"1080P 高清","audio_hires":false}))
             .unwrap();
         let player = PlayerMedia::reported(
             &json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":3}),
@@ -556,10 +568,13 @@ mod tests {
             now()
         ));
         fs::create_dir_all(&directory).unwrap();
-        assert_eq!(load(&directory).unwrap().cache, CachePolicy::default());
+        let defaults = load(&directory).unwrap().cache;
+        assert_eq!(defaults, CachePolicy::default());
+        assert_eq!(defaults.video_quality, "1080P 高帧率");
+        assert!(defaults.audio_hires);
         assert_eq!(load(&directory).unwrap().language, None);
         let next = CachePolicy::default()
-            .updated(&json!({"max_cache_items":4}))
+            .updated(&json!({"max_cache_items":4,"video_quality":"720P 高清","audio_hires":false}))
             .unwrap();
         save(&directory, &CachePolicy::default(), Some(UiLanguage::Ja)).unwrap();
         save(&directory, &next, Some(UiLanguage::Ja)).unwrap();

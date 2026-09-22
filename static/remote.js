@@ -1490,7 +1490,25 @@ function setRemoteQrSectionOpen(open) {
   elements.remoteQrContent?.classList.toggle("hidden", !state.remoteQrSectionOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrSectionOpen));
   elements.remoteQrToggle?.classList.toggle("is-expanded", state.remoteQrSectionOpen);
+  if (open && document.documentElement.dataset.nativeHost === "true") loadNativeRemoteAccess();
   syncRemoteMenuBounds();
+}
+
+let nativeRemoteAccess = null;
+let nativeRemoteAccessLoading = false;
+async function loadNativeRemoteAccess() {
+  if (nativeRemoteAccessLoading) return;
+  if (nativeRemoteAccess) { renderRemoteAccess(nativeRemoteAccess); return; }
+  nativeRemoteAccessLoading = true;
+  try {
+    const response = await fetch("/api/remote-access", {headers:clientHeaders(), cache:"no-store"});
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(t("remote.qrFailed"));
+    nativeRemoteAccess = payload.data;
+    renderRemoteAccess(nativeRemoteAccess);
+  } catch {
+    elements.remotePopoverQrPlaceholder.textContent = t("remote.qrFailed");
+  } finally { nativeRemoteAccessLoading = false; }
 }
 
 function setRemoteSettingsSectionOpen(open) {
@@ -1517,8 +1535,9 @@ window.visualViewport?.addEventListener("scroll", syncRemoteMenuBounds);
 window.addEventListener("remote-invitation-changed", () => renderRemoteAccess(state.data?.remote_access));
 
 function renderRemoteAccess(remoteAccess) {
-  if (document.documentElement?.dataset?.nativeHost === "true") return;
+  remoteAccess ||= nativeRemoteAccess;
   const internet = window.BilikaraRemoteTransport?.mode === "internet";
+  if (!internet && document.documentElement.dataset.nativeHost === "true" && !remoteAccess) return;
   const invitation = internet ? window.BilikaraRemoteTransport.invitation?.() : null;
   // A public Remote snapshot has no LAN address. Never invent one from its origin.
   const candidates = [remoteAccess?.preferred_url, ...(remoteAccess?.lan_urls || []), remoteAccess?.local_url];
@@ -1539,7 +1558,7 @@ function renderRemoteAccess(remoteAccess) {
   card.classList.toggle("is-dual", Boolean(localUrl && internet));
   if (elements.remotePopoverUrlLink) {
     elements.remotePopoverUrlLink.href = localUrl;
-    elements.remotePopoverUrlLink.textContent = localUrl;
+    elements.remotePopoverUrlLink.textContent = localUrl ? new URL(localUrl).origin : "";
   }
   elements.remotePopoverUrlHint.textContent = t("internetRemote.localSameNetwork");
   renderRemoteQr(localUrl, [{ image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder }]);
@@ -1630,19 +1649,13 @@ function setAppMessage(message, isError = false) {
 }
 
 function setSearchMessage(message, isError = false) {
-  if (!elements.searchMessage) {
-    return;
-  }
-  elements.searchMessage.textContent = message || "";
-  elements.searchMessage.classList.toggle("error", Boolean(isError));
+  if (elements.searchMessage) elements.searchMessage.textContent = "";
+  if (isError && message) setAppMessage(message, true);
 }
 
 function setLarkSearchMessage(message, isError = false) {
-  if (!elements.larkSearchMessage) {
-    return;
-  }
-  elements.larkSearchMessage.textContent = message || "";
-  elements.larkSearchMessage.classList.toggle("error", Boolean(isError));
+  if (elements.larkSearchMessage) elements.larkSearchMessage.textContent = "";
+  if (isError && message) setAppMessage(message, true);
 }
 
 function setMessageForSource(source, message, isError = false) {
@@ -3424,23 +3437,24 @@ function connectStateStream() {
   });
 }
 
-async function searchGatchaCache(query) {
+async function searchGatchaCache(query, {offset = 0, limit = 18} = {}) {
   const normalizedQuery = String(query || "").trim();
-  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}`, {
+  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}&offset=${offset}&limit=${limit}`, {
     headers: clientHeaders(),
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.searchFailed"));
   }
-  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+  return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
 
-async function searchCatalog(query) {
+async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
   const normalizedQuery = String(query || "").trim();
   const params = new URLSearchParams();
   params.set("q", normalizedQuery);
-  params.set("limit", "80");
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
   const response = await fetch(`/api/catalog/search?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
@@ -3449,7 +3463,7 @@ async function searchCatalog(query) {
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
-  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+  return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
 
 
@@ -3620,7 +3634,7 @@ async function pullGatchaFavlist(uid, folderIds = []) {
 }
 
 function gatchaTaskBusy() {
-  return Boolean(state.data?.gatcha?.busy);
+  return Boolean(state.data?.gatcha?.busy || state.data?.gatcha?.background_busy);
 }
 
 function localizedGatchaTaskMessage(message, status = "") {
@@ -3691,6 +3705,18 @@ function syncGatchaTaskTerminalMessage() {
   const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
   const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
+  if (status !== "failed") {
+    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+      state.sourcesFollowBrowseRenderSignature = "";
+      void loadFollowBrowse({uid:state.followBrowseSelectedUid,
+        query:String(state.followBrowseData.query || ""), keepQuery:true});
+    });
+    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+      state.favlistBrowseRenderSignature = "";
+      void loadFavlistBrowse({folderId:state.favlistBrowseSelectedFolderId,
+        query:String(state.favlistBrowseData.query || ""), keepQuery:true});
+    });
+  }
 }
 
 function gatchaUidResultMessage(result, fallbackUid = "") {
@@ -3869,21 +3895,13 @@ function renderLarkSearchResults(items) {
 }
 
 function setSourcesFollowBrowseMessage(message, isError = false) {
-  if (!elements.sourcesFollowMessage) {
-    return;
-  }
-  elements.sourcesFollowMessage.textContent = message || "";
-  elements.sourcesFollowMessage.classList.toggle("is-error", Boolean(isError));
-  elements.sourcesFollowMessage.classList.toggle("hidden", !message);
+  if (elements.sourcesFollowMessage) elements.sourcesFollowMessage.textContent = "";
+  if (isError && message) setAppMessage(message, true);
 }
 
 function setFavlistBrowseMessage(message, isError = false) {
-  if (!elements.favlistBrowseMessage) {
-    return;
-  }
-  elements.favlistBrowseMessage.textContent = message || "";
-  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
-  elements.favlistBrowseMessage.classList.toggle("hidden", !message);
+  if (elements.favlistBrowseMessage) elements.favlistBrowseMessage.textContent = "";
+  if (isError && message) setAppMessage(message, true);
 }
 
 function setSourceManagementInlineMessage(target, message, isError = false) {
@@ -4028,21 +4046,28 @@ function remoteResultPaginationOptions(container, items, emptyText) {
     if (typeof data.has_more === "boolean") load = page => fetchD1Browse({ ...query, ...page });
   } else if (owner === "categories") {
     const category = selectedCategoryBrowseDefinition();
-    data = { has_more: state.categoryBrowseHasMore };
+    data = { matched_count: state.categoryBrowseMatchedCount, has_more: state.categoryBrowseHasMore };
     loading = state.categoryBrowseLoading;
     const query = { tags: category?.tags || [], query: state.categoryBrowseQuery };
     key = JSON.stringify([query, state.categoryBrowseSeq]);
     load = page => fetchD1CategoryBrowse({ ...query, ...page });
-  } else if (owner === "shared") {
-    key = JSON.stringify([owner, canonicalBilikaraSearch.seq]);
-    loading = canonicalBilikaraSearch.loading;
+  } else if (owner === "shared" || owner === "local") {
+    const search = owner === "shared" ? canonicalBilikaraSearch : localLibrarySearch;
+    key = JSON.stringify([owner, search.seq]);
+    data = search.data || {};
+    loading = search.loading;
+    const query = search.query;
+    if (typeof data.has_more === "boolean") {
+      load = page => owner === "shared" ? searchCatalog(query, page) : searchGatchaCache(query, page);
+    }
   }
   const limited = !load;
-  const total = Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
+  const total = !limited && Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
     ? data.matched_count : (limited || data.has_more === false ? items.length : null);
-  const readAhead = ["name", "artist", "categories"].includes(owner) ? 2 : 0;
-  return { key, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead,
-    emptyText, language: state.language };
+  const readAhead = ["name", "artist", "categories", "shared"].includes(owner) ? 2 : 0;
+  const readSize = ["shared", "local"].includes(owner) ? 72 : undefined;
+  return { key, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead, readSize,
+    emptyText, language: state.language, prefetch: readAhead > 0 };
 }
 
 function renderSearchResultItems(container, items, emptyText = "") {
@@ -4055,7 +4080,7 @@ function renderSearchResultItems(container, items, emptyText = "") {
   if (!pager) {
     pager = window.BilikaraResultPager.create(container, {
       translate: t,
-      renderItems: (page, message) => renderSearchResultPage(container, page, message),
+      renderItems: (page, message, target = container) => renderSearchResultPage(target, page, message, requestDetailOwnerForContainer(container)),
       reportError: message => setAppMessage(message, true),
     });
     remoteResultPagers.set(container, pager);
@@ -4067,7 +4092,7 @@ function hideRemoteResultPager(container) {
   if (container) remoteResultPagers.get(container)?.hide();
 }
 
-function renderSearchResultPage(container, items, emptyText = "") {
+function renderSearchResultPage(container, items, emptyText = "", owner = requestDetailOwnerForContainer(container)) {
   if (!container) {
     return;
   }
@@ -4086,7 +4111,7 @@ function renderSearchResultPage(container, items, emptyText = "") {
     const row = createSearchResultRow(item, {
       eagerCover: index < expandedSearchEagerCoverCount,
     });
-    applyRequestResultSelection(row, item, requestDetailOwnerForContainer(container));
+    applyRequestResultSelection(row, item, owner);
     container.appendChild(row);
   });
   syncRemoteRequestPanelSizeTier();
@@ -4109,7 +4134,9 @@ function appendSearchResultItems(container, items) {
   syncRemoteRequestPanelSizeTier();
 }
 
+const localLibrarySearch = {query:"", data:null, seq:0, loading:false};
 const canonicalBilikaraSearch = {
+  data: null,
   query: "",
   items: [],
   message: "",
@@ -4130,6 +4157,8 @@ function syncBilikaraSearchView() {
   if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
     elements.larkSearchQuery.value = query;
   }
+  window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
 
   setLarkSearchMessage(message, isError);
 
@@ -4147,6 +4176,7 @@ function syncBilikaraSearchView() {
 
 async function executeCanonicalBilikaraSearch(queryStr) {
   const query = String(queryStr || "").trim();
+  if (canonicalBilikaraSearch.loading && canonicalBilikaraSearch.submitted === query) return;
   if (!query) {
     canonicalBilikaraSearch.query = "";
     canonicalBilikaraSearch.items = [];
@@ -4161,6 +4191,7 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   const searchSeq = canonicalBilikaraSearch.seq + 1;
   canonicalBilikaraSearch.seq = searchSeq;
   canonicalBilikaraSearch.query = query;
+  canonicalBilikaraSearch.submitted = query;
   canonicalBilikaraSearch.loading = true;
   canonicalBilikaraSearch.message = t("search.larkSearching");
   canonicalBilikaraSearch.isError = false;
@@ -4173,7 +4204,8 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   }
 
   try {
-    const poolItems = await searchCatalog(query);
+    const data = await searchCatalog(query);
+    const poolItems = data.items;
     if (canonicalBilikaraSearch.seq !== searchSeq) {
       return;
     }
@@ -4187,6 +4219,7 @@ async function executeCanonicalBilikaraSearch(queryStr) {
       return true;
     });
 
+    canonicalBilikaraSearch.data = data;
     canonicalBilikaraSearch.items = freshItems;
     canonicalBilikaraSearch.message = freshItems.length ? "" : t("search.larkNoResults");
     canonicalBilikaraSearch.isError = false;
@@ -4334,6 +4367,32 @@ function ensureD1BrowseView(kind = state.remoteDiscoverMode) {
   return view;
 }
 
+const emptyD1Tags = [];
+function renderD1TagPage(container, entries) {
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = t("search.browseNoTags");
+    container.append(empty);
+  }
+  for (const entry of entries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tag-browser-tag";
+    button.dataset.tag = String(entry.tag || "");
+    button.dataset.locale = String(entry.locale || "");
+    const name = document.createElement("span");
+    name.className = "tag-browser-tag-name";
+    name.textContent = String(entry.tag || "");
+    const count = document.createElement("span");
+    count.className = "tag-browser-tag-count";
+    count.textContent = t("search.browseTagCount", {count:Number(entry.count || 0)});
+    button.append(name, count);
+    container.append(button);
+  }
+}
+
 function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   const normalizedKind = kind === "artist" ? "artist" : "name";
   const mode = d1BrowseModeState(normalizedKind);
@@ -4384,10 +4443,10 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     backButton.disabled = mode.loading;
   }
 
-  const tags = Array.isArray(mode.data?.tags) ? mode.data.tags : [];
+  const tags = Array.isArray(mode.data?.tags) ? mode.data.tags : emptyD1Tags;
   const items = Array.isArray(mode.data?.items) ? mode.data.items : [];
   if (current) {
-    const parts = [title];
+    const parts = [mode.letter ? title : d1BrowsePickLetterText(normalizedKind)];
     if (mode.letter) {
       parts.push(mode.letter);
     }
@@ -4397,41 +4456,23 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     current.textContent = parts.join(" / ");
   }
   if (tagGrid) {
-    tagGrid.innerHTML = "";
-    tagGrid.classList.toggle("hidden", Boolean(mode.tag));
-    if (!mode.tag) {
-      if (mode.loading) {
-        const loading = document.createElement("div");
-        loading.className = "search-empty";
-        loading.textContent = t("search.browseLoading");
-        tagGrid.appendChild(loading);
-      } else if (!mode.letter) {
-        const empty = document.createElement("div");
-        empty.className = "search-empty";
-        empty.textContent = d1BrowsePickLetterText(normalizedKind);
-        tagGrid.appendChild(empty);
-      } else if (!tags.length) {
-        const empty = document.createElement("div");
-        empty.className = "search-empty";
-        empty.textContent = t("search.browseNoTags");
-        tagGrid.appendChild(empty);
-      } else {
-        tags.forEach((entry) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "tag-browser-tag";
-          button.dataset.tag = String(entry.tag || "");
-          button.dataset.locale = String(entry.locale || "");
-          const name = document.createElement("span");
-          name.className = "tag-browser-tag-name";
-          name.textContent = String(entry.tag || "");
-          const count = document.createElement("span");
-          count.className = "tag-browser-tag-count";
-          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
-          button.append(name, count);
-          tagGrid.appendChild(button);
+    tagGrid.classList.toggle("hidden", Boolean(mode.tag) || !mode.letter);
+    if (mode.tag || !mode.letter) {
+      tagGrid.replaceChildren();
+      hideRemoteResultPager(tagGrid);
+    } else {
+      let pager = remoteResultPagers.get(tagGrid);
+      if (!pager) {
+        pager = window.BilikaraResultPager.create(tagGrid, {
+          translate: t,
+          renderItems: (entries, _message, target = tagGrid) => renderD1TagPage(target, entries),
+          rows: 6,
+          reportError: text => setAppMessage(text, true),
         });
+        remoteResultPagers.set(tagGrid, pager);
       }
+      pager.update({key: JSON.stringify([normalizedKind, mode.letter, mode.query, mode.seq]),
+        items: tags, total: tags.length, limited: true, hasMore: false, loading: mode.loading, language: state.language});
     }
   }
   if (results) {
@@ -4445,19 +4486,12 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
       hideRemoteResultPager(results);
     }
   }
-  if (message) {
-    let text = "";
-    if (mode.tag && !mode.loading && !items.length) {
-      text = t("search.larkNoResults");
-    }
-    message.textContent = mode.loading ? t("search.browseLoading") : text;
-    message.classList.remove("is-error");
-  }
+  if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-d1-browse-search]"),
     view.querySelector(".tag-browser-nav"), {
       key: JSON.stringify([normalizedKind, mode.letter, mode.tag, mode.locale]),
       title: mode.tag || [title, mode.letter].filter(Boolean).join(" / "),
-      query: mode.query, loading: mode.loading, translate: t,
+      query: mode.query, loading: mode.loading, translate: t, available: Boolean(mode.letter),
     });
   syncRemoteRequestPanelSizeTier();
 }
@@ -4627,16 +4661,7 @@ function renderCategoryBrowseView() {
   if (results) {
     renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
   }
-  if (message) {
-    let text = "";
-    if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
-      text = t("search.browseLoading");
-    } else if (!state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
-      text = t("search.larkNoResults");
-    }
-    message.textContent = text;
-    message.classList.remove("is-error");
-  }
+  if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
     key: selected.id, title: selected.name, query: state.categoryBrowseQuery,
     loading: state.categoryBrowseLoading, translate: t,
@@ -4663,6 +4688,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
     state.categoryBrowseItems = [];
     state.categoryBrowseOffset = 0;
     state.categoryBrowseHasMore = true;
+    state.categoryBrowseMatchedCount = null;
   }
   state.categoryBrowseLoading = true;
   renderCategoryBrowseView();
@@ -4679,6 +4705,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
     const nextItems = Array.isArray(data.items) ? data.items : [];
     state.categoryBrowseItems = append ? mergeBrowseItems(state.categoryBrowseItems, nextItems) : mergeBrowseItems([], nextItems);
     state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseMatchedCount = Number.isSafeInteger(data.matched_count) ? data.matched_count : null;
     state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
   } catch (error) {
     if (state.categoryBrowseSeq === searchSeq) {
@@ -4879,6 +4906,7 @@ async function loadFavlistBrowse({
     if (state.favlistBrowseSeq === seq) {
       state.favlistBrowseLoading = false;
       renderFavlistBrowse();
+      window.BilikaraSourceStatus?.flush("favorites");
     }
   }
 }
@@ -5148,9 +5176,9 @@ function renderSourcesFollowBrowse() {
   }
   if (elements.sourcesAddFollowUidButton) {
     elements.sourcesAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    elements.sourcesAddFollowUidButton.toggleAttribute("aria-busy", state.gatchaUidSaving);
+    window.BilikaraSourceStatus.setBusy(elements.sourcesAddFollowUidButton, state.gatchaUidSaving || taskBusy);
     elements.sourcesAddFollowUidButton.textContent = taskBusy
-      ? t("gatcha.globalCooldown")
+      ? t("gatcha.pulling")
       : state.gatchaUidSaving
         ? t("gatcha.adding")
         : t("gatcha.add");
@@ -5294,6 +5322,7 @@ async function loadFollowBrowse({
     if (state.followBrowseSeq === seq) {
       state.followBrowseLoading = false;
       renderSourcesFollowBrowse();
+      window.BilikaraSourceStatus?.flush("uids");
     }
   }
 }
@@ -5463,10 +5492,13 @@ function renderGatchaView() {
 
 function renderSourceManagementControls() {
   syncGatchaTaskTerminalMessage();
+  window.BilikaraSourceStatus?.sync([document.getElementById("remote-sources-uids-panel"), document.getElementById("remote-sources-favorites-panel")], {
+    task:state.data?.gatcha, loading:state.gatchaUidSaving || state.gatchaFavlistSaving || state.gatchaRefreshSaving, translate:t,
+  });
   const taskBusy = gatchaTaskBusy();
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
-    elements.refreshGatchaCacheButton.toggleAttribute("aria-busy", state.gatchaRefreshSaving);
+    window.BilikaraSourceStatus.setBusy(elements.refreshGatchaCacheButton, state.gatchaRefreshSaving || taskBusy);
     elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
   }
   if (elements.sourcesFavlistUidInput) {
@@ -5474,15 +5506,15 @@ function renderSourceManagementControls() {
   }
   if (elements.sourcesPullFavlistButton) {
     elements.sourcesPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    elements.sourcesPullFavlistButton.toggleAttribute("aria-busy", state.gatchaFavlistSaving);
+    window.BilikaraSourceStatus.setBusy(elements.sourcesPullFavlistButton, state.gatchaFavlistSaving || taskBusy);
     elements.sourcesPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
-      elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
+      elements.refreshGatchaCacheButton.textContent = t("gatcha.pulling");
     }
     if (elements.sourcesPullFavlistButton) {
-      elements.sourcesPullFavlistButton.textContent = t("gatcha.globalCooldown");
+      elements.sourcesPullFavlistButton.textContent = t("gatcha.pulling");
     }
   }
   renderSourcesFollowBrowse();
@@ -7999,6 +8031,7 @@ function syncCurrentCacheState(current) {
   if (textNode) {
     if (textNode.textContent !== label) {
       textNode.textContent = label;
+      textNode.title = label;
     }
   } else {
     elements.currentCacheState.textContent = label;
@@ -8723,6 +8756,7 @@ elements.requestForm.addEventListener("submit", async (event) => {
 
 elements.searchForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (localLibrarySearch.loading) return;
   const query = String(elements.searchQuery.value || "").trim();
   if (!query) {
     hideSearchResults();
@@ -8731,11 +8765,17 @@ elements.searchForm.addEventListener("submit", async (event) => {
     return;
   }
 
+  localLibrarySearch.loading = true;
   elements.searchButton.disabled = true;
   elements.searchButton.setAttribute("aria-busy", "true");
   setSearchMessage(t("search.localSearching"));
   try {
-    const items = await searchGatchaCache(query);
+    localLibrarySearch.query = query;
+    localLibrarySearch.seq += 1;
+    const data = await searchGatchaCache(query);
+    localLibrarySearch.data = data;
+    const items = data.items;
+    localLibrarySearch.loading = false;
     renderSearchResults(items);
     setSearchMessage(items.length ? "" : t("search.localNotFound"));
   } catch (error) {
@@ -8743,6 +8783,7 @@ elements.searchForm.addEventListener("submit", async (event) => {
     setSearchMessage("");
     setAppMessage(error.message, true);
   } finally {
+    localLibrarySearch.loading = false;
     elements.searchButton.disabled = false;
     elements.searchButton.removeAttribute("aria-busy");
   }
@@ -10165,15 +10206,9 @@ function lockPlaybackSheetDocumentScroll() {
   if (state.playbackSheetScrollLock) {
     return;
   }
-  const scrollY = Number(window.scrollY || window.pageYOffset || 0);
-  state.playbackSheetScrollLock = {
-    scrollY,
-    position: document.body.style.position,
-    top: document.body.style.top,
-    width: document.body.style.width,
-    overflow: document.body.style.overflow,
-  };
-  document.body.style.top = `${-scrollY}px`;
+  // Keep the playback lifecycle marker until its closing animation finishes.
+  // The shared modal observer freezes and restores the document for all panels.
+  state.playbackSheetScrollLock = true;
   document.body.classList.add("playback-sheet-scroll-locked");
 }
 
@@ -10181,19 +10216,9 @@ function unlockPlaybackSheetDocumentScroll() {
   if (state.playbackSheetOpen || state.ratingPromptElement || elements.historyExportDialog?.open) {
     return;
   }
-  const lock = state.playbackSheetScrollLock;
-  if (!lock) {
-    return;
-  }
+  if (!state.playbackSheetScrollLock) return;
   state.playbackSheetScrollLock = null;
   document.body.classList.remove("playback-sheet-scroll-locked");
-  document.body.style.position = lock.position;
-  document.body.style.top = lock.top;
-  document.body.style.width = lock.width;
-  document.body.style.overflow = lock.overflow;
-  if (typeof window.scrollTo === "function") {
-    window.scrollTo(0, lock.scrollY);
-  }
 }
 
 function trapFocusWithin(root, event, preferredElement = null) {
@@ -10366,5 +10391,46 @@ async function startRemoteSession() {
   }
   connectStateStream();
 }
+
+// One document lock for every visible Remote modal, including nested editors.
+// Keep it until the last closing animation finishes; the top menu is not modal.
+(function installRemoteModalScrollLock() {
+  const selector = '.song-detail-view, .rating-modal, .binding-sheet, .remote-identity-modal, .playback-sheet, dialog';
+  let saved = null;
+  function sync() {
+    const open = [...document.querySelectorAll(selector)].some(element =>
+      (element.tagName !== 'DIALOG' || element.open)
+      && !element.closest('[hidden], .hidden') && element.getClientRects().length);
+    if (open === Boolean(saved)) return;
+    const body = document.body;
+    if (open) {
+      saved = {x: scrollX, y: scrollY, styles: {}};
+      for (const property of ['position', 'top', 'left', 'width', 'overflow']) {
+        saved.styles[property] = [body.style.getPropertyValue(property), body.style.getPropertyPriority(property)];
+      }
+      body.style.position = 'fixed';
+      body.style.top = `${-saved.y}px`;
+      body.style.left = `${-saved.x}px`;
+      body.style.width = '100%';
+      body.style.overflow = 'hidden';
+    } else {
+      const previous = saved;
+      saved = null;
+      for (const [property, [value, priority]] of Object.entries(previous.styles)) {
+        if (value) body.style.setProperty(property, value, priority);
+        else body.style.removeProperty(property);
+      }
+      const root = document.documentElement;
+      const behavior = root.style.scrollBehavior;
+      root.style.scrollBehavior = 'auto';
+      window.scrollTo(previous.x, previous.y);
+      root.style.scrollBehavior = behavior;
+    }
+  }
+  new MutationObserver(sync).observe(document.body, {
+    subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open'],
+  });
+  sync();
+})();
 
 startRemoteSession();

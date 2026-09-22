@@ -53,6 +53,11 @@ pub(super) fn dispatch(
         }
     }
     if method == Method::GET {
+        // Authenticated LAN devices can share the same invitation they used
+        // to join. This is not a public snapshot or Internet protocol route.
+        if path == "/api/remote-access" {
+            return with_app(|app| Ok(app.native().remote_access.clone()));
+        }
         if path == "/api/internet-remote/state" {
             return internet::route(context, identity, path, &body);
         }
@@ -89,6 +94,9 @@ pub(super) fn dispatch(
     }
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
+    }
+    if admin::handles(path) {
+        return admin::route(context, identity, path, &body);
     }
     if path == "/api/session/startup-choice" {
         return with_app(|app| {
@@ -426,11 +434,7 @@ pub(super) fn dispatch(
 }
 
 fn unavailable() -> ApiError {
-    ApiError::new(
-        501,
-        "alpha_unavailable",
-        "此功能暂不在 Android Beta 验收范围内",
-    )
+    ApiError::new(501, "native_unavailable", "当前 Rust Host 尚不支持此接口")
 }
 
 #[cfg(test)]

@@ -23,9 +23,9 @@ pub(super) fn unavailable() -> ApiError {
     )
 }
 
-/// An empty explicitly selected directory is enrolled once. Refuse any existing
-/// unmarked directory, including ordinary desktop data. Storage's lock prevents
-/// concurrent authorities; its checkpoint validation remains authoritative.
+/// Admit empty roots or existing native checkpoints. Storage validates the
+/// checkpoint schema and owns the lock; old preview markers are compatibility
+/// input only, never created for a new installation.
 pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("--data-dir must be an absolute native data directory".into());
@@ -41,36 +41,47 @@ pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
         return Err("Preview root must not be a symlink".into());
     }
     let path = path.canonicalize().map_err(|e| e.to_string())?;
+    if path.join("desktop-import.pending").exists() {
+        return Err(
+            "Incomplete desktop import; preserve this directory and import into a new destination"
+                .into(),
+        );
+    }
+    // The checkpoint's strict schema validation runs before any Host services.
+    if path.join("host-state.json").exists() {
+        return Ok(path);
+    }
     let marker = path.join(MARKER);
-    if !marker.exists() {
-        if std::fs::read_dir(&path)
+    if marker.exists() {
+        if !std::fs::symlink_metadata(&marker)
             .map_err(|e| e.to_string())?
-            .next()
-            .is_some()
+            .is_file()
+            || std::fs::read(&marker).map_err(|e| e.to_string())? != b"desktop-rust-preview-v1\n"
         {
-            return Err(
-                "Refusing nonempty unmarked directory; use --import-from with a new destination"
-                    .into(),
-            );
+            return Err("Invalid old preview directory marker".into());
         }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-            .and_then(|mut f| f.write_all(b"desktop-rust-preview-v1\n"))
-            .map_err(|e| e.to_string())?;
-    } else if !std::fs::symlink_metadata(&marker)
+    } else if std::fs::read_dir(&path)
         .map_err(|e| e.to_string())?
-        .is_file()
-        || std::fs::read(&marker).map_err(|e| e.to_string())? != b"desktop-rust-preview-v1\n"
+        .next()
+        .is_some()
     {
-        return Err("Invalid preview directory marker".into());
+        return Err("Refusing existing data without a native checkpoint; use --import-from with a new destination".into());
     }
     Ok(path)
 }
 
 pub fn asset_source(root: &Path) -> Result<AssetSource, String> {
+    asset_source_with_worklet(root, &root.join("vendor/signalsmith-stretch"))
+}
+
+fn asset_source_with_worklet(root: &Path, worklet: &Path) -> Result<AssetSource, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let worklet = worklet
+        .canonicalize()
+        .map_err(|_| "Missing bundled Signalsmith assets")?;
+    if !worklet.join("SignalsmithStretch.js").is_file() {
+        return Err("Missing bundled Signalsmith entry".into());
+    }
     for file in [
         "index.html",
         "app.js",
@@ -84,15 +95,20 @@ pub fn asset_source(root: &Path) -> Result<AssetSource, String> {
         "remote.html",
         "remote.js",
         "fonts/SourceHanSans-VF.ttf",
-        "vendor/signalsmith-stretch/SignalsmithStretch.js",
     ] {
         if !root.join(file).is_file() {
             return Err(format!("Missing shared desktop asset: {file}"));
         }
     }
     Ok(Arc::new(move |name| {
-        let path = root.join(name).canonicalize().ok()?;
-        if !path.starts_with(&root) {
+        // Only the frontend worklet has an HTTP mount in the shared vendor
+        // directory. Native tools, libraries and package metadata stay private.
+        let (boundary, relative) = match name.strip_prefix("vendor/signalsmith-stretch/") {
+            Some(relative) => (&worklet, relative),
+            None => (&root, name),
+        };
+        let path = boundary.join(relative).canonicalize().ok()?;
+        if !path.starts_with(boundary) {
             return None;
         }
         let mime = match path.extension()?.to_str()? {
@@ -309,12 +325,24 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let resources = paths::resource_root(&executable)?;
+    let development_assets = assets.is_some();
     let assets = assets
         .map(Ok)
         .unwrap_or_else(|| paths::package_assets(&resources))?
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let source = asset_source(&assets)?;
+    let source = if development_assets {
+        asset_source(&assets)?
+    } else {
+        let worklet = resources
+            .join("vendor/signalsmith-stretch")
+            .canonicalize()
+            .map_err(|_| "Missing packaged Signalsmith assets")?;
+        if !worklet.starts_with(resources.canonicalize().map_err(|e| e.to_string())?) {
+            return Err("Packaged Signalsmith assets escape their resources".into());
+        }
+        asset_source_with_worklet(&assets, &worklet)?
+    };
     paths::configure_media(assets.parent().ok_or("Missing resource root")?)?;
     let directory = paths::data_root(directory, &executable, PLATFORM, |key| {
         std::env::var_os(key)
@@ -345,7 +373,7 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
         .ok()
     })();
     let _ = INSTALLATION
-        .set(admitted.filter(|installation| !directory.starts_with(&installation.root)));
+        .set(admitted.filter(|installation| installation.permits_data_directory(&directory)));
     crate::playlist_export::prewarm_fonts(&desktop_font_path()?).map_err(|e| e.message)?;
     let seed: AppStateSeed = serde_json::from_value(json!({"session_started_at":now(),
         "session_played_file":format!("played-native-{}.json", (now()*1000.0) as u64),"updated_at":now()})).map_err(|e| e.to_string())?;

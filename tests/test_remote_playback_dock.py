@@ -269,7 +269,7 @@ console.log(JSON.stringify({{
 
     def test_safe_area_cover_progress_and_ready_state_match_review_delta(self):
         dock_rule = re.search(r"\.playback-dock\s*\{([^}]*)\}", self.styles).group(1)
-        self.assertIn("bottom: calc(20px + env(safe-area-inset-bottom, 0px))", dock_rule)
+        self.assertIn("bottom: max(12px, env(safe-area-inset-bottom, 0px))", dock_rule)
         self.assertIn("left: calc(12px + env(safe-area-inset-left, 0px))", dock_rule)
         self.assertIn("right: calc(12px + env(safe-area-inset-right, 0px))", dock_rule)
         self.assertIn("viewport-fit=cover", self.markup)
@@ -475,7 +475,8 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
         self.assertIn('elements.playbackDock.focus({ preventScroll: true })', sheet_source)
         self.assertIn('elements.playbackSheetCollapse?.focus?.({ preventScroll: true })', sheet_source)
         self.assertIn('document.body.classList.add("playback-sheet-scroll-locked")', sheet_source)
-        self.assertIn("window.scrollTo(0, lock.scrollY)", sheet_source)
+        self.assertNotIn("window.scrollTo(", sheet_source)
+        self.assertNotIn("document.body.style.top", sheet_source)
         self.assertIn("if (immediate || prefersReducedMotion())", sheet_source)
 
     def test_scroll_lock_waits_for_the_last_modal_owner(self):
@@ -504,7 +505,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
   elements.historyExportDialog.open = false;
   unlockPlaybackSheetDocumentScroll();
   assert.equal(state.playbackSheetScrollLock, null);
-  assert.equal(scrolls, previousScrolls + 1);
+  assert.equal(scrolls, previousScrolls, "Unlock must not change the document scroll position");
 }
 """
         subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
