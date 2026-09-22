@@ -1,8 +1,8 @@
 //! Android release checks reuse the shared Rust version/channel policy. APK I/O
 //! and package/signature verification belong to Android's system adapter. The
-//! desktop Rust Host reuses the same shared decisions for a check-only loop: it
-//! reads release metadata and nothing else. No archive transfer, staging,
-//! executable replacement, update helper or restart belongs to this path.
+//! desktop Host uses the same decisions with a native package installer.
+//! Trusted launch facts and a private shell activation boundary own replacement.
+mod desktop_install;
 use super::*;
 use bilikara_rust::{
     ReleaseCandidate, ReleaseSelection, ReleaseSelectionRequest, UpdateAction,
@@ -42,7 +42,7 @@ pub(crate) struct DesktopUpdateFacts {
 }
 impl DesktopUpdateFacts {
     /// Platforms whose released desktop packages can replace an installation in
-    /// place. This describes the platform only; this Host still cannot install.
+    /// place. Packaged-launch capability is checked separately.
     fn installable_platform(&self) -> bool {
         matches!(self.platform.as_str(), "windows" | "macos")
     }
@@ -59,8 +59,9 @@ pub(crate) struct UpdateState {
     status: Value,
     package: Option<Value>,
     operation: u64,
-    /// Present only for the desktop Host, where checking is the whole feature.
+    /// Trusted desktop facts; APK and desktop installation remain separate.
     desktop: Option<DesktopUpdateFacts>,
+    install: Option<desktop_install::Job>,
 }
 impl Default for UpdateState {
     fn default() -> Self {
@@ -69,11 +70,15 @@ impl Default for UpdateState {
             package: None,
             operation: 0,
             desktop: None,
+            install: None,
         }
     }
 }
 impl UpdateState {
     pub(crate) fn expire(&mut self, timestamp: f64) -> bool {
+        if self.install.is_some() {
+            return false;
+        }
         let age = timestamp - self.status["updated_at"].as_f64().unwrap_or(0.0);
         let limit = if self.status["state"] == "checking" {
             60.0
@@ -93,7 +98,7 @@ impl UpdateState {
         }
         false
     }
-    /// The desktop Host starts in a check-only idle state carrying its trusted
+    /// The desktop Host starts in an idle state carrying its trusted
     /// facts, so the first UI render is already coherent.
     pub(crate) fn desktop(facts: DesktopUpdateFacts) -> Self {
         Self {
@@ -101,6 +106,7 @@ impl UpdateState {
             package: None,
             operation: 0,
             desktop: Some(facts),
+            install: None,
         }
     }
     pub(crate) fn snapshot(&self) -> Value {
@@ -115,7 +121,7 @@ impl UpdateState {
     fn busy(&self) -> bool {
         matches!(
             self.status["state"].as_str(),
-            Some("checking" | "downloading" | "installing")
+            Some("checking" | "downloading" | "installing" | "prepared" | "restarting")
         )
     }
 }
@@ -247,7 +253,7 @@ fn plan(
     ))
 }
 
-// --- Desktop check-only loop -------------------------------------------------
+// --- Desktop release checks --------------------------------------------------
 
 fn desktop_failed(message: &str) -> ApiError {
     ApiError::new(503, "update_check_failed", message)
@@ -278,7 +284,7 @@ fn desktop_sources(preview: bool) -> Vec<String> {
 fn fetch_desktop(url: &str) -> Result<Value, ApiError> {
     let client = crate::http_client::builder()
         .timeout(Duration::from_secs(DESKTOP_TIMEOUT_SECONDS))
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(crate::http_client::release_redirects())
         .build()
         .map_err(|_| desktop_failed(DESKTOP_NETWORK_ERROR))?;
     let response = client
@@ -370,8 +376,8 @@ fn desktop_base(facts: &DesktopUpdateFacts, preview: bool) -> Value {
         "asset_name": "",
         "asset_available": false,
         // Release metadata alone never proves an installable native replacement.
-        // This Host has no installer, so automatic installation stays false even
-        // when the platform itself could be updated in place.
+        // The packaged-launch and digest-bound candidate admission below decide
+        // whether this operation can proceed to native package preparation.
         "auto_update_supported": false,
         "platform_auto_update_supported": facts.installable_platform(),
         "requires_recheck": false,
@@ -441,10 +447,10 @@ fn desktop_message(
     };
     // Check-only: say what this Host will not do, and where to update by hand.
     let tail = if asset {
-        format!("桌面 Rust 预览只检查更新，不会下载或安装；请在浏览器打开 {release_url} 手动更新。")
+        format!("当前启动方式或发布信息不支持原生自动安装；请在浏览器打开 {release_url} 手动更新。")
     } else {
         format!(
-            "该版本没有适用于 {}/{} 的桌面更新包；桌面 Rust 预览只检查更新，请在浏览器打开 {release_url}。",
+            "该版本没有适用于 {}/{} 的桌面更新包；请在浏览器打开 {release_url}。",
             facts.platform, facts.arch
         )
     };
@@ -499,7 +505,7 @@ fn desktop_decide(
     let asset = desktop_asset(release, facts);
     status["latest_version"] = json!(tag);
     status["release_url"] = json!(release_url);
-    status["update_installable"] = json!(eligible);
+    status["update_installable"] = json!(false);
     status["update_available"] = json!(decision.action == UpdateAction::NormalUpgrade);
     status["switch_to_release_available"] = json!(matches!(
         decision.action,
@@ -527,10 +533,17 @@ fn desktop_decide(
 
 /// Walks the trusted sources in order and returns the first complete decision.
 /// Every source failing is a failure, never an up-to-date success.
-fn desktop_plan(facts: &DesktopUpdateFacts, preview: bool) -> Result<Value, ApiError> {
+fn desktop_plan(
+    facts: &DesktopUpdateFacts,
+    preview: bool,
+) -> Result<(Value, Option<Value>), ApiError> {
     let mut last = desktop_failed(DESKTOP_NETWORK_ERROR);
     for url in desktop_sources(preview) {
-        match fetch_desktop(&url).and_then(|payload| desktop_decide(&payload, facts, preview)) {
+        match fetch_desktop(&url).and_then(|payload| {
+            let status = desktop_decide(&payload, facts, preview)?;
+            let package = desktop_install::package(&payload, &status);
+            Ok((status, package))
+        }) {
             Ok(status) => return Ok(status),
             Err(error) => last = error,
         }
@@ -583,9 +596,16 @@ fn desktop_route(context: &Arc<HostContext>, path: &str, body: &Value) -> Result
         if session.updates.operation != operation {
             return Err(ApiError::new(409, "stale_update", "更新检查已失效"));
         }
-        session.updates.status =
-            result.unwrap_or_else(|error| desktop_failure(&facts, preview, &error.message));
-        session.updates.package = None;
+        let (mut status, package) =
+            result.unwrap_or_else(|error| (desktop_failure(&facts, preview, &error.message), None));
+        if context.desktop_installation.is_some() && package.is_some() {
+            status["auto_update_supported"] = json!(true);
+            status["message"] = json!(
+                "发现桌面更新。下载后将校验原生包结构与完整性；旧 Python 包无法安装。确认更新后应用将重新启动。"
+            );
+        }
+        session.updates.status = status;
+        session.updates.package = package;
         session.revision += 1;
         Ok(session.updates.snapshot())
     })
@@ -598,7 +618,7 @@ pub(super) fn route(
     body: &Value,
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, true))?;
-    // Android install/finish and desktop check-only are separate loops; neither
+    // Android APK installation and native desktop replacement are separate; neither
     // platform reaches the other's operations.
     if context.desktop {
         return desktop_route(context, path, body);
@@ -682,6 +702,29 @@ pub(super) fn route(
             Ok(session.updates.snapshot())
         }),
         _ => Err(ApiError::new(404, "not_found", "未知更新操作")),
+    }
+}
+
+/// Only the desktop process capability reaches these operations. The ordinary
+/// Host cookie can be shared by a presentation WebView, so it is insufficient.
+pub(super) fn private_desktop(
+    context: &Arc<HostContext>,
+    path: &str,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    match path {
+        "/api/app/update/install" => desktop_install::start(context, body),
+        "/api/app/update/cancel" if body.as_object().is_some_and(|b| b.is_empty()) => {
+            desktop_install::cancel()
+        }
+        "/api/app/update/activate" => {
+            let operation = body["operation"]
+                .as_u64()
+                .ok_or_else(|| ApiError::invalid("Invalid operation"))?;
+            desktop_install::activate(context, operation)?;
+            Ok(json!({"committed":true}))
+        }
+        _ => Err(ApiError::invalid("Invalid desktop operation")),
     }
 }
 
@@ -816,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_check_only_loop_agrees_across_route_authoritative_state_and_guards() {
+    fn desktop_check_loop_agrees_across_route_authoritative_state_and_guards() {
         let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1103,13 +1146,13 @@ mod tests {
             400
         );
 
-        // 11. The check-only guard admits nothing else. Installation, the
-        // Android finish callback and rating stay unavailable.
-        for path in [
-            "/api/app/update/install",
-            "/api/app/update/finish",
-            "/api/rating/submit",
-        ] {
+        // 11. This fixture has no packaged shell. Install stays unavailable;
+        // Android finish callbacks and unrelated privileged routes stay denied.
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":false})).0,
+            403
+        );
+        for path in ["/api/app/update/finish", "/api/rating/submit"] {
             assert_eq!(
                 post(path, json!({"include_preview": false})).0,
                 501,
@@ -1212,6 +1255,337 @@ mod tests {
         drop(host);
         crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn desktop_native_install_routes_transfer_validate_cancel_and_preserve_old_files() {
+        use sha2::{Digest, Sha256};
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        let directory =
+            std::env::temp_dir().join(format!("native-install-route-{}", token().unwrap()));
+        let installed = directory.join("installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("old-record"), b"preserved").unwrap();
+        *desktop::INSTALLATION_OVERRIDE.lock().unwrap() =
+            Some(crate::update_installer::native::Installation {
+                root: installed.clone(),
+                platform: "windows".into(),
+                arch: "x64".into(),
+                wait_pids: vec![111, 222],
+            });
+        let seed: crate::AppStateSeed = serde_json::from_value(
+            json!({"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0}),
+        )
+        .unwrap();
+        assert!(
+            crate::initialize_native_host(&directory, seed)
+                .error()
+                .is_none()
+        );
+        let host = super::super::start(
+            &directory,
+            Arc::new(|_| None),
+            true,
+            Some("private-shell-fixture".into()),
+        )
+        .unwrap();
+        set_facts("0.8.0-preview.2", "windows", "x64");
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap();
+        let bootstrap = client
+            .get(host.bootstrap_url())
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document")
+            .send()
+            .unwrap();
+        let cookie = bootstrap.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let base = format!("http://127.0.0.1:{}", host.local_port());
+        let post = |path: &str, body: Value| -> (u16, Value) {
+            let mut request = client
+                .post(format!("{base}{path}"))
+                .header("cookie", &cookie);
+            if matches!(path, "/api/app/update/install" | "/api/app/update/cancel") {
+                request = request.header("x-bilikara-shutdown-token", "private-shell-fixture");
+            }
+            let response = request.json(&body).send().unwrap();
+            (
+                response.status().as_u16(),
+                response.json().unwrap_or(Value::Null),
+            )
+        };
+        let state = || -> Value {
+            client
+                .get(format!("{base}/api/app/update/status"))
+                .header("cookie", &cookie)
+                .send()
+                .unwrap()
+                .json::<Value>()
+                .unwrap()["data"]
+                .clone()
+        };
+        let wait = |wanted: &str| -> Value {
+            // Read real SSE state notifications, no retry-until-green sleeps.
+            let response = client
+                .get(format!("{base}/api/events"))
+                .header("cookie", &cookie)
+                .send()
+                .unwrap();
+            for line in BufReader::new(response).lines() {
+                let line = line.unwrap();
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let value: Value = serde_json::from_str(data).unwrap();
+                    if value["app_update"]["state"] == wanted {
+                        return value["app_update"].clone();
+                    }
+                }
+            }
+            panic!("SSE stopped before {wanted}")
+        };
+        let fixture = Fixture::start();
+        set_sources(&[fixture.url("/metadata")]);
+        *desktop_install::DOWNLOAD_OVERRIDE.lock().unwrap() =
+            Some(vec![fixture.url("/primary"), fixture.url("/mirror")]);
+        let bytes = crate::update_installer::native::tests::windows_package("0.8.1", "x64");
+        let release_for = |bytes: &[u8]| {
+            desktop_release(
+                "v0.8.1",
+                json!([{"name":"bilikara-v0.8.1-windows-x64.zip","size":bytes.len(),"digest":format!("sha256:{:x}",Sha256::digest(bytes)),"browser_download_url":"https://unrelated.invalid/never-used.zip"}]),
+            )
+        };
+        fixture.json("/metadata", 200, &release_for(&bytes));
+        fixture.serve("/primary", 503, vec![]);
+        fixture.serve("/mirror", 200, bytes.clone());
+        let check = post("/api/app/update/check", json!({"include_preview":false}));
+        assert_eq!(check.0, 200);
+        assert_eq!(check.1["data"]["auto_update_supported"], true);
+        assert_eq!(check.1["data"]["update_installable"], false);
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":true})).0,
+            400
+        );
+        assert_eq!(
+            post(
+                "/api/app/update/install",
+                json!({"include_preview":false,"install_root":"/other"})
+            )
+            .0,
+            400
+        );
+        assert_eq!(
+            client
+                .post(format!("{base}/api/app/update/install"))
+                .json(&json!({"include_preview":false}))
+                .send()
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":false})).0,
+            200
+        );
+        let ready = wait("prepared");
+        assert_eq!(ready["update_installable"], true);
+        assert_eq!(ready["downloaded_bytes"], bytes.len());
+        assert!(
+            fixture
+                .hits()
+                .ends_with(&["/primary".into(), "/mirror".into()])
+        );
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":false})).0,
+            409
+        );
+        assert_eq!(
+            post("/api/app/update/check", json!({"include_preview":true})).0,
+            409
+        );
+        // An ordinary Host cookie cannot activate a helper, even with forged facts.
+        assert_eq!(
+            post(
+                "/api/app/update/activate",
+                json!({"operation":ready["operation"]})
+            )
+            .0,
+            403
+        );
+        assert!(!with_app(|app| Ok(app.native().updates.expire(now() + 10000.0))).unwrap());
+        assert_eq!(post("/api/app/update/cancel", json!({})).0, 200);
+        assert_eq!(state()["requires_recheck"], true);
+        let stale = client
+            .post(format!("{base}/api/app/update/activate"))
+            .header("x-bilikara-shutdown-token", "private-shell-fixture")
+            .json(&json!({"operation":ready["operation"]}))
+            .send()
+            .unwrap();
+        assert_eq!(stale.status(), 409);
+        for (label, bad) in [
+            ("invalid", b"not a zip".to_vec()),
+            (
+                "wrong_arch",
+                crate::update_installer::native::tests::windows_package("0.8.1", "arm64"),
+            ),
+        ] {
+            fixture.json("/metadata", 200, &release_for(&bad));
+            fixture.serve("/mirror", 200, bad);
+            assert_eq!(
+                post("/api/app/update/check", json!({"include_preview":false})).0,
+                200
+            );
+            assert_eq!(
+                post("/api/app/update/install", json!({"include_preview":false})).0,
+                200
+            );
+            let failed = wait("failed");
+            assert!(!failed["error"].as_str().unwrap().is_empty(), "{label}");
+            assert_eq!(
+                std::fs::read(installed.join("old-record")).unwrap(),
+                b"preserved"
+            );
+        }
+        // Declared oversized content is rejected before allocation/publication.
+        fixture.json("/metadata", 200, &release_for(b"small"));
+        fixture.serve("/mirror", 200, bytes);
+        post("/api/app/update/check", json!({"include_preview":false}));
+        post("/api/app/update/install", json!({"include_preview":false}));
+        assert!(wait("failed")["error"].as_str().unwrap().contains("大小"));
+        // A controlled in-flight body barrier proves cancellation, late
+        // completion and owner stop without scheduling sleeps.
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        *desktop_install::COMPLETIONS.lock().unwrap() = Some(completed_tx);
+        let barrier = |body: Vec<u8>| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/transfer", listener.local_addr().unwrap());
+            let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body[..20]).unwrap();
+                stream.flush().unwrap();
+                arrived_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+                let _ = stream.write_all(&body[20..]);
+            });
+            (url, arrived_rx, release_tx, worker)
+        };
+        let good = crate::update_installer::native::tests::windows_package("0.8.1", "x64");
+        fixture.json("/metadata", 200, &release_for(&good));
+        let (url, arrived, release, transfer) = barrier(good.clone());
+        *desktop_install::DOWNLOAD_OVERRIDE.lock().unwrap() = Some(vec![url]);
+        post("/api/app/update/check", json!({"include_preview":false}));
+        let operation = post("/api/app/update/install", json!({"include_preview":false})).1["data"]
+            ["operation"]
+            .as_u64()
+            .unwrap();
+        arrived.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(post("/api/app/update/cancel", json!({})).0, 200);
+        let newer =
+            post("/api/app/update/check", json!({"include_preview":true})).1["data"].clone();
+        release.send(()).unwrap();
+        transfer.join().unwrap();
+        while completed_rx.recv_timeout(Duration::from_secs(10)).unwrap() != operation {}
+        assert_eq!(
+            state(),
+            newer,
+            "old transfer cannot overwrite a newer check"
+        );
+        // Helper generation and the private launch intent are tested separately
+        // from real Windows replacement; this Linux fixture launches no helper.
+        fixture.serve("/mirror", 200, good.clone());
+        *desktop_install::DOWNLOAD_OVERRIDE.lock().unwrap() = Some(vec![fixture.url("/mirror")]);
+        post("/api/app/update/check", json!({"include_preview":false}));
+        post("/api/app/update/install", json!({"include_preview":false}));
+        let ready = wait("prepared");
+        *desktop_install::LAUNCH_INTENTS.lock().unwrap() = Some(Vec::new());
+        for _ in 0..2 {
+            let result = client
+                .post(format!("{base}/api/app/update/activate"))
+                .header("x-bilikara-shutdown-token", "private-shell-fixture")
+                .json(&json!({"operation":ready["operation"]}))
+                .send()
+                .unwrap();
+            assert_eq!(result.status(), 200);
+        }
+        let intents = desktop_install::LAUNCH_INTENTS
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert!(
+            std::fs::read_to_string(&intents[0][2])
+                .unwrap()
+                .contains("bilikara-desktop.exe")
+        );
+        assert_eq!(state()["state"], "restarting");
+        assert_eq!(state()["cancellable"], false);
+        assert_eq!(post("/api/app/update/cancel", json!({})).0, 409);
+        while completed_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+            != ready["operation"].as_u64().unwrap()
+        {}
+        // The simulated helper now owns this directory; remove it explicitly.
+        std::fs::remove_dir_all(Path::new(&intents[0][2]).parent().unwrap()).unwrap();
+        with_app(|app| {
+            app.native().updates = UpdateState::desktop(DesktopUpdateFacts {
+                version: "0.8.0-preview.2".into(),
+                platform: "windows".into(),
+                arch: "x64".into(),
+            });
+            Ok(())
+        })
+        .unwrap();
+        let (url, arrived, release, transfer) = barrier(good);
+        *desktop_install::DOWNLOAD_OVERRIDE.lock().unwrap() = Some(vec![url]);
+        post("/api/app/update/check", json!({"include_preview":false}));
+        post("/api/app/update/install", json!({"include_preview":false}));
+        arrived.recv_timeout(Duration::from_secs(10)).unwrap();
+        host.context.stop.store(true, Ordering::Release);
+        release.send(()).unwrap();
+        transfer.join().unwrap();
+        drop(host); // Joins the owning worker, including staging cleanup.
+        assert!(std::fs::read_dir(&directory).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("update-")
+        }));
+        assert_eq!(
+            std::fs::read(installed.join("old-record")).unwrap(),
+            b"preserved"
+        );
+        *desktop_install::COMPLETIONS.lock().unwrap() = None;
+        *SOURCE_OVERRIDE.lock().unwrap() = None;
+        *desktop_install::DOWNLOAD_OVERRIDE.lock().unwrap() = None;
+        *desktop::INSTALLATION_OVERRIDE.lock().unwrap() = None;
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

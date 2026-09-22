@@ -75,8 +75,9 @@ no Python runtime, PyInstaller payload or temporary Python FFI libraries.
 `BILIKARA_NATIVE_DATA_DIR` (and the earlier preview-directory alias) overrides
 the native data root; it does not select a different backend. See
 `docs/native-desktop.md` for layouts, builds, storage and explicit legacy import.
-This establishes the D0 launch/distribution slice, not full Preview 2 feature
-parity or update installation.
+Packaged Windows/macOS update installation uses the shared Rust installer and
+private shell lifecycle boundary. These contracts do not establish full Preview 2
+feature parity or release acceptance.
 
 The retained legacy Python Host has the following adapter responsibilities.
 They are not dependencies of normal native desktop launch or packaging; the

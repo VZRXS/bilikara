@@ -13,6 +13,23 @@ pub(crate) fn builder() -> reqwest::blocking::ClientBuilder {
     builder
 }
 
+#[cfg(feature = "native-host")]
+pub(crate) fn release_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5
+            || (attempt
+                .previous()
+                .first()
+                .is_some_and(|url| url.scheme() == "https")
+                && attempt.url().scheme() != "https")
+        {
+            attempt.error("release redirect rejected")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

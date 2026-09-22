@@ -341,6 +341,101 @@ pub(crate) fn request_backend_shutdown(base_url: &str, shutdown_token: &str, nat
     !native || response.starts_with(b"HTTP/1.1 200 ") || response.starts_with(b"HTTP/1.0 200 ")
 }
 
+/// Private lifecycle request. Browser content never receives this token.
+fn request_update(
+    backend: &BackendProcess,
+    route: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let base = backend
+        .backend_url()
+        .map_err(|_| "backend unavailable")?
+        .ok_or("backend unavailable")?;
+    let address = parse_local_http_url(&base).ok_or("invalid backend address")?;
+    let mut stream = TcpStream::connect((address.connect_host.as_str(), address.port))
+        .map_err(|_| "backend unavailable")?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| e.to_string())?;
+    let body = body.to_string();
+    let request = format!(
+        "POST {route} HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nX-Bilikara-Shutdown-Token: {}\r\nConnection: close\r\n\r\n{}",
+        address.host_header,
+        address.port,
+        body.len(),
+        backend.shutdown_token,
+        body
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|_| "update request failed")?;
+    let mut response = Vec::new();
+    stream
+        .take(32768)
+        .read_to_end(&mut response)
+        .map_err(|_| "update response failed")?;
+    let split = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("invalid update response")?;
+    let data: serde_json::Value =
+        serde_json::from_slice(&response[split + 4..]).map_err(|_| "invalid update response")?;
+    if !response.starts_with(b"HTTP/1.1 200 ") || data["ok"] != true {
+        return Err(data["error"]
+            .as_str()
+            .unwrap_or("native update operation was not accepted")
+            .chars()
+            .take(500)
+            .collect());
+    }
+    Ok(data["data"].clone())
+}
+
+pub(crate) fn activate_update(backend: &BackendProcess, operation: u64) -> Result<(), String> {
+    request_update(
+        backend,
+        "/api/app/update/activate",
+        serde_json::json!({"operation":operation}),
+    )
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub(crate) async fn start_desktop_update(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+    include_preview: bool,
+) -> Result<serde_json::Value, String> {
+    crate::presentation::authorize_window(&window, &backend, &["main"])?;
+    let backend = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        request_update(
+            &backend,
+            "/api/app/update/install",
+            serde_json::json!({"include_preview":include_preview}),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_desktop_update(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+) -> Result<serde_json::Value, String> {
+    crate::presentation::authorize_window(&window, &backend, &["main"])?;
+    let backend = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        request_update(&backend, "/api/app/update/cancel", serde_json::json!({}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -789,6 +884,57 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::thread;
+
+    #[test]
+    fn private_update_transport_uses_owned_capability_and_bounded_json() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "POST /api/app/update/activate HTTP/1.1\r\n");
+            let mut length = 0;
+            let mut private = false;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                private |= line == "X-Bilikara-Shutdown-Token: fixture-capability\r\n";
+            }
+            assert!(private);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"operation":7})
+            );
+            let body = r#"{"ok":true,"data":{"committed":true}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let backend = BackendProcess {
+            child: Arc::new(Mutex::new(None)),
+            base_url: Arc::new(Mutex::new(Some(format!("http://{address}")))),
+            shutdown_token: "fixture-capability".into(),
+            host_cookie: Arc::new(Mutex::new(None)),
+            active_downloads: Arc::new(AtomicUsize::new(0)),
+        };
+        activate_update(&backend, 7).unwrap();
+        server.join().unwrap();
+    }
 
     #[test]
     fn desktop_native_capability_handoff_is_explicit() {

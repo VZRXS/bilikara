@@ -45,9 +45,8 @@ pub(super) fn dispatch(
         if method == Method::GET && path == "/api/app/update/status" {
             return updates::desktop_status(identity);
         }
-        // Narrowly admit the check-only update loop. Android install/finish,
-        // shutdown, external-link, maintenance and rating operations stay
-        // unavailable; `/api/app/*` is not broadly exposed.
+        // Public Host routes expose checks/status. Install/cancel/activation
+        // require the shell capability in the HTTP owner before dispatch.
         let admitted = matches!(path, "/api/app/update/status" | "/api/app/update/check");
         if (path.starts_with("/api/app/") && !admitted) || path.starts_with("/api/rating/") {
             return Err(desktop::unavailable());

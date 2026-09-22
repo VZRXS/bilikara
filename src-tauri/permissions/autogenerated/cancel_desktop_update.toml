@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-desktop-update"
+description = "Enables the cancel_desktop_update command without any pre-configured scope."
+commands.allow = ["cancel_desktop_update"]
+
+[[permission]]
+identifier = "deny-cancel-desktop-update"
+description = "Denies the cancel_desktop_update command without any pre-configured scope."
+commands.deny = ["cancel_desktop_update"]

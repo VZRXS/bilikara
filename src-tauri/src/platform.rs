@@ -133,3 +133,88 @@ pub(crate) fn create_macos_main_webview_window(app: &tauri::App) -> tauri::Resul
         .build()?;
     Ok(())
 }
+
+fn external_web_url(value: &str) -> Result<tauri::Url, String> {
+    let url = tauri::Url::parse(value).map_err(|_| "invalid web URL")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || value.chars().any(char::is_control)
+        || value.len() > 4096
+    {
+        return Err("only web URLs are allowed".into());
+    }
+    Ok(url)
+}
+
+#[tauri::command]
+pub(crate) fn open_external_web_url(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+    url: String,
+) -> Result<(), String> {
+    crate::presentation::authorize_window(&window, &backend, &["main"])?;
+    let url = external_web_url(&url)?;
+    // System handlers receive one validated URL argument, never a shell command.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        let value: Vec<u16> = std::ffi::OsStr::new(url.as_str())
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                value.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result as isize <= 32 {
+            return Err("system browser could not open the URL".into());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let program = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else {
+            "/usr/bin/xdg-open"
+        };
+        let mut child = std::process::Command::new(program)
+            .arg(url.as_str())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|_| "system browser is unavailable")?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod web_url_tests {
+    #[test]
+    fn only_web_links_with_no_embedded_credentials() {
+        for url in [
+            "file:///tmp/a",
+            "javascript:alert(1)",
+            "https://user:secret@example.com",
+            "https://example.com/\n",
+        ] {
+            assert!(super::external_web_url(url).is_err());
+        }
+        assert!(
+            super::external_web_url("https://github.com/VZRXS/bilikara/releases/tag/v0.8.0")
+                .is_ok()
+        );
+    }
+}

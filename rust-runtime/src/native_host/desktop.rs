@@ -173,9 +173,23 @@ fn desktop_font_path() -> Result<PathBuf, String> {
         .ok_or("Desktop font path unavailable".into())
 }
 
-// Trusted desktop facts for the check-only update loop, resolved once from
+// Trusted desktop facts for the update loop, resolved once from
 // local configuration before the listener starts. Same scope as FONT above.
 static UPDATE_FACTS: std::sync::OnceLock<updates::DesktopUpdateFacts> = std::sync::OnceLock::new();
+
+static INSTALLATION: std::sync::OnceLock<Option<crate::update_installer::native::Installation>> =
+    std::sync::OnceLock::new();
+#[cfg(test)]
+pub(super) static INSTALLATION_OVERRIDE: std::sync::Mutex<
+    Option<crate::update_installer::native::Installation>,
+> = std::sync::Mutex::new(None);
+pub(super) fn installation() -> Option<crate::update_installer::native::Installation> {
+    #[cfg(test)]
+    if let Some(value) = INSTALLATION_OVERRIDE.lock().unwrap().clone() {
+        return Some(value);
+    }
+    INSTALLATION.get().cloned().flatten()
+}
 
 const PLATFORM: &str = if cfg!(target_os = "windows") {
     "windows"
@@ -309,6 +323,23 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let directory = preview_root(&directory)?;
     let _ = FONT.set(assets.join("fonts/SourceHanSans-VF.ttf"));
     let _ = UPDATE_FACTS.set(resolve_update_facts(&assets));
+    let admitted = (|| {
+        if std::env::var("BILIKARA_LAUNCH_MODE").ok().as_deref() != Some("tauri") {
+            return None;
+        }
+        let shell = PathBuf::from(std::env::var_os("BILIKARA_DESKTOP_EXECUTABLE")?);
+        let pid = std::env::var("BILIKARA_DESKTOP_PID").ok()?.parse().ok()?;
+        crate::update_installer::native::Installation::from_launcher(
+            &executable,
+            &shell,
+            pid,
+            PLATFORM,
+            &machine_arch(),
+        )
+        .ok()
+    })();
+    let _ = INSTALLATION
+        .set(admitted.filter(|installation| !directory.starts_with(&installation.root)));
     crate::playlist_export::prewarm_fonts(&desktop_font_path()?).map_err(|e| e.message)?;
     let seed: AppStateSeed = serde_json::from_value(json!({"session_started_at":now(),
         "session_played_file":format!("played-native-{}.json", (now()*1000.0) as u64),"updated_at":now()})).map_err(|e| e.to_string())?;

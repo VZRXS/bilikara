@@ -912,6 +912,48 @@ pub(crate) async fn restart_application(
 }
 
 #[tauri::command]
+pub(crate) async fn apply_desktop_update(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+    lifecycle: tauri::State<'_, ApplicationLifecycleState>,
+    operation: u64,
+) -> Result<(), String> {
+    presentation::authorize_window(&window, &backend, &[MAIN_WINDOW_LABEL])?;
+    match lifecycle.claim_restart() {
+        RestartClaim::Accepted => (),
+        RestartClaim::AlreadyAccepted => return Ok(()),
+        RestartClaim::ShutdownInProgress => {
+            return Err("application shutdown is already in progress".into());
+        }
+    }
+    if let Err(error) = prepare_application_restart_on_main_thread(&app, &window).await {
+        lifecycle.release_restart_after_preparation_failure();
+        return Err(error);
+    }
+    let owned = backend.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        backend_process::activate_update(&owned, operation)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Err(error) = result {
+        lifecycle.release_restart_after_preparation_failure();
+        return Err(error);
+    }
+    let owned = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // The generated helper waits for both owned PIDs. It never kills them.
+        // Do not ask Tauri to restart the old executable before replacement.
+        backend_process::shutdown(&owned);
+        app.exit(0);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn set_window_fullscreen(
     window: tauri::WebviewWindow,
     backend: tauri::State<'_, BackendProcess>,

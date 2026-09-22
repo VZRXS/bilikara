@@ -28,7 +28,7 @@ pub mod playlist_export;
 mod qr_image;
 pub mod shared_catalog;
 mod status_service;
-mod update_installer;
+pub mod update_installer;
 
 pub use app_state::{
     AppSnapshot, AppState, AppStateRequest, AppStateResponse, AppStateSeed, BackupSeed, CacheEvent,

@@ -1726,6 +1726,7 @@ fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntime
                 // input I/O. Starting another track download cannot fix it.
                 DownloadErrorKind::Io => "storage",
                 DownloadErrorKind::LengthMismatch => "length_mismatch",
+                DownloadErrorKind::SizeLimit => "size_limit",
                 DownloadErrorKind::EmptyBody => "empty_body",
                 DownloadErrorKind::Cancelled => "cancelled",
             };

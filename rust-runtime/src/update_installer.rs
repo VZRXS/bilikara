@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zip::ZipArchive;
 
+pub mod native;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareUpdateRequest {
@@ -58,7 +60,17 @@ pub fn launch_update_helper(
     request: &LaunchUpdateHelperRequest,
 ) -> Result<(), UpdateInstallerError> {
     validate_helper_command(&request.command)?;
-    let mut command = Command::new(&request.command[0]);
+    #[cfg(windows)]
+    let program = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32/cmd.exe");
+    #[cfg(not(windows))]
+    let program = PathBuf::from(&request.command[0]);
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.arg("/d"); // Ignore user CMD AutoRun hooks.
+
     command
         .args(&request.command[1..])
         .stdin(Stdio::null())
@@ -276,7 +288,10 @@ fn walk_paths(root: &Path, visitor: &mut impl FnMut(&Path)) -> Result<(), Update
     for entry in entries {
         let path = entry.map_err(io_error("payload_scan_failed"))?.path();
         visitor(&path);
-        if path.is_dir() {
+        if fs::symlink_metadata(&path)
+            .map_err(io_error("payload_scan_failed"))?
+            .is_dir()
+        {
             walk_paths(&path, visitor)?;
         }
     }

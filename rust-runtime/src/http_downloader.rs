@@ -73,6 +73,7 @@ pub enum DownloadErrorKind {
     HttpStatus,
     Io,
     LengthMismatch,
+    SizeLimit,
     EmptyBody,
     Cancelled,
 }
@@ -135,6 +136,40 @@ pub struct DownloadResult {
 
 pub fn download_to_path<F>(
     request: &DownloadRequest,
+    continue_download: F,
+) -> Result<DownloadResult, DownloadError>
+where
+    F: FnMut(DownloadProgress) -> bool,
+{
+    download_with_redirects(
+        request,
+        None,
+        reqwest::redirect::Policy::limited(10),
+        continue_download,
+    )
+}
+
+#[cfg(feature = "native-host")]
+pub(crate) fn download_release_to_path<F>(
+    request: &DownloadRequest,
+    maximum_bytes: u64,
+    continue_download: F,
+) -> Result<DownloadResult, DownloadError>
+where
+    F: FnMut(DownloadProgress) -> bool,
+{
+    download_with_redirects(
+        request,
+        Some(maximum_bytes),
+        crate::http_client::release_redirects(),
+        continue_download,
+    )
+}
+
+fn download_with_redirects<F>(
+    request: &DownloadRequest,
+    maximum_bytes: Option<u64>,
+    redirects: reqwest::redirect::Policy,
     mut continue_download: F,
 ) -> Result<DownloadResult, DownloadError>
 where
@@ -149,6 +184,7 @@ where
     }
 
     let client = crate::http_client::builder()
+        .redirect(redirects)
         .connect_timeout(Duration::from_millis(request.connect_timeout_ms))
         .timeout(Duration::from_millis(request.request_timeout_ms))
         .build()
@@ -192,6 +228,7 @@ where
                     candidate_index,
                     attempt,
                     host_rewritten,
+                    maximum_bytes,
                     &mut continue_download,
                 ) {
                     Ok(result) => return Ok(result),
@@ -202,6 +239,7 @@ where
                         if matches!(
                             error.kind,
                             DownloadErrorKind::Cancelled
+                                | DownloadErrorKind::SizeLimit
                                 | DownloadErrorKind::Io
                                 | DownloadErrorKind::DestinationExists
                                 | DownloadErrorKind::InvalidRequest
@@ -314,6 +352,7 @@ fn download_candidate<F>(
     candidate_index: usize,
     attempt: u32,
     host_rewritten: bool,
+    maximum_bytes: Option<u64>,
     continue_download: &mut F,
 ) -> Result<DownloadResult, DownloadError>
 where
@@ -349,6 +388,13 @@ where
     }
 
     let content_length = response.content_length();
+    if maximum_bytes.is_some_and(|limit| content_length.is_some_and(|size| size > limit)) {
+        return Err(DownloadError::new(
+            DownloadErrorKind::SizeLimit,
+            "download exceeds its byte limit",
+        )
+        .for_candidate(candidate_index));
+    }
     let temp_path = temporary_path(destination);
     let result = if content_length.is_some_and(|length| length > MULTIPART_SEGMENT_BYTES) {
         drop(response);
@@ -387,6 +433,7 @@ where
                         candidate_index,
                         attempt,
                         host_rewritten,
+                        maximum_bytes,
                         continue_download,
                     )
                 }
@@ -402,6 +449,7 @@ where
             candidate_index,
             attempt,
             host_rewritten,
+            maximum_bytes,
             continue_download,
         )
     };
@@ -424,6 +472,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_response<F>(
     mut response: Response,
     temp_path: &Path,
@@ -431,12 +480,19 @@ fn stream_response<F>(
     candidate_index: usize,
     attempt: u32,
     host_rewritten: bool,
+    maximum_bytes: Option<u64>,
     continue_download: &mut F,
 ) -> Result<DownloadResult, DownloadError>
 where
     F: FnMut(DownloadProgress) -> bool,
 {
     let content_length = response.content_length();
+    if maximum_bytes.is_some_and(|limit| content_length.is_some_and(|size| size > limit)) {
+        return Err(DownloadError::new(
+            DownloadErrorKind::SizeLimit,
+            "download exceeds its byte limit",
+        ));
+    }
     let mut output = create_temp_file(temp_path, candidate_index)?;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     let mut downloaded_bytes = 0_u64;
@@ -450,6 +506,13 @@ where
         })?;
         if count == 0 {
             break;
+        }
+        if maximum_bytes.is_some_and(|limit| downloaded_bytes.saturating_add(count as u64) > limit)
+        {
+            return Err(DownloadError::new(
+                DownloadErrorKind::SizeLimit,
+                "download exceeds its byte limit",
+            ));
         }
         output.write_all(&buffer[..count]).map_err(|_| {
             DownloadError::new(DownloadErrorKind::Io, "failed to write temporary download")

@@ -25,7 +25,7 @@ const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
 const defaultSongAdvanceDelaySeconds = 3;
 const maxSongAdvanceDelaySeconds = 30;
-const appUpdateCheckTimeoutMs = 10000;
+const appUpdateCheckTimeoutMs = 30000;
 const avDelayRequestTimeoutMs = 8000;
 const fullscreenRequestToastMs = 4200;
 const fullscreenRequestToastFadeMs = 500;
@@ -40,7 +40,7 @@ let searchDetailController = null;
 
 function openExternalUrl(url) {
   if (document.documentElement?.dataset?.hostPlatform === "desktop") {
-    setAppMessage("Desktop Rust preview: external-link integration is unavailable.");
+    globalThis.BilikaraDesktopPlatform?.openExternal(url).catch((error) => setAppMessage(error.message, true));
     return;
   }
   if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
@@ -557,6 +557,7 @@ const elements = {
   settingsUpdateIndicator: document.getElementById("settings-update-indicator"),
   appUpdateRow: document.getElementById("app-update-row"),
   appUpdateStatus: document.getElementById("app-update-status"),
+  updateCancelButton: document.getElementById("update-cancel-button"),
   updateVersionBadge: document.getElementById("update-version-badge"),
   applicationRestartRow: document.getElementById("application-restart-row"),
   applicationRestartButton: document.getElementById("application-restart-button"),
@@ -10137,7 +10138,7 @@ function appUpdateStatus() {
 }
 
 function isAppUpdateBusy(update = appUpdateStatus()) {
-  return ["checking", "downloading", "installing", "restarting"].includes(String(update?.state || ""));
+  return Boolean(state.updateInstallRequestInFlight) || ["checking", "downloading", "installing", "prepared", "restarting"].includes(String(update?.state || ""));
 }
 
 function appUpdateMatchesSelectedChannel(update = appUpdateStatus()) {
@@ -10205,7 +10206,7 @@ function appUpdateButtonText(update = appUpdateStatus()) {
       ? t("service.updateDownloadingPercent", { percent })
       : t("service.updateDownloading");
   }
-  if (stateValue === "installing") {
+  if (stateValue === "installing" || stateValue === "prepared") {
     return t("service.updateInstalling");
   }
   if (stateValue === "restarting") {
@@ -10270,6 +10271,11 @@ function maybeReportManualUpdateCheckOutcome(update) {
 
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
+  if (update.state === "prepared") {
+    globalThis.BilikaraDesktopPlatform?.applyUpdate(update).catch((error) => setAppMessage(error.message, true));
+  }
+  const cancelButton = elements.updateCancelButton;
+  if (cancelButton) cancelButton.hidden = update.cancellable !== true;
   maybeReportManualUpdateCheckOutcome(update);
   const busy = state.updateCheckRequestInFlight || isAppUpdateBusy(update);
   const eligible = shouldPresentCurrentChannelUpdate(update);
@@ -10280,7 +10286,7 @@ function renderUpdatePreviewControl() {
   }
   if (elements.updatePreviewCheckbox) {
     elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-    elements.updatePreviewCheckbox.disabled = false;
+    elements.updatePreviewCheckbox.disabled = busy;
   }
   if (elements.updateCheckButton) {
     elements.updateCheckButton.disabled = busy;
@@ -18023,7 +18029,6 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
 
 function scheduleStartupAppUpdateCheck() {
   if (state.data?.capabilities?.app_update === false) return false;
-  if (globalThis.document?.documentElement?.dataset?.nativeHost === "true" && !globalThis.BilikaraAndroidPlatform) return false;
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
   }
@@ -18036,10 +18041,14 @@ function scheduleStartupAppUpdateCheck() {
 }
 
 async function installAppUpdate(includePreview = false) {
+  if (state.updateInstallRequestInFlight || isAppUpdateBusy()) return;
+  state.updateInstallRequestInFlight = true;
+  renderUpdatePreviewControl();
   try {
-    const updateStatus = await apiPost("/api/app/update/install", {
-      include_preview: Boolean(includePreview),
-    });
+    const updateStatus = globalThis.BilikaraDesktopPlatform
+      ? await globalThis.BilikaraDesktopPlatform.startUpdate(Boolean(includePreview))
+      : await apiPost("/api/app/update/install", { include_preview: Boolean(includePreview) });
+    if (state.data) state.data.app_update = updateStatus;
     if (updateStatus.android_package && document.documentElement?.dataset?.nativeHost === "true") {
       closeConfirm();
       let result = "failed";
@@ -18061,6 +18070,9 @@ async function installAppUpdate(includePreview = false) {
     );
   } catch (error) {
     setAppMessage(error?.message || t("service.updateFailed"), true);
+  } finally {
+    state.updateInstallRequestInFlight = false;
+    renderUpdatePreviewControl();
   }
 }
 
@@ -18075,7 +18087,7 @@ async function checkAppUpdate(event) {
   }
 
   if (!update?.auto_update_supported) {
-    if (globalThis.document?.documentElement?.dataset?.nativeHost === "true") {
+    if (globalThis.BilikaraAndroidPlatform) {
       setAppMessage(update.message || "当前测试包暂不支持正式签名包覆盖更新。");
       return;
     }
@@ -21792,3 +21804,19 @@ window.addEventListener("pageshow", () => {
 });
 
 startPolling();
+
+// Cancels the operation owned by the native desktop Host. A committed helper
+// explicitly rejects cancellation; closing the UI never claims rollback.
+document.getElementById("update-cancel-button")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  try {
+    const result = await globalThis.BilikaraDesktopPlatform.cancelUpdate();
+    if (state.data) state.data.app_update = result;
+    renderUpdatePreviewControl();
+    setAppMessage(result.message);
+  } catch (error) { setAppMessage(error.message, true); }
+  finally { button.disabled = false; button.removeAttribute("aria-busy"); }
+});

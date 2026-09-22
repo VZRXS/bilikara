@@ -101,6 +101,7 @@ pub(crate) struct HostContext {
     bbdown: Option<crate::cache_runtime::bbdown::Executable>,
     aria2: std::sync::Mutex<Option<crate::cache_runtime::aria2::Executable>>,
     shutdown_token: Option<String>,
+    desktop_installation: Option<crate::update_installer::native::Installation>,
     workers: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
@@ -330,6 +331,11 @@ fn start(
         port,
         desktop,
         shutdown_token,
+        desktop_installation: if desktop {
+            desktop::installation()
+        } else {
+            None
+        },
         bbdown,
         aria2: std::sync::Mutex::new(aria2),
         workers: std::sync::Mutex::new(Vec::new()),
@@ -541,7 +547,15 @@ async fn handle_inner(
             json!({"ok":true,"status":"ready","backend":"rust"}),
         ));
     }
-    if path == "/api/app/shutdown" && method == Method::POST && context.desktop {
+    if matches!(
+        path.as_str(),
+        "/api/app/shutdown"
+            | "/api/app/update/activate"
+            | "/api/app/update/install"
+            | "/api/app/update/cancel"
+    ) && method == Method::POST
+        && context.desktop
+    {
         if !identity.loopback
             || context.shutdown_token.as_deref().is_none_or(|expected| {
                 request
@@ -552,6 +566,19 @@ async fn handle_inner(
             })
         {
             return Err(ApiError::new(403, "shutdown", "关闭凭证无效"));
+        }
+        if path.starts_with("/api/app/update/") {
+            let bytes = axum::body::to_bytes(request.into_body(), 1024)
+                .await
+                .map_err(|_| ApiError::invalid("Invalid update operation"))?;
+            let body: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| ApiError::invalid("Invalid update operation"))?;
+            let result = tokio::task::spawn_blocking(move || {
+                updates::private_desktop(&context, &path, &body)
+            })
+            .await
+            .map_err(|_| ApiError::invalid("Update operation failed"))??;
+            return Ok(json_response(200, json!({"ok":true,"data":result})));
         }
         context.stop.store(true, Ordering::Release);
         return Ok(json_response(200, json!({"ok":true})));

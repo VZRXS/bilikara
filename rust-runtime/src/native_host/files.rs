@@ -248,6 +248,7 @@ mod tests {
             bbdown: None,
             aria2: std::sync::Mutex::new(None),
             shutdown_token: None,
+            desktop_installation: None,
             workers: std::sync::Mutex::new(Vec::new()),
         };
         crate::app_state::with_cache_application(|app| {

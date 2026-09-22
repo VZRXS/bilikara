@@ -314,5 +314,33 @@ function indicatorState() {{
         self.assertEqual(result["opened"], ["https://example.test/v0.8.2"])
 
 
+class NativeDesktopUpdateAdapterTest(unittest.TestCase):
+    def test_private_shell_operations_and_duplicate_activation(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        script = r'''
+const fs=require("node:fs"), vm=require("node:vm"), assert=require("node:assert/strict");
+const calls=[];
+const desktop={window:{__TAURI__:{core:{invoke:async(name,args)=>{calls.push([name,args]);return {state:"downloading"};}}}},document:{documentElement:{dataset:{hostPlatform:"desktop"}}}};
+vm.runInNewContext(fs.readFileSync("static/desktop-platform.js","utf8"),desktop);
+(async()=>{
+ const adapter=desktop.window.BilikaraDesktopPlatform;
+ await adapter.startUpdate(true);await adapter.cancelUpdate();
+ await adapter.openExternal("https://github.com/VZRXS/bilikara/releases");
+ await Promise.all([adapter.applyUpdate({state:"prepared",operation:7}),adapter.applyUpdate({state:"prepared",operation:7})]);
+ await adapter.applyUpdate({state:"downloading",operation:8});
+ assert.deepEqual(calls.map(v=>v[0]),["start_desktop_update","cancel_desktop_update","open_external_web_url","apply_desktop_update"]);
+ assert.equal(calls[0][1].includePreview,true);assert.equal(calls[3][1].operation,7);
+ assert.ok(!calls.some(v=>JSON.stringify(v).includes("command")));
+ const android={window:{},document:{documentElement:{dataset:{hostPlatform:"android"}}}};
+ vm.runInNewContext(fs.readFileSync("static/desktop-platform.js","utf8"),android);
+ assert.equal(android.window.BilikaraDesktopPlatform,undefined);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+        result = subprocess.run([node, "-"], input=script, text=True, capture_output=True, cwd=ROOT, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

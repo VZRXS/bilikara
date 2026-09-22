@@ -100,8 +100,32 @@ pipe. Direct backend execution prints that private readiness message for a
 trusted caller; it does not launch a browser. Normal desktop users launch the
 Tauri application.
 
-This launch/distribution contract does not complete Preview 2 feature parity or
-release acceptance. Updates remain check-only: a matching archive is not
-installable from the native Host. Preview 1's Python archive and native archives
-have different runtime/data layouts; upgrade installation/restart is separate
-work and must not install an older Python bundle into this path.
+Packaged Windows/macOS applications support explicit update/download/restart
+from the existing update controls. Version/channel eligibility is separate from
+package compatibility: an archive needs a bounded size and published SHA-256,
+the matching native layout/version/architecture, all required resources and
+libav dependencies. macOS also verifies the candidate's code signature before
+activation. An older Python/PyInstaller package is refused even when the
+preview-to-stable policy selects that release. Linux and source-development
+launches offer checks and a release-page link for manual updates.
+
+Download and preparation can be cancelled. Once the main desktop window commits
+replacement through its private shell capability, cancellation is unavailable.
+The helper waits for the owned backend and shell to exit, stages a sibling
+installation, preserves the previous application as `.previous-update-*`, and
+launches the new Tauri entry. A copy/replacement failure retains or restores the
+old installation; this is not a general crash-rollback guarantee. After checking
+the new installation, the user may remove that previous application directory.
+Native data remains in its separate application-data directory. An explicit
+native data override inside the installation makes automatic update unavailable.
+The audience window, Remote and ordinary HTTP cookies cannot initiate or commit
+a desktop installation. Manual release links open a validated web URL through
+the shell, without navigating the player away.
+
+Preview 1's Windows Tauri archive extraction/relaunch names remain compatible
+with the native archive; legacy data still requires the explicit import above.
+Preview 1's macOS extractor does not preserve bundle symlinks, so that transition
+requires manual replacement with the intact native app and explicit data import.
+Native-to-native macOS updates preserve safe relative bundle links. Real package
+installation and platform acceptance remain necessary before a Preview 2 release;
+this launch/update contract does not establish full product parity.
