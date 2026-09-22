@@ -7,6 +7,7 @@
   <title>bilikara host</title>
   <link rel="icon" href="/pic/icon.png" />
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/browse-search.css" />
   <link rel="stylesheet" href="/search-result-media.css" />
   <script src="/search-result-media.js" defer></script>
   <link rel="stylesheet" href="/song-detail.css" />
@@ -14,10 +15,12 @@
   <link rel="stylesheet" href="/host-layout.css" />
   <link rel="stylesheet" href="/status-indicators.css" />
   <link rel="stylesheet" href="/volume-control.css" />
+  <link rel="stylesheet" href="/request-tabs.css" />
+  <link rel="stylesheet" href="/ui-surfaces.css" />
 </head>
 
 <body>
-  <div class="app-shell" id="app-shell" data-active-workspace="queue" data-stage-mode="compact">
+  <div class="app-shell" id="app-shell" data-active-workspace="request" data-stage-mode="compact">
     <header class="topbar" aria-label="Global toolbar" data-i18n-aria-label="shell.globalToolbar">
       <div class="host-brand">
         <h1 data-i18n="brand.name">bilikara</h1>
@@ -64,7 +67,6 @@
                   </button>
                   <span class="cache-advanced-tooltip" id="internet-remote-mode-description" role="tooltip">
                     <span data-i18n="internetRemote.localEntryDescription">访问设备与 Host 位于同一局域网时可直接使用本地入口。公网房间运行期间，本地 Remote 仍可同时使用。</span>
-                    <span id="internet-remote-local-address-detail"></span>
                   </span>
                 </span>
               </div>
@@ -333,20 +335,13 @@
               </div>
               <div class="cache-panel-side">
                 <p class="cache-panel-hint" data-i18n="service.autoClearHint">关闭服务后会自动清空</p>
-                <div class="cache-panel-tool-list">
-                  <p id="bbdown-status-row">
-                    <span>Bilibili</span>
-                    <button type="button" class="bbdown-login-badge is-unknown" id="bbdown-login-button">
-                      <span class="bbdown-login-label" data-i18n="service.notLoggedIn">未登录</span>
-                      <span class="bbdown-login-hover-label" data-i18n="service.logout">退出</span>
-                    </button>
-                  </p>
-                  <p id="ffmpeg-status-row">
-                    <span>FFmpeg</span>
-                    <span class="tool-status-indicator is-loading cache-panel-tool-indicator"
-                      id="ffmpeg-panel-status-indicator" aria-hidden="true"></span>
-                  </p>
-                </div>
+                <p id="bbdown-status-row">
+                  <span>Bilibili</span>
+                  <button type="button" class="bbdown-login-badge is-unknown" id="bbdown-login-button">
+                    <span class="bbdown-login-label" data-i18n="service.notLoggedIn">未登录</span>
+                    <span class="bbdown-login-hover-label" data-i18n="service.logout">退出</span>
+                  </button>
+                </p>
               </div>
             </div>
             <div class="cache-panel-row cache-panel-row-double" id="cache-capacity-row">
@@ -409,20 +404,22 @@
                 </span>
               </label>
             </div>
-            <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
-              <div class="bbdown-login-copy">
-                <p class="cache-panel-label" data-i18n="service.bbdownLogin">Bilibili 登录</p>
+            <section class="host-account-settings" id="host-account-settings">
+              <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
+                <div class="bbdown-login-copy">
+                  <p class="cache-panel-label" data-i18n="service.bbdownLogin">Bilibili 登录</p>
+                </div>
+                <div class="bbdown-login-qr">
+                  <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="Bilibili 登录二维码"
+                    data-i18n-alt="service.bbdownQrAlt" />
+                  <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
+                  <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
+                </div>
+                <button type="button" class="toolbar-button bbdown-login-refresh" id="bbdown-login-refresh">
+                  <span data-i18n="service.regenerateQr">重新生成二维码</span>
+                </button>
               </div>
-              <div class="bbdown-login-qr">
-                <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="Bilibili 登录二维码"
-                  data-i18n-alt="service.bbdownQrAlt" />
-                <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
-                <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
-              </div>
-              <button type="button" class="toolbar-button bbdown-login-refresh" id="bbdown-login-refresh">
-                <span data-i18n="service.regenerateQr">重新生成二维码</span>
-              </button>
-            </div>
+            </section>
             <!-- LEGACY: 在线外挂模式暂时下线，保留元素 id 仅避免旧脚本引用失效。 -->
             <div class="cache-panel-row cache-panel-mode-row hidden" aria-hidden="true">
               <div>
@@ -454,6 +451,20 @@
     </header>
 
     <div class="critical-banner-region" id="critical-banner-region">
+      <section class="backup-banner hidden" id="native-session-choice" aria-labelledby="native-session-choice-title" aria-live="polite" aria-hidden="true" inert>
+        <div class="backup-copy">
+          <p class="backup-title" id="native-session-choice-title" data-i18n="mobile.sessionChoiceTitle">要继续上一场吗？</p>
+          <p class="backup-text" data-i18n="mobile.sessionChoiceHint">已保留上次的用户、队列和本场歌单。关闭或倒计时结束将开启新一场，历史记录、登录和设置会保留。</p>
+          <p id="native-session-choice-error" role="alert"></p>
+        </div>
+        <div class="backup-actions">
+          <button type="button" class="banner-action" data-session-choice="continue" data-i18n="backup.continuePreviousSession">继续上一场</button>
+          <button type="button" class="banner-close" id="native-session-dismiss" data-session-choice="new" aria-label="关闭并开启新一场" data-i18n-aria-label="mobile.dismissSessionChoice">
+            <span data-session-countdown aria-hidden="true">10</span>
+            <svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+      </section>
       <section class="backup-banner hidden" id="backup-banner" aria-live="polite" aria-hidden="true" inert>
         <div class="backup-copy">
           <p class="backup-title" id="backup-title" data-i18n="backup.tag">Auto Restore</p>
@@ -473,8 +484,8 @@
         <section class="host-content-region">
           <div class="android-host-only android-page-tools" id="android-page-tools" hidden>
             <div id="android-queue-tabs" class="android-page-tabs" hidden>
-              <button type="button" data-android-workspace="queue" data-i18n="mobile.queue">播放队列</button>
-              <button type="button" data-android-workspace="history" data-i18n="shell.history">历史</button>
+              <button type="button" data-android-workspace="queue" data-shared-workspace="queue"></button>
+              <button type="button" data-android-workspace="history" data-shared-workspace="history"></button>
             </div>
             <div id="android-request-tabs" hidden></div>
             <button type="button" class="android-settings-back" id="android-settings-back" hidden>
@@ -802,7 +813,7 @@
           </section>
           <div class="host-workspace-backdrop" id="host-workspace-backdrop" hidden aria-hidden="true"></div>
           <section class="host-workspace-region" id="host-workspace-region" role="region"
-            aria-labelledby="work-rail-queue" data-active-workspace="queue">
+            aria-labelledby="work-rail-request" data-active-workspace="request">
 
         <section class="settings-workspace host-workspace-fragment" id="host-workspace-settings" role="tabpanel"
           aria-labelledby="work-rail-settings" data-host-workspace-panel="settings" hidden inert>
@@ -821,15 +832,6 @@
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
               </div>
               <div class="settings-section-card">
-                <div class="cache-panel-row settings-control-row android-window-preferences" id="android-layout-settings" hidden>
-                  <p class="cache-panel-label" id="android-layout-label" data-i18n="mobile.layout">界面布局</p>
-                  <div class="mode-switch" id="android-layout-switch" role="group" aria-labelledby="android-layout-label">
-                    <button type="button" class="mode-button" data-android-layout-mode="auto" data-i18n="mobile.layoutAuto" disabled>自动</button>
-                    <button type="button" class="mode-button" data-android-layout-mode="desktop" data-i18n="mobile.layoutDesktop" disabled>桌面</button>
-                    <button type="button" class="mode-button" data-android-layout-mode="phone" data-i18n="mobile.layoutPhone" disabled>手机</button>
-                  </div>
-                  <p class="cache-panel-hint" data-i18n="mobile.layoutHint">自动按窗口宽度切换布局；不重载播放器。手动选择会保存在本机。</p>
-                </div>
                 <div class="cache-panel-row settings-control-row android-window-preferences" id="android-orientation-settings" hidden>
                   <p class="cache-panel-label" id="android-orientation-label" data-i18n="mobile.orientation">屏幕方向</p>
                   <div class="mode-switch" id="android-orientation-switch" role="group" aria-labelledby="android-orientation-label">
@@ -1001,7 +1003,7 @@
         </section>
 
         <section class="request-workspace host-workspace-fragment" id="host-workspace-request" role="tabpanel"
-          aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
+          aria-labelledby="work-rail-request" data-host-workspace-panel="request">
           <header class="request-workspace-head host-peer-head">
             <div class="host-peer-heading">
               <p class="section-tag" data-i18n="request.workspaceTag">Request</p>
@@ -1020,7 +1022,7 @@
                 aria-selected="false" tabindex="-1" data-i18n="request.sourcesTab">来源</button>
               <button type="button" role="tab" class="android-host-only" id="android-request-random"
                 data-android-workspace="random" aria-controls="gatcha-panel" aria-selected="false"
-                tabindex="-1" data-i18n="shell.random">试试运气</button>
+                tabindex="-1" data-shared-workspace="random"></button>
             </nav>
           </header>
 
@@ -1051,6 +1053,10 @@
             <section class="request-subview request-search-view" id="request-search-panel" role="tabpanel"
               data-request-panel="search" aria-labelledby="workspace-request-heading" hidden inert>
               <header class="request-mode-head">
+                <button type="button" class="request-mode-back" data-request-back>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
+                  <span data-i18n="common.back">返回</span>
+                </button>
                 <div class="request-mode-tabs" role="tablist" aria-label="搜索范围"
                   data-i18n-aria-label="search.modeSelector">
                   <button type="button" role="tab" data-search-mode="shared"
@@ -1075,6 +1081,7 @@
                 <p class="search-message message-surface" id="lark-search-message" role="status" aria-live="polite"></p>
                 <div id="lark-search-results" class="search-results request-scroll-region hidden" tabindex="0"
                   aria-label="共享曲库搜索结果" data-i18n-aria-label="search.sharedResultsLabel"></div>
+                <div class="host-search-summary" data-search-summary="shared" hidden></div>
               </section>
 
               <section class="request-mode-panel" id="request-search-local" role="tabpanel"
@@ -1090,12 +1097,17 @@
                 <p class="search-message message-surface" id="search-message" role="status" aria-live="polite"></p>
                 <div id="search-results" class="search-results request-scroll-region hidden" tabindex="0"
                   aria-label="本地曲库搜索结果" data-i18n-aria-label="search.localResultsLabel"></div>
+                <div class="host-search-summary" data-search-summary="local" hidden></div>
               </section>
             </section>
 
             <section class="request-subview request-discover-view" id="request-discover-panel" role="tabpanel"
               data-request-panel="discover" aria-labelledby="workspace-request-heading" hidden inert>
               <header class="request-mode-head">
+                <button type="button" class="request-mode-back" data-request-back>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
+                  <span data-i18n="common.back">返回</span>
+                </button>
                 <div class="request-mode-tabs" role="tablist" aria-label="发现方式"
                   data-i18n-aria-label="discover.modeSelector">
                   <button type="button" role="tab" data-discover-mode="categories"
@@ -1140,6 +1152,10 @@
             <section class="request-subview request-sources-view" id="request-sources-panel" role="tabpanel"
               data-request-panel="sources" aria-labelledby="workspace-request-heading" hidden inert>
               <header class="request-mode-head">
+                <button type="button" class="request-mode-back" data-request-back>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
+                  <span data-i18n="common.back">返回</span>
+                </button>
                 <div class="request-mode-tabs" role="tablist" aria-label="来源类型"
                   data-i18n-aria-label="sources.modeSelector">
                   <button type="button" role="tab" data-sources-mode="uids"
@@ -1365,7 +1381,7 @@
         </div>
 
       <aside class="queue-card list-card host-workspace-fragment" id="host-workspace-queue" role="tabpanel"
-        aria-labelledby="work-rail-queue" data-host-workspace-panel="queue">
+        aria-labelledby="work-rail-queue" data-host-workspace-panel="queue" hidden inert>
         <div class="queue-card-head">
           <div class="queue-card-heading host-peer-heading">
             <p class="section-tag" id="list-tag" data-i18n="list.tag">Requests</p>
@@ -1417,10 +1433,12 @@
                 <h3 class="queue-current-title" id="queue-current-title" data-i18n="player.noSong">还没有歌曲</h3>
                 <div class="queue-current-meta">
                   <p class="queue-current-requester hidden" id="queue-current-requester"></p>
-                  <button type="button" class="toolbar-button" id="open-rating-button" disabled
-                    data-i18n="rating.rate">评分</button>
-              <button type="button" class="next-button queue-current-next" id="next-button"
-                data-i18n="player.nextSong">切歌</button>
+                  <div class="queue-current-actions">
+                    <button type="button" class="toolbar-button queue-current-rating" id="open-rating-button" disabled
+                      data-i18n="rating.rate">评分</button>
+                    <button type="button" class="next-button queue-current-next" id="next-button"
+                      data-i18n="player.nextSong">切歌</button>
+                  </div>
                 </div>
                 <p class="queue-current-cache-detail hidden" id="queue-current-cache-detail"></p>
               </div>
@@ -1460,37 +1478,37 @@
       <nav class="work-rail" id="work-rail" role="tablist" aria-orientation="vertical"
         aria-label="Host workspaces" data-i18n-aria-label="shell.workspaces">
         <button type="button" class="work-rail-button" id="work-rail-queue" role="tab"
-          data-host-workspace="queue" aria-controls="host-workspace-queue" aria-selected="true" tabindex="0">
+          data-host-workspace="queue" data-compact-page="queue" aria-controls="host-workspace-queue" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5h12M6 12h12M6 19h12"></path><circle cx="3" cy="5" r=".7" fill="currentColor"></circle><circle cx="3" cy="12" r=".7" fill="currentColor"></circle><circle cx="3" cy="19" r=".7" fill="currentColor"></circle></svg>
           <span class="work-rail-label" data-i18n="shell.queue">Queue</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-history" role="tab"
-          data-host-workspace="history" aria-controls="host-workspace-history" aria-selected="false" tabindex="-1">
+          data-host-workspace="history" data-compact-page="queue" aria-controls="host-workspace-history" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5v5h5"></path><path d="M5.5 16.5A8 8 0 1 0 5 8"></path><path d="M12 7.5V12l3 2"></path></svg>
           <span class="work-rail-label" data-i18n="shell.history">History</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-request" role="tab"
-          data-host-workspace="request" aria-controls="host-workspace-request" aria-selected="false" tabindex="-1">
+          data-host-workspace="request" data-compact-page="request" aria-controls="host-workspace-request" aria-selected="true" tabindex="0">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="5.5"></circle><path d="m14 14 5 5M10 7.5v5M7.5 10h5"></path></svg>
           <span class="work-rail-label" data-i18n="shell.request">Request</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-random" role="tab"
-          data-host-workspace="random" aria-controls="gatcha-panel" aria-selected="false" tabindex="-1">
+          data-host-workspace="random" data-compact-page="request" aria-controls="gatcha-panel" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle></svg>
           <span class="work-rail-label" data-i18n="shell.random">试试运气</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-users" role="tab"
-          data-host-workspace="users" aria-controls="session-users-panel" aria-selected="false" tabindex="-1">
+          data-host-workspace="users" data-compact-page="users" aria-controls="session-users-panel" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path></svg>
           <span class="work-rail-label" data-i18n="shell.users">Session Users</span>
         </button>
         <button type="button" class="work-rail-button work-rail-settings" id="work-rail-settings" role="tab"
-          data-host-workspace="settings" aria-controls="host-workspace-settings" aria-selected="false" tabindex="-1">
+          data-host-workspace="settings" data-compact-page="my" aria-controls="host-workspace-settings" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
@@ -1507,15 +1525,9 @@
       <button type="button" data-android-page="playback" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/><path d="M4 5v14"/></svg><span data-i18n="mobile.playback">播放</span>
       </button>
-      <button type="button" data-android-page="queue">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h8M3 6h.01M3 12h.01M3 18h.01"/></svg><span data-i18n="mobile.queue">播放队列</span>
-      </button>
-      <button type="button" data-android-page="request">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg><span data-i18n="shell.request">点歌</span>
-      </button>
-      <button type="button" data-android-page="users">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 4a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></svg><span data-i18n="shell.users">本场用户</span>
-      </button>
+      <button type="button" data-android-page="queue" data-shared-workspace="queue" data-workspace-icon></button>
+      <button type="button" data-android-page="request" data-shared-workspace="request" data-workspace-icon></button>
+      <button type="button" data-android-page="users" data-shared-workspace="users" data-workspace-icon></button>
       <button type="button" data-android-page="my">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="mobile.me">我的</span>
       </button>
@@ -1832,17 +1844,10 @@
     </div>
   </div>
 
-  <dialog id="android-session-choice" aria-labelledby="android-session-choice-title">
-    <h2 id="android-session-choice-title" data-i18n="mobile.sessionChoiceTitle">开始本场卡拉 OK</h2>
-    <p data-i18n="mobile.sessionChoiceHint">继续上一场会保留本场用户、队列和本场歌单。开启新一场会清空这些内容，但保留历史记录、登录和设置。</p>
-    <p id="android-session-choice-error" role="alert"></p>
-    <div class="android-session-choice-actions">
-      <button type="button" class="toolbar-button" data-session-choice="continue" data-i18n="backup.continuePreviousSession">继续上一场</button>
-      <button type="button" class="next-button" data-session-choice="new" data-i18n="mobile.newSession">开启新一场</button>
-    </div>
-  </dialog>
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
+  <script src="/source-status.js" defer></script>
+  <script src="/browse-search.js" defer></script>
   <script src="/export-download.js" defer></script>
   <script src="/diagnostics-copy.js" defer></script>
   <script src="/song-detail.js" defer></script>

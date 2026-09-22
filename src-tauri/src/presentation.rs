@@ -1714,7 +1714,10 @@ fn create_display_identifier_window(
     );
     let size = tauri::PhysicalSize::new(width, height);
     let label = format!("{DISPLAY_IDENTIFIER_WINDOW_PREFIX}{generation}-{number}");
-    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url));
+    #[cfg(windows)]
+    let builder = builder.data_directory(crate::desktop_storage::webview_directory(app.config())?);
+    let window = builder
         .on_navigation(move |candidate| {
             crate::backend_process::window_origin_authorized(
                 candidate.as_str(),
@@ -2081,7 +2084,10 @@ fn create_controller_window(
     }
     let url = controller_url(host, generation)?;
     let allowed_origin = url.clone();
-    WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url));
+    #[cfg(windows)]
+    let builder = builder.data_directory(crate::desktop_storage::webview_directory(app.config())?);
+    builder
         .on_navigation(move |candidate| {
             crate::backend_process::window_origin_authorized(
                 candidate.as_str(),

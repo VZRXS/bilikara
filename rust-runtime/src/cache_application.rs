@@ -176,50 +176,34 @@ impl CacheApplication {
                         "正在下载视频及音轨".into()
                     };
                     let mut projections = vec![CacheEvent::Started { message }];
-                    if (default || attempt.source == "downkyi") && !attempt.tracks.is_empty() {
+                    if !attempt.tracks.is_empty() {
                         projections.push(progress(attempt, 0.0));
                     }
                     projections
                 }
                 "progress" => {
-                    let Ok(track) = serde_json::from_value::<Track>(payload["track"].clone())
+                    let Ok(mut track) = serde_json::from_value::<Track>(payload["track"].clone())
                     else {
                         continue;
                     };
                     if track.key.is_empty() {
                         continue;
                     }
-                    if default || attempt.source == "downkyi" {
-                        if attempt.tracks.is_empty() {
-                            continue;
-                        }
-                        attempt.tracks.insert(track.key.clone(), track);
-                        vec![progress(attempt, current_progress)]
-                    } else {
-                        let value = if track.target_bytes > 0 {
-                            (100.0 * track.current_bytes as f64 / track.target_bytes as f64)
-                                .clamp(0.0, 99.0)
-                        } else {
-                            0.0
-                        };
-                        vec![CacheEvent::Progress {
-                            progress: value,
-                            message: Some(format!(
-                                "{}{}：{}%",
-                                if payload["source"] == "bbdown" {
-                                    "BBDown · "
-                                } else {
-                                    ""
-                                },
-                                if track.label.is_empty() {
-                                    "下载中"
-                                } else {
-                                    &track.label
-                                },
-                                value as u32
-                            )),
-                        }]
+                    if attempt.tracks.is_empty() {
+                        continue;
                     }
+                    // Validation reports a phase change without transfer byte counters.
+                    // Retain the completed download while the media backend validates it.
+                    if track.phase == "validating"
+                        && track.current_bytes == 0
+                        && track.target_bytes == 0
+                        && let Some(previous) = attempt.tracks.get(&track.key)
+                    {
+                        track.current_bytes = previous.current_bytes;
+                        track.target_bytes = previous.target_bytes;
+                    }
+                    attempt.tracks.insert(track.key.clone(), track);
+                    vec![progress(attempt, current_progress)]
                 }
                 "ready" => {
                     if default && artifact_identity(payload).is_none() {
@@ -451,7 +435,7 @@ fn progress(attempt: &Attempt, previous: f64) -> CacheEvent {
         ));
     }
     CacheEvent::Progress {
-        progress: value,
+        progress: value.max(previous).min(99.0),
         message: Some(lines.join("\n")),
     }
 }
@@ -861,6 +845,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_tracks_stay_aggregated_and_activity_survives_rounded_progress() {
+        for source in ["native", "bbdown", "downkyi"] {
+            let (mut app, reservation) = fixture();
+            let mut service = CacheApplication::default();
+            let tracks = json!([
+                {"key":"v","label":"视频P1","order":0,"current_bytes":80,"target_bytes":100},
+                {"key":"a","label":"音轨P2","order":1,"current_bytes":20,"target_bytes":100}
+            ]);
+            let result = service.apply(
+                &mut app,
+                vec![event(
+                    &reservation,
+                    1,
+                    1,
+                    "started",
+                    json!({"source":source,"tracks":tracks}),
+                )],
+                HostContract::Native,
+                2.0,
+            );
+            assert_eq!(item(&result).cache_progress, 49.0);
+            for (sequence, current, now) in [(2, 40, 3.0), (3, 40, 4.0), (4, 0, 5.0)] {
+                let result = service.apply(&mut app, vec![event(&reservation,sequence,1,"progress",json!({"source":source,"track":{"key":"a","label":"音轨P2","order":1,"current_bytes":current,"target_bytes":100}}))], HostContract::Native, now);
+                let song = item(&result);
+                assert!(
+                    (song.cache_progress - 58.8).abs() < 0.001,
+                    "{source}: {}",
+                    song.cache_progress
+                );
+                assert!(song.cache_message.contains("视频P1：80 B / 100 B"));
+                assert!(song.cache_message.contains("音轨P2："));
+                assert_eq!(song.cache_activity_at, now);
+            }
+        }
+    }
+
+    #[test]
     fn native_contract_retains_bbdown_messages_and_error_limits() {
         let (mut app, reservation) = fixture();
         let mut service = CacheApplication::default();
@@ -871,15 +892,15 @@ pub(crate) mod tests {
                 1,
                 1,
                 "started",
-                json!({"source":"bbdown"}),
+                json!({"source":"bbdown","tracks":[{"key":"v","label":"视频","target_bytes":100}]}),
             )],
             HostContract::Native,
             2.0,
         );
-        assert_eq!(item(&result).cache_message, "BBDown 正在下载视频及音轨");
+        assert!(item(&result).cache_message.contains("视频：0 B / 100 B"));
         let result=service.apply(&mut app,vec![event(&reservation,2,1,"progress",json!({"source":"bbdown","track":{"key":"v","label":"视频","current_bytes":70,"target_bytes":100}}))],HostContract::Native,2.0);
-        assert_eq!(item(&result).cache_progress, 70.0);
-        assert_eq!(item(&result).cache_message, "BBDown · 视频：70%");
+        assert!((item(&result).cache_progress - 68.6).abs() < 0.001);
+        assert!(item(&result).cache_message.contains("视频：70 B / 100 B"));
         let result = service.apply(
             &mut app,
             vec![event(

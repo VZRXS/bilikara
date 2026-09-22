@@ -7,10 +7,11 @@ $rustInfo = & rustc -vV
 if ($LASTEXITCODE -ne 0 -or -not ($rustInfo -match "^host: $rustArch-pc-windows-msvc$")) { throw 'Expected the matching native Rust MSVC host target' }
 $driver = Join-Path $prefix 'driver'
 New-Item -ItemType Directory -Force $driver | Out-Null
-cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --example libav_metadata 2>&1 | Tee-Object (Join-Path $prefix "records/driver-build.log")
+# Match the packaged backend so its optimized Runtime library can be reused.
+cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --example libav_metadata 2>&1 | Tee-Object (Join-Path $prefix "records/driver-build.log")
 if ($LASTEXITCODE -ne 0) { throw 'Developer driver build failed' }
 Copy-Item rust-runtime/target/release/examples/libav_metadata.exe $driver
-$messages = & cargo test --manifest-path rust-runtime/Cargo.toml --release --locked --lib --no-run --message-format=json
+$messages = & cargo test --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --lib --no-run --message-format=json
 $testExit = $LASTEXITCODE
 $messages | Out-File (Join-Path $prefix 'records/runtime-test-build.jsonl') -Encoding utf8
 if ($testExit -ne 0) { throw 'Runtime smoke test build failed' }

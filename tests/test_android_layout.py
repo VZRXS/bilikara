@@ -29,8 +29,9 @@ class AndroidLayoutTest(unittest.TestCase):
                         "orientation", "orientationSystem", "orientationLandscape", "orientationPortrait",
                         "orientationHint", "windowPreferenceFailed"):
                 self.assertTrue(translations[language][f"mobile.{key}"])
-        for name in ("layout", "orientation"):
-            self.assertIn(f'id="android-{name}-settings" hidden', host)
+        self.assertIn('id="android-orientation-settings" hidden', host)
+        self.assertNotIn('id="android-layout-settings"', host)
+        self.assertNotIn('data-android-layout-mode=', host)
 
     def test_native_preferences_are_narrow_and_survive_loopback_port_changes(self):
         native = (ROOT / "src-tauri/gen/android/app/src/main/java/com/bilikara/app/HostWindowControls.kt").read_text(encoding="utf-8")

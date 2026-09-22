@@ -153,10 +153,8 @@
         <h2 id="internet-join-title" data-i18n="internetRemote.joinTitle">连接 bilikara 房间</h2>
         <p class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用须填写用户名，登记后本设备将始终使用该身份点歌。</p>
         <form class="remote-identity-form">
-          <label for="internet-join-identity" data-i18n="remoteIdentity.inputLabel">用户名</label>
-          <input id="internet-join-identity" name="identity" type="text" maxlength="24" autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入用户名" required>
-          <label for="internet-join-password" data-i18n="internetRemote.password">房间密码</label>
-          <input id="internet-join-password" name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" data-i18n-placeholder="internetRemote.passwordPlaceholder" placeholder="请输入 Host 显示的房间密码" required>
+          <input id="internet-join-identity" name="identity" type="text" maxlength="24" autocomplete="nickname" aria-label="用户名" data-i18n-aria-label="remoteIdentity.inputLabel" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="输入用户名" required>
+          <input id="internet-join-password" name="password" type="password" minlength="4" maxlength="32" autocomplete="current-password" aria-label="房间密码" data-i18n-aria-label="internetRemote.password" data-i18n-placeholder="internetRemote.passwordPlaceholder" placeholder="输入房间密码" required>
           <div class="remote-identity-actions"><button type="submit" class="primary-button" data-i18n="internetRemote.connect">连接</button></div>
         </form>
       </div>`;
@@ -648,11 +646,11 @@
         if (url.searchParams.has("table")) {
           return jsonResponse({ ok: false, code: "catalog_table_retired", error: "Feishu table selection has been retired" }, 410);
         }
-        response = await request("catalog.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)) }, "bulk");
-        return jsonResponse({ ok: true, data: { items: (response.data?.items || []).map(publicSearchItem) } });
+        response = await request("catalog.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)), offset: Number(url.searchParams.get("offset") || 0) }, "bulk");
+        return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
       }
       if (method === "GET" && url.pathname === "/api/gatcha/search") {
-        response = await request("gatcha.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)) }, "bulk");
+        response = await request("gatcha.search", { query: url.searchParams.get("q") || "", limit: Math.min(80, Number(url.searchParams.get("limit") || 80)), offset: Number(url.searchParams.get("offset") || 0) }, "bulk");
         return jsonResponse({ ok: true, data: publicCatalogPayload(response.data) });
       }
       if (method === "GET" && url.pathname === "/api/d1/browse") {

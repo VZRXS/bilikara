@@ -271,11 +271,11 @@ fn apt(dir: &Path, payload: &Path, cancel: &AtomicBool) -> Result<(), CacheRunti
     }
     executable(&payload.join(name()))
 }
-fn executable(path: &Path) -> Result<(), CacheRuntimeError> {
+fn executable(_path: &Path) -> Result<(), CacheRuntimeError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(io)?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o755)).map_err(io)?;
     }
     Ok(())
 }

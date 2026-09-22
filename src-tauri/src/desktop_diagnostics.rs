@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 const MAX_BACKEND_OUTPUT_CHARS: usize = 2_048;
@@ -281,12 +281,13 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
     {
         if current_exe
             .parent()?
-            .join("bilikara-desktop-host.exe")
+            .join("_internal/bilikara-desktop-host.exe")
             .is_file()
         {
             return Some(
-                PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-                    .join("bilikara/logs")
+                current_exe
+                    .parent()?
+                    .join("runtime/logs")
                     .join(DESKTOP_STARTUP_LOG_NAME),
             );
         }
@@ -416,6 +417,64 @@ pub(crate) fn persist_backend_tails(
     persist_backend_tail(startup_log, "stderr", stderr_tail);
 }
 
+pub(crate) fn backend_failure_reason(
+    fallback: &str,
+    stderr_tail: &Arc<Mutex<BoundedOutputTail>>,
+) -> String {
+    stderr_tail
+        .lock()
+        .ok()
+        .and_then(|tail| {
+            tail.lines
+                .iter()
+                .rev()
+                .find_map(|line| line.strip_prefix("Native desktop startup failed: "))
+                .map(sanitized_backend_stdout_line)
+        })
+        .unwrap_or_else(|| sanitized_backend_stdout_line(fallback))
+}
+
+#[cfg(any(test, target_os = "macos", windows))]
+fn startup_failure_message(reason: &str, log_path: Option<&Path>) -> String {
+    let reason = sanitized_backend_stdout_line(reason);
+    let guidance = if reason.starts_with("Legacy desktop records found at ") {
+        "检测到旧版数据，旧文件未修改。请使用下方命令显式导入到新的绝对路径，或指定独立的数据目录开始使用；不要直接覆盖旧文件。\n\n"
+    } else {
+        ""
+    };
+    let location = log_path
+        .map(|path| format!("启动日志 / Startup log:\n{}", path.display()))
+        .unwrap_or_else(|| "无法写入启动日志。请从终端启动以查看错误。".into());
+    format!("{guidance}{reason}\n\n{location}")
+}
+
+/// A WebView profile error can occur before Tauri has an AppHandle.
+#[cfg(windows)]
+pub(crate) fn fail_before_app(startup_log: Option<&DesktopStartupLog>, reason: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    if let Some(log) = startup_log {
+        log.append("desktop_failure", sanitized_backend_stdout_line(reason));
+    }
+    let message = format!(
+        "无法初始化桌面窗口。请确认软件已完整解压，且软件目录允许写入。\n\n{}",
+        startup_failure_message(reason, startup_log.map(|log| log.path.as_path()))
+    );
+    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "Bilikara 启动失败 / Startup failure"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: null owner and valid null-terminated UTF-16 strings for the call.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
 pub(crate) fn fail_desktop_startup(
     app_handle: &tauri::AppHandle,
     startup_log: Option<&DesktopStartupLog>,
@@ -426,31 +485,21 @@ pub(crate) fn fail_desktop_startup(
         startup_log.append("desktop_failure", format!("reason={reason}"));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        let diagnostic_location = startup_log
-            .map(|log| {
-                format!(
-                    "Startup details were written to:\n\n{}",
-                    log.path.to_string_lossy()
-                )
-            })
-            .unwrap_or_else(|| {
-                "The startup log could not be written. Launch the app from Terminal to capture the OS error."
-                    .to_string()
-            });
         let exit_handle = app_handle.clone();
         app_handle
             .dialog()
-            .message(format!(
-                "Bilikara's backend stopped or could not start.\n\n{diagnostic_location}"
+            .message(startup_failure_message(
+                reason,
+                startup_log.map(|log| log.path.as_path()),
             ))
-            .title("Bilikara backend failure")
+            .title("Bilikara 启动失败 / Startup failure")
             .kind(MessageDialogKind::Error)
             .show(move |_| exit_handle.exit(1));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     app_handle.exit(1);
 }
 
@@ -459,6 +508,32 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn startup_failure_surfaces_native_cause_without_private_pipe_output() {
+        let tail = Arc::new(Mutex::new(BoundedOutputTail::default()));
+        assert_eq!(
+            backend_failure_reason("exit code: 1", &tail),
+            "exit code: 1"
+        );
+        push_backend_tail(&tail, "Native desktop startup failed: Legacy desktop records found at C:\\Old. Choose an explicit import".into());
+        push_backend_tail(&tail, "unrelated final output".into());
+        let reason = backend_failure_reason("exit code: 1", &tail);
+        let message =
+            startup_failure_message(&reason, Some(Path::new("runtime/logs/desktop-startup.log")));
+        assert!(message.contains("旧文件未修改"));
+        assert!(!message.contains("native-desktop.md"));
+        assert!(message.contains("显式导入"));
+        assert!(message.contains("C:\\Old"));
+        assert!(message.contains("desktop-startup.log"));
+        push_backend_tail(
+            &tail,
+            "Native desktop startup failed: cookie=private-value".into(),
+        );
+        let message = startup_failure_message(&backend_failure_reason("exit", &tail), None);
+        assert!(!message.contains("private-value"));
+        assert!(message.contains("[redacted sensitive backend output]"));
+    }
 
     #[test]
     fn stdout_forwarding_is_bounded_and_redacts_sensitive_lines() {
@@ -500,7 +575,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn packaged_windows_desktop_log_does_not_require_runtime_to_exist_yet() {
+    fn packaged_windows_desktop_log_uses_portable_runtime_without_enrolling_native_data() {
         let temp_dir = std::env::temp_dir().join(format!(
             "bilikara_desktop_log_path_test_{}_{}",
             std::process::id(),
@@ -511,16 +586,18 @@ mod tests {
         let executable = temp_dir.join("bilikara-desktop.exe");
 
         assert!(!runtime_dir.exists());
+        assert_eq!(desktop_startup_log_path(&executable), None);
+        fs::write(
+            temp_dir.join("_internal/bilikara-desktop-host.exe"),
+            b"native backend",
+        )
+        .expect("write packaged native backend");
 
         assert_eq!(
             desktop_startup_log_path(&executable),
-            Some(
-                runtime_dir
-                    .join("data")
-                    .join("logs")
-                    .join(DESKTOP_STARTUP_LOG_NAME)
-            )
+            Some(runtime_dir.join("logs").join(DESKTOP_STARTUP_LOG_NAME))
         );
+        assert!(!runtime_dir.exists());
 
         fs::remove_dir_all(temp_dir).expect("remove packaged runtime directory");
     }

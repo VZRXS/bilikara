@@ -125,6 +125,8 @@ pub struct PlaylistItem {
     pub cache_status: String,
     #[serde(default)]
     pub cache_progress: f64,
+    #[serde(default)]
+    pub cache_activity_at: f64,
     #[serde(default = "default_cache_message")]
     pub cache_message: String,
     #[serde(default)]
@@ -1263,6 +1265,7 @@ fn assign_new_item_incarnation(
     clear_committed_artifact(item, true);
     item.cache_status = "pending".to_owned();
     item.cache_progress = 0.0;
+    item.cache_activity_at = 0.0;
     Ok(())
 }
 
@@ -1536,6 +1539,7 @@ fn validate_item(item: &PlaylistItem) -> Result<(), ExecuteError> {
         || item.page <= 0
         || item.video_page <= 0
         || !item.cache_progress.is_finite()
+        || !item.cache_activity_at.is_finite()
         || !matches!(
             item.queue_slot_type.as_str(),
             "cycle" | "priority" | "manual"
@@ -2532,6 +2536,7 @@ fn apply_cache_event(
     cache_attempt_token: u64,
     issued_through: u64,
     event: &CacheEvent,
+    now: f64,
 ) -> Result<MutationResult, ExecuteError> {
     let active =
         validate_cache_attempt_ownership(data, item_id, cache_attempt_token, issued_through)?;
@@ -2703,6 +2708,7 @@ fn apply_cache_event(
             );
         }
     }
+    item.cache_activity_at = now;
     validate_item(item)?;
     let changed = before != *item;
     let terminal = terminal_cache_event(event);
@@ -3679,6 +3685,7 @@ fn apply_mutation(
             item_id,
             cache_attempt_token,
             event,
+            now,
             ..
         } => apply_cache_event(
             data,
@@ -3686,6 +3693,7 @@ fn apply_mutation(
             cache_attempt_token,
             issued_cache_attempt_tokens,
             &event,
+            now,
         ),
         AppStateRequest::Initialize { .. }
         | AppStateRequest::Snapshot { .. }
@@ -3778,12 +3786,18 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::CatalogSearch { query, limit } => {
+            RemoteRequestV1::CatalogSearch {
+                query,
+                limit,
+                offset,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "catalog_search", "query": query, "limit": limit})),
+                    Some(
+                        json!({"kind": "catalog_search", "query": query, "limit": limit, "offset": offset}),
+                    ),
                     false,
                 );
             }
@@ -3847,12 +3861,18 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::GatchaSearch { query, limit } => {
+            RemoteRequestV1::GatchaSearch {
+                query,
+                limit,
+                offset,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "gatcha_search", "query": query, "limit": limit})),
+                    Some(
+                        json!({"kind": "gatcha_search", "query": query, "limit": limit, "offset": offset}),
+                    ),
                     false,
                 );
             }
@@ -5419,6 +5439,7 @@ mod tests {
             queue_slot_type: "cycle".to_owned(),
             cache_status: "pending".to_owned(),
             cache_progress: 0.0,
+            cache_activity_at: 0.0,
             cache_message: "等待缓存".to_owned(),
             video_relative_path: String::new(),
             video_media_url: String::new(),
@@ -8818,6 +8839,7 @@ mod tests {
             "selected_audio_variant_id",
             "cache_status",
             "cache_progress",
+            "cache_activity_at",
             "cache_message",
             "video_relative_path",
             "video_media_url",

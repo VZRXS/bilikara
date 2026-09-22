@@ -69,6 +69,8 @@ def main():
                 env.pop("BILIKARA_DESKTOP_RUST_PREVIEW_DIR",None)
                 with open(output/f"{name}-stdout.log","w") as out,open(output/f"{name}-stderr.log","w") as err:
                     app_env=dict(env,PATH=str(application_path),BILIKARA_DISABLE_MEDIA_CLI="1",BILIKARA_BILIBILI_COOKIE="")
+                    app_env={key:value for key,value in app_env.items() if not key.startswith((
+                        "PYTHON", "CARGO_", "RUSTUP_", "RUSTFLAGS", "NODE_", "LD_LIBRARY_PATH", "DYLD_", "BILIKARA_LIBAV"))}
                     app=subprocess.Popen([str(executable)],cwd=temp,env=app_env,stdout=out,stderr=err)
                     child=None
                     try:

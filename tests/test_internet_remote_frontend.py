@@ -118,7 +118,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             ':root:is([data-theme="dark"], [data-theme="blue"]) .remote-access-card',
             self.remote_access_css,
         )
-        self.assertIn("background: var(--settings-panel-bg);", self.remote_access_css)
+        self.assertIn("background: var(--modal-card-bg);", self.remote_access_css)
+        self.assertIn("border: var(--modal-card-border);", self.remote_access_css)
+        self.assertIn("box-shadow: var(--rating-card-shadow);", self.remote_access_css)
         self.assertEqual(
             self.host_html.count('data-i18n="internetRemote.localScanTitle"'),
             2,
@@ -224,10 +226,12 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertNotIn("internet-remote-mode-copy", self.host_html)
         self.assertNotIn('id="internet-remote-meta"', self.host_html)
         self.assertIn('data-i18n="internetRemote.localEntryDescription"', self.host_html)
-        self.assertIn('id="internet-remote-local-address-detail"', self.host_html)
+        self.assertNotIn('id="internet-remote-local-address-detail"', self.host_html)
+        self.assertIn('id="remote-popover-url-link"', self.host_html)
+        self.assertIn('id="remote-popover-copy-link"', self.host_html)
         self.assertIn("本地 Remote 仍可同时使用", self.host_html)
         self.assertIn('setStatus(state.available\n      ? ""', self.host_js)
-        self.assertIn(
+        self.assertNotIn(
             't("internetRemote.localAddressDetail", { url: shareableUrl })',
             self.host_app_js,
         )

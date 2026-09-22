@@ -17,6 +17,11 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # Preserve file/line backtraces without full variable/type debug data.
+      # This only affects CI checks/tests, never the release profile.
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +77,10 @@ jobs:
             ./rust -> target
             ./rust-runtime -> target
             ./src-tauri -> target
-          shared-key: ci-bundle
+          # Retain our crates as well as dependencies; Cargo still validates them.
+          cache-workspace-crates: true
+          # Separate feature sets; rotate once because exact hits are immutable.
+          shared-key: ci-test-workspace-v1
 
       - name: Rust Checks and Build
         shell: bash
@@ -99,6 +107,32 @@ jobs:
         run: |
           python -m compileall -q bilikara
           python -m py_compile start_bilikara.py build_bundle.py
+
+      - name: Resolve Linux media test cache identity
+        if: runner.os == 'Linux'
+        id: test-libav-key
+        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+
+      - name: Cache verified Linux media test libraries
+        if: runner.os == 'Linux'
+        id: test-libav-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/bilikara-test-libav-cache
+          key: ${{ steps.test-libav-key.outputs.key }}
+
+      - name: Build libav prerequisite for packaged media tests
+        if: runner.os == 'Linux'
+        env:
+          BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+          BILIKARA_LIBAV_CACHE: ${{ runner.temp }}/bilikara-test-libav-cache
+          BILIKARA_LIBAV_CACHE_HIT: ${{ steps.test-libav-cache.outputs.cache-hit }}
+        run: |
+          # This suite loads only the companion. Release drivers/test binaries
+          # and packaging records are built by the desktop bundle jobs.
+          bash media-libav/build-posix-libraries.sh
+          python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
+          echo "BILIKARA_TEST_LIBAV_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so" >> "$GITHUB_ENV"
 
       - name: Run unit tests
         # Independent QR decoding belongs to tests, not packaged runtime imports.
@@ -193,11 +227,12 @@ jobs:
       - name: Cache Rust builds
         uses: Swatinem/rust-cache@v2
         with:
+          # The native bundle never builds rust/target; it links the core through Runtime.
           workspaces: |
-            ./rust -> target
             ./rust-runtime -> target
             ./src-tauri -> target
-          shared-key: ci-bundle
+          cache-workspace-crates: true
+          shared-key: ci-desktop-bundle-workspace-v1
 
       - name: Setup native MSVC environment
         if: runner.os == 'Windows'
@@ -284,8 +319,9 @@ jobs:
         run: |
           test -x dist/bilikara.app/Contents/MacOS/bilikara-desktop-host
           test -f dist/bilikara.app/Contents/Resources/native-desktop.json
-          bbdown_vendor="$(find dist/bilikara.app -type f -name BBDown -path '*/vendor/*' -print -quit)"
-          test -n "$bbdown_vendor"
+          # Native code lives in Frameworks; the runtime resource path is a relative symlink.
+          bbdown_vendor="dist/bilikara.app/Contents/Resources/vendor/BBDown"
+          test -x "$bbdown_vendor"
           "$bbdown_vendor" --help
 
       - name: Setup Node.js
@@ -327,17 +363,12 @@ jobs:
         run: |
           mkdir -p dist_release
           ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
-          ln -s Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app dist_release/bilikara.app
-          test "$(readlink dist_release/bilikara.app)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app
+          ln -s Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license dist_release/license
+          test ! -e dist_release/bilikara.app
+          test -s dist_release/license/LICENSE
           cp README-macOS.txt dist_release/README-macOS.txt
           test -s dist_release/README-macOS.txt
-          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara.app", "隐私与安全性", "仍要打开"))'
-
-          echo "=== Verifying staged bilikara.app ==="
-          test -x dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
-          plutil -lint dist_release/bilikara.app/Contents/Info.plist
-          codesign --verify --deep --strict --verbose=4 dist_release/bilikara.app
-          codesign -dv --verbose=4 dist_release/bilikara.app
+          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara-backend.app", "license/", "隐私与安全性", "仍要打开"))'
 
           echo "=== Verifying staged Bilikara-Desktop.app ==="
           test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
@@ -350,7 +381,6 @@ jobs:
           codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
 
           echo "=== Architecture checks ==="
-          file dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
           file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
           file "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
           test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara-desktop-host")"
@@ -380,12 +410,16 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          foreach ($required in @('bilikara-desktop-host.exe', 'bilikara-desktop.exe', 'vendor/bilikara_media_libav.dll', 'native-desktop.json')) {
+          foreach ($required in @('_internal/bilikara-desktop-host.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll', '_internal/native-desktop.json', 'license/LICENSE')) {
             if (-not (Test-Path (Join-Path $package $required))) {
               throw "Extracted bundle is missing $required"
             }
           }
-          foreach ($buildOnly in @('preview', 'libav-smoke.ps1', 'libav-smoke-result.json', 'vendor/bilikara_media_libav_test.dll')) {
+          $entries = @(Get-ChildItem -LiteralPath $package | ForEach-Object { $_.Name } | Sort-Object)
+          if (($entries -join ',') -ne '_internal,bilikara-desktop.exe,license') {
+            throw "Unexpected outer package entries: $entries"
+          }
+          foreach ($buildOnly in @('_internal/preview', '_internal/libav-smoke.ps1', '_internal/libav-smoke-result.json', '_internal/vendor/bilikara_media_libav_test.dll')) {
             if (Test-Path (Join-Path $package $buildOnly)) {
               throw "Build-only validation payload leaked into archive: $buildOnly"
             }
@@ -399,19 +433,13 @@ jobs:
           mkdir -p test_extract
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
           test -s test_extract/dist_release/README-macOS.txt
-          test -L test_extract/dist_release/bilikara.app
-          test "$(readlink test_extract/dist_release/bilikara.app)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app
+          test ! -e test_extract/dist_release/bilikara.app
+          test -L test_extract/dist_release/license
+          test "$(readlink test_extract/dist_release/license)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license
+          test -s test_extract/dist_release/license/LICENSE
           cmp README-macOS.txt test_extract/dist_release/README-macOS.txt
-          test ! -e test_extract/dist_release/bilikara.app/Contents/Resources/libav-diagnostics
-          test ! -e test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
           test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/libav-diagnostics
-          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/vendor/libbilikara_media_libav_test.dylib
-
-          echo "=== Verifying extracted bilikara.app ==="
-          test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
-          plutil -lint test_extract/dist_release/bilikara.app/Contents/Info.plist
-          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/bilikara.app
-          codesign -dv --verbose=4 test_extract/dist_release/bilikara.app
+          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/libbilikara_media_libav_test.dylib
 
           echo "=== Verifying extracted Bilikara-Desktop.app ==="
           test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
@@ -439,13 +467,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/bilikara-desktop-host.exe'
+          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/_internal/bilikara-desktop-host.exe'
           python scripts/check_native_desktop_bundle.py "$backend"
 
       - name: Verify extracted native desktop and no-media-CLI layout on macOS
         if: runner.os == 'macOS'
         run: |
-          python scripts/check_native_desktop_bundle.py test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara-desktop-host
           python scripts/check_native_desktop_bundle.py test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
 
       - name: Upload native bundle
@@ -507,7 +534,8 @@ jobs:
           workspaces: |
             ./rust-runtime -> target
             ./src-tauri -> target
-          shared-key: android-apk
+          cache-workspace-crates: true
+          shared-key: android-apk-workspace-v1
 
       - name: Cache Gradle dependencies
         uses: gradle/actions/setup-gradle@v5

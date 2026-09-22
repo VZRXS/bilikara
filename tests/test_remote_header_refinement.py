@@ -115,6 +115,7 @@ assert.equal(document.documentElement.dataset.remoteInputModality, 'keyboard');
         end = self.script.index("function syncRemoteMenuBounds", start)
         menu_source = self.script[start:end]
         script = f"""
+const document = {{documentElement: {{dataset: {{nativeHost: "false"}}}}}};
 const state = {{
   remoteMenuOpen: false,
   remoteQrSectionOpen: false,

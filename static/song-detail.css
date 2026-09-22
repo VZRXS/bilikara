@@ -1,3 +1,17 @@
+/* Opaque close surfaces stay legible over arbitrary cover art in every theme. */
+:root {
+  --close-control-bg: #eee9e3;
+  --close-control-hover-bg: #e3dbd2;
+}
+:root[data-theme="dark"] {
+  --close-control-bg: #353230;
+  --close-control-hover-bg: #49433e;
+}
+:root[data-theme="blue"] {
+  --close-control-bg: #173c56;
+  --close-control-hover-bg: #234e69;
+}
+
 .song-detail-view {
   position: absolute;
   inset: 0;
@@ -46,8 +60,8 @@
 .song-detail-close {
   position: absolute;
   z-index: 4;
-  top: -14px;
-  right: -14px;
+  top: 10px;
+  right: 10px;
 }
 
 /* Shared SVG close mark: no font metrics or optical padding compensation. */
@@ -81,15 +95,13 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--rating-close-bg);
+  background: var(--close-control-bg);
   color: var(--ink);
   box-shadow: none;
   font: 400 20px/0 sans-serif;
   cursor: pointer;
   touch-action: manipulation;
-  transform-origin: center;
   transition:
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
     background 180ms ease,
     color 180ms ease,
     box-shadow 180ms ease;
@@ -99,18 +111,9 @@
   .request-workspace .song-detail-close:hover,
   .request-workspace .song-detail-close:focus-visible,
   .selection-modal .song-detail-close:hover,
-  .selection-modal .song-detail-close:focus-visible,
-  .remote-shell > .song-detail-view .song-detail-close:hover,
-  .remote-shell > .song-detail-view .song-detail-close:focus-visible {
-    background: var(--rating-close-hover-bg);
-    transform: scale(1.04);
+  .selection-modal .song-detail-close:focus-visible {
+    background: var(--close-control-hover-bg);
   }
-}
-
-.request-workspace .song-detail-close:active:not(:disabled),
-.selection-modal .song-detail-close:active:not(:disabled),
-.remote-shell > .song-detail-view .song-detail-close:active:not(:disabled) {
-  transform: scale(0.96);
 }
 
 .request-workspace .song-detail-close:focus-visible,
@@ -125,12 +128,6 @@
   .selection-modal .song-detail-close:focus-visible,
   .remote-shell > .song-detail-view .song-detail-close:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
-  }
-}
-
-@media (hover: none), (pointer: coarse) {
-  .remote-shell > .song-detail-view .song-detail-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
-    transform: scale(0.97);
   }
 }
 
@@ -199,6 +196,7 @@
 }
 
 .song-detail-title {
+  padding-right: 28px;
   margin: 0;
   overflow: hidden;
   display: -webkit-box;
@@ -358,8 +356,8 @@
   }
 
   .song-detail-close {
-    top: -10px;
-    right: -8px;
+    top: 10px;
+    right: 10px;
     width: 32px;
     height: 32px;
   }
@@ -383,6 +381,7 @@
   }
 
   .song-detail-title {
+    padding-right: 0;
     -webkit-line-clamp: 4;
     line-clamp: 4;
     font-size: 15px;
@@ -494,8 +493,8 @@
 }
 
 .rating-card > .rating-close {
-  top: -14px;
-  right: -14px;
+  top: 10px;
+  right: 10px;
 }
 
 .rating-title {
@@ -560,5 +559,7 @@
 
 @media (max-width: 680px) {
   .rating-body { padding: 14px; }
-  .rating-card > .rating-close { top: -10px; right: -8px; }
+  .rating-card > .rating-close { top: 10px; right: 10px; }
 }
+
+.request-workspace .song-detail-title { padding-right: 0; }

@@ -7,13 +7,15 @@ bilikara for macOS
 
 Bilikara-Desktop.app
 
-压缩包中的 bilikara.app 是指向 Bilikara-Desktop.app 内嵌原生后端的相对符号链接，
-用于命令行诊断及显式旧数据导入，不是第二个桌面启动入口。
+压缩包只提供这一个应用入口，原生后端已收在 Bilikara-Desktop.app 内。
 请完整解压后使用；安装桌面版时只需移动 Bilikara-Desktop.app。
 后端命令位于 Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host。
+许可证、第三方源码和说明集中在内嵌后端的 Contents/Resources/license/ 中；
+压缩包外层的 license/ 是指向该目录的相对链接，方便直接阅读。
 程序不需要 Python。原生数据保存在 ~/Library/Application Support/bilikara/native。
 若检测到旧数据，启动提示会要求显式导入到新的独立目录；不会覆盖旧数据。
-导入及构建命令见 docs/native-desktop.md。
+导入说明见项目仓库：
+https://github.com/VZRXS/bilikara/blob/work/v0.8.0/docs/native-desktop.md
 
 
 【首次启动被 macOS 阻止时】

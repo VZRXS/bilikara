@@ -159,12 +159,12 @@ fn resolve_backend_command_from(
         )
     } else {
         (
-            current_dir.join(if cfg!(windows) {
+            current_dir.join("_internal").join(if cfg!(windows) {
                 "bilikara-desktop-host.exe"
             } else {
                 "bilikara-desktop-host"
             }),
-            "native-adjacent",
+            "native-contained",
         )
     };
     if !is_backend_candidate(&executable, current_exe) {
@@ -817,7 +817,7 @@ pub(crate) fn launch(
                 desktop_diagnostics::fail_desktop_startup(
                     &app_handle,
                     startup_log_for_monitor.as_ref(),
-                    &reason,
+                    &desktop_diagnostics::backend_failure_reason(&reason, &stderr_tail_for_monitor),
                 );
                 break;
             }
@@ -1176,10 +1176,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn packaged_linux_resolves_adjacent_executable_without_python() {
-        use std::os::unix::fs::PermissionsExt;
+    fn packaged_directory_resolves_contained_executable_without_python() {
         let directory = std::env::temp_dir().join(format!(
             "bilikara_linux_package_{}_{}",
             std::process::id(),
@@ -1187,13 +1185,25 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let desktop = directory.join("bilikara-desktop");
-        let backend = directory.join("bilikara-desktop-host");
+        let backend = directory.join("_internal").join(if cfg!(windows) {
+            "bilikara-desktop-host.exe"
+        } else {
+            "bilikara-desktop-host"
+        });
+        fs::create_dir(backend.parent().unwrap()).unwrap();
         fs::write(&desktop, b"desktop").unwrap();
         fs::write(&backend, b"backend").unwrap();
-        fs::set_permissions(&backend, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&backend, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let resolution = resolve_backend_command_from(&desktop, &directory, false).unwrap();
-        assert_eq!(resolution.candidate_type, "native-adjacent");
-        assert_eq!(PathBuf::from(resolution.command), backend);
+        assert_eq!(resolution.candidate_type, "native-contained");
+        assert_eq!(
+            PathBuf::from(resolution.command),
+            backend.canonicalize().unwrap()
+        );
         assert!(resolution.args.is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -1243,7 +1253,10 @@ mod tests {
         )
         .expect("packaged resolution");
         assert_eq!(resolution.candidate_type, "macos-embedded-backend");
-        assert_eq!(PathBuf::from(resolution.command), embedded_backend);
+        assert_eq!(
+            PathBuf::from(resolution.command),
+            embedded_backend.canonicalize().unwrap()
+        );
         assert!(resolution.args.is_empty());
         assert!(!temp_dir.join("translocated").join("bilikara.app").exists());
 
@@ -1303,7 +1316,7 @@ mod tests {
         fs::write(target_dir.join("bilikara.exe"), b"legacy frozen backend").unwrap();
         let missing = resolve_backend_command_from(&desktop_exe, &target_dir, false)
             .expect_err("missing native backend fails closed, even in a checkout");
-        assert_eq!(missing.candidate_type, "native-adjacent");
+        assert_eq!(missing.candidate_type, "native-contained");
         assert!(!missing.candidate_exists);
 
         fs::remove_dir_all(temp_dir).expect("remove development backend test directory");

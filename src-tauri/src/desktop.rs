@@ -25,6 +25,20 @@ pub(crate) fn run() {
     desktop_diagnostics::install_desktop_panic_hook(startup_log.as_ref());
     desktop_diagnostics::install_runtime_desktop_diagnostics(startup_log.as_ref());
 
+    let context = tauri::generate_context!();
+    #[cfg(windows)]
+    let context = {
+        let mut context = context;
+        if let Err(reason) = crate::desktop_storage::configure_windows(
+            context.config_mut(),
+            &current_exe,
+            crate::desktop_storage::native_data_override(),
+        ) {
+            desktop_diagnostics::fail_before_app(startup_log.as_ref(), &reason);
+            panic!("invalid desktop storage configuration: {reason}");
+        }
+        context
+    };
     let startup_log_for_setup = startup_log.clone();
     let run_result = tauri::Builder::default()
         .manage(presentation::PresentationState::default())
@@ -85,7 +99,7 @@ pub(crate) fn run() {
             Ok(())
         })
         .on_window_event(window_lifecycle::handle_window_event)
-        .run(tauri::generate_context!());
+        .run(context);
 
     match run_result {
         Ok(()) => {
@@ -96,6 +110,8 @@ pub(crate) fn run() {
                 "tauri_run",
                 format!("status=error message={error}"),
             );
+            #[cfg(windows)]
+            desktop_diagnostics::fail_before_app(startup_log.as_ref(), &error.to_string());
             panic!("error while running tauri application: {error}");
         }
     }

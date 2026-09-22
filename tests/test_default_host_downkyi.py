@@ -403,6 +403,21 @@ class DefaultHostDownKyiTest(DownKyiFixture, unittest.TestCase):
         self.assertEqual(result["kind"], "invalid_override")
 
     def test_hevc_and_dolby_preserve_validated_source_bytes(self):
+        if not rust_runtime._media_companion_provisioned:
+            # Media routing is configured once per process. Keep the legacy
+            # pure-Rust/fallback suite independent of this packaged-libav case.
+            companion = os.environ.get("BILIKARA_TEST_LIBAV_COMPANION", "")
+            self.assertTrue(
+                companion and Path(companion).is_file(),
+                "Set BILIKARA_TEST_LIBAV_COMPANION to the built libav companion",
+            )
+            completed = subprocess.run(
+                [sys.executable, "-m", "unittest", "tests." + self.id().removeprefix("tests."), "-v"],
+                env={**os.environ, "BILIKARA_LIBAV_COMPANION": companion},
+                capture_output=True, text=True, timeout=90,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            return
         self.video_codec = 12
         self.dolby_only = True
         self.manager.audio_hires = True

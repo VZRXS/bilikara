@@ -136,9 +136,9 @@ pub(super) fn start(context: &Arc<HostContext>, body: &Value) -> Result<Value, A
         .desktop_installation
         .clone()
         .ok_or_else(|| ApiError::new(409, "manual_update", "当前启动方式只支持检查和手动更新"))?;
-    if context.directory.starts_with(&installation.root) {
+    if !installation.permits_data_directory(&context.directory) {
         return Err(failure(
-            "数据目录位于应用安装目录内，请先将原生数据迁移到平台应用数据目录后手动更新",
+            "安装目录内仅支持 runtime/data（兼容旧 native）数据目录的自动更新；自定义目录请手动更新并保留数据",
         ));
     }
     if body.as_object().is_none_or(|m| m.len() != 1) || !body["include_preview"].is_boolean() {
@@ -205,10 +205,12 @@ fn run(
     operation: u64,
     phase: Arc<AtomicU8>,
 ) {
-    let workspace = context.directory.join(format!(
-        "update-{}",
-        token().unwrap_or_else(|_| format!("{operation}"))
-    ));
+    let workspace = installation
+        .update_workspace_parent(&context.directory)
+        .join(format!(
+            "update-{}",
+            token().unwrap_or_else(|_| format!("{operation}"))
+        ));
     let mut created = false;
     let result = (|| {
         std::fs::create_dir(&workspace).map_err(|_| failure("无法创建更新暂存目录"))?;

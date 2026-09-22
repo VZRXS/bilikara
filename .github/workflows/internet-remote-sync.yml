@@ -9,6 +9,7 @@ on:
       - scripts/sync_internet_remote_assets.ps1
       - static/accent-palette.css
       - static/browse-search.js
+      - static/browse-search.css
       - static/export-download.js
       - static/export-guard.js
       - static/i18n.json
@@ -26,9 +27,12 @@ on:
       - static/result-pagination.js
       - static/search-result-media.css
       - static/search-result-media.js
+      - static/request-tabs.css
+      - static/ui-surfaces.css
       - static/song-detail.css
       - static/song-detail.js
       - static/status-indicators.css
+      - static/source-status.js
       - static/volume-control.css
       - static/volume-control.js
       - static/pic/*
@@ -75,6 +79,7 @@ jobs:
       - name: Check browser scripts
         run: |
           node --check static/browse-search.js
+          node --check static/source-status.js
           node --check static/export-guard.js
           node --check static/export-download.js
           node --check static/internet-remote-host.js

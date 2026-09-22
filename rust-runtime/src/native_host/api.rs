@@ -53,6 +53,11 @@ pub(super) fn dispatch(
         }
     }
     if method == Method::GET {
+        // Authenticated LAN devices can share the same invitation they used
+        // to join. This is not a public snapshot or Internet protocol route.
+        if path == "/api/remote-access" {
+            return with_app(|app| Ok(app.native().remote_access.clone()));
+        }
         if path == "/api/internet-remote/state" {
             return internet::route(context, identity, path, &body);
         }

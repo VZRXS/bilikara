@@ -68,7 +68,7 @@ impl Installation {
                 "Native shell/backend layout does not match",
             ));
         }
-        validate_package(&root, platform, arch, None)?;
+        validate_package_contents(&root, platform, arch, None, true)?;
         // Refuse paths whose CMD expansion could change a generated command.
         if platform == "windows" {
             cmd_path(&root)?;
@@ -80,19 +80,46 @@ impl Installation {
             wait_pids: vec![std::process::id(), pid],
         })
     }
+
+    /// Only the documented portable data directory may live inside a Windows
+    /// installation. The helper preserves runtime/ after both owners exit.
+    pub fn permits_data_directory(&self, data: &Path) -> bool {
+        !data.starts_with(&self.root)
+            || (self.platform == "windows"
+                && ["runtime/data", "runtime/native"]
+                    .iter()
+                    .any(|relative| data == self.root.join(relative)))
+    }
+
+    /// Keep the running helper and extracted payload outside the directory it
+    /// will rename. External application-data roots retain their existing use.
+    pub fn update_workspace_parent<'a>(&'a self, data: &'a Path) -> &'a Path {
+        if data.starts_with(&self.root) {
+            self.root.parent().expect("validated installation parent")
+        } else {
+            data
+        }
+    }
 }
 
 fn backend_path(root: &Path, platform: &str) -> PathBuf {
     if platform == "macos" {
         root.join("Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host")
     } else {
-        root.join("bilikara-desktop-host.exe")
+        resources(root, platform).join("bilikara-desktop-host.exe")
     }
 }
 fn resources(root: &Path, platform: &str) -> PathBuf {
     if platform == "macos" {
         root.join("Contents/Frameworks/bilikara-backend.app/Contents/Resources")
+    } else if root.join("_internal").exists() {
+        // A damaged current layout must fail validation, never fall through to
+        // a stale backend left in one of the earlier native layouts.
+        root.join("_internal")
+    } else if root.join("backend").exists() {
+        root.join("backend")
     } else {
+        // Earlier native development candidates used a flat package.
         root.into()
     }
 }
@@ -121,6 +148,16 @@ pub fn validate_package(
     arch: &str,
     version: Option<&str>,
 ) -> Result<(), UpdateInstallerError> {
+    validate_package_contents(root, platform, arch, version, false)
+}
+
+fn validate_package_contents(
+    root: &Path,
+    platform: &str,
+    arch: &str,
+    version: Option<&str>,
+    installed: bool,
+) -> Result<(), UpdateInstallerError> {
     let root = root.canonicalize().map_err(io_error("package_missing"))?;
     let assets = resources(&root, platform);
     let manifest = bounded_json(&assets.join("native-desktop.json"))?;
@@ -134,6 +171,9 @@ pub fn validate_package(
         || !matches!(arch, "x64" | "arm64")
         || manifest["schema_version"] != 1
         || manifest["backend"] != "rust"
+        || manifest
+            .get("resource_layout")
+            .is_some_and(|v| v != "internal-v1")
         || manifest["development"] != false
         || manifest["platform"] != platform
         || manifest["arch"] != arch
@@ -183,8 +223,17 @@ pub fn validate_package(
         "static/host-updates.js",
         "static/desktop-platform.js",
         "static/fonts/SourceHanSans-VF.ttf",
-        "static/vendor/signalsmith-stretch/SignalsmithStretch.js",
     ];
+    required.push(
+        if assets.file_name().is_some_and(|n| n == "_internal")
+            || manifest["resource_layout"] == "internal-v1"
+        {
+            "vendor/signalsmith-stretch/SignalsmithStretch.js"
+        } else {
+            // Earlier native archives kept frontend dependencies within static/.
+            "static/vendor/signalsmith-stretch/SignalsmithStretch.js"
+        },
+    );
     required.push("vendor/ffmpeg-runtime.json");
     for file in required.into_iter().map(|p| assets.join(p)).chain([
         assets.join("vendor").join(companion),
@@ -246,17 +295,31 @@ pub fn validate_package(
         bounded_json(&assets.join("vendor/aria2-macos.json"))?;
     }
     // Inspect actual entries, without rejecting documentation mentioning Python.
-    reject_runtime_payloads(&root, &root)?;
+    reject_runtime_payloads(&root, &root, installed && platform == "windows")?;
     Ok(())
 }
 
-fn reject_runtime_payloads(root: &Path, boundary: &Path) -> Result<(), UpdateInstallerError> {
+fn reject_runtime_payloads(
+    root: &Path,
+    boundary: &Path,
+    installed: bool,
+) -> Result<(), UpdateInstallerError> {
     for entry in fs::read_dir(root).map_err(io_error("package_scan"))? {
         let entry = entry.map_err(io_error("package_scan"))?;
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
         let ty = entry.file_type().map_err(io_error("package_scan"))?;
-        if name == "_internal"
-            || name == "site-packages"
+        if root == boundary && name == "runtime" {
+            if installed && ty.is_dir() {
+                // User-owned data/tools, including untouched legacy import
+                // sources, are not immutable application payloads.
+                continue;
+            }
+            return Err(error(
+                "incompatible_package",
+                "Update archive must not supply runtime data",
+            ));
+        }
+        if name == "site-packages"
             || name == "base_library.zip"
             || name.ends_with(".pyz")
             || name.ends_with(".pyc")
@@ -267,7 +330,16 @@ fn reject_runtime_payloads(root: &Path, boundary: &Path) -> Result<(), UpdateIns
             || (name.starts_with("python") && name.ends_with(".dll"))
             || matches!(
                 name.as_str(),
-                "ffmpeg" | "ffmpeg.exe" | "ffprobe" | "ffprobe.exe"
+                "ffmpeg"
+                    | "ffmpeg.exe"
+                    | "ffprobe"
+                    | "ffprobe.exe"
+                    | "bilikara_rust.dll"
+                    | "bilikara_runtime.dll"
+                    | "libbilikara_rust.so"
+                    | "libbilikara_runtime.so"
+                    | "libbilikara_rust.dylib"
+                    | "libbilikara_runtime.dylib"
             )
         {
             return Err(error(
@@ -288,7 +360,7 @@ fn reject_runtime_payloads(root: &Path, boundary: &Path) -> Result<(), UpdateIns
             ));
         }
         if ty.is_dir() {
-            reject_runtime_payloads(&entry.path(), boundary)?;
+            reject_runtime_payloads(&entry.path(), boundary, installed)?;
         }
     }
     Ok(())
@@ -533,6 +605,16 @@ pub fn prepare(
     version: &str,
     mut active: impl FnMut() -> bool,
 ) -> Result<Prepared, UpdateInstallerError> {
+    if workspace
+        .canonicalize()
+        .map_err(io_error("package_missing"))?
+        .starts_with(&installation.root)
+    {
+        return Err(error(
+            "unsafe_install_path",
+            "Update workspace must be outside the installed application",
+        ));
+    }
     let parent = installation
         .root
         .parent()
@@ -671,7 +753,7 @@ fn native_windows_script(
     // Never mirror-delete a live installation or kill a PID. Keep old data and
     // the recoverable backup until the new version is confirmed by the user.
     Ok(format!(
-        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"SRC={src}\"\r\nset \"DST={dst}\"\r\nset \"NEW={dst}.incoming-{suffix}\"\r\nset \"OLD={dst}.previous-{suffix}\"\r\nif exist \"%NEW%\" exit /b 1\r\nif exist \"%OLD%\" exit /b 1\r\nfor %%I in ({pids}) do (call :waitpid %%I & if errorlevel 1 exit /b 1)\r\nrobocopy \"%SRC%\" \"%NEW%\" /E >nul\r\nif errorlevel 8 goto failed\r\nfor %%D in (runtime data updates) do if exist \"%DST%\\%%D\" (robocopy \"%DST%\\%%D\" \"%NEW%\\%%D\" /E >nul & if errorlevel 8 goto failed)\r\nmove \"%DST%\" \"%OLD%\" >nul\r\nif errorlevel 1 goto failed\r\nmove \"%NEW%\" \"%DST%\" >nul\r\nif errorlevel 1 goto restore\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\nrmdir /s /q \"{work}\"\r\nexit /b 0\r\n:restore\r\nmove \"%OLD%\" \"%DST%\" >nul\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\n:failed\r\nrmdir /s /q \"%NEW%\"\r\nexit /b 1\r\n:waitpid\r\nset /a WAIT=0\r\n:wait\r\nset /a WAIT+=1\r\nif %WAIT% GEQ 90 exit /b 1\r\nfor /f \"tokens=2\" %%P in ('tasklist /FI \"PID eq %~1\" /NH 2^>nul') do if \"%%P\"==\"%~1\" (timeout /t 1 /nobreak >nul & goto wait)\r\nexit /b 0\r\n"
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"SRC={src}\"\r\nset \"DST={dst}\"\r\nset \"NEW={dst}.incoming-{suffix}\"\r\nset \"OLD={dst}.previous-{suffix}\"\r\nif exist \"%NEW%\" exit /b 1\r\nif exist \"%OLD%\" exit /b 1\r\ncd /d \"%DST%\\..\"\r\nif errorlevel 1 exit /b 1\r\nfor %%I in ({pids}) do (call :waitpid %%I & if errorlevel 1 exit /b 1)\r\nrobocopy \"%SRC%\" \"%NEW%\" /E >nul\r\nif errorlevel 8 goto failed\r\nfor %%D in (runtime data updates) do if exist \"%DST%\\%%D\" (robocopy \"%DST%\\%%D\" \"%NEW%\\%%D\" /E >nul & if errorlevel 8 goto failed)\r\nmove \"%DST%\" \"%OLD%\" >nul\r\nif errorlevel 1 goto failed\r\nmove \"%NEW%\" \"%DST%\" >nul\r\nif errorlevel 1 goto restore\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\nrmdir /s /q \"{work}\"\r\nexit /b 0\r\n:restore\r\nmove \"%OLD%\" \"%DST%\" >nul\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\n:failed\r\nrmdir /s /q \"%NEW%\"\r\nexit /b 1\r\n:waitpid\r\nset /a WAIT=0\r\n:wait\r\nset /a WAIT+=1\r\nif %WAIT% GEQ 90 exit /b 1\r\nfor /f \"tokens=2\" %%P in ('tasklist /FI \"PID eq %~1\" /NH 2^>nul') do if \"%%P\"==\"%~1\" (timeout /t 1 /nobreak >nul & goto wait)\r\nexit /b 0\r\n"
     ))
 }
 
@@ -697,6 +779,10 @@ pub(crate) mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     pub(crate) fn windows_package(version: &str, arch: &str) -> Vec<u8> {
+        windows_package_layout(version, arch, "_internal/")
+    }
+
+    fn windows_package_layout(version: &str, arch: &str, layout: &str) -> Vec<u8> {
         let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let mut pe = vec![0_u8; 128];
         pe[..2].copy_from_slice(b"MZ");
@@ -710,7 +796,11 @@ pub(crate) mod tests {
             })
             .to_le_bytes(),
         );
-        let manifest=serde_json::json!({"schema_version":1,"backend":"rust","platform":"windows","arch":arch,"version":version,"development":false}).to_string();
+        let mut manifest = serde_json::json!({"schema_version":1,"backend":"rust","platform":"windows","arch":arch,"version":version,"development":false});
+        if layout == "_internal/" {
+            manifest["resource_layout"] = serde_json::json!("internal-v1");
+        }
+        let manifest = manifest.to_string();
         let media =
             serde_json::json!({"schema_version":1,"kind":"libav","target":format!("{}-pc-windows-msvc",if arch=="arm64" {"aarch64"} else {"x86_64"}),"runtime_files":["bilikara_media_libav.dll"]})
                 .to_string();
@@ -733,16 +823,59 @@ pub(crate) mod tests {
             ("static/desktop-platform.js", b"fixture"),
             ("static/fonts/SourceHanSans-VF.ttf", b"fixture font"),
             (
-                "static/vendor/signalsmith-stretch/SignalsmithStretch.js",
+                if layout == "_internal/" {
+                    "vendor/signalsmith-stretch/SignalsmithStretch.js"
+                } else {
+                    "static/vendor/signalsmith-stretch/SignalsmithStretch.js"
+                },
                 b"fixture worklet",
             ),
         ] {
+            let prefix = if name != "bilikara-desktop.exe" {
+                layout
+            } else {
+                ""
+            };
             writer
-                .start_file(format!("bilikara/{name}"), SimpleFileOptions::default())
+                .start_file(
+                    format!("bilikara/{prefix}{name}"),
+                    SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn internal_and_earlier_native_installations_validate_without_fallback() {
+        for layout in ["", "backend/", "_internal/"] {
+            let root = root();
+            let archive = root.join("native.zip");
+            fs::write(&archive, windows_package_layout("0.8.1", "x64", layout)).unwrap();
+            let extracted = root.join("extracted");
+            extract(&archive, &extracted, &mut || true).unwrap();
+            let package = extracted.join("bilikara");
+            validate_package(&package, "windows", "x64", Some("0.8.1")).unwrap();
+            let installation = Installation::from_launcher(
+                &backend_path(&package, "windows"),
+                &package.join("bilikara-desktop.exe"),
+                std::process::id() + 1,
+                "windows",
+                "x64",
+            )
+            .unwrap();
+            assert_eq!(installation.root, package.canonicalize().unwrap());
+            if layout != "_internal/" {
+                // An incomplete new layout must not accidentally select a stale
+                // flat backend left beside it.
+                fs::create_dir(package.join("_internal")).unwrap();
+            } else {
+                fs::remove_file(package.join("_internal/native-desktop.json")).unwrap();
+            }
+            assert!(validate_package(&package, "windows", "x64", None).is_err());
+            fs::remove_dir_all(root).unwrap();
+        }
     }
     fn root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -755,6 +888,75 @@ pub(crate) mod tests {
         ));
         fs::create_dir(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn portable_data_is_preserved_but_never_admitted_from_an_update_archive() {
+        let root = root();
+        let archive = root.join("native.zip");
+        fs::write(&archive, windows_package("0.8.1", "x64")).unwrap();
+        extract(&archive, &root.join("extracted"), &mut || true).unwrap();
+        let package = root.join("extracted/bilikara").canonicalize().unwrap();
+        let data = package.join("runtime/data");
+        fs::create_dir_all(&data).unwrap();
+        let legacy = package.join("runtime/tools/ffmpeg.exe");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, b"untouched legacy import source").unwrap();
+        assert!(validate_package(&package, "windows", "x64", None).is_err());
+        let installation = Installation::from_launcher(
+            &backend_path(&package, "windows"),
+            &package.join("bilikara-desktop.exe"),
+            std::process::id() + 1,
+            "windows",
+            "x64",
+        )
+        .unwrap();
+        assert!(installation.permits_data_directory(&data));
+        assert!(installation.permits_data_directory(&package.join("runtime/native")));
+        assert_eq!(
+            installation.update_workspace_parent(&data),
+            package.parent().unwrap()
+        );
+        for relative in [
+            "",
+            "_internal",
+            "runtime",
+            "runtime/custom",
+            "runtime/native/nested",
+            "runtime/data/nested",
+        ] {
+            assert!(!installation.permits_data_directory(&package.join(relative)));
+        }
+        assert!(installation.permits_data_directory(&root.join("external")));
+        let macos = Installation {
+            platform: "macos".into(),
+            ..installation.clone()
+        };
+        assert!(!macos.permits_data_directory(&data));
+        assert_eq!(
+            fs::read(&legacy).unwrap(),
+            b"untouched legacy import source"
+        );
+        let workspace = data.join("update-fixture");
+        fs::create_dir(&workspace).unwrap();
+        assert_eq!(
+            prepare(&installation, &archive, &workspace, "0.8.1", || true)
+                .unwrap_err()
+                .kind,
+            "unsafe_install_path"
+        );
+        fs::write(package.join("_internal/python311.dll"), b"retired runtime").unwrap();
+        assert!(
+            Installation::from_launcher(
+                &backend_path(&package, "windows"),
+                &package.join("bilikara-desktop.exe"),
+                std::process::id() + 1,
+                "windows",
+                "x64",
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn native_preparation_preserves_old_install_and_legacy_launcher_contract() {
@@ -827,15 +1029,31 @@ pub(crate) mod tests {
         assert!(validate_package(&package, "windows", "arm64", Some("0.8.1")).is_err());
         assert!(validate_package(&package, "windows", "x64", Some("0.8.2")).is_err());
         assert!(validate_package(&package, "macos", "x64", None).is_err());
-        fs::write(package.join("python311.dll"), b"retired").unwrap();
-        assert!(validate_package(&package, "windows", "x64", None).is_err());
-        fs::remove_file(package.join("python311.dll")).unwrap();
-        fs::remove_file(package.join("static/vendor/signalsmith-stretch/SignalsmithStretch.js"))
+        for retired in [
+            "python311.dll",
+            "base_library.zip",
+            "payload.pyz",
+            "ffmpeg.exe",
+            "ffprobe.exe",
+            "bilikara_rust.dll",
+            "bilikara_runtime.dll",
+        ] {
+            let file = package.join("_internal").join(retired);
+            fs::write(&file, b"retired").unwrap();
+            assert!(
+                validate_package(&package, "windows", "x64", None).is_err(),
+                "{retired}"
+            );
+            fs::remove_file(file).unwrap();
+        }
+        validate_package(&package, "windows", "x64", None).unwrap();
+        fs::remove_file(package.join("_internal/vendor/signalsmith-stretch/SignalsmithStretch.js"))
             .unwrap();
         assert!(validate_package(&package, "windows", "x64", None).is_err());
         assert!(cmd_path(Path::new("C:/%evil%/app")).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+
     #[test]
     fn extraction_rejects_escape_alias_writes_duplicates_and_cancellation() {
         for name in ["../escape", "/absolute", "C:/escape", "..\\escape"] {

@@ -199,6 +199,7 @@
     root.className = "song-detail-view hidden";
     root.setAttribute("aria-hidden", "true");
     root.innerHTML = `
+      <div class="song-detail-backdrop"></div>
       <div class="song-detail-surface">
         <article class="song-detail-card" role="document">
           <button type="button" class="song-detail-close" data-song-detail-close aria-label="${translate("common.close")}"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
@@ -314,7 +315,7 @@
       root.classList.remove("hidden", "closing");
       root.setAttribute("aria-hidden", "false");
       render(activeItem);
-      global.requestAnimationFrame(() => elements.close?.focus());
+      global.requestAnimationFrame(() => elements.close?.focus({ preventScroll: true }));
       return true;
     }
 

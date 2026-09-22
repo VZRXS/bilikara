@@ -120,7 +120,8 @@ the companion from the trusted vendor directory only when an operation needs it.
 Compatibility subprocesses use that same package; the existing restore still
 copies the complete CLI dependency closure for explicit source workflows.
 
-Windows loader: trusted absolute local drive path, UTF-16 `LoadLibraryExW` with
+Windows loader: trusted absolute local drive path (including the canonical
+`\\?\C:\...` form), UTF-16 `LoadLibraryExW` with
 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`. No CWD/PATH
 search or loader PATH/SetDllDirectory mutation. Per-load module snapshots reject
 already-loaded or newly resolved foreign FFmpeg/companion modules; foreign modules

@@ -19,6 +19,7 @@
     section.hidden = true;
     const hint = document.createElement("p");
     hint.className = "android-display-hint";
+    hint.hidden = root.dataset.hostPlatform !== "android";
     hint.dataset.i18n = "mobile.externalDisplayHint";
     hint.textContent = t("mobile.externalDisplayHint");
     section.append(hint);
@@ -26,94 +27,6 @@
     displaySection = section;
   }
 
-  let selectedSessionUser = "";
-  let userActionBusy = false;
-  function syncSessionUsers() {
-    if (!state.data?.session_users?.includes(selectedSessionUser)) selectedSessionUser = "";
-    const list = byId("session-user-list");
-    const touchActions = portrait || root.dataset.hostPlatform === "android";
-    root.dataset.hostTouchUsers = String(touchActions);
-    const help = document.querySelector('[data-i18n="session.help"], [data-i18n="mobile.sessionHelp"]');
-    if (help) {
-      help.dataset.i18n = touchActions ? "mobile.sessionHelp" : "session.help";
-      help.textContent = t(help.dataset.i18n);
-    }
-    for (const badge of list.querySelectorAll(".session-user-badge")) {
-      if (!touchActions) {
-        badge.draggable = true;
-        const toggle = badge.querySelector(".android-user-toggle");
-        if (toggle) {
-          const name = document.createElement("span");
-          name.className = "session-user-name";
-          name.textContent = badge.dataset.name;
-          toggle.replaceWith(name);
-          badge.querySelector(".android-user-actions")?.remove();
-        }
-        badge.classList.remove("is-actions-open");
-        continue;
-      }
-      badge.draggable = false;
-      let toggle = badge.querySelector(".android-user-toggle");
-      if (!toggle) {
-        toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "android-user-toggle";
-        toggle.textContent = badge.dataset.name;
-        badge.querySelector(".session-user-name").replaceWith(toggle);
-        const actions = document.createElement("div");
-        actions.className = "android-user-actions";
-        for (const [action,label] of [["up","↑"],["down","↓"],["remove",t("common.delete")]]) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.dataset.userAction = action;
-          button.textContent = label;
-          button.setAttribute("aria-label", action === "remove" ? t("common.delete") : t(action === "up" ? "common.moveUp" : "common.moveDown"));
-          actions.append(button);
-        }
-        badge.append(actions);
-      }
-      const open = badge.dataset.name === selectedSessionUser;
-      badge.querySelector(".android-user-actions").hidden = !open;
-      toggle.setAttribute("aria-expanded", String(open));
-      badge.classList.toggle("is-actions-open", open);
-      for (const button of badge.querySelectorAll("[data-user-action]")) {
-        const index = Number(badge.dataset.index);
-        button.disabled = userActionBusy || (button.dataset.userAction === "up" && index === 0)
-          || (button.dataset.userAction === "down" && index === (state.data?.session_users?.length || 0) - 1);
-      }
-    }
-  }
-  byId("session-user-list").addEventListener("contextmenu", event => { if (root.dataset.hostTouchUsers === "true") event.preventDefault(); });
-  byId("session-user-list").addEventListener("click", async event => {
-    const badge = event.target.closest(".session-user-badge");
-    if (!badge || userActionBusy || root.dataset.hostTouchUsers !== "true") return;
-    const button = event.target.closest("[data-user-action]");
-    if (!button) {
-      selectedSessionUser = selectedSessionUser === badge.dataset.name ? "" : badge.dataset.name;
-      syncSessionUsers();
-      return;
-    }
-    if (button.disabled) return;
-    userActionBusy = true;
-    const label = button.textContent;
-    button.textContent = t("remoteIdentity.saving");
-    button.setAttribute("aria-busy", "true");
-    syncSessionUsers();
-    try {
-      if (button.dataset.userAction === "remove") await removeSessionUser(badge.dataset.name);
-      else await moveSessionUser(badge.dataset.name, Number(badge.dataset.index) + (button.dataset.userAction === "up" ? -1 : 1));
-    } finally {
-      button.textContent = label;
-      button.removeAttribute("aria-busy");
-      userActionBusy = false;
-      syncSessionUsers();
-    }
-  });
-  document.addEventListener("click", event => {
-    if (event.target.closest("#session-user-list") || userActionBusy || !selectedSessionUser) return;
-    selectedSessionUser = "";
-    syncSessionUsers();
-  });
   const dock = byId("android-host-dock");
   const tools = byId("android-page-tools");
   const myPage = byId("android-my-page");
@@ -126,26 +39,39 @@
   const cacheSettings = byId("cache-settings");
   const cacheAnchor = document.createComment("desktop cache settings position");
   cacheSettings.before(cacheAnchor);
-  const loginNodes = ["bbdown-status-row", "bbdown-login-panel"].map(id => {
-    const node = byId(id);
-    const anchor = document.createComment("desktop login position");
-    node.before(anchor);
-    return {node, anchor};
-  });
-  const advancedNodes = ["advance-delay-field", "cache-source-row"].map(id => {
-    const node = byId(id);
-    const anchor = document.createComment("desktop playback setting position");
-    node.before(anchor);
-    return {node, anchor};
-  });
-  const pages = new Set(["playback", "queue", "request", "users", "my"]);
+  const account = byId("host-account-settings");
+  const accountAnchor = document.createComment("desktop account section position");
+  account.before(accountAnchor);
+  const accountStatus = byId("bbdown-status-row");
+  const accountStatusAnchor = document.createComment("desktop account status position");
+  accountStatus.before(accountStatusAnchor);
+  // The desktop rail owns shared workspace labels, icons, targets and grouping.
+  // Compact navigation has its own outer shell, not another content definition.
+  const workspaceButtons = Array.from(document.querySelectorAll("[data-host-workspace]"));
+  const workspaceButton = workspace => workspaceButtons.find(button => button.dataset.hostWorkspace === workspace);
+  const defaultWorkspaces = new Map();
+  for (const button of workspaceButtons) {
+    if (!defaultWorkspaces.has(button.dataset.compactPage)) defaultWorkspaces.set(button.dataset.compactPage, button.dataset.hostWorkspace);
+  }
+  for (const link of document.querySelectorAll("[data-shared-workspace]")) {
+    const source = workspaceButton(link.dataset.sharedWorkspace);
+    const label = source.querySelector(".work-rail-label").cloneNode(true);
+    label.removeAttribute("class");
+    link.append(label);
+    if (link.hasAttribute("data-workspace-icon")) {
+      const icon = source.querySelector(".work-rail-icon").cloneNode(true);
+      icon.removeAttribute("class");
+      link.prepend(icon);
+    }
+    link.setAttribute("aria-controls", source.getAttribute("aria-controls"));
+  }
+  const pages = new Set(Array.from(dock.querySelectorAll("[data-android-page]"), button => button.dataset.androidPage));
   let portrait = false;
   let preferences = {layout: "auto", orientation: "system"};
   let preferencesReady = false;
   let preferenceBusy = false;
   let preferenceError = false;
   const layoutApi = window.BilikaraHostWindowPreferences;
-  const layoutSwitch = byId("android-layout-switch");
   const orientationSwitch = byId("android-orientation-switch");
   let page = "playback";
   let settings = false;
@@ -199,19 +125,13 @@
 
   function settingsEmbedded() { return portrait && page === "my" && !settings; }
 
-  function syncAccount() {
-    if (!portrait) return;
-    const login = state.data?.bbdown?.login;
-    const idle = !login?.state || login.state === "idle";
-    // The account card waits for an explicit tap; merely visiting My must not
-    // create a login request. Active QR/polling continues through shared code.
-    byId("bbdown-login-panel").classList.toggle("hidden", Boolean(login?.logged_in) || idle);
-    byId("android-account-slot").classList.toggle("is-logged", Boolean(login?.logged_in));
-  }
-
   function syncRequestTabs() {
     if (!portrait) return;
     const random = state.activeHostWorkspace === "random";
+    // The contextual row occupies the primary row's place on phones. All
+    // secondary tabs and content stay in their original shared DOM nodes.
+    requestTabs.hidden = page !== "request" || (!random && state.requestSubview !== "quick");
+    tools.hidden = queueTabs.hidden && requestTabs.hidden && settingsBack.hidden;
     const randomButton = byId("android-request-random");
     randomButton.setAttribute("aria-selected", String(random));
     randomButton.tabIndex = random ? 0 : -1;
@@ -250,7 +170,7 @@
       button.setAttribute("aria-pressed", String(button.dataset.androidWorkspace === state.activeHostWorkspace));
     }
     syncRequestTabs();
-    syncAccount();
+    syncHostAccountPresentation();
   }
 
   function saveRoute(replace = false) {
@@ -274,7 +194,7 @@
     settings = page === "my" && openSettings;
     state.cacheSettingsOpen = settingsEmbedded();
     syncCachePanelVisibility();
-    const workspace = {queue: queueView, request: requestView, users: "users", my: "settings"}[page];
+    const workspace = page === "queue" ? queueView : page === "request" ? requestView : defaultWorkspaces.get(page);
     if (workspace) activateHostWorkspace(workspace, {inputOrigin: "host-navigation"});
     syncVisibility();
     schedulePersistentStageMeasurement();
@@ -285,7 +205,7 @@
     if (inputOrigin === "host-navigation") return;
     // Existing flows (e.g. asking the user to add a session user) must still
     // reveal their target page, even when the currently visible page is Play.
-    const target = {queue: "queue", history: "queue", request: "request", random: "request", users: "users", settings: "my"}[workspace];
+    const target = workspaceButton(workspace)?.dataset.compactPage;
     if (!target) return;
     if (target === "queue") queueView = workspace;
     if (target === "request") requestView = workspace;
@@ -324,8 +244,8 @@
       }
       requestTabs.append(sharedRequestTabs);
       byId("android-settings-slot").append(cacheSettings);
-      for (const {node} of loginNodes) byId("android-account-slot").append(node);
-      for (const {node} of advancedNodes) byId("cache-panel").append(node);
+      byId("android-account-slot").append(account);
+      account.prepend(accountStatus);
       navigate(page, {openSettings: settings, remember: false});
     } else {
       if (displaySection) {
@@ -334,9 +254,9 @@
       }
       requestTabsAnchor.after(sharedRequestTabs);
       cacheAnchor.after(cacheSettings);
-      for (const {node, anchor} of loginNodes) anchor.after(node);
-      for (const {node, anchor} of advancedNodes) anchor.after(node);
-      byId("bbdown-login-panel").classList.toggle("hidden", Boolean(state.data?.bbdown?.login?.logged_in));
+      accountAnchor.after(account);
+      accountStatusAnchor.after(accountStatus);
+      syncHostAccountPresentation();
       state.cacheSettingsOpen = false;
       syncCachePanelVisibility();
       elements.leftColumn.classList.remove("android-stage-away");
@@ -350,7 +270,7 @@
       tools.hidden = true;
     }
     renderHostWorkspaceSelection();
-    syncSessionUsers();
+    syncSessionUserControls();
     for (const {node, top, left} of scrolls) { node.scrollTop = top; node.scrollLeft = left; }
     if (focused?.isConnected && !focused.closest("[inert], [hidden]")) {
       focused.focus({preventScroll: true});
@@ -361,7 +281,6 @@
 
   function syncWindowPreferences() {
     for (const [group, attribute, value] of [
-      [layoutSwitch, "androidLayoutMode", preferences.layout],
       [orientationSwitch, "androidOrientationMode", preferences.orientation],
     ]) {
       for (const button of group.querySelectorAll("button")) {
@@ -373,16 +292,17 @@
     }
   }
 
-  async function changeWindowPreference(event, field, group) {
+  async function changeWindowPreference(event) {
+    const group = orientationSwitch;
     const button = event.target.closest("button");
     if (!button || !group.contains(button) || button.disabled || preferenceBusy) return;
-    const mode = button.dataset[field === "layout" ? "androidLayoutMode" : "androidOrientationMode"];
-    if (mode === preferences[field]) return;
+    const mode = button.dataset.androidOrientationMode;
+    if (mode === preferences.orientation) return;
     preferenceBusy = true;
     button.setAttribute("aria-busy", "true");
     syncWindowPreferences();
     try {
-      preferences = await (field === "layout" ? layoutApi.client.saveLayout(mode) : layoutApi.client.saveOrientation(mode));
+      preferences = {...await layoutApi.client.saveOrientation(mode), layout: "auto"};
       preferenceError = false;
       updateOrientation();
     } catch {
@@ -395,14 +315,14 @@
     }
   }
 
-  byId("android-layout-settings").hidden = false;
   byId("android-orientation-settings").hidden = !layoutApi?.orientation;
-  layoutSwitch.addEventListener("click", event => changeWindowPreference(event, "layout", layoutSwitch));
-  orientationSwitch.addEventListener("click", event => changeWindowPreference(event, "orientation", orientationSwitch));
+  orientationSwitch.addEventListener("click", changeWindowPreference);
   syncWindowPreferences();
   if (layoutApi?.client) {
     layoutApi.client.load().then(saved => {
-      preferences = saved;
+      // Preview 2 exposes responsive layout only. Retain saved platform data,
+      // but do not let an earlier hidden manual selection pin the interface.
+      preferences = {...saved, layout: "auto"};
       preferencesReady = true;
       updateOrientation();
       syncWindowPreferences();
@@ -412,7 +332,7 @@
     });
   }
 
-  window.BilikaraHostLayout = {isPortrait: () => portrait, syncSessionUsers, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, syncAccount, diagnosticsMarkdown};
+  window.BilikaraHostLayout = {isPortrait: () => portrait, syncVisibility, syncPlayerFieldWidths, workspaceActivated, settingsEmbedded, syncRequestTabs, diagnosticsMarkdown};
   const fullscreenRemote = byId("android-fullscreen-remote-button");
   fullscreenRemote.addEventListener("click", () => {
     if (!state.playerFullscreenRemotePinned) retryFailedQr();
@@ -438,6 +358,13 @@
     activateHostWorkspace(workspace, {inputOrigin: "host-navigation"});
     saveRoute(true);
   });
+  for (const button of document.querySelectorAll("[data-request-back]")) {
+    button.addEventListener("click", () => {
+      const previous = state.requestSubview;
+      activateRequestSubview("quick");
+      sharedRequestTabs.querySelector(`[data-request-view="${previous}"]`)?.focus();
+    });
+  }
   sharedRequestTabs.addEventListener("keydown", (event) => {
     if (!portrait || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     // Capture before the desktop four-tab handler: the portrait row has five.
@@ -449,7 +376,10 @@
     else if (event.key === "End") index = buttons.length - 1;
     else index = (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
     buttons[index]?.click();
-    buttons[index]?.focus();
+    const target = requestTabs.hidden
+      ? document.querySelector(".request-subview:not([hidden]) .request-mode-tabs [aria-selected='true']")
+      : buttons[index];
+    target?.focus();
   }, true);
   byId("android-open-settings").addEventListener("click", () => navigate("my", {openSettings: true}));
   settingsBack.addEventListener("click", () => {

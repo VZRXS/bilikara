@@ -1,5 +1,5 @@
 //! One-time desktop layout reader. The source is never opened for writing.
-//! Existing storage publishes the checkpoint; the preview marker is published
+//! Existing storage publishes the checkpoint; import completion is committed
 //! last, so an interrupted import cannot be mistaken for a usable installation.
 use super::{desktop, library, preferences};
 use crate::{
@@ -337,7 +337,8 @@ impl Import {
         if loaded.is_some() {
             return Err(failure("destination already initialized"));
         }
-        storage.save(self.seed).map_err(|e| e.message)?;
+        let pending = directory.join("desktop-import.pending");
+        write_new(&pending, b"desktop-import-v1\n")?;
         preferences::save(directory, &self.cache, None)
             .map_err(|_| failure("destination preferences"))?;
         if let Some(cookie) = self.cookie {
@@ -357,11 +358,10 @@ impl Import {
             &directory.join("desktop-import-report.json"),
             &serde_json::to_vec_pretty(&self.report).map_err(|_| failure("report"))?,
         )?;
-        let pending = directory.join("desktop-import-marker.pending");
-        write_new(&pending, b"desktop-rust-preview-v1\n")?;
-        crate::file_publication::publish_no_replace(&pending, &directory.join(desktop::MARKER))
-            .map_err(|_| failure("final marker publication"))?;
-        let _ = fs::remove_file(pending);
+        // Publish the valid checkpoint last. Until the pending guard is removed,
+        // an interrupted multi-file import cannot reopen as a completed one.
+        storage.save(self.seed).map_err(|e| e.message)?;
+        fs::remove_file(pending).map_err(|_| failure("import completion"))?;
         Ok(())
     }
 }
@@ -442,9 +442,9 @@ pub(super) fn restore(
         .try_exists()
         .map_err(|_| failure("destination"))?
     {
-        if !destination.join(desktop::MARKER).is_file() {
+        if !destination.join("host-state.json").is_file() {
             return Err(
-                "Desktop import refuses an existing unmarked destination; select a new directory"
+                "Desktop import refuses an existing destination without a native checkpoint; select a new directory"
                     .into(),
             );
         }
@@ -606,6 +606,8 @@ mod tests {
         );
         drop(storage);
         let before = fs::read(f.dest().join("host-state.json")).unwrap();
+        assert!(!f.dest().join(desktop::MARKER).exists());
+        assert!(!f.dest().join("desktop-import.pending").exists());
         // A vanished or now-corrupt old source cannot overwrite native changes.
         restore(&f.0.join("gone"), &f.dest(), "bad credential never read").unwrap();
         assert_eq!(fs::read(f.dest().join("host-state.json")).unwrap(), before);
@@ -648,8 +650,8 @@ mod tests {
         assert!(Import::read(&f.source(), "").is_err());
     }
     #[test]
-    fn interrupted_storage_and_marker_publication_never_enroll_partial_destination() {
-        for blocked in ["host-state.pending", "desktop-import-marker.pending"] {
+    fn interrupted_import_never_reopens_partial_destination() {
+        for blocked in ["host-state.pending", "desktop-import.pending"] {
             let f = Fixture::new();
             populate(&f);
             let before = fs::read(f.source().join("data/history.json")).unwrap();

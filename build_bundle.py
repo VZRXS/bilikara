@@ -554,8 +554,8 @@ def _resolved_bundle_binary_paths() -> tuple[dict[str, Path], list[str]]:
     return bundled, missing + optional_missing
 
 
-def _write_release_compliance_files() -> None:
-    target_dir = _release_compliance_dir()
+def _write_release_compliance_files(target_dir: Path | None = None, *, native: bool = False) -> None:
+    target_dir = target_dir if target_dir is not None else _release_compliance_dir()
     if not target_dir:
         return
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -569,14 +569,15 @@ def _write_release_compliance_files() -> None:
     licenses_dir.mkdir(parents=True, exist_ok=True)
     bundled_paths, missing_tools = _resolved_bundle_binary_paths()
     _write_text(
-        licenses_dir / "ffmpeg-source.txt",
-        _ffmpeg_source_notice(bundled_paths, missing_tools),
+        licenses_dir / ("libav-source.txt" if native else "ffmpeg-source.txt"),
+        _ffmpeg_source_notice(bundled_paths, missing_tools, native=native),
     )
     _write_text(
         licenses_dir / "bbdown-source.txt",
         _bbdown_source_notice(bundled_paths),
     )
-    _copy_ffmpeg_source_material(target_dir, licenses_dir)
+    # Native libav staging already retains the upstream license set under libav/.
+    _copy_ffmpeg_source_material(target_dir, licenses_dir, copy_license=not native)
     _copy_bbdown_license(licenses_dir)
     for binary_name in ("ffmpeg", "ffprobe"):
         binary_path = bundled_paths.get(binary_name)
@@ -603,8 +604,25 @@ def _release_compliance_dir() -> Path | None:
     return bundle_dir if bundle_dir.exists() else None
 
 
-def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[str]) -> str:
+def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[str], *, native: bool = False) -> str:
     source_metadata = _ffmpeg_source_metadata()
+    if native:
+        archive = Path(source_metadata["archive"]).name if source_metadata.get("archive") else "not recorded"
+        return "\n".join([
+            "FFmpeg libraries (libav) redistribution notes",
+            "",
+            "This native product uses dynamically loaded libraries from the FFmpeg project.",
+            "FFmpeg and ffprobe executables are not bundled. The library build disables",
+            "programs, GPL and nonfree components; see libav/COPYING.LGPLv2.1 and libav/LICENSE.md.",
+            "",
+            f"- FFmpeg library version: {source_metadata.get('version') or 'not recorded'}",
+            f"- Official source URL: {source_metadata.get('url') or 'not recorded'}",
+            f"- Source SHA-256: {source_metadata.get('sha256') or 'not recorded'}",
+            f"- Exact source archive: ../THIRD_PARTY_SOURCES/{archive}",
+            "- Build scripts and companion source: ../THIRD_PARTY_SOURCES/media-libav/",
+            "- Upstream legal information: https://ffmpeg.org/legal.html",
+            "",
+        ])
     lines = [
         "FFmpeg / FFprobe redistribution notes",
         "",
@@ -695,7 +713,7 @@ def _copy_bbdown_license(licenses_dir: Path) -> None:
     shutil.copy2(license_path, licenses_dir / "BBDown-LICENSE.txt")
 
 
-def _copy_ffmpeg_source_material(target_dir: Path, licenses_dir: Path) -> None:
+def _copy_ffmpeg_source_material(target_dir: Path, licenses_dir: Path, *, copy_license: bool = True) -> None:
     metadata = _ffmpeg_source_metadata()
     archive_value = metadata.get("archive")
     if archive_value:
@@ -715,7 +733,7 @@ def _copy_ffmpeg_source_material(target_dir: Path, licenses_dir: Path) -> None:
         shutil.copy2(archive_path, sources_dir / archive_path.name)
 
     license_value = metadata.get("license")
-    if license_value:
+    if license_value and copy_license:
         license_path = Path(license_value).expanduser()
         if not license_path.is_file():
             raise RuntimeError(f"Configured FFmpeg license file not found: {license_path}")

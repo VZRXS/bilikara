@@ -74,7 +74,7 @@ async function installPlaybackFixture(context, page) {
   await page.evaluate(async()=>{
     if(state.presentationSession.phase!=="inactive") await deactivateLocalPresentation();
   });
-  if (await page.locator("#android-session-choice").evaluate(el=>el.open)) {
+  if (await page.locator("#native-session-choice").isVisible()) {
     await page.locator('[data-session-choice="continue"]').click();
   }
   if (mode === "playback") await installPlaybackFixture(context,page);

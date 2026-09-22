@@ -666,6 +666,7 @@ fn assemble(
         queue_slot_type: "cycle".into(),
         cache_status: "pending".into(),
         cache_progress: 0.0,
+        cache_activity_at: 0.0,
         cache_message: "等待缓存".into(),
         video_relative_path: String::new(),
         video_media_url: String::new(),

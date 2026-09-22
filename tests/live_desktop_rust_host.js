@@ -83,6 +83,21 @@ async function capture(name, target) {
   console.log("playback start interaction done");
   await page.waitForFunction(()=>document.querySelector("video")?.currentTime>0.3,null,{timeout:20000});
   console.log("login, automatic binding, native cache and playback passed");
+  const defaultPolicy=(await okay('/api/state')).cache_policy;
+  assert.equal(defaultPolicy.video_quality,'1080P 高帧率');assert.equal(defaultPolicy.audio_hires,true);
+  // Native Host restores the existing sanitized package download. Connectivity
+  // probes go only to run_desktop_rust_host.py's non-forwarding TLS fixture.
+  assert.equal((await fetch(ready.baseUrl+'/api/diagnostics/package',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
+  assert.equal((await host.request.post(ready.baseUrl+'/api/diagnostics/package',{headers:{Origin:'https://foreign.invalid'},data:{}})).status(),403);
+  await page.locator('#work-rail-settings').click();
+  const diagnosticDownload=page.waitForEvent('download');
+  await page.locator('#diagnostic-package-button').click();
+  const diagnostic=await diagnosticDownload;
+  assert.equal(diagnostic.suggestedFilename(),'bilikara-diagnostics.zip');
+  await diagnostic.saveAs(path.join(evidence,'diagnostics.zip'));
+  await page.waitForFunction(()=>!state.diagnosticsBusy);
+  assert.equal(await page.locator('#diagnostic-package-button').getAttribute('aria-busy'),null);
+  await page.locator('#work-rail-request').click();
   const first=await okay("/api/state");
   assert.equal(first.current_item.selected_pages.length,2);
   const manual=await api("/api/playlist/add",{url:"https://www.bilibili.com/video/BV1xx411c7mE",requester_name:"Desktop Fixture"});
@@ -100,6 +115,7 @@ async function capture(name, target) {
   await remote.locator("#remote-identity-submit").click();
   await remote.waitForFunction(()=>document.querySelector("#remote-identity-modal").classList.contains("hidden"));
   assert.equal((await remoteContext.request.post(new URL("/api/app/update/check",lanInvite).href,{data:{}})).status(),403);
+  assert.equal((await remoteContext.request.post(new URL('/api/diagnostics/package',lanInvite).href,{data:{}})).status(),403);
   await remote.locator("#playback-dock").click();
   await remote.locator('[data-control-action="toggle-play"]').click();
   await page.waitForFunction(()=>document.querySelector("video")?.paused===true);

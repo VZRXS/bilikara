@@ -150,11 +150,11 @@
     const url = preferredUrl || localUrl;
     if (!url) return;
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
-    elements.remoteUrlLink.textContent = url;
+    elements.remoteUrlLink.textContent = new URL(url).origin;
     elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
     const nativeQr = String(candidate?.qr_image || "");
-    const qrUrl = androidDisplay
-      ? (nativeQr.startsWith("data:image/svg+xml;base64,") ? nativeQr : "")
+    const qrUrl = nativeQr.startsWith("data:image/svg+xml;base64,")
+      ? nativeQr : androidDisplay ? ""
       : `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
     if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
     elements.remoteQrImage.dataset.qrUrl = qrUrl;
@@ -197,7 +197,7 @@
       : "";
     const candidateQr = String(candidate?.qr_image || "");
     const qrImage = active && (candidateQr.startsWith("data:image/png;base64,")
-      || (androidDisplay && candidateQr.startsWith("data:image/svg+xml;base64,")))
+      || candidateQr.startsWith("data:image/svg+xml;base64,"))
       ? candidateQr
       : "";
     if (elements.internetRemoteQrImage.__bilikaraQrImage === qrImage) return;

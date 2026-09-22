@@ -190,9 +190,10 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
         ]
         self.assertIn("relative = route.lstrip", static_handler)
         self.assertIn("not static_path.exists()", static_handler)
-        bundle_source = (ROOT / "build_bundle.py").read_text(encoding="utf-8")
-        self.assertIn("static_arg =", bundle_source)
-        self.assertIn("ROOT_DIR / 'static'", bundle_source)
+        bundle_source = (ROOT / "scripts" / "native_desktop_bundle.py").read_text(encoding="utf-8")
+        self.assertIn('static = resources / "static"', bundle_source)
+        self.assertIn('source_static = bundle.ROOT_DIR / "static"', bundle_source)
+        self.assertIn('shutil.copytree(source_static, static,', bundle_source)
 
 
 if __name__ == "__main__":

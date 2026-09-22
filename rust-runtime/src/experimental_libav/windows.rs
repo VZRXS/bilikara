@@ -36,14 +36,17 @@ fn unavailable() -> ProbeError {
 
 impl Library {
     pub(in crate::experimental_libav) fn check_local_path(path: &Path) -> Result<(), ProbeError> {
-        // Reject UNC/device paths, ADS and drive-relative names before opening:
-        // no named-pipe wait, remote share, or Win32 device fallback.
+        // canonicalize() returns VerbatimDisk paths on Windows. They remain
+        // local drives; UNC/device namespaces, ADS and drive-relative names do
+        // not. Validate only the components after the drive prefix for ADS.
         let mut parts = path.components();
-        if !matches!(parts.next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+        if !matches!(parts.next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
             || !matches!(parts.next(), Some(Component::RootDir))
-            || path
-                .to_str()
-                .is_none_or(|p| p[2..].contains(':') || p.contains('\0'))
+            || parts.any(|part| {
+                part.as_os_str()
+                    .to_str()
+                    .is_none_or(|value| value.contains([':', '\0']))
+            })
         {
             return Err(media_error(
                 MediaErrorKind::InvalidRequest,
@@ -196,6 +199,36 @@ fn verify_modules(directory: &Path) -> Result<(), ProbeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_local_drives_are_allowed_but_other_namespaces_and_ads_are_not() {
+        for path in [
+            r"C:\Bilikara 空\vendor\companion.dll",
+            r"\\?\C:\Bilikara 空\vendor\companion.dll",
+        ] {
+            Library::check_local_path(Path::new(path)).unwrap();
+        }
+        let canonical = std::env::temp_dir().canonicalize().unwrap();
+        Library::check_local_path(&canonical.join("Bilikara 空").join("companion.dll")).unwrap();
+        for path in [
+            r"\\server\share\companion.dll",
+            r"\\?\UNC\server\share\companion.dll",
+            r"\\.\pipe\companion",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\companion.dll",
+            r"C:companion.dll",
+            r"\vendor\companion.dll",
+            "companion.dll",
+            r"C:\vendor\companion.dll:stream",
+            r"\\?\C:\vendor\companion.dll:stream",
+            r"\\?\C:\vendor:stream\companion.dll",
+            "C:\\vendor\\companion\0.dll",
+        ] {
+            assert!(
+                Library::check_local_path(Path::new(path)).is_err(),
+                "{path:?}"
+            );
+        }
+    }
 
     #[test]
     fn unicode_module_path_preserves_vendor_boundary() {

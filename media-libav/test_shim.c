@@ -158,9 +158,19 @@ static void windows_long_path_tests(void) {
     assert(input != INVALID_HANDLE_VALUE);
     fd = bm_fd_from_handle_v1(input);
     assert(fd >= 0 && bm_empty_distinct_output(fd, utf8) == BM_OK);
+    /* The Rust Host keeps canonical \\?\ drive paths all the way to remux. */
+    char canonical[4096];
+    assert(WideCharToMultiByte(CP_UTF8, 0, path, -1, canonical, sizeof(canonical), NULL, NULL));
+    assert(bm_absolute_path(canonical));
+    int canonical_fd = bm_open_read(canonical);
+    assert(canonical_fd >= 0);
+    assert(bm_empty_distinct_output(canonical_fd, canonical) == BM_INVALID_REQUEST);
+    close(canonical_fd);
+    assert(bm_empty_distinct_output(fd, canonical) == BM_OK);
     DWORD written;
     assert(WriteFile(output, "x", 1, &written, NULL) && written == 1);
     assert(bm_empty_distinct_output(fd, utf8) == BM_INVALID_REQUEST);
+    assert(bm_empty_distinct_output(fd, canonical) == BM_INVALID_REQUEST);
     close(fd);
     CloseHandle(input);
     CloseHandle(output);
@@ -172,6 +182,9 @@ static void windows_long_path_tests(void) {
     }
     assert(RemoveDirectoryW(path));
     assert(!bm_wide("\\\\server\\share\\file") && !bm_wide("C:relative"));
+    assert(!bm_wide("\\\\?\\UNC\\server\\share\\file"));
+    assert(!bm_wide("\\\\.\\PhysicalDrive0"));
+    assert(!bm_wide("\\\\?\\C:\\file:stream"));
     puts("Windows long-path I/O: Unicode, empty/distinct and nonempty guards passed");
 }
 #endif

@@ -1,6 +1,6 @@
 //! Shared diagnostic renderer with bounded, host-only platform facts and probes.
 use super::*;
-use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact};
+use crate::diagnostics::{DiagnosticRequest, DiagnosticResult, build_diagnostic_artifact};
 
 fn safe_text(value: &Value) -> String {
     value
@@ -47,11 +47,11 @@ fn environment(body: &Value, timestamp: f64) -> Value {
     system
 }
 
-pub(super) fn markdown(
+fn artifact(
     context: &HostContext,
     identity: &Identity,
     body: &Value,
-) -> Result<Value, ApiError> {
+) -> Result<DiagnosticResult, ApiError> {
     let aria2_available = context.desktop && context.aria2().is_some();
     let (snapshot, events, cache_policy) = with_app(|app| {
         app.native_authorize(identity, true)?;
@@ -118,8 +118,40 @@ pub(super) fn markdown(
         .into(),
         connectivity_timeout_ms: 5000,
     };
-    let result = build_diagnostic_artifact(&request)
-        .map_err(|_| ApiError::new(503, "diagnostics", "无法生成原生诊断信息"))?;
+    build_diagnostic_artifact(&request)
+        .map_err(|_| ApiError::new(503, "diagnostics", "无法生成原生诊断信息"))
+}
+
+pub(super) fn package(
+    context: &HostContext,
+    identity: &Identity,
+    body: &Value,
+) -> Result<Response, ApiError> {
+    let result = artifact(context, identity, body)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(result.zip_base64)
+        .map_err(|_| ApiError::new(503, "diagnostics", "无法生成原生诊断包"))?;
+    let length = bytes.len();
+    let mut response = Body::from(bytes).into_response();
+    let headers = response.headers_mut();
+    headers.insert("content-type", "application/zip".parse().unwrap());
+    headers.insert("content-length", length.to_string().parse().unwrap());
+    headers.insert("cache-control", "no-store".parse().unwrap());
+    headers.insert(
+        "content-disposition",
+        "attachment; filename=\"bilikara-diagnostics.zip\""
+            .parse()
+            .unwrap(),
+    );
+    Ok(response)
+}
+
+pub(super) fn markdown(
+    context: &HostContext,
+    identity: &Identity,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    let result = artifact(context, identity, body)?;
     let runtime = result
         .files
         .get("runtime-state.json")
