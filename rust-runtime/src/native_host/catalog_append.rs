@@ -23,10 +23,25 @@ fn request(item: &PlaylistItem) -> CloudflareServiceRequest {
     }
 }
 
+/// Called under AppState's lock only after an explicit add has committed.
+pub(super) fn accepted_item(
+    app: &crate::app_state::AppState,
+    id: &str,
+) -> Result<PlaylistItem, ApiError> {
+    let snapshot = app.native_core_snapshot()?;
+    snapshot
+        .current_item
+        .iter()
+        .chain(snapshot.playlist.iter())
+        .find(|item| item.id == id)
+        .cloned()
+        .ok_or_else(|| ApiError::new(500, "accepted_item_missing", "无法读取已点歌曲"))
+}
+
 pub(super) fn enqueue(item: &PlaylistItem) {
     // No SQL, credentials, media URLs or source-library bulk upload here.
     // The service normalizes entries and writes through the same /batch-add API.
-    if execute_cloudflare(&request(item)).is_err() {
+    if !matches!(execute_cloudflare(&request(item)), Ok(result) if result["accepted"] == true) {
         eprintln!("native catalog append could not be scheduled");
     }
 }

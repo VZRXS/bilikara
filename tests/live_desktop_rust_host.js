@@ -199,7 +199,7 @@ async function capture(name, target) {
   // Known unsupported actions report unavailable rather than fake readiness.
   // The shared Host cookie does not carry the shell's private install capability.
   assert.equal((await host.request.post(ready.baseUrl+"/api/app/update/install",{data:{include_preview:false}})).status(),403);
-  for(const route of ["/api/app/update/finish","/api/rating/submit"])
+  for(const route of ["/api/app/update/finish"])
     assert.equal((await api(route,{include_preview:false})).status,501,route);
   await remoteContext.close(); await host.close();
   await stop(ready);

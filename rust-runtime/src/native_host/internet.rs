@@ -72,17 +72,47 @@ pub(super) fn route(
                 .filter(|value| !value.is_empty() && value.len() <= 65536)
                 .ok_or_else(|| ApiError::invalid("Remote 消息长度无效"))?
                 .to_owned();
-            let reply = with_app(|app| {
+            let (reply, rating) = with_app(|app| {
+                app.native_authorize(identity, true)?;
+                if context.stop.load(Ordering::Acquire) {
+                    return Err(ApiError::new(503, "stopped", "Host 已停止"));
+                }
                 let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
-                app.native_execute(AppStateRequest::DispatchInternetRemoteMessage {
-                    schema_version: 1,
-                    peer_id: peer.clone(),
-                    lane,
-                    message,
-                    reset_av_delay,
-                    now: now(),
-                })
+                let mut reply =
+                    app.native_execute(AppStateRequest::DispatchInternetRemoteMessage {
+                        schema_version: 1,
+                        peer_id: peer.clone(),
+                        lane,
+                        message,
+                        reset_av_delay,
+                        now: now(),
+                    })?;
+                // Reserve while typed peer identity, session and play validation
+                // still hold the same lock. Never re-admit a peer as a Host name.
+                let rating = if reply["_host_effect"]["kind"] == "submit_rating" {
+                    let effect = reply
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("_host_effect")
+                        .unwrap();
+                    Some(ratings::prepare(
+                        app,
+                        identity,
+                        &json!({
+                            "session_user_name":effect["session_name"], "play_id":effect["play_id"],
+                            "bvid":effect["bvid"], "score":effect["score"]
+                        }),
+                    )?)
+                } else {
+                    None
+                };
+                Ok((reply, rating))
             })?;
+            if let Some(submission) = rating {
+                let mut reply = reply;
+                reply["data"] = ratings::submit_reserved(submission)?;
+                return Ok(reply);
+            }
             let mut reply = effect(context, identity, &peer, reply)?;
             // Refresh under the same state lock as observations. Never publish a
             // stale core snapshot paired with a newer player's position.
@@ -140,8 +170,7 @@ fn effect(
     if context.desktop
         && matches!(
             kind,
-            "submit_rating"
-                | "gatcha_pool_config_set"
+            "gatcha_pool_config_set"
                 | "gatcha_uid_preview"
                 | "gatcha_uid_add"
                 | "gatcha_refresh"
@@ -175,13 +204,6 @@ fn effect(
                 json!({
                     "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"]
                 }),
-            )?;
-            return Ok(reply);
-        }
-        "submit_rating" => {
-            ratings::submit(
-                identity,
-                &json!({"session_user_name":effect["session_name"], "play_id":effect["play_id"], "bvid":effect["bvid"], "score":effect["score"]}),
             )?;
             return Ok(reply);
         }
@@ -331,7 +353,7 @@ fn add(
     })?;
     let request: NativeVideoRequest = serde_json::from_value(json!({"url":format!("https://www.bilibili.com/video/{bvid}?p={page}"),"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
     let item = fetch_native_video(&request, &cookie).map_err(api::video_error)?;
-    let result = with_app(|app| {
+    let (result, accepted_item) = with_app(|app| {
         if context.stop.load(Ordering::Acquire) {
             return Err(ApiError::new(503, "stopped", "Host 已停止"));
         }
@@ -339,16 +361,22 @@ fn add(
             api::queue_space(app.native_core_snapshot()?.playlist.len())?;
         }
         let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
-        app.native_execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
+        let result = app.native_execute(AppStateRequest::CompleteInternetRemotePlaylistAdd {
             schema_version: 1,
             peer_id: peer.into(),
             request_id: request_id.into(),
             item: item.clone(),
             reset_av_delay,
             now: now(),
-        })
+        })?;
+        let accepted_item = if result["accepted"] == true {
+            Some(catalog_append::accepted_item(app, &item.id)?)
+        } else {
+            None
+        };
+        Ok((result, accepted_item))
     })?;
-    if result["accepted"] == true && !context.desktop {
+    if let Some(item) = accepted_item {
         catalog_append::enqueue(&item);
     }
     Ok(result)

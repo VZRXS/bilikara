@@ -48,7 +48,7 @@ pub(super) fn dispatch(
         // Public Host routes expose checks/status. Install/cancel/activation
         // require the shell capability in the HTTP owner before dispatch.
         let admitted = matches!(path, "/api/app/update/status" | "/api/app/update/check");
-        if (path.starts_with("/api/app/") && !admitted) || path.starts_with("/api/rating/") {
+        if path.starts_with("/api/app/") && !admitted {
             return Err(desktop::unavailable());
         }
     }
@@ -155,7 +155,7 @@ pub(super) fn dispatch(
         return internet::route(context, identity, path, &body);
     }
     if path == "/api/rating/submit" {
-        return ratings::submit(identity, &body);
+        return ratings::submit(context, identity, &body);
     }
     if path == "/api/rating/log" {
         with_app(|app| app.native_requester(identity, ""))?;
@@ -190,7 +190,7 @@ pub(super) fn dispatch(
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
         let item = fetch_native_video(&request, &cookie).map_err(video_error)?;
-        let snapshot = with_app(|app| {
+        let (snapshot, accepted_item) = with_app(|app| {
             if context.stop.load(Ordering::Acquire) {
                 return Err(ApiError::new(503, "stopped", "Host 已停止"));
             }
@@ -225,11 +225,12 @@ pub(super) fn dispatch(
                 }
                 return Err(error);
             }
-            app.native_snapshot(host)
+            Ok((
+                app.native_snapshot(host)?,
+                catalog_append::accepted_item(app, &item.id)?,
+            ))
         })?;
-        if !context.desktop {
-            catalog_append::enqueue(&item);
-        }
+        catalog_append::enqueue(&accepted_item);
         return Ok(snapshot);
     }
     if path == "/api/cache/retry" {

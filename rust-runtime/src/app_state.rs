@@ -4243,10 +4243,22 @@ impl AppState {
                 )
             }
             RemoteRequestV1::RatingSubmit { play_id, score } => {
-                let Some(current) = snapshot.current_item.as_ref() else {
+                let bvid = snapshot
+                    .current_item
+                    .as_ref()
+                    .filter(|item| item.id == play_id)
+                    .map(|item| item.bvid.as_str())
+                    .or_else(|| {
+                        snapshot
+                            .session_played
+                            .iter()
+                            .find(|item| item.item_id == play_id)
+                            .map(|item| item.bvid.as_str())
+                    });
+                let Some(bvid) = bvid else {
                     return execute_error_response(rejected(
-                        "internet_remote_no_current_song",
-                        "No song is playing",
+                        "rating_stale",
+                        "Song is not in this session's played records",
                     ));
                 };
                 let session_name = match validation.session_name.as_deref() {
@@ -4265,7 +4277,7 @@ impl AppState {
                         "kind": "submit_rating",
                         "session_name": session_name,
                         "play_id": play_id,
-                        "bvid": current.bvid,
+                        "bvid": bvid,
                         "score": score,
                     })),
                     false,

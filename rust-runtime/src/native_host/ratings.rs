@@ -18,7 +18,8 @@ struct Entry {
     play: String,
     complete: bool,
 }
-struct Submission {
+pub(super) struct Submission {
+    owner: String,
     generation: u64,
     id: u64,
     payload: Value,
@@ -98,7 +99,7 @@ impl RatingLedger {
     }
 }
 
-fn prepare(
+pub(super) fn prepare(
     app: &mut AppState,
     identity: &Identity,
     body: &Value,
@@ -140,6 +141,7 @@ fn prepare(
         .ratings
         .reserve(snapshot.session_generation, &user, &play)?;
     Ok(id.map(|id| Submission {
+        owner: app.native().host_token.clone(),
         id,
         generation: snapshot.session_generation,
         payload: json!({"session_user_name":user,"play_id":play,"bvid":bvid,"score":score}),
@@ -173,8 +175,27 @@ fn send(
     }
 }
 
-pub(super) fn submit(identity: &Identity, body: &Value) -> Result<Value, ApiError> {
-    let Some(submission) = with_app(|app| prepare(app, identity, body))? else {
+pub(super) fn submit(
+    context: &HostContext,
+    identity: &Identity,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    submit_reserved(with_app(|app| {
+        if context.stop.load(Ordering::Acquire) {
+            return Err(ApiError::new(503, "stopped", "Host 已停止"));
+        }
+        prepare(app, identity, body)
+    })?)
+}
+
+fn finish(app: &mut AppState, submission: &Submission, success: bool) {
+    if app.native().host_token == submission.owner {
+        app.native().ratings.finish(submission, success);
+    }
+}
+
+pub(super) fn submit_reserved(submission: Option<Submission>) -> Result<Value, ApiError> {
+    let Some(submission) = submission else {
         return Ok(json!({"success":true,"queued":false,"duplicate":true}));
     };
     // A dropped/panicking transport must release admission just like a timeout.
@@ -186,7 +207,7 @@ pub(super) fn submit(identity: &Identity, body: &Value) -> Result<Value, ApiErro
         fn drop(&mut self) {
             if !self.finished {
                 let _ = with_app(|app| {
-                    app.native().ratings.finish(&self.value, false);
+                    finish(app, &self.value, false);
                     Ok(())
                 });
             }
@@ -198,7 +219,7 @@ pub(super) fn submit(identity: &Identity, body: &Value) -> Result<Value, ApiErro
     };
     let result = send(&pending.value, execute_cloudflare);
     with_app(|app| {
-        app.native().ratings.finish(&pending.value, result.is_ok());
+        finish(app, &pending.value, result.is_ok());
         Ok(())
     })?;
     pending.finished = true;
@@ -288,5 +309,28 @@ mod tests {
         }
         assert!(ledger.reserve(1, "Alice", "overflow").is_err());
         assert!(ledger.reserve(2, "Alice", "0").unwrap().is_some());
+        let old = Submission {
+            owner: "host".into(),
+            generation: 1,
+            id: 1,
+            payload: json!({}),
+        };
+        ledger.finish(&old, true);
+        assert!(
+            !ledger.entries[0].complete,
+            "old session completion cannot finish a new reservation"
+        );
+
+        // A replacement Host can reuse ledger sequence/session numbers. Its
+        // private owner identity must still exclude the old network completion.
+        app.native().host_token = "replacement".into();
+        app.native().ratings = RatingLedger::default();
+        assert_eq!(
+            app.native().ratings.reserve(1, "Alice", "played").unwrap(),
+            Some(1)
+        );
+        finish(&mut app, &old, true);
+        assert!(!app.native().ratings.entries[0].complete);
+        assert!(app.native().ratings.events.is_empty());
     }
 }

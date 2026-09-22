@@ -1152,7 +1152,7 @@ mod tests {
             post("/api/app/update/install", json!({"include_preview":false})).0,
             403
         );
-        for path in ["/api/app/update/finish", "/api/rating/submit"] {
+        for path in ["/api/app/update/finish", "/api/app/execute"] {
             assert_eq!(
                 post(path, json!({"include_preview": false})).0,
                 501,

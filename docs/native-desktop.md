@@ -129,3 +129,21 @@ requires manual replacement with the intact native app and explicit data import.
 Native-to-native macOS updates preserve safe relative bundle links. Real package
 installation and platform acceptance remain necessary before a Preview 2 release;
 this launch/update contract does not establish full product parity.
+
+## Song ratings and request contributions
+
+Host-selected session users and identity-bound Remote users can rate a current
+or played song through the shared Rust rating service. HTTP and typed Internet
+Remote commands use the same bounded pending/completed ledger. A result reports
+success only after Catalog accepts it; failures release the reservation for an
+explicit retry. This is session-local duplicate protection, not durable
+exactly-once delivery across crashes or ambiguous network failures.
+
+Each successfully committed explicit song request can enqueue its seven public
+metadata fields through the existing bounded Catalog append worker. Failed,
+duplicate or stale adds do not enqueue. A full queue or delivery failure does
+not undo the local request. Neither login, startup nor library import triggers
+bulk publication. `song_rating` describes this ordinary action; desktop
+`catalog_write` and `maintenance` remain false and grant no server authority.
+Administrator review, blacklist/tag mutation, monthly maintenance and automatic
+library publication remain separate product decisions.

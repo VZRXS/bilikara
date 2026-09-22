@@ -339,6 +339,7 @@ const state = {
   ratingPromptReturnFocusToDock: false,
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
+  ratingPendingKeys: new Set(),
   ratingOptOut: false,
   // Deferred auto-ratings: items that crossed the play threshold but whose
   // auto score=5 has not been submitted yet. The auto-rating fires TWO songs
@@ -2022,12 +2023,12 @@ function submitSongRating(item, score, trigger = null) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || state.ratingPendingKeys.has(submissionKey))) {
     ratingLog("submit BLOCKED by dedup: playId=" + playId + " score=" + score);
     return false;
   }
   if (submissionKey) {
-    state.ratingSubmittedKeys.add(submissionKey);
+    state.ratingPendingKeys.add(submissionKey);
     // The user submitted a manual rating — cancel any pending auto-rating
     // for this item so the auto score=5 doesn't override the user's choice.
     state.pendingAutoRatings.delete(playId);
@@ -2056,17 +2057,19 @@ function submitSongRating(item, score, trigger = null) {
     keepalive: true,
   }).then(async (response) => {
     const result = await response.json();
-    if (!response.ok || result?.ok === false || result?.success === false || result?.data?.success === false) {
+    if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success === false) {
       throw new Error(result?.error || t("error.requestFailed"));
     }
+    if (submissionKey) state.ratingSubmittedKeys.add(submissionKey);
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
-      renderCurrentRatingButton(state.data?.current_item);
     }
     console.warn("Rating submit failed:", error);
     setAppMessage(error.message || t("error.requestFailed"), true);
   }).finally(() => {
+    state.ratingPendingKeys.delete(submissionKey);
+    renderCurrentRatingButton(state.data?.current_item);
     if (button) {
       button.disabled = wasDisabled;
       button.removeAttribute("aria-busy");
@@ -2244,7 +2247,7 @@ function ratingSubmissionKey(item) {
   if (!playId) {
     return "";
   }
-  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
 function hasSubmittedSongRating(item) {
@@ -6283,9 +6286,12 @@ function renderCurrentRatingButton(current) {
   }
   const enabled = Boolean(current?.bvid);
   const submitted = enabled && hasSubmittedSongRating(current);
-  button.disabled = !enabled || submitted;
+  const pending = state.ratingPendingKeys.has(ratingSubmissionKey(current));
+  button.disabled = !enabled || submitted || pending;
   button.classList.toggle("hidden", !enabled);
   button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  if (pending) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
   button.title = submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
 }
 

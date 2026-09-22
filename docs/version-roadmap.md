@@ -266,10 +266,11 @@ exercises that bundle policy in source launches. Unsupported media operations
 fail explicitly; missing companion support does not authorize installing or
 falling back to a media CLI. Corruption remains distinct from unsupported media.
 
-Update checking is covered below. Update installation, remaining
-maintenance/rating/catalog-publication features and full desktop lifecycle
-parity remain separate work. Native default launch and Python-free distribution
-use the contract above; this does not establish those feature completions. Physical
+Update checking is covered below; native installation, song ratings and explicit
+post-request Catalog contribution follow [the native desktop contract](native-desktop.md).
+Administrator maintenance, automatic library publication and full desktop lifecycle
+parity remain separate product decisions. Native default launch and Python-free distribution
+use the contract above; this does not establish full feature parity. Physical
 multi-display, native dialogs and platform-specific process behavior require
 their own Windows/macOS/device validation.
 
@@ -405,7 +406,7 @@ development build unless `BILIKARA_VERSION` is set.
 
 The desktop application-operation guard was narrowly replaced, not lifted. Only
 the status and check routes are admitted; Android install/finish, shutdown,
-external-link, maintenance and rating operations still report unavailable,
+external-link and maintenance operations still report unavailable,
 `/api/app/*` is not broadly exposed, and Host-only authorization is unchanged,
 so Remote clients cannot acquire update control. Requests cannot select an
 endpoint, path or destination, and no Bilibili cookie, bootstrap credential or

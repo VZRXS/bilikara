@@ -6,6 +6,11 @@ Rust Host state. Remote remains a controller with its own page and permissions;
 the audience page remains a presentation surface.
 
 `native-session.js` presents the persisted-session choice on either Host.
+The shared Host song controls expose the existing rating dialog for the selected
+session requester. Host and Remote submissions retain their playback identity
+across layout changes, release failed submissions for retry, and check HTTP and
+service failures before retaining a successful submission. The native backend
+validates identity and eligible plays independently of these presentation gates.
 `host-layout.js` adapts the shared controls to a phone navigation dock or the
 existing desktop workspace rail. Settings offers Auto, Desktop and Phone:
 Auto selects Phone below 700 CSS pixels, independently of keyboard height or

@@ -51,7 +51,13 @@ def main():
             counts[name] = counts.get(name, 0) + 1
             status = 200
             headers = {}
-            if name == "/fixture/bbdown-no-dash":
+            if name == "/batch-add":
+                payload = json.loads(handler.rfile.read(int(handler.headers["Content-Length"])))
+                assert set(payload) == {"records"}
+                assert all(set(entry) == {"mid", "bvid", "title", "url", "owner_name", "owner_url", "cover_url"} for entry in payload["records"])
+                assert not handler.headers.get("Cookie") and not handler.headers.get("Authorization")
+                body = {"success": True}
+            elif name == "/fixture/bbdown-no-dash":
                 bbdown_unsupported.set(); body = {}
             elif name == "/fixture/bbdown-dash":
                 bbdown_unsupported.clear(); body = {}
@@ -175,7 +181,7 @@ def main():
             result = subprocess.run(["node", driver, str(evidence)], cwd=ROOT, env=env, timeout=240)
         if cache_policy or bbdown_real: assert not fixture.stages, "Cache policy tests must not run login"
         else: assert "generate" in fixture.stages and "poll" in fixture.stages
-        forbidden = [name for name in counts if any(word in name for word in ["batch-add", "rating", "space/wbi", "gviz", "d1/"])]
+        forbidden = [name for name in counts if any(word in name for word in ["rating", "space/wbi", "gviz", "d1/"])]
         assert not forbidden, forbidden
         (evidence / "fixture-summary.json").write_text(json.dumps({"request_counts": counts, "login_stages": fixture.stages, "forwarded_external_requests": 0}, indent=2))
         return result.returncode

@@ -334,7 +334,7 @@ impl AppState {
         } else {
             Value::Null
         };
-        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"catalog_write":!session.desktop,"maintenance":!session.desktop});
+        value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"song_rating":true,"catalog_write":!session.desktop,"maintenance":!session.desktop});
         value["app"] = json!({"version":session.updates.version_label().unwrap_or_else(|| "0.8.0-preview.0".to_owned()),
             "releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,

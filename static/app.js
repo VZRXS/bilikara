@@ -406,6 +406,7 @@ const state = {
   ratingPromptSubmitted: false,
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
+  ratingPendingKeys: new Set(),
   ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
@@ -665,6 +666,7 @@ const elements = {
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
   nextButton: document.getElementById("next-button"),
+  openRatingButton: document.getElementById("open-rating-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
@@ -5500,7 +5502,7 @@ async function apiPost(url, payload = {}, options = {}) {
   }
 }
 
-function submitSongRating(item, score) {
+function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
@@ -5508,11 +5510,11 @@ function submitSongRating(item, score) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || state.ratingPendingKeys.has(submissionKey))) {
     return false;
   }
   if (submissionKey) {
-    state.ratingSubmittedKeys.add(submissionKey);
+    state.ratingPendingKeys.add(submissionKey);
   }
   const payload = {
     session_user_name: sessionUserName,
@@ -5520,15 +5522,36 @@ function submitSongRating(item, score) {
     bvid,
     score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
   };
+  const button = trigger && "disabled" in trigger ? trigger : null;
+  const wasDisabled = button?.disabled;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
+    keepalive: true,
+  }).then(async (response) => {
+    const result = await response.json();
+    if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success !== true) {
+      throw new Error(result?.error || t("error.requestFailed"));
+    }
+    if (submissionKey) state.ratingSubmittedKeys.add(submissionKey);
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
     }
-    console.warn("Rating submit failed:", error);
+    state.ratingPromptSeenPlayIds.delete(playId);
+    setAppMessage(error.message || t("error.requestFailed"), true);
+  }).finally(() => {
+    state.ratingPendingKeys.delete(submissionKey);
+    renderCurrentRatingButton(state.data?.current_item);
+    if (button) {
+      button.disabled = wasDisabled;
+      button.removeAttribute("aria-busy");
+    }
   });
   return true;
 }
@@ -5592,7 +5615,21 @@ function ratingSubmissionKey(item) {
   if (!playId) {
     return "";
   }
-  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function renderCurrentRatingButton(current) {
+  const button = elements.openRatingButton;
+  if (!button) return;
+  const item = current || previousRatingPromptItem(null);
+  const enabled = Boolean(item?.bvid && selectedRequesterName())
+    && state.data?.capabilities?.song_rating !== false;
+  const submitted = enabled && hasSubmittedSongRating(item);
+  const pending = state.ratingPendingKeys.has(ratingSubmissionKey(item));
+  button.disabled = !enabled || submitted || pending;
+  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  if (pending) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
 }
 
 function hasSubmittedSongRating(item) {
@@ -5739,7 +5776,7 @@ function setRatingPromptActiveTab(tab) {
   renderRatingPromptContent();
 }
 
-function closeRatingPrompt({ submit = true } = {}) {
+function closeRatingPrompt({ submit = true, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
@@ -5766,7 +5803,7 @@ function closeRatingPrompt({ submit = true } = {}) {
   state.ratingPromptOpener = null;
 
   if (shouldSubmit) {
-    submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
+    submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore, trigger);
   }
   if (opener?.isConnected) {
     opener.focus({ preventScroll: true });
@@ -5777,11 +5814,11 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function openRatingPrompt(item) {
-  if (document.documentElement?.dataset?.nativeHost === "true") return;
+function openRatingPrompt(item, { manual = false } = {}) {
+  if (state.data?.capabilities?.song_rating === false) return;
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
     return;
   }
   if (fullscreenElement()) {
@@ -9363,6 +9400,7 @@ function render() {
   }
   renderListHeader(data.playlist, data.history || []);
   renderRequesterSelect(data.session_users || []);
+  renderCurrentRatingButton(currentItem);
   renderSessionUsers(data.session_users || []);
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderPlaybackRepairControls(currentItem);
@@ -20996,8 +21034,12 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
   }
+});
+
+elements.openRatingButton?.addEventListener("click", () => {
+  openRatingPrompt(state.data?.current_item || previousRatingPromptItem(null), { manual: true });
 });
 
 function handleRatingFullscreenChange() {

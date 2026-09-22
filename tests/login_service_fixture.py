@@ -61,6 +61,13 @@ class LoginFixture:
             def log_message(self, *_):
                 pass
 
+            def do_POST(self):
+                if fixture.handle_request and fixture.handle_request(self):
+                    return
+                self.send_response(405)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
             def do_CONNECT(self):
                 self.send_response(200)
                 self.end_headers()
