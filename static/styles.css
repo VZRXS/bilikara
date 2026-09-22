@@ -11720,14 +11720,14 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
    phone. Keep the shared controls and DOM/tab order, but stack their labels
    and wrap touch targets inside the native Host's scrollable tray. */
 @media (max-width: 900px) {
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls > .av-sync-panel,
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls > .volume-panel {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls > .av-sync-panel,
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls > .volume-panel {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     overflow: visible;
   }
 
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
     width: 100%;
     min-width: 0;
     max-width: 100%;
@@ -11736,18 +11736,18 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
     justify-self: stretch;
   }
 
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > button {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > button {
     flex: 1 0 60px;
     min-height: 44px;
   }
 
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .av-sync-input-wrap {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-input-wrap {
     flex: 1 0 112px;
     min-width: 0;
     min-height: 44px;
   }
 
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .volume-controls {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .volume-controls {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr) auto;
     width: 100%;
@@ -11755,7 +11755,8 @@ html[data-native-host="true"]:not([data-host-platform="desktop"]) :is(
     justify-self: stretch;
   }
 
-  html[data-native-host="true"][data-android-layout="portrait"] .app-shell .stage-extended-controls .volume-slider {
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .volume-range-wrap,
+  html[data-host-layout="portrait"] .app-shell .stage-extended-controls .volume-slider {
     width: 100%;
     min-width: 0;
     min-height: 44px;
