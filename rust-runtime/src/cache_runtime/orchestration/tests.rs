@@ -4,6 +4,106 @@ use crate::cache_application::{CacheApplication, HostContract};
 use std::sync::Barrier;
 
 #[test]
+fn downkyi_captures_preferences_and_urgent_external_handoff_without_double_reservation() {
+    let mut f = Fixture::new();
+    f.facts.hevc_supported = Some(false);
+    f.facts.avc_quality_cap = "480P 清晰".into();
+    f.run(Action::Reconcile).unwrap(); // report capability before caching these items
+    let current = f.add("a");
+    f.add("b");
+    f.ready("a");
+    f.run(Action::Reconcile).unwrap();
+    f.activate("b");
+    let external = f
+        .app
+        .reserve_runtime_attempt("a", &current.item_incarnation_id)
+        .unwrap();
+    f.facts.external_attempts.push(ExternalAttempt {
+        item_id: "a".into(),
+        cache_attempt_token: external.cache_attempt_token,
+        retry_open: true,
+        primary: false,
+        urgent: true,
+    });
+    f.orchestration.aria2 = Some(aria2::Executable {
+        path: f.facts.cache_root.join("aria2c"),
+        version: "1.37.0".into(),
+        connections: 16,
+    });
+    f.facts.download_source = "downkyi".into();
+    f.facts.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+    let result = f
+        .run(Action::Retry {
+            item_id: current.id.clone(),
+            incarnation: current.item_incarnation_id.clone(),
+            force: true,
+        })
+        .unwrap();
+    assert_eq!(result["external_retries"][0]["handoff"], true);
+    f.run(Action::Reconcile).unwrap();
+    assert!(!f.state.jobs.contains_key("a"));
+    f.app.settle_artifact_reservation(&external);
+    f.facts.external_attempts.clear();
+    f.run(Action::Wake).unwrap();
+    let captured = f.state.jobs["a"].clone();
+    assert!(matches!(
+        captured.spec.executor,
+        Executor::Downkyi {
+            force_avc: true,
+            ..
+        }
+    ));
+    assert_eq!(captured.spec.executor.attempts(), 10);
+    assert_eq!(captured.spec.avc_quality_cap, "480P 清晰");
+    assert_eq!(captured.spec.cookie, f.facts.cookie);
+    assert!(matches!(
+        f.state.queued_priorities["a"],
+        CacheJobPriority::Urgent
+    ));
+    assert!(!f.state.active["b"].cancel.load(Ordering::Acquire));
+    f.facts.cookie.clear();
+    f.facts.download_source = "bbdown".into();
+    f.run(Action::Reconcile).unwrap();
+    assert_eq!(
+        f.state.jobs["a"].cache_attempt_token,
+        captured.cache_attempt_token
+    );
+    assert_eq!(f.state.jobs["a"].spec.cookie, captured.spec.cookie);
+    assert_eq!(f.state.jobs["a"].spec.executor.source(), "downkyi");
+}
+
+#[test]
+fn downkyi_keeps_video_cid_separate_from_ordered_audio_pages() {
+    let mut f = Fixture::new();
+    let mut item = f.add("a");
+    item.selected_pages = vec![3, 1];
+    item.selected_cids = vec![33, 11];
+    item.selected_parts = vec!["instrumental".into(), "original".into()];
+    item.available_pages = vec![1, 2, 3];
+    item.available_cids = vec![111, 22, 333];
+    item.video_page = 2;
+    f.facts.download_source = "downkyi".into();
+    let job = default_job(&item, &f.facts).unwrap();
+    assert_eq!(
+        job.pages
+            .iter()
+            .map(|p| (p.page, p.cid))
+            .collect::<Vec<_>>(),
+        vec![(3, 33), (1, 11)]
+    );
+    let tracks = track_specs(&job).unwrap();
+    assert_eq!(
+        tracks
+            .iter()
+            .map(|t| (t.page.page, t.page.cid))
+            .collect::<Vec<_>>(),
+        vec![(2, 22), (3, 33), (1, 11)]
+    );
+    item.available_cids.clear();
+    assert!(default_job(&item, &f.facts).is_err());
+}
+
+#[test]
 fn failed_bbdown_replacement_cancels_the_superseded_executor() {
     let mut f = Fixture::new();
     let item = f.add("a");
@@ -800,7 +900,7 @@ fn retained_source_supersedes_deferred_native_replacement_intent() {
     f.facts.avc_quality_cap = "480P 清晰".into();
     f.run(Action::Reconcile).unwrap();
     assert_eq!(f.orchestration.replacements.len(), 1);
-    f.facts.download_source = "downkyi".into();
+    f.facts.download_source = "ytdlp".into();
     f.run(Action::Reconcile).unwrap();
     assert!(f.orchestration.replacements.is_empty());
     f.app.settle_artifact_reservation(&r);

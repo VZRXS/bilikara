@@ -126,6 +126,26 @@ pub(super) fn dispatch(
             "请先在 Host 选择继续上一场或开启新一场",
         ));
     }
+    if matches!(
+        path,
+        "/api/cache-downloader/status" | "/api/cache-downloader/prepare"
+    ) {
+        with_app(|app| app.native_authorize(identity, true))?;
+        if body.as_object().is_none_or(|v| v.len() != 1) || body["download_source"] != "downkyi" {
+            return Err(ApiError::invalid("Only a source choice is accepted"));
+        }
+        let install = path.ends_with("/prepare");
+        let ready = context.prepare_aria2(install);
+        return Ok(match ready {
+            Ok(()) => {
+                json!({"download_source":"downkyi","tool":"aria2c","ready":true,"requires_prepare":false,"auto_prepare_supported":false,"message":"DownKyi/aria2c ready"})
+            }
+            Err(e) if install => return Err(e),
+            Err(e) => {
+                json!({"download_source":"downkyi","tool":"aria2c","ready":false,"requires_prepare":true,"message":e.message,"auto_prepare_supported":e.code != "invalid_override" && crate::cache_runtime::aria2::Executable::can_prepare(&[])})
+            }
+        });
+    }
     if path == "/api/cache-policy" {
         return preferences::update(context, identity, &body);
     }

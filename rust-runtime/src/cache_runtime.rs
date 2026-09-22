@@ -26,7 +26,9 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub(crate) mod aria2;
 pub(crate) mod bbdown;
+mod child;
 
 pub(crate) mod orchestration;
 
@@ -36,6 +38,10 @@ pub(crate) mod orchestration;
 pub(crate) enum Executor {
     #[default]
     Native,
+    Downkyi {
+        executable: aria2::Executable,
+        force_avc: bool,
+    },
     Bbdown {
         executable: bbdown::Executable,
         force_avc: bool,
@@ -48,11 +54,12 @@ impl Executor {
         match self {
             Self::Native => "native",
             Self::Bbdown { .. } => "bbdown",
+            Self::Downkyi { .. } => "downkyi",
         }
     }
     fn attempts(&self) -> u32 {
         match self {
-            Self::Native => TRACK_ATTEMPTS,
+            Self::Native | Self::Downkyi { .. } => TRACK_ATTEMPTS,
             Self::Bbdown { .. } => 1,
         }
     }
@@ -101,6 +108,8 @@ pub struct CacheJobSpec {
     #[serde(default)]
     pub aid: u64,
     pub video_page: u32,
+    #[serde(skip)]
+    pub(crate) video_only_page: Option<CachePageSpec>,
     pub pages: Vec<CachePageSpec>,
     pub cache_root: PathBuf,
     pub log_file: PathBuf,
@@ -273,6 +282,7 @@ struct RuntimeState {
 struct SharedRuntime {
     state: Mutex<RuntimeState>,
     wake: Condvar,
+    preparation_cancel: Mutex<(String, Arc<AtomicBool>)>,
 }
 
 struct CacheRuntime {
@@ -572,6 +582,7 @@ impl CacheRuntime {
         let shared = Arc::new(SharedRuntime {
             state: Mutex::new(RuntimeState::default()),
             wake: Condvar::new(),
+            preparation_cancel: Mutex::new(Default::default()),
         });
         let primary_shared = Arc::clone(&shared);
         let urgent_shared = Arc::clone(&shared);
@@ -609,6 +620,7 @@ impl CacheRuntime {
             shared: Arc::new(SharedRuntime {
                 state: Mutex::new(RuntimeState::default()),
                 wake: Condvar::new(),
+                preparation_cancel: Mutex::new(Default::default()),
             }),
             workers: Mutex::new(Vec::new()),
             reserve_cache_attempt,
@@ -1154,6 +1166,12 @@ impl CacheRuntime {
     }
 
     fn shutdown(&self) {
+        self.shared
+            .preparation_cancel
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .1
+            .store(true, Ordering::Release);
         let reservations = {
             let mut state = lock_state(&self.shared);
             let reservations = resource_reservations(&state);
@@ -1394,8 +1412,13 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
             let track_cancel = Arc::clone(cancel);
             match thread::Builder::new()
                 .name(format!("bilikara-cache-track-{}", track.key))
-                .spawn(move || run_track(&shared, &job, &track, &track_cancel))
-            {
+                .spawn(move || {
+                    let result = run_track(&shared, &job, &track, &track_cancel);
+                    if result.is_err() {
+                        track_cancel.store(true, Ordering::Release);
+                    }
+                    result
+                }) {
                 Ok(handle) => handles.push(handle),
                 Err(error) => {
                     failures.push(CacheRuntimeError::new("thread", error.to_string()));
@@ -1466,6 +1489,12 @@ fn run_track(
         // Native's ten-attempt resolver/download loop.
         return bbdown::run_track(executable, shared, job, track, cancel);
     }
+    if matches!(job.spec.executor, Executor::Downkyi { .. })
+        && let Some(message) =
+            crate::desktop_login::download_login_error("downkyi", &job.spec.cookie)
+    {
+        return Err(CacheRuntimeError::new("authentication", message));
+    }
     let mut last_error = CacheRuntimeError::new("download", "track download failed");
     for attempt in 1..=TRACK_ATTEMPTS {
         if cancel.load(Ordering::Acquire) {
@@ -1479,6 +1508,7 @@ fn run_track(
                 if is_terminal_track_error(&last_error) {
                     return Err(last_error);
                 }
+                emit_track_progress(shared, job, track, "retrying", attempt, (0, 0));
                 if !wait_for_retry(cancel, attempt) {
                     return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
                 }
@@ -1511,30 +1541,38 @@ fn run_track(
         let raw_path = attempt_dir.join(format!(".{final_name}.raw"));
         let normalized_path = attempt_dir.join(&final_name);
         emit_track_progress(shared, job, track, "downloading", attempt, (0, 0));
-        let request = match download_request(&job.spec, &stream, raw_path.clone()) {
-            Ok(request) => request,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&attempt_dir);
-                return Err(error);
-            }
+        let download = if let Executor::Downkyi { executable, .. } = &job.spec.executor {
+            aria2::download(executable, &job.spec, &stream, &raw_path, cancel, |bytes| {
+                emit_track_progress(shared, job, track, "downloading", attempt, bytes);
+            })
+        } else {
+            let request = match download_request(&job.spec, &stream, raw_path.clone()) {
+                Ok(request) => request,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&attempt_dir);
+                    return Err(error);
+                }
+            };
+            download_to_path(&request, |progress| {
+                emit_track_progress(
+                    shared,
+                    job,
+                    track,
+                    "downloading",
+                    attempt,
+                    (progress.downloaded_bytes, progress.total_bytes.unwrap_or(0)),
+                );
+                !cancel.load(Ordering::Acquire)
+            })
+            .map(|_| ())
+            .map_err(|error| cache_download_error(track, error))
         };
-        let download = download_to_path(&request, |progress| {
-            emit_track_progress(
-                shared,
-                job,
-                track,
-                "downloading",
-                attempt,
-                (progress.downloaded_bytes, progress.total_bytes.unwrap_or(0)),
-            );
-            !cancel.load(Ordering::Acquire)
-        });
         if let Err(error) = download {
             let _ = fs::remove_dir_all(&attempt_dir);
-            if error.kind == DownloadErrorKind::Cancelled {
+            if error.kind == "cancelled" {
                 return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
             }
-            last_error = cache_download_error(track, error);
+            last_error = error;
             append_log(
                 &job.spec.log_file,
                 &format!(
@@ -1545,23 +1583,37 @@ fn run_track(
             if is_terminal_track_error(&last_error) {
                 return Err(last_error);
             }
+            emit_track_progress(shared, job, track, "retrying", attempt, (0, 0));
             if !wait_for_retry(cancel, attempt) {
                 return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
             }
             continue;
         }
         emit_track_progress(shared, job, track, "validating", attempt, (0, 0));
-        let normalized = normalize_track(&job.spec, track, &raw_path, &normalized_path, cancel);
+        let normalized =
+            if bbdown::default_passthrough(&job.spec, track.kind, stream.codec_name.as_deref()) {
+                bbdown::validate_default_track(&job.spec, track, &raw_path, cancel).and_then(
+                    |metadata| {
+                        fs::rename(&raw_path, &normalized_path).map_err(|_| {
+                            CacheRuntimeError::new("storage", "Cannot stage validated media")
+                        })?;
+                        Ok(TrackValidation::Inspected(metadata))
+                    },
+                )
+            } else {
+                normalize_track(&job.spec, track, &raw_path, &normalized_path, cancel)
+                    .map(TrackValidation::Normalized)
+            };
         let _ = fs::remove_file(&raw_path);
         match normalized {
             Ok(probe) => {
-                let size = probe.file_bytes;
+                let size = probe.file_bytes();
                 emit_track_progress(shared, job, track, "ready", attempt, (size, size));
                 return Ok(TrackResult {
                     spec: track.clone(),
                     temporary_path: normalized_path,
                     final_name,
-                    probe: TrackValidation::Normalized(probe),
+                    probe,
                 });
             }
             Err(error) => {
@@ -1576,9 +1628,12 @@ fn run_track(
                 track.label, attempt, TRACK_ATTEMPTS, last_error.message
             ),
         );
-        if is_terminal_track_error(&last_error) {
+        if is_terminal_track_error(&last_error)
+            || matches!(job.spec.executor, Executor::Downkyi { .. })
+        {
             return Err(last_error);
         }
+        emit_track_progress(shared, job, track, "retrying", attempt, (0, 0));
         if !wait_for_retry(cancel, attempt) {
             return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
         }
@@ -1772,6 +1827,9 @@ fn resolve_track_stream(
         {
             bbdown::preflight_audio(&dash)
         }
+        ExpectedMediaKind::Audio if matches!(job.executor, Executor::Downkyi { .. }) => {
+            aria2::select_audio(&dash, job.audio_hires)
+        }
         ExpectedMediaKind::Audio => select_audio(&dash.audio, dash.flac.as_ref(), job.audio_hires),
     }
 }
@@ -1798,6 +1856,9 @@ fn select_video(
     let force_avc = !matches!(
         job.executor,
         Executor::Bbdown {
+            force_avc: false,
+            ..
+        } | Executor::Downkyi {
             force_avc: false,
             ..
         }
@@ -2108,7 +2169,7 @@ fn validate_job_fields(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
         ));
     }
     let mut pages = HashSet::new();
-    for page in &job.pages {
+    for page in job.pages.iter().chain(job.video_only_page.iter()) {
         if page.page == 0 || page.cid == 0 || !pages.insert(page.page) {
             return Err(CacheRuntimeError::new(
                 "invalid_request",
@@ -2279,6 +2340,7 @@ fn track_specs(job: &CacheJobSpec) -> Result<Vec<TrackSpec>, CacheRuntimeError> 
         .pages
         .iter()
         .find(|page| page.page == job.video_page)
+        .or(job.video_only_page.as_ref())
         .cloned()
         .ok_or_else(|| {
             CacheRuntimeError::new(
@@ -2764,6 +2826,7 @@ mod tests {
             bvid: "BV1xx411c7mD".to_owned(),
             aid: 1,
             video_page: 1,
+            video_only_page: None,
             pages: vec![CachePageSpec {
                 page: 1,
                 cid: 2,

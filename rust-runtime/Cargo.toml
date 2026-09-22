@@ -29,6 +29,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cosmic-text = { version = "0.17", default-features = false, features = ["std", "swash", "fontconfig"] }
 csv = "1.4"
 fs2 = "0.4"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+sha2 = "0.10"
 getrandom = "0.3"
 if-addrs = "0.13"
 libc = "0.2"

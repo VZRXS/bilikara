@@ -15,6 +15,7 @@ mod tests;
 pub(crate) struct NativeSession {
     pub desktop: bool,
     pub bbdown_available: bool,
+    pub aria2_available: bool,
     pub player_media: crate::native_host::preferences::PlayerMedia,
     pub media_client: String,
     pub cache_policy: crate::native_host::preferences::CachePolicy,
@@ -338,22 +339,37 @@ impl AppState {
             "releases_url":"https://github.com/VZRXS/bilikara/releases"});
         value["session_flags"] = json!({"auto_restored_backup":false,
             "startup_choice_pending":self.native_session_choice_pending()});
-        value["cache_policy"] = session
-            .cache_policy
-            .snapshot_with(session.desktop && session.bbdown_available);
+        value["cache_policy"] = session.cache_policy.snapshot_with(
+            session.desktop && session.bbdown_available,
+            session.desktop && session.aria2_available,
+        );
         if session.desktop {
+            if !session.aria2_available && session.cache_policy.download_source != "downkyi" {
+                value["cache_policy"]["download_source_choices"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"value":"downkyi","label":"DownKyi (aria2c)"}));
+            }
             let effective = crate::native_host::preferences::MediaSelection::new(
                 &session.cache_policy,
                 &session.player_media,
                 true,
             );
-            value["cache_policy"]["force_avc"] = json!(true);
+            value["cache_policy"]["force_avc"] = json!(effective.force_avc);
             value["cache_policy"]["avc_quality_cap"] = json!(session.player_media.avc_quality_cap);
             value["cache_policy"]["media_capabilities"] = session.player_media.snapshot();
             value["cache_policy"]["effective_video_quality"] = json!(effective.quality);
-            value["cache_policy"]["media_backend"] =
-                json!({"video_codecs":["avc"],"hevc_available":false});
-            if !session.player_media.usable() {
+            value["cache_policy"]["media_backend"] = if session.cache_policy.download_source
+                == "downkyi"
+            {
+                json!({"video_codecs":["avc","hevc","av1"],"hevc_available":!effective.force_avc})
+            } else {
+                json!({"video_codecs":["avc"],"hevc_available":false})
+            };
+            if !session.player_media.usable()
+                && !(session.cache_policy.download_source == "downkyi"
+                    && session.player_media.details["hevc_supported"] == true)
+            {
                 value["cache_policy"]["enabled"] = json!(false);
                 value["cache_policy"]["unavailable_reason"] = json!(
                     "Host player reports no AVC decode support; this media backend requires AVC"
@@ -391,7 +407,7 @@ impl AppState {
             // status route returns; there is no second placeholder projection.
             value["app_update"] = session.updates.snapshot();
         }
-        value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
+        value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else if session.cache_policy.download_source == "downkyi" {"DownKyi/aria2c"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
         if value["cache_policy"]["enabled"] == false {
             value["bbdown"]["ready"] = json!(false);
             value["bbdown"]["state"] = json!("unavailable");

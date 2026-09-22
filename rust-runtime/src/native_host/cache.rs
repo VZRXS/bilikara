@@ -124,8 +124,12 @@ fn tick(
         ))
     })?;
     let effective = MediaSelection::new(&policy, &player, context.desktop);
-    let usable = policy.available_with(context.desktop && context.bbdown.is_some())
-        && (!context.desktop || player.usable());
+    let usable = policy.available_with(
+        context.desktop && context.bbdown.is_some(),
+        context.desktop && context.aria2().is_some(),
+    ) && (!context.desktop
+        || (player.usable()
+            || policy.download_source == "downkyi" && player.details["hevc_supported"] == true));
     let items: Vec<_> = snapshot
         .current_item
         .iter()
@@ -256,6 +260,12 @@ fn job(
 ) -> Result<CacheJobSpec, ApiError> {
     let executor = match policy.download_source.as_str() {
         "native" => crate::cache_runtime::Executor::Native,
+        "downkyi" if context.desktop => crate::cache_runtime::Executor::Downkyi {
+            executable: context.aria2().ok_or_else(|| {
+                ApiError::new(501, "aria2_unavailable", "DownKyi/aria2c unavailable")
+            })?,
+            force_avc: effective.force_avc,
+        },
         "bbdown" if context.desktop => crate::cache_runtime::Executor::Bbdown {
             executable: context.bbdown.clone().ok_or_else(|| {
                 ApiError::new(
@@ -288,7 +298,11 @@ fn job(
             audio_hires: policy.audio_hires,
             executor,
         },
-        crate::cache_runtime::orchestration::JobContract::Native,
+        if policy.download_source == "downkyi" {
+            crate::cache_runtime::orchestration::JobContract::Downkyi
+        } else {
+            crate::cache_runtime::orchestration::JobContract::Native
+        },
     )
     .map_err(cache_error)
 }
@@ -321,14 +335,20 @@ pub(super) fn retry(
         }
         return Err(ApiError::new(403, "download_login_required", message));
     }
-    if !policy.available_with(context.desktop && context.bbdown.is_some()) {
+    if !policy.available_with(
+        context.desktop && context.bbdown.is_some(),
+        context.desktop && context.aria2().is_some(),
+    ) {
         return Err(ApiError::new(
             501,
             "imported_cache_policy_unavailable",
             "Imported downloader/preferences are unavailable; select supported Native settings explicitly",
         ));
     }
-    if context.desktop && !player.usable() {
+    if context.desktop
+        && !(player.usable()
+            || policy.download_source == "downkyi" && player.details["hevc_supported"] == true)
+    {
         return Err(ApiError::new(
             501,
             "player_media_unavailable",

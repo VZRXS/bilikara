@@ -441,6 +441,20 @@ def configure_bbdown(*, owner: str, prepared_path: Path | None) -> dict[str, Any
     return result
 
 
+def configure_aria2(*, owner: str, directory: Path, override_path: Path | None,
+                    vendor_roots: list[Path], install: bool) -> dict[str, Any]:
+    """Trusted source configuration/preparation transport, never HTTP fields."""
+    result = _call_runtime_service("native_cache", {
+        "command": "configure_aria2", "owner": owner, "directory": str(directory.resolve()),
+        "override_path": str(override_path.resolve()) if override_path is not None else None,
+        "vendor_roots": [str(p.resolve()) for p in vendor_roots], "install": install,
+    })
+    if (type(result.get("ready")) is not bool or type(result.get("auto_prepare_supported")) is not bool
+        or any(not isinstance(result.get(k), str) for k in ("message", "path", "version"))):
+        raise RustRuntimeServiceError("invalid_response", "Invalid aria2c readiness", response={})
+    return result
+
+
 def native_cache_request(command: str, **fields: Any) -> dict[str, Any]:
     if (_runtime_lib is not None and _media_startup_error
         and command not in {"stop", "clear", "prepare", "handoff"}):

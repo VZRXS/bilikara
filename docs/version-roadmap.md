@@ -46,6 +46,9 @@ rules. The first AppState cutover is now established:
   Rust and Python state authorities, and no per-operation stateful fallback.
 - The D0 compiled-only desktop build/launch contract remains separate work;
   this cutover does not remove Python or rewrite the release launch contract.
+  Preview 2 targets the default Rust Host and removal of Python production
+  dependencies; native desktop distribution and default launch follow the
+  shared-service convergence.
 - The current application-service slice in `rust-runtime` owns the Bilibili
   QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
   I/O, Rust Native cache queues/retries/cancellation/validated publication,
@@ -97,8 +100,9 @@ External-tool direction:
   H.264/AAC MP4 copy/fast-start and FLAC-in-MP4 extraction in supported same-build
   packages. Rust owns routing; Pure Rust and operation-specific same-build CLI
   compatibility remain. `BILIKARA_MEDIA_BACKEND=legacy` at startup restores the
-  previous routes without libav. DownKyi timestamp remux, BBDown's own explicit
-  FFmpeg workflow and operations outside accepted profiles retain their paths.
+  source-mode compatibility routes without libav. Native, BBDown and DownKyi
+  use shared Rust validation/normalization; their desktop production paths do
+  not invoke FFmpeg/ffprobe. Retained yt-dlp/source compatibility is separate.
   Linux trusted-prefix integration is locally testable; Windows x64 package
   execution needs Actions after review/push. Code review, Actions evidence and
   deferred manual playback are separate gates. No ARM64/macOS or historical
@@ -271,8 +275,8 @@ configured `BILIKARA_HOME/tools/bbdown` and installed/bundled executable-relativ
 locations. It neither searches PATH nor downloads/installs a binary. A bounded
 offline help check verifies the version and required arguments. Configure a
 trusted executable and restart to change availability. Public requests cannot
-supply executable paths or commands. DownKyi/aria2c and yt-dlp are not Rust Host
-executors; their default-product behavior remains available.
+supply executable paths or commands. DownKyi/aria2c uses the shared executor
+described below; yt-dlp remains a default Python Host source.
 
 Each accepted attempt captures its source, effective preferences and P02
 credentials. BBDown uses typed arguments, owned staging, separate tracks and
@@ -313,6 +317,41 @@ explicit-source workers. BBDown progress uses structured stages and measured
 bytes; raw child text and its upgrade hints are not parsed or logged, and tool
 failure does not trigger an automatic installer/update retry. This does not
 switch the default Host or retire the Python distribution dependency.
+
+### DownKyi/aria2c in both desktop Hosts
+
+Explicit `downkyi` uses shared Rust DASH selection, cache orchestration and a
+supervised external aria2c child in both the default Python Host and the native
+desktop Host. The ordinary Runtime cdylib includes this executor without the
+HTTP Host feature; mobile does not admit desktop executables. Python transports
+trusted configuration, coarse triggers and decided persistence/HTTP/SSE effects;
+it has no DownKyi transfer, track retry or child-output execution path.
+
+Rust preparation reuses bundled/managed/system locations, explicit override
+precedence and pinned platform assets. Invalid overrides fail closed. Working
+tools need no download, and active executable capabilities remain immutable.
+Public requests select the source or request preparation, never paths, commands
+or arbitrary download inputs. Trusted configuration is scoped to the existing
+owner; observations reuse validated capabilities.
+
+Attempts capture source, credentials, selected video/audio pages and CIDs,
+variant order, quality, conditional AVC caps and Hi-Res preference. DownKyi
+retains its preferred Dolby/FLAC/first-regular audio policy and ordered URL
+candidates. Each track has at most ten resolving/transfer attempts, with
+cancellable three-second waits and aria2c's internal retry count set to one.
+Existing shared job/track limits bound concurrency. Partial sibling work stops
+on terminal failure; source handoffs settle ownership before replacement.
+
+URLs and host-scoped cookies use private, promptly removed aria2 inputs, with
+line/option injection rejected. The child ignores user config and netrc, uses
+fixed argv without a shell or RPC service, and has bounded supervision and pipe
+draining. Rust projects exact reported byte progress and structured errors,
+never file preallocation or raw credential-bearing output. A successful exit
+still requires shared structural media checks and normalization before immutable
+publication. HEVC/AV1 and Dolby source bytes retain the validated desktop path;
+FFmpeg/ffprobe execution remains retired. Page metadata duration is not a file
+completeness oracle. Shared AppState events and artifact leases preserve readable
+media across failed replacement, queue changes and stale completion.
 
 ### Update checking in the Rust Desktop Host
 

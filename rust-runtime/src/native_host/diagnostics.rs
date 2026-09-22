@@ -52,6 +52,7 @@ pub(super) fn markdown(
     identity: &Identity,
     body: &Value,
 ) -> Result<Value, ApiError> {
+    let aria2_available = context.desktop && context.aria2().is_some();
     let (snapshot, events, cache_policy) = with_app(|app| {
         app.native_authorize(identity, true)?;
         Ok((
@@ -59,7 +60,7 @@ pub(super) fn markdown(
             app.native_diagnostics(),
             app.native()
                 .cache_policy
-                .snapshot_with(context.desktop && context.bbdown.is_some()),
+                .snapshot_with(context.desktop && context.bbdown.is_some(), aria2_available),
         ))
     })?;
     // Never include the login checkpoint, access URLs, tokens, or raw HTTP headers.

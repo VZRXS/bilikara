@@ -26,7 +26,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await restart();page=getPage();watch();await ready();
   await page.locator("#cache-settings-toggle").click();
   const choices=(await okay("/api/state")).cache_policy.download_source_choices.map(v=>v.value);
-  assert.deepEqual(choices,["native","bbdown"]);
+  assert.deepEqual(choices,["native","bbdown","downkyi"]);
   assert.ok(await page.title());assert.ok((await page.locator("body").innerText()).includes("Imported desktop song"));
   if(process.env.BILIKARA_BBDOWN_REAL){
     const previous=await current();

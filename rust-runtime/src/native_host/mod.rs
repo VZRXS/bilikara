@@ -99,6 +99,7 @@ pub(crate) struct HostContext {
     port: u16,
     desktop: bool,
     bbdown: Option<crate::cache_runtime::bbdown::Executable>,
+    aria2: std::sync::Mutex<Option<crate::cache_runtime::aria2::Executable>>,
     shutdown_token: Option<String>,
     workers: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -132,6 +133,39 @@ impl NativeHost {
     }
 }
 impl HostContext {
+    fn aria2(&self) -> Option<crate::cache_runtime::aria2::Executable> {
+        self.aria2.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    fn prepare_aria2(&self, install: bool) -> Result<(), ApiError> {
+        if !self.desktop {
+            return Err(ApiError::new(
+                501,
+                "cache_source_unavailable",
+                "aria2c is desktop-only",
+            ));
+        }
+        let mut capability = self.aria2.lock().unwrap_or_else(|p| p.into_inner());
+        if capability.is_none() {
+            *capability = Some(
+                crate::cache_runtime::aria2::Executable::prepare(
+                    &self.directory.join("tools/aria2c"),
+                    std::env::var_os("ARIA2C_PATH")
+                        .filter(|p| !p.is_empty())
+                        .map(PathBuf::from),
+                    &[],
+                    install,
+                    &self.stop,
+                )
+                .map_err(|e| ApiError::new(501, &e.kind, e.message))?,
+            );
+        }
+        drop(capability);
+        with_app(|app| {
+            app.native().aria2_available = true;
+            Ok(())
+        })
+    }
+
     fn spawn(&self, name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
         let mut workers = self
             .workers
@@ -240,6 +274,20 @@ fn start(
     } else {
         None
     };
+    let aria2 = if desktop {
+        crate::cache_runtime::aria2::Executable::prepare(
+            &directory.join("tools/aria2c"),
+            std::env::var_os("ARIA2C_PATH")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from),
+            &[],
+            saved_preferences.cache.download_source == "downkyi",
+            &AtomicBool::new(false),
+        )
+        .ok()
+    } else {
+        None
+    };
     // Seed/migrate configured UP sources before any login-triggered refresh.
     library::initialize(&directory)?;
     with_app(|app| {
@@ -259,6 +307,7 @@ fn start(
             session.updates = updates::UpdateState::desktop(desktop::update_facts());
         }
         session.bbdown_available = bbdown.is_some();
+        session.aria2_available = aria2.is_some();
         session.host_token = host_token.clone();
         session.invite = invite;
         session.cookie = saved_cookie;
@@ -282,6 +331,7 @@ fn start(
         desktop,
         shutdown_token,
         bbdown,
+        aria2: std::sync::Mutex::new(aria2),
         workers: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -71,7 +71,6 @@ ARIA2_PROGRESS_RE = re.compile(
     r"\(([0-9.]+)%\)",
     re.IGNORECASE,
 )
-ARIA2_HTTP_STATUS_RE = re.compile(r"\bstatus=(401|402|403)\b", re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
@@ -109,13 +108,6 @@ RUST_MEDIA_PROBE_CONTAINER_SUFFIXES = frozenset({".m4a", ".mp4"})
 RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS = frozenset(
     {"unsupported_codec", "unsupported_container_layout"}
 )
-try:
-    ARIA2_CONNECTIONS_PER_TRACK = max(
-        1,
-        min(16, int(os.getenv("BILIKARA_ARIA2_CONNECTIONS_PER_TRACK", "16"))),
-    )
-except ValueError:
-    ARIA2_CONNECTIONS_PER_TRACK = 16
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
@@ -340,6 +332,9 @@ class CacheManager:
         self.native_cache_error = ""
         self.native_cache_call_lock = threading.Lock()
         self.native_cache_observation_lock = threading.Lock()
+        self.aria2_configuration = None
+        self.aria2_install_attempted = False
+        self.aria2_configuration_lock = threading.Lock()
         self.bbdown_configuration_lock = threading.Lock()
         self.bbdown_configuration: dict[str, Any] | None = None
         rust_runtime.reset_bilibili_login_status()
@@ -593,6 +588,10 @@ class CacheManager:
             and configuration["download_source"] == DOWNLOAD_SOURCE_BBDOWN
             and not self._download_login_error(DOWNLOAD_SOURCE_BBDOWN, cookie=cookie)):
             self._configure_bbdown_executor()
+        if (command in {"reconcile", "wake", "retry"}
+            and configuration["download_source"] == DOWNLOAD_SOURCE_DOWNKYI
+            and not self._download_login_error(DOWNLOAD_SOURCE_DOWNKYI, cookie=cookie)):
+            self._configure_aria2_executor(install=True)
         with self.lock:
             if self.stop_event.is_set() and command != "stop":
                 return {}
@@ -620,7 +619,7 @@ class CacheManager:
             )
             self._apply_native_cache_snapshot(result["snapshot"])
             # These are decided views used by retained external workers and UI.
-            if self.download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+            if self.download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
                 self.desired_ids = set(result["desired_ids"])
                 self.ordered_desired_ids = list(result["ordered_ids"])
             processes = []
@@ -660,7 +659,7 @@ class CacheManager:
             self.collect_retired_artifacts()
             if result:
                 current_ids = set(result["current_ids"])
-                for source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+                for source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
                     for log_file in (self.log_dir / source).glob("*.log"):
                         if log_file.stem not in current_ids:
                             self._safe_unlink(log_file)
@@ -737,7 +736,9 @@ class CacheManager:
             if YTDLP_PATH_OVERRIDE
             else self._local_ytdlp_binary_path()
         )
-        aria2c_path = (
+        with self.aria2_configuration_lock:
+            aria2_configuration = dict(self.aria2_configuration or {})
+        aria2c_path = Path(aria2_configuration["path"]) if aria2_configuration else (
             Path(ARIA2C_PATH_OVERRIDE).expanduser()
             if ARIA2C_PATH_OVERRIDE
             else self._local_aria2c_binary_path()
@@ -770,9 +771,7 @@ class CacheManager:
                 ),
                 "aria2c": self._diagnostic_tool_entry(
                     aria2c_path,
-                    self._read_aria2c_version(aria2c_path)
-                    if aria2c_path.exists()
-                    else "",
+                    str(aria2_configuration.get("version") or ""),
                     binary_state if download_source == DOWNLOAD_SOURCE_DOWNKYI else "",
                 ),
                 "FFmpeg": self._diagnostic_tool_entry(
@@ -967,7 +966,7 @@ class CacheManager:
                 )
             )
 
-        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             self._sync_native_with_playlist()
         elif should_recache:
             self._request_desired_recaching("HEVC unsupported; switching video cache to AVC")
@@ -1109,7 +1108,7 @@ class CacheManager:
         items = self.store.list_items()
         if not items:
             return
-        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             self.sync_with_playlist()
             return
         invalidated_ids: list[str] = []
@@ -1301,6 +1300,10 @@ class CacheManager:
                     self.bbdown_configuration = None
             return self.downloader_status(normalized_source)
         if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
+            with self.aria2_configuration_lock:
+                if self.aria2_configuration and not self.aria2_configuration["ready"]:
+                    self.aria2_configuration = None
+                    self.aria2_install_attempted = False
             status = self._aria2c_status()
             if status.get("ready"):
                 return status
@@ -1335,51 +1338,33 @@ class CacheManager:
         with self.lock:
             self.binary_state, self.binary_version, self.binary_message = status
 
-    def _aria2c_status(self) -> dict[str, Any]:
-        override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
-        manual_path = self._local_aria2c_binary_path()
-        system_path = None if override else self._system_aria2c_path()
+    def _configure_aria2_executor(self, *, install: bool = False) -> dict[str, Any]:
+        self._ensure_native_cache_runtime()
+        with self.aria2_configuration_lock:
+            if self.aria2_configuration is None or (
+                install and not self.aria2_configuration["ready"] and not self.aria2_install_attempted
+            ):
+                self.aria2_configuration = rust_runtime.configure_aria2(
+                    owner=self._artifact_owner, directory=ARIA2C_DIR,
+                    override_path=Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None,
+                    vendor_roots=[VENDOR_DIR, INTERNAL_VENDOR_DIR], install=install,
+                )
+                self.aria2_install_attempted = install
+            result = dict(self.aria2_configuration)
+        with self.lock:
+            if self.download_source == DOWNLOAD_SOURCE_DOWNKYI:
+                self.binary_state = "ready" if result["ready"] else "failed"
+                self.binary_version = result["version"]
+                self.binary_message = result["message"]
+        return result
 
-        if override and override.exists():
-            binary_path = override
-        elif system_path:
-            binary_path = system_path
-        else:
-            binary_path = manual_path
-        exists = binary_path.exists()
-        version = self._read_aria2c_version(binary_path) if exists else ""
-        system, arch = self._current_platform_tokens()
-        ready = bool(version)
-        auto_prepare_supported = not ready and self._aria2_auto_prepare_supported(system, arch)
-        if ready:
-            if override and binary_path == override:
-                message = f"使用外部 aria2c: {override}"
-            elif system_path and binary_path == system_path:
-                message = f"使用系统 aria2c: {system_path}"
-            else:
-                message = f"aria2c {version} 已就绪"
-        elif exists and auto_prepare_supported:
-            message = f"aria2c 不可执行，将在确认后自动修复: {binary_path}"
-        elif exists:
-            message = f"aria2c 不可执行: {binary_path}"
-        elif auto_prepare_supported:
-            message = f"需要下载 aria2c 到 {manual_path}"
-        else:
-            message = f"当前平台需要手动安装 aria2c，或将 aria2c 放入 {manual_path}"
-        return {
-            "download_source": DOWNLOAD_SOURCE_DOWNKYI,
-            "tool": "aria2c",
-            "ready": ready,
-            "requires_prepare": not ready,
-            "auto_prepare_supported": auto_prepare_supported,
-            "path": str(binary_path),
-            "manual_path": str(manual_path),
-            "version": version,
-            "platform": system,
-            "arch": arch,
-            "install_url": "https://github.com/aria2/aria2/releases",
-            "message": message,
-        }
+    def _aria2c_status(self) -> dict[str, Any]:
+        result = self._configure_aria2_executor()
+        return {"download_source": DOWNLOAD_SOURCE_DOWNKYI, "tool": "aria2c",
+                "requires_prepare": not result["ready"],
+                "auto_prepare_supported": result["auto_prepare_supported"],
+                "manual_path": str(self._local_aria2c_binary_path()), **result}
+
     def cache_metrics(self) -> dict[str, Any]:
         item_bytes: dict[str, int] = {}
         logical_total_bytes = 0
@@ -1422,7 +1407,7 @@ class CacheManager:
         }
 
     def prepare_session(self) -> None:
-        native = self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN)
+        native = self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI)
         items = [] if native else self.store.list_items()
         cache_attempt_tokens = self._begin_live_cache_attempts(items)
         if native:
@@ -1539,7 +1524,7 @@ class CacheManager:
 
     def clear_runtime_cache(self) -> None:
         native_cache = (
-            self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN)
+            self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI)
             or self.native_cache_started
         )
         items = [] if native_cache else self.store.list_items()
@@ -1608,7 +1593,7 @@ class CacheManager:
                 "expected item incarnation must be a non-empty Rust identity"
             )
         download_source = self._current_download_source()
-        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             try:
                 self._native_orchestration(
                     "retry", item_id=item_id,
@@ -1838,7 +1823,7 @@ class CacheManager:
     def sync_with_playlist(self) -> None:
         if self.stop_event.is_set():
             return
-        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             self._sync_native_with_playlist()
             return
         if self.native_cache_started:
@@ -1874,7 +1859,7 @@ class CacheManager:
         missing_download_login = False
         with self.lock:
             download_source = self.python_worker_download_sources.get(item_id, self.download_source)
-            if download_source not in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+            if download_source not in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
                 if (
                     item_id in self.pending_ids
                     or item_id in self.native_cache_snapshot.get("active_item_ids", [])
@@ -1893,7 +1878,7 @@ class CacheManager:
                     self.pending_ids.add(item_id)
                     self.python_worker_download_sources[item_id] = download_source
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
-        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             self._sync_native_with_playlist()
             return
         if missing_download_login:
@@ -1924,7 +1909,7 @@ class CacheManager:
     def _start_urgent_cache(self, item_id: str) -> None:
         with self.lock:
             download_source = self.python_worker_download_sources.get(item_id, self.download_source)
-        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             item = self.store.get_item(item_id)
             if item is not None:
                 self.retry_item(item_id, expected_item_incarnation_id=item.item_incarnation_id, force=True)
@@ -2009,7 +1994,7 @@ class CacheManager:
     def _after_external_cache_attempt(self, should_resync: bool) -> None:
         if self.stop_event.is_set():
             return
-        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             # A closed retry window may have deferred a Native replacement, even
             # when the external attempt failed. Wake Rust after ownership drains;
             # a clear/stop operation remains closed to these background wakeups.
@@ -2028,7 +2013,7 @@ class CacheManager:
             # A stale retained-source priority plan cannot create a shared job
             # in the Python queue after configuration changed.
             if self.python_worker_download_sources.get(item_id, self.download_source) in (
-                DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN
+                DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI
             ):
                 return
             download_source = self.python_worker_download_sources.setdefault(
@@ -2078,7 +2063,7 @@ class CacheManager:
             return
         with self.lock:
             download_source = self.python_worker_download_sources.get(item_id, self.download_source)
-            if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+            if download_source in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
                 return
             if login_error := self._download_login_error(download_source, item_id):
                 raise ValueError(login_error)
@@ -2462,12 +2447,7 @@ class CacheManager:
             native_tracks_prevalidated = bool(
                 cache_result.get("native_tracks_prevalidated")
             )
-            downkyi_tracks_prevalidated = bool(
-                cache_result.get("downkyi_tracks_prevalidated")
-            )
-            if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
-                self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
-            if not native_tracks_prevalidated and not downkyi_tracks_prevalidated:
+            if not native_tracks_prevalidated:
                 self._validate_cache_result(
                     item.id,
                     cache_result,
@@ -2850,20 +2830,6 @@ class CacheManager:
                 audio_tracks=audio_tracks,
                 cache_attempt_token=cache_attempt_token,
             )
-        elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            dash_streams = self._resolve_dash_streams(item)
-            result_paths = self._download_dash_streams_with_aria2c(
-                item,
-                binary_path,
-                ffmpeg_path,
-                item_dir,
-                log_path,
-                dash_streams=dash_streams,
-                video_track=video_track,
-                audio_tracks=audio_tracks,
-                cache_attempt_token=cache_attempt_token,
-                validate_tracks=True,
-            )
         else:
             raise RuntimeError("source must be executed by the shared Rust runtime")
 
@@ -2968,7 +2934,7 @@ class CacheManager:
             "selected_audio_variant_id": selected_audio_variant_id,
             "validation_files": validation_files,
         }
-        if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
             validation_metadata = [
                 dict(track.get("validation_metadata") or {})
                 for track in download_tracks
@@ -2981,10 +2947,7 @@ class CacheManager:
                 )
             result["validation_metadata"] = validation_metadata
             result["validation_failure_count"] = 0
-            if download_source == DOWNLOAD_SOURCE_NATIVE:
-                result["native_tracks_prevalidated"] = True
-            else:
-                result["downkyi_tracks_prevalidated"] = True
+            result["native_tracks_prevalidated"] = True
         return result
 
     @staticmethod
@@ -3137,15 +3100,6 @@ class CacheManager:
     ) -> list[str]:
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             return self._ytdlp_download_command(
-                binary_path,
-                ffmpeg_path,
-                page_url,
-                page=page,
-                stream_kind=stream_kind,
-                target_dir=target_dir,
-            )
-        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            return self._downkyi_download_command(
                 binary_path,
                 ffmpeg_path,
                 page_url,
@@ -3907,313 +3861,6 @@ class CacheManager:
             executor.shutdown(wait=True)
         return result_paths
 
-    def _download_dash_streams_with_aria2c(
-        self,
-        item,
-        binary_path: Path,
-        ffmpeg_path: Path,
-        item_dir: Path,
-        log_path: Path,
-        *,
-        dash_streams: dict,
-        video_track: dict,
-        audio_tracks: list[dict],
-        cache_attempt_token: int,
-        validate_tracks: bool = False,
-    ) -> dict[str, Path]:
-        item_id = item.id
-        cookie = effective_bilibili_cookie()
-        if message := self._download_login_error(DOWNLOAD_SOURCE_DOWNKYI, item_id, cookie=cookie):
-            error = DownloadCommandError(message)
-            error.kind = "authentication_required"
-            raise error
-        self._append_log_line(log_path, "download_credentials_loaded source=downkyi (current login; credentials redacted)")
-
-        selected_pages = self._selected_pages_for_item(item)
-        video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
-
-        with self.lock:
-            audio_hires = self.audio_hires
-
-        video_urls = self._dash_stream_urls(dash_streams, "video")
-        if not video_urls:
-            raise DownloadCommandError("未找到视频流下载地址")
-        video_target_dir = item_dir / f"video-p{video_page}"
-        video_target_dir.mkdir(parents=True, exist_ok=True)
-
-        ffprobe_path: Path | None = None
-
-        track_args: list[tuple[dict, list[str], str, Path, str, str, dict[str, object]]] = []
-        track_args.append((
-            video_track,
-            video_urls,
-            f"video-p{video_page}.mp4",
-            video_target_dir,
-            f"下载视频轨 P{video_page}",
-            "video",
-            (dash_streams.get("video") or [{}])[0],
-        ))
-
-        for track in audio_tracks:
-            page = int(track["page"])
-            label = str(track["label"])
-            audio_target_dir = item_dir / f"audio-p{page}"
-            audio_target_dir.mkdir(parents=True, exist_ok=True)
-
-            cid = self._cid_for_page(item, page)
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] resolve audio DASH: page={page}, cid={cid}")
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] download audio track: page={page}, label={label}")
-
-            try:
-                page_dash_streams = self._resolve_dash_streams(item, cid=cid)
-            except Exception as exc:
-                raise RuntimeError(f"P{page} 音频解析失败: {exc}") from exc
-
-            best_audio = page_dash_streams.get("audio") or []
-            flac_audio = page_dash_streams.get("flac")
-            dolby_audio = page_dash_streams.get("dolby")
-            preferred_audio = self._select_preferred_dash_audio(
-                best_audio,
-                flac_audio,
-                dolby_audio,
-                audio_hires=audio_hires,
-            )
-
-            if preferred_audio:
-                audio_urls = self._preferred_audio_urls(preferred_audio)
-            else:
-                audio_urls = self._dash_stream_urls(page_dash_streams, "audio")
-            if not audio_urls:
-                raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
-
-            out_ext = ".flac" if (flac_audio and preferred_audio is flac_audio and audio_hires) else ".m4a"
-            track_args.append((
-                track,
-                audio_urls,
-                f"audio-p{page}{out_ext}",
-                audio_target_dir,
-                f"下载音轨 P{page}",
-                "audio",
-                preferred_audio or {},
-            ))
-
-        result_paths: dict[str, Path] = {}
-        max_workers = max(1, min(len(track_args), MAX_PARALLEL_TRACK_DOWNLOADS))
-        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-downkyi-track")
-
-        def _download_track(args: tuple) -> tuple[str, Path]:
-            track, urls, out_name, target_dir, stage_label, stream_kind, stream_metadata = args
-            track["stream_metadata"] = dict(stream_metadata)
-            track_key = str(track["key"])
-            page = int(track["page"])
-            cid = self._cid_for_page(item, page)
-            validation_label = f"{'视频轨' if stream_kind == 'video' else '音轨'} P{page}"
-            max_attempts = DOWNKYI_TRACK_MAX_ATTEMPTS if validate_tracks else 1
-            last_error = "未知错误"
-
-            for attempt in range(1, max_attempts + 1):
-                if validate_tracks:
-                    self._raise_if_retry_requested(item_id)
-                    self._raise_if_priority_shift(item_id)
-                if attempt > 1:
-                    self._reset_download_track_progress(
-                        item_id,
-                        track_key,
-                        cache_attempt_token=cache_attempt_token,
-                    )
-                self._set_download_track_phase(
-                    item_id,
-                    track_key,
-                    cache_attempt_token=cache_attempt_token,
-                    phase="downloading",
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                )
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] media_diagnostic: "
-                    f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'start'}, ensure_ascii=False, sort_keys=True)}",
-                )
-                media_path: Path | None = None
-                try:
-                    media_path = self._download_stream_with_aria2c(
-                        item_id, binary_path, ffmpeg_path, target_dir, log_path,
-                        urls=urls,
-                        out_name=out_name,
-                        cookie=cookie,
-                        stage_label=stage_label,
-                        track_key=track_key,
-                        cache_attempt_token=cache_attempt_token,
-                        stream_kind=stream_kind,
-                        page=page,
-                        cid=cid,
-                        stream_metadata=stream_metadata,
-                        mark_done=not validate_tracks,
-                    )
-                    if validate_tracks:
-                        self._set_download_track_phase(
-                            item_id,
-                            track_key,
-                            cache_attempt_token=cache_attempt_token,
-                            phase="validating",
-                            attempt=attempt,
-                            max_attempts=max_attempts,
-                        )
-                        source_audio_duration = None
-                        if stream_kind == "audio":
-                            source_audio_duration = self._probe_original_audio_duration(
-                                ffprobe_path,
-                                ffmpeg_path,
-                                media_path,
-                                label=validation_label,
-                                log_path=log_path,
-                                rust_container_hint="mp4",
-                            )
-                        self._normalize_downkyi_media_file(
-                            ffmpeg_path,
-                            media_path,
-                            label=validation_label,
-                            stream_kind=stream_kind,
-                            log_path=log_path,
-                        )
-                        validation_entry: dict[str, object] = {
-                            "label": validation_label,
-                            "path": media_path,
-                            "required_streams": {stream_kind},
-                            "stream_kind": stream_kind,
-                            "page": page,
-                            "cid": cid,
-                            "download_source": DOWNLOAD_SOURCE_DOWNKYI,
-                            "stream_metadata": dict(stream_metadata),
-                        }
-                        if stream_kind == "video":
-                            validation_entry["expected_duration"] = self._duration_for_page(item, page)
-                        if source_audio_duration is not None:
-                            validation_entry["source_audio_duration"] = source_audio_duration
-                        metadata = self._validate_media_file(
-                            ffprobe_path,
-                            ffmpeg_path,
-                            media_path,
-                            label=validation_label,
-                            required_streams={stream_kind},
-                            log_path=log_path,
-                            diagnostic_context={**validation_entry, "item_id": item_id},
-                        )
-                        metadata.update({
-                            "label": validation_label,
-                            "page": page,
-                            "stream_kind": stream_kind,
-                            "expected_duration": self._optional_probe_float(
-                                validation_entry.get("expected_duration")
-                            ),
-                            "source_audio_duration": self._optional_probe_float(
-                                validation_entry.get("source_audio_duration")
-                            ),
-                        })
-                        track["validation_metadata"] = metadata
-                        final_size = media_path.stat().st_size
-                        self._update_download_track_progress(
-                            item_id,
-                            cache_attempt_token=cache_attempt_token,
-                            track_key=track_key,
-                            target_dir=media_path.parent,
-                            current_bytes=final_size,
-                            target_bytes=final_size,
-                            done=True,
-                            measure_path=False,
-                        )
-                        self._set_download_track_phase(
-                            item_id,
-                            track_key,
-                            cache_attempt_token=cache_attempt_token,
-                            phase="ready",
-                            attempt=attempt,
-                            max_attempts=max_attempts,
-                        )
-                    self._append_log_line(
-                        log_path,
-                        f"[{self._log_timestamp()}] media_diagnostic: "
-                        f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'ok'}, ensure_ascii=False, sort_keys=True)}",
-                    )
-                    return track_key, media_path
-                except CacheCancelledError:
-                    if media_path is not None:
-                        self._safe_rmtree(media_path.parent)
-                    self._set_download_track_phase(
-                        item_id,
-                        track_key,
-                        cache_attempt_token=cache_attempt_token,
-                        phase="retrying",
-                        attempt=attempt,
-                        max_attempts=max_attempts,
-                    )
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    last_error = self._compact_probe_error(str(exc)) or type(exc).__name__
-                    if media_path is not None:
-                        self._safe_rmtree(media_path.parent)
-                    terminal = self._is_terminal_track_failure(exc)
-                    self._append_log_line(
-                        log_path,
-                        f"[{self._log_timestamp()}] media_diagnostic: "
-                        f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'failed', 'error': last_error}, ensure_ascii=False, sort_keys=True)}",
-                    )
-                    if terminal:
-                        raise
-                    if attempt >= max_attempts:
-                        raise DownloadCommandError(
-                            f"{validation_label} 已尝试 {max_attempts} 次仍失败: {last_error}"
-                        ) from exc
-                    if self.stop_event.wait(DOWNKYI_TRACK_RETRY_WAIT_SECONDS):
-                        raise CacheCancelledError("缓存已停止") from exc
-
-            raise DownloadCommandError(
-                f"{validation_label} 已尝试 {max_attempts} 次仍失败: {last_error}"
-            )
-
-        future_to_track = {
-            executor.submit(_download_track, args): args[0]
-            for args in track_args
-        }
-        try:
-            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
-            exceptions: list[Exception] = []
-            for future in done:
-                if future.cancelled():
-                    continue
-                try:
-                    key, path = future.result()
-                    result_paths[key] = path
-                except Exception as exc:  # noqa: BLE001
-                    exceptions.append(exc)
-
-            if exceptions:
-                for future in pending:
-                    future.cancel()
-                self._terminate_item_processes(item_id)
-                still_running = [future for future in pending if not future.cancelled()]
-                if still_running:
-                    wait(still_running)
-                    for future in still_running:
-                        if future.cancelled():
-                            continue
-                        try:
-                            future.result()
-                        except Exception as exc:  # noqa: BLE001
-                            exceptions.append(exc)
-                raise self._preferred_download_exception(exceptions)
-
-            for future, track_ref in future_to_track.items():
-                if future not in done:
-                    try:
-                        key, path = future.result()
-                        result_paths[key] = path
-                    except Exception as exc:  # noqa: BLE001
-                        exceptions.append(exc)
-        finally:
-            executor.shutdown(wait=True)
-
-        return result_paths
 
     @staticmethod
     def _py_dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
@@ -4397,150 +4044,6 @@ class CacheManager:
             "numbered_alternatives": [entry["name"] for entry in entries if entry["numbered_alternative"]],
         }
 
-    def _download_stream_with_aria2c(
-        self,
-        item_id: str,
-        binary_path: Path,
-        ffmpeg_path: Path,
-        target_dir: Path,
-        log_path: Path,
-        *,
-        urls: list[str],
-        out_name: str,
-        cookie: str,
-        stage_label: str,
-        track_key: str,
-        cache_attempt_token: int,
-        stream_kind: str,
-        page: int = 0,
-        cid: int = 0,
-        stream_metadata: dict[str, object] | None = None,
-        mark_done: bool = True,
-    ) -> Path:
-        if not urls:
-            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
-
-        download_urls = [str(url).strip() for url in urls if str(url).strip()]
-        if not download_urls:
-            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
-
-        target_dir.mkdir(parents=True, exist_ok=True)
-        attempt_dir = target_dir / f".attempt-{uuid.uuid4().hex}"
-        attempt_dir.mkdir(parents=False, exist_ok=False)
-        expected_path = attempt_dir / out_name
-        final_path = target_dir / out_name
-        metadata = stream_metadata or {}
-        selection_summary = {
-            "event": "downkyi_track_selected",
-            "item_id": item_id,
-            "page": page,
-            "cid": cid,
-            "stream_kind": stream_kind,
-            "quality_id": int(metadata.get("quality_id") or 0),
-            "codec_name": str(metadata.get("codec_name") or ""),
-            "codec_string": str(metadata.get("codecs") or ""),
-            "mime_type": str(metadata.get("mime_type") or ""),
-            "bandwidth": int(metadata.get("bandwidth") or 0),
-            "primary_url": self._safe_url_summary(download_urls[0]),
-            "backup_url_count": max(0, len(download_urls) - 1),
-            "expected_output": str(expected_path),
-            "final_output": str(final_path),
-        }
-        self._append_log_line(
-            log_path,
-            f"[{self._log_timestamp()}] media_diagnostic: "
-            f"{json.dumps(selection_summary, ensure_ascii=False, sort_keys=True)}",
-        )
-
-        connections = str(ARIA2_CONNECTIONS_PER_TRACK)
-        command = [
-            self._tool_arg_path(binary_path),
-            *(["--no-conf"] if media_cli.DISABLED else []),
-            *download_urls,
-            "--dir", self._tool_arg_path(attempt_dir),
-            "--out", out_name,
-            "--continue=false",
-            "--auto-file-renaming=false",
-            "--allow-overwrite=false",
-            "--max-tries=1",
-            "--retry-wait=3",
-            f"--split={connections}",
-            "--min-split-size=5M",
-            f"--max-connection-per-server={connections}",
-            "--file-allocation=none",
-            "--human-readable=false",
-            "--summary-interval=1",
-            "--console-log-level=notice",
-        ]
-
-        if cookie:
-            command.extend(["--header", f"Cookie: {cookie}"])
-        command.extend(["--header", "Origin: https://www.bilibili.com"])
-        command.extend(["--header", "Referer: https://www.bilibili.com"])
-        user_agent = BILIBILI_HEADERS.get("User-Agent", "")
-        if user_agent:
-            command.extend(["--header", f"User-Agent: {user_agent}"])
-
-        exit_code: int | None = None
-        try:
-            self._run_item_command(
-                item_id,
-                command,
-                ffmpeg_path,
-                log_path,
-                stage_label=stage_label,
-                stream_kind=stream_kind,
-                target_dir=attempt_dir,
-                track_key=track_key,
-                cache_attempt_token=cache_attempt_token,
-                tool_dir=binary_path.parent,
-                silent=True,
-                is_preallocated=False,
-                progress_from_output=True,
-                mark_done_on_exit=False,
-            )
-            exit_code = 0
-        except Exception as exc:
-            exit_code = getattr(exc, "return_code", None)
-            raise
-        finally:
-            output_summary = self._aria2_output_diagnostics(attempt_dir, expected_path)
-            output_summary.update(
-                event="aria2_output",
-                item_id=item_id,
-                exit_code=exit_code,
-                stream_kind=stream_kind,
-                page=page,
-                cid=cid,
-                final_output=str(final_path),
-            )
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] media_diagnostic: "
-                f"{json.dumps(output_summary, ensure_ascii=False, sort_keys=True)}",
-            )
-            if exit_code != 0:
-                self._safe_rmtree(attempt_dir)
-
-        self._raise_if_retry_requested(item_id)
-        output_summary = self._aria2_output_diagnostics(attempt_dir, expected_path)
-        try:
-            self._require_exact_aria2_output(output_summary, expected_path, stage_label)
-        except Exception:
-            self._safe_rmtree(attempt_dir)
-            raise
-        final_size = expected_path.stat().st_size
-        self._update_download_track_progress(
-            item_id,
-            cache_attempt_token=cache_attempt_token,
-            track_key=track_key,
-            target_dir=attempt_dir,
-            current_bytes=final_size,
-            target_bytes=final_size,
-            done=mark_done,
-            measure_path=False,
-        )
-        return expected_path
 
     def _download_stream_with_rust(
         self,
@@ -4694,52 +4197,11 @@ class CacheManager:
         )
         return expected_path
 
-    @staticmethod
-    def _require_exact_aria2_output(
-        output_summary: dict[str, object],
-        expected_path: Path,
-        stage_label: str,
-    ) -> None:
-        aria2_files = list(output_summary.get("aria2_files") or [])
-        if aria2_files:
-            raise DownloadCommandError(
-                f"{stage_label} 完成后仍有 aria2 控制文件: {', '.join(map(str, aria2_files))}"
-            )
-        numbered = list(output_summary.get("numbered_alternatives") or [])
-        if numbered:
-            raise DownloadCommandError(
-                f"{stage_label} 生成了意外的编号输出: {', '.join(map(str, numbered))}"
-            )
-        media_files = [
-            entry
-            for entry in list(output_summary.get("files") or [])
-            if isinstance(entry, dict) and bool(entry.get("media_like"))
-        ]
-        if len(media_files) != 1 or str(media_files[0].get("name") or "") != expected_path.name:
-            names = ", ".join(str(entry.get("name") or "") for entry in media_files) or "无"
-            raise DownloadCommandError(f"{stage_label} 输出不唯一或路径不符: {names}")
-        if not bool(output_summary.get("expected_exists")):
-            raise DownloadCommandError(f"{stage_label} 完成后未找到精确输出文件 {expected_path.name}")
-        if int(media_files[0].get("size") or 0) <= 0:
-            raise DownloadCommandError(f"{stage_label} 输出文件为空")
-
-    def _downkyi_download_command(
-        self,
-        binary_path: Path,
-        ffmpeg_path: Path,
-        page_url: str,
-        *,
-        page: int,
-        stream_kind: str,
-        target_dir: Path,
-    ) -> list[str]:
-        raise DownloadCommandError("Downkyi 模式不使用 URL 下载命令，请使用 _download_dash_streams_with_aria2c")
-
     def _should_force_avc_locked(self) -> bool:
         return self.hevc_supported is False
 
     def _request_desired_recaching(self, message: str) -> None:
-        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN):
+        if self._current_download_source() in (DOWNLOAD_SOURCE_NATIVE, DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI):
             self._sync_native_with_playlist()
             return
         with self.lock:
@@ -4816,7 +4278,6 @@ class CacheManager:
         tool_dir: Path | None = None,
         silent: bool = True,
         is_preallocated: bool = False,
-        progress_from_output: bool = False,
         mark_done_on_exit: bool = True,
     ) -> None:
         media_cli.require_media_cli(command[0])
@@ -4825,9 +4286,6 @@ class CacheManager:
         if not silent:
             _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
-        current_bytes_state = {"value": 0}
-        progress_percent_state: dict[str, float | None] = {"value": None}
-        classified_http_status: int | None = None
         monitor_stop = threading.Event()
 
         media_cli.require_media_cli(command[0])
@@ -4853,7 +4311,7 @@ class CacheManager:
             target_dir=target_dir,
             target_bytes=0,
             is_preallocated=is_preallocated,
-            measure_path=not progress_from_output,
+            measure_path=True,
         )
         monitor = threading.Thread(
             target=self._monitor_download_track_progress,
@@ -4865,10 +4323,8 @@ class CacheManager:
                 "track_key": track_key,
                 "target_dir": target_dir,
                 "target_bytes_state": target_bytes_state,
-                "current_bytes_state": current_bytes_state if progress_from_output else None,
-                "progress_percent_state": progress_percent_state if progress_from_output else None,
                 "is_preallocated": is_preallocated,
-                "measure_path": not progress_from_output,
+                "measure_path": True,
             },
             daemon=True,
         )
@@ -4879,35 +4335,15 @@ class CacheManager:
                 line = self._normalize_output_line(raw_line)
                 if not line:
                     continue
-                status_match = (
-                    ARIA2_HTTP_STATUS_RE.search(line)
-                    if progress_from_output
-                    else None
-                )
-                if status_match is not None:
-                    classified_http_status = int(status_match.group(1))
-                safe_line = (
-                    self._sanitized_bilibili_login_error(line)
-                    if progress_from_output
-                    else line
-                )
+                safe_line = line
                 last_message = safe_line
                 if not silent:
                     _debug_print(f"[bilikara-cache] [{stage_label}] {safe_line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {safe_line}")
                 self._record_item_activity(item_id)
-                aria2_progress = self._aria2_progress_bytes(line) if progress_from_output else None
-                if aria2_progress is not None:
-                    downloaded_bytes, target_bytes, progress = aria2_progress
-                    current_bytes_state["value"] = max(
-                        current_bytes_state["value"],
-                        downloaded_bytes,
-                    )
-                    progress_percent_state["value"] = progress
-                else:
-                    downloaded_bytes = None
-                    progress = self._extract_progress(line)
-                    target_bytes = 0
+                downloaded_bytes = None
+                progress = self._extract_progress(line)
+                target_bytes = 0
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
                 self._update_download_track_progress(
@@ -4919,7 +4355,7 @@ class CacheManager:
                     target_bytes=target_bytes_state["value"],
                     progress_percent=progress,
                     is_preallocated=is_preallocated,
-                    measure_path=not progress_from_output,
+                    measure_path=True,
                 )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
@@ -4956,31 +4392,7 @@ class CacheManager:
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            if classified_http_status == 401:
-                error = DownloadCommandError(
-                    "DownKyi/aria2c Bilibili login/Cookie is invalid or expired "
-                    "(HTTP 401)"
-                )
-                error.kind = "authentication"
-                error.http_status = classified_http_status
-                error.status_code = classified_http_status
-            elif classified_http_status == 402:
-                error = DownloadCommandError(
-                    "DownKyi/aria2c Bilibili media access is unavailable or requires "
-                    "payment (HTTP 402)"
-                )
-                error.kind = "unavailable"
-                error.http_status = classified_http_status
-                error.status_code = classified_http_status
-            elif classified_http_status == 403:
-                error = DownloadCommandError(
-                    "DownKyi/aria2c Bilibili media access was forbidden (HTTP 403)"
-                )
-                error.kind = "forbidden"
-                error.http_status = classified_http_status
-                error.status_code = classified_http_status
-            else:
-                error = DownloadCommandError(f"{stage_label}: {last_message}")
+            error = DownloadCommandError(f"{stage_label}: {last_message}")
             error.return_code = return_code
             raise error
 
@@ -7055,59 +6467,10 @@ class CacheManager:
             return binary_path
 
     def _ensure_aria2c(self) -> Path:
-        media_cli.require_media_cli("aria2c")
-        with self.binary_prepare_lock:
-            override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
-            if override and override.exists():
-                with self.lock:
-                    self.binary_state = "ready"
-                    version = self._read_aria2c_version(override)
-                    self.binary_version = version
-                    self.binary_message = f"使用外部 aria2c: {override}"
-                return override
-
-            system_path = self._system_aria2c_path()
-            if system_path:
-                version = self._read_aria2c_version(system_path)
-                if version:
-                    with self.lock:
-                        self.binary_state = "ready"
-                        self.binary_version = version
-                        self.binary_message = f"使用系统 aria2c: {system_path}"
-                    return system_path
-
-            binary_path = self._local_aria2c_binary_path()
-            local_version = self._read_aria2c_version(binary_path) if binary_path.exists() else ""
-            if not local_version:
-                system, arch = self._current_platform_tokens()
-                if not self._aria2_auto_prepare_supported(system, arch):
-                    raise RuntimeError(
-                        f"未找到 aria2c。请安装 aria2c，或将可执行文件放入 {binary_path} 后再切换。"
-                    )
-                with self.lock:
-                    self.binary_state = "installing"
-                    self.binary_message = "正在下载 aria2c"
-                try:
-                    self._install_aria2c(binary_path)
-                except Exception as exc:
-                    with self.lock:
-                        self.binary_state = "error"
-                        self.binary_message = f"下载 aria2c 失败: {exc}"
-                    raise
-            if not binary_path.exists():
-                raise RuntimeError(
-                    f"未找到 aria2c，可将 aria2c 放入 {ARIA2C_DIR}\n"
-                    f"下载地址: https://github.com/aria2/aria2/releases"
-                )
-            binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
-            version = self._read_aria2c_version(binary_path)
-            if not version:
-                raise RuntimeError(f"aria2c 不可执行: {binary_path}")
-            with self.lock:
-                self.binary_state = "ready"
-                self.binary_version = version
-                self.binary_message = f"aria2c {version} 已就绪"
-            return binary_path
+        result = self._configure_aria2_executor(install=True)
+        if not result["ready"]:
+            raise RuntimeError(result["message"])
+        return Path(result["path"])
 
     @staticmethod
     def _local_aria2c_binary_path() -> Path:

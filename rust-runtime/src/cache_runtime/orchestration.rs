@@ -45,6 +45,15 @@ pub struct Facts {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     /// Trusted Host preparation result, never forwarded from HTTP request data.
+    ConfigureAria2 {
+        owner: String,
+        directory: PathBuf,
+        override_path: Option<PathBuf>,
+        #[serde(default)]
+        vendor_roots: Vec<PathBuf>,
+        #[serde(default)]
+        install: bool,
+    },
     ConfigureBbdown {
         owner: String,
         prepared_path: Option<PathBuf>,
@@ -90,6 +99,7 @@ pub(crate) struct Orchestration {
     paused: bool,
     capability: Option<(bool, String)>,
     bbdown: Option<bbdown::Executable>,
+    aria2: Option<aria2::Executable>,
     // Pending replacement intent, keyed by existing identities, while a retained
     // external worker finishes publication. This is not a second work queue.
     replacements: HashSet<(String, String)>,
@@ -98,6 +108,7 @@ pub(crate) struct Orchestration {
 
 pub(crate) enum JobContract {
     Default,
+    Downkyi,
     #[cfg(feature = "native-host")]
     Native,
 }
@@ -123,7 +134,7 @@ pub(crate) fn build_job(
 ) -> Result<CacheJobSpec, CacheRuntimeError> {
     let mut selected = Vec::new();
     match contract {
-        JobContract::Default => {
+        JobContract::Default | JobContract::Downkyi => {
             for page in &item.selected_pages {
                 if *page > 0 && !selected.contains(page) {
                     selected.push(*page);
@@ -146,7 +157,7 @@ pub(crate) fn build_job(
         let selected_index = item.selected_pages.iter().position(|p| p == page);
         let available_index = item.available_pages.iter().position(|p| p == page);
         let (cid, duration, label) = match contract {
-            JobContract::Default => (
+            JobContract::Default | JobContract::Downkyi => (
                 selected_index
                     .and_then(|i| item.selected_cids.get(i))
                     .copied()
@@ -193,8 +204,29 @@ pub(crate) fn build_job(
             label,
         });
     }
+    let downkyi = matches!(contract, JobContract::Downkyi);
+    let video_only_page = if downkyi && item.video_page > 0 && !selected.contains(&item.video_page)
+    {
+        let index = item
+            .available_pages
+            .iter()
+            .position(|p| *p == item.video_page);
+        Some(CachePageSpec {
+            page: item.video_page as u32,
+            cid: index
+                .and_then(|i| item.available_cids.get(i))
+                .copied()
+                .or_else(|| (item.video_page == item.page).then_some(item.cid))
+                .unwrap_or(0)
+                .max(0) as u64,
+            duration_seconds: None,
+            label: format!("P{}", item.video_page),
+        })
+    } else {
+        None
+    };
     let video_page = match contract {
-        JobContract::Default if !selected.contains(&item.video_page) => selected[0],
+        JobContract::Default if !downkyi && !selected.contains(&item.video_page) => selected[0],
         _ => item.video_page,
     };
     let job = CacheJobSpec {
@@ -204,6 +236,7 @@ pub(crate) fn build_job(
         bvid: item.bvid.clone(),
         aid: item.aid.max(0) as u64,
         video_page: u32::try_from(video_page).unwrap_or(0),
+        video_only_page,
         pages,
         cache_root: inputs.cache_root,
         log_file: inputs.log_file,
@@ -265,6 +298,16 @@ fn reserve(
 }
 
 pub fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
+    if let Command::ConfigureAria2 {
+        owner,
+        directory,
+        override_path,
+        vendor_roots,
+        install,
+    } = command
+    {
+        return configure_aria2(&owner, &directory, override_path, &vendor_roots, install);
+    }
     if let Command::ConfigureBbdown {
         owner,
         prepared_path,
@@ -281,7 +324,9 @@ pub fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
         return handoff(&owner, &item_id, &expected_item_incarnation_id);
     }
     let (owner, mut facts, action) = match command {
-        Command::Handoff { .. } | Command::ConfigureBbdown { .. } => unreachable!(),
+        Command::Handoff { .. }
+        | Command::ConfigureBbdown { .. }
+        | Command::ConfigureAria2 { .. } => unreachable!(),
         Command::Reconcile { owner, facts } => (owner, facts, Action::Reconcile),
         Command::Wake { owner, facts } => (owner, facts, Action::Wake),
         Command::Retry {
@@ -325,6 +370,24 @@ pub fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
         .as_ref()
         .cloned()
         .ok_or_else(|| CacheRuntimeError::new("stopped", "Native cache runtime has not started"))?;
+    if matches!(action, Action::Stop) {
+        // Interrupt tool setup before waiting for its submission gate. Validate
+        // the owner while signalling so an obsolete owner cannot stop a new one.
+        with_cache_application(|app| {
+            check_owner(app, &owner, &facts)?;
+            let mut preparation = runtime
+                .shared
+                .preparation_cancel
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if preparation.0 != owner {
+                *preparation = (owner.clone(), Arc::new(AtomicBool::new(false)));
+            }
+            preparation.1.store(true, Ordering::Release);
+            Ok::<_, CacheRuntimeError>(())
+        })
+        .map_err(app_error)??;
+    }
     let mut orchestration = runtime
         .orchestration
         .lock()
@@ -347,6 +410,106 @@ pub fn execute(command: Command) -> Result<Value, CacheRuntimeError> {
     .map_err(app_error)?;
     runtime.shared.wake.notify_all();
     result
+}
+
+fn configure_aria2(
+    owner: &str,
+    directory: &Path,
+    override_path: Option<PathBuf>,
+    vendor_roots: &[PathBuf],
+    install: bool,
+) -> Result<Value, CacheRuntimeError> {
+    let runtime = runtime_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| CacheRuntimeError::new("stopped", "cache runtime has not started"))?;
+    let mut orchestration = runtime
+        .orchestration
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    with_cache_application(|app| {
+        if app.artifact_owner(owner) {
+            Ok(())
+        } else {
+            Err(CacheRuntimeError::new("stopped", "cache owner changed"))
+        }
+    })
+    .map_err(app_error)??;
+    {
+        let state = lock_state(&runtime.shared);
+        if state.stopping || orchestration.stopped && orchestration.owner == owner {
+            return Err(CacheRuntimeError::new(
+                "stopped",
+                "cache orchestration stopped",
+            ));
+        }
+        if state
+            .jobs
+            .values()
+            .any(|job| matches!(job.spec.executor, Executor::Downkyi { .. }))
+            || state.active.iter().any(|(id, active)| {
+                state
+                    .jobs
+                    .get(id)
+                    .is_none_or(|job| job.cache_attempt_token != active.cache_attempt_token)
+            })
+            || (orchestration.owner != owner && !state.active.is_empty())
+        {
+            return Err(CacheRuntimeError::new(
+                "busy",
+                "DownKyi attempts must drain before configuring aria2c",
+            ));
+        }
+    }
+    // Preparation holds only the submission gate, never AppState or workers.
+    // Cancellation is tied to this owner, including a Stop already waiting on
+    // the gate. A later owner receives a distinct token.
+    let cancel = with_cache_application(|app| {
+        if !app.artifact_owner(owner) {
+            return Err(CacheRuntimeError::new("stopped", "cache owner changed"));
+        }
+        let mut preparation = runtime
+            .shared
+            .preparation_cancel
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if preparation.0 != owner {
+            *preparation = (owner.into(), Arc::new(AtomicBool::new(false)));
+        }
+        Ok(preparation.1.clone())
+    })
+    .map_err(app_error)??;
+    let result =
+        aria2::Executable::prepare(directory, override_path, vendor_roots, install, &cancel);
+    with_cache_application(|app| {
+        if app.artifact_owner(owner) && !cancel.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(CacheRuntimeError::new(
+                "stopped",
+                "aria2c preparation owner stopped or changed",
+            ))
+        }
+    })
+    .map_err(app_error)??;
+    if orchestration.owner != owner {
+        *orchestration = Orchestration {
+            owner: owner.into(),
+            ..Default::default()
+        };
+    }
+    let response = match &result {
+        Ok(exe) => {
+            json!({"ready":true,"message":"DownKyi/aria2c ready","version":exe.version,"path":exe.path,"auto_prepare_supported":false})
+        }
+        Err(e) => {
+            json!({"ready":false,"message":e.message,"kind":e.kind,"path":directory.join(if cfg!(windows) {"aria2c.exe"} else {"aria2c"}),"version":"","auto_prepare_supported":e.kind != "invalid_override" && aria2::Executable::can_prepare(vendor_roots)})
+        }
+    };
+    orchestration.aria2 = result.ok();
+    Ok(response)
 }
 
 fn configure_bbdown(
@@ -547,6 +710,8 @@ fn default_job(item: &PlaylistItem, facts: &Facts) -> Result<CacheJobSpec, Cache
                 .log_dir
                 .join(if facts.download_source == "bbdown" {
                     "bbdown"
+                } else if facts.download_source == "downkyi" {
+                    "downkyi"
                 } else {
                     "native"
                 })
@@ -563,7 +728,11 @@ fn default_job(item: &PlaylistItem, facts: &Facts) -> Result<CacheJobSpec, Cache
             audio_hires: facts.audio_hires,
             executor: Executor::Native,
         },
-        JobContract::Default,
+        if facts.download_source == "downkyi" {
+            JobContract::Downkyi
+        } else {
+            JobContract::Default
+        },
     )
 }
 
@@ -668,7 +837,10 @@ impl Orchestration {
             Action::Stop => "缓存已在退出时清空",
             _ => "",
         };
-        let native = matches!(facts.download_source.as_str(), "native" | "bbdown");
+        let native = matches!(
+            facts.download_source.as_str(),
+            "native" | "bbdown" | "downkyi"
+        );
         let cap = (
             facts.hevc_supported == Some(false),
             facts.avc_quality_cap.clone(),
@@ -681,6 +853,15 @@ impl Orchestration {
             .iter()
             .map(|item| {
                 let job = default_job(item, facts).and_then(|mut job| {
+                    if facts.download_source == "downkyi" {
+                        if let Some(message) = crate::desktop_login::download_login_error("downkyi", &facts.cookie) {
+                            return Err(CacheRuntimeError::new("authentication", message));
+                        }
+                        job.executor = Executor::Downkyi {
+                            executable: self.aria2.clone().ok_or_else(|| CacheRuntimeError::new("unavailable", "DownKyi/aria2c unavailable: prepare a compatible executable or correct ARIA2C_PATH"))?,
+                            force_avc: facts.hevc_supported == Some(false),
+                        };
+                    }
                     if facts.download_source == "bbdown" {
                         if let Some(message) = crate::desktop_login::download_login_error("bbdown", &facts.cookie) {
                             return Err(CacheRuntimeError::new("authentication", message));
@@ -750,9 +931,11 @@ impl Orchestration {
                     "当前缓存状态不能重新下载",
                 ));
             }
-            if facts.download_source == "bbdown"
-                && let Some(message) =
-                    crate::desktop_login::download_login_error("bbdown", &facts.cookie)
+            if matches!(facts.download_source.as_str(), "bbdown" | "downkyi")
+                && let Some(message) = crate::desktop_login::download_login_error(
+                    &facts.download_source,
+                    &facts.cookie,
+                )
             {
                 return Err(CacheRuntimeError::new("retry_not_allowed", message));
             }
@@ -762,7 +945,9 @@ impl Orchestration {
             .then(|| item_id.clone());
             self.replacements
                 .insert((item_id.clone(), incarnation.clone()));
-            if facts.download_source == "bbdown" && external.contains_key(item_id.as_str()) {
+            if matches!(facts.download_source.as_str(), "bbdown" | "downkyi")
+                && external.contains_key(item_id.as_str())
+            {
                 self.external_handoffs.insert(
                     (item_id.clone(), incarnation.clone()),
                     manual_urgent.as_ref() == Some(item_id),

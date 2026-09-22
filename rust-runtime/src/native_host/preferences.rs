@@ -59,19 +59,22 @@ impl CachePolicy {
         self.download_source == "native" && self.validate().is_ok()
     }
 
-    pub(crate) fn available_with(&self, bbdown: bool) -> bool {
-        self.available() || (bbdown && self.download_source == "bbdown" && self.validate().is_ok())
+    pub(crate) fn available_with(&self, bbdown: bool, aria2: bool) -> bool {
+        self.available()
+            || ((bbdown && self.download_source == "bbdown"
+                || aria2 && self.download_source == "downkyi")
+                && self.validate().is_ok())
     }
 
     pub(crate) fn snapshot(&self) -> Value {
-        self.snapshot_with(false)
+        self.snapshot_with(false, false)
     }
 
-    pub(crate) fn snapshot_with(&self, bbdown: bool) -> Value {
+    pub(crate) fn snapshot_with(&self, bbdown: bool, aria2: bool) -> Value {
         let mut value = json!(self);
         value.as_object_mut().unwrap().remove("retained_settings");
-        value["enabled"] = json!(self.available_with(bbdown));
-        value["unavailable_reason"] = json!(if self.available_with(bbdown) {
+        value["enabled"] = json!(self.available_with(bbdown, aria2));
+        value["unavailable_reason"] = json!(if self.available_with(bbdown, aria2) {
             ""
         } else {
             "Imported download source or cache preference is unavailable in Desktop Rust; select supported Native settings explicitly"
@@ -83,7 +86,16 @@ impl CachePolicy {
                 .unwrap()
                 .push(json!({"value":"bbdown","label":"BBDown"}));
         }
-        if self.download_source != "native" && !(bbdown && self.download_source == "bbdown") {
+        if aria2 {
+            value["download_source_choices"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"value":"downkyi","label":"DownKyi (aria2c)"}));
+        }
+        if self.download_source != "native"
+            && !(bbdown && self.download_source == "bbdown")
+            && !(aria2 && self.download_source == "downkyi")
+        {
             value["download_source_choices"].as_array_mut().unwrap().push(json!({"value":self.download_source,"label":format!("{} (unavailable in Desktop Rust)", self.download_source)}));
         }
         if self.download_source == "bbdown" && !bbdown {
@@ -104,7 +116,9 @@ impl CachePolicy {
             .ok_or_else(|| ApiError::invalid("没有可更新的缓存策略"))?;
         let mut next = json!(self);
         for (key, value) in fields {
-            if key == "download_source" && (value == "native" || value == "bbdown") {
+            if key == "download_source"
+                && (value == "native" || value == "bbdown" || value == "downkyi")
+            {
                 next[key] = value.clone();
                 continue;
             }
@@ -217,30 +231,37 @@ pub(crate) struct MediaSelection {
     pub avc_cap: String,
     pub audio_hires: bool,
     pub source: String,
+    pub force_avc: bool,
 }
 
 impl MediaSelection {
     pub(crate) fn new(policy: &CachePolicy, player: &PlayerMedia, desktop: bool) -> Self {
-        let cap = if desktop {
+        let force_avc =
+            policy.download_source != "downkyi" || player.details["hevc_supported"] == false;
+        let cap = if !force_avc {
+            ""
+        } else if desktop {
             &player.avc_quality_cap
         } else {
             &policy.video_quality
         };
         let decision = decide_quality_policy(&QualityPolicyRequest {
             raw_quality: policy.video_quality.clone(),
-            raw_cap: cap.clone(),
+            raw_cap: cap.to_owned(),
             choice_index: None,
         });
         Self {
             quality: decision.bbdown_quality_order[0].label().into(),
-            avc_cap: cap.clone(),
+            avc_cap: cap.to_owned(),
             audio_hires: policy.audio_hires,
             source: policy.download_source.clone(),
+            force_avc,
         }
     }
 
     pub(crate) fn changes_artifact(&self, other: &Self) -> bool {
-        self.source != other.source
+        self.force_avc != other.force_avc
+            || self.source != other.source
             || self.quality != other.quality
             || self.audio_hires != other.audio_hires
     }
@@ -348,6 +369,13 @@ pub(super) fn update(
 ) -> Result<Value, ApiError> {
     with_app(|app| {
         app.native_authorize(identity, true)?;
+        app.native().cache_policy.updated(body).map(|_| ())
+    })?;
+    if body["download_source"] == "downkyi" {
+        context.prepare_aria2(true)?;
+    }
+    with_app(|app| {
+        app.native_authorize(identity, true)?;
         let next = app.native().cache_policy.updated(body)?;
         if body["download_source"] == "bbdown" && (!context.desktop || context.bbdown.is_none()) {
             return Err(ApiError::new(
@@ -409,6 +437,29 @@ pub(super) fn language(
 mod tests {
     use super::*;
     #[test]
+    fn downkyi_requires_aria2_and_applies_avc_cap_only_when_needed() {
+        let policy = CachePolicy::default()
+            .updated(&json!({"download_source":"downkyi", "video_quality":"1080P 高清"}))
+            .unwrap();
+        assert!(!policy.available_with(true, false));
+        assert!(policy.available_with(false, true));
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":3}),
+        )
+        .unwrap();
+        let selection = MediaSelection::new(&policy, &player, true);
+        assert!(!selection.force_avc);
+        assert_eq!(selection.quality, "1080P 高清");
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":false,"avc_supported":true,"max_avc_quality_index":3}),
+        )
+        .unwrap();
+        let capped = MediaSelection::new(&policy, &player, true);
+        assert!(capped.force_avc);
+        assert_eq!(capped.quality, "480P 清晰");
+        assert!(selection.changes_artifact(&capped));
+    }
+    #[test]
     fn validates_entire_patch_and_defaults_to_native_choices() {
         let original = CachePolicy::default();
         for patch in [
@@ -417,7 +468,7 @@ mod tests {
             json!({"max_cache_items":true}),
             json!({"video_quality":"8K"}),
             json!({"audio_hires":"true"}),
-            json!({"download_source":"downkyi"}),
+            json!({"download_source":"arbitrary-executor"}),
             json!({"max_cache_items":5,"unknown":1}),
         ] {
             assert!(original.updated(&patch).is_err(), "{patch}");
@@ -441,12 +492,12 @@ mod tests {
             .updated(&json!({"download_source":"bbdown"}))
             .unwrap();
         assert!(!bbdown.available());
-        assert!(!bbdown.available_with(false));
-        assert!(bbdown.available_with(true));
+        assert!(!bbdown.available_with(false, false));
+        assert!(bbdown.available_with(true, false));
         assert_eq!(bbdown.snapshot()["enabled"], false);
-        assert_eq!(bbdown.snapshot_with(true)["enabled"], true);
+        assert_eq!(bbdown.snapshot_with(true, false)["enabled"], true);
         assert_eq!(
-            bbdown.snapshot_with(true)["download_source_choices"]
+            bbdown.snapshot_with(true, false)["download_source_choices"]
                 .as_array()
                 .unwrap()
                 .len(),

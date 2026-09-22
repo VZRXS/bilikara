@@ -2,8 +2,25 @@
 //! media policy or publication authority lives here.
 use super::*;
 use std::ffi::OsString;
-use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+fn supervise(
+    command: Command,
+    cancel: &AtomicBool,
+    timeout: Duration,
+    capture: bool,
+    progress: impl FnMut(),
+) -> Result<Vec<u8>, CacheRuntimeError> {
+    super::child::supervise(
+        command,
+        cancel,
+        timeout,
+        capture,
+        progress,
+        &|_, _| {},
+        "BBDown",
+    )
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Executable(PathBuf);
@@ -153,98 +170,6 @@ fn arguments(job: &CacheJobSpec, track: &TrackSpec, directory: &Path) -> Vec<OsS
         },
     ]);
     args
-}
-
-struct OwnedChild(Child);
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        // SAFETY: child started in its own process group; never target our group.
-        unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// Drain both streams concurrently, retaining only bounded offline help. Download
-/// output is never logged, parsed or returned: it can contain cookies/URLs.
-fn supervise(
-    mut command: Command,
-    cancel: &AtomicBool,
-    timeout: Duration,
-    capture: bool,
-    mut progress: impl FnMut(),
-) -> Result<Vec<u8>, CacheRuntimeError> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW, no shell
-    }
-    if cancel.load(Ordering::Acquire) {
-        return Err(CacheRuntimeError::new("cancelled", "BBDown cancelled"));
-    }
-    let mut child = OwnedChild(command.spawn().map_err(|_| CacheRuntimeError::new("unavailable", "BBDown could not start; configure an installed compatible executable with BB_DOWN_PATH and restart Host"))?);
-    fn drain(mut input: impl Read, capture: bool) -> Vec<u8> {
-        let mut output = Vec::new();
-        let mut buffer = [0; 8192];
-        while let Ok(size) = input.read(&mut buffer) {
-            if size == 0 {
-                break;
-            }
-            if capture {
-                output.extend_from_slice(&buffer[..size.min(65536 - output.len())]);
-            }
-        }
-        output
-    }
-    let stdout = child.0.stdout.take().unwrap();
-    let stderr = child.0.stderr.take().unwrap();
-    thread::scope(|scope| {
-        let out = scope.spawn(move || drain(stdout, capture));
-        scope.spawn(move || drain(stderr, false));
-        let start = Instant::now();
-        let result = loop {
-            if cancel.load(Ordering::Acquire) {
-                break Err(CacheRuntimeError::new("cancelled", "BBDown cancelled"));
-            }
-            if start.elapsed() > timeout {
-                break Err(CacheRuntimeError::new("tool_timeout", "BBDown timed out"));
-            }
-            match child.0.try_wait() {
-                Ok(Some(status)) if status.success() => break Ok(()),
-                Ok(Some(_)) => {
-                    break Err(CacheRuntimeError::new(
-                        "tool_exit",
-                        "BBDown failed; check installed version, login and source access, then retry",
-                    ));
-                }
-                Err(_) => {
-                    break Err(CacheRuntimeError::new(
-                        "tool_process",
-                        "BBDown process status unavailable",
-                    ));
-                }
-                Ok(None) => {
-                    progress();
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        };
-        drop(child); // terminate/reap before joining pipe readers, including cancellation
-        let output = out.join().unwrap_or_default();
-        result.map(|()| output)
-    })
 }
 
 // BBDown 1.6.3 skip-mux output may be in its CID subdirectory. Require exactly
@@ -456,14 +381,19 @@ pub(super) fn preflight_audio(
         .ok_or_else(|| CacheRuntimeError::new("selection", "no audio stream is available"))
 }
 
-fn default_passthrough(job: &CacheJobSpec, kind: ExpectedMediaKind, codec: Option<&str>) -> bool {
-    let Executor::Bbdown {
-        default_host: true,
-        force_avc,
-        ..
-    } = job.executor
-    else {
-        return false;
+pub(super) fn default_passthrough(
+    job: &CacheJobSpec,
+    kind: ExpectedMediaKind,
+    codec: Option<&str>,
+) -> bool {
+    let force_avc = match job.executor {
+        Executor::Bbdown {
+            default_host: true,
+            force_avc,
+            ..
+        }
+        | Executor::Downkyi { force_avc, .. } => force_avc,
+        _ => return false,
     };
     match kind {
         ExpectedMediaKind::Video => !force_avc && matches!(codec, Some("hevc" | "av1")),
@@ -471,7 +401,7 @@ fn default_passthrough(job: &CacheJobSpec, kind: ExpectedMediaKind, codec: Optio
     }
 }
 
-fn validate_default_track(
+pub(super) fn validate_default_track(
     job: &CacheJobSpec,
     track: &TrackSpec,
     source: &Path,
@@ -498,7 +428,7 @@ fn validate_default_track(
     else {
         return Err(CacheRuntimeError::new(
             "unavailable",
-            "BBDown track requires the packaged media validator",
+            "Desktop source track requires the packaged media validator",
         ));
     };
     append_log(
@@ -517,7 +447,7 @@ fn validate_default_track(
     {
         return Err(CacheRuntimeError::new(
             "invalid_media",
-            "BBDown output failed the validated MP4 track contract",
+            "Desktop source output failed the validated MP4 track contract",
         ));
     }
     Ok(metadata)

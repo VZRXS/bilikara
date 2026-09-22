@@ -26,6 +26,7 @@ pub(crate) struct CacheApplication {
 
 #[derive(Default)]
 struct Attempt {
+    source: String,
     generation: u64,
     token: u64,
     terminal_sequence: u64,
@@ -151,6 +152,12 @@ impl CacheApplication {
                     message: "等待 Rust 缓存队列".into(),
                 }],
                 "started" => {
+                    attempt.source = match payload["source"].as_str() {
+                        Some("downkyi") => "downkyi",
+                        Some("bbdown") => "bbdown",
+                        _ => "native",
+                    }
+                    .into();
                     attempt.tracks = payload["tracks"]
                         .as_array()
                         .into_iter()
@@ -159,7 +166,9 @@ impl CacheApplication {
                         .filter(|t| !t.key.is_empty())
                         .map(|t| (t.key.clone(), t))
                         .collect();
-                    let message = if default {
+                    let message = if attempt.source == "downkyi" {
+                        "DownKyi/aria2c 正在下载视频及音轨".into()
+                    } else if default {
                         format!("正在缓存 1 路视频轨 + {count} 路音轨")
                     } else if payload["source"] == "bbdown" {
                         "BBDown 正在下载视频及音轨".into()
@@ -167,7 +176,7 @@ impl CacheApplication {
                         "正在下载视频及音轨".into()
                     };
                     let mut projections = vec![CacheEvent::Started { message }];
-                    if default && !attempt.tracks.is_empty() {
+                    if (default || attempt.source == "downkyi") && !attempt.tracks.is_empty() {
                         projections.push(progress(attempt, 0.0));
                     }
                     projections
@@ -180,7 +189,7 @@ impl CacheApplication {
                     if track.key.is_empty() {
                         continue;
                     }
-                    if default {
+                    if default || attempt.source == "downkyi" {
                         if attempt.tracks.is_empty() {
                             continue;
                         }
@@ -408,6 +417,9 @@ fn progress(attempt: &Attempt, previous: f64) -> CacheEvent {
             "估算中".into()
         }
     )];
+    if attempt.source == "downkyi" {
+        lines[0].insert_str(0, "DownKyi/aria2c · ");
+    }
     for t in tracks {
         let mut label = if t.label.is_empty() {
             "轨道".into()

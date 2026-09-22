@@ -340,6 +340,7 @@ mod tests {
             port: 0,
             desktop: false,
             bbdown: None,
+            aria2: std::sync::Mutex::new(None),
             shutdown_token: None,
             workers: std::sync::Mutex::new(Vec::new()),
         };
