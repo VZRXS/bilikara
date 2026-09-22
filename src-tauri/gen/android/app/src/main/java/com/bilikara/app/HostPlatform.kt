@@ -22,6 +22,9 @@ internal class HostPlatform(private val activity: AppCompatActivity) {
     WebViewCompat.addWebMessageListener(webView, "BilikaraHostPlatform", setOf(origin)) {
         _, message, sourceOrigin, isMainFrame, reply ->
       if (!isMainFrame || sourceOrigin != expected || message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
+      val page = Uri.parse(webView.url ?: "")
+      if (page.scheme != expected.scheme || page.authority != expected.authority ||
+        page.path !in listOf("/", "/index.html")) return@addWebMessageListener
       val raw = message.data ?: return@addWebMessageListener
       if (raw.length > 8192) return@addWebMessageListener
       val input = try { JSONObject(raw) } catch (_: Exception) { return@addWebMessageListener }

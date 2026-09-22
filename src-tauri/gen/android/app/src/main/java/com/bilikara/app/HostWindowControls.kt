@@ -54,18 +54,17 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
     // No wildcard origins, remote pages, subframes or generic native commands.
     WebViewCompat.addWebMessageListener(webView, "BilikaraHostWindow", setOf(origin)) {
         _, message, sourceOrigin, isMainFrame, reply ->
-      if (isMainFrame && sourceOrigin == expected && message.type == WebMessageCompat.TYPE_STRING &&
-        message.data in listOf("enter", "exit")) {
+      if (!isMainFrame || sourceOrigin != expected || message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
+      val page = Uri.parse(webView.url ?: "")
+      if (page.scheme != expected.scheme || page.authority != expected.authority ||
+        page.path !in listOf("/", "/index.html")) return@addWebMessageListener
+      if (message.data in listOf("enter", "exit")) {
         val enabled = message.data == "enter"
         setFullscreen(enabled)
         back.isEnabled = enabled
         reply.postMessage(if (enabled) "entered" else "exited")
         return@addWebMessageListener
       }
-      if (!isMainFrame || sourceOrigin != expected || message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
-      val page = Uri.parse(webView.url ?: "")
-      if (page.scheme != expected.scheme || page.authority != expected.authority ||
-        page.path !in listOf("/", "/index.html")) return@addWebMessageListener
       val raw = message.data ?: return@addWebMessageListener
       if (raw.length > 1024) return@addWebMessageListener
       val input = try { JSONObject(raw) } catch (_: Exception) { return@addWebMessageListener }
