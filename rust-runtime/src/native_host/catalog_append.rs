@@ -6,6 +6,37 @@ use crate::cloudflare_service::{
     CloudflareOperation, CloudflareServiceRequest, execute_cloudflare,
 };
 
+pub(super) fn completion() -> crate::gatcha_refresh::CatalogCompletion {
+    crate::gatcha_refresh::CatalogCompletion {
+        base_url: crate::shared_catalog::CatalogRequest::for_host().base_url,
+        user_agent: crate::native_video::USER_AGENT.into(),
+        timeout_ms: 10_000,
+    }
+}
+
+/// Source operations publish locally before handing candidates to the bounded
+/// review queue. Admission failure must not undo that successful local write.
+pub(super) fn source_result(value: &mut Value) {
+    let entries = value
+        .as_object_mut()
+        .and_then(|value| value.remove("entries"));
+    let entries = entries
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let entries: Vec<_> = entries.into_iter().filter(Value::is_object).collect();
+    if entries.is_empty() {
+        return;
+    }
+    let config = completion();
+    let _ = execute_cloudflare(&CloudflareServiceRequest {
+        schema_version: 1,
+        base_url: config.base_url,
+        user_agent: config.user_agent,
+        timeout_ms: config.timeout_ms,
+        operation: CloudflareOperation::EnqueueAppend { entries },
+    });
+}
+
 fn request(item: &PlaylistItem) -> CloudflareServiceRequest {
     CloudflareServiceRequest {
         schema_version: 1,

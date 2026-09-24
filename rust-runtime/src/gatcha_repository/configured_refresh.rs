@@ -38,7 +38,7 @@ pub(crate) fn execute_configured_refresh(
     if let Some(paths) = rebuild {
         rebuild_schema(repository, paths, keywords, &client, control, notify)
     } else {
-        refresh_all(&repository.paths, keywords, &client, control)
+        refresh_all(&repository.paths, keywords, &client, control, notify)
     }
 }
 

@@ -289,6 +289,53 @@ assert.equal(pages.peek(5)[0].id,24);
 assert.equal(calls.length,1); // No recursive scan after the prefetch resolves.
 """)
 
+    def test_last_page_warms_backward_search_window_without_per_page_reads(self):
+        self.run_case("""
+const calls = [], pages = new Pages();
+pages.update(initial({items:items(0,80),total:1000,readSize:72,readAhead:2,prefetch:true,
+  load:async range=>{
+    calls.push(range);
+    const length=Math.min(range.limit,1000-range.offset);
+    return {items:items(range.offset,length),offset:range.offset,matched_count:1000,
+      has_more:range.offset+length<1000,next_offset:range.offset+length};
+  }}));
+await pages.goTo(pages.lastPage);
+if(pages.prefetchPending)await pages.prefetchPending.promise;
+assert.equal(calls.length,2); // One jump and one bounded neighboring window.
+for(let page=166;page>=159;page--) {
+  assert.ok(pages.peek(page),'Reverse swipe preview is already present');
+  const turn=pages.goTo(page);
+  assert.equal(pages.loading,false);
+  await turn;
+  assert.equal(pages.items[0].id,(page-1)*6);
+}
+assert.equal(calls.length,2);
+assert.ok(pages.cache.size<=12);
+assert.ok(calls.every(call=>call.limit<=80));
+""")
+
+    def test_jump_during_prefetch_still_warms_the_new_neighbors(self):
+        self.run_case("""
+let finish;
+const pages = new Pages();
+pages.update(initial({items:items(0,18),total:221,readAhead:2,prefetch:true,
+  load:async range=>{
+    if(range.offset===18)return new Promise(resolve=>{finish=resolve});
+    const length=Math.min(range.limit,221-range.offset);
+    return {items:items(range.offset,length),offset:range.offset,matched_count:221,
+      has_more:range.offset+length<221,next_offset:range.offset+length};
+  }}));
+await pages.goTo(2);
+const old=pages.prefetchPending.promise;
+await pages.goTo(37);
+finish({items:items(18,18),offset:18,has_more:true,next_offset:36});
+await old;
+if(pages.prefetchPending)await pages.prefetchPending.promise;
+assert.equal(pages.page,37);
+assert.equal(pages.items[0].id,216);
+assert.equal(pages.peek(36)[0].id,210);
+""")
+
     def test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded(self):
         self.run_case("""
 for (const fail of [false,true]) {

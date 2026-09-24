@@ -30,6 +30,7 @@
       this.version = 0;
       this.cache = new Map();
       this.page = 1;
+      this.direction = 1;
       this.items = [];
       this.busy = false;
       this.externalBusy = false;
@@ -63,6 +64,7 @@
         this.hasMore = Boolean(options.hasMore);
         this.initialHasMore = this.hasMore;
         this.page = sameSource ? Math.floor(firstItem / size) + 1 : 1;
+        this.direction = 1;
         this.items = options.items.slice((this.page - 1) * size, this.page * size);
         this.cache.clear();
         for (let start = 0; start < options.items.length; start += size) {
@@ -79,6 +81,7 @@
     }
 
     remember(page, items) {
+      this.cache.delete(page);
       this.cache.set(page, items);
       while (this.cache.size > 12) {
         const oldest = Array.from(this.cache.keys()).find(key => key !== this.page);
@@ -119,10 +122,17 @@
     async prefetch() {
       if (!this.prefetchEnabled || !this.readAhead || this.loading || this.prefetchPending
         || typeof this.load !== "function" || this.shouldPrefetch?.() === false) return;
-      const page = Array.from({length:this.readAhead}, (_, index) => this.page + index + 1)
-        .find(next => next <= this.lastPage && this.peek(next) === null
-          && (this.total !== null || this.hasMore));
-      if (!page) return;
+      const neighbors = [this.direction, -this.direction].flatMap(direction =>
+        Array.from({length:this.readAhead}, (_, index) => this.page + direction * (index + 1)));
+      const missing = neighbors.find(next => next >= 1 && next <= this.lastPage && this.peek(next) === null
+        && (next < this.page || this.total !== null || this.hasMore));
+      if (!missing) return;
+      // Backward reads include the current/adjacent page so filling the bounded
+      // cache cannot evict the very page the next reverse swipe will need.
+      const page = missing < this.page
+        ? Math.max(1, this.page - Math.max(this.readAhead, Math.ceil(this.readSize / this.pageSize) - 2))
+        : missing;
+      const originPage = this.page;
       const version = this.version;
       const attempt = `${version}:${this.page}:${page}`;
       if (this.prefetchAttempt === attempt) return;
@@ -149,6 +159,7 @@
           // may retry, but SSE renders must not repeatedly hit the provider.
         } finally {
           if (this.prefetchPending === pending) this.prefetchPending = null;
+          if (version !== this.version || this.page !== originPage) void this.prefetch();
         }
       })();
       await pending.promise;
@@ -160,6 +171,7 @@
       if (!Number.isSafeInteger(page) || page < 1 || page > this.lastPage) {
         throw new RangeError("page_out_of_range");
       }
+      this.direction = page < this.page ? -1 : 1;
       const pending = this.prefetchPending;
       if (pending && page >= pending.page && page < pending.end) {
         const version = this.version;

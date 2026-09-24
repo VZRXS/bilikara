@@ -277,6 +277,7 @@ fn execute_gatcha_operation(
             keywords,
             &network_client(cookie, user_agent, referer, *timeout_ms)?,
             &RefreshControl::default(),
+            &|_| {},
         ),
         GatchaOperation::PreviewFavlist {
             uid,
@@ -638,6 +639,7 @@ fn refresh_all(
     keywords: &[String],
     client: &BilibiliHttpClient,
     control: &RefreshControl,
+    notify: &dyn Fn(Value),
 ) -> Result<Value, GatchaRepositoryError> {
     control.check()?;
     let (configured, legacy_cache, initial_checkpoints) = {
@@ -660,8 +662,12 @@ fn refresh_all(
     control.commit(|| {
         persist_refresh_summary(paths, &results, &errors, "", false, configured.len())
     })?;
-    for uid in &configured {
+    for (index, uid) in configured.iter().enumerate() {
         control.check()?;
+        notify(
+            json!({"phase":"uid", "current_uid":uid, "uid_index":index + 1, "uid_total":configured.len(),
+            "sources":{"uids":results.len(), "favorites":0}}),
+        );
         let result = (|| {
             let (known_profile, existing) = {
                 let _guard = repository_guard()?;
@@ -711,7 +717,13 @@ fn refresh_all(
             }))
         })();
         match result {
-            Ok(value) => results.push(value),
+            Ok(value) => {
+                results.push(value);
+                notify(
+                    json!({"phase":"uid", "uid_index":index + 1, "uid_total":configured.len(),
+                    "sources":{"uids":results.len(), "favorites":0}}),
+                );
+            }
             Err(failure) => errors.push(json!({"uid": uid, "error": failure.message})),
         }
         control.commit(|| {
@@ -719,7 +731,17 @@ fn refresh_all(
         })?;
     }
     control.check()?;
-    let favlist_result = refresh_existing_favlist(paths, client, control);
+    let favlist_result = refresh_existing_favlist(
+        paths,
+        client,
+        control,
+        &|index, total, current| {
+            notify(
+                json!({"phase":"favlist", "current_folder_id":current, "favlist_index":index, "favlist_total":total,
+            "sources":{"uids":results.len(), "favorites":index}}),
+            );
+        },
+    );
     let favlist_error = favlist_result
         .as_ref()
         .err()
@@ -967,6 +989,7 @@ fn refresh_existing_favlist(
     paths: &GatchaPaths,
     client: &BilibiliHttpClient,
     control: &RefreshControl,
+    notify: &dyn Fn(usize, usize, Option<&str>),
 ) -> Result<Option<Value>, GatchaRepositoryError> {
     if !paths.favlist_file.exists() {
         return Ok(None);
@@ -976,47 +999,36 @@ fn refresh_existing_favlist(
     if folders.is_empty() {
         return Ok(None);
     }
-    let mut fresh = Vec::new();
     let mut refreshed = 0usize;
+    let mut added = 0usize;
+    let mut result = None;
     for folder in folders.iter().filter_map(Value::as_object) {
         let uid =
             first_text(folder, &["uid", "mid"]).unwrap_or_else(|| text_value(&payload, "uid"));
         if uid.is_empty() || folder_id(folder).is_empty() {
             continue;
         }
-        fresh.extend(fetch_favlist_entries_controlled(
-            client,
-            &uid,
-            folder,
-            Some(1),
-            control,
-        )?);
+        notify(refreshed, folders.len(), Some(&folder_id(folder)));
+        let fresh = fetch_favlist_entries_controlled(client, &uid, folder, Some(1), control)?;
+        // Publish each folder before starting the next network operation. Read
+        // the latest file under the repository lock to retain concurrent edits.
+        let (added_count, total_count) = control.commit(|| {
+            let _guard = repository_guard()?;
+            payload = load_favlist(&paths.favlist_file);
+            let (merged, added_count) = merge_incremental_entries(array(&payload, "items"), &fresh);
+            let total_count = merged.len();
+            payload["items"] = json!(merged);
+            payload["updated_at"] = json!(unix_timestamp());
+            atomic_write_json(&paths.favlist_file, &payload)?;
+            Ok((added_count, total_count))
+        })?;
         refreshed += 1;
+        added += added_count;
+        result = Some(json!({"mode":"incremental", "folder_count":refreshed,
+            "added_count":added, "total_count":total_count}));
+        notify(refreshed, folders.len(), None);
     }
-    if refreshed == 0 {
-        return Ok(None);
-    }
-    control.commit(|| {
-        let _guard = repository_guard()?;
-        payload = load_favlist(&paths.favlist_file);
-        let existing = array(&payload, "items").to_vec();
-        let (merged, added_count) = merge_incremental_entries(&existing, &fresh);
-        payload
-            .as_object_mut()
-            .expect("favlist payload")
-            .insert("items".to_owned(), Value::Array(merged.clone()));
-        payload
-            .as_object_mut()
-            .expect("favlist payload")
-            .insert("updated_at".to_owned(), json!(unix_timestamp()));
-        atomic_write_json(&paths.favlist_file, &payload)?;
-        Ok(Some(json!({
-            "mode": "incremental",
-            "folder_count": refreshed,
-            "added_count": added_count,
-            "total_count": merged.len(),
-        })))
-    })
+    Ok(result)
 }
 
 fn fetch_profile(client: &BilibiliHttpClient, uid: &str) -> Result<Value, GatchaRepositoryError> {

@@ -23,6 +23,7 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    pub startup_library_refresh_attempted: bool,
     pub monthly_refresh_active: bool,
     pub ratings: crate::native_host::ratings::RatingLedger,
     pub remote_export_ready: bool,

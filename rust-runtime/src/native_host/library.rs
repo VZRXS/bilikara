@@ -253,21 +253,31 @@ impl TaskLease {
                 app.native_requester(identity, "")?;
             }
             let session = app.native();
-            Self::reserve(session, identity.is_none())?;
+            // preview.1 granted only the first startup/login refresh the
+            // nonblocking startup path. Later logins use the normal task lease.
+            let automatic = if session.desktop
+                && identity.is_none()
+                && matches!(trigger, "login_success" | "credential_restore")
+            {
+                !std::mem::replace(&mut session.startup_library_refresh_attempted, true)
+            } else {
+                identity.is_none() && trigger != "cookie_config"
+            };
+            Self::reserve(session, automatic)?;
             let ticket = if configured {
                 // Reserve keeps native authorization/cooldown policy. Transfer
                 // its lease to the shared task owner under the same AppState lock.
-                if identity.is_some() {
+                if !automatic {
                     session.login.release_gacha_refresh();
                 }
                 session.login.begin_configured_refresh(
-                    identity.is_some(),
+                    !automatic,
                     GachaTaskUpdate {
                         status: GachaTaskStatus::Running,
                         message: "本地曲库更新中".into(),
                         error: String::new(),
                         result: None,
-                        blocking: identity.is_some(),
+                        blocking: !automatic,
                     },
                 )
             } else {
@@ -276,7 +286,7 @@ impl TaskLease {
             Ok((
                 Self {
                     complete: false,
-                    automatic: identity.is_none(),
+                    automatic,
                     trigger,
                     started,
                     ticket,
@@ -470,8 +480,15 @@ fn refresh(
             default_uids: default_uids(),
             operation,
         },
-        rebuild: None,
-        catalog: None,
+        rebuild: (context.desktop && lease.automatic).then(|| {
+            crate::gatcha_refresh::RebuildPaths {
+                uid_temp: context.directory.join("gatcha_uids_temp.json"),
+                cache_temp: context.directory.join("gatcha_cache_temp.json"),
+                favlist_temp: context.directory.join("gatcha_favlist_temp.json"),
+                progress: context.directory.join("gatcha_rebuild_progress.json"),
+            }
+        }),
+        catalog: Some(catalog_append::completion()),
     };
     let stop = context.stop.clone();
     context
@@ -479,7 +496,19 @@ fn refresh(
             let result = if stop.load(Ordering::Acquire) {
                 Err(ApiError::new(503, "stopped", "Host 已停止"))
             } else {
-                crate::gatcha_refresh::execute(&request, &control, &|_| {})
+                let outcome = crate::gatcha_refresh::execute(&request, &control, &|progress| {
+                    let generation = lease.ticket.as_ref().expect("configured refresh ticket").0;
+                    let _ = with_app(|app| {
+                        let session = app.native();
+                        session
+                            .login
+                            .configured_refresh_progress(generation, progress);
+                        session.revision = session.revision.saturating_add(1);
+                        Ok(())
+                    });
+                });
+                crate::gatcha_refresh::complete_catalog(&request, &outcome, &control);
+                outcome
                     .payload
                     .map_err(|e| ApiError::new(400, &e.kind, e.message))
             };
@@ -490,12 +519,9 @@ fn refresh(
 }
 
 pub(super) fn refresh_after_login(context: &HostContext, trigger: &'static str) {
-    if context.desktop {
-        return;
-    } // Bulk maintenance is deferred in desktop preview.
     // A library failure must not turn a successful login into a failed login.
-    // No manual/global UI lock or cooldown for login/credential restore, as on
-    // desktop. The internal I/O lease still prevents duplicate scans.
+    // The first desktop startup/login refresh uses the nonblocking startup
+    // path; later logins retain the ordinary refresh admission rules.
     let _ = refresh(context, None, trigger);
 }
 
@@ -536,11 +562,9 @@ pub(super) fn write(
     let result = execute(&context.directory, operation);
     lease.finish(&result)?;
     let mut value = result?;
-    // Desktop's add response summarizes imports; never resend an entire pool
-    // over HTTP/SSE or enqueue it for D1 merely because a source was refreshed.
-    if let Some(value) = value.as_object_mut() {
-        value.remove("entries");
-    }
+    // Restore preview.1's post-write moderation append, stripping candidates
+    // from the response before it can be forwarded through HTTP/Remote.
+    catalog_append::source_result(&mut value);
     Ok(value)
 }
 
@@ -648,6 +672,99 @@ mod tests {
         drop(host);
         crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn desktop_saved_login_refreshes_sources_on_startup() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        let directory =
+            std::env::temp_dir().join(format!("native-startup-refresh-{}", token().unwrap()));
+        let seed = serde_json::from_value(
+            json!({"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0}),
+        )
+        .unwrap();
+        assert!(
+            crate::initialize_native_host(&directory, seed)
+                .error()
+                .is_none()
+        );
+        initialize(&directory).unwrap();
+        std::fs::write(
+            paths(&directory).uid_file,
+            br#"{"schema_version":2,"uids":[],"profiles":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("BBDown.data"),
+            "SESSDATA=synthetic; bili_jct=synthetic",
+        )
+        .unwrap();
+        let host = super::super::start(&directory, Arc::new(|_| None), true, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while with_app(|app| Ok(app.native().library_refresh_active)).unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        with_app(|app| {
+            assert!(app.native().startup_library_refresh_attempted);
+            assert_eq!(
+                app.native().login.gacha_snapshot().last_status,
+                GachaTaskStatus::Success
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert!(paths(&directory).cache_file.exists());
+        drop(host);
+        crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn desktop_login_refresh_uses_startup_bypass_only_once() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        with_app(|app| {
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            app.native().desktop = true;
+            app.native().cookie = "synthetic".into();
+            Ok(())
+        })
+        .unwrap();
+        let (configured, _) = TaskLease::acquire(None, "cookie_config", true).unwrap();
+        assert!(!configured.automatic);
+        assert!(!with_app(|app| Ok(app.native().startup_library_refresh_attempted)).unwrap());
+        configured.finish(&Ok(json!({}))).unwrap();
+        let (first, _) = TaskLease::acquire(None, "credential_restore", true).unwrap();
+        assert!(first.automatic);
+        with_app(|app| {
+            let status = app.native().login.gacha_snapshot();
+            assert!(status.background_busy);
+            assert!(!status.blocking);
+            Ok(())
+        })
+        .unwrap();
+        assert!(TaskLease::acquire(None, "login_success", true).is_err());
+        first.finish(&Ok(json!({}))).unwrap();
+        let (next, _) = TaskLease::acquire(None, "login_success", true).unwrap();
+        assert!(!next.automatic);
+        with_app(|app| {
+            let status = app.native().login.gacha_snapshot();
+            assert!(status.busy);
+            assert!(status.blocking);
+            Ok(())
+        })
+        .unwrap();
+        next.finish(&Ok(json!({}))).unwrap();
+        with_app(|app| {
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

@@ -131,10 +131,8 @@ const state = {
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
   gatchaUidFaceRenderSignature: "",
-  gatchaTaskLastMessageSignature: "",
   gatchaUidLastToastSignature: "",
   confirmPopoverRenderSignature: "",
-  gatchaTaskWatchStartedAt: Date.now() / 1000,
   historyRenderSignature: "",
   playlistEmptyRenderSignature: "",
   cacheSliderRenderSignature: "",
@@ -1136,7 +1134,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.followBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
   state.gatchaUidFaceRenderSignature = "";
-  state.gatchaTaskLastMessageSignature = "";
   state.currentTitleRenderSignature = "";
   state.remoteAccessRenderSignature = "";
   state.listHeaderRenderSignature = "";
@@ -8574,6 +8571,7 @@ function renderFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (owner.avatar_url) {
           const avatar = document.createElement("img");
@@ -8718,6 +8716,7 @@ function renderFavlistBrowse() {
         count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (folder.avatar_url) {
           const avatar = document.createElement("img");
@@ -9289,55 +9288,41 @@ function gatchaTaskBusyMessage() {
 }
 
 function syncGatchaTaskTerminalMessage() {
-  const task = state.data?.gatcha || {};
-  if (task.busy || state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving) {
-    return;
+  const task = state.data?.gatcha;
+  if (!task) return;
+  const changedSources = window.BilikaraSourceStatus?.takeSourceChanges?.(task) || [];
+  const completed = window.BilikaraSourceStatus?.takeCompletion(task,
+    state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving);
+  if (!completed && !changedSources.length) return;
+  if (completed) {
+    const status = String(task.last_status || "");
+    const fallback =
+      status === "success"
+        ? t("gatcha.refreshDone")
+        : status === "partial"
+          ? t("gatcha.refreshPartial")
+          : t("gatcha.refreshFailed");
+    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const detail = task.last_error ? `${message} ${task.last_error}` : message;
+    setGatchaUidMessage(detail, status !== "success");
   }
-  const status = String(task.last_status || "");
-  if (!["success", "partial", "failed"].includes(status)) {
-    return;
-  }
-  const updatedAt = Number(task.last_updated_at || 0);
-  if (updatedAt && updatedAt < state.gatchaTaskWatchStartedAt - 1) {
-    return;
-  }
-  const signature = JSON.stringify({
-    status,
-    message: task.last_message || "",
-    error: task.last_error || "",
-    updatedAt,
+  // Each committed source becomes visible while the rest of the batch runs.
+  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+    state.followBrowseRenderSignature = "";
+    void loadFollowBrowse({
+      uid: state.followBrowseSelectedUid,
+      query: state.followBrowseQuery,
+      keepQuery: true,
+    });
   });
-  if (signature === state.gatchaTaskLastMessageSignature) {
-    return;
-  }
-  state.gatchaTaskLastMessageSignature = signature;
-  const fallback =
-    status === "success"
-      ? t("gatcha.refreshDone")
-      : status === "partial"
-        ? t("gatcha.refreshPartial")
-        : t("gatcha.refreshFailed");
-  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
-  const detail = task.last_error ? `${message} ${task.last_error}` : message;
-  setGatchaUidMessage(detail, status !== "success");
-  if (status !== "failed") {
-    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
-      state.followBrowseRenderSignature = "";
-      void loadFollowBrowse({
-        uid: state.followBrowseSelectedUid,
-        query: state.followBrowseQuery,
-        keepQuery: true,
-      });
+  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+    state.favlistBrowseRenderSignature = "";
+    void loadFavlistBrowse({
+      folderId: state.favlistBrowseSelectedFolderId,
+      query: state.favlistBrowseQuery,
+      keepQuery: true,
     });
-    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
-      state.favlistBrowseRenderSignature = "";
-      void loadFavlistBrowse({
-        folderId: state.favlistBrowseSelectedFolderId,
-        query: state.favlistBrowseQuery,
-        keepQuery: true,
-      });
-    });
-  }
+  });
 }
 
 function renderGatchaUidFace() {
@@ -21862,6 +21847,7 @@ elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (state.gatchaRefreshSaving) return;
   if (gatchaTaskBusy()) {
     setGatchaUidMessage(gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
@@ -21872,14 +21858,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   setGatchaUidInlineMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
-    if (result?.started !== false && state.data) {
-      state.data.gatcha = {
-        ...(state.data.gatcha || {}),
-        busy: true,
-        message: gatchaTaskBusyMessage(),
-        last_status: "running",
-      };
-    }
+    await fetchState();
     setGatchaUidMessage(result?.started === false ? t("gatcha.refreshAlreadyRunning") : t("gatcha.refreshStarted"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);

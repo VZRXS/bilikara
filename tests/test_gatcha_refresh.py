@@ -18,6 +18,46 @@ class ConfiguredRefreshTest(unittest.TestCase):
             self.assertEqual(f.provider.requests, [])
             self.assertEqual(f.provider.posts, [])
 
+    def test_each_source_is_published_before_the_next_network_response(self):
+        from urllib.parse import parse_qs, urlsplit
+        with ConfiguredRefreshFixture(uids=("1", "2")) as f:
+            f.write("favlist", {"schema_version": 2, "uid": "42",
+                "folders": [{"id": "100", "title": "first"}, {"id": "200", "title": "second"}], "items": []})
+            second_uid, second_folder = threading.Event(), threading.Event()
+            release_uid, release_folder = threading.Event(), threading.Event()
+            def respond(target):
+                url = urlsplit(target)
+                query = parse_qs(url.query)
+                if url.path.endswith("/acc/info") and query.get("mid") == ["2"]:
+                    second_uid.set()
+                    if not release_uid.wait(5):
+                        raise AssertionError("second UID was not released")
+                if url.path.endswith("/resource/list") and query.get("media_id") == ["200"]:
+                    second_folder.set()
+                    if not release_folder.wait(5):
+                        raise AssertionError("second folder was not released")
+                return f.respond(target)
+            f.provider.return_value = respond
+            self.assertTrue(f.start())
+            try:
+                self.assertTrue(second_uid.wait(5))
+                task = rust_runtime.gatcha_task_snapshot()
+                self.assertTrue(task["busy"])
+                self.assertEqual(task["last_result"]["rebuild"]["current_uid"], "2")
+                self.assertEqual(task["last_result"]["rebuild"]["sources"]["uids"], 1)
+                self.assertEqual(f.read("cache")["uids"]["1"][0]["bvid"], "BVNEW0000001")
+                release_uid.set()
+                self.assertTrue(second_folder.wait(5))
+                task = rust_runtime.gatcha_task_snapshot()
+                self.assertTrue(task["busy"])
+                self.assertEqual(task["last_result"]["rebuild"]["current_folder_id"], "200")
+                self.assertEqual(task["last_result"]["rebuild"]["sources"]["favorites"], 1)
+                self.assertEqual(f.read("favlist")["items"][0]["fav_folder_id"], "100")
+            finally:
+                release_uid.set()
+                release_folder.set()
+            self.assertEqual(f.wait()["last_status"], "success")
+
     def test_schema_resume_reuses_completed_favorite_folder(self):
         with ConfiguredRefreshFixture(uids=(), legacy=True) as f:
             f.add_folder()

@@ -228,6 +228,51 @@ pub(super) fn begin(
     with_app(|app| app.native_snapshot(true))
 }
 
+/// Compatibility with the Python Host's runtime Cookie override. Like that
+/// route this does not overwrite saved QR credentials on disk.
+pub(super) fn configure(
+    context: &HostContext,
+    identity: &Identity,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    with_app(|app| {
+        app.native_authorize(identity, true)?;
+        let sessdata = body["sessdata"].as_str().unwrap_or_default().trim();
+        let jct = body["bili_jct"].as_str().unwrap_or_default().trim();
+        let session = app.native();
+        if !sessdata.is_empty() || !jct.is_empty() {
+            if sessdata.is_empty() || jct.is_empty() || sessdata.contains(';') || jct.contains(';')
+            {
+                return Err(ApiError::invalid("请同时提供有效的 SESSDATA 和 bili_jct"));
+            }
+            let cookie = canonical_cookie(&format!("SESSDATA={sessdata}; bili_jct={jct}"))
+                .ok_or_else(|| ApiError::invalid("请同时提供有效的 SESSDATA 和 bili_jct"))?;
+            session.cookie = cookie;
+            session.login_generation = None;
+            session.login.reset_bilibili_login();
+            session.login.set_bilibili_login(
+                None,
+                BilibiliLoginUpdate {
+                    state: BilibiliLoginStatus::LoggedIn,
+                    message: "Bilibili 已登录".into(),
+                    qr_image: String::new(),
+                },
+            );
+            session.revision += 1;
+        }
+        if session.cookie.is_empty() {
+            return Err(ApiError::invalid(
+                "请先登录 Bilibili 或提供 SESSDATA 和 bili_jct",
+            ));
+        }
+        Ok(())
+    })?;
+    // This old entry used ordinary admission and never consumed the first
+    // startup/login bypass. A busy refresh does not roll back the override.
+    library::refresh_after_login(context, "cookie_config");
+    Ok(json!({"message":"配置已实时生效"}))
+}
+
 pub(super) fn logout(context: &HostContext, identity: &Identity) -> Result<Value, ApiError> {
     with_app(|app| {
         app.native_authorize(identity, true)?;

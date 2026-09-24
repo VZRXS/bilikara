@@ -423,7 +423,7 @@ fn start(
     };
     cache::start_pump(context.clone())?;
     network::start_monitor(&context)?;
-    if !desktop && with_app(|app| Ok(!app.native().cookie.is_empty()))? {
+    if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
         library::refresh_after_login(&context, "credential_restore");
     }
     if desktop {
@@ -684,13 +684,19 @@ async fn handle_inner(
             return diagnostics::package(&context, &identity, &body);
         }
         let result = api::dispatch(&context, &identity, host, &method, &path, &query, body)?;
+        let mut response = json!({"ok":true,"data":result});
+        if path == "/api/config/cookie" {
+            // Retain the old HTTP response for external clients as well as
+            // the Native data envelope used by current clients.
+            response["message"] = response["data"]["message"].clone();
+        }
         Ok(json_response(
             if path == "/api/admin-maintenance/trigger" {
                 202
             } else {
                 200
             },
-            json!({"ok":true,"data":result}),
+            response,
         ))
     })
     .await

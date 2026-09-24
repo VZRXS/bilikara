@@ -873,7 +873,7 @@
       "internetRemote.connectionReset": "连接已重置",
       "internetRemote.notConnected": "尚未连接 Host",
       "internetRemote.signalingNotConnected": "信令未连接",
-      "gatcha.pullingSources": "正在拉取，完成后自动刷新",
+      "gatcha.pullingSources": "正在拉取",
       "gatcha.readingSource": "正在读取来源…"
     },
     "en": {
@@ -1748,7 +1748,7 @@
       "internetRemote.connectionReset": "The connection was reset",
       "internetRemote.notConnected": "Not connected to Host",
       "internetRemote.signalingNotConnected": "Signaling is not connected",
-      "gatcha.pullingSources": "Fetching; refreshes when complete",
+      "gatcha.pullingSources": "Fetching",
       "gatcha.readingSource": "Reading source…"
     },
     "ja": {
@@ -2623,7 +2623,7 @@
       "internetRemote.connectionReset": "接続がリセットされました",
       "internetRemote.notConnected": "Host に未接続です",
       "internetRemote.signalingNotConnected": "シグナリングに未接続です",
-      "gatcha.pullingSources": "取得中・完了後に自動更新",
+      "gatcha.pullingSources": "取得中",
       "gatcha.readingSource": "取得元を読み込み中…"
     }
   }

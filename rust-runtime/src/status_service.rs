@@ -168,11 +168,20 @@ impl RuntimeStatusService {
         Some(ticket)
     }
 
-    pub(crate) fn configured_refresh_progress(&mut self, generation: u64, progress: Value) {
+    pub(crate) fn configured_refresh_progress(&mut self, generation: u64, mut progress: Value) {
         if self.configured_refresh.as_ref().map(|t| t.0) == Some(generation) {
+            let incremental = progress.get("sources").is_some();
+            if incremental {
+                progress["sources"]["generation"] = serde_json::json!(generation);
+            }
             self.set_gacha_task(GachaTaskUpdate {
                 status: GachaTaskStatus::Running,
-                message: "正在重建抽卡缓存格式...".into(),
+                message: if incremental {
+                    "正在拉取来源..."
+                } else {
+                    "正在重建抽卡缓存格式..."
+                }
+                .into(),
                 error: String::new(),
                 result: Some(serde_json::json!({"rebuild":progress})),
                 blocking: false,

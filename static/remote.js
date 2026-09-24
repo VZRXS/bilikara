@@ -257,8 +257,6 @@ const state = {
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
-  gatchaTaskLastMessageSignature: "",
-  gatchaTaskWatchStartedAt: Date.now() / 1000,
   remoteRequestView: "quick",
   remoteRequestTabsExpanded: false,
   remoteSearchMode: "shared",
@@ -778,7 +776,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
   state.sourcesFollowBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
-  state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
@@ -3690,49 +3687,35 @@ function gatchaTaskBusyMessage() {
 }
 
 function syncGatchaTaskTerminalMessage() {
-  const task = state.data?.gatcha || {};
-  if (task.busy || state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving) {
-    return;
+  const task = state.data?.gatcha;
+  if (!task) return;
+  const changedSources = window.BilikaraSourceStatus?.takeSourceChanges?.(task) || [];
+  const completed = window.BilikaraSourceStatus?.takeCompletion(task,
+    state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving);
+  if (!completed && !changedSources.length) return;
+  if (completed) {
+    const status = String(task.last_status || "");
+    const fallback =
+      status === "success"
+        ? t("gatcha.refreshDone")
+        : status === "partial"
+          ? t("gatcha.refreshPartial")
+          : t("gatcha.refreshFailed");
+    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const detail = task.last_error ? `${message} ${task.last_error}` : message;
+    setGatchaUidMessage(detail, status !== "success");
   }
-  const status = String(task.last_status || "");
-  if (!["success", "partial", "failed"].includes(status)) {
-    return;
-  }
-  const updatedAt = Number(task.last_updated_at || 0);
-  if (updatedAt && updatedAt < state.gatchaTaskWatchStartedAt - 1) {
-    return;
-  }
-  const signature = JSON.stringify({
-    status,
-    message: task.last_message || "",
-    error: task.last_error || "",
-    updatedAt,
+  // Each committed source becomes visible while the rest of the batch runs.
+  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+    state.sourcesFollowBrowseRenderSignature = "";
+    void loadFollowBrowse({uid:state.followBrowseSelectedUid,
+      query:String(state.followBrowseData?.query || ""), keepQuery:true});
   });
-  if (signature === state.gatchaTaskLastMessageSignature) {
-    return;
-  }
-  state.gatchaTaskLastMessageSignature = signature;
-  const fallback =
-    status === "success"
-      ? t("gatcha.refreshDone")
-      : status === "partial"
-        ? t("gatcha.refreshPartial")
-        : t("gatcha.refreshFailed");
-  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
-  const detail = task.last_error ? `${message} ${task.last_error}` : message;
-  setGatchaUidMessage(detail, status !== "success");
-  if (status !== "failed") {
-    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
-      state.sourcesFollowBrowseRenderSignature = "";
-      void loadFollowBrowse({uid:state.followBrowseSelectedUid,
-        query:String(state.followBrowseData.query || ""), keepQuery:true});
-    });
-    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
-      state.favlistBrowseRenderSignature = "";
-      void loadFavlistBrowse({folderId:state.favlistBrowseSelectedFolderId,
-        query:String(state.favlistBrowseData.query || ""), keepQuery:true});
-    });
-  }
+  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+    state.favlistBrowseRenderSignature = "";
+    void loadFavlistBrowse({folderId:state.favlistBrowseSelectedFolderId,
+      query:String(state.favlistBrowseData?.query || ""), keepQuery:true});
+  });
 }
 
 function gatchaUidResultMessage(result, fallbackUid = "") {
@@ -4812,6 +4795,7 @@ function renderFavlistBrowse() {
         count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (folder.avatar_url) {
           const avatar = document.createElement("img");
@@ -5234,6 +5218,7 @@ function renderSourcesFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (owner.avatar_url) {
           const avatar = document.createElement("img");
@@ -9710,6 +9695,7 @@ document.addEventListener("click", async (event) => {
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (state.gatchaRefreshSaving) return;
   if (gatchaTaskBusy()) {
     setGatchaUidMessage(gatchaTaskBusyMessage(), true);
     renderSourceManagementControls();
@@ -9720,14 +9706,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   setGatchaUidLoadingMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
-    if (result?.started !== false && state.data) {
-      state.data.gatcha = {
-        ...(state.data.gatcha || {}),
-        busy: true,
-        message: gatchaTaskBusyMessage(),
-        last_status: "running",
-      };
-    }
+    await fetchState({ force: false });
     setGatchaUidMessage(result?.started === false ? t("gatcha.busyFallback") : t("gatcha.refreshStarted"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
@@ -10223,7 +10202,7 @@ function lockPlaybackSheetDocumentScroll() {
     return;
   }
   // Keep the playback lifecycle marker until its closing animation finishes.
-  // The shared modal observer freezes and restores the document for all panels.
+  // The shared modal observer contains scroll input without repositioning the page.
   state.playbackSheetScrollLock = true;
   document.body.classList.add("playback-sheet-scroll-locked");
 }
@@ -10296,7 +10275,9 @@ function openPlaybackSheet() {
   void elements.playbackSheetPanel?.offsetHeight;
   elements.playbackSheet.classList.add("is-open");
   schedulePlaybackSheetAdaptiveLayout({ force: true });
-  elements.playbackSheetCollapse?.focus?.({ preventScroll: true });
+  if (document.documentElement.dataset.remoteInputModality === "keyboard") {
+    elements.playbackSheetCollapse?.focus?.({ preventScroll: true });
+  }
   return true;
 }
 
@@ -10344,6 +10325,7 @@ function closePlaybackSheet({ immediate = false, restoreFocus = true } = {}) {
     syncRemoteShellInert();
     if (
       restoreFocus
+      && document.documentElement.dataset.remoteInputModality === "keyboard"
       && state.data?.current_item
       && elements.playbackDock
       && !elements.playbackDock.classList.contains("hidden")
@@ -10412,37 +10394,68 @@ async function startRemoteSession() {
 // Keep it until the last closing animation finishes; the top menu is not modal.
 (function installRemoteModalScrollLock() {
   const selector = '.song-detail-view, .rating-modal, .binding-sheet, .remote-identity-modal, .playback-sheet, dialog';
-  let saved = null;
+  let locked = false;
+  let touch = null;
+  const visible = element => (element.tagName !== 'DIALOG' || element.open)
+    && !element.closest('[hidden], .hidden') && element.getClientRects().length;
   function sync() {
-    const open = [...document.querySelectorAll(selector)].some(element =>
-      (element.tagName !== 'DIALOG' || element.open)
-      && !element.closest('[hidden], .hidden') && element.getClientRects().length);
-    if (open === Boolean(saved)) return;
-    const body = document.body;
-    if (open) {
-      saved = {x: scrollX, y: scrollY, styles: {}};
-      for (const property of ['position', 'top', 'left', 'width', 'overflow']) {
-        saved.styles[property] = [body.style.getPropertyValue(property), body.style.getPropertyPriority(property)];
-      }
-      body.style.position = 'fixed';
-      body.style.top = `${-saved.y}px`;
-      body.style.left = `${-saved.x}px`;
-      body.style.width = '100%';
-      body.style.overflow = 'hidden';
-    } else {
-      const previous = saved;
-      saved = null;
-      for (const [property, [value, priority]] of Object.entries(previous.styles)) {
-        if (value) body.style.setProperty(property, value, priority);
-        else body.style.removeProperty(property);
-      }
-      const root = document.documentElement;
-      const behavior = root.style.scrollBehavior;
-      root.style.scrollBehavior = 'auto';
-      window.scrollTo(previous.x, previous.y);
-      root.style.scrollBehavior = behavior;
-    }
+    const open = [...document.querySelectorAll(selector)].some(visible);
+    if (open === locked) return;
+    locked = open;
+    document.documentElement.classList.toggle('remote-modal-scroll-locked', locked);
   }
+  // Keep the root in normal flow: fixing body changes scrollY/viewport geometry
+  // even when its negative top visually disguises the jump. Consume only input
+  // that would scroll the background, including chaining at a panel boundary.
+  function scrollable(target, dx, dy) {
+    const boundary = target?.closest?.(selector);
+    if (!boundary || !visible(boundary)) return null;
+    const horizontal = Math.abs(dx) > Math.abs(dy);
+    const delta = horizontal ? dx : dy;
+    for (let element = target; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      const overflow = horizontal ? style.overflowX : style.overflowY;
+      const position = horizontal ? element.scrollLeft : element.scrollTop;
+      const extent = horizontal ? element.scrollWidth - element.clientWidth : element.scrollHeight - element.clientHeight;
+      if (/^(auto|scroll)$/.test(overflow) && extent > 1
+        && (delta < 0 ? position > 0 : position < extent - 1)) return element;
+      if (element === boundary) break;
+    }
+    return null;
+  }
+  document.addEventListener('wheel', event => {
+    if (locked && !event.ctrlKey && !scrollable(event.target, event.deltaX, event.deltaY)) event.preventDefault();
+  }, {passive:false});
+  document.addEventListener('touchstart', event => {
+    touch = event.touches.length === 1 ? {x:event.touches[0].clientX, y:event.touches[0].clientY} : null;
+  }, {passive:true});
+  document.addEventListener('touchmove', event => {
+    if (!touch || event.touches.length !== 1) return;
+    const next = {x:event.touches[0].clientX, y:event.touches[0].clientY};
+    const dx = touch.x - next.x, dy = touch.y - next.y;
+    // Native range dragging also uses touchmove's default action. Keep that
+    // horizontal gesture inside the panel while blocking background scrolling.
+    const rangeDrag = Math.abs(dx) > Math.abs(dy)
+      && event.target.matches?.('input[type="range"]:not(:disabled)')
+      && event.target.closest(selector);
+    if (locked && !rangeDrag && !scrollable(event.target, dx, dy)) event.preventDefault();
+    touch = next;
+  }, {passive:false});
+  document.addEventListener('keydown', event => {
+    if (!locked || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
+      || !['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End',' '].includes(event.key)
+      || event.target.closest?.('input,textarea,select,[contenteditable="true"]')
+      || (event.key === ' ' && event.target.closest?.('button,[role="button"]'))) return;
+    const delta = ['ArrowUp','ArrowLeft','PageUp','Home'].includes(event.key) || (event.key === ' ' && event.shiftKey) ? -1 : 1;
+    const horizontal = ['ArrowLeft','ArrowRight'].includes(event.key);
+    const element = scrollable(event.target, horizontal ? delta : 0, horizontal ? 0 : delta);
+    event.preventDefault();
+    if (element) {
+      const amount = ['Home','End'].includes(event.key) ? element.scrollHeight
+        : event.key.startsWith('Arrow') ? 40 : element.clientHeight * 0.9;
+      element.scrollBy(horizontal ? delta * amount : 0, horizontal ? 0 : delta * amount);
+    }
+  });
   new MutationObserver(sync).observe(document.body, {
     subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open'],
   });

@@ -4932,9 +4932,10 @@ body.remote-identity-modal-open {
 
 html:has(body.playback-sheet-scroll-locked),
 body.playback-sheet-scroll-locked {
-  overflow: hidden;
   overscroll-behavior: none;
 }
+
+html.remote-modal-scroll-locked { overscroll-behavior: none; }
 
 @media (max-width: 699px) and (min-height: 521px) {
   .playback-sheet {

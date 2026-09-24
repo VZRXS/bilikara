@@ -177,6 +177,9 @@ pub(super) fn dispatch(
     if path == "/api/diagnostics/markdown" {
         return diagnostics::markdown(context, identity, &body);
     }
+    if path == "/api/config/cookie" {
+        return login::configure(context, identity, &body);
+    }
     if path == "/api/bbdown/login/start" {
         return login::begin(
             context.clone(),

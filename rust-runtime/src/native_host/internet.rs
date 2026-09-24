@@ -167,19 +167,6 @@ fn effect(
         return Ok(reply);
     };
     let kind = effect["kind"].as_str().unwrap_or_default();
-    if context.desktop
-        && matches!(
-            kind,
-            "gatcha_pool_config_set"
-                | "gatcha_uid_preview"
-                | "gatcha_uid_add"
-                | "gatcha_refresh"
-                | "gatcha_favlist_preview"
-                | "gatcha_favlist_refresh"
-        )
-    {
-        return Err(desktop::unavailable());
-    }
     let page_fields = [
         ("q", "query"),
         ("limit", "limit"),
