@@ -178,7 +178,11 @@ pub(super) fn dispatch(
         return diagnostics::markdown(context, identity, &body);
     }
     if path == "/api/bbdown/login/start" {
-        return login::begin(context.clone(), identity);
+        return login::begin(
+            context.clone(),
+            identity,
+            body["force"].as_bool().unwrap_or(false),
+        );
     }
     if path == "/api/bbdown/logout" {
         return login::logout(context, identity);
@@ -256,7 +260,12 @@ pub(super) fn dispatch(
                 .ok_or_else(|| ApiError::new(409, "stale_item", "此歌曲已更换"))?;
             Ok((item, app.native().cookie.clone()))
         })?;
-        cache::retry(context, &item, &cookie)?;
+        cache::retry(
+            context,
+            &item,
+            &cookie,
+            body["force"].as_bool().unwrap_or(false),
+        )?;
         return with_app(|app| app.native_snapshot(host));
     }
     with_app(|app| {

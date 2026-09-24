@@ -3498,6 +3498,7 @@ fn apply_mutation(
             replace_session_archive(data, &new_session);
             data.previous_session = None;
             data.backup = None;
+            data.native_session_choice_pending = false;
             increment_session_generation(data)?;
             let mut result = MutationResult::changed(mutation_value(true), false);
             result.effects = PersistenceEffects {
@@ -4352,6 +4353,7 @@ impl AppState {
                 );
             }
             RemoteRequestV1::CacheRetry {
+                force,
                 item_id,
                 expected_item_incarnation_id,
                 ..
@@ -4362,6 +4364,7 @@ impl AppState {
                     json!(project_remote_state(&snapshot)),
                     Some(json!({
                         "kind": "retry_cache",
+                        "force": force,
                         "item_id": item_id,
                         "item_incarnation_id": expected_item_incarnation_id,
                     })),
@@ -6067,6 +6070,22 @@ mod tests {
             assert_eq!(rejected.result["stale"], json!(true), "{kind}");
             assert!(rejected.result.get("_host_effect").is_none(), "{kind}");
             assert_eq!(state.data, data_before, "{kind}");
+        }
+        for (seq, force) in [(5, false), (6, true)] {
+            let accepted = remote_message(
+                &mut state,
+                peer_id,
+                epoch,
+                seq,
+                "cache.retry",
+                json!({
+                    "item_id":"b", "expected_item_incarnation_id":live_incarnation,
+                    "expected_revision":live.revision, "force":force,
+                }),
+                25.0 + seq as f64,
+            );
+            assert_eq!(accepted.result["accepted"], true);
+            assert_eq!(accepted.result["_host_effect"]["force"], force);
         }
     }
 

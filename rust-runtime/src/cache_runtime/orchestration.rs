@@ -232,6 +232,7 @@ pub(crate) fn build_job(
     let job = CacheJobSpec {
         schema_version: 1,
         item_id: item.id.clone(),
+        display_title: item.display_title.clone(),
         item_incarnation_id: item.item_incarnation_id.clone(),
         bvid: item.bvid.clone(),
         aid: item.aid.max(0) as u64,
@@ -911,26 +912,11 @@ impl Orchestration {
                     "playlist item incarnation changed before retry",
                 ));
             }
-            if !native || !plan.desired_ids.contains(item_id) {
-                return Err(CacheRuntimeError::new(
-                    "retry_not_allowed",
-                    "当前不在自动缓存窗口中",
-                ));
-            }
-            if item.cache_status == "ready" && !force {
-                return Err(CacheRuntimeError::new(
-                    "retry_not_allowed",
-                    "这首歌已经缓存完成，无需重新下载",
-                ));
-            }
-            if !["pending", "queued", "downloading", "failed", "ready"]
-                .contains(&item.cache_status.as_str())
-            {
-                return Err(CacheRuntimeError::new(
-                    "retry_not_allowed",
-                    "当前缓存状态不能重新下载",
-                ));
-            }
+            validate_manual_retry(
+                &item.cache_status,
+                *force,
+                native && plan.desired_ids.contains(item_id),
+            )?;
             if matches!(facts.download_source.as_str(), "bbdown" | "downkyi")
                 && let Some(message) = crate::desktop_login::download_login_error(
                     &facts.download_source,
@@ -939,9 +925,12 @@ impl Orchestration {
             {
                 return Err(CacheRuntimeError::new("retry_not_allowed", message));
             }
-            manual_urgent = (*force
-                && app.current_cache_item_id() == Some(item_id.as_str())
-                && primary.as_ref().is_some_and(|id| id != item_id))
+            manual_urgent = manual_retry_is_urgent(
+                *force,
+                app.current_cache_item_id() == Some(item_id.as_str()),
+                primary.as_deref(),
+                item_id,
+            )
             .then(|| item_id.clone());
             self.replacements
                 .insert((item_id.clone(), incarnation.clone()));
@@ -1161,5 +1150,120 @@ impl Orchestration {
             json!({"snapshot": snapshot_locked(state), "desired_ids": plan.desired_ids,
             "ordered_ids": plan.pending_order, "external_retries": external_retries,"current_ids":items.iter().map(|item|&item.id).collect::<Vec<_>>()}),
         )
+    }
+}
+
+/// Revalidate and reserve a Native Host manual retry under worker -> AppState
+/// locks, so an intervening completion/window change cannot admit stale work.
+#[cfg(feature = "native-host")]
+pub(crate) fn retry_native_host(job: CacheJobSpec, force: bool) -> Result<(), CacheRuntimeError> {
+    validate_job(&job)?;
+    let runtime = active_runtime()?;
+    let mut state = lock_state(&runtime.shared);
+    let result = with_cache_application(|app| {
+        let items = app.cache_items().map_err(app_error)?;
+        let position = items
+            .iter()
+            .position(|item| {
+                item.id == job.item_id && item.item_incarnation_id == job.item_incarnation_id
+            })
+            .ok_or_else(|| CacheRuntimeError::new("item_incarnation_mismatch", "此歌曲已更换"))?;
+        validate_manual_retry(
+            &items[position].cache_status,
+            force,
+            position < app.native().cache_policy.max_cache_items,
+        )?;
+        let urgent = manual_retry_is_urgent(
+            force,
+            app.current_cache_item_id() == Some(job.item_id.as_str()),
+            state.primary_active_item_id.as_deref(),
+            &job.item_id,
+        );
+        CacheRuntime::submit_locked(
+            &mut state,
+            job,
+            if urgent {
+                CacheJobPriority::Urgent
+            } else {
+                CacheJobPriority::Front
+            },
+            true,
+            |id, incarnation| reserve(app, id, incarnation),
+        )
+    })
+    .map_err(app_error)?;
+    runtime.shared.wake.notify_all();
+    result.map(|_| ())
+}
+
+// Shared admission policy for legacy transport and Native Host manual retries.
+pub(crate) fn validate_manual_retry(
+    status: &str,
+    force: bool,
+    in_window: bool,
+) -> Result<(), CacheRuntimeError> {
+    let message = if !in_window {
+        Some("当前不在自动缓存窗口中")
+    } else if status == "ready" && !force {
+        Some("这首歌已经缓存完成，无需重新下载")
+    } else if !["pending", "queued", "downloading", "failed", "ready"].contains(&status) {
+        Some("当前缓存状态不能重新下载")
+    } else {
+        None
+    };
+    match message {
+        Some(message) => Err(CacheRuntimeError::new("retry_not_allowed", message)),
+        None => Ok(()),
+    }
+}
+
+pub(crate) fn manual_retry_is_urgent(
+    force: bool,
+    is_current: bool,
+    primary: Option<&str>,
+    item_id: &str,
+) -> bool {
+    force && is_current && primary.is_some_and(|id| id != item_id)
+}
+
+#[cfg(test)]
+mod manual_retry_tests {
+    use super::*;
+    #[test]
+    fn status_window_and_force_are_independent_admission_requirements() {
+        for status in [
+            "pending",
+            "queued",
+            "downloading",
+            "failed",
+            "ready",
+            "idle",
+            "cancelled",
+            "",
+        ] {
+            for force in [false, true] {
+                assert!(validate_manual_retry(status, force, false).is_err());
+                let allowed = ["pending", "queued", "downloading", "failed"].contains(&status)
+                    || status == "ready" && force;
+                assert_eq!(
+                    validate_manual_retry(status, force, true).is_ok(),
+                    allowed,
+                    "{status} force={force}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn only_forced_current_retry_with_another_primary_uses_urgent_lane() {
+        for force in [false, true] {
+            for current in [false, true] {
+                for primary in [None, Some("target"), Some("other")] {
+                    assert_eq!(
+                        manual_retry_is_urgent(force, current, primary, "target"),
+                        force && current && primary == Some("other")
+                    );
+                }
+            }
+        }
     }
 }

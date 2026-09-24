@@ -767,6 +767,7 @@
         response = await request(kinds[url.pathname], { item_id: String(body.item_id || ""), expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/cache/retry") {
         response = await request("cache.retry", {
+          force: Boolean(body.force),
           item_id: String(body.item_id || ""),
           expected_item_incarnation_id: String(body.expected_item_incarnation_id || ""),
           expected_revision: expectedRevision(),

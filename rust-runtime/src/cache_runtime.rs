@@ -103,6 +103,8 @@ pub struct CacheJobSpec {
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub item_id: String,
+    #[serde(default)]
+    pub display_title: String,
     pub item_incarnation_id: String,
     pub bvid: String,
     #[serde(default)]
@@ -1396,7 +1398,11 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
     }
     append_log(
         &job.spec.log_file,
-        &format!("start Rust cache generation {}", job.generation),
+        &format!(
+            "start cache: {} (generation {})",
+            log_title(&job.spec),
+            job.generation
+        ),
     );
     let track_specs = match track_specs(&job.spec) {
         Ok(tracks) => tracks,
@@ -2596,14 +2602,25 @@ fn directory_size(root: &Path) -> u64 {
     total
 }
 
-fn append_log(path: &Path, message: &str) {
+fn log_title(job: &CacheJobSpec) -> String {
+    let title = if job.display_title.trim().is_empty() {
+        &job.bvid
+    } else {
+        &job.display_title
+    };
+    title
+        .chars()
+        .take(1000)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+pub(crate) fn append_log(path: &Path, message: &str) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+    let local_now = chrono::Local::now();
+    let timestamp = local_now.format("%Y-%m-%d %H:%M:%S");
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[{timestamp}] {message}");
     }
@@ -2821,6 +2838,7 @@ mod tests {
     fn job(root: &Path) -> CacheJobSpec {
         CacheJobSpec {
             executor: Executor::Native,
+            display_title: "Fixture song".to_owned(),
             schema_version: 1,
             item_id: "song-a".to_owned(),
             item_incarnation_id: reservation(1).item_incarnation_id,

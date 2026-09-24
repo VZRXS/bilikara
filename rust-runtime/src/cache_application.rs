@@ -167,15 +167,7 @@ impl CacheApplication {
                         .filter(|t| !t.key.is_empty())
                         .map(|t| (t.key.clone(), t))
                         .collect();
-                    let message = if attempt.source == "downkyi" {
-                        "DownKyi/aria2c 正在下载视频及音轨".into()
-                    } else if default {
-                        format!("正在缓存 1 路视频轨 + {count} 路音轨")
-                    } else if payload["source"] == "bbdown" {
-                        "BBDown 正在下载视频及音轨".into()
-                    } else {
-                        "正在下载视频及音轨".into()
-                    };
+                    let message = format!("正在缓存 1 路视频轨 + {count} 路音轨");
                     let mut projections = vec![CacheEvent::Started { message }];
                     if !attempt.tracks.is_empty() {
                         projections.push(progress(attempt, 0.0));

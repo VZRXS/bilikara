@@ -84,6 +84,24 @@ const eventStreamRetryJitterRatio = 0.2;
         )
         self.assertNotIn("playback_generation", listener)
 
+    def test_expired_native_lan_session_reenters_once_without_redirecting_public_remote(self):
+        start = self.source.index("function reenterExpiredLocalRemote")
+        end = self.source.index("function clearRemoteConnectionOfflineTimer", start)
+        output = self.run_node(self.source[start:end] + """
+const state = {remoteSessionReentering:false};
+const visits = [];
+const window = {location:{replace:url=>visits.push(url)},BilikaraRemoteTransport:{mode:'internet'}};
+const error = {code:'forbidden'};
+const publicResult = reenterExpiredLocalRemote({status:403},error);
+window.BilikaraRemoteTransport.mode = 'local';
+const otherResults = [reenterExpiredLocalRemote({status:500},error),reenterExpiredLocalRemote({status:403},{code:'origin'})];
+const first = reenterExpiredLocalRemote({status:403},error);
+const concurrent = reenterExpiredLocalRemote({status:403},error);
+console.log(JSON.stringify({publicResult,otherResults,first,concurrent,visits}));
+""")
+        self.assertEqual(output, {"publicResult": False, "otherResults": [False, False],
+                                  "first": True, "concurrent": True, "visits": ["/remote"]})
+
     def test_current_cache_retry_forwards_the_observed_item_incarnation(self):
         start = self.source.index("function syncCurrentCacheState")
         end = self.source.index(

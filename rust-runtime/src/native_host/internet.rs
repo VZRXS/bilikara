@@ -40,7 +40,7 @@ pub(super) fn route(
             {
                 return Err(ApiError::invalid("无效的公网 Remote 链接"));
             }
-            Ok(json!({"image":qr_image(&value)?}))
+            Ok(json!({"image":access_qr_image(&value)?}))
         }
         "/api/internet-remote/state" => {
             let mut state = with_app(public_state)?;
@@ -202,7 +202,7 @@ fn effect(
                 "/api/cache/retry",
                 "",
                 json!({
-                    "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"]
+                    "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"], "force":effect["force"]
                 }),
             )?;
             return Ok(reply);

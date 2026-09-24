@@ -291,6 +291,7 @@ impl AppState {
             } => Some((current_name.clone(), new_name.clone())),
             _ => None,
         };
+        let reset_runtime = matches!(&command, AppStateRequest::ResetRuntime { .. });
         let response = self.execute(command);
         if let Some(error) = response.error() {
             let status = match error.kind.as_str() {
@@ -304,6 +305,11 @@ impl AppState {
         }
         if let Some((old, new)) = renamed {
             self.native().ratings.rename(&old, &new);
+        }
+        if reset_runtime {
+            // Python rotated the identity registry on data reset. Invalidating
+            // names alone leaves old tokens occupying every Remote device slot.
+            self.native().devices.clear();
         }
         Ok(response.result().cloned().unwrap_or(Value::Null))
     }

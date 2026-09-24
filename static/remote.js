@@ -313,6 +313,7 @@ const state = {
   },
   remoteIdentityChecking: true,
   remoteIdentitySaving: false,
+  remoteSessionReentering: false,
   remoteIdentityModalMode: "register",
   remoteIdentityError: "",
   dataRenderSignature: "",
@@ -1558,7 +1559,7 @@ function renderRemoteAccess(remoteAccess) {
   card.classList.toggle("is-dual", Boolean(localUrl && internet));
   if (elements.remotePopoverUrlLink) {
     elements.remotePopoverUrlLink.href = localUrl;
-    elements.remotePopoverUrlLink.textContent = localUrl ? new URL(localUrl).origin : "";
+    elements.remotePopoverUrlLink.textContent = localUrl ? (new URL(localUrl).origin + new URL(localUrl).pathname) : "";
   }
   elements.remotePopoverUrlHint.textContent = t("internetRemote.localSameNetwork");
   renderRemoteQr(localUrl, [{ image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder }]);
@@ -1903,6 +1904,7 @@ async function fetchRemoteIdentity({ showExpired = false } = {}) {
       headers: clientHeaders(),
     });
     const payload = await response.json();
+    if (reenterExpiredLocalRemote(response, payload)) return;
     if (!response.ok || !payload.ok) {
       throw new Error(localizedApiMessage(payload.error) || t("error.requestFailed"));
     }
@@ -2966,11 +2968,25 @@ async function fetchState(options = {}) {
   const { force = true } = options;
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
+  if (reenterExpiredLocalRemote(response, payload)) return;
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   applyStateSnapshot(payload.data, { forceRender: force || !state.data });
   noteRemoteFallbackSuccess();
+}
+
+function reenterExpiredLocalRemote(response, payload) {
+  if (response.status !== 403 || payload?.code !== "forbidden"
+    || window.BilikaraRemoteTransport?.mode === "internet") return false;
+  // A native data reset invalidates the device cookie as well as its name.
+  // Re-enter through the existing navigation-only LAN handshake before asking
+  // for a new name; repeatedly submitting with the retired cookie cannot work.
+  if (!state.remoteSessionReentering) {
+    state.remoteSessionReentering = true;
+    window.location.replace("/remote");
+  }
+  return true;
 }
 
 function clearRemoteConnectionOfflineTimer() {

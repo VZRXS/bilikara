@@ -52,15 +52,6 @@ struct ExportRow {
     part: String,
 }
 
-fn title(display: &str, original: &str) -> String {
-    if display.is_empty() {
-        original
-    } else {
-        display
-    }
-    .into()
-}
-
 fn project(
     history: &[HistoryEntry],
     played: &[SessionPlayedEntry],
@@ -72,7 +63,11 @@ fn project(
             history
                 .iter()
                 .map(|item| ExportRow {
-                    title: title(&item.display_title, &item.title),
+                    title: bilikara_rust::clean_display_title(
+                        &item.title,
+                        &item.display_title,
+                        &item.part_title,
+                    ),
                     bvid: [&item.resolved_url, &item.original_url, &item.key]
                         .into_iter()
                         .find_map(|s| bvid.find(s).map(|m| m.as_str().to_owned()))
@@ -91,7 +86,11 @@ fn project(
         "played" => played
             .iter()
             .map(|item| ExportRow {
-                title: title(&item.display_title, &item.title),
+                title: bilikara_rust::clean_display_title(
+                    &item.title,
+                    &item.display_title,
+                    &item.part_title,
+                ),
                 bvid: item.bvid.clone(),
                 requester: item.requester_name.clone(),
                 owner: item.owner_name.clone(),
@@ -366,6 +365,35 @@ mod tests {
         assert!(unknown.exists());
         drop(scratch);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_titles_match_desktop_display_cleanup_without_mutating_records() {
+        let history: HistoryEntry = serde_json::from_value(json!({
+            "key":"fixture", "title":"【カラオケ】agony - KOTOKO",
+            "display_title":"【カラオケ】agony - KOTOKO - P2", "part_title":"P2",
+            "original_url":"", "resolved_url":"", "requested_at":1.0
+        }))
+        .unwrap();
+        let played: SessionPlayedEntry = serde_json::from_value(json!({
+            "key":"fixture", "item_id":"fixture", "title":"",
+            "display_title":"【卡拉OK】七里香 - P2", "part_title":"P2",
+            "original_url":"", "resolved_url":"", "bvid":"", "aid":1, "cid":2,
+            "page":2, "played_at":1.0
+        }))
+        .unwrap();
+        let history_before = serde_json::to_value(&history).unwrap();
+        let played_before = serde_json::to_value(&played).unwrap();
+        assert_eq!(
+            project(std::slice::from_ref(&history), &[], "history").unwrap()[0].title,
+            "agony - KOTOKO"
+        );
+        // Current and archived sessions share this projection.
+        let rows = project(&[], std::slice::from_ref(&played), "played").unwrap();
+        assert_eq!(rows[0].title, "七里香");
+        assert_eq!(rows[0].part, "P2");
+        assert_eq!(serde_json::to_value(&history).unwrap(), history_before);
+        assert_eq!(serde_json::to_value(&played).unwrap(), played_before);
     }
 
     #[test]

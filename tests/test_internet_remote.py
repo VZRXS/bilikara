@@ -71,6 +71,18 @@ class FakeContext:
 
 
 class InternetRemoteAdapterTest(unittest.TestCase):
+    def test_retry_adapter_preserves_validated_force_instead_of_forcing_all_requests(self):
+        for force in (None, False, True):
+            with self.subTest(force=force):
+                effect = {"kind": "retry_cache", "item_id": "song", "item_incarnation_id": "incarnation"}
+                if force is not None:
+                    effect["force"] = force
+                context = FakeContext(response(effect=effect))
+                calls = []
+                context.retry_cache_item = lambda item_id, **kwargs: calls.append((item_id, kwargs))
+                internet_remote.dispatch(context, "peer", "control", "message")
+                self.assertEqual(calls, [("song", {"expected_item_incarnation_id": "incarnation", "force": force is True})])
+
     def test_remote_state_adds_host_transport_revision_and_live_player_status(self):
         class StateStore:
             def internet_remote_state(self):

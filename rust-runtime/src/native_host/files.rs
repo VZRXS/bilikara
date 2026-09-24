@@ -249,6 +249,7 @@ mod tests {
             desktop: false,
             bbdown: None,
             aria2: std::sync::Mutex::new(None),
+            aria2_prepare: std::sync::Mutex::new(()),
             shutdown_token: None,
             desktop_installation: None,
             workers: std::sync::Mutex::new(Vec::new()),

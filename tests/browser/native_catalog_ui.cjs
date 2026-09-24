@@ -186,10 +186,9 @@ const notes=path.resolve(output);
     const size=Number(/viewBox="0 0 (\d+) /.exec(svg)[1]);
     const rects=[...svg.matchAll(/M(\d+) (\d+)h(\d+)v(\d+)H/g)].map(m=>m.slice(1).map(Number));
     assert.ok(rects.length>0);
-    const module=rects[0][2];
     const border=[Math.min(...rects.map(r=>r[0])),Math.min(...rects.map(r=>r[1])),
      size-Math.max(...rects.map(r=>r[0]+r[2])),size-Math.max(...rects.map(r=>r[1]+r[3]))];
-    assert.deepEqual(border,[4,4,4,4].map(n=>n*module),'LAN and public QR images carry four-module quiet zones');
+    assert.deepEqual(border,[0,0,0,0],'Host access QR images use only the outer CSS frame, matching the shipped Python desktop');
    }
 
    assert.equal((await remote.request.get(base+'/api/remote-access',{headers:{Origin:'https://foreign.invalid'}})).status(),403);
@@ -202,11 +201,28 @@ const notes=path.resolve(output);
    });
    assert.match(menuSurface.background,/, 0\.9\)$/);assert.equal(menuSurface.radius,'18px');assert.equal(menuSurface.blur,'blur(12px)');
    assert.equal(menuSurface.contentBackground,'rgba(0, 0, 0, 0)');assert.equal(menuSurface.contentShadow,'none','An inline QR section must not add a second floating surface');
-   const link=remote.locator('#remote-popover-url-link');assert.equal(await link.textContent(),new URL(await link.getAttribute('href')).origin);
+   const link=remote.locator('#remote-popover-url-link');assert.equal(await link.textContent(),new URL(await link.getAttribute('href')).origin+'/remote');
+   await remote.locator('#remote-menu-panel').screenshot({path:path.join(notes,'remote-access-link.png')});
    await remote.locator('#remote-menu-toggle').click();
-   assert.equal(await host.locator('#remote-popover-url-link').textContent(),new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).origin);
+   assert.equal(await host.locator('#remote-popover-url-link').textContent(),new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).origin+'/remote');
    assert.equal(await host.locator('#internet-remote-local-address-detail').count(),0);
    await host.waitForFunction(()=>['remote-popover-qr-image','player-fullscreen-remote-qr-image'].every(id=>document.getElementById(id)?.naturalWidth>0));
+   assert.ok(new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).searchParams.has('invite'));
+   await host.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedInvitation=text;}}}));
+   await host.locator('#remote-mini-trigger').click();
+   await host.locator('#remote-popover-copy-link').click();
+   await host.waitForFunction(()=>Boolean(window.copiedInvitation));
+   const copied=await host.evaluate(()=>window.copiedInvitation);
+   assert.equal(new URL(copied).pathname,'/remote');assert.ok(new URL(copied).searchParams.has('invite'));
+   const freshContext=await hostContext.browser().newContext();const fresh=await freshContext.newPage();
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),403,'A fresh device needs the invitation before opening /remote');
+   await fresh.goto(copied);await fresh.waitForURL(new URL('/remote',copied).href);
+   assert.ok((await freshContext.cookies()).some(cookie=>cookie.httpOnly));
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'The paired device can reuse /remote without invite');
+   await freshContext.close();
+   await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'host-access-link.png')});
+   await host.locator('#remote-mini-popover-close').click();
+
   });
   const settled=async page=>page.evaluate(async()=>{
    // Sheet openers schedule their entry classes on the next animation frame.
@@ -633,7 +649,7 @@ const notes=path.resolve(output);
    await controller.waitForFunction(()=>['controller-remote-qr-image','controller-internet-remote-qr-image'].every(id=>{
     const image=document.getElementById(id);return image.naturalWidth>0&&!image.classList.contains('hidden');
    }));
-   assert.equal(await controller.locator('#controller-remote-url-link').textContent(),new URL(await controller.locator('#controller-remote-url-link').getAttribute('href')).origin);
+   assert.equal(await controller.locator('#controller-remote-url-link').textContent(),new URL(await controller.locator('#controller-remote-url-link').getAttribute('href')).origin+'/remote');
    assert.match(await controller.locator('.presentation-output-remote-popover').evaluate(e=>getComputedStyle(e).transitionDuration),/^0\.2s/);
    measurements.presentationQrUnderNativeCsp={transport:'fixture shell IPC and real native HTTP/CSP',publicRoomCreated:false};
    await controller.close();
@@ -1138,6 +1154,23 @@ const notes=path.resolve(output);
    assert.equal(await host.locator('.empty-hint').innerText(),'总计：120 B / 200 B\n视频P1：80 B / 100 B\n音轨P2：40 B / 100 B');
    assert.equal(await host.locator('.empty-hint').evaluate(e=>getComputedStyle(e).whiteSpace),'pre-line');
    await host.locator('.player-panel').screenshot({path:path.join(notes,'host-all-cache-tracks.png')});
+  });
+  await check('remoteReconnectsAfterDataReset',async()=>{
+   assert.equal(await remote.evaluate(()=>state.remoteIdentity.registered),true);
+   const reentered=remote.waitForEvent('framenavigated',{predicate:frame=>frame===remote.mainFrame(),timeout:7000});
+   const reset=await host.evaluate(async()=>{
+    const response=await fetch('/api/data/reset',{method:'POST',headers:clientHeaders({'Content-Type':'application/json'}),body:'{}'});
+    return {status:response.status,payload:await response.json()};
+   });
+   assert.equal(reset.status,200);assert.equal(reset.payload.ok,true);
+   await reentered;
+   await remote.locator('#remote-identity-input').waitFor({state:'visible'});
+   await remote.waitForFunction(()=>!state.remoteIdentityChecking);
+   assert.equal(await remote.evaluate(()=>state.remoteIdentity.registered),false);
+   await remote.locator('#remote-identity-input').fill('New session user');
+   await remote.locator('#remote-identity-submit').click();
+   await remote.waitForFunction(()=>state.remoteIdentity.registered && state.remoteIdentity.name==='New session user');
+   measurements.remoteReconnectsAfterDataReset={reentered:true,reregistered:true};
   });
   await fs.writeFile(path.join(notes,'ui-results.json'),JSON.stringify({directory,measurements,failures,errors,calls,productionRequests:0},null,2));
   console.log(JSON.stringify({directory,measurements,failures,errors,calls,productionRequests:0},null,2));

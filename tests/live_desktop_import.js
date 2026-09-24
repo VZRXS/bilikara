@@ -167,7 +167,7 @@ async function openHost(ready) {
   console.log("Actual desktop import, exports, native mutations and no-reimport restart passed");
 })().catch(async error=>{console.error(error,stderr);if(process.env.BILIKARA_BBDOWN_FIXTURE){
     if(page)await fs.writeFile(path.join(evidence,"failure-state.json"),JSON.stringify(await api("/api/state"),null,2)).catch(()=>{});
-    await fs.cp(path.join(directory,"logs/native"),path.join(evidence,"failure-cache-logs"),{recursive:true}).catch(()=>{});
+    await fs.cp(path.join(directory,"logs"),path.join(evidence,"failure-cache-logs"),{recursive:true}).catch(()=>{});
     const fixtureRoot=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
     if(fixtureRoot)for(const file of await fs.readdir(fixtureRoot))if(file.endsWith(".started"))await fs.copyFile(path.join(fixtureRoot,file),path.join(evidence,file));
   }if(page)await capture("failure.png",page).catch(()=>{});process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}if(proxy)proxy.close();if(temporary)await fs.rm(temporary,{recursive:true,force:true});});

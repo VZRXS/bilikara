@@ -451,7 +451,8 @@ pub(super) fn restore(
         let directory = desktop::preview_root(destination)?;
         let (_storage, seed) = NativeHostStorage::open(&directory).map_err(|e| e.message)?;
         app_state::prepare_import(seed.ok_or_else(|| failure("existing destination checkpoint"))?)?;
-        preferences::load(&directory).map_err(|_| failure("existing destination preferences"))?;
+        preferences::load(&directory, true)
+            .map_err(|_| failure("existing destination preferences"))?;
         super::login::load_desktop(&directory)
             .map_err(|_| failure("existing destination credentials"))?;
         return Ok(());
@@ -589,7 +590,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(seed.playlist[0].cache_status, "pending");
-        let prefs = preferences::load(&f.dest()).unwrap();
+        let prefs = preferences::load(&f.dest(), true).unwrap();
         assert_eq!(prefs.cache.download_source, "bbdown");
         assert!(!prefs.cache.available());
         assert_eq!(prefs.cache.retained_settings["cache_policy"]["unknown"], 7);

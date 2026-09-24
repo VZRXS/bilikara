@@ -24,7 +24,7 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
             }
             if last_cleanup.elapsed() >= Duration::from_secs(10) {
-                if maintenance::collect(&context.cache_root, false).is_err() {
+                if maintenance::collect(&context.cache_root, false).is_err() || collect_logs(&context.directory).is_err() {
                     let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-cleanup-failed"}),now());Ok(())});
                 }
                 last_cleanup=std::time::Instant::now();
@@ -246,11 +246,72 @@ fn tick(
         preempt_item_id: plan.preempt_ids.first().cloned().unwrap_or_default(),
     })
     .map_err(cache_error)?;
+    collect_logs(&context.directory)?;
     *last_fingerprint = fingerprint;
     Ok(())
 }
 
-fn item_log_path(directory: &Path, item_id: &str) -> Result<PathBuf, ApiError> {
+fn collect_logs(directory: &Path) -> Result<(), ApiError> {
+    let runtime = execute_cache_runtime(CacheRuntimeCommand::Snapshot {}).map_err(cache_error)?;
+    visit_song_logs(directory, |path, id| {
+        // Recheck live ownership immediately before unlinking. Active workers
+        // may still append after cancellation, so retain their logs until drained.
+        with_app(|app| {
+            let snapshot = app.native_core_snapshot()?;
+            let retained = app.native_session_choice_pending()
+                || snapshot
+                    .current_item
+                    .iter()
+                    .chain(snapshot.playlist.iter())
+                    .any(|item| item.id == id)
+                || ["active_item_ids", "pending_ids"].iter().any(|key| {
+                    runtime[*key]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id)))
+                });
+            if !retained {
+                std::fs::remove_file(path)
+                    .map_err(|_| ApiError::new(503, "cache_log", "无法清理缓存日志"))?;
+            }
+            Ok(())
+        })
+    })
+}
+
+fn visit_song_logs(
+    directory: &Path,
+    mut visit: impl FnMut(&Path, &str) -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    let root = directory.join("logs");
+    for folder in std::iter::once(root.clone())
+        .chain(["native", "bbdown", "downkyi"].map(|source| root.join(source)))
+    {
+        match std::fs::symlink_metadata(&folder) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(ApiError::new(503, "cache_log", "无法读取缓存日志目录")),
+        }
+        if folder == root {
+            continue;
+        }
+        for entry in std::fs::read_dir(folder)
+            .map_err(|_| ApiError::new(503, "cache_log", "无法读取缓存日志目录"))?
+        {
+            let entry = entry.map_err(|_| ApiError::new(503, "cache_log", "无法读取缓存日志"))?;
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_file())
+                && path.extension().is_some_and(|ext| ext == "log")
+                && let Some(id) = path.file_stem().and_then(|name| name.to_str())
+            {
+                visit(&path, id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn item_log_path(directory: &Path, source: &str, item_id: &str) -> Result<PathBuf, ApiError> {
     // Imported identifiers must never turn a per-song log into a path outside logs.
     if item_id.is_empty()
         || item_id.len() > 160
@@ -260,7 +321,10 @@ fn item_log_path(directory: &Path, item_id: &str) -> Result<PathBuf, ApiError> {
     {
         return Err(ApiError::invalid("缓存歌曲标识无效"));
     }
-    let root = directory.join("logs/native");
+    if !["native", "bbdown", "downkyi"].contains(&source) {
+        return Err(ApiError::invalid("缓存下载源无效"));
+    }
+    let root = directory.join("logs").join(source);
     std::fs::create_dir_all(&root)
         .map_err(|_| ApiError::new(503, "cache_log", "无法创建缓存日志目录"))?;
     Ok(root.join(format!("{item_id}.log")))
@@ -304,7 +368,7 @@ fn job(
         item,
         crate::cache_runtime::orchestration::JobInputs {
             cache_root: context.cache_root.clone(),
-            log_file: item_log_path(&context.directory, &item.id)?,
+            log_file: item_log_path(&context.directory, &policy.download_source, &item.id)?,
             cookie: cookie.into(),
             user_agent: crate::native_video::USER_AGENT.into(),
             referer: "https://www.bilibili.com/".into(),
@@ -326,8 +390,28 @@ pub(super) fn retry(
     context: &HostContext,
     item: &PlaylistItem,
     cookie: &str,
+    force: bool,
 ) -> Result<(), ApiError> {
     let (policy, player) = with_app(|app| {
+        let snapshot = app.native_core_snapshot()?;
+        let policy = app.native().cache_policy.clone();
+        let items: Vec<_> = snapshot
+            .current_item
+            .iter()
+            .chain(snapshot.playlist.iter())
+            .collect();
+        let position = items
+            .iter()
+            .position(|live| {
+                live.id == item.id && live.item_incarnation_id == item.item_incarnation_id
+            })
+            .ok_or_else(|| ApiError::new(409, "stale_item", "此歌曲已更换"))?;
+        crate::cache_runtime::orchestration::validate_manual_retry(
+            &items[position].cache_status,
+            force,
+            position < policy.max_cache_items,
+        )
+        .map_err(|error| ApiError::new(409, &error.kind, error.message))?;
         Ok((
             app.native().cache_policy.clone(),
             app.native().player_media.clone(),
@@ -336,18 +420,10 @@ pub(super) fn retry(
     if let Some(message) =
         crate::desktop_login::download_login_error(&policy.download_source, cookie)
     {
-        use std::io::Write;
-        if let Ok(mut log) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(item_log_path(&context.directory, &item.id)?)
-        {
-            let _ = writeln!(
-                log,
-                "download_login_required source={}",
-                policy.download_source
-            );
-        }
+        crate::cache_runtime::append_log(
+            &item_log_path(&context.directory, &policy.download_source, &item.id)?,
+            &format!("download_login_required source={}", policy.download_source),
+        );
         return Err(ApiError::new(403, "download_login_required", message));
     }
     if !policy.available_with(
@@ -371,11 +447,17 @@ pub(super) fn retry(
         ));
     }
     let effective = MediaSelection::new(&policy, &player, context.desktop);
-    execute_cache_runtime(CacheRuntimeCommand::Retry {
-        job: job(context, item, cookie, &policy, &effective)?,
-        urgent: true,
-    })
-    .map_err(cache_error)?;
+    crate::cache_runtime::orchestration::retry_native_host(
+        job(context, item, cookie, &policy, &effective)?,
+        force,
+    )
+    .map_err(|error| {
+        if ["retry_not_allowed", "item_incarnation_mismatch"].contains(&error.kind.as_str()) {
+            ApiError::new(409, &error.kind, error.message)
+        } else {
+            cache_error(error)
+        }
+    })?;
     Ok(())
 }
 
@@ -389,17 +471,42 @@ mod log_tests {
             std::process::id(),
             (now() * 1e9) as u64
         ));
-        let first = item_log_path(&root, "first").unwrap();
-        let second = item_log_path(&root, "second").unwrap();
+        let first = item_log_path(&root, "native", "first").unwrap();
+        let second = item_log_path(&root, "native", "second").unwrap();
         assert_eq!(first, root.join("logs/native/first.log"));
         let content = vec![b'x'; 1024 * 1024 + 1];
         std::fs::write(&first, &content).unwrap();
         std::fs::write(&second, b"second task").unwrap();
-        assert_eq!(item_log_path(&root, "first").unwrap(), first);
+        assert_eq!(item_log_path(&root, "native", "first").unwrap(), first);
         assert_eq!(std::fs::read(first).unwrap(), content);
         assert_eq!(std::fs::read(second).unwrap(), b"second task");
+        for source in ["native", "bbdown", "downkyi"] {
+            let old = item_log_path(&root, source, "obsolete").unwrap();
+            assert_eq!(old, root.join(format!("logs/{source}/obsolete.log")));
+            std::fs::write(old, b"old task").unwrap();
+        }
+        assert!(item_log_path(&root, "../outside", "id").is_err());
+        let diagnostic = root.join("logs/monthly-d1-refresh.log");
+        std::fs::write(&diagnostic, b"keep diagnostic").unwrap();
+        let unrelated = root.join("logs/native/notes.txt");
+        std::fs::write(&unrelated, b"keep notes").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&diagnostic, root.join("logs/native/link.log")).unwrap();
+        visit_song_logs(&root, |path, id| {
+            if id == "obsolete" {
+                std::fs::remove_file(path).unwrap();
+            }
+            assert_ne!(id, "link", "Never visit symlink targets");
+            Ok(())
+        })
+        .unwrap();
+        for source in ["native", "bbdown", "downkyi"] {
+            assert!(!root.join(format!("logs/{source}/obsolete.log")).exists());
+        }
+        assert!(diagnostic.exists());
+        assert!(unrelated.exists());
         for id in ["", "../outside", "a/b", "a\\b", "C:outside", ".."] {
-            assert!(item_log_path(&root, id).is_err());
+            assert!(item_log_path(&root, "native", id).is_err());
         }
         std::fs::remove_dir_all(root).unwrap();
     }

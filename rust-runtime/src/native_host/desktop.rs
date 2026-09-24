@@ -374,7 +374,6 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     })();
     let _ = INSTALLATION
         .set(admitted.filter(|installation| installation.permits_data_directory(&directory)));
-    crate::playlist_export::prewarm_fonts(&desktop_font_path()?).map_err(|e| e.message)?;
     let seed: AppStateSeed = serde_json::from_value(json!({"session_started_at":now(),
         "session_played_file":format!("played-native-{}.json", (now()*1000.0) as u64),"updated_at":now()})).map_err(|e| e.to_string())?;
     let initialized = initialize_native_host(&directory, seed);
@@ -393,6 +392,20 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
             "baseUrl":format!("http://127.0.0.1:{}",host.local_port()),"bootstrapUrl":host.bootstrap_url(),"backend":"rust"})
         );
         std::io::stdout().flush().map_err(|e| e.to_string())?;
+        // Export is optional at launch, as in the shipped Python desktop Host.
+        // Reuse the renderer's synchronized font cache: an immediate export
+        // waits for the same resources, while normal Host requests stay ready.
+        // Track the worker so shutdown joins it before dropping AppState.
+        if let Err(error) = host.context.spawn("desktop-export-prewarm", || {
+            let result = desktop_font_path().and_then(|path| {
+                crate::playlist_export::prewarm_fonts(&path).map_err(|e| e.message)
+            });
+            if let Err(error) = result {
+                eprintln!("Desktop export font prewarm failed: {error}");
+            }
+        }) {
+            eprintln!("Could not start desktop export font prewarm: {error}");
+        }
         while !host.context.stop.load(Ordering::Acquire) {
             #[cfg(unix)]
             if EXIT_REQUESTED.load(Ordering::Acquire)

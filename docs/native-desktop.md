@@ -123,6 +123,15 @@ explicit Windows shell override, WebView storage uses an adjacent `<native-direc
 directory so it cannot contaminate a new import destination before enrollment.
 Existing native checkpoints remain valid; the old preview marker is no longer required.
 
+Desktop windows initially load the script-free `desktop-startup.html`, then
+navigate to the authenticated Host once its ready event arrives. The full Host
+UI only initializes at that backend origin. Export font discovery/prewarming
+runs as a supervised background worker; immediate image exports share its font
+cache, while CSV and ordinary Host use do not depend on successful prewarming.
+An unselected aria2 downloader is also probed in the background without installing
+anything. A saved DownKyi selection still prepares its required tool before cache
+scheduling begins. Both background workers are joined during Host shutdown.
+
 Existing native records take precedence. A nonempty directory without a native checkpoint (or an old valid preview marker),
 or a malformed checkpoint, is refused, never treated as an empty library. On macOS/Linux,
 known legacy data without native records produces an explicit import instruction.
@@ -275,9 +284,21 @@ is never scheduled by startup, login or ordinary local-library refresh.
 Summary-only progress and outcomes are recorded in `logs/monthly-d1-refresh.log`;
 credentials and upstream bodies are excluded.
 
-Native cache tasks append to `logs/native/<item_id>.log` under the data directory;
-logs are not merged or automatically truncated at 1 MiB. AppState snapshots and
+Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
+where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
+start with the song title. Logs are not merged or truncated at 1 MiB; orphaned
+song logs are removed after the item leaves the current song/playlist and its
+worker has drained. AppState snapshots and
 typed Internet Remote projections include aggregate downloaded/total bytes and
 ordered per-track progress. An unknown total remains zero until all track sizes
 are known. These transient fields are reset with a new attempt, terminal event
 or data reopen; Host and Remote do not reconstruct them from diagnostic text.
+
+Manual cache retry preserves the observed item incarnation and the caller's
+`force` flag across local and Internet Remote transport. Ready items require
+`force`; only pending, queued, downloading, failed or ready items inside the
+current automatic cache window are eligible. Admission rechecks these conditions
+under the worker/AppState locks before reserving a replacement attempt. Normal
+manual retries enter the front of the normal queue. Only a forced retry of the
+current song while a different song occupies the primary worker uses the urgent
+lane; `force` does not bypass cache-window or backend capability checks.

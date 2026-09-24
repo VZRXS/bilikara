@@ -485,6 +485,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             cache,
         )
 
+        self.assertIn("force: Boolean(body.force)", cache)
+
         variant_start = self.remote_transport.index(
             'url.pathname === "/api/player/audio-variant"'
         )
@@ -536,6 +538,23 @@ const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\
   assert.deepEqual(calls, ["player.set_volume"]);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''.replace("BODY", json.dumps(body))
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_retry_transport_preserves_force_true_false_and_legacy_absence(self):
+        start = self.remote_transport.index('response = await request("cache.retry", {')
+        end = self.remote_transport.index('\n      } else if', start)
+        script = r'''const assert = require("node:assert/strict");
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const send = new AsyncFunction("body", "request", "expectedRevision", "let response;\n" + BODY + "\nreturn response;");
+(async()=>{
+  for(const force of [undefined,false,true]){
+    let observed;
+    await send({item_id:"song",expected_item_incarnation_id:"incarnation",force},async(kind,body)=>{observed={kind,body};},()=>12);
+    assert.deepEqual(observed,{kind:"cache.retry",body:{item_id:"song",expected_item_incarnation_id:"incarnation",force:force===true,expected_revision:12}});
+  }
+})().catch(error=>{console.error(error);process.exitCode=1;});'''.replace("BODY", json.dumps(self.remote_transport[start:end]))
         result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 

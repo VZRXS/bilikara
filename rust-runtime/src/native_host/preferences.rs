@@ -296,7 +296,7 @@ fn regular(path: &Path) -> Result<(), ApiError> {
     }
 }
 
-pub(super) fn load(directory: &Path) -> Result<Saved, ApiError> {
+pub(super) fn load(directory: &Path, desktop: bool) -> Result<Saved, ApiError> {
     let path = directory.join("native-preferences.json");
     regular(&path)?;
     let file = match fs::File::open(path) {
@@ -323,7 +323,9 @@ pub(super) fn load(directory: &Path) -> Result<Saved, ApiError> {
     // Existing native/mobile preferences retain their strict contract. Only
     // explicit desktop imports carry preserved legacy settings for unavailable
     // values; loading them must not silently select a different downloader.
-    if saved.cache.retained_settings.is_empty() && !saved.cache.available() {
+    // Validate the saved source's contract, not its current installation.
+    // Desktop discovers/prepares tool availability after loading preferences.
+    if saved.cache.retained_settings.is_empty() && !saved.cache.available_with(desktop, desktop) {
         return Err(storage_error());
     }
     if saved.cache.download_source.len() > 128 || saved.cache.video_quality.len() > 128 {
@@ -568,28 +570,41 @@ mod tests {
             now()
         ));
         fs::create_dir_all(&directory).unwrap();
-        let defaults = load(&directory).unwrap().cache;
+        let defaults = load(&directory, false).unwrap().cache;
         assert_eq!(defaults, CachePolicy::default());
         assert_eq!(defaults.video_quality, "1080P 高帧率");
         assert!(defaults.audio_hires);
-        assert_eq!(load(&directory).unwrap().language, None);
+        assert_eq!(load(&directory, false).unwrap().language, None);
         let next = CachePolicy::default()
             .updated(&json!({"max_cache_items":4,"video_quality":"720P 高清","audio_hires":false}))
             .unwrap();
         save(&directory, &CachePolicy::default(), Some(UiLanguage::Ja)).unwrap();
         save(&directory, &next, Some(UiLanguage::Ja)).unwrap();
-        assert_eq!(load(&directory).unwrap().cache, next);
-        assert_eq!(load(&directory).unwrap().language, Some(UiLanguage::Ja));
+        assert_eq!(load(&directory, false).unwrap().cache, next);
+        assert_eq!(
+            load(&directory, false).unwrap().language,
+            Some(UiLanguage::Ja)
+        );
         // Existing Alpha preferences have no language field; retain their cache.
         fs::write(
             directory.join("native-preferences.json"),
             json!({"schema_version":1,"cache":next}).to_string(),
         )
         .unwrap();
-        assert_eq!(load(&directory).unwrap().language, None);
-        assert_eq!(load(&directory).unwrap().cache, next);
+        assert_eq!(load(&directory, false).unwrap().language, None);
+        assert_eq!(load(&directory, false).unwrap().cache, next);
+        for source in ["bbdown", "downkyi"] {
+            let selected = next.updated(&json!({"download_source":source})).unwrap();
+            save(&directory, &selected, None).unwrap();
+            assert_eq!(load(&directory, true).unwrap().cache, selected);
+            assert!(load(&directory, false).is_err());
+        }
+        let mut invalid = next.clone();
+        invalid.download_source = "unknown-executor".into();
+        save(&directory, &invalid, None).unwrap();
+        assert!(load(&directory, true).is_err());
         fs::write(directory.join("native-preferences.json"), b"invalid").unwrap();
-        assert!(load(&directory).is_err());
+        assert!(load(&directory, false).is_err());
         assert_eq!(
             fs::read(directory.join("native-preferences.json")).unwrap(),
             b"invalid"

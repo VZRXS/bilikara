@@ -171,19 +171,29 @@ fn save(directory: &Path, cookie: &str) -> Result<(), ApiError> {
     fs::rename(pending, destination).map_err(|_| io_error())
 }
 
-pub(super) fn begin(context: Arc<HostContext>, identity: &Identity) -> Result<Value, ApiError> {
+fn reserve_generation(
+    session: &mut crate::app_state::native_session::NativeSession,
+    force: bool,
+) -> Option<u64> {
+    if !session.cookie.is_empty() || (!force && session.login_generation.is_some()) {
+        return None;
+    }
+    let generation = session
+        .login
+        .begin_bilibili_login("正在生成 B 站登录二维码".into());
+    session.login_generation = Some(generation);
+    session.revision += 1;
+    Some(generation)
+}
+
+pub(super) fn begin(
+    context: Arc<HostContext>,
+    identity: &Identity,
+    force: bool,
+) -> Result<Value, ApiError> {
     let generation = with_app(|app| {
         app.native_authorize(identity, true)?;
-        let session = app.native();
-        if !session.cookie.is_empty() || session.login_generation.is_some() {
-            return Ok(None);
-        }
-        let generation = session
-            .login
-            .begin_bilibili_login("正在生成 B 站登录二维码".into());
-        session.login_generation = Some(generation);
-        session.revision += 1;
-        Ok(Some(generation))
+        Ok(reserve_generation(app.native(), force))
     })?;
     if let Some(generation) = generation {
         let context = context.clone();
@@ -198,6 +208,9 @@ pub(super) fn begin(context: Arc<HostContext>, identity: &Identity) -> Result<Va
         {
             with_app(|app| {
                 let session = app.native();
+                if session.login_generation != Some(generation) {
+                    return Ok(());
+                }
                 session.login_generation = None;
                 session.login.set_bilibili_login(
                     Some(generation),
@@ -341,6 +354,7 @@ mod tests {
             desktop: false,
             bbdown: None,
             aria2: std::sync::Mutex::new(None),
+            aria2_prepare: std::sync::Mutex::new(()),
             shutdown_token: None,
             desktop_installation: None,
             workers: std::sync::Mutex::new(Vec::new()),
@@ -352,6 +366,42 @@ mod tests {
             Ok(generation)
         })
         .unwrap();
+        let replacement = with_app(|app| {
+            app.native().cookie.clear();
+            assert_eq!(reserve_generation(app.native(), false), None);
+            Ok(reserve_generation(app.native(), true).unwrap())
+        })
+        .unwrap();
+        assert_ne!(generation, replacement);
+        update_waiting(&context, replacement, "new-qr", "new login").unwrap();
+        update_waiting(&context, generation, "old-qr", "old login").unwrap();
+        finish(
+            &context,
+            generation,
+            Ok("SESSDATA=stale; bili_jct=stale".into()),
+        )
+        .unwrap();
+        finish(&context, generation, Err(network_failure())).unwrap();
+        assert!(!directory.join(COOKIE_FILE).exists());
+        with_app(|app| {
+            let session = app.native();
+            assert_eq!(session.login_generation, Some(replacement));
+            assert!(session.cookie.is_empty());
+            assert_eq!(
+                session
+                    .login
+                    .bilibili_snapshot(crate::status_service::BilibiliLoginFacts {
+                        logged_in: false,
+                        data_exists: false,
+                        data_path: String::new()
+                    })
+                    .qr_image,
+                "new-qr"
+            );
+            Ok(())
+        })
+        .unwrap();
+        let generation = replacement;
         // No configured sources: the real refresh pipeline must complete without
         // any Bilibili/D1 request, still publishing its status and repository file.
         finish(

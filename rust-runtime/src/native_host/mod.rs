@@ -102,6 +102,7 @@ pub(crate) struct HostContext {
     desktop: bool,
     bbdown: Option<crate::cache_runtime::bbdown::Executable>,
     aria2: std::sync::Mutex<Option<crate::cache_runtime::aria2::Executable>>,
+    aria2_prepare: std::sync::Mutex<()>,
     shutdown_token: Option<String>,
     desktop_installation: Option<crate::update_installer::native::Installation>,
     workers: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
@@ -147,24 +148,28 @@ impl HostContext {
                 "aria2c is desktop-only",
             ));
         }
-        let mut capability = self.aria2.lock().unwrap_or_else(|p| p.into_inner());
-        if capability.is_none() {
-            *capability = Some(
-                crate::cache_runtime::aria2::Executable::prepare(
-                    &self.directory.join("tools/aria2c"),
-                    std::env::var_os("ARIA2C_PATH")
-                        .filter(|p| !p.is_empty())
-                        .map(PathBuf::from),
-                    &[],
-                    install,
-                    &self.stop,
-                )
-                .map_err(|e| ApiError::new(501, &e.kind, e.message))?,
-            );
+        // Serialize preparation without blocking cache/status readers on an
+        // optional external process. Publish only a fully validated executable.
+        let _preparing = self.aria2_prepare.lock().unwrap_or_else(|p| p.into_inner());
+        if self.aria2().is_none() {
+            let executable = crate::cache_runtime::aria2::Executable::prepare(
+                &self.directory.join("tools/aria2c"),
+                std::env::var_os("ARIA2C_PATH")
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from),
+                &[],
+                install,
+                &self.stop,
+            )
+            .map_err(|e| ApiError::new(501, &e.kind, e.message))?;
+            *self.aria2.lock().unwrap_or_else(|p| p.into_inner()) = Some(executable);
         }
-        drop(capability);
         with_app(|app| {
-            app.native().aria2_available = true;
+            let session = app.native();
+            if !session.aria2_available {
+                session.aria2_available = true;
+                session.revision += 1;
+            }
             Ok(())
         })
     }
@@ -219,13 +224,21 @@ pub(crate) fn token() -> Result<String, ApiError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 pub(crate) fn qr_image(value: &str) -> Result<String, ApiError> {
-    // Match the Preview 1 Rust Host: the SVG carries its four-module quiet
-    // zone. The access card's 3px CSS padding is only an outer visual frame.
+    render_qr(value, true)
+}
+
+pub(crate) fn access_qr_image(value: &str) -> Result<String, ApiError> {
+    // Access cards supply the legacy desktop's 3px outer frame. Login QR
+    // images keep their own four-module quiet zone via qr_image instead.
+    render_qr(value, false)
+}
+
+fn render_qr(value: &str, quiet_zone: bool) -> Result<String, ApiError> {
     let code = qrcode::QrCode::new(value).map_err(|_| ApiError::invalid("无法生成二维码"))?;
     let svg = code
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(256, 256)
-        .quiet_zone(true)
+        .quiet_zone(quiet_zone)
         .build();
     Ok(format!(
         "data:image/svg+xml;base64,{}",
@@ -282,26 +295,30 @@ fn start(
         .collect();
     let local = format!("http://127.0.0.1:{port}/remote?invite={invite}");
     let preferred = lan_urls.first().unwrap_or(&local).clone();
-    let qr = qr_image(&preferred)?;
+    let qr = access_qr_image(&preferred)?;
     let saved_cookie = if desktop {
         login::load_desktop(&directory)?
     } else {
         login::load(&directory)?
     };
-    let saved_preferences = preferences::load(&directory)?;
+    let saved_preferences = preferences::load(&directory, desktop)?;
     let bbdown = if desktop {
         crate::cache_runtime::bbdown::Executable::discover(&directory)
     } else {
         None
     };
-    let aria2 = if desktop {
+    // Only a selected aria2 backend is a readiness dependency. Probing an
+    // optional aria2 binary launches subprocesses (and may time out); Native
+    // and BBDown users must not wait for those capability checks at startup.
+    let needs_aria2 = desktop && saved_preferences.cache.download_source == "downkyi";
+    let aria2 = if needs_aria2 {
         crate::cache_runtime::aria2::Executable::prepare(
             &directory.join("tools/aria2c"),
             std::env::var_os("ARIA2C_PATH")
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
             &[],
-            saved_preferences.cache.download_source == "downkyi",
+            true,
             &AtomicBool::new(false),
         )
         .ok()
@@ -357,6 +374,7 @@ fn start(
         },
         bbdown,
         aria2: std::sync::Mutex::new(aria2),
+        aria2_prepare: std::sync::Mutex::new(()),
         workers: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -418,6 +436,16 @@ fn start(
     }
     if desktop {
         host.install_desktop_export()?;
+        if !needs_aria2 {
+            let tools_context = context.clone();
+            context
+                .spawn("desktop-aria2-probe", move || {
+                    // No installation/network work for an unselected source.
+                    // prepare_aria2 serializes with an explicit user request.
+                    let _ = tools_context.prepare_aria2(false);
+                })
+                .map_err(|_| ApiError::new(503, "runtime", "无法创建工具检查线程"))?;
+        }
     }
     Ok(host)
 }
@@ -794,7 +822,23 @@ mod tests {
     }
     #[test]
     fn invitation_qr_is_local_not_an_external_service() {
-        let image = qr_image("http://192.168.1.2:1234/remote?invite=test").unwrap();
+        let url = "http://192.168.1.2:1234/remote?invite=test";
+        let image = access_qr_image(url).unwrap();
         assert!(image.starts_with("data:image/svg+xml;base64,"));
+        let svg = base64::engine::general_purpose::STANDARD
+            .decode(image.split_once(',').unwrap().1)
+            .unwrap();
+        let expected = qrcode::QrCode::new(url)
+            .unwrap()
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(256, 256)
+            .quiet_zone(false)
+            .build();
+        assert_eq!(String::from_utf8(svg).unwrap(), expected);
+        assert_ne!(
+            image,
+            qr_image(url).unwrap(),
+            "Login codes retain their internal quiet zone"
+        );
     }
 }

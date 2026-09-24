@@ -150,7 +150,7 @@
     const url = preferredUrl || localUrl;
     if (!url) return;
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
-    elements.remoteUrlLink.textContent = new URL(url).origin;
+    elements.remoteUrlLink.textContent = (new URL(url).origin + new URL(url).pathname);
     elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
     const nativeQr = String(candidate?.qr_image || "");
     const qrUrl = nativeQr.startsWith("data:image/svg+xml;base64,")

@@ -208,7 +208,7 @@ def _run_host_effect(
         context.retry_cache_item(
             str(effect["item_id"]),
             expected_item_incarnation_id=str(effect["item_incarnation_id"]),
-            force=True,
+            force=bool(effect.get("force", False)),
         )
         return public_response
     if kind == "submit_rating":

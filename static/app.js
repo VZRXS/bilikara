@@ -9923,7 +9923,7 @@ function renderPlayerFullscreenRemoteAccess({
   elements.playerFullscreenRemotePopover?.querySelector(".remote-access-card")
     ?.classList.toggle("is-local-only-preview", !internetActive);
   setTextContent(elements.playerFullscreenRemoteUrl,
-    normalizedLocalDisplayUrl ? new URL(normalizedLocalDisplayUrl).origin : "");
+    normalizedLocalDisplayUrl ? (new URL(normalizedLocalDisplayUrl).origin + new URL(normalizedLocalDisplayUrl).pathname) : "");
   elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
   setTextContent(
@@ -10038,13 +10038,13 @@ function renderRemoteAccess(remoteAccess) {
     if (link.getAttribute("href") !== displayUrl) {
       link.href = displayUrl;
     }
-    setTextContent(link, new URL(displayUrl).origin);
+    setTextContent(link, (new URL(displayUrl).origin + new URL(displayUrl).pathname));
   });
   if (elements.remotePopoverUrlLink) {
     elements.remotePopoverUrlLink.href = popoverTargetUrl || "";
     elements.remotePopoverUrlLink.dataset.shareable = String(Boolean(shareableUrl));
     elements.remotePopoverUrlLink.classList.toggle("hidden", !popoverTargetUrl);
-    elements.remotePopoverUrlLink.textContent = popoverTargetUrl ? new URL(popoverTargetUrl).origin : "";
+    elements.remotePopoverUrlLink.textContent = popoverTargetUrl ? (new URL(popoverTargetUrl).origin + new URL(popoverTargetUrl).pathname) : "";
     elements.remotePopoverUrlLink.title = shareableUrl
       ? popoverTargetUrl
       : t("internetRemote.openOnThisDevice");

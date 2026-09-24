@@ -16,7 +16,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   const reaped=async pids=>{await until(async()=>{for(const pid of pids){try{await fs.stat(`/proc/${pid}`);return false;}catch{}}return true;});};
   const current=async()=> (await okay("/api/state")).current_item;
   const ready=async()=>{await until(async()=> (await current()).cache_status==="ready");return current();};
-  const retry=async()=>{const item=await current();return okay("/api/cache/retry",{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id});};
+  const retry=async()=>{const item=await current();return okay("/api/cache/retry",{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id,force:true});};
   const caps=avc=>okay("/api/client/media-capabilities",{hevc_supported:false,avc_supported:avc,max_avc_quality_index:4});
   // Baseline import already proved missing BBDown is preserved and unavailable.
   assert.equal((await api("/api/cache-policy",{download_source:"bbdown"})).status,501);
@@ -55,11 +55,22 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   assert.equal((await api("/api/cache/retry",{item_id:guest.id,expected_item_incarnation_id:guest.item_incarnation_id})).status,403);
   for(let n=0;n<4;n++)await okay("/api/state");
   assert.equal((await starts()).length,guestStarts);
-  assert.match(await fs.readFile(path.join(directory,"logs/native",guest.id+".log"),"utf8"),/download_login_required source=bbdown/);
-  await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-ready");
+  assert.match(await fs.readFile(path.join(directory,"logs/bbdown",guest.id+".log"),"utf8"),/download_login_required source=bbdown/);
+  const generations=async()=> (await (await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-stats")).json()).generations;
   await okay("/api/bbdown/login/start",{});
+  await until(async()=>Boolean((await okay("/api/state")).bbdown.login.qr_image));
+  const beforeRefresh=await generations();
+  await okay("/api/bbdown/login/start",{});
+  assert.equal(await generations(),beforeRefresh);
+  await okay("/api/bbdown/login/start",{force:true});
+  await until(async()=>await generations()===beforeRefresh+1);
+  await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-ready");
   await until(async()=> (await okay("/api/state")).bbdown.logged_in);
   await mode("success");await retry();await ready();
+  const completed=await current();
+  const plainReadyRetry=await api("/api/cache/retry",{item_id:completed.id,expected_item_incarnation_id:completed.item_incarnation_id});
+  assert.equal(plainReadyRetry.status,409);
+  assert.equal((await current()).artifact_set_id,completed.artifact_set_id,"Rejected ready retry preserves the readable artifact");
   await page.waitForFunction(()=>state.data.current_item.cache_status==="ready" && state.data.bbdown.logged_in);
   await capture("bbdown-login-retry-ready.png",page);
   const loggedInArtifact=(await current()).artifact_set_id;
@@ -130,14 +141,31 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await mode("success");await retry();await ready();
   // Window shrink cancels queued-item work; re-entry gets a fresh attempt.
   await mode("slow");await okay("/api/cache-policy",{max_cache_items:2});await until(async()=> (await running()).length>=2);
-  const windowPids=await running();await okay("/api/cache-policy",{max_cache_items:1});await reaped(windowPids);
+  const windowPids=await running();
+  // Only this forced current-song retry may overlap another primary song.
+  await retry();await until(async()=> (await running()).length>=4);
+  for(const pid of windowPids)assert.ok((await running()).includes(pid),"Urgent retry must not preempt the other primary song");
+  await mode("success");await retry();await ready();
+  await okay("/api/cache-policy",{max_cache_items:1});await reaped(windowPids);
+  const outside=(await okay("/api/state")).playlist[0];
+  const outsideRetry=await api("/api/cache/retry",{item_id:outside.id,expected_item_incarnation_id:outside.item_incarnation_id,force:true});
+  assert.equal(outsideRetry.status,409,"Force cannot bypass the automatic cache window");
+  assert.equal((await okay("/api/state")).playlist[0].artifact_set_id,outside.artifact_set_id);
+  assert.equal((await okay("/api/state")).playlist[0].cache_status,outside.cache_status);
   await mode("success");await okay("/api/cache-policy",{max_cache_items:2});
   await until(async()=> (await okay("/api/state")).playlist[0].cache_status==="ready");
   const queued=(await okay("/api/state")).playlist[0];
-  await mode("slow");await okay("/api/cache/retry",{item_id:queued.id,expected_item_incarnation_id:queued.item_incarnation_id});
+  await mode("slow");await okay("/api/cache/retry",{item_id:queued.id,expected_item_incarnation_id:queued.item_incarnation_id,force:true});
   await until(async()=> (await running()).length>=2);const removedPids=await running();
   await okay("/api/playlist/remove",{item_id:queued.id});await reaped(removedPids);await sleep(1000);
   assert.ok(!(await okay("/api/state")).playlist.some(v=>v.id===queued.id));
+  await until(async()=>{
+    for(const source of ["native","bbdown","downkyi"]){
+      try{await fs.stat(path.join(directory,"logs",source,queued.id+".log"));return false;}
+      catch(error){if(error.code!=="ENOENT")throw error;}
+    }
+    return true;
+  });
   // Multi-page command selection preserves audio variant ordering and identity.
   await mode("success");
   await okay("/api/playlist/add",{url:"https://www.bilibili.com/video/BV1xx411c7mE",requester_name:"Alice",selected_video_page:1,selected_audio_pages:[1,2]});
@@ -158,8 +186,9 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   // restart's common stop is idempotently skipped by the harness after shutdown.
   await restart();page=getPage();watch();
   const unavailable=await okay("/api/state");assert.equal(unavailable.cache_policy.download_source,"bbdown");assert.equal(unavailable.cache_policy.enabled,false);
-  assert.equal((await api("/api/cache/retry",{item_id:unavailable.current_item.id,expected_item_incarnation_id:unavailable.current_item.item_incarnation_id})).status,501);
-  const log=(await Promise.all((await fs.readdir(path.join(directory,"logs/native"))).map(name=>fs.readFile(path.join(directory,"logs/native",name),"utf8")))).join("\n");assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(log));
+  assert.equal((await api("/api/cache/retry",{item_id:unavailable.current_item.id,expected_item_incarnation_id:unavailable.current_item.item_incarnation_id,force:true})).status,501);
+  const log=(await Promise.all((await fs.readdir(path.join(directory,"logs/bbdown"))).map(name=>fs.readFile(path.join(directory,"logs/bbdown",name),"utf8")))).join("\n");assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(log));
+  assert.match(log,/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] start cache: Imported desktop song/);
   assert.deepEqual(errors,[]);
   await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,fixtureChild:true,providerDownloadTested:false,pythonBackend:false,applicationPathEmpty:true,choices,success:true,hiresFlac:true,multiPageAudio:true,sourceReplacement:true,lateOldStagingResult:true,nonDashRejectedBeforeChild:true,userRetry:true,disablement:true,windowShrink:true,removal:true,shutdown:true,unavailable:true,outcomes,consoleErrors:errors,browserWarnings:warnings},null,2));
 };

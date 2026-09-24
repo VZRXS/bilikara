@@ -148,6 +148,54 @@ fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
 }
 
 #[test]
+fn runtime_reset_reclaims_remote_devices_only_after_a_successful_commit() {
+    let (mut app, host) = setup();
+    app.data.as_mut().unwrap().native_session_choice_pending = true;
+    for index in 0..10 {
+        app.native_join_remote("", format!("remote{index}"))
+            .unwrap();
+    }
+    let remote = Identity {
+        token: "remote0".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    let reset = |file_name: &str| AppStateRequest::ResetRuntime {
+        schema_version: 1,
+        new_session: SessionArchiveSeed {
+            file_name: file_name.into(),
+            session_started_at: 3.0,
+            items: vec![],
+        },
+        now: 3.0,
+    };
+    assert!(app.native_execute(reset("../invalid.json")).is_err());
+    assert!(app.native_session_choice_pending());
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "Alice");
+    assert!(app.native_join_remote("", "overflow".into()).is_err());
+    app.native_execute(reset("next.json")).unwrap();
+    assert!(!app.native_session_choice_pending());
+    assert!(app.native_authorize(&host, true).unwrap());
+    assert!(app.native_authorize(&remote, false).is_err());
+    assert!(app.native_core_snapshot().unwrap().session_users.is_empty());
+    assert_eq!(
+        app.native_join_remote("remote0", "new-remote".into())
+            .unwrap(),
+        "new-remote"
+    );
+    assert_eq!(
+        app.native_identity(&Identity {
+            token: "new-remote".into(),
+            ..remote
+        })
+        .unwrap()["registered"],
+        false
+    );
+}
+
+#[test]
 fn playback_claim_status_and_commands_are_exact_generation_bound() {
     let (mut app, host) = setup();
     let (snapshot, claim) = ready(&mut app);
