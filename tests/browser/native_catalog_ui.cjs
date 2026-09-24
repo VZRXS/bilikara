@@ -176,7 +176,7 @@ const notes=path.resolve(output);
   await check('privateLanSharing',async()=>{
    assert.equal((await fetch(base+'/api/remote-access')).status,403);
    const response=await remote.request.get(base+'/api/remote-access');assert.equal(response.status(),200);
-   const data=(await response.json()).data;assert.ok(new URL(data.local_url).searchParams.has('invite'));
+   const data=(await response.json()).data;assert.equal(new URL(data.local_url).search,'');assert.equal(new URL(data.local_url).pathname,'/remote');
    const publicUrl='https://rtc.kevinx96.icu/remote.html#room=QUIET-ZONE-FIXTURE&join='+'A'.repeat(43);
    const publicQrResponse=await host.request.post(base+'/api/internet-remote/qr',{data:{url:publicUrl}});
    assert.equal(publicQrResponse.status(),200);
@@ -207,22 +207,119 @@ const notes=path.resolve(output);
    assert.equal(await host.locator('#remote-popover-url-link').textContent(),new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).origin+'/remote');
    assert.equal(await host.locator('#internet-remote-local-address-detail').count(),0);
    await host.waitForFunction(()=>['remote-popover-qr-image','player-fullscreen-remote-qr-image'].every(id=>document.getElementById(id)?.naturalWidth>0));
-   assert.ok(new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).searchParams.has('invite'));
+   assert.equal(new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).search,'');
    await host.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedInvitation=text;}}}));
    await host.locator('#remote-mini-trigger').click();
    await host.locator('#remote-popover-copy-link').click();
    await host.waitForFunction(()=>Boolean(window.copiedInvitation));
    const copied=await host.evaluate(()=>window.copiedInvitation);
-   assert.equal(new URL(copied).pathname,'/remote');assert.ok(new URL(copied).searchParams.has('invite'));
-   const freshContext=await hostContext.browser().newContext();const fresh=await freshContext.newPage();
-   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),403,'A fresh device needs the invitation before opening /remote');
+   assert.equal(new URL(copied).pathname,'/remote');assert.equal(new URL(copied).search,'');
+   const freshContext=await context({width:392,height:817});
+   await freshContext.route(new URL(copied).origin+'/**',route=>route.continue());
+   const fresh=await freshContext.newPage();
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'A fresh device can open /remote directly');
    await fresh.goto(copied);await fresh.waitForURL(new URL('/remote',copied).href);
    assert.ok((await freshContext.cookies()).some(cookie=>cookie.httpOnly));
-   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'The paired device can reuse /remote without invite');
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'The device can reuse /remote without another entry document');
+   await fresh.locator('#remote-identity-input').fill('Direct LAN entry');
+   await fresh.locator('#remote-identity-submit').click();
+   await fresh.waitForFunction(()=>state.remoteIdentity?.registered);
+   const beforeCookie=(await freshContext.cookies()).find(cookie=>cookie.name==='bilikara_native').value;
+   await fresh.reload();await fresh.waitForFunction(()=>state.remoteIdentity?.registered);
+   assert.equal((await freshContext.cookies()).find(cookie=>cookie.name==='bilikara_native').value,beforeCookie);
+   assert.equal((await fresh.request.post(new URL('/api/session-users/add',copied).href,{data:{name:'Forbidden'}})).status(),403);
    await freshContext.close();
    await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'host-access-link.png')});
    await host.locator('#remote-mini-popover-close').click();
 
+  });
+  await check('localEntryFailureStates',async()=>{
+   let mode='ok';
+   const pattern='**/api/state';
+   const handler=async route=>{
+    if(mode==='ok')return route.continue();
+    if(mode==='network')return route.abort('connectionrefused');
+    if(mode==='http')return route.fulfill({status:503,contentType:'text/html',body:'Unavailable fixture'});
+    if(mode==='invalid')return route.fulfill({contentType:'application/json',body:'{"ok":true,"data":null}'});
+    const response=await route.fetch();const body=await response.json();
+    body.data.remote_access={local_url:base+'/remote',preferred_url:base+'/remote',lan_urls:[]};
+    if(mode==='switched') {
+     const url=`http://192.168.50.8:${new URL(base).port}/remote`;
+     body.data.remote_access={...body.data.remote_access,preferred_url:url,lan_urls:[url],
+      qr_image:'data:image/svg+xml;base64,'+Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><text y="20">Changed network fixture</text></svg>').toString('base64')};
+    }
+    return route.fulfill({response,json:body});
+   };
+   await hostContext.route(pattern,handler);
+   const unavailable=async()=>{
+    for(const id of ['remote-url-link','remote-popover-url-link']) {
+     assert.equal(await host.locator('#'+id).getAttribute('href'),null);
+     assert.equal(await host.locator('#'+id).getAttribute('aria-disabled'),'true');
+    }
+    for(const id of ['copy-remote-url-button','remote-popover-copy-link'])assert.equal(await host.locator('#'+id).isDisabled(),true);
+    for(const id of ['remote-qr-image','remote-popover-qr-image','remote-mini-qr-image','player-fullscreen-remote-qr-image']) {
+     assert.equal(await host.locator('#'+id).getAttribute('src'),null);
+     assert.equal(await host.locator('#'+id).evaluate(e=>e.classList.contains('hidden')),true);
+    }
+   };
+   try {
+    await host.locator('#remote-mini-trigger').click();
+    await host.evaluate(()=>{
+     window.previousQrLoad=document.querySelector('#remote-popover-qr-image').onload;
+     Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:()=>new Promise(resolve=>{window.finishCopy=resolve;})}});
+    });
+    await host.locator('#remote-popover-copy-link').click();
+    await host.waitForFunction(()=>Boolean(window.finishCopy));
+    mode='http';await host.evaluate(()=>fetchState().catch(()=>{}));
+    await host.evaluate(()=>{window.previousQrLoad?.();window.finishCopy();});
+    await host.waitForFunction(()=>!document.querySelector('#remote-popover-copy-link').hasAttribute('aria-busy'));
+    await unavailable();
+    mode='ok';await host.evaluate(()=>fetchState());
+    for(const failure of ['http','network','invalid','no-lan']) {
+     mode=failure;await host.evaluate(()=>fetchState().catch(()=>{}));
+     await unavailable();
+     const text=await host.locator('#remote-popover-url-hint').textContent();
+     assert.match(text,({http:/HTTP 503/,network:/无法连接/,invalid:/无效/, 'no-lan':/局域网/})[failure]);
+     if(failure==='http')await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'local-entry-http-error.png')});
+     mode='ok'; // Recovery must come from the real timer, without a click/fetch call.
+     await host.waitForFunction(()=>document.querySelector('#remote-popover-qr-image').naturalWidth>0&&!document.querySelector('#remote-popover-qr-image').classList.contains('hidden'));
+     assert.equal(await host.locator('#remote-popover-copy-link').isEnabled(),true);
+    }
+    await host.evaluate(()=>{
+     const request=++state.remoteAccessRequestSequence;
+     updateRemoteAccessFailure({kind:'timeout'},request);
+     updateRemoteAccessFailure({kind:'http',status:403},request-1);
+    });
+    await unavailable();assert.match(await host.locator('#remote-popover-url-hint').textContent(),/超时/);
+    await host.evaluate(()=>fetchState());
+    mode='switched';
+    await host.waitForFunction(()=>document.querySelector('#remote-popover-url-link').href.includes('192.168.50.8'));
+    assert.match(await host.locator('#remote-popover-qr-image').getAttribute('src'),/^data:image\/svg\+xml;base64,/);
+    assert.equal(await host.locator('#remote-popover-copy-link').isEnabled(),true);
+    mode='no-lan';
+    await host.waitForFunction(()=>!document.querySelector('#remote-popover-url-link').hasAttribute('href'));
+    await unavailable();
+    mode='ok';
+    await host.waitForFunction(()=>document.querySelector('#remote-popover-copy-link').disabled===false);
+   } finally {await hostContext.unroute(pattern,handler);await host.locator('#remote-mini-popover-close').click();}
+  });
+  await check('publicRoomFailureDetails',async()=>{
+   const pattern='https://rtc.kevinx96.icu/v1/rooms';let requests=0;
+   const handler=route=>{requests++;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"offline_fixture"}'});};
+   await hostContext.route(pattern,handler);
+   try {
+    await host.locator('#remote-mini-trigger').click();
+    if(!await host.locator('#internet-remote-restart').isVisible())await host.locator('#internet-remote-disclosure').click();
+    await host.locator('#internet-remote-restart').click();
+    await host.waitForFunction(()=>document.querySelector('#internet-remote-status').textContent.includes('HTTP 503'));
+    assert.equal(requests,1);
+    assert.equal(await host.locator('#internet-remote-copy-link').isDisabled(),true);
+    assert.equal(await host.locator('#internet-remote-url').getAttribute('href'),null);
+    assert.equal(await host.locator('#internet-remote-qr').getAttribute('src'),null);
+    const status=await host.locator('#internet-remote-status').evaluate(e=>({height:e.getBoundingClientRect().height,clip:getComputedStyle(e).clip}));
+    assert.ok(status.height>10);assert.equal(status.clip,'auto');
+    await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'public-room-http-error.png')});
+   } finally {await hostContext.unroute(pattern,handler);await host.locator('#remote-mini-popover-close').click();}
   });
   const settled=async page=>page.evaluate(async()=>{
    // Sheet openers schedule their entry classes on the next animation frame.
@@ -651,6 +748,15 @@ const notes=path.resolve(output);
    }));
    assert.equal(await controller.locator('#controller-remote-url-link').textContent(),new URL(await controller.locator('#controller-remote-url-link').getAttribute('href')).origin+'/remote');
    assert.match(await controller.locator('.presentation-output-remote-popover').evaluate(e=>getComputedStyle(e).transitionDuration),/^0\.2s/);
+   await host.evaluate(()=>{
+    const channel=new BroadcastChannel(BilikaraPresentationSync.channelName);
+    channel.postMessage(BilikaraPresentationSync.makeEnvelope('master-state',{
+     language:'zh',scene:{generation:1},remoteAccess:{preferred_url:'',local_url:'',qr_image:'',unavailable_message:'HTTP 503 fixture'},internetRemote:{active:false}
+    },{senderId:'offline-qr-fixture',sequence:2}));channel.close();
+   });
+   await controller.waitForFunction(()=>document.querySelector('#controller-remote-url-hint').textContent.includes('503'));
+   assert.equal(await controller.locator('#controller-remote-url-link').getAttribute('href'),null);
+   assert.equal(await controller.locator('#controller-remote-qr-image').getAttribute('src'),null);
    measurements.presentationQrUnderNativeCsp={transport:'fixture shell IPC and real native HTTP/CSP',publicRoomCreated:false};
    await controller.close();
   });

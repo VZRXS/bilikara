@@ -47,7 +47,7 @@
 
   function diagnosticError(error) {
     const name = String(error?.name || "Error").slice(0, 64);
-    const errorCode = name === "AbortError"
+    const errorCode = ["AbortError", "TimeoutError"].includes(name)
       ? "timeout"
       : name === "TypeError"
         ? "network_error"
@@ -116,6 +116,13 @@
     }));
   }
 
+  function roomCreationProblem() {
+    if (window.isSecureContext === false || !window.crypto?.subtle) {
+      return tr("internetRemote.insecureContext", "当前页面不能使用建房所需的加密功能。请在这台电脑上通过 127.0.0.1 或 localhost 打开 Host 后重试。");
+    }
+    return state.available ? "" : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC");
+  }
+
   function publishInternetRemoteDisplay() {
     const online = state.mode === "internet" && Boolean(state.roomId && !state.expired);
     const active = Boolean(
@@ -148,6 +155,8 @@
   }
 
   function render() {
+    const creationProblem = roomCreationProblem();
+    if (creationProblem) setStatus(creationProblem, "bad");
     const online = state.mode === "internet";
     const fullMenuOpen = elements.settings.classList.contains("is-qr-pinned");
     const roomActive = Boolean(state.roomId && !state.expired);
@@ -172,7 +181,9 @@
     elements.internetContent.classList.toggle("hidden", !internetContentVisible);
     elements.internetContent.inert = !fullInternetContentVisible;
     elements.summary.textContent = tr("internetRemote.localEntry", "本地入口");
-    elements.publicMeta.textContent = !state.available
+    elements.publicMeta.textContent = creationProblem && state.available
+      ? tr("internetRemote.environmentUnavailable", "当前页面无法建房")
+      : !state.available
       ? tr("internetRemote.unavailableShort", "WebRTC 不可用")
       : state.busy
       ? tr("internetRemote.creating", "创建中…")
@@ -187,9 +198,9 @@
     elements.publicConnectionCount.textContent = String(roomActive ? connectedCount : 0);
     elements.publicMeta.classList.toggle(
       "is-error",
-      !state.busy && (!state.available || state.expired || state.roomFailure),
+      !state.busy && (Boolean(creationProblem) || state.expired || state.roomFailure),
     );
-    elements.restart.disabled = state.busy || !state.available;
+    elements.restart.disabled = state.busy || Boolean(creationProblem);
     elements.stop.disabled = state.busy || !roomActive;
     elements.password.disabled = state.busy;
     elements.duration.disabled = state.busy;
@@ -208,7 +219,9 @@
     elements.stop.classList.toggle("hidden", !roomActive);
     elements.room.classList.toggle("hidden", !roomResultAvailable);
     elements.copy.disabled = !roomResultAvailable;
-    elements.url.href = roomResultAvailable ? state.remoteUrl : "";
+    if (roomResultAvailable) elements.url.href = state.remoteUrl;
+    else elements.url.removeAttribute("href");
+    elements.url.setAttribute("aria-disabled", String(!roomResultAvailable));
     elements.url.textContent = "";
     const currentPasswordVisible = roomResultAvailable
       && (compactRoomPreviewVisible || passwordDraftChanged);
@@ -700,7 +713,7 @@
   }
 
   async function startRoom() {
-    if (state.busy || !state.available) return;
+    if (state.busy || roomCreationProblem()) return;
     state.internetExpanded = true;
     const wasRebuild = Boolean(state.roomId);
     const password = elements.password.value.trim();
@@ -725,18 +738,21 @@
     }
     state.busy = true;
     state.roomFailure = false;
+    setStatus("");
     render();
-    await stopRoom(false);
-    state.mode = "internet";
-    state.password = password;
-    state.hostToken = transport.randomBase64Url(32);
-    state.joinToken = transport.randomBase64Url(32);
-    state.hostPeerId = transport.randomBase64Url(16);
     const startedAt = performance.now();
+    let httpStatus = null;
     recordDiagnostic("room.create", "started");
     try {
+      await stopRoom(false);
+      state.mode = "internet";
+      state.password = password;
+      state.hostToken = transport.randomBase64Url(32);
+      state.joinToken = transport.randomBase64Url(32);
+      state.hostPeerId = transport.randomBase64Url(16);
       const response = await fetch(`${SIGNAL_ORIGIN}/v1/rooms`, {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           host_token_hash: await transport.sha256(state.hostToken),
@@ -744,6 +760,7 @@
           lifetime_hours: lifetimeHours,
         }),
       });
+      httpStatus = response.status;
       recordDiagnostic("room.create", "response", {
         httpStatus: response.status,
         elapsedMs: performance.now() - startedAt,
@@ -804,12 +821,18 @@
       const failure = diagnosticError(error);
       recordDiagnostic("room.create", "failed", {
         ...failure,
+        httpStatus,
         elapsedMs: performance.now() - startedAt,
       });
       await stopRoom(false);
       state.roomFailure = true;
       const message = tr("internetRemote.createFailed", "创建失败：{error}", {
-        error: failure.errorMessage,
+        error: httpStatus ? `HTTP ${httpStatus} · ${failure.errorMessage}`
+          : ["TimeoutError", "AbortError"].includes(error.name)
+            ? tr("internetRemote.createTimeout", "信令服务响应超时，请稍后重试。")
+            : error.name === "TypeError"
+              ? tr("internetRemote.createNetworkFailed", "无法连接信令服务，请检查网络、代理或 DNS。浏览器未提供更具体原因。")
+              : failure.errorMessage,
       });
       setStatus(message, "bad");
       notifyAction(message, true);
@@ -939,13 +962,14 @@
         ? event.detail.language
         : "zh";
       if (elements) {
-        setStatus(state.available
-          ? state.expired
+        // Keep a failed request's detailed cause until the next attempt.
+        if (!state.roomFailure) {
+          setStatus(state.available
+            ? state.expired
               ? tr("internetRemote.expired", "公网房间已过期，请重建房间")
-              : state.roomFailure
-                ? tr("internetRemote.createFailedShort", "创建失败")
-                : ""
-          : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
+              : ""
+            : tr("internetRemote.unavailable", "当前浏览器不支持 WebRTC"), state.available ? "" : "bad");
+        }
         render();
       }
     }

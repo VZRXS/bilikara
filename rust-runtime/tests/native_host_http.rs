@@ -212,16 +212,25 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     assert_eq!(snapshot["data"]["session_users"], json!(["Alice"]));
     assert_eq!(snapshot["data"]["capabilities"]["native_host"], true);
     assert!(!snapshot.to_string().contains("host-token"));
-    let invite = snapshot["data"]["remote_access"]["local_url"]
+    let remote_url = snapshot["data"]["remote_access"]["local_url"]
         .as_str()
         .unwrap();
+    assert_eq!(remote_url, format!("{base}/remote"));
+    for address in snapshot["data"]["remote_access"]["lan_urls"]
+        .as_array()
+        .unwrap()
+    {
+        let url = url::Url::parse(address.as_str().unwrap()).unwrap();
+        assert_eq!(url.path(), "/remote");
+        assert!(url.query().is_none());
+    }
     for (mode, dest) in [
         ("cors", "empty"),
         ("no-cors", "image"),
         ("navigate", "iframe"),
     ] {
         let forbidden = client
-            .get(invite)
+            .get(remote_url)
             .header("sec-fetch-mode", mode)
             .header("sec-fetch-dest", dest)
             .send()
@@ -230,7 +239,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         assert!(forbidden.headers().get("set-cookie").is_none());
     }
     let join = client
-        .get(invite)
+        .get(remote_url)
         .header("sec-fetch-site", "cross-site")
         .header("sec-fetch-mode", "navigate")
         .header("sec-fetch-dest", "document")
@@ -249,6 +258,29 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let entry_html = join.text().unwrap();
     assert!(entry_html.contains("url=/remote\""));
     assert!(!entry_html.contains(remote_cookie.split('=').nth(1).unwrap()));
+    // A refresh renders the page directly, reusing either Remote or Host
+    // identity. Opening Remote in the Host's browser must not replace its cookie.
+    for existing in [&remote_cookie, &cookie] {
+        let page = client
+            .get(remote_url)
+            .header("cookie", existing)
+            .send()
+            .unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(page.headers().get("set-cookie").is_none());
+        assert!(page.text().unwrap().contains("shared UI"));
+    }
+    // First visits, legacy links and a stale cookie after restart all join
+    // without invitation validation. These are still Remote-only identities.
+    for suffix in ["/remote/", "/remote.html", "/remote?invite=expired"] {
+        let entry = client
+            .get(format!("{base}{suffix}"))
+            .header("cookie", "bilikara_native=previous-host-lifetime")
+            .send()
+            .unwrap();
+        assert_eq!(entry.status(), 200);
+        assert!(entry.headers().get("set-cookie").is_some());
+    }
     assert_eq!(
         post(
             "/api/session-users/add",

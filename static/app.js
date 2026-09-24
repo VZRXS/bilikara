@@ -122,6 +122,11 @@ const state = {
   sessionUserActionsName: "",
   sessionUserActionPending: null,
   remoteAccessRenderSignature: "",
+  remoteAccessFailure: null,
+  remoteAccessRequestSequence: 0,
+  remoteAccessOutcomeSequence: 0,
+  remoteAccessQrFailure: "",
+  statePollInFlight: false,
   internetRemoteDisplay: null,
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
@@ -1716,7 +1721,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     scene,
     clock,
     language: state.language,
-    remoteAccess: state.data?.remote_access || null,
+    remoteAccess: remoteAccessForPresentation(),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
       hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
@@ -6042,13 +6047,24 @@ async function reportMediaCapabilities() {
 async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
   const previousData = state.data;
-  const response = await fetch("/api/state", {
-    headers: clientHeaders(),
-  });
-  const payload = await parseApiResponse(response, "/api/state");
-  if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
+  const sequence = ++state.remoteAccessRequestSequence;
+  let response, payload;
+  try {
+    response = await fetch("/api/state", {
+      headers: clientHeaders(), signal: AbortSignal.timeout(10_000),
+    });
+    payload = await parseApiResponse(response, "/api/state");
+    if (!response.ok || !payload.ok || !validatedHostSnapshotIdentity(payload.data)) {
+      throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
+    }
+  } catch (error) {
+    const kind = response && !response.ok ? "http"
+      : response ? "invalid"
+      : ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network";
+    updateRemoteAccessFailure({ kind, status: response?.status }, sequence);
+    throw error;
   }
+  updateRemoteAccessFailure(null, sequence);
   if (!acceptHostStateSnapshot(payload.data)) {
     return false;
   }
@@ -9924,7 +9940,9 @@ function renderPlayerFullscreenRemoteAccess({
     ?.classList.toggle("is-local-only-preview", !internetActive);
   setTextContent(elements.playerFullscreenRemoteUrl,
     normalizedLocalDisplayUrl ? (new URL(normalizedLocalDisplayUrl).origin + new URL(normalizedLocalDisplayUrl).pathname) : "");
-  elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
+  elements.playerFullscreenRemoteUrl?.classList.remove("hidden");
+  elements.playerFullscreenRemoteUrl?.setAttribute("aria-disabled", String(!normalizedLocalDisplayUrl));
+  if (!normalizedLocalDisplayUrl) setTextContent(elements.playerFullscreenRemoteUrl, t("remote.noAddress"));
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
   setTextContent(
     elements.playerFullscreenPublicMeta,
@@ -9947,7 +9965,7 @@ function renderPlayerFullscreenRemoteAccess({
     image: elements.playerFullscreenRemoteQrImage,
     placeholder: elements.playerFullscreenRemoteQrPlaceholder,
     size: 220,
-    emptyMessage: t("internetRemote.notReady"),
+    emptyMessage: localHint || t("internetRemote.notReady"),
   }]);
   renderProvidedRemoteQr(
     internetActive ? internetQrImage : "",
@@ -9961,6 +9979,8 @@ function renderPlayerFullscreenRemoteAccess({
 
 function normalizedRemoteHttpUrl(value) {
   const candidate = String(value || "").trim();
+  // An absent snapshot/address is not a link to the current Host page.
+  if (!candidate) return "";
   try {
     const parsed = new URL(candidate, window.location.href);
     return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
@@ -9984,22 +10004,52 @@ function remoteUrlUsesLoopback(value) {
     || hostname.startsWith("::ffff:127.");
 }
 
+function updateRemoteAccessFailure(failure, sequence) {
+  if (sequence < state.remoteAccessOutcomeSequence) return;
+  state.remoteAccessOutcomeSequence = sequence;
+  if (JSON.stringify(failure) === JSON.stringify(state.remoteAccessFailure)) return;
+  state.remoteAccessFailure = failure;
+  renderRemoteAccess(state.data?.remote_access);
+  publishPresentationOutputState();
+}
+
+function localRemoteAccessView(remoteAccess) {
+  const failure = state.remoteAccessFailure;
+  if (failure) {
+    const key = failure.kind === "http" && [401, 403].includes(failure.status)
+      ? "remote.accessDenied" : `remote.access${failure.kind[0].toUpperCase()}${failure.kind.slice(1)}`;
+    return { url: "", hint: t(key, { status: failure.status }) };
+  }
+  if (!remoteAccess) return { url: "", hint: t(state.hasValidStateResponse ? "remote.accessInvalid" : "remote.accessWaiting") };
+  const candidates = [remoteAccess.preferred_url, ...(Array.isArray(remoteAccess.lan_urls) ? remoteAccess.lan_urls : []), remoteAccess.local_url];
+  const urls = candidates.map(normalizedRemoteHttpUrl).filter(value => {
+    if (!value) return false;
+    const url = new URL(value);
+    return !url.username && !url.password && ["/remote", "/remote/", "/remote.html"].includes(url.pathname);
+  });
+  const url = urls.find(value => !remoteUrlUsesLoopback(value)) || "";
+  if (!url) return { url: "", hint: t(urls.length ? "remote.noLanHint" : "remote.accessInvalid") };
+  const source = String(remoteAccess.qr_image || "");
+  const qrKey = JSON.stringify([url, source]);
+  if (state.remoteAccessQrFailure === qrKey || (document.documentElement.dataset.nativeHost === "true" && !source.startsWith("data:image/svg+xml;base64,"))) {
+    return { url: "", hint: t("remote.qrFailed") };
+  }
+  return { url, hint: t("internetRemote.localSameNetwork") };
+}
+
+function remoteAccessForPresentation() {
+  const access = state.data?.remote_access;
+  const view = localRemoteAccessView(access);
+  return { ...access, preferred_url: view.url, local_url: view.url,
+    qr_image: view.url ? access?.qr_image || "" : "", unavailable_message: view.url ? "" : view.hint };
+}
+
 function renderRemoteAccess(remoteAccess) {
-  const preferredUrl = String(remoteAccess?.preferred_url || "");
-  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
-  const localUrl = String(remoteAccess?.local_url || "");
-  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
-  const shareableUrl = [preferredUrl, ...lanUrls, localUrl]
-    .map(normalizedRemoteHttpUrl)
-    .find((url) => url && !remoteUrlUsesLoopback(url)) || "";
-  const localOpenUrl = normalizedRemoteHttpUrl(localUrl)
-    || normalizedRemoteHttpUrl(`${window.location.origin}/remote`);
-  const popoverTargetUrl = shareableUrl || localOpenUrl;
-  const displayHint = lanUrls.length > 1
-    ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
-    : lanUrls.length === 1
-      ? t("remote.defaultHint")
-      : t("remote.noLanHint");
+  const view = localRemoteAccessView(remoteAccess);
+  const displayUrl = view.url;
+  const shareableUrl = view.url;
+  const popoverTargetUrl = view.url;
+  const displayHint = view.hint;
   const internetDisplay = state.internetRemoteDisplay;
   const internetActive = Boolean(
     internetDisplay?.mode === "internet"
@@ -10016,7 +10066,6 @@ function renderRemoteAccess(remoteAccess) {
     displayUrl,
     displayHint,
     shareableUrl,
-    localOpenUrl,
     internetActive,
     internetQrImage,
     internetPassword,
@@ -10031,54 +10080,45 @@ function renderRemoteAccess(remoteAccess) {
   }
   state.remoteAccessRenderSignature = signature;
 
-  [elements.remoteUrlLink].forEach((link) => {
-    if (!link) {
-      return;
-    }
-    if (link.getAttribute("href") !== displayUrl) {
-      link.href = displayUrl;
-    }
-    setTextContent(link, (new URL(displayUrl).origin + new URL(displayUrl).pathname));
-  });
-  if (elements.remotePopoverUrlLink) {
-    elements.remotePopoverUrlLink.href = popoverTargetUrl || "";
-    elements.remotePopoverUrlLink.dataset.shareable = String(Boolean(shareableUrl));
-    elements.remotePopoverUrlLink.classList.toggle("hidden", !popoverTargetUrl);
-    elements.remotePopoverUrlLink.textContent = popoverTargetUrl ? (new URL(popoverTargetUrl).origin + new URL(popoverTargetUrl).pathname) : "";
-    elements.remotePopoverUrlLink.title = shareableUrl
-      ? popoverTargetUrl
-      : t("internetRemote.openOnThisDevice");
+  for (const link of [elements.remoteUrlLink, elements.remotePopoverUrlLink]) {
+    if (!link) continue;
+    link.classList.remove("hidden");
+    if (displayUrl) link.setAttribute("href", displayUrl);
+    else link.removeAttribute("href");
+    link.setAttribute("aria-disabled", String(!displayUrl));
+    link.tabIndex = displayUrl ? 0 : -1;
+    link.dataset.shareable = String(Boolean(displayUrl));
+    link.textContent = displayUrl ? new URL(displayUrl).origin + new URL(displayUrl).pathname : t("remote.noAddress");
+    link.title = displayUrl || displayHint;
+  }
+  setTextContent(elements.remoteUrlHint, displayHint);
+  setTextContent(elements.remotePopoverUrlHint, displayHint);
+  for (const button of [elements.copyRemoteUrlButton, elements.remotePopoverCopyLink]) {
+    button?.classList.remove("hidden");
+    if (button) button.disabled = !shareableUrl || button.getAttribute("aria-busy") === "true";
   }
 
-  setTextContent(elements.remoteUrlHint, displayHint);
-  setTextContent(
-    elements.remotePopoverUrlHint,
-    t("internetRemote.localSameNetwork"),
-  );
-  elements.remotePopoverCopyLink?.classList.toggle("hidden", !shareableUrl);
-  if (elements.remotePopoverCopyLink) elements.remotePopoverCopyLink.disabled = !shareableUrl;
-
   renderRemoteQr(displayUrl, [
-    { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
+    { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220, emptyMessage: displayHint },
   ]);
   renderRemoteQr(shareableUrl, [
     {
       image: elements.remotePopoverQrImage,
       placeholder: elements.remotePopoverQrPlaceholder,
       size: 220,
-      emptyMessage: t("internetRemote.notReady"),
+      emptyMessage: displayHint,
     },
     {
       image: elements.remoteMiniQrImage,
       placeholder: elements.remoteMiniQrPlaceholder,
       size: 132,
-      emptyMessage: t("internetRemote.notReady"),
+      emptyMessage: displayHint,
     },
   ]);
   renderPlayerFullscreenRemoteAccess({
     localQrUrl: shareableUrl,
     localDisplayUrl: popoverTargetUrl,
-    localHint: t("internetRemote.localSameNetwork"),
+    localHint: displayHint,
     internetActive,
     internetQrImage,
     internetPassword,
@@ -10148,6 +10188,9 @@ function renderRemoteQr(url, targets = []) {
       image.classList.add("hidden");
       placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
+      state.remoteAccessQrFailure = JSON.stringify([normalizedUrl, String(state.data?.remote_access?.qr_image || "")]);
+      renderRemoteAccess(state.data?.remote_access);
+      publishPresentationOutputState();
     };
     image.src = qrUrl;
   });
@@ -19536,7 +19579,7 @@ elements.resortPlaylistButton?.addEventListener("click", async () => {
 });
 
 elements.copyRemoteUrlButton.addEventListener("click", async () => {
-  await copyRemoteUrl();
+  await copyRemoteAction(elements.copyRemoteUrlButton, elements.remoteUrlLink);
 });
 
 async function copyRemoteAction(button, link) {
@@ -19546,7 +19589,7 @@ async function copyRemoteAction(button, link) {
   try {
     await copyRemoteUrlFromLink(link);
   } finally {
-    button.disabled = false;
+    button.disabled = !link?.getAttribute("href") || link.getAttribute("aria-disabled") === "true";
     button.removeAttribute("aria-busy");
   }
 }
@@ -21879,14 +21922,18 @@ async function startPolling() {
   // Do this once at bootstrap, not on polling or progress snapshots.
   syncNativeWindowTheme();
   window.setInterval(async () => {
+    if (state.statePollInFlight) return;
+    state.statePollInFlight = true;
     try {
       await fetchState();
+      await restartHostPlaybackAfterBootstrap();
     } catch (error) {
       if (shouldReportStateFetchError(error)) {
         setAppMessage(error.message, true);
       }
+    } finally {
+      state.statePollInFlight = false;
     }
-    await restartHostPlaybackAfterBootstrap();
   }, pollIntervalMs);
 }
 

@@ -148,7 +148,21 @@
     const preferredUrl = normalizedHttpUrl(candidate?.preferred_url);
     const localUrl = normalizedHttpUrl(candidate?.local_url);
     const url = preferredUrl || localUrl;
-    if (!url) return;
+    if (!url) {
+      elements.remoteUrlLink.removeAttribute("href");
+      elements.remoteUrlLink.setAttribute("aria-disabled", "true");
+      elements.remoteUrlLink.textContent = t("remote.noAddress");
+      elements.remoteUrlHint.textContent = candidate?.unavailable_message || t("remote.accessWaiting");
+      elements.remoteQrImage.onload = null;
+      elements.remoteQrImage.onerror = null;
+      delete elements.remoteQrImage.dataset.qrUrl;
+      elements.remoteQrImage.removeAttribute("src");
+      elements.remoteQrImage.classList.add("hidden");
+      elements.remoteQrPlaceholder.textContent = elements.remoteUrlHint.textContent;
+      elements.remoteQrPlaceholder.classList.remove("hidden");
+      return;
+    }
+    elements.remoteUrlLink.setAttribute("aria-disabled", "false");
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
     elements.remoteUrlLink.textContent = (new URL(url).origin + new URL(url).pathname);
     elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");

@@ -80,11 +80,11 @@
                 </div>
                 <div class="internet-remote-share-details remote-access-details">
                   <p class="internet-remote-share-title remote-access-copy-title" data-i18n="internetRemote.localScanTitle">扫码连接</p>
-                  <a id="remote-popover-url-link" class="internet-remote-local-link remote-access-link" href="/remote"></a>
+                  <a id="remote-popover-url-link" class="internet-remote-local-link remote-access-link" aria-disabled="true" tabindex="-1"></a>
                   <p id="remote-popover-url-hint" class="internet-remote-share-meta remote-access-meta"
                     data-i18n="internetRemote.localSameNetwork">访问设备需与 Host 在同一网络</p>
                   <div class="internet-remote-share-actions">
-                    <button type="button" class="toolbar-button ghost" id="remote-popover-copy-link"
+                    <button type="button" class="toolbar-button ghost" id="remote-popover-copy-link" disabled
                       data-i18n="internetRemote.copyLink">复制链接</button>
                   </div>
                 </div>
@@ -169,7 +169,7 @@
                 <div class="internet-remote-actions">
                   <button type="button" class="toolbar-button hidden" id="internet-remote-stop"
                     data-i18n="internetRemote.stop">关闭公网房间</button>
-                  <button type="button" class="next-button" id="internet-remote-restart"
+                  <button type="button" class="next-button" id="internet-remote-restart" disabled
                     data-i18n="internetRemote.create">创建房间</button>
                 </div>
                 <div class="internet-remote-room internet-remote-share-layout remote-access-entry-content hidden" id="internet-remote-room">
@@ -1290,7 +1290,7 @@
                 <p class="section-tag" data-i18n="remote.tag">Mobile Remote</p>
                 <h2 data-i18n="remote.entryTitle">手机点歌入口</h2>
               </div>
-              <button type="button" id="copy-remote-url-button" class="toolbar-button" data-i18n="remote.copyLink">
+              <button type="button" id="copy-remote-url-button" disabled class="toolbar-button" data-i18n="remote.copyLink">
                 复制链接
               </button>
             </div>
@@ -1303,7 +1303,7 @@
               </div>
               <div class="remote-copy">
                 <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
-                <a id="remote-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
+                <a id="remote-url-link" class="remote-url-link" aria-disabled="true" tabindex="-1" target="_blank" rel="noreferrer">
                   /remote
                 </a>
                 <p id="remote-url-hint" class="remote-url-hint">

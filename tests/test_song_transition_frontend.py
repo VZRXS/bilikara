@@ -910,6 +910,9 @@ console.log(JSON.stringify({{
             "function isSafeHostSnapshotInteger", "function syncCachePanelVisibility"
         )
         polling = self.source_slice("async function fetchState", "function renderSignatureForData")
+        remote_access_failure = self.source_slice(
+            "function updateRemoteAccessFailure", "function localRemoteAccessView"
+        )
         holds = self.source_slice(
             "function shouldHoldCurrentItemForTransition", "function stopMountedPlayerForAdvanceDelay"
         )
@@ -956,6 +959,7 @@ const state = {{
   localShouldBePlaying: true, localAdvanceInFlight: false, localAdvanceDelayToken: 0,
   manualTransitionHoldItemId: "", manualTransitionHoldGeneration: 0,
   songTransitionGeneration: 0, lastSongTransitionOverlayKey: "",
+  remoteAccessFailure: null, remoteAccessRequestSequence: 0, remoteAccessOutcomeSequence: 0,
 }};
 function currentItemIdFromData(data) {{ return String(data?.current_item?.id || ""); }}
 function queuedNextItem() {{ return state.data.playlist[0]; }}
@@ -964,6 +968,8 @@ function hasLocalAdvanceDelayOverlay() {{ return false; }}
 function hidePlayerDelayOverlay() {{}}
 function closeOpenMenus() {{}}
 function renderPlayer() {{}}
+function renderRemoteAccess() {{}}
+function publishPresentationOutputState() {{}}
 function frontendPlaybackMode() {{ return "local"; }}
 function isCurrentHostPlaybackSession() {{ return false; }}
 function render() {{}}
@@ -983,6 +989,7 @@ let respond;
 function fetch() {{ return new Promise(resolve => {{ respond = resolve; }}); }}
 function apiPost() {{ return new Promise(resolve => {{ respond = resolve; }}); }}
 {snapshots}
+{remote_access_failure}
 {polling}
 {holds}
 {transitions}

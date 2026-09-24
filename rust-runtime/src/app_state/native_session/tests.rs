@@ -39,7 +39,6 @@ fn setup() -> (AppState, Identity) {
         .is_none()
     );
     app.native().host_token = "host-token".into();
-    app.native().invite = "invite-token".into();
     let identity = Identity {
         token: "host-token".into(),
         loopback: true,
@@ -114,18 +113,13 @@ fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
         loopback: false,
         client: "phone".into(),
     };
-    assert!(app.native_redeem("wrong", "", "remote0".into()).is_err());
     for index in 0..10 {
-        app.native_redeem("invite-token", "", format!("remote{index}"))
+        app.native_join_remote("", format!("remote{index}"))
             .unwrap();
     }
-    assert!(
-        app.native_redeem("invite-token", "", "overflow".into())
-            .is_err()
-    );
+    assert!(app.native_join_remote("", "overflow".into()).is_err());
     assert_eq!(
-        app.native_redeem("invite-token", "remote0", "unused".into())
-            .unwrap(),
+        app.native_join_remote("remote0", "unused".into()).unwrap(),
         "remote0"
     );
     assert!(app.native_authorize(&remote, true).is_err());
@@ -193,6 +187,161 @@ fn runtime_reset_reclaims_remote_devices_only_after_a_successful_commit() {
         .unwrap()["registered"],
         false
     );
+}
+
+#[test]
+fn remote_identity_revocation_survives_same_name_reuse_and_failed_commits() {
+    let (mut app, _) = setup();
+    let root = std::env::temp_dir().join(format!(
+        "bilikara-identity-revocation-{}",
+        crate::native_host::token().unwrap()
+    ));
+    let seed: AppStateSeed = serde_json::from_value(json!({
+        "session_users":["Alice"], "session_started_at":1.0,
+        "session_played_file":"native.json", "updated_at":1.0
+    }))
+    .unwrap();
+    app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+    assert!(app.initialize_native(&root, seed).error().is_none());
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    let identity_before = app.native_identity(&remote).unwrap();
+    let remove = || AppStateRequest::RemoveSessionUser {
+        schema_version: 1,
+        name: "Alice".into(),
+        now: 3.0,
+    };
+    // A storage rejection cannot revoke a still-committed singer's identity.
+    let before = std::fs::read(root.join("host-state.json")).unwrap();
+    std::fs::create_dir(root.join("host-state.pending")).unwrap();
+    assert!(app.execute(remove()).error().is_some());
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "Alice");
+    assert_eq!(app.native_identity(&remote).unwrap(), identity_before);
+    assert_eq!(std::fs::read(root.join("host-state.json")).unwrap(), before);
+    std::fs::remove_dir(root.join("host-state.pending")).unwrap();
+
+    // Use the shared command boundary, not just the HTTP adapter wrapper.
+    assert!(app.execute(remove()).error().is_none());
+    assert!(app.native_requester(&remote, "Alice").is_err());
+    // SSE may coalesce remove+add into one snapshot with the same user list.
+    // Its identity marker must still tell the frontend to recheck registration.
+    assert_ne!(
+        app.native_snapshot(false).unwrap()["remote_session_id"],
+        identity_before["session_id"]
+    );
+    assert!(
+        app.execute(AppStateRequest::AddSessionUser {
+            schema_version: 1,
+            name: "Alice".into(),
+            now: 4.0,
+        })
+        .error()
+        .is_none()
+    );
+    assert!(app.native_requester(&remote, "Alice").is_err());
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), true, 5.0)
+            .unwrap_err()
+            .code,
+        "identity_required"
+    );
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), false, 5.0)
+            .unwrap_err()
+            .code,
+        "session_user_already_exists"
+    );
+    // Explicitly claiming a name still works; revocation is not a device ban.
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 5.0)
+        .unwrap();
+    assert_eq!(app.native_requester(&remote, "Spoof").unwrap(), "Alice");
+    assert!(app.native_authorize(&remote, true).is_err());
+    app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stale_remote_identity_cannot_use_rename_to_register_in_a_new_session() {
+    let (mut app, _) = setup();
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    app.data.as_mut().unwrap().native_session_choice_pending = true;
+    app.native_execute(AppStateRequest::ResolveNativeSession {
+        schema_version: 1,
+        continue_previous: false,
+        new_session: SessionArchiveSeed {
+            file_name: "new-session.json".into(),
+            session_started_at: 3.0,
+            items: vec![],
+        },
+        now: 3.0,
+    })
+    .unwrap();
+    assert_eq!(app.native_identity(&remote).unwrap()["registered"], false);
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), true, 4.0)
+            .unwrap_err()
+            .code,
+        "identity_required"
+    );
+    assert!(app.native_core_snapshot().unwrap().session_users.is_empty());
+}
+
+#[test]
+fn remote_registration_claim_and_rename_share_the_session_name_policy() {
+    let (mut app, _) = setup();
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    let registered = app
+        .native_register(&remote, &json!({"name":"  Alice\t Smith  "}), false, 2.0)
+        .unwrap();
+    assert_eq!(registered["registered"], true);
+    assert_eq!(registered["name"], "Alice Smith");
+    assert_eq!(
+        app.native_requester(&remote, "Spoof").unwrap(),
+        "Alice Smith"
+    );
+
+    app.native_join_remote("", "claimant".into()).unwrap();
+    let claimant = Identity {
+        token: "claimant".into(),
+        ..remote.clone()
+    };
+    assert_eq!(
+        app.native_register(&claimant, &json!({"name":"Alice   Smith"}), false, 2.0)
+            .unwrap_err()
+            .code,
+        "session_user_already_exists"
+    );
+    app.native_register(
+        &claimant,
+        &json!({"name":"Alice   Smith", "claim":true}),
+        false,
+        2.0,
+    )
+    .unwrap();
+    let renamed = app
+        .native_register(&remote, &json!({"name":" New\n Name "}), true, 3.0)
+        .unwrap();
+    assert_eq!(renamed["name"], "New Name");
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "New Name");
+    assert_eq!(app.native_identity(&claimant).unwrap()["registered"], false);
 }
 
 #[test]
@@ -485,8 +634,7 @@ fn desktop_player_facts_are_host_owned_transient_and_separate_from_backend_suppo
             .is_err()
     );
     assert_eq!(app.native().player_media, before);
-    app.native_redeem("invite-token", "", "remote".into())
-        .unwrap();
+    app.native_join_remote("", "remote".into()).unwrap();
     let remote = Identity {
         token: "remote".into(),
         loopback: false,

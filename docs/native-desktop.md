@@ -6,6 +6,20 @@ Cargo, source checkout or preview environment variable is needed by an installed
 product. Python remains a build/test tool and the legacy source Host remains
 available for compatibility tests; it is not included in the native bundle.
 
+LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
+an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
+establishes a Remote device cookie and then shows username registration, matching
+the Python Host's direct-entry flow. An existing device cookie is reused; a stale
+cookie can rejoin after a Host restart. This does not grant Host management or
+media access: those still require the private loopback Host session. Public-room
+passwords and signaling are separate and unchanged.
+
+The native Host checks local network interfaces every five seconds without
+Internet probes. Changed LAN addresses and their QR image are published together
+through AppState; unchanged addresses do not regenerate the QR or advance the
+state revision. Host polling updates all entry surfaces automatically. With no
+LAN address, entry links and copy actions are disabled until one returns.
+
 ## Build and development
 
 Use the repository's Node.js 24 and Rust toolchains. From the repository root:

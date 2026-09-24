@@ -28,13 +28,13 @@ pub(crate) struct NativeSession {
     pub remote_export_ready: bool,
     pub updates: crate::native_host::updates::UpdateState,
     pub host_token: String,
-    pub invite: String,
     pub cookie: String,
     pub login: RuntimeStatusService,
     pub login_generation: Option<u64>,
     pub remote_access: Value,
     pub revision: u64,
     devices: HashMap<String, Device>,
+    identity_revision: u64,
     claim: Option<Claim>,
     observation: Option<Value>,
     diagnostics: VecDeque<Value>,
@@ -51,6 +51,30 @@ impl std::fmt::Debug for NativeSession {
             .field("device_count", &self.devices.len())
             .field("logged_in", &!self.cookie.is_empty())
             .finish_non_exhaustive()
+    }
+}
+
+impl NativeSession {
+    pub(super) fn reconcile_identities(&mut self, users: &[String], generation: u64) {
+        let mut revoked = false;
+        for device in self.devices.values_mut() {
+            if !device.name.is_empty()
+                && (device.generation != generation || !users.contains(&device.name))
+            {
+                device.name.clear();
+                device.generation = 0;
+                revoked = true;
+            }
+        }
+        if revoked {
+            // SSE can coalesce a removal and re-addition of the same name. The
+            // opaque identity marker still makes Remote recheck registration.
+            self.identity_revision = self.identity_revision.saturating_add(1);
+        }
+    }
+
+    fn identity_marker(&self, generation: u64) -> String {
+        format!("native-{generation}-{}", self.identity_revision)
     }
 }
 
@@ -143,27 +167,15 @@ impl AppState {
         if host || (!host_only && session.devices.contains_key(&identity.token)) {
             Ok(host)
         } else {
-            Err(ApiError::new(
-                403,
-                "forbidden",
-                "请使用此 Host 当前显示的手机点歌二维码加入",
-            ))
+            Err(ApiError::new(403, "forbidden", "请重新打开手机点歌页面"))
         }
     }
 
-    pub(crate) fn native_redeem(
+    pub(crate) fn native_join_remote(
         &mut self,
-        invite: &str,
         existing_token: &str,
         new_token: String,
     ) -> Result<String, ApiError> {
-        if self.native_session.invite.is_empty() || invite != self.native_session.invite {
-            return Err(ApiError::new(
-                403,
-                "invalid_invite",
-                "二维码已失效，请重新扫码",
-            ));
-        }
         if self.native_session.devices.contains_key(existing_token) {
             return Ok(existing_token.to_owned());
         }
@@ -171,7 +183,7 @@ impl AppState {
             return Err(ApiError::new(
                 429,
                 "room_full",
-                "此 Alpha 最多连接 10 台手机；重启 Host 可清理设备",
+                "最多连接 10 台手机；重启 Host 可清理设备",
             ));
         }
         self.native_session.devices.insert(
@@ -198,7 +210,7 @@ impl AppState {
             .map(|device| device.name.as_str())
             .unwrap_or("");
         Ok(
-            json!({"registered":!name.is_empty(),"name":name,"session_id":format!("native-{}",snapshot.session_generation)}),
+            json!({"registered":!name.is_empty(),"name":name,"session_id":self.native_session.identity_marker(snapshot.session_generation)}),
         )
     }
 
@@ -211,11 +223,15 @@ impl AppState {
     ) -> Result<Value, ApiError> {
         self.native_authorize(identity, false)?;
         let snapshot = self.native_core_snapshot()?;
-        let name = text(body, "name")?.trim().to_owned();
+        let name = normalize_session_user_name(&text(body, "name")?);
         let current = self
             .native_session
             .devices
             .get(&identity.token)
+            .filter(|device| {
+                device.generation == snapshot.session_generation
+                    && snapshot.session_users.contains(&device.name)
+            })
             .map(|d| d.name.clone())
             .unwrap_or_default();
         if rename && current.is_empty() {
@@ -356,7 +372,7 @@ impl AppState {
                 .saturating_add(session.revision)
                 .saturating_add(self.player_controls.revision)
         );
-        value["remote_session_id"] = json!(format!("native-{}", snapshot.session_generation));
+        value["remote_session_id"] = json!(session.identity_marker(snapshot.session_generation));
         value["player_status"] = session
             .observation
             .as_ref()

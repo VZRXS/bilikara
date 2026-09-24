@@ -245,8 +245,7 @@ mod tests {
             .is_none()
         );
         app.native().host_token = "host".into();
-        app.native().invite = "invite".into();
-        app.native_redeem("invite", "", "remote".into()).unwrap();
+        app.native_join_remote("", "remote".into()).unwrap();
         let remote = Identity {
             token: "remote".into(),
             loopback: false,

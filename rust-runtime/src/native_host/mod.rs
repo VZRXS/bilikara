@@ -288,14 +288,7 @@ fn start(
         .map_err(|_| ApiError::invalid("无法确定 Host 端口"))?
         .port();
     let host_token = token()?;
-    let invite = token()?;
-    let lan_urls: Vec<String> = network::lan_addresses()
-        .into_iter()
-        .map(|ip| format!("http://{ip}:{port}/remote?invite={invite}"))
-        .collect();
-    let local = format!("http://127.0.0.1:{port}/remote?invite={invite}");
-    let preferred = lan_urls.first().unwrap_or(&local).clone();
-    let qr = access_qr_image(&preferred)?;
+    let remote_access = network::remote_access(port, &network::lan_addresses())?;
     let saved_cookie = if desktop {
         login::load_desktop(&directory)?
     } else {
@@ -346,12 +339,10 @@ fn start(
         session.bbdown_available = bbdown.is_some();
         session.aria2_available = aria2.is_some();
         session.host_token = host_token.clone();
-        session.invite = invite;
         session.cookie = saved_cookie;
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
-        session.remote_access =
-            json!({"local_url":local,"preferred_url":preferred,"lan_urls":lan_urls,"qr_image":qr});
+        session.remote_access = remote_access;
         Ok(())
     })?;
     exports::clean_stale(&directory)?;
@@ -431,6 +422,7 @@ fn start(
         server: Some(server),
     };
     cache::start_pump(context.clone())?;
+    network::start_monitor(&context)?;
     if !desktop && with_app(|app| Ok(!app.native().cookie.is_empty()))? {
         library::refresh_after_login(&context, "credential_restore");
     }
@@ -501,10 +493,10 @@ fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
 }
 
 fn validate_entry_navigation(headers: &HeaderMap) -> Result<(), ApiError> {
-    // Capability redemption is the only cross-site exception. Modern browsers
-    // must be opening a top-level document, never fetching/embedding the URL.
-    // Older WebViews may omit Fetch Metadata; the unguessable capability (and
-    // actual loopback peer for Host) remains required independently below.
+    // Entry pages allow cross-site top-level navigation, never fetching or
+    // embedding. Older WebViews may omit Fetch Metadata. Host bootstrap still
+    // requires its private token and actual loopback peer independently below;
+    // the open LAN entry only establishes a Remote identity.
     for (name, expected) in [
         ("sec-fetch-mode", "navigate"),
         ("sec-fetch-dest", "document"),
@@ -577,14 +569,21 @@ async fn handle_inner(
         })?;
         return Ok(session_entry(EntryPage::Host, secret));
     }
-    if method == Method::GET
-        && matches!(path.as_str(), "/remote" | "/remote.html")
-        && let Some((_, invite)) =
-            url::form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == "invite")
-    {
+    if method == Method::GET && matches!(path.as_str(), "/remote" | "/remote/" | "/remote.html") {
         validate_entry_navigation(request.headers())?;
-        let device_token = with_app(|app| app.native_redeem(&invite, &identity.token, token()?))?;
-        return Ok(session_entry(EntryPage::Remote, &device_token));
+        let device_token = with_app(|app| {
+            // LAN entry is open, as in the Python Host. A device cookie only
+            // binds its Remote identity; it never grants Host authority.
+            // Preserve existing Host/Remote cookies and avoid a refresh loop.
+            if app.native_authorize(&identity, false).is_ok() {
+                Ok(None)
+            } else {
+                app.native_join_remote(&identity.token, token()?).map(Some)
+            }
+        })?;
+        if let Some(device_token) = device_token {
+            return Ok(session_entry(EntryPage::Remote, &device_token));
+        }
     }
     // APIs, authenticated assets and media keep the original origin checks.
     validate_origin(request.headers(), context.port)?;
@@ -704,9 +703,11 @@ enum EntryPage {
 }
 
 fn session_entry(page: EntryPage, token: &str) -> Response {
-    let location = match page {
-        EntryPage::Host => "/",
-        EntryPage::Remote => "/remote",
+    let (location, lifetime) = match page {
+        EntryPage::Host => ("/", ""),
+        // Preserve ordinary Remote recognition when the browser is closed.
+        // This does not extend the lifetime of process-private Host authority.
+        EntryPage::Remote => ("/remote", "; Max-Age=31536000"),
     };
     // A 303 keeps the navigation cross-site and can withhold a Strict cookie
     // on the redirect target. Commit a local document first, then navigate
@@ -723,7 +724,7 @@ fn session_entry(page: EntryPage, token: &str) -> Response {
     );
     response.headers_mut().insert(
         "set-cookie",
-        format!("bilikara_native={token}; Path=/; HttpOnly; SameSite=Strict")
+        format!("bilikara_native={token}; Path=/; HttpOnly; SameSite=Strict{lifetime}")
             .parse()
             .expect("random token header"),
     );
@@ -789,6 +790,20 @@ async fn event_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_remote_entry_cookies_survive_browser_session_close() {
+        let remote = session_entry(EntryPage::Remote, "remote-device");
+        let cookie = remote.headers()["set-cookie"].to_str().unwrap();
+        assert!(cookie.contains("Max-Age=31536000"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(!cookie.contains("Secure"), "LAN HTTP remains supported");
+        let host = session_entry(EntryPage::Host, "private-host");
+        let cookie = host.headers()["set-cookie"].to_str().unwrap();
+        assert!(!cookie.contains("Max-Age"));
+        assert!(!cookie.contains("Expires"));
+    }
     #[test]
     fn rejects_dns_rebinding_and_foreign_origins() {
         let mut headers = HeaderMap::new();
@@ -821,8 +836,8 @@ mod tests {
         }
     }
     #[test]
-    fn invitation_qr_is_local_not_an_external_service() {
-        let url = "http://192.168.1.2:1234/remote?invite=test";
+    fn remote_qr_is_local_not_an_external_service() {
+        let url = "http://192.168.1.2:1234/remote";
         let image = access_qr_image(url).unwrap();
         assert!(image.starts_with("data:image/svg+xml;base64,"));
         let svg = base64::engine::general_purpose::STANDARD

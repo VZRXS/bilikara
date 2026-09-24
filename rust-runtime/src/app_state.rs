@@ -4983,6 +4983,12 @@ impl AppState {
                     if let Err(error) = self.persist_native(&next) {
                         return storage_error_response(error);
                     }
+                    // Revoke retired LAN singer bindings at the shared commit
+                    // boundary, after persistence succeeds. A later same-name
+                    // user must not restore an old device's registration.
+                    #[cfg(feature = "native-host")]
+                    self.native_session
+                        .reconcile_identities(&next.session_users, next.session_generation);
                     if clears_controls {
                         self.player_controls.clear();
                     }

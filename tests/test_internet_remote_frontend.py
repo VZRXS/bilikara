@@ -42,7 +42,7 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_host_exposes_local_and_internet_modes_without_replacing_local_remote(self):
         self.assertIn('id="internet-remote-local-content"', self.host_html)
         self.assertIn('id="internet-remote-disclosure"', self.host_html)
-        self.assertIn('href="/remote"', self.host_html)
+        self.assertRegex(self.host_html, r'id="remote-popover-url-link"[^>]+aria-disabled="true"')
         self.assertIn('state.mode = "local"', self.host_js)
 
     def test_host_uses_one_mobile_remote_entry_with_a_collapsed_public_menu(self):
@@ -277,11 +277,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         render_start = self.host_app_js.index("function renderRemoteAccess")
         render_end = self.host_app_js.index("function renderRemoteQr", render_start)
         render = self.host_app_js[render_start:render_end]
-        self.assertIn(
-            "elements.remotePopoverUrlHint,\n    t(\"internetRemote.localSameNetwork\")",
-            render,
-        )
-        self.assertIn('localHint: t("internetRemote.localSameNetwork")', render)
+        self.assertIn("setTextContent(elements.remotePopoverUrlHint, displayHint)", render)
+        self.assertIn("localHint: displayHint", render)
+        self.assertIn('hint: t("internetRemote.localSameNetwork")', self.host_app_js)
 
     def test_host_remote_entry_controls_use_shared_control_geometry(self):
         self.assertIn('class="internet-remote-config-row"', self.host_html)
@@ -396,9 +394,27 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn("function remoteUrlUsesLoopback", self.host_app_js)
         self.assertIn('hostname.startsWith("127.")', self.host_app_js)
         self.assertIn('hostname === "::1"', self.host_app_js)
-        self.assertIn("!remoteUrlUsesLoopback(url)", self.host_app_js)
+        self.assertIn("!remoteUrlUsesLoopback(value)", self.host_app_js)
         self.assertIn("renderRemoteQr(shareableUrl", self.host_app_js)
-        self.assertIn('t("internetRemote.openOnThisDevice")', self.host_app_js)
+        self.assertIn('button.disabled = !shareableUrl', self.host_app_js)
+
+    def test_missing_remote_address_never_becomes_host_homepage(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required")
+        program = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync('static/app.js','utf8');
+const helpers=source.slice(source.indexOf('function normalizedRemoteHttpUrl('),source.indexOf('function renderRemoteAccess('));
+const context={URL,window:{location:{href:'http://10.45.66.136:8080/'}}};
+vm.createContext(context);vm.runInContext(helpers,context);
+for(const value of [undefined,null,'','   ']) assert.equal(context.normalizedRemoteHttpUrl(value),'');
+context.candidates=['',undefined,'http://10.45.66.136:8080/remote'];
+assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>url&&!remoteUrlUsesLoopback(url))',context),'http://10.45.66.136:8080/remote');
+context.candidates=['',undefined,'http://127.0.0.1:8080/remote'];
+assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>url&&!remoteUrlUsesLoopback(url))',context),undefined);
+'''
+        result = subprocess.run([node, "-e", program], cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_public_qr_failure_keeps_the_valid_room_result(self):
         start = self.host_js.index("async function startRoom")
