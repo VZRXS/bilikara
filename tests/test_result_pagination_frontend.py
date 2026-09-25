@@ -180,11 +180,15 @@ await pages.goTo(1);
 assert.equal(pages.canNext, true);
 """)
 
-    def test_vertical_and_diagonal_gestures_do_not_turn_pages(self):
+    def test_direction_lock_tolerates_diagonal_drift_but_preserves_vertical_scrolling(self):
         self.run_case("""
 assert.equal(swipeDirection(-90, 8), 1);
 assert.equal(swipeDirection(90, 8), -1);
-for (const [dx, dy] of [[-40, 0], [5, -160], [85, 70], [0, 0]]) {
+assert.equal(swipeDirection(85, 70), -1);
+assert.equal(swipeDirection(-90, 160, true), 1);
+assert.equal(swipeDirection(90, -160, true), -1);
+assert.equal(swipeDirection(40, 0, true), 0);
+for (const [dx, dy] of [[-40, 0], [5, -160], [70, 85], [0, 0]]) {
   assert.equal(swipeDirection(dx, dy), 0);
 }
 """)

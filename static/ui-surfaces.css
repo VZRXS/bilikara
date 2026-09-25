@@ -58,15 +58,51 @@
 .song-detail-surface { position: relative; z-index: 1; pointer-events: none; }
 .song-detail-card { pointer-events: auto; }
 
-/* Blur the stacked Remote page behind large panels; anchored controls keep shadow only. */
+/* Dim the stacked Remote page behind large panels; anchored controls keep shadow only. */
+:root[data-ui-client="remote"] {
+  --remote-modal-backdrop-bg: rgba(29, 26, 24, 0.24);
+}
+:root[data-ui-client="remote"][data-theme="blue"] {
+  --remote-modal-backdrop-bg: rgba(2, 6, 23, 0.38);
+}
 :root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
   .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
 :root[data-ui-client="remote"] .history-export-dialog::backdrop {
-  background: transparent;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--remote-modal-backdrop-bg);
 }
-:root[data-ui-client="remote"] .playback-sheet .playback-sheet-panel {
-  border-radius: 18px 18px 0 0;
-  border-bottom: 0;
+@media (orientation: portrait) and (max-width: 699px) {
+  :root[data-ui-client="remote"] .playback-sheet .playback-sheet-panel {
+    border-radius: 18px 18px min(18px, var(--remote-safe-area-bottom)) min(18px, var(--remote-safe-area-bottom));
+  }
+}
+
+/* Fade the Remote backdrop independently of panel motion.
+   Host backgrounds stay transparent. */
+@keyframes remote-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes remote-backdrop-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root[data-ui-client="remote"] .history-export-dialog[open]::backdrop {
+  animation: remote-backdrop-in 200ms ease-out both;
+}
+:root[data-ui-client="remote"] .closing :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root[data-ui-client="remote"] .history-export-dialog.closing::backdrop {
+  animation: remote-backdrop-out 200ms ease-out forwards;
+}
+:root[data-ui-client="remote"] .song-detail-view { animation: none; }
+:root[data-ui-client="remote"] :is(.binding-sheet-backdrop, .playback-sheet-backdrop) {
+  transition-property: opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+    .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
+  :root[data-ui-client="remote"] .history-export-dialog::backdrop {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }

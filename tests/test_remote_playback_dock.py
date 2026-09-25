@@ -366,7 +366,8 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
             self.script.index("function syncCurrentCacheState") :
             self.script.index("function currentCacheStateLabel")
         ]
-        self.assertIn('classList.toggle("hidden", !label && !showRetry)', cache_sync_source)
+        self.assertIn('classList.toggle("hidden", !label && !showRetry && !ready)', cache_sync_source)
+        self.assertIn('setAttribute("aria-hidden", String(ready))', cache_sync_source)
 
     def test_audio_variant_bar_is_one_row_with_one_scrollable_popover_owner(self):
         render_source = self.script[
@@ -563,9 +564,10 @@ for (const owner of ['sheet', 'rating', 'export']) {
             self.styles.index("@media (max-width: 699px) and (min-height: 521px)") :
             self.styles.index("@media (max-width: 360px)")
         ]
-        self.assertIn("padding-top: 0", portrait_rule)
-        self.assertIn("max-height: 100dvh", portrait_rule)
-        self.assertIn("env(safe-area-inset-top, 0px)", portrait_rule)
+        self.assertIn("max-height: calc(100dvh - max(12px, var(--remote-safe-area-top)))", portrait_rule)
+        sheet_rule = re.search(r"\.playback-sheet\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("padding: max(12px, var(--remote-safe-area-top))", sheet_rule)
+        self.assertIn("var(--remote-safe-area-left)", sheet_rule)
         self.assertIn("width: min(880px, 100%)", self.styles)
         self.assertNotIn("repeat(3", self.styles[self.styles.index("/* Remote playback dock") :])
 
@@ -799,7 +801,9 @@ for (const owner of ['sheet', 'rating', 'export']) {
     def test_sheet_is_content_sized_and_transport_reuses_one_dom_in_two_modes(self):
         body_rule = re.search(r"\.playback-sheet-body\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("flex: 0 1 auto", body_rule)
-        self.assertIn("padding: 14px 16px calc(10px + env(safe-area-inset-bottom, 0px))", body_rule)
+        self.assertIn("padding: 14px 16px 10px", body_rule)
+        panel_rule = re.search(r"\.playback-sheet-panel\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("padding-bottom: var(--remote-safe-area-bottom)", panel_rule)
         primary_rule = re.search(r"\.playback-sheet-primary\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("display: flex", primary_rule)
         self.assertIn("flex-direction: column", primary_rule)

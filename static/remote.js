@@ -1949,7 +1949,7 @@ function openRemoteIdentityRename() {
     elements.remoteIdentityInput.value = state.remoteIdentity.name;
   }
   renderRemoteIdentity();
-  elements.remoteIdentityInput?.focus();
+  elements.remoteIdentityInput?.focus({ preventScroll: true });
   elements.remoteIdentityInput?.select();
 }
 
@@ -8051,7 +8051,9 @@ function syncCurrentCacheState(current) {
       delete retryBtn.dataset.itemIncarnationId;
     }
   }
-  elements.currentCacheState.classList.toggle("hidden", !label && !showRetry);
+  const ready = current.cache_status === "ready";
+  elements.currentCacheState.classList.toggle("hidden", !label && !showRetry && !ready);
+  elements.currentCacheState.setAttribute("aria-hidden", String(ready));
 }
 
 

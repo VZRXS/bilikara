@@ -231,8 +231,8 @@
     }
   }
 
-  function swipeDirection(dx, dy) {
-    return Math.abs(dx) >= 64 && Math.abs(dx) > Math.abs(dy) * 1.6
+  function swipeDirection(dx, dy, horizontalLocked = false) {
+    return Math.abs(dx) >= 64 && (horizontalLocked || Math.abs(dx) > Math.abs(dy) * 1.15)
       ? (dx < 0 ? 1 : -1) : 0;
   }
 
@@ -584,11 +584,13 @@
 
     function finishDrag(event, cancelled = false) {
       if (!drag || drag.id !== event.pointerId) return;
-      const direction = cancelled ? 0 : swipeDirection(event.clientX - drag.x, event.clientY - drag.y);
       const horizontal = drag.horizontal;
+      // Once the initial movement selected paging, later vertical drift must
+      // not reclassify this gesture as page scrolling or cancel the page turn.
+      const direction = cancelled || !horizontal ? 0 : swipeDirection(event.clientX - drag.x, event.clientY - drag.y, true);
       const displacement = drag.displacement || 0;
       drag = null;
-      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+      if (typeof event.pointerId === "number" && viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
       if (horizontal) rest();
       if (!direction) {
         if (horizontal) void restoreDrag(displacement);
@@ -601,17 +603,17 @@
     }
     viewport.addEventListener("pointerdown", event => {
       suppressClick = false;
-      if (!event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (event.pointerType === "touch" || !event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, horizontal: false };
     }, { passive: true });
-    viewport.addEventListener("pointermove", event => {
+    function moveDrag(event) {
       if (!drag || drag.id !== event.pointerId) return;
       const dx = Math.abs(event.clientX - drag.x), dy = Math.abs(event.clientY - drag.y);
-      if (!drag.horizontal && dy > 12 && dy >= dx) { drag = null; return; }
-      if (!drag.horizontal && dx > 12 && dx > dy * 1.6) {
+      if (!drag.horizontal && dy >= 8 && dy > dx * 1.15) { drag = null; return; }
+      if (!drag.horizontal && dx >= 8 && dx > dy * 1.15) {
         drag.horizontal = true;
         suppressClick = true;
-        viewport.setPointerCapture(event.pointerId);
+        if (typeof event.pointerId === "number") viewport.setPointerCapture(event.pointerId);
         showDots();
       }
       if (drag.horizontal) {
@@ -623,8 +625,47 @@
         if (canTurn) dragPreview(distance < 0 ? 1 : -1, drag.displacement);
         else { preview?.remove();preview=null; }
       }
+    }
+    viewport.addEventListener("pointermove", event => {
+      // Pointer motion arrives before the first touchmove's browser slop
+      // threshold. Remember that initial intent, without capturing touch.
+      moveDrag(event.pointerType === "touch"
+        ? {pointerId:"touch", clientX:event.clientX, clientY:event.clientY} : event);
     }, { passive: true });
-    viewport.addEventListener("pointercancel", event => finishDrag(event, true));
+    // Touch Events let us cancel native vertical panning only after a sideways
+    // intent is clear. Passive Pointer Events alone cannot stop Safari from
+    // taking a diagonal drag and issuing pointercancel partway through it.
+    viewport.addEventListener("touchstart", event => {
+      if (event.touches.length !== 1) {
+        if (drag?.id === "touch") finishDrag({pointerId:"touch"}, true);
+        return;
+      }
+      suppressClick = false;
+      if (model.loading || settling) return;
+      const point = event.touches[0];
+      drag = {id:"touch", touchId:point.identifier, x:point.clientX, y:point.clientY, horizontal:false};
+    }, {passive:true});
+    viewport.addEventListener("touchmove", event => {
+      if (drag?.id !== "touch" || event.touches.length !== 1) return;
+      if (!event.cancelable) {
+        finishDrag({pointerId:"touch"}, true);
+        return;
+      }
+      const point = [...event.touches].find(point => point.identifier === drag.touchId);
+      if (!point) return;
+      moveDrag({pointerId:"touch", clientX:point.clientX, clientY:point.clientY});
+      if (drag?.horizontal) event.preventDefault();
+    }, {passive:false});
+    viewport.addEventListener("touchend", event => {
+      if (drag?.id !== "touch") return;
+      const point = [...event.changedTouches].find(point => point.identifier === drag.touchId);
+      if (point) finishDrag({pointerId:"touch", clientX:point.clientX, clientY:point.clientY});
+    }, {passive:true});
+    viewport.addEventListener("touchcancel", () => {
+      if (drag?.id === "touch") finishDrag({pointerId:"touch"}, true);
+    }, {passive:true});
+    viewport.addEventListener("pointercancel", event => finishDrag(
+      event.pointerType === "touch" ? {pointerId:"touch"} : event, true));
     viewport.addEventListener("lostpointercapture", event => {
       // Touch starts with implicit capture on the card's child. Transferring
       // it to the viewport emits a bubbling loss on that child, not a cancellation.
