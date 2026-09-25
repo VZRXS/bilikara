@@ -412,6 +412,7 @@ const state = {
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingPendingKeys: new Set(),
+  ratingQueuedKeys: new Set(),
   ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
@@ -4703,7 +4704,7 @@ function closeHighestRequestTaskLayerForEscape() {
     return true;
   }
   if (state.ratingPromptElement) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: false });
     return true;
   }
   return false;
@@ -5526,7 +5527,7 @@ function submitSongRating(item, score, trigger = null) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || state.ratingPendingKeys.has(submissionKey))) {
+  if (submissionKey && (hasSubmittedSongRating(item) || isSongRatingQueued(item) || state.ratingPendingKeys.has(submissionKey))) {
     return false;
   }
   if (submissionKey) {
@@ -5544,6 +5545,7 @@ function submitSongRating(item, score, trigger = null) {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   }
+  renderCurrentRatingButton(state.data?.current_item);
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
@@ -5554,7 +5556,10 @@ function submitSongRating(item, score, trigger = null) {
     if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success !== true) {
       throw new Error(result?.error || t("error.requestFailed"));
     }
-    if (submissionKey) state.ratingSubmittedKeys.add(submissionKey);
+    if (submissionKey) {
+      if (result?.data?.queued) state.ratingQueuedKeys.add(submissionKey);
+      else state.ratingSubmittedKeys.add(submissionKey);
+    }
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
@@ -5623,7 +5628,7 @@ function ratingSubmissionUserName(item) {
 
 function ratingSubmissionPlayId(item) {
   const bvid = String(item?.bvid || "").trim();
-  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
 function ratingSubmissionKey(item) {
@@ -5637,20 +5642,39 @@ function ratingSubmissionKey(item) {
 function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
   if (!button) return;
-  const item = current || previousRatingPromptItem(null);
-  const enabled = Boolean(item?.bvid && selectedRequesterName())
-    && state.data?.capabilities?.song_rating !== false;
-  const submitted = enabled && hasSubmittedSongRating(item);
-  const pending = state.ratingPendingKeys.has(ratingSubmissionKey(item));
-  button.disabled = !enabled || submitted || pending;
-  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  const items = ratingPromptItemsForItem(current);
+  const candidates = [items.current, items.previous].filter(Boolean);
+  const enabled = Boolean(selectedRequesterName()) && candidates.some(item => isItemRateable(item));
+  const pending = !enabled && candidates.some(item => state.ratingPendingKeys.has(ratingSubmissionKey(item)));
+  const queued = candidates.some(isSongRatingQueued);
+  const submitted = !enabled && !pending && !queued && candidates.some(hasSubmittedSongRating);
+  button.disabled = !enabled;
+  button.textContent = queued ? t("rating.queued") : submitted ? t("rating.rated") : t("rating.rate");
+  button.title = queued ? t("rating.queuedTitle") : submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
   if (pending) button.setAttribute("aria-busy", "true");
   else button.removeAttribute("aria-busy");
+  refreshOpenRatingPrompt(current);
+}
+
+function serverRatingStatus(item) {
+  const playId = ratingSubmissionPlayId(item);
+  const user = ratingSubmissionUserName(item).toLowerCase();
+  const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
+    && String(entry.session_user_name || "").toLowerCase() === user);
+  const key = ratingSubmissionKey(item);
+  if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
+  if (entry) return entry.status;
+  if (playId !== ratingSubmissionPlayId(state.data?.current_item)) state.ratingQueuedKeys.delete(key);
+  return state.ratingQueuedKeys.has(key) ? "waiting" : "";
+}
+
+function isSongRatingQueued(item) {
+  return ["waiting", "sending"].includes(serverRatingStatus(item));
 }
 
 function hasSubmittedSongRating(item) {
   const key = ratingSubmissionKey(item);
-  return Boolean(key && state.ratingSubmittedKeys.has(key));
+  return serverRatingStatus(item) === "accepted" || Boolean(key && state.ratingSubmittedKeys.has(key));
 }
 
 function normalizeRatingPromptItem(item) {
@@ -5688,6 +5712,37 @@ function ratingPromptItemsForItem(item) {
   };
 }
 
+function isItemRateable(item, isCurrent = false) {
+  if (!item?.bvid || state.data?.capabilities?.song_rating === false) return false;
+  const playId = ratingSubmissionPlayId(item);
+  const played = (state.data?.session_played || []).find(entry => String(entry.item_id || entry.id || "") === playId);
+  // Current-song confirmation may be held by the Host until its accepted
+  // playback observation reaches 50%; a skipped, ineligible song cannot be rated.
+  return (playId === ratingSubmissionPlayId(state.data?.current_item) || Boolean(played?.threshold_reached))
+    && !hasSubmittedSongRating(item)
+    && !isSongRatingQueued(item)
+    && !state.ratingPendingKeys.has(ratingSubmissionKey(item));
+}
+
+function refreshOpenRatingPrompt(current) {
+  if (!state.ratingPromptElement) return;
+  const items = ratingPromptItemsForItem(current);
+  const selectedId = ratingSubmissionPlayId(activeRatingPromptItem());
+  const tab = ["current", "previous"].find(key => items[key]
+    && ratingSubmissionPlayId(items[key]) === selectedId && isItemRateable(items[key], key === "current"));
+  if (!tab) { closeRatingPrompt({ submit: false }); return; }
+  const currentRateable = isItemRateable(items.current, true);
+  const previousRateable = isItemRateable(items.previous, false);
+  const changed = state.ratingPromptActiveTab !== tab
+    || state.ratingPromptCurrentRateable !== currentRateable
+    || state.ratingPromptPreviousRateable !== previousRateable;
+  state.ratingPromptItems = items;
+  state.ratingPromptActiveTab = tab;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
+  if (changed) renderRatingPromptContent();
+}
+
 function activeRatingPromptItem() {
   return normalizeRatingPromptItem(
     state.ratingPromptItems?.[state.ratingPromptActiveTab]
@@ -5719,8 +5774,7 @@ function renderRatingPromptContent() {
 
   root.querySelectorAll("[data-rating-tab]").forEach((button) => {
     const tab = button.dataset.ratingTab;
-    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
-    button.disabled = !hasItem;
+    button.disabled = !isItemRateable(state.ratingPromptItems?.[tab], tab === "current");
     button.classList.toggle("active", tab === state.ratingPromptActiveTab);
     button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
   });
@@ -5771,7 +5825,7 @@ function renderRatingPromptContent() {
   }
   const score = document.createElement("div");
   score.className = "song-detail-metric rating-score";
-  score.append(root.querySelector(".rating-stars"), root.querySelector(".rating-hint"));
+  score.append(root.querySelector(".rating-stars"));
   copy.appendChild(score);
   media.appendChild(copy);
   content.replaceChildren(media);
@@ -5785,21 +5839,23 @@ function renderRatingPromptContent() {
 }
 
 function setRatingPromptActiveTab(tab) {
-  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+  if (!state.ratingPromptElement || !isItemRateable(state.ratingPromptItems?.[tab], tab === "current")) {
     return;
   }
   state.ratingPromptActiveTab = tab;
+  state.ratingPromptItemId = ratingSubmissionPlayId(state.ratingPromptItems[tab]);
+  state.ratingPromptScore = 5;
   renderRatingPromptContent();
 }
 
-function closeRatingPrompt({ submit = true, trigger = null } = {}) {
+function closeRatingPrompt({ submit = false, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
   }
   const item = state.data?.current_item;
   const bvid = state.ratingPromptBvid;
-  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && bvid && isItemRateable(activeRatingPromptItem());
   state.ratingPromptSubmitted = true;
   const promptItem = activeRatingPromptItem();
   root.classList.add("closing");
@@ -5832,22 +5888,27 @@ function setRatingOptOut(enabled) {
 
 function openRatingPrompt(item, { manual = false } = {}) {
   if (state.data?.capabilities?.song_rating === false) return;
-  const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
+  const playId = String(item?.id || "").trim();
+  if (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId))) {
     return;
   }
   if (fullscreenElement()) {
     return;
   }
   const promptItems = ratingPromptItemsForItem(item);
-  closeRatingPrompt({ submit: true });
-  state.ratingPromptSeenPlayIds.add(playId);
-  state.ratingPromptItemId = playId;
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+  if (!selectedRequesterName() || (!currentRateable && !previousRateable)) return;
+  closeRatingPrompt({ submit: false });
+  const tab = currentRateable ? "current" : "previous";
+  const activeItem = promptItems[tab];
+  state.ratingPromptItemId = ratingSubmissionPlayId(activeItem);
   state.ratingPromptItems = promptItems;
-  state.ratingPromptActiveTab = "current";
-  state.ratingPromptItem = promptItems.current;
-  state.ratingPromptBvid = bvid;
+  state.ratingPromptActiveTab = tab;
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptBvid = activeItem.bvid;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
   state.ratingPromptScore = 5;
   state.ratingPromptSubmitted = false;
   state.ratingPromptOpener = document.activeElement;
@@ -5893,7 +5954,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const doneButton = document.createElement("button");
   doneButton.type = "button";
   doneButton.className = "next-button";
-  doneButton.dataset.ratingClose = "";
+  doneButton.dataset.ratingSubmit = "";
   doneButton.textContent = t("rating.done");
   const addUpButton = document.createElement("button");
   addUpButton.type = "button";
@@ -5910,10 +5971,11 @@ function openRatingPrompt(item, { manual = false } = {}) {
   previousTab.type = "button";
   previousTab.dataset.ratingTab = "previous";
   previousTab.setAttribute("role", "tab");
-  previousTab.disabled = !promptItems.previous;
+  previousTab.disabled = !previousRateable;
   previousTab.textContent = t("rating.previousTab");
   const currentTab = document.createElement("button");
   currentTab.type = "button";
+  currentTab.disabled = !currentRateable;
   currentTab.dataset.ratingTab = "current";
   currentTab.setAttribute("role", "tab");
   currentTab.textContent = t("rating.currentTab");
@@ -5922,13 +5984,9 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const message = document.createElement("p");
   message.className = "rating-message";
   message.dataset.ratingMessage = "";
-  const hint = document.createElement("p");
-  hint.className = "rating-hint";
-  hint.dataset.i18n = "rating.hint";
-  hint.textContent = t("rating.hint");
   const body = document.createElement("div");
   body.className = "rating-body";
-  body.append(content, stars, hint, actions, tabs, message);
+  body.append(content, stars, actions, tabs, message);
   card.append(closeButton, body);
   root.append(backdrop, card);
   document.body.appendChild(root);
@@ -5941,14 +5999,7 @@ function maybeShowRatingPromptForProgress(item, currentTime, duration) {
 }
 
 function handleRatingCurrentItemChange(currentItem) {
-  if (!state.ratingPromptElement) {
-    return;
-  }
-  const currentId = String(currentItem?.id || "");
-  if (!currentId || currentId !== state.ratingPromptItemId) {
-    closeRatingPrompt({ submit: true });
-    return;
-  }
+  refreshOpenRatingPrompt(currentItem);
 }
 
 function handleRequesterSelectionChange() {
@@ -21221,13 +21272,18 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  const submitButton = event.target.closest("[data-rating-submit]");
+  if (submitButton) {
+    closeRatingPrompt({ submit: true, trigger: submitButton });
+    return;
+  }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
+    closeRatingPrompt({ submit: false, trigger: event.target.closest("[data-rating-close]") });
   }
 });
 
 elements.openRatingButton?.addEventListener("click", () => {
-  openRatingPrompt(state.data?.current_item || previousRatingPromptItem(null), { manual: true });
+  openRatingPrompt(state.data?.current_item, { manual: true });
 });
 
 function handleRatingFullscreenChange() {

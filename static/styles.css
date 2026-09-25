@@ -7036,7 +7036,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .rating-kicker,
-.rating-hint,
 .rating-owner,
 .rating-message {
   margin: 0;
@@ -7046,13 +7045,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 .rating-kicker {
   font-size: 12px;
   text-transform: uppercase;
-}
-
-.rating-hint {
-  margin: 0 0 12px;
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.55;
 }
 
 .rating-stars {

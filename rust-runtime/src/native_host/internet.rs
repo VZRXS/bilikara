@@ -9,6 +9,38 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         .native_execute(AppStateRequest::InternetRemoteState { schema_version: 1 })?["remote_state"]
         .clone();
     let snapshot = app.native_snapshot(false)?;
+    state["song_ratings"] = snapshot["song_ratings"].clone();
+    // Rating navigation needs only the current/previous plays. Explicitly
+    // project public fields; catalog projection wraps arrays and omits eligibility.
+    state["session_played"] = json!(
+        snapshot["session_played"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|entry| {
+                let mut item = json!({});
+                for key in [
+                    "item_id",
+                    "bvid",
+                    "title",
+                    "display_title",
+                    "part_title",
+                    "cover_url",
+                    "owner_mid",
+                    "owner_name",
+                    "threshold_reached",
+                ] {
+                    item[key] = entry[key].clone();
+                }
+                item
+            })
+            .collect::<Vec<_>>()
+    );
     state["state_revision"] = snapshot["state_revision"].clone();
     let status = &snapshot["player_status"];
     state["player_status"] = if status.is_object() {
@@ -583,6 +615,35 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rating_state_keeps_previous_eligibility_without_exporting_private_records() {
+        let mut app = AppState::default();
+        let played = (0..3)
+            .map(|n| {
+                json!({"key":format!("p{n}"),"item_id":format!("p{n}"),
+            "bvid":"BV1z84y1p7oS","title":"song","display_title":"song","part_title":"P1",
+            "original_url":"https://private.test/token","resolved_url":"https://private.test/token",
+            "aid":1,"cid":2,"page":1,"played_at":n+1,"threshold_reached":n==1})
+            })
+            .collect::<Vec<_>>();
+        let seed = serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1,
+            "updated_at":4,"session_played_file":"private.json","session_played":played}))
+        .unwrap();
+        app.native_execute(AppStateRequest::Initialize {
+            schema_version: 1,
+            state: Box::new(seed),
+        })
+        .unwrap();
+        let state = public_state(&mut app).unwrap();
+        let played = state["session_played"].as_array().unwrap();
+        assert_eq!(played.len(), 2);
+        assert_eq!(played[0]["item_id"], "p1");
+        assert_eq!(played[0]["threshold_reached"], true);
+        assert_eq!(played[1]["threshold_reached"], false);
+        assert_eq!(state["song_ratings"], json!([]));
+        assert!(!state["session_played"].to_string().contains("private"));
+    }
+
     #[test]
     fn public_effect_results_keep_covers_and_pagination_but_never_secrets_or_paths() {
         let value = public_data(

@@ -521,12 +521,6 @@
   padding: 0;
 }
 
-.rating-score .rating-hint {
-  margin: 0;
-  text-align: left;
-  font-size: 13px;
-}
-
 .rating-actions {
   --rating-actions-gap: 10px;
   display: grid;

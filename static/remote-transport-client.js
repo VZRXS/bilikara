@@ -544,7 +544,8 @@
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
       history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
       session_history: [],
-      session_played: [],
+      session_played: (remoteState.session_played || []).map(localHistoryItem).filter(Boolean),
+      song_ratings: remoteState.song_ratings || [],
       session_users: Array.isArray(remoteState.session_users) ? remoteState.session_users : [],
       remote_session_id: `internet-${roomId}`,
       player_settings: {

@@ -423,6 +423,7 @@ fn start(
     };
     cache::start_pump(context.clone())?;
     network::start_monitor(&context)?;
+    ratings::start_pump(context.clone())?;
     if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
         library::refresh_after_login(&context, "credential_restore");
     }

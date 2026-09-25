@@ -886,7 +886,12 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
   data.player_settings.av_delay_lock_button_enabled = true;
   data.bilibili_logged_in = true;
   data.current_item.cache_status = "ready";
+  data.session_played = [{item_id: "previous", bvid: "BV1z84y1p7oS", threshold_reached: true}];
+  data.song_ratings = [{session_user_name: "Alice", play_id: "fixture", status: "waiting"}];
   local = localState(data);
+  assert.equal(local.session_played[0].item_id, "previous");
+  assert.equal(local.session_played[0].threshold_reached, true);
+  assert.equal(local.song_ratings[0].status, "waiting");
   assert.equal(local.player_settings.av_delay.has_local_adjustment, true);
   assert.equal(local.player_settings.av_delay.lock_button_enabled, true);
   assert.equal(local.bbdown.logged_in, true);

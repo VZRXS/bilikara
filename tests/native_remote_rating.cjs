@@ -6,20 +6,23 @@ const vm = require('node:vm');
   const source = fs.readFileSync(file, 'utf8');
   const fn = source.slice(source.indexOf('function submitSongRating('), source.indexOf('function ratingItemUrl('));
   let resolve, calls = 0, errors = 0, payload;
-  const state = {ratingSubmittedKeys:new Set(),ratingPendingKeys:new Set(),ratingPromptSeenPlayIds:new Set(), pendingAutoRatings:new Map(),autoRatingFlushQueue:[],data:{}};
+  const state = {ratingSubmittedKeys:new Set(),ratingPendingKeys:new Set(),ratingQueuedKeys:new Set(),ratingPromptSeenPlayIds:new Set(), pendingAutoRatings:new Map(),autoRatingFlushQueue:[],data:{}};
   const button = {disabled:false, attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}};
   const context = {state, console:{warn(){}}, ratingLog(){}, ratingSubmissionUserName:()=>'Alice',
     ratingSubmissionPlayId:()=> 'played', ratingSubmissionKey:()=> 'alice::played',
     clientHeaders:h=>h, t:k=>k, setAppMessage:()=>errors++,renderCurrentRatingButton(){},
     fetch:(_url,options)=>{payload=JSON.parse(options.body);calls++; return new Promise(r=>{resolve=r;});}};
-  vm.createContext(context); vm.runInContext(fn,context);
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function serverRatingStatus('),source.indexOf('function normalizeRatingPromptItem(')),context);
+  vm.runInContext(fn,context);
   const tick = () => new Promise(r=>setImmediate(r));
   const item = {id:'played',bvid:'BV1z84y1p7oS'};
   for(const response of [
     {ok:false,json:async()=>({ok:false,error:'offline'})},
     {ok:true,json:async()=>({ok:true,data:{success:false}})},
     {ok:true,json:async()=>{throw Error('bad JSON');}},
-    {ok:true,json:async()=>({})}
+    {ok:true,json:async()=>({})},
+    {ok:true,json:async()=>({ok:true,data:{}})}
   ]) {
     assert.equal(context.submitSongRating(item,4,button),true);
     assert.equal(button.disabled,true); assert.equal(button.attrs['aria-busy'],'true');
@@ -30,7 +33,15 @@ const vm = require('node:vm');
     assert.equal(state.ratingSubmittedKeys.size,0);
     assert.equal(button.disabled,false); assert.equal(button.attrs['aria-busy'],undefined);
   }
-  assert.equal(errors,4);
+  assert.equal(errors,5);
+  context.submitSongRating(item,3,button);
+  resolve({ok:true,json:async()=>({ok:true,data:{success:true,queued:true}})});await tick();
+  assert.equal(state.ratingSubmittedKeys.size,0,'Deferred confirmation is not a submitted rating');
+  assert.equal(state.ratingQueuedKeys.size,1);
+  assert.equal(context.submitSongRating(item,5,button),false);
+  state.data.song_ratings=[{play_id:'played',session_user_name:'Alice',status:'failed'}];
+  assert.equal(context.serverRatingStatus(item),'failed');
+  assert.equal(state.ratingQueuedKeys.size,0,'Server failure releases deferred dedup for explicit retry');
   state.pendingAutoRatings.set('played',{item});
   state.autoRatingFlushQueue.push({playId:'played',item});
   context.submitSongRating(item,4,button);

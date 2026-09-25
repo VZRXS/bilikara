@@ -1049,7 +1049,7 @@ const notes=path.resolve(output);
     await card.screenshot({path:path.join(notes,`host-binding-${theme}.png`)});
     await host.locator('#binding-modal-close').click();await card.waitFor({state:'hidden'});
     await host.locator('#work-rail-queue').click();
-    await host.evaluate(item=>openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true}),items[0]);
+    await host.evaluate(item=>{if(elements.requesterSelect)elements.requesterSelect.value='UI fixture';state.data.session_played.push({...item,item_id:'ui-rating-fixture',threshold_reached:true});openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true});},items[0]);
     const rating=host.locator('.rating-card');await rating.waitFor();await settled(host);
     const style=await rating.evaluate(e=>{const s=getComputedStyle(e);return [s.backgroundColor,s.border,s.borderRadius,s.boxShadow];});
     try {assert.deepEqual(style,styles.volume);await closeControl(host,rating,rating.locator('.rating-close'));await rating.screenshot({path:path.join(notes,`host-rating-${theme}.png`)});await host.screenshot({path:path.join(notes,`host-rating-${theme}-scope.png`)});}
@@ -1094,7 +1094,7 @@ const notes=path.resolve(output);
     await closeControl(remote,detail,detail.locator('.song-detail-close'),true);
     await detail.screenshot({path:path.join(notes,`remote-detail-${theme}.png`)});
     await detail.locator('.song-detail-close').click();await detail.waitFor({state:'hidden'});
-    await remote.evaluate(item=>openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true}),items[0]);
+    await remote.evaluate(item=>{if(elements.requesterSelect)elements.requesterSelect.value='UI fixture';state.data.session_played.push({...item,item_id:'ui-rating-fixture',threshold_reached:true});openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true});},items[0]);
     const rating=remote.locator('.rating-card');await rating.waitFor();
     try {
      await closeControl(remote,rating,rating.locator('.rating-close'),true);
@@ -1519,6 +1519,108 @@ const notes=path.resolve(output);
      assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: background keyboard scrolling is locked`);
     } finally {await remote.evaluate(close);await settled(remote);}
     assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: closing preserves page position`);
+   }
+  });
+  await check('ratingEligibilityAndDismissal',async()=>{
+   for(const [client,page] of [['host',host],['remote',remote]]) {
+    const requests=[];let fail=false,release=null,queued=false;
+    await page.route('**/api/rating/submit',async route=>{
+     requests.push(route.request().postDataJSON());
+     if(release)await new Promise(resolve=>{release=resolve;});
+     await route.fulfill({status:fail?503:200,contentType:'application/json',body:JSON.stringify(fail?{ok:false,error:'Fixture rating failed'}:{ok:true,data:{success:true,queued}})});
+    });
+    try {
+     if(client==='host') {await page.locator('#requester-select').selectOption({label:'UI fixture'},{force:true});await page.locator('#work-rail-queue').click();}
+     await page.evaluate(({item,client})=>{
+      fetchState=async()=>{};state.eventSource?.close();
+      state.ratingOptOut=true;state.ratingSubmittedKeys.clear();state.ratingPendingKeys.clear();state.ratingQueuedKeys.clear();
+      const current={...item,id:'rating-current',title:'Current song',display_title:'Current song',requester_name:'UI fixture',cache_status:'pending'};
+      const previous={...item,id:'rating-previous',item_id:'rating-previous',title:'Previous song',display_title:'Previous song',bvid:'BV0000000001',threshold_reached:false};
+      state.data={...state.data,song_ratings:[],current_item:current,session_played:[previous,{...current,item_id:current.id,threshold_reached:false}]};
+      if(client==='host')renderQueueCurrent(current);else {renderCurrentItem(current);openPlaybackSheet();}
+      renderCurrentRatingButton(current);
+     },{item:items[0],client});
+     const button=page.locator('#open-rating-button'),modal=page.locator('.rating-modal:not(.closing)');
+     assert.equal(await button.isDisabled(),false,'Current song can be confirmed before halfway');
+     await button.click();await modal.waitFor();
+     assert.equal(await modal.locator('[data-rating-tab="current"]').getAttribute('aria-selected'),'true');
+     assert.equal(await modal.locator('[data-rating-tab="previous"]').isDisabled(),true,'Skipped ineligible previous song cannot be rated');
+     await page.evaluate(()=>setRatingPromptActiveTab('previous'));
+     assert.equal(await page.evaluate(()=>state.ratingPromptActiveTab),'current');
+     await settled(page);await page.screenshot({path:path.join(notes,`${client}-rating-before-half.png`)});
+     await modal.locator('.rating-close').click();await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     await button.click();await modal.locator('[data-rating-score="4"]').click();
+     await page.keyboard.press('Escape');await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     await button.click();await modal.locator('.rating-modal-backdrop').click({position:{x:2,y:2}});
+     await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     queued=true;
+     await button.click();await modal.locator('[data-rating-score="3"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>state.ratingQueuedKeys.size===1 && state.ratingPendingKeys.size===0);
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.queued')));
+     assert.equal(await button.isDisabled(),true);
+     assert.equal(await page.evaluate(()=>hasSubmittedSongRating(state.data.current_item)),false);
+     await page.evaluate(()=>{
+      state.data.song_ratings=[{play_id:'rating-current',session_user_name:ratingSubmissionUserName(state.data.current_item),status:'waiting',score:3}];
+      state.ratingQueuedKeys.clear();renderCurrentRatingButton(state.data.current_item);
+     });
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.queued')),'Pending state survives loss of local UI state');
+     await settled(page);await page.screenshot({path:path.join(notes,`${client}-rating-pending.png`)});
+     // Server acknowledgement, rather than opening/closing or local progress, means rated.
+     await page.evaluate(()=>{state.data.session_played[1].threshold_reached=true;state.data.song_ratings[0].status='accepted';renderCurrentRatingButton(state.data.current_item);});
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.rated')));
+     assert.equal(await button.isDisabled(),true);assert.equal(requests.length,1,'UI must not resubmit the deferred rating');
+     // A deferred network failure re-enables explicit retry.
+     await page.evaluate(()=>{state.data.song_ratings[0].status='failed';renderCurrentRatingButton(state.data.current_item);});
+     assert.equal(await button.isDisabled(),false);
+     if(client==='remote') {
+      const autoQueued=await page.evaluate(()=>{
+       const clock=currentPlaybackClockSeconds;
+       currentPlaybackClockSeconds=()=>({currentSeconds:60,durationSeconds:120});
+       state.pendingAutoRatings.clear();state.ratingPromptSeenPlayIds.delete('rating-current');
+       try {maybeUpdateRemoteRatingPrompt(state.data.current_item);return state.pendingAutoRatings.has('rating-current');}
+       finally {currentPlaybackClockSeconds=clock;}
+      });
+      assert.equal(autoQueued,false,'Failed confirmed score must not be replaced by automatic five stars');
+     }
+     queued=false;fail=true;release=true;
+     await button.click();await modal.locator('[data-rating-score="2"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>state.ratingPendingKeys.size===1);
+     assert.equal(await button.isDisabled(),true);assert.equal(await button.getAttribute('aria-busy'),'true');
+     while(typeof release!=='function')await new Promise(r=>setTimeout(r,10));
+     release();release=null;await page.waitForFunction(()=>state.ratingPendingKeys.size===0);
+     assert.equal(await button.isDisabled(),false);fail=false;
+     await button.click();await modal.locator('[data-rating-score="4"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>hasSubmittedSongRating(state.data.current_item));
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.rated')));
+     assert.deepEqual(requests.map(r=>[r.play_id,r.score]),[['rating-current',3],['rating-current',2],['rating-current',4]]);
+     // A valid previous song stays available without a current song; an early skip does not.
+     await page.evaluate(()=>{
+      state.data.current_item=null;state.data.session_played.pop();state.ratingSubmittedKeys.clear();
+      state.data.song_ratings=[{play_id:'rating-previous',session_user_name:ratingSubmissionUserName(state.data.session_played[0]),status:'discarded'}];
+      renderCurrentRatingButton(null);
+     });
+     assert.equal(await button.isDisabled(),true);
+     await page.evaluate(()=>{state.data.session_played[0].threshold_reached=true;state.data.song_ratings=[];renderCurrentRatingButton(null);});
+     await button.click();assert.equal(await page.evaluate(()=>state.ratingPromptActiveTab),'previous');
+     await modal.locator('.rating-close').click();
+     if(client==='remote') {
+      const flushed=await page.evaluate(()=>{
+       const calls=[];const original=submitSongRating;submitSongRating=(item,score)=>{calls.push([item.id,score]);return true;};
+       try {
+        state.ratingOptOut=false;state.pendingAutoRatings.clear();state.autoRatingFlushQueue=[];state.ratingCurrentPlayId='a';
+        state.pendingAutoRatings.set('a',{playId:'a',item:{id:'a',bvid:'BV0000000000'}});
+        maybeUpdateRemoteRatingPrompt({id:'b',bvid:'BV0000000001'});
+        if(calls.length)throw Error('previous song auto-rated before manual opportunity');
+        maybeUpdateRemoteRatingPrompt({id:'c',bvid:'BV0000000002'});return calls;
+       } finally {submitSongRating=original;state.ratingOptOut=true;state.pendingAutoRatings.clear();state.autoRatingFlushQueue=[];}
+      });assert.deepEqual(flushed,[['a',5]]);
+     }
+     measurements[`rating-${client}`]={closeSubmissions:0,explicitRequests:requests.length,deferred:true,serverAcknowledgement:true,previousFallback:true,retry:true};
+    } finally {
+     if(typeof release==='function')release();
+     await page.evaluate(()=>closeRatingPrompt({submit:false}));await page.unroute('**/api/rating/submit');
+     await page.reload();await page.waitForFunction(()=>state.data?.capabilities);
+    }
    }
   });
   await check('hostRatingPills',async()=>{

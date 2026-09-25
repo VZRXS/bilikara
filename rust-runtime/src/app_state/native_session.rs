@@ -373,6 +373,18 @@ impl AppState {
                 .saturating_add(session.revision)
                 .saturating_add(self.player_controls.revision)
         );
+        let current_rating_play = snapshot.current_item.as_ref().map(|item| item.id.as_str());
+        let previous_rating_play = snapshot
+            .session_played
+            .iter()
+            .rev()
+            .find(|item| Some(item.item_id.as_str()) != current_rating_play)
+            .map(|item| item.item_id.as_str());
+        value["song_ratings"] = session.ratings.snapshot(
+            snapshot.session_generation,
+            current_rating_play,
+            previous_rating_play,
+        );
         value["remote_session_id"] = json!(session.identity_marker(snapshot.session_generation));
         value["player_status"] = session
             .observation
