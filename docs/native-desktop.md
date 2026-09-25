@@ -20,6 +20,16 @@ through AppState; unchanged addresses do not regenerate the QR or advance the
 state revision. Host polling updates all entry surfaces automatically. With no
 LAN address, entry links and copy actions are disabled until one returns.
 
+Addresses come from the OS interface and routing tables: IP Helper on Windows,
+`getifaddrs` with sysfs and `/proc/net/route` on Linux and Android, and
+`PF_ROUTE` on macOS and iOS. Physical links come first, ordered by default
+gateway and route metric, so the QR code follows the phone-hotspot or LAN
+adapter as v0.7.2 did even when a VPN owns the Internet route. Virtual, VPN, VM,
+container and Bluetooth adapters are a single last resort when no physical link
+exists. Loopback and cellular addresses are never offered. A PC's Mobile Hotspot
+or an iPhone's Personal Hotspot is listed after the upstream link. The legacy
+Python Host ranks addresses with the same Rust policy.
+
 ## Build and development
 
 Use the repository's Node.js 24 and Rust toolchains. From the repository root:

@@ -1,4 +1,5 @@
 import ctypes
+import ipaddress
 import json
 import os
 import threading
@@ -590,6 +591,63 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             route_sources=["172.28.32.1"],
         )
         self.assertEqual(addresses, ["172.28.32.1"])
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_network_addresses_accept_interface_facts_over_real_abi(self):
+        # A generic TAP adapter selected by the route probe must not replace
+        # the phone-hotspot WLAN that owns the default gateway.
+        addresses = rust_runtime.detect_lan_ipv4_addresses(
+            platform_name="win32",
+            candidates=[
+                {
+                    "name": "以太网 2",
+                    "address": "10.8.0.2",
+                    "is_up": True,
+                    "interface_type": "ethernet",
+                    "description": "TAP-Windows Adapter V9",
+                    "hardware": False,
+                },
+                {
+                    "name": "WLAN",
+                    "address": "172.20.10.2",
+                    "is_up": True,
+                    "has_default_route": True,
+                    "interface_type": "wifi",
+                    "hardware": True,
+                    "route_metric": 35,
+                },
+                {
+                    "name": "Cellular",
+                    "address": "10.176.4.9",
+                    "is_up": True,
+                    "interface_type": "cellular",
+                },
+            ],
+            route_sources=["10.8.0.2"],
+        )
+        self.assertEqual(addresses, ["172.20.10.2"])
+        with self.assertRaises(rust_runtime.RustRuntimeServiceError):
+            rust_runtime.detect_lan_ipv4_addresses(
+                candidates=[{"name": "WLAN", "address": "172.20.10.2", "mac": "x"}],
+            )
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_network_addresses_enumerate_this_machine_over_real_abi(self):
+        addresses = rust_runtime.detect_lan_ipv4_addresses(route_sources=[])
+        self.assertIsInstance(addresses, list)
+        self.assertEqual(len(addresses), len(set(addresses)))
+        for address in addresses:
+            parsed = ipaddress.ip_address(address)
+            self.assertEqual(parsed.version, 4)
+            self.assertFalse(parsed.is_loopback or parsed.is_unspecified, address)
 
     @unittest.skipUnless(
         os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()

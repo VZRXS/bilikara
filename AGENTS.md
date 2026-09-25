@@ -261,7 +261,7 @@ When completing a task, agents must report:
 | `src/update_installer.rs` | Update extraction, helper generation, and helper launch validation. |
 | `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
 | `src/playlist_export.rs` and `src/playlist_export/` | Complete CSV/image export service, local-time formatting, reusable fonts, text layout/rasterization, PNG/ZIP and coarse wire adaptation; no AppState lock during rendering. |
-| `src/networking.rs` | Native LAN interface discovery and address ranking. |
+| `src/networking.rs` and `src/networking/` | Native LAN interface and routing facts per platform, plus the pure address classification and ranking policy. |
 | `src/ffi.rs` | Temporary C ABI, including the additive schema-v1 AppState request entry used by the Python Host adapter. |
 
 ### Tauri Shell Layer (`src-tauri/`)

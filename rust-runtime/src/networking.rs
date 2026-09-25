@@ -1,59 +1,28 @@
-use if_addrs::get_if_addrs;
+//! LAN Remote address discovery.
+//!
+//! Platform collectors read interface and routing tables from the local OS;
+//! [`policy`] classifies and orders those facts without further I/O.
+
+#[cfg(any(target_vendor = "apple", test))]
+mod apple;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod linux;
+mod policy;
+#[cfg(unix)]
+mod posix;
+#[cfg(any(windows, test))]
+mod windows;
+
+pub use policy::rank_lan_ipv4_candidates;
+
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 const ROUTE_TARGETS: [(&str, u16); 3] = [("1.1.1.1", 80), ("8.8.8.8", 80), ("9.9.9.9", 80)];
-const MACOS_VIRTUAL_PREFIXES: [&str; 11] = [
-    "lo", "utun", "bridge", "awdl", "llw", "ap", "gif", "stf", "p2p", "vmnet", "vnic",
-];
-const LINUX_VIRTUAL_PREFIXES: [&str; 14] = [
-    "lo",
-    "docker",
-    "veth",
-    "virbr",
-    "br-",
-    "tun",
-    "tap",
-    "wg",
-    "tailscale",
-    "zt",
-    "cni",
-    "flannel",
-    "kube",
-    "podman",
-];
-const WINDOWS_VIRTUAL_KEYWORDS: [&str; 28] = [
-    "hyper-v",
-    "vethernet",
-    "vmware",
-    "virtualbox",
-    "wsl",
-    "docker",
-    "tailscale",
-    "zerotier",
-    "singbox",
-    "sing-box",
-    "singbox_tun",
-    "sing-tun",
-    "mihomo",
-    "meta",
-    "clash",
-    "v2rayn",
-    "nekoray",
-    "hiddify",
-    "tun2socks",
-    "vpn",
-    "tunnel",
-    "wintun",
-    "loopback",
-    "bluetooth",
-    "vmess",
-    "vless",
-    "trojan",
-    "shadowsocks",
-];
 
+/// One IPv4 address and what the OS reports about its interface. FFI callers
+/// may send only the original fields; collectors also fill the optional facts.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InterfaceAddress {
@@ -63,10 +32,33 @@ pub struct InterfaceAddress {
     pub is_up: Option<bool>,
     #[serde(default)]
     pub has_default_route: bool,
+    /// `unknown`, `ethernet`, `wifi`, `physical`, `hotspot`, `virtual`,
+    /// `tunnel`, `container`, `bluetooth`, `cellular` or `loopback`.
     #[serde(default = "unknown_interface_type")]
     pub interface_type: String,
     #[serde(default)]
     pub description: String,
+    /// Whether the OS reports a hardware-backed link; `None` when unknown.
+    #[serde(default)]
+    pub hardware: Option<bool>,
+    /// Preference among default routes; lower is preferred.
+    #[serde(default)]
+    pub route_metric: Option<u32>,
+}
+
+impl Default for InterfaceAddress {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            address: String::new(),
+            is_up: None,
+            has_default_route: false,
+            interface_type: unknown_interface_type(),
+            description: String::new(),
+            hardware: None,
+            route_metric: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -89,16 +81,15 @@ fn unknown_interface_type() -> String {
     "unknown".to_owned()
 }
 
+/// Ranked addresses for the legacy Python Host adapter. Omitted route sources
+/// keep its UDP route lookup, which selects a local address without sending.
 pub fn detect_lan_ipv4_addresses(request: &NetworkAddressRequest) -> NetworkAddressResult {
     let platform = normalized_platform(&request.platform_name);
     let route_sources = request
         .route_sources
         .clone()
         .unwrap_or_else(route_selected_ipv4s);
-    let mut candidates = request
-        .candidates
-        .clone()
-        .unwrap_or_else(enumerate_interfaces);
+    let mut candidates = request.candidates.clone().unwrap_or_else(local_interfaces);
     let known: HashSet<String> = candidates.iter().map(|item| item.address.clone()).collect();
     for address in &route_sources {
         if !known.contains(address) {
@@ -107,8 +98,7 @@ pub fn detect_lan_ipv4_addresses(request: &NetworkAddressRequest) -> NetworkAddr
                 address: address.clone(),
                 is_up: Some(true),
                 has_default_route: true,
-                interface_type: "unknown".to_owned(),
-                description: String::new(),
+                ..InterfaceAddress::default()
             });
         }
     }
@@ -117,81 +107,24 @@ pub fn detect_lan_ipv4_addresses(request: &NetworkAddressRequest) -> NetworkAddr
     }
 }
 
-pub fn rank_lan_ipv4_candidates(
-    candidates: &[InterfaceAddress],
-    route_sources: &[String],
-    platform: &str,
-) -> Vec<String> {
-    let route_set: HashSet<Ipv4Addr> = route_sources
-        .iter()
-        .filter_map(|value| valid_ipv4(value))
-        .collect();
-    let mut unique: HashMap<Ipv4Addr, InterfaceAddress> = HashMap::new();
-    for candidate in candidates {
-        let Some(address) = valid_ipv4(&candidate.address) else {
-            continue;
-        };
-        let should_replace = unique
-            .get(&address)
-            .is_some_and(|current| candidate.is_up == Some(true) && current.is_up != Some(true));
-        if should_replace || !unique.contains_key(&address) {
-            let mut normalized = candidate.clone();
-            normalized.address = address.to_string();
-            unique.insert(address, normalized);
-        }
-    }
-    let mut values: Vec<(Ipv4Addr, InterfaceAddress)> = unique
-        .into_iter()
-        .filter(|(_, candidate)| candidate.is_up != Some(false))
-        .collect();
-    if values.iter().any(|(address, _)| !address.is_link_local()) {
-        values.retain(|(address, _)| !address.is_link_local());
-    }
-    values.sort_by(|(left_address, left), (right_address, right)| {
-        interface_score(right, right_address, &route_set, platform)
-            .cmp(&interface_score(left, left_address, &route_set, platform))
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-            .then_with(|| u32::from(*left_address).cmp(&u32::from(*right_address)))
-    });
-    let Some((_, recommended)) = values.first() else {
-        return Vec::new();
-    };
-    let physical: Vec<&InterfaceAddress> = values
-        .iter()
-        .map(|(_, candidate)| candidate)
-        .filter(|candidate| !is_virtual_interface(candidate, platform))
-        .collect();
-    let visible: Vec<&InterfaceAddress> = if physical.is_empty() {
-        vec![recommended]
-    } else if is_virtual_interface(recommended, platform) {
-        std::iter::once(recommended).chain(physical).collect()
-    } else {
-        physical
-    };
-    let mut seen = HashSet::new();
-    visible
-        .into_iter()
-        .filter(|candidate| seen.insert(candidate.address.clone()))
-        .map(|candidate| candidate.address.clone())
-        .collect()
+/// Current LAN Remote addresses from local interface and routing tables only.
+pub fn local_lan_ipv4_addresses() -> Vec<String> {
+    rank_lan_ipv4_candidates(&local_interfaces(), &[], &normalized_platform(""))
 }
 
-fn enumerate_interfaces() -> Vec<InterfaceAddress> {
-    get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|interface| match interface.addr.ip() {
-            IpAddr::V4(address) => Some(InterfaceAddress {
-                name: interface.name,
-                address: address.to_string(),
-                is_up: Some(true),
-                has_default_route: false,
-                interface_type: "unknown".to_owned(),
-                description: String::new(),
-            }),
-            IpAddr::V6(_) => None,
-        })
-        .collect()
+#[cfg(windows)]
+fn local_interfaces() -> Vec<InterfaceAddress> {
+    windows::interfaces()
+}
+
+#[cfg(unix)]
+fn local_interfaces() -> Vec<InterfaceAddress> {
+    posix::interfaces()
+}
+
+#[cfg(not(any(windows, unix)))]
+fn local_interfaces() -> Vec<InterfaceAddress> {
+    Vec::new()
 }
 
 fn route_selected_ipv4s() -> Vec<String> {
@@ -209,113 +142,46 @@ fn route_selected_ipv4s() -> Vec<String> {
         let IpAddr::V4(address) = local.ip() else {
             continue;
         };
-        if valid_ipv4(&address.to_string()).is_some() && !selected.contains(&address.to_string()) {
-            selected.push(address.to_string());
+        let address = address.to_string();
+        if policy::valid_ipv4(&address).is_some() && !selected.contains(&address) {
+            selected.push(address);
         }
     }
     selected
-}
-
-fn valid_ipv4(value: &str) -> Option<Ipv4Addr> {
-    let address: Ipv4Addr = value.trim().parse().ok()?;
-    (!address.is_loopback() && !address.is_unspecified() && !address.is_multicast())
-        .then_some(address)
 }
 
 fn normalized_platform(requested: &str) -> String {
     if !requested.trim().is_empty() {
         return requested.trim().to_lowercase();
     }
-    if cfg!(target_os = "windows") {
-        "win32".to_owned()
+    let current = if cfg!(target_os = "windows") {
+        "win32"
     } else if cfg!(target_os = "macos") {
-        "darwin".to_owned()
+        "darwin"
+    } else if cfg!(target_os = "ios") {
+        "ios"
+    } else if cfg!(target_os = "android") {
+        "android"
     } else {
-        "linux".to_owned()
-    }
-}
-
-fn is_virtual_interface(candidate: &InterfaceAddress, platform: &str) -> bool {
-    let name = candidate.name.to_lowercase();
-    let description = candidate.description.to_lowercase();
-    let interface_type = candidate.interface_type.to_lowercase();
-    if ["virtual", "tunnel", "loopback", "container"].contains(&interface_type.as_str()) {
-        return true;
-    }
-    if platform == "darwin" {
-        return MACOS_VIRTUAL_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix));
-    }
-    if platform.starts_with("linux") {
-        return LINUX_VIRTUAL_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix));
-    }
-    if platform.starts_with("win") {
-        let labels = format!("{name} {description}");
-        return WINDOWS_VIRTUAL_KEYWORDS
-            .iter()
-            .any(|keyword| labels.contains(keyword));
-    }
-    false
-}
-
-fn interface_score(
-    candidate: &InterfaceAddress,
-    address: &Ipv4Addr,
-    route_sources: &HashSet<Ipv4Addr>,
-    platform: &str,
-) -> i32 {
-    let mut score = 0;
-    if route_sources.contains(address) {
-        score += 10_000;
-    }
-    if candidate.has_default_route {
-        score += 1_500;
-    }
-    match candidate.is_up {
-        Some(true) => score += 500,
-        Some(false) => score -= 4_000,
-        None => {}
-    }
-    score += if address.is_private() { 600 } else { 150 };
-    if address.is_link_local() {
-        score -= 2_500;
-    }
-    score += if is_virtual_interface(candidate, platform) {
-        -12_000
-    } else {
-        800
+        "linux"
     };
-    let name = candidate.name.to_lowercase();
-    let preferred_native_name = (platform == "darwin" && name.starts_with("en"))
-        || (platform.starts_with("linux")
-            && ["eth", "en", "wlan", "wl"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix)));
-    if preferred_native_name {
-        score += 500;
-    }
-    if ["ethernet", "wifi", "physical"].contains(&candidate.interface_type.to_lowercase().as_str())
-    {
-        score += 500;
-    }
-    score
+    current.to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    use std::process::Command;
 
     fn candidate(name: &str, address: &str, kind: &str) -> InterfaceAddress {
         InterfaceAddress {
             name: name.to_owned(),
             address: address.to_owned(),
             is_up: Some(true),
-            has_default_route: false,
             interface_type: kind.to_owned(),
-            description: String::new(),
+            ..InterfaceAddress::default()
         }
     }
 
@@ -360,5 +226,176 @@ mod tests {
             rank_lan_ipv4_candidates(&values, &["172.19.0.1".to_owned()], "win32"),
             vec!["192.168.50.20"]
         );
+    }
+
+    #[test]
+    fn wire_requests_accept_original_and_additive_interface_facts() {
+        let request: NetworkAddressRequest = serde_json::from_value(serde_json::json!({
+            "platform_name": "win32",
+            "candidates": [
+                {"name": "Ethernet 2", "address": "10.8.0.2", "is_up": true},
+                {
+                    "name": "WLAN",
+                    "address": "172.20.10.2",
+                    "is_up": true,
+                    "has_default_route": true,
+                    "interface_type": "wifi",
+                    "description": "Intel(R) Wi-Fi 6 AX201 160MHz",
+                    "hardware": true,
+                    "route_metric": 35
+                }
+            ],
+            "route_sources": []
+        }))
+        .unwrap();
+        assert_eq!(
+            detect_lan_ipv4_addresses(&request).addresses,
+            vec!["172.20.10.2", "10.8.0.2"]
+        );
+        let unknown = serde_json::from_value::<NetworkAddressRequest>(serde_json::json!({
+            "candidates": [{"name": "WLAN", "address": "172.20.10.2", "mac": "00:15:5d:00:00:01"}]
+        }));
+        assert!(unknown.is_err(), "unknown interface facts stay rejected");
+    }
+
+    // The live tests below read this machine's real interface and routing
+    // tables. On CI the independent OS tool must succeed, so a missing route
+    // fails instead of silently validating nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    fn required_on_ci() -> bool {
+        std::env::var_os("CI").is_some()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    fn command_output(program: &str, args: &[&str]) -> Option<String> {
+        let output = Command::new(program).args(args).output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    #[test]
+    fn live_interfaces_classify_loopback_and_rank_only_local_addresses() {
+        let interfaces = local_interfaces();
+        assert!(
+            interfaces
+                .iter()
+                .any(|item| item.interface_type == "loopback" && item.address.starts_with("127.")),
+            "{interfaces:#?}"
+        );
+        for item in &interfaces {
+            assert!(item.address.parse::<Ipv4Addr>().is_ok(), "{item:?}");
+            assert!(!item.name.is_empty(), "{item:?}");
+        }
+        let known: HashSet<&str> = interfaces
+            .iter()
+            .map(|item| item.address.as_str())
+            .collect();
+        let ranked = local_lan_ipv4_addresses();
+        let unique: HashSet<&String> = ranked.iter().collect();
+        assert_eq!(unique.len(), ranked.len(), "{ranked:?}");
+        for address in &ranked {
+            assert!(
+                known.contains(address.as_str()),
+                "{address} not in {known:?}"
+            );
+            assert!(!address.starts_with("127."), "{ranked:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_linux_default_route_matches_iproute2() {
+        let Some(output) = command_output("ip", &["-4", "route", "show", "default"]) else {
+            assert!(
+                !required_on_ci(),
+                "`ip -4 route show default` must run on CI"
+            );
+            return;
+        };
+        let devices: HashSet<&str> = output
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                words.find(|word| *word == "dev")?;
+                words.next()
+            })
+            .collect();
+        assert!(!required_on_ci() || !devices.is_empty(), "{output}");
+        let interfaces = local_interfaces();
+        for device in devices {
+            for item in interfaces.iter().filter(|item| item.name == device) {
+                assert!(item.has_default_route, "{item:?} in {output}");
+                assert!(item.route_metric.is_some(), "{item:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_macos_primary_default_route_matches_route_get() {
+        let Some(output) = command_output("route", &["-n", "get", "default"]) else {
+            assert!(!required_on_ci(), "`route -n get default` must run on CI");
+            return;
+        };
+        let device = output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("interface:"))
+            .map(str::trim)
+            .expect("route -n get default names an interface");
+        let interfaces = local_interfaces();
+        let primary: Vec<&InterfaceAddress> = interfaces
+            .iter()
+            .filter(|item| item.name == device)
+            .collect();
+        for item in &primary {
+            assert!(item.has_default_route, "{item:?}");
+            assert_eq!(item.route_metric, Some(0), "{item:?}");
+        }
+        assert!(
+            !required_on_ci() || !primary.is_empty(),
+            "{device}: {interfaces:#?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_windows_gateways_match_net_ip_configuration() {
+        let script = "Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | \
+                      ForEach-Object { $_.InterfaceAlias }";
+        let Some(output) = command_output("powershell", &["-NoProfile", "-Command", script]) else {
+            assert!(!required_on_ci(), "Get-NetIPConfiguration must run on CI");
+            return;
+        };
+        let aliases: HashSet<&str> = output
+            .lines()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .collect();
+        assert!(!required_on_ci() || !aliases.is_empty(), "{output}");
+        let interfaces = local_interfaces();
+        for alias in &aliases {
+            let matching: Vec<&InterfaceAddress> = interfaces
+                .iter()
+                .filter(|item| item.name == *alias)
+                .collect();
+            assert!(!matching.is_empty(), "{alias}: {interfaces:#?}");
+            for item in matching {
+                assert!(item.has_default_route, "{item:?}");
+                assert!(item.route_metric.is_some(), "{item:?}");
+                assert!(item.hardware.is_some(), "{item:?}");
+            }
+        }
+        // Get-NetIPConfiguration omits hidden and disconnected adapters.
+        let connected_hardware = |item: &&InterfaceAddress| {
+            item.has_default_route && item.is_up == Some(true) && item.hardware == Some(true)
+        };
+        for item in interfaces.iter().filter(connected_hardware) {
+            assert!(
+                aliases.contains(item.name.as_str()),
+                "{item:?} not in {aliases:?}"
+            );
+        }
     }
 }

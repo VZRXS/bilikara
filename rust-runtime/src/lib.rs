@@ -68,7 +68,7 @@ pub use native_video::{
 };
 pub use networking::{
     InterfaceAddress, NetworkAddressRequest, NetworkAddressResult, detect_lan_ipv4_addresses,
-    rank_lan_ipv4_candidates,
+    local_lan_ipv4_addresses, rank_lan_ipv4_candidates,
 };
 pub use qr_image::{QrImageError, QrImageErrorKind, generate_qr_png};
 pub use status_service::{

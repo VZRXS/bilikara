@@ -2,6 +2,7 @@
 
 use bilikara_runtime::{
     AppStateRequest, AppStateSeed, execute_app_state, initialize_native_host,
+    local_lan_ipv4_addresses,
     native_host::{Asset, NativeHost},
 };
 use serde_json::{Value, json};
@@ -216,14 +217,27 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         .as_str()
         .unwrap();
     assert_eq!(remote_url, format!("{base}/remote"));
-    for address in snapshot["data"]["remote_access"]["lan_urls"]
+    let port = url::Url::parse(&base).unwrap().port();
+    let lan_urls = snapshot["data"]["remote_access"]["lan_urls"]
         .as_array()
-        .unwrap()
-    {
+        .unwrap();
+    let mut published = Vec::new();
+    for address in lan_urls {
         let url = url::Url::parse(address.as_str().unwrap()).unwrap();
         assert_eq!(url.path(), "/remote");
         assert!(url.query().is_none());
+        assert_eq!(url.port(), port);
+        published.push(url.host_str().unwrap().to_owned());
     }
+    // The running Host publishes the shared LAN policy's current addresses.
+    assert_eq!(published, local_lan_ipv4_addresses());
+    assert_eq!(
+        snapshot["data"]["remote_access"]["preferred_url"],
+        lan_urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| json!(remote_url))
+    );
     for (mode, dest) in [
         ("cors", "empty"),
         ("no-cors", "image"),
