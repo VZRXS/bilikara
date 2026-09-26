@@ -146,6 +146,15 @@ impl RuntimeStatusService {
             current.0 == ticket.0 && std::sync::Arc::ptr_eq(&current.1, &ticket.1)
         })
     }
+    #[cfg(feature = "native-host")]
+    pub(crate) fn cancel_configured_refresh(&mut self) {
+        // Keep ownership until the worker retires; cancellation fences writes
+        // without admitting a second concurrent repository task.
+        if let Some((_, control)) = &self.configured_refresh {
+            control.stop();
+        }
+    }
+
     pub(crate) fn begin_configured_refresh(
         &mut self,
         global_lock: bool,

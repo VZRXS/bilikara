@@ -97,7 +97,7 @@ fn candidates(package: &Value) -> Vec<crate::DownloadCandidate> {
                     ),
                 },
             ],
-            proxy: None,
+            proxy: crate::native_host::environment::download_proxy(),
         })
         .expect("fixed candidate identities");
     planned
@@ -225,7 +225,6 @@ fn run(
         let expected = package["bytes"]
             .as_u64()
             .ok_or_else(|| failure("更新大小无效"))?;
-        let started = std::time::Instant::now();
         let mut too_large = false;
         let result = crate::http_downloader::download_release_to_path(
             &crate::DownloadRequest {
@@ -240,10 +239,7 @@ fn run(
             |progress| {
                 too_large |= progress.downloaded_bytes > expected
                     || progress.total_bytes.is_some_and(|n| n > expected);
-                if too_large
-                    || started.elapsed() > Duration::from_secs(600)
-                    || !current(&context, operation, &phase)
-                {
+                if too_large || !current(&context, operation, &phase) {
                     return false;
                 }
                 with_app(|app| {

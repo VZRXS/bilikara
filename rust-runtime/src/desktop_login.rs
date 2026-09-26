@@ -233,13 +233,12 @@ pub(crate) fn save_cookie(path: &Path, cookie: &str) -> Result<(), LoginError> {
     result
 }
 
-/// Shared external-download admission rule; Native remains available to guests.
+/// DownKyi requires account credentials; BBDown and Native support guests.
 pub(crate) fn download_login_error(source: &str, cookie: &str) -> Option<&'static str> {
     if login_cookie(cookie).is_some() {
         return None;
     }
     match source {
-        "bbdown" => Some("BBDown 下载需要登录 Bilibili，请登录后重新下载"),
         "downkyi" => Some("DownKyi/aria2c 下载需要登录 Bilibili，请登录后重新下载"),
         _ => None,
     }
@@ -403,15 +402,14 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
 mod download_tests {
     use super::*;
     #[test]
-    fn external_downloads_require_login_but_native_does_not() {
+    fn downkyi_requires_login_while_bbdown_and_native_allow_guests() {
         for cookie in [
             "",
             "buvid3=visitor; bili_ticket=visitor",
             "SESSDATA=partial",
         ] {
-            for source in ["bbdown", "downkyi"] {
-                assert!(download_login_error(source, cookie).is_some());
-            }
+            assert!(download_login_error("downkyi", cookie).is_some());
+            assert!(download_login_error("bbdown", cookie).is_none());
             assert!(download_login_error("native", cookie).is_none());
         }
         for source in ["bbdown", "downkyi", "native", "yt-dlp"] {

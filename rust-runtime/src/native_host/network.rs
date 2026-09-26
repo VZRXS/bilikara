@@ -7,7 +7,9 @@ use super::*;
 // see the same current address. The shared AppState remains the only authority.
 pub(super) fn start_monitor(context: &Arc<HostContext>) -> Result<(), ApiError> {
     let port = context.port;
+    let bind_address = context.bind_address;
     let stop = context.stop.clone();
+    let worker_context = context.clone();
     context
         .spawn("native-lan-monitor", move || {
             while !stop.load(Ordering::Acquire) {
@@ -20,7 +22,12 @@ pub(super) fn start_monitor(context: &Arc<HostContext>) -> Result<(), ApiError> 
                 if stop.load(Ordering::Acquire) {
                     return;
                 }
-                let addresses = lan_addresses();
+                *worker_context
+                    .allowed_hosts
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner()) =
+                    crate::networking::local_transport_addresses();
+                let addresses = bound_addresses(bind_address);
                 let urls = lan_urls(port, &addresses);
                 let unchanged =
                     with_app(|app| Ok(app.native().remote_access["lan_urls"] == json!(urls)));
@@ -60,6 +67,16 @@ fn publish_access(session: &mut crate::app_state::native_session::NativeSession,
     if session.remote_access != access {
         session.remote_access = access;
         session.revision += 1;
+    }
+}
+
+pub(super) fn bound_addresses(bind: std::net::Ipv4Addr) -> Vec<String> {
+    if bind.is_unspecified() {
+        lan_addresses()
+    } else if bind.is_loopback() {
+        Vec::new()
+    } else {
+        vec![bind.to_string()]
     }
 }
 

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const GEOMETRY_SCHEMA_VERSION: u8 = 1;
@@ -1066,6 +1067,66 @@ pub(crate) fn set_window_fullscreen(
     Ok(())
 }
 
+pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    // Last-window/user exits share the main-window confirmation and cleanup.
+    // macOS Cmd-Q is a custom menu action that calls Window::close directly.
+    // Explicit exit codes belong to restart/update or fatal startup handling.
+    if let tauri::RunEvent::ExitRequested {
+        code: None, api, ..
+    } = event
+        && let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL)
+        && let Some(backend) = app.try_state::<BackendProcess>()
+        && !backend.close_approved.load(Ordering::Acquire)
+    {
+        api.prevent_exit();
+        let _ = window.close();
+    }
+}
+
+fn export_close_needs_confirmation(local_active: bool, remote_active: Option<bool>) -> bool {
+    local_active || remote_active != Some(false)
+}
+
+fn unknown_export_exit_labels(language: &str) -> (&'static str, &'static str, &'static str) {
+    match language {
+        "en" => (
+            "Cannot check whether a playlist export is still running. Force quit and risk interrupting it?",
+            "Force quit",
+            "Stay open",
+        ),
+        "ja" => (
+            "エクスポートの実行状態を確認できません。中断される可能性がありますが、強制終了しますか？",
+            "強制終了",
+            "開いたままにする",
+        ),
+        _ => (
+            "无法确认是否仍有歌单导出。强制退出可能中断导出，是否强制退出？",
+            "强制退出",
+            "暂不退出",
+        ),
+    }
+}
+
+fn export_exit_labels(language: &str) -> (&'static str, &'static str, &'static str) {
+    match language {
+        "en" => (
+            "A playlist is being exported. Force quit and cancel the unfinished export?",
+            "Force quit",
+            "Keep exporting",
+        ),
+        "ja" => (
+            "プレイリストをエクスポート中です。強制終了して未完了のエクスポートをキャンセルしますか？",
+            "強制終了",
+            "エクスポートを続行",
+        ),
+        _ => (
+            "当前正在导出歌单，是否强制退出？未完成的导出将被取消。",
+            "强制退出",
+            "继续导出",
+        ),
+    }
+}
+
 pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if window.label() == MAIN_WINDOW_LABEL {
         match event {
@@ -1078,7 +1139,61 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                 }
                 refresh_cached_main_window_geometry(window);
             }
-            tauri::WindowEvent::CloseRequested { .. } => {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if let Some(backend) = window.try_state::<BackendProcess>()
+                    && !backend.close_approved.load(Ordering::Acquire)
+                {
+                    api.prevent_close();
+                    if !backend.export_close_prompt.swap(true, Ordering::AcqRel) {
+                        let backend = backend.inner().clone();
+                        let closing = window.clone();
+                        // Check the Host off the UI thread: Remote/browser exports
+                        // also hold its render/transfer permit until completion.
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let status = backend.remote_export_status();
+                            let remote_active = status
+                                .as_ref()
+                                .ok()
+                                .and_then(|status| status["active"].as_bool());
+                            let local_active = backend.export_in_progress();
+                            if !export_close_needs_confirmation(local_active, remote_active) {
+                                backend.close_approved.store(true, Ordering::Release);
+                                backend.export_close_prompt.store(false, Ordering::Release);
+                                let _ = closing.close();
+                                return;
+                            }
+                            let language = status
+                                .as_ref()
+                                .ok()
+                                .and_then(|status| status["language"].as_str())
+                                .unwrap_or("zh");
+                            let (message, confirm, cancel) =
+                                if remote_active.is_none() && !local_active {
+                                    unknown_export_exit_labels(language)
+                                } else {
+                                    export_exit_labels(language)
+                                };
+                            let dialog = closing
+                                .dialog()
+                                .message(message)
+                                .title("Bilikara")
+                                .kind(MessageDialogKind::Warning)
+                                .buttons(MessageDialogButtons::OkCancelCustom(
+                                    confirm.into(),
+                                    cancel.into(),
+                                ));
+                            dialog.show(move |confirmed| {
+                                if confirmed {
+                                    backend.force_export_exit.store(true, Ordering::Release);
+                                    backend.close_approved.store(true, Ordering::Release);
+                                    let _ = closing.close();
+                                }
+                                backend.export_close_prompt.store(false, Ordering::Release);
+                            });
+                        });
+                    }
+                    return;
+                }
                 let restart_in_progress = window
                     .try_state::<ApplicationLifecycleState>()
                     .is_some_and(|state| state.restart_in_progress());
@@ -1088,6 +1203,27 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                     geometry_diagnostic("save_on_close", "error_ignored");
                 } else {
                     geometry_diagnostic("save_on_close", "ok");
+                }
+                if !restart_in_progress
+                    && let Some(backend) = window.try_state::<BackendProcess>()
+                    && window
+                        .try_state::<ApplicationLifecycleState>()
+                        .is_some_and(|lifecycle| lifecycle.claim_window_shutdown())
+                {
+                    api.prevent_close();
+                    let app = window.app_handle().clone();
+                    // Never block the WebView/UI thread while joining Host
+                    // workers: it must process media teardown before exit.
+                    for view in app.webview_windows().values() {
+                        let _ = view.eval("window.dispatchEvent(new Event('bilikara-before-close')); document.querySelectorAll('video,audio').forEach(media => { media.pause(); media.removeAttribute('src'); media.load(); });");
+                        let _ = view.hide();
+                    }
+                    presentation::prepare_app_shutdown(&app);
+                    let backend = backend.inner().clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        backend_process::shutdown(&backend);
+                        app.exit(0);
+                    });
                 }
             }
             _ => {}
@@ -1117,6 +1253,20 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn close_requires_known_idle_or_explicit_confirmation() {
+        assert!(!export_close_needs_confirmation(false, Some(false)));
+        assert!(export_close_needs_confirmation(false, Some(true)));
+        assert!(export_close_needs_confirmation(false, None));
+        assert!(export_close_needs_confirmation(true, Some(false)));
+        assert!(export_close_needs_confirmation(true, None));
+        for language in ["zh", "en", "ja"] {
+            let (message, confirm, cancel) = unknown_export_exit_labels(language);
+            assert!(!message.is_empty());
+            assert_ne!(confirm, cancel);
+        }
+    }
 
     const FRAMELESS: LogicalFrameSize = LogicalFrameSize {
         width: 0.0,

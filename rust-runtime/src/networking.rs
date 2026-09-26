@@ -107,6 +107,17 @@ pub fn detect_lan_ipv4_addresses(request: &NetworkAddressRequest) -> NetworkAddr
     }
 }
 
+/// Local transport addresses include secondary adapters even when they are not
+/// preferred for QR display. This list never includes arbitrary remote hosts.
+#[cfg(feature = "native-host")]
+pub(crate) fn local_transport_addresses() -> Vec<std::net::IpAddr> {
+    local_interfaces()
+        .into_iter()
+        .filter(|interface| interface.is_up != Some(false))
+        .filter_map(|interface| interface.address.parse().ok())
+        .collect()
+}
+
 /// Current LAN Remote addresses from local interface and routing tables only.
 pub fn local_lan_ipv4_addresses() -> Vec<String> {
     rank_lan_ipv4_candidates(&local_interfaces(), &[], &normalized_platform(""))

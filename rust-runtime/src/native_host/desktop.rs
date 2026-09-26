@@ -145,7 +145,11 @@ impl NativeHost {
                 .iter()
                 .map(|row| bilikara_rust::playlist_export::ExportEntry {
                     title: row["title"].as_str().unwrap_or_default().into(),
-                    display_title: row["title"].as_str().unwrap_or_default().into(),
+                    display_title: row["csv_title"]
+                        .as_str()
+                        .or_else(|| row["title"].as_str())
+                        .unwrap_or_default()
+                        .into(),
                     requester_name: row["requester"].as_str().unwrap_or_default().into(),
                     owner_name: row["owner"].as_str().unwrap_or_default().into(),
                     owner_mid: row["owner_mid"]
@@ -162,19 +166,12 @@ impl NativeHost {
                 })
                 .collect::<Vec<_>>();
             let artifact = if spec["format"] == "csv" {
-                crate::playlist_export::export_csv(
-                    &entries,
-                    if spec["source"] == "history" {
-                        "点歌时间"
-                    } else {
-                        "播放时间"
-                    },
-                )
+                crate::playlist_export::export_csv(&entries, "播放时间")
             } else {
                 crate::playlist_export::export_image(&crate::playlist_export::ImageExportRequest {
                     entries,
                     font_path: desktop_font_path()?,
-                    title: "bilikara 歌单".into(),
+                    title: "bilikara 歌单导出".into(),
                     page_size: spec["pageSize"].as_u64().ok_or("Missing page size")? as usize,
                     app_version: update_facts().version,
                 })
@@ -291,6 +288,8 @@ pub(super) fn update_facts() -> updates::DesktopUpdateFacts {
 }
 
 pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
+    #[cfg(windows)]
+    let desktop_parent = super::desktop_process::Parent::open()?;
     #[cfg(unix)]
     unsafe {
         // The handler only sets an atomic flag; cleanup runs on the owner thread.
@@ -310,6 +309,7 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let mut args = arguments;
     let mut directory = None;
     let mut assets = None;
+    let mut port = None;
     let mut import_from = std::env::var_os("BILIKARA_DESKTOP_RUST_IMPORT_FROM")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
@@ -319,10 +319,11 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
             "--import-from" => import_from = Some(PathBuf::from(args.next().ok_or("--import-from requires an explicit legacy app-home")?)),
             "--static-dir" => assets = Some(PathBuf::from(args.next().ok_or("--static-dir requires an explicit asset directory")?)),
             "--no-browser" | "--headless" => {},
-            "--port" if args.next().as_deref() == Some("0") => {},
-            _ => return Err("Usage: bilikara-desktop-host [--data-dir ABSOLUTE_NATIVE_DIR] [--import-from ABSOLUTE_LEGACY_APP_HOME] [--static-dir ABSOLUTE_DEVELOPMENT_STATIC_DIR] [--port 0 --headless --no-browser]".into()),
+            "--port" => port = Some(args.next().ok_or("--port requires a port number")?),
+            _ => return Err("Usage: bilikara-desktop-host [--data-dir ABSOLUTE_NATIVE_DIR] [--import-from ABSOLUTE_LEGACY_APP_HOME] [--static-dir ABSOLUTE_DEVELOPMENT_STATIC_DIR] [--port PORT --headless --no-browser]".into()),
         }
     }
+    super::environment::configure_port(port)?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let resources = paths::resource_root(&executable)?;
     let development_assets = assets.is_some();
@@ -407,6 +408,11 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
             eprintln!("Could not start desktop export font prewarm: {error}");
         }
         while !host.context.stop.load(Ordering::Acquire) {
+            #[cfg(windows)]
+            if desktop_parent.exited() {
+                desktop_parent.arm_orphan_exit_watchdog();
+                break;
+            }
             #[cfg(unix)]
             if EXIT_REQUESTED.load(Ordering::Acquire)
                 || desktop_parent.is_some_and(|parent| unsafe { libc::getppid() } as u32 != parent)

@@ -10,6 +10,8 @@ use std::{
 
 const COOKIE_FILE: &str = "bilibili-login.json";
 const MAX_LOGIN_BYTES: u64 = 16 * 1024;
+const ENV_COOKIE: &str = "BILIKARA_BILIBILI_COOKIE";
+const ENV_DISMISSED: &str = "bilibili-env-dismissed.json";
 pub(crate) use crate::login_service::LoginDiagnostic;
 use crate::login_service::{self, canonical_cookie};
 
@@ -101,6 +103,12 @@ pub(super) fn load_desktop(directory: &Path) -> Result<String, ApiError> {
     Ok(cookie)
 }
 fn save_for_host(context: &HostContext, cookie: &str) -> Result<(), ApiError> {
+    // A user logout or completed QR login supersedes the launch override, also
+    // after restart. Store only its digest; a newly configured value can apply.
+    dismiss_environment(
+        &context.directory,
+        &std::env::var(ENV_COOKIE).unwrap_or_default(),
+    )?;
     if !context.desktop {
         return save(&context.directory, cookie);
     }
@@ -113,6 +121,73 @@ fn save_for_host(context: &HostContext, cookie: &str) -> Result<(), ApiError> {
         Ok(())
     } else {
         crate::desktop_login::save_cookie(&path, cookie).map_err(Into::into)
+    }
+}
+
+fn environment_digest(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(raw.trim().as_bytes()))
+}
+
+fn dismiss_environment(directory: &Path, raw: &str) -> Result<(), ApiError> {
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+    let destination = directory.join(ENV_DISMISSED);
+    let pending = directory.join("bilibili-env-dismissed.pending");
+    regular_or_missing(&destination)?;
+    regular_or_missing(&pending)?;
+    let mut file = private_options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&pending)
+        .map_err(|_| io_error())?;
+    file.write_all(environment_digest(raw).as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|_| io_error())?;
+    drop(file);
+    fs::rename(pending, destination).map_err(|_| io_error())
+}
+
+fn environment_candidate(directory: &Path, raw: &str) -> Option<String> {
+    if fs::read_to_string(directory.join(ENV_DISMISSED))
+        .ok()
+        .as_deref()
+        == Some(&environment_digest(raw))
+    {
+        return None;
+    }
+    canonical_cookie(raw)
+}
+
+pub(super) fn launch_cookie(directory: &Path, saved: String) -> (String, String) {
+    let raw = std::env::var(ENV_COOKIE).unwrap_or_default();
+    if raw.trim().is_empty() {
+        return (saved, String::new());
+    }
+    let Some(cookie) = environment_candidate(directory, &raw) else {
+        return (saved, String::new());
+    };
+    let verified = crate::bilibili_service::BilibiliHttpClient::for_video(
+        &cookie,
+        crate::native_video::USER_AGENT,
+        "https://www.bilibili.com/",
+        5000,
+    )
+    .and_then(|client| {
+        client.get_api_json(
+            "https://api.bilibili.com/x/web-interface/nav",
+            "无法验证 Bilibili 登录",
+        )
+    });
+    if verified.is_ok_and(|value| value["data"]["isLogin"] == true) {
+        (cookie, String::new())
+    } else {
+        (
+            saved,
+            "环境变量 Cookie 未通过登录验证，已保留原登录状态；可在软件中重新登录".into(),
+        )
     }
 }
 
@@ -235,6 +310,36 @@ pub(super) fn configure(
     identity: &Identity,
     body: &Value,
 ) -> Result<Value, ApiError> {
+    with_app(|app| app.native_authorize(identity, true))?;
+    let sessdata = body["sessdata"].as_str().unwrap_or_default().trim();
+    let jct = body["bili_jct"].as_str().unwrap_or_default().trim();
+    if !sessdata.is_empty() || !jct.is_empty() {
+        if sessdata.is_empty() || jct.is_empty() || sessdata.contains(';') || jct.contains(';') {
+            return Err(ApiError::invalid("请同时提供有效的 SESSDATA 和 bili_jct"));
+        }
+        let cookie = canonical_cookie(&format!("SESSDATA={sessdata}; bili_jct={jct}"))
+            .ok_or_else(|| ApiError::invalid("Cookie 格式无效"))?;
+        let value = crate::bilibili_service::BilibiliHttpClient::for_video(
+            &cookie,
+            crate::native_video::USER_AGENT,
+            "https://www.bilibili.com/",
+            5000,
+        )
+        .and_then(|client| {
+            client.get_api_json(
+                "https://api.bilibili.com/x/web-interface/nav",
+                "无法验证 Bilibili 登录",
+            )
+        })
+        .map_err(|error| ApiError::new(400, &error.kind, error.message))?;
+        if value["data"]["isLogin"] != true {
+            return Err(ApiError::new(
+                400,
+                "authentication",
+                "Cookie 无效或已过期，请重新登录",
+            ));
+        }
+    }
     with_app(|app| {
         app.native_authorize(identity, true)?;
         let sessdata = body["sessdata"].as_str().unwrap_or_default().trim();
@@ -247,6 +352,9 @@ pub(super) fn configure(
             }
             let cookie = canonical_cookie(&format!("SESSDATA={sessdata}; bili_jct={jct}"))
                 .ok_or_else(|| ApiError::invalid("请同时提供有效的 SESSDATA 和 bili_jct"))?;
+            if session.cookie != cookie {
+                library::invalidate_credentials(session);
+            }
             session.cookie = cookie;
             session.login_generation = None;
             session.login.reset_bilibili_login();
@@ -265,11 +373,12 @@ pub(super) fn configure(
                 "请先登录 Bilibili 或提供 SESSDATA 和 bili_jct",
             ));
         }
+        session.pending_library_refresh = Some("cookie_config");
         Ok(())
     })?;
     // This old entry used ordinary admission and never consumed the first
     // startup/login bypass. A busy refresh does not roll back the override.
-    library::refresh_after_login(context, "cookie_config");
+    library::refresh_after_login(context);
     Ok(json!({"message":"配置已实时生效"}))
 }
 
@@ -280,6 +389,7 @@ pub(super) fn logout(context: &HostContext, identity: &Identity) -> Result<Value
         let session = app.native();
         session.login_generation = None;
         session.login.reset_bilibili_login();
+        library::invalidate_credentials(session);
         session.cookie.clear();
         session.revision += 1;
         app.native_snapshot(true)
@@ -342,7 +452,11 @@ fn finish(
         }
         let update = match result {
             Ok(cookie) => {
+                if session.cookie != cookie {
+                    library::invalidate_credentials(session);
+                }
                 session.cookie = cookie;
+                session.pending_library_refresh = Some("login_success");
                 BilibiliLoginUpdate {
                     state: BilibiliLoginStatus::LoggedIn,
                     message: "Bilibili 已登录".into(),
@@ -362,7 +476,7 @@ fn finish(
         Ok(logged_in)
     })?;
     if logged_in {
-        library::refresh_after_login(context, "login_success");
+        library::refresh_after_login(context);
     }
     Ok(())
 }
@@ -371,6 +485,22 @@ fn finish(
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn dismissed_environment_cannot_restore_itself_after_logout_or_qr_login() {
+        let directory = std::env::temp_dir().join(format!("cookie-override-{}", token().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        let first = "SESSDATA=first; bili_jct=first";
+        let second = "SESSDATA=second; bili_jct=second";
+        assert!(environment_candidate(&directory, first).is_some());
+        dismiss_environment(&directory, first).unwrap();
+        assert!(environment_candidate(&directory, first).is_none());
+        assert!(environment_candidate(&directory, second).is_some());
+        let stored = fs::read_to_string(directory.join(ENV_DISMISSED)).unwrap();
+        assert!(!stored.contains("SESSDATA"));
+        assert!(!stored.contains("first"));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn successful_login_refreshes_library_once_but_stale_or_failed_login_does_not() {
@@ -392,11 +522,12 @@ mod tests {
             assets: Arc::new(|_| None),
             stop: Arc::new(AtomicBool::new(false)),
             api_slots: Arc::new(Semaphore::new(1)),
-            event_slots: Arc::new(Semaphore::new(1)),
             export_slots: Arc::new(Semaphore::new(1)),
             export_renderer: std::sync::OnceLock::new(),
             port: 0,
             desktop: false,
+            bind_address: std::net::Ipv4Addr::UNSPECIFIED,
+            allowed_hosts: Default::default(),
             bbdown: None,
             aria2: std::sync::Mutex::new(None),
             aria2_prepare: std::sync::Mutex::new(()),
@@ -503,7 +634,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        library::refresh_after_login(&context, "credential_restore");
+        with_app(|app| {
+            app.native().pending_library_refresh = Some("credential_restore");
+            Ok(())
+        })
+        .unwrap();
+        library::refresh_after_login(&context);
         assert_eq!(
             with_app(|app| Ok(app.native_diagnostics()["library_refresh"]
                 .as_array()
@@ -521,7 +657,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        library::refresh_after_login(&context, "credential_restore");
+        with_app(|app| {
+            app.native().pending_library_refresh = Some("credential_restore");
+            Ok(())
+        })
+        .unwrap();
+        library::refresh_after_login(&context);
         let deadline = Instant::now() + Duration::from_secs(3);
         while with_app(|app| Ok(app.native().library_refresh_active)).unwrap()
             && Instant::now() < deadline

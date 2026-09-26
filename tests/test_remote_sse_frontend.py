@@ -35,7 +35,9 @@ class RemoteSseFrontendTest(unittest.TestCase):
         cls.clock_render_source = source[start:end]
         start = source.index("function applyStateSnapshot")
         end = source.index("function clearEventStreamReconnectTimer", start)
-        cls.apply_snapshot_source = source[start:end]
+        epoch_start = source.index("function stateEpochTransition")
+        epoch_end = source.index("const CACHE_VOLATILE_ITEM_KEYS", epoch_start)
+        cls.apply_snapshot_source = source[epoch_start:epoch_end] + source[start:end]
         start = source.index("async function fetchState")
         end = source.index("async function searchGatchaCache", start)
         cls.state_transport_source = source[start:end]
@@ -70,6 +72,40 @@ const eventStreamRetryJitterRatio = 0.2;
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
+
+    def test_host_restart_accepts_new_epoch_and_rejects_retired_responses(self):
+        start = self.source.index("function currentStateRevision")
+        end = self.source.index("const CACHE_VOLATILE_ITEM_KEYS", start)
+        output = self.run_node(self.source[start:end] + self.apply_snapshot_source + """
+const state = {data:null, remoteVolumeSaveSeq:0};
+const elements = {};
+const renderSignatureForSnapshot = JSON.stringify;
+function clearRemoteVolumeCommitTimer() {}
+function currentPlayerStatus() { return null; }
+function clearCurrentPlaybackClock() {}
+function syncRemoteIdentityWithSnapshot() {}
+function scheduleFavlistBrowseReloadFromState() {}
+function scheduleRender() {}
+function renderCacheStatusOnly() {}
+const snapshot = (epoch, revision, volume) => ({state_epoch:epoch, state_revision:revision, playlist:[], player_settings:{volume_percent:volume}});
+const old = snapshot('old-host', 35, 60);
+applyStateSnapshot(old);
+const fresh = snapshot('new-host', 4, 80);
+const currentAfterRestart = eventStreamStateIsCurrent(fresh);
+const acceptedRestart = applyStateSnapshot(fresh);
+const acceptedLateOld = applyStateSnapshot({...old,state_revision:99}, {forceRender:true});
+const lateOldCurrent = eventStreamStateIsCurrent(old);
+const acceptedDuplicate = applyStateSnapshot(fresh);
+const acceptedOutOfOrder = applyStateSnapshot(snapshot('new-host',3,70));
+const acceptedNewer = applyStateSnapshot(snapshot('new-host',5,85));
+const acceptedOlderProtocol = applyStateSnapshot({state_revision:100,player_settings:{volume_percent:10}}, {forceRender:true});
+console.log(JSON.stringify({currentAfterRestart,acceptedRestart,acceptedLateOld,lateOldCurrent,acceptedDuplicate,acceptedOutOfOrder,acceptedNewer,acceptedOlderProtocol,epoch:state.data.state_epoch,volume:state.data.player_settings.volume_percent}));
+""")
+        self.assertEqual(output, {
+            "currentAfterRestart": True, "acceptedRestart": True, "acceptedLateOld": False,
+            "lateOldCurrent": False, "acceptedDuplicate": False, "acceptedOutOfOrder": False,
+            "acceptedNewer": True, "acceptedOlderProtocol": False, "epoch": "new-host", "volume": 85,
+        })
 
     def test_audio_variant_request_uses_only_the_observed_item_incarnation(self):
         start = self.source.index('elements.audioVariantBar.addEventListener("click"')
@@ -1555,7 +1591,9 @@ function retryEventButton(currentItem) {{
     def test_remote_queue_retry_stale_releases_only_its_button(self):
         start = self.queue_source.index("async function handleQueueAction")
         end = self.queue_source.index("function beginDrag", start)
-        queue_action = self.queue_source[start:end]
+        helpers_start = self.queue_source.index("const pendingQueueActions")
+        helpers_end = self.queue_source.index("const dragScrollThresholdPx", helpers_start)
+        queue_action = self.queue_source[helpers_start:helpers_end] + self.queue_source[start:end]
         script = f"""
 class FakeButton {{
   constructor() {{ this.disabled = false; this.attributes = {{}}; }}

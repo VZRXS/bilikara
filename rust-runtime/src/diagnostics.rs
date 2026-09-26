@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use zip::ZipWriter;
@@ -22,6 +22,8 @@ const MAX_MARKDOWN_LOG_LINES: usize = 80;
 pub struct DiagnosticRequest {
     pub app_home: PathBuf,
     pub log_dir: PathBuf,
+    #[serde(default)]
+    pub additional_logs: Vec<PathBuf>,
     #[serde(default)]
     pub config_files: Vec<PathBuf>,
     pub system: Value,
@@ -79,7 +81,13 @@ pub fn build_diagnostic_artifact(
         )
     });
     let configs = collect_configs(&request.config_files, &names);
-    let logs = collect_logs(&request.log_dir, &names);
+    let mut logs = collect_logs(&request.log_dir, &names);
+    for path in request.additional_logs.iter().take(4) {
+        if let Some(text) = read_log_tail(path, &names) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            logs.insert(format!("shell__{name}"), text);
+        }
+    }
 
     let mut files = BTreeMap::<String, Vec<u8>>::new();
     files.insert("system.json".to_owned(), json_bytes(&system));
@@ -401,7 +409,7 @@ fn probe_connectivity(
 fn collect_configs(paths: &[PathBuf], names: &[String]) -> BTreeMap<String, Value> {
     let mut configs = BTreeMap::new();
     for path in paths {
-        if !path.is_file() {
+        if !fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() <= 1024 * 1024) {
             continue;
         }
         let name = path
@@ -426,24 +434,30 @@ fn collect_logs(log_dir: &Path, names: &[String]) -> BTreeMap<String, String> {
     candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     let mut logs = BTreeMap::new();
     for (_, path) in candidates.into_iter().take(MAX_LOG_FILES) {
-        let Ok(metadata) = path.metadata() else {
+        let Some(text) = read_log_tail(&path, names) else {
             continue;
         };
-        let Ok(bytes) = fs::read(&path) else {
-            continue;
-        };
-        let start = bytes
-            .len()
-            .saturating_sub(MAX_LOG_BYTES.min(metadata.len()) as usize);
-        let text = String::from_utf8_lossy(&bytes[start..]);
         let relative = path
             .strip_prefix(log_dir)
             .unwrap_or(&path)
             .to_string_lossy()
             .replace(['\\', '/'], "__");
-        logs.insert(relative, redact_text(&text, names));
+        logs.insert(relative, text);
     }
     logs
+}
+
+fn read_log_tail(path: &Path, names: &[String]) -> Option<String> {
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(MAX_LOG_BYTES)))
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_LOG_BYTES).read_to_end(&mut bytes).ok()?;
+    Some(redact_text(&String::from_utf8_lossy(&bytes), names))
 }
 
 fn collect_log_paths(root: &Path, output: &mut Vec<(std::time::SystemTime, PathBuf)>) {
@@ -452,7 +466,7 @@ fn collect_log_paths(root: &Path, output: &mut Vec<(std::time::SystemTime, PathB
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
         if metadata.is_dir() {
@@ -776,6 +790,35 @@ fn io_error(cause: std::io::Error) -> DiagnosticError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_logs_are_bounded_redacted_and_skip_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "diagnostic-tail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("desktop-startup.log");
+        let mut bytes = vec![b'x'; MAX_LOG_BYTES as usize * 2];
+        bytes.extend_from_slice(b"\nCookie: private-value\n/Users/Alice/runtime\n");
+        fs::write(&log, bytes).unwrap();
+        let tail = read_log_tail(&log, &["Alice".into()]).unwrap();
+        assert!(tail.len() <= MAX_LOG_BYTES as usize + 64);
+        assert!(!tail.contains("private-value"));
+        assert!(!tail.contains("Alice"));
+        assert!(tail.contains(REDACTED));
+        #[cfg(unix)]
+        {
+            let link = root.join("alias.log");
+            std::os::unix::fs::symlink(&log, &link).unwrap();
+            assert!(read_log_tail(&link, &[]).is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn redacts_nested_secrets_and_usernames() {

@@ -77,10 +77,10 @@ pub(super) fn dispatch(
                 | "/api/d1/browse"
                 | "/api/d1/category-browse"
         ) {
-            return catalog::read(path, query);
+            return catalog::read(context, path, query);
         }
         if path.starts_with("/api/gatcha/") {
-            return library::read(context, path, query);
+            return library::read(context, identity, path, query);
         }
         return with_app(|app| match path {
             "/api/state" => app.native_snapshot(host),
@@ -138,6 +138,18 @@ pub(super) fn dispatch(
         "/api/cache-downloader/status" | "/api/cache-downloader/prepare"
     ) {
         with_app(|app| app.native_authorize(identity, true))?;
+        if matches!(body["download_source"].as_str(), Some("yt-dlp" | "ytdlp")) {
+            if path.ends_with("/prepare") {
+                return Err(ApiError::new(
+                    501,
+                    "cache_source_unavailable",
+                    "yt-dlp 接口保留，当前版本暂不启用",
+                ));
+            }
+            return Ok(
+                json!({"download_source":"ytdlp","tool":"yt-dlp","ready":false,"enabled":false,"state":"disabled","auto_prepare_supported":false,"message":"yt-dlp 接口保留，当前版本暂不启用"}),
+            );
+        }
         if body.as_object().is_none_or(|v| v.len() != 1) || body["download_source"] != "downkyi" {
             return Err(ApiError::invalid("Only a source choice is accepted"));
         }
@@ -204,7 +216,12 @@ pub(super) fn dispatch(
             Ok((app.native().cookie.clone(), snapshot.session_generation))
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
-        let item = fetch_native_video(&request, &cookie).map_err(video_error)?;
+        let item = fetch_native_video(&request, &cookie).map_err(|error| {
+            if let Some(bvid) = &error.missing_bvid {
+                catalog::delete_invalid(bvid);
+            }
+            video_error(error)
+        })?;
         let (snapshot, accepted_item) = with_app(|app| {
             if context.stop.load(Ordering::Acquire) {
                 return Err(ApiError::new(503, "stopped", "Host 已停止"));
@@ -228,7 +245,12 @@ pub(super) fn dispatch(
             let result = app.native_execute(AppStateRequest::AddItem {
                 schema_version: 1,
                 item: item.clone(),
-                position: body["position"].as_str().unwrap_or("tail").into(),
+                position: if body["position"] == "next" {
+                    "next"
+                } else {
+                    "tail"
+                }
+                .into(),
                 requester_name: requester,
                 reset_av_delay,
                 allow_repeat: body["allow_repeat"].as_bool().unwrap_or(false),
@@ -315,6 +337,9 @@ pub(super) fn dispatch(
             "/api/player/key-shift",
             "/api/playlist/reorder",
             "/api/playlist/resort",
+            "/api/playlist/remove",
+            "/api/playlist/play-now",
+            "/api/playlist/move-next",
         ];
         app.native_authorize(identity, !shared.contains(&path))?;
         let mut command = json!({"schema_version":1,"now":now});
@@ -353,7 +378,11 @@ pub(super) fn dispatch(
             "/api/history/clear" => command["command"] = json!("clear_history"),
             "/api/history/remove" => {
                 command["command"] = json!("remove_history_entry");
-                command["key"] = json!(text(&body, "key")?);
+                let key = text(&body, "key")?;
+                if key.trim().is_empty() {
+                    return Err(ApiError::invalid("历史记录标识无效"));
+                }
+                command["key"] = json!(key);
             }
             "/api/player/next" => {
                 command["command"] = json!("advance_to_next");
@@ -372,6 +401,9 @@ pub(super) fn dispatch(
                 }
             }
             "/api/player/volume" => {
+                if body.get("volume_percent").is_none() && body.get("is_muted").is_none() {
+                    return Err(ApiError::invalid("缺少音量或静音状态"));
+                }
                 // Parse both inputs before committing either existing core command.
                 let settings = app.native_core_snapshot()?.player_settings;
                 let volume = body
@@ -379,8 +411,8 @@ pub(super) fn dispatch(
                     .cloned()
                     .unwrap_or(json!(settings.volume_percent))
                     .as_i64()
-                    .filter(|v| (0..=i64::from(crate::app_state::MAX_VOLUME_PERCENT)).contains(v))
                     .ok_or_else(|| ApiError::invalid("音量无效"))?
+                    .clamp(0, i64::from(crate::app_state::MAX_VOLUME_PERCENT))
                     as i32;
                 let muted = body
                     .get("is_muted")
@@ -436,7 +468,13 @@ pub(super) fn dispatch(
         }
         let request: AppStateRequest = serde_json::from_value(command)
             .map_err(|_| ApiError::invalid("操作参数不完整或格式无效"))?;
-        app.native_execute(request)?;
+        let result = app.native_execute(request)?;
+        if path == "/api/player/audio-variant" && result["found"] != true {
+            return Err(ApiError::invalid("音轨无效"));
+        }
+        if path == "/api/session/continue-previous" && result["changed"] != true {
+            return Err(ApiError::invalid("没有可继续的上一场记录"));
+        }
         if path == "/api/player/av-delay-action" {
             Ok(json!(app.native_core_snapshot()?.player_settings.av_delay))
         } else {

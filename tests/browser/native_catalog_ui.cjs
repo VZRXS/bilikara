@@ -1522,7 +1522,9 @@ const notes=path.resolve(output);
    }
   });
   await check('ratingEligibilityAndDismissal',async()=>{
-   for(const [client,page] of [['host',host],['remote',remote]]) {
+   await require('./remote_rating_dialog.cjs')(remote,items[0],notes);
+   measurements.remoteRatingEligibility={passed:true};
+   for(const [client,page] of [['host',host]]) {
     const requests=[];let fail=false,release=null,queued=false;
     await page.route('**/api/rating/submit',async route=>{
      requests.push(route.request().postDataJSON());

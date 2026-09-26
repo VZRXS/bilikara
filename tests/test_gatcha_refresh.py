@@ -8,6 +8,44 @@ from gatcha_refresh_fixture import ConfiguredRefreshFixture
 
 
 class ConfiguredRefreshTest(unittest.TestCase):
+    def test_readding_uid_returns_only_new_catalog_contributions(self):
+        with ConfiguredRefreshFixture() as f:
+            f.write("cache", {"schema_version": 3, "uids": {
+                "1": [{"bvid": "BVNEW0000001", "title": "existing"}]
+            }, "profiles": {}})
+            f.videos["1"].insert(0, {**f.videos["1"][0], "bvid": "BVNEW0000003"})
+            result = bilibili._rust_gatcha_network("add_uid", uid="1", keywords=["karaoke"])
+            self.assertEqual([entry["bvid"] for entry in result["entries"]], ["BVNEW0000003"])
+            self.assertEqual(result["cache"]["total_count"], 2)
+            repeated = bilibili._rust_gatcha_network("add_uid", uid="1", keywords=["karaoke"])
+            self.assertEqual(repeated["entries"], [])
+
+    def test_favorites_import_does_not_upload_old_or_unrelated_folder_records(self):
+        from urllib.parse import urlsplit
+        with ConfiguredRefreshFixture(uids=()) as f:
+            f.add_folder()
+            saved = f.read("favlist")
+            saved["items"] = [
+                {"bvid": "BVFAVREBUILD", "title": "old", "fav_uid": "42", "fav_folder_id": "100"},
+                {"bvid": "BVUNRELATED1", "title": "other", "fav_uid": "9", "fav_folder_id": "200"},
+            ]
+            f.write("favlist", saved)
+            def respond(target):
+                path = urlsplit(target).path
+                if path.endswith("/list-all"):
+                    return {"code": 0, "data": {"list": [{"id": "100", "title": "K songs", "attr": 0, "media_count": 2}]}}
+                if path.endswith("/resource/list"):
+                    return {"code": 0, "data": {"medias": [
+                        {**f.favorite, "bvid": "BVNEWFAVORIT"}, f.favorite,
+                    ], "has_more": False}}
+                return f.respond(target)
+            f.provider.return_value = respond
+            result = bilibili._rust_gatcha_network("refresh_favlist", uid="42", folder_ids=["100"], folder_keywords=[])
+            self.assertEqual([entry["bvid"] for entry in result["entries"]], ["BVNEWFAVORIT"])
+            self.assertEqual(len(f.read("favlist")["items"]), 3)
+            repeated = bilibili._rust_gatcha_network("refresh_favlist", uid="42", folder_ids=["100"], folder_keywords=[])
+            self.assertEqual(repeated["entries"], [])
+
     def test_empty_configuration_is_success_without_provider_requests(self):
         with ConfiguredRefreshFixture(uids=()) as f:
             self.assertTrue(f.start())
@@ -200,7 +238,7 @@ class ConfiguredRefreshTest(unittest.TestCase):
             started.assert_not_called()
             done.assert_not_called()
 
-    def test_schema_resume_preserves_completed_uids_and_only_indexes_favorites(self):
+    def test_schema_resume_preserves_completed_uids_and_indexes_new_records(self):
         with ConfiguredRefreshFixture(legacy=True) as f:
             f.add_folder()
             f.write("uids_temp", {"schema_version":2,"uids":["1"],"profiles":{"1":{"uid":"1","name":"saved","space_url":"https://space.bilibili.com/1"}}})
@@ -212,9 +250,9 @@ class ConfiguredRefreshTest(unittest.TestCase):
             self.assertEqual(status["last_status"], "success")
             self.assertEqual(f.read("cache")["uids"]["1"][0]["bvid"], "BVSAVED00001")
             self.assertFalse(any("acc/info" in path or "arc/search" in path for path, _ in f.provider.requests))
-            self.assertEqual(f.appended_bvids(1), ["BVFAVREBUILD"])
+            self.assertEqual(f.appended_bvids(2), ["BVFAVREBUILD", "BVSAVED00001"])
 
-    def test_schema_failure_keeps_published_files_and_can_resume_without_uploading_uids(self):
+    def test_schema_failure_keeps_published_files_and_resumes_incremental_upload(self):
         with ConfiguredRefreshFixture(legacy=True) as f:
             f.add_folder()
             before = {name: f.path(name).read_bytes() for name in ("uids", "cache", "favlist")}
@@ -229,7 +267,23 @@ class ConfiguredRefreshTest(unittest.TestCase):
             self.assertTrue(f.start(use_global_lock=False, startup_schema_rebuild=True))
             self.assertEqual(f.wait()["last_status"], "success")
             self.assertFalse(f.path("rebuild_progress").exists())
-            self.assertEqual(f.appended_bvids(1), ["BVFAVREBUILD"])
+            self.assertEqual(f.appended_bvids(2), ["BVFAVREBUILD", "BVNEW0000001"])
+
+    def test_schema_rebuild_does_not_reupload_existing_uids_or_favorites(self):
+        with ConfiguredRefreshFixture(uids=("1", "2"), legacy=True) as f:
+            f.add_folder()
+            f.write("cache", {"schema_version": 2, "uids": {
+                "1": [{"bvid": "BVNEW0000001", "title": "already published"}]
+            }, "profiles": {}})
+            favorites = f.read("favlist")
+            favorites["items"] = [{"bvid": "BVFAVREBUILD", "title": "existing favorite",
+                                    "fav_uid": "42", "fav_folder_id": "100"}]
+            f.write("favlist", favorites)
+            self.assertTrue(f.start(use_global_lock=False, startup_schema_rebuild=True))
+            self.assertEqual(f.wait()["last_status"], "success")
+            self.assertEqual(f.appended_bvids(1), ["BVNEW0000002"])
+            self.assertEqual(len(f.read("cache")["uids"]), 2)
+            self.assertEqual(f.read("favlist")["items"][0]["bvid"], "BVFAVREBUILD")
 
     def test_observer_exception_does_not_leak_lease_or_prevent_catalog_completion(self):
         with ConfiguredRefreshFixture() as f, self.assertLogs("bilikara.gatcha_refresh", level="ERROR"):

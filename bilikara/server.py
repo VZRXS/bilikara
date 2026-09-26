@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -427,6 +428,7 @@ class AppContext:
         ensure_directories()
         self._state_change_condition = threading.Condition()
         self._state_revision = 0
+        self._state_epoch = secrets.token_hex(16)
         self._sse_payload_condition = threading.Condition()
         self._sse_payload_revision = -1
         self._sse_payload = b""
@@ -517,7 +519,11 @@ class AppContext:
         }
         payload["app_update"] = self.app_update_snapshot()
         payload["state_revision"] = state_revision
+        payload["state_epoch"] = self._state_epoch
         return payload
+
+    def state_epoch_snapshot(self) -> str:
+        return self._state_epoch
 
     def state_revision_snapshot(self) -> int:
         with self._state_change_condition:
@@ -1378,7 +1384,46 @@ class AppContext:
         }
 
 
-CONTEXT = AppContext()
+class _LazyAppContext:
+    """Create the retained Host adapter only when its transport is used.
+
+    Importing handlers must not start a cache owner, write user files or race
+    another explicit AppState owner (including isolated integration fixtures).
+    """
+
+    def __init__(self) -> None:
+        self._instance = None
+        self._lock = threading.Lock()
+
+    def _get(self):
+        with self._lock:
+            if self._instance is None:
+                self._instance = AppContext()
+            return self._instance
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+    def __setattr__(self, name, value):
+        if name in {"_instance", "_lock"}:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._get(), name, value)
+
+    def __delattr__(self, name):
+        if name in {"_instance", "_lock"}:
+            object.__delattr__(self, name)
+        else:
+            delattr(self._get(), name)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            instance = self._instance
+        if instance is not None:
+            instance.shutdown()
+
+
+CONTEXT = _LazyAppContext()
 atexit.register(CONTEXT.shutdown)
 
 

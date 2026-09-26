@@ -1,11 +1,24 @@
 //! Native HTTP session state lives under the same AppState mutex as the queue.
 //! This is transient transport/player ownership, never a second playlist or a
-//! persisted bearer-token store. A process restart invalidates every token.
+//! persisted bearer-token store. Only registered LAN token digests are saved.
 //! Validated cache preferences are reloaded separately from private storage.
 use super::*;
 use crate::native_host::ApiError;
 use crate::status_service::{BilibiliLoginFacts, RuntimeStatusService};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+
+const MAX_REMOTE_DEVICES: usize = 256;
+fn device_digest(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+pub(super) fn bound_saved_remote_state(seed: &mut AppStateSeed) {
+    while seed.remote_identities.len() > MAX_REMOTE_DEVICES {
+        let key = seed.remote_identities.keys().min().cloned().unwrap();
+        seed.remote_identities.remove(&key);
+    }
+}
 mod media;
 
 #[cfg(test)]
@@ -14,6 +27,7 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct NativeSession {
     pub desktop: bool,
+    sse_frames: [Option<(u64, std::sync::Arc<str>)>; 2],
     pub bbdown_available: bool,
     pub aria2_available: bool,
     pub player_media: crate::native_host::preferences::PlayerMedia,
@@ -23,18 +37,29 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    // Written with credential commits; read/consumed with task admission.
+    // Failed or delayed callers must never write an intent back afterward.
+    pub pending_library_refresh: Option<&'static str>,
     pub startup_library_refresh_attempted: bool,
+    pub library_credential_scope: String,
+    pub favlist_updated_at: f64,
     pub monthly_refresh_active: bool,
+    pub owner_enrichment_attempts: HashMap<String, f64>,
     pub ratings: crate::native_host::ratings::RatingLedger,
+    pub invalid_catalog_deletions: VecDeque<(String, std::time::Instant)>,
     pub remote_export_ready: bool,
+    pub startup_warning: String,
     pub updates: crate::native_host::updates::UpdateState,
     pub host_token: String,
+    pub state_epoch: String,
     pub cookie: String,
     pub login: RuntimeStatusService,
     pub login_generation: Option<u64>,
     pub remote_access: Value,
     pub revision: u64,
     devices: HashMap<String, Device>,
+    device_order: VecDeque<String>,
+    guest_pool_preferences: HashMap<String, Value>,
     identity_revision: u64,
     claim: Option<Claim>,
     observation: Option<Value>,
@@ -106,6 +131,11 @@ pub(crate) struct Identity {
 #[cfg(test)]
 pub(crate) static GLOBAL_APP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub(crate) fn state_changes() -> &'static tokio::sync::Notify {
+    static CHANGES: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    CHANGES.get_or_init(tokio::sync::Notify::new)
+}
+
 pub(crate) fn with_app<T>(
     action: impl FnOnce(&mut AppState) -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
@@ -113,7 +143,12 @@ pub(crate) fn with_app<T>(
         .get_or_init(|| Mutex::new(AppState::default()))
         .lock()
         .map_err(|_| ApiError::new(503, "state_unavailable", "Rust 状态锁不可用"))?;
-    action(&mut state)
+    let before = state.native_session.revision;
+    let result = action(&mut state);
+    if state.native_session.revision != before {
+        state_changes().notify_waiters();
+    }
+    result
 }
 
 pub(crate) fn text(body: &Value, key: &str) -> Result<String, ApiError> {
@@ -165,7 +200,12 @@ impl AppState {
         let host = identity.loopback
             && !session.host_token.is_empty()
             && identity.token == session.host_token;
-        if host || (!host_only && session.devices.contains_key(&identity.token)) {
+        let digest = device_digest(&identity.token);
+        let registered = self
+            .data
+            .as_ref()
+            .is_some_and(|data| data.remote_identities.contains_key(&digest));
+        if host || (!host_only && (session.devices.contains_key(&digest) || registered)) {
             Ok(host)
         } else {
             Err(ApiError::new(403, "forbidden", "请重新打开手机点歌页面"))
@@ -177,18 +217,42 @@ impl AppState {
         existing_token: &str,
         new_token: String,
     ) -> Result<String, ApiError> {
-        if self.native_session.devices.contains_key(existing_token) {
+        let digest = device_digest(existing_token);
+        if self.native_session.devices.contains_key(&digest) {
+            self.native_session
+                .device_order
+                .retain(|key| key != &digest);
+            self.native_session.device_order.push_back(digest);
             return Ok(existing_token.to_owned());
         }
-        if self.native_session.devices.len() >= 10 {
-            return Err(ApiError::new(
-                429,
-                "room_full",
-                "最多连接 10 台手机；重启 Host 可清理设备",
-            ));
+        while self.native_session.devices.len() >= MAX_REMOTE_DEVICES {
+            let Some(oldest) = self.native_session.device_order.pop_front() else {
+                break;
+            };
+            self.native_session.devices.remove(&oldest);
+            self.native_session
+                .guest_pool_preferences
+                .remove(&format!("device:{oldest}"));
         }
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?;
+        if let Some(name) = data.remote_identities.get(&digest) {
+            self.native_session.device_order.push_back(digest.clone());
+            self.native_session.devices.insert(
+                digest,
+                Device {
+                    name: name.clone(),
+                    generation: data.session_generation,
+                },
+            );
+            return Ok(existing_token.to_owned());
+        }
+        let digest = device_digest(&new_token);
+        self.native_session.device_order.push_back(digest.clone());
         self.native_session.devices.insert(
-            new_token.clone(),
+            digest,
             Device {
                 name: String::new(),
                 generation: 0,
@@ -203,12 +267,19 @@ impl AppState {
         let name = self
             .native_session
             .devices
-            .get(&identity.token)
+            .get(&device_digest(&identity.token))
             .filter(|device| {
                 device.generation == snapshot.session_generation
                     && snapshot.session_users.contains(&device.name)
             })
             .map(|device| device.name.as_str())
+            .or_else(|| {
+                self.data
+                    .as_ref()?
+                    .remote_identities
+                    .get(&device_digest(&identity.token))
+                    .map(String::as_str)
+            })
             .unwrap_or("");
         Ok(
             json!({"registered":!name.is_empty(),"name":name,"session_id":self.native_session.identity_marker(snapshot.session_generation)}),
@@ -222,13 +293,15 @@ impl AppState {
         rename: bool,
         now: f64,
     ) -> Result<Value, ApiError> {
-        self.native_authorize(identity, false)?;
+        if !self.native_authorize(identity, false)? {
+            self.native_join_remote(&identity.token, identity.token.clone())?;
+        }
         let snapshot = self.native_core_snapshot()?;
         let name = normalize_session_user_name(&text(body, "name")?);
         let current = self
             .native_session
             .devices
-            .get(&identity.token)
+            .get(&device_digest(&identity.token))
             .filter(|device| {
                 device.generation == snapshot.session_generation
                     && snapshot.session_users.contains(&device.name)
@@ -238,27 +311,37 @@ impl AppState {
         if rename && current.is_empty() {
             return Err(ApiError::new(403, "identity_required", "请先登记点歌人"));
         }
-        if rename && current != name {
-            self.native_execute(AppStateRequest::RenameSessionUser {
-                schema_version: 1,
-                current_name: current,
-                new_name: name.clone(),
-                now,
-            })?;
-        } else if !snapshot.session_users.contains(&name) {
-            self.native_execute(AppStateRequest::AddSessionUser {
-                schema_version: 1,
-                name: name.clone(),
-                now,
-            })?;
-        } else if current != name && body["claim"] != true {
+        if !rename
+            && snapshot.session_users.contains(&name)
+            && current != name
+            && body["claim"] != true
+        {
             let mut error = ApiError::new(409, "session_user_already_exists", "该用户已存在");
             error.extra = json!({"name":name});
             return Err(error);
         }
-        if let Some(device) = self.native_session.devices.get_mut(&identity.token) {
+        let digest = device_digest(&identity.token);
+        let guest_key = format!("device:{digest}");
+        self.native_execute(AppStateRequest::RegisterRemoteUser {
+            schema_version: 1,
+            name: name.clone(),
+            current_name: rename.then_some(current),
+            digest: digest.clone(),
+            resident_devices: self.native_session.device_order.iter().cloned().collect(),
+            guest_config: self
+                .native_session
+                .guest_pool_preferences
+                .get(&guest_key)
+                .cloned(),
+            now,
+        })?;
+        self.native_session
+            .guest_pool_preferences
+            .remove(&guest_key);
+        if let Some(device) = self.native_session.devices.get_mut(&digest) {
             device.name = name;
             device.generation = snapshot.session_generation;
+            self.native_session.revision += 1;
         }
         self.native_identity(identity)
     }
@@ -278,6 +361,120 @@ impl AppState {
         Ok(identity["name"].as_str().unwrap_or_default().to_owned())
     }
 
+    pub(crate) fn native_pool_key(
+        &self,
+        identity: &Identity,
+        requested: &str,
+    ) -> Result<String, ApiError> {
+        let host = self.native_authorize(identity, false)?;
+        let name = if host {
+            normalize_session_user_name(requested)
+        } else {
+            self.native_identity(identity)?["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        if !name.is_empty() {
+            if !self
+                .data
+                .as_ref()
+                .is_some_and(|data| data.session_users.contains(&name))
+            {
+                return Err(ApiError::new(
+                    400,
+                    "session_user_not_found",
+                    "请选择本场用户",
+                ));
+            }
+            return Ok(format!("user:{name}"));
+        }
+        if host && let Some(peer) = identity.client.strip_prefix("native-internet:") {
+            return Ok(format!("peer:{peer}"));
+        }
+        Ok(if host {
+            "host".into()
+        } else {
+            format!("device:{}", device_digest(&identity.token))
+        })
+    }
+
+    pub(crate) fn native_pool_config(&self, key: &str, legacy_default: &Value) -> Value {
+        if let Some(config) = self.native_session.guest_pool_preferences.get(key) {
+            return config.clone();
+        }
+        self.data
+            .as_ref()
+            .and_then(|data| {
+                data.gatcha_pool_preferences
+                    .get(key)
+                    .or_else(|| data.gatcha_pool_preferences.get(":default"))
+            })
+            .cloned()
+            .unwrap_or_else(|| legacy_default.clone())
+    }
+
+    pub(crate) fn native_migrate_pool_default(&mut self, config: Value) -> Result<(), ApiError> {
+        if !self
+            .data
+            .as_ref()
+            .is_some_and(|data| data.gatcha_pool_preferences.contains_key(":default"))
+        {
+            self.native_save_pool_config(":default".into(), config)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn native_save_pool_config(
+        &mut self,
+        key: String,
+        config: Value,
+    ) -> Result<(), ApiError> {
+        let config = crate::gatcha_repository::normalize_pool_config(&config);
+        if key.starts_with("device:") || key.starts_with("peer:") {
+            if key
+                .strip_prefix("device:")
+                .is_some_and(|digest| !self.native_session.devices.contains_key(digest))
+            {
+                return Err(ApiError::new(
+                    403,
+                    "identity_required",
+                    "请重新打开手机点歌页面",
+                ));
+            }
+            if self.native_session.guest_pool_preferences.len() >= MAX_REMOTE_DEVICES
+                && !self
+                    .native_session
+                    .guest_pool_preferences
+                    .contains_key(&key)
+                && let Some(oldest) = self
+                    .native_session
+                    .guest_pool_preferences
+                    .keys()
+                    .min()
+                    .cloned()
+            {
+                self.native_session.guest_pool_preferences.remove(&oldest);
+            }
+            self.native_session
+                .guest_pool_preferences
+                .insert(key, config);
+            self.native_session.revision += 1;
+            return Ok(());
+        }
+        let mut next = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?
+            .clone();
+        next.gatcha_pool_preferences.insert(key, config);
+        self.persist_native(&next)
+            .map_err(|e| ApiError::new(503, e.kind, e.message))?;
+        self.data = Some(next);
+        self.native_session.revision += 1;
+        Ok(())
+    }
+
     pub(crate) fn native_core_snapshot(&self) -> Result<AppSnapshot, ApiError> {
         self.data
             .as_ref()
@@ -290,6 +487,17 @@ impl AppState {
         &mut self,
         mut command: AppStateRequest,
     ) -> Result<Value, ApiError> {
+        // Native checkpoints own the archive contents. The legacy file adapter
+        // supplies its own freshly read archive; its missing/invalid result must
+        // continue to revoke the offer instead of reusing a stale cached copy.
+        if let AppStateRequest::ContinuePreviousSession { archive, .. } = &mut command
+            && archive.is_none()
+        {
+            *archive = self
+                .data
+                .as_ref()
+                .and_then(|data| data.previous_session.clone());
+        }
         if self.native_session.desktop {
             match &mut command {
                 AppStateRequest::AdvanceToNext { reset_av_delay, .. }
@@ -306,6 +514,11 @@ impl AppState {
                 new_name,
                 ..
             } => Some((current_name.clone(), new_name.clone())),
+            AppStateRequest::RegisterRemoteUser {
+                current_name: Some(current),
+                name,
+                ..
+            } => Some((current.clone(), name.clone())),
             _ => None,
         };
         let reset_runtime = matches!(&command, AppStateRequest::ResetRuntime { .. });
@@ -313,7 +526,10 @@ impl AppState {
         if let Some(error) = response.error() {
             let status = match error.kind.as_str() {
                 "player_busy" => 429,
-                "invalid_player_control" => 400,
+                "invalid_player_control"
+                | "invalid_session_user"
+                | "duplicate_session_user"
+                | "too_many_session_users" => 400,
                 _ => 409,
             };
             let mut failure = ApiError::new(status, &error.kind, &error.message);
@@ -324,11 +540,36 @@ impl AppState {
             self.native().ratings.rename(&old, &new);
         }
         if reset_runtime {
+            self.native_session.guest_pool_preferences.clear();
             // Python rotated the identity registry on data reset. Invalidating
             // names alone leaves old tokens occupying every Remote device slot.
             self.native().devices.clear();
+            self.native().device_order.clear();
         }
         Ok(response.result().cloned().unwrap_or(Value::Null))
+    }
+
+    pub(crate) fn native_sse_frame(
+        &mut self,
+        host: bool,
+    ) -> Result<(u64, std::sync::Arc<str>), ApiError> {
+        let revision = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?
+            .revision
+            .saturating_add(self.native_session.revision)
+            .saturating_add(self.player_controls.revision);
+        let index = usize::from(host);
+        if let Some((cached, frame)) = &self.native_session.sse_frames[index]
+            && *cached == revision
+        {
+            return Ok((revision, frame.clone()));
+        }
+        let value = self.native_snapshot(host)?;
+        let frame: std::sync::Arc<str> = format!("event: state\ndata: {value}\n\n").into();
+        self.native_session.sse_frames[index] = Some((revision, frame.clone()));
+        Ok((revision, frame))
     }
 
     pub(crate) fn native_snapshot(&self, host: bool) -> Result<Value, ApiError> {
@@ -367,6 +608,10 @@ impl AppState {
         let mut value = serde_json::to_value(&snapshot)
             .map_err(|_| ApiError::invalid("无法序列化 Host 状态"))?;
         let session = &self.native_session;
+        if host {
+            value["startup_warning"] = json!(session.startup_warning);
+        }
+        value["state_epoch"] = json!(session.state_epoch);
         value["state_revision"] = json!(
             snapshot
                 .revision
@@ -444,6 +689,16 @@ impl AppState {
             }
         }
         if value["cache_policy"]["enabled"] == false {
+            let no_avc = session.desktop
+                && !session.player_media.usable()
+                && !(session.cache_policy.download_source == "downkyi"
+                    && session.player_media.details["hevc_supported"] == true);
+            value["cache_policy"]["unavailable_reason"] =
+                json!(session.cache_policy.localized_unavailable(
+                    session.ui_language,
+                    session.bbdown_available,
+                    no_avc
+                ));
             let message = value["cache_policy"]["unavailable_reason"].clone();
             if let Some(item) = value
                 .get_mut("current_item")
@@ -468,6 +723,7 @@ impl AppState {
                 .count()
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
+        value["gatcha_favlist_updated_at"] = json!(session.favlist_updated_at);
         if host {
             // One authoritative update status for both platforms. The desktop
             // check-only loop and the Android loop project the same state the
@@ -603,7 +859,11 @@ impl AppState {
         let sequence = positive(body, "status_sequence")?;
         let item_id = text(body, "item_id")?;
         let current_time = number(body, "current_time")?;
-        let duration = number(body, "duration")?;
+        let duration = if body.get("duration").is_none_or(Value::is_null) {
+            0.0
+        } else {
+            number(body, "duration")?
+        };
         let phase = text(body, "observed_phase")?;
         if current_time < 0.0
             || duration < 0.0
@@ -862,5 +1122,18 @@ impl AppState {
     }
     pub(crate) fn native_release_claim(&mut self) {
         self.native_session.claim = None;
+    }
+
+    pub(crate) fn native_retire_cache(&mut self) {
+        self.native_release_claim();
+        if let Some(data) = &mut self.data {
+            for item in data.current_item.iter_mut().chain(&mut data.playlist) {
+                clear_committed_artifact(item, true);
+                item.cache_status = default_cache_status();
+                item.cache_progress = 0.0;
+                item.cache_message = default_cache_message();
+            }
+        }
+        self.shutdown_artifact_lifetime();
     }
 }

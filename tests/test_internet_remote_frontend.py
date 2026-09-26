@@ -914,6 +914,18 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
     await Promise.resolve(); assert.deepEqual(reconnectEvents, ["error"]);
     replacement.close();
   }
+  state.authorized = true; state.remoteState = {...data,state_epoch:"old-host",state_revision:35};
+  const restarting = createStateSource(); const revisions = [];
+  restarting.addEventListener("state", e => revisions.push(JSON.parse(e.data)));
+  await Promise.resolve();
+  handleDataMessage({type:"state",data:{...data,state_epoch:"new-host",state_revision:4}});
+  handleDataMessage({type:"state",data:{...data,state_epoch:"old-host",state_revision:99}});
+  handleDataMessage({type:"state",data:{...data,state_epoch:"new-host",state_revision:3}});
+  assert.equal(revisions.length,2);
+  assert.equal(revisions[1].state_revision,4);
+  assert.equal(revisions[1].state_epoch,"new-host");
+  assert.equal(state.remoteState.state_epoch,"new-host");
+  restarting.close();
   state.authorized = true; state.remoteState = data;
   const events = []; const stream = createStateSource();
   stream.addEventListener("state", e => events.push(e.type));

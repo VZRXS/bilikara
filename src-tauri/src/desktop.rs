@@ -73,7 +73,26 @@ pub(crate) fn run() {
             let startup_log = startup_log_for_setup.clone();
 
             #[cfg(target_os = "macos")]
-            platform::create_macos_main_webview_window(app)?;
+            {
+                platform::create_macos_main_webview_window(app)?;
+                // Tauri's predefined Quit invokes Cocoa terminate: directly.
+                // Keep its standard menus, replacing the app menu's final Quit
+                // with an ordinary item routed through CloseRequested.
+                let menu = tauri::menu::Menu::default(app.handle())?;
+                if let Some(tauri::menu::MenuItemKind::Submenu(application)) = menu.items()?.first()
+                {
+                    let count = application.items()?.len();
+                    application.remove_at(count.saturating_sub(1))?;
+                    application.append(&tauri::menu::MenuItem::with_id(
+                        app,
+                        "bilikara-quit",
+                        "Quit Bilikara",
+                        true,
+                        Some("CmdOrCtrl+Q"),
+                    )?)?;
+                }
+                app.set_menu(menu)?;
+            }
 
             let Some(window) = app.get_webview_window("main") else {
                 desktop_diagnostics::fail_desktop_startup(
@@ -99,7 +118,15 @@ pub(crate) fn run() {
             Ok(())
         })
         .on_window_event(window_lifecycle::handle_window_event)
-        .run(context);
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "bilikara-quit"
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.close();
+            }
+        })
+        .build(context)
+        .map(|app| app.run(window_lifecycle::handle_run_event));
 
     match run_result {
         Ok(()) => {

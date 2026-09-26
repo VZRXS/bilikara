@@ -149,6 +149,7 @@ For UI actions that trigger asynchronous operations or backend side-effects:
 - **Domain Boundaries**: Do not begin work on an unrelated business domain or migration area.
 - **Behavior Preservation**: Preserve existing fallback behaviors and user-visible functionality unless explicitly directed to alter them.
 - **Test Quality**: Never weaken, disable, or delete assertions to force a passing build.
+- **Explicit UTF-8 for Repository Text**: Python code and tests reading repository JavaScript (especially files containing Chinese text), HTML, CSS, JSON, Markdown, or other UTF-8 source/assets must explicitly pass `encoding="utf-8"` to `Path.read_text()`, `Path.write_text()`, and text-mode `open()`. Text subprocess pipes carrying this content, including Node.js test harnesses, must also specify `encoding="utf-8"` in `subprocess.run()` / `Popen()`; `text=True` alone is insufficient. Never rely on the OS locale, Linux defaults, `PYTHONUTF8`, or a CI environment switch to make these operations portable: Windows may default to CP1252/GBK. Apply this rule to new and modified scripts/tests; do not fix decode failures by ignoring/replacing invalid bytes or weakening assertions.
 - **Reviewability**: Each business-rule domain change should remain independently reviewable and revertible.
 - **Git Hygiene**: Do not create unexpected branches, worktrees, tags, release builds, or remote pushes unless requested. Never rewrite published history without an explicit request and backup.
 

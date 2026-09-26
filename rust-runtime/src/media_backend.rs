@@ -1688,7 +1688,7 @@ fn temporary_path(destination: &Path, stage: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
@@ -1878,7 +1878,7 @@ mod tests {
         writer.into_writer().sync_all().expect("flush fixture");
     }
 
-    fn write_h264_fixture(path: &Path) {
+    pub(crate) fn write_h264_fixture(path: &Path) {
         let file = File::create(path).expect("create fixture");
         let config = Mp4Config {
             major_brand: "isom".parse().unwrap(),

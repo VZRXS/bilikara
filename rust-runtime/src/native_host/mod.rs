@@ -6,7 +6,10 @@ mod catalog;
 mod catalog_append;
 pub mod desktop;
 mod desktop_import;
+#[cfg(windows)]
+pub(crate) mod desktop_process;
 mod diagnostics;
+mod environment;
 mod exports;
 mod files;
 mod internet;
@@ -18,6 +21,7 @@ mod admin;
 mod maintenance;
 mod monthly;
 mod network;
+mod owner_enrichment;
 pub(crate) mod preferences;
 pub(crate) mod ratings;
 pub(crate) mod updates;
@@ -33,7 +37,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use std::{
-    net::{IpAddr, SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -95,11 +99,12 @@ pub(crate) struct HostContext {
     assets: AssetSource,
     stop: Arc<AtomicBool>,
     api_slots: Arc<Semaphore>,
-    event_slots: Arc<Semaphore>,
     export_slots: Arc<Semaphore>,
     export_renderer: std::sync::OnceLock<RemoteExportRenderer>,
     port: u16,
     desktop: bool,
+    bind_address: std::net::Ipv4Addr,
+    allowed_hosts: std::sync::RwLock<Vec<std::net::IpAddr>>,
     bbdown: Option<crate::cache_runtime::bbdown::Executable>,
     aria2: std::sync::Mutex<Option<crate::cache_runtime::aria2::Executable>>,
     aria2_prepare: std::sync::Mutex<()>,
@@ -207,6 +212,18 @@ impl Drop for NativeHost {
         for worker in workers {
             let _ = worker.join();
         }
+        // Downloads and HTTP media readers have drained. Release live media
+        // projections before collecting owned artifacts; checkpoint records
+        // already omit cache paths, so queue/history persistence is unaffected.
+        let _ = with_app(|app| {
+            app.native_retire_cache();
+            Ok(())
+        });
+        let media = maintenance::collect(&self.context.cache_root, false);
+        let logs = cache::clear_song_logs(&self.context.directory);
+        if media.is_err() || logs.is_err() {
+            eprintln!("native cache cleanup incomplete; startup will retry");
+        }
         // AppState remains alive until the owner has dropped this handle.
     }
 }
@@ -278,22 +295,20 @@ fn start(
     // live attempt after the validated restart reset.
     maintenance::collect(&cache_root, true)
         .map_err(|_| ApiError::new(503, "cache_storage", "无法清理旧媒体缓存"))?;
-    let listener = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
-        .map_err(|_| ApiError::new(503, "listen", "无法开启本地 Host 服务"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|_| ApiError::new(503, "listen", "无法配置 Host 服务"))?;
-    let port = listener
+    let (listeners, bind_address) = environment::listeners(desktop)?;
+    let port = listeners[0]
         .local_addr()
         .map_err(|_| ApiError::invalid("无法确定 Host 端口"))?
         .port();
     let host_token = token()?;
-    let remote_access = network::remote_access(port, &network::lan_addresses())?;
+    let state_epoch = token()?;
+    let remote_access = network::remote_access(port, &network::bound_addresses(bind_address))?;
     let saved_cookie = if desktop {
         login::load_desktop(&directory)?
     } else {
         login::load(&directory)?
     };
+    let (saved_cookie, cookie_warning) = login::launch_cookie(&directory, saved_cookie);
     let saved_preferences = preferences::load(&directory, desktop)?;
     let bbdown = if desktop {
         crate::cache_runtime::bbdown::Executable::discover(&directory)
@@ -319,7 +334,9 @@ fn start(
         None
     };
     // Seed/migrate configured UP sources before any login-triggered refresh.
-    library::initialize(&directory)?;
+    let recovered_library = library::initialize(&directory)?;
+    library::migrate_pool(&directory)?;
+    library::publish_favorites_timestamp(&directory);
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -339,7 +356,16 @@ fn start(
         session.bbdown_available = bbdown.is_some();
         session.aria2_available = aria2.is_some();
         session.host_token = host_token.clone();
+        session.state_epoch = state_epoch.clone();
         session.cookie = saved_cookie;
+        session.pending_library_refresh =
+            (!session.cookie.is_empty()).then_some("credential_restore");
+        session.startup_warning = cookie_warning;
+        if recovered_library {
+            session
+                .startup_warning
+                .push_str(" 曲库来源配置损坏，已备份原文件并恢复默认来源");
+        }
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
         session.remote_access = remote_access;
@@ -352,11 +378,12 @@ fn start(
         assets,
         stop: Arc::new(AtomicBool::new(false)),
         api_slots: Arc::new(Semaphore::new(32)),
-        event_slots: Arc::new(Semaphore::new(12)),
         export_slots: Arc::new(Semaphore::new(1)),
         export_renderer: std::sync::OnceLock::new(),
         port,
         desktop,
+        bind_address,
+        allowed_hosts: std::sync::RwLock::new(crate::networking::local_transport_addresses()),
         shutdown_token,
         desktop_installation: if desktop {
             desktop::installation()
@@ -379,39 +406,48 @@ fn start(
         .name("native-host-http".into())
         .spawn(move || {
             runtime.block_on(async move {
-                let listener = match tokio::net::TcpListener::from_std(listener) {
-                    Ok(value) => value,
-                    Err(_) => return,
-                };
                 let stop = worker_context.stop.clone();
                 let router = Router::new().fallback(handle).with_state(worker_context);
-                let server = axum::serve(
-                    listener,
-                    router.into_make_service_with_connect_info::<SocketAddr>(),
-                );
-                let graceful_stop = stop.clone();
-                let mut serving = tokio::spawn(async move {
-                    server
-                        .with_graceful_shutdown(async move {
-                            while !graceful_stop.load(Ordering::Acquire) {
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        })
-                        .await
-                });
-                while !stop.load(Ordering::Acquire) && !serving.is_finished() {
+                let mut serving = tokio::task::JoinSet::new();
+                for listener in listeners {
+                    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
+                        continue;
+                    };
+                    let server = axum::serve(
+                        listener,
+                        router
+                            .clone()
+                            .into_make_service_with_connect_info::<SocketAddr>(),
+                    );
+                    let graceful_stop = stop.clone();
+                    serving.spawn(async move {
+                        server
+                            .with_graceful_shutdown(async move {
+                                while !graceful_stop.load(Ordering::Acquire) {
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                }
+                            })
+                            .await
+                    });
+                }
+                while !stop.load(Ordering::Acquire) && !serving.is_empty() {
+                    if serving.try_join_next().is_some() {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 // Give completed responses a bounded drain. A WebView can keep
                 // an SSE/media/body connection open after its window closes.
                 // Runtime drop cancels those async tasks and waits for blocking
                 // requests; the owner joins this thread before shutting AppState.
-                if tokio::time::timeout(Duration::from_secs(2), &mut serving)
-                    .await
-                    .is_err()
+                if tokio::time::timeout(Duration::from_secs(2), async {
+                    while serving.join_next().await.is_some() {}
+                })
+                .await
+                .is_err()
                 {
-                    serving.abort();
-                    let _ = serving.await;
+                    serving.abort_all();
+                    while serving.join_next().await.is_some() {}
                 }
             })
         })
@@ -421,12 +457,17 @@ fn start(
         context: context.clone(),
         server: Some(server),
     };
+    library::start_coordinator(context.clone())?;
     cache::start_pump(context.clone())?;
     network::start_monitor(&context)?;
     ratings::start_pump(context.clone())?;
-    if with_app(|app| Ok(!app.native().cookie.is_empty()))? {
-        library::refresh_after_login(&context, "credential_restore");
+    if let Err(error) = owner_enrichment::start(context.clone()) {
+        eprintln!(
+            "[native-host] UP metadata enrichment unavailable: {}",
+            error.code
+        );
     }
+    library::refresh_after_login(&context);
     if desktop {
         host.install_desktop_export()?;
         if !needs_aria2 {
@@ -461,7 +502,11 @@ fn cookie(headers: &HeaderMap) -> String {
         .to_owned()
 }
 
-fn validate_host(headers: &HeaderMap, port: u16) -> Result<&str, ApiError> {
+fn validate_host<'a>(
+    headers: &'a HeaderMap,
+    port: u16,
+    allowed: &[std::net::IpAddr],
+) -> Result<&'a str, ApiError> {
     let host = headers
         .get("host")
         .and_then(|value| value.to_str().ok())
@@ -469,19 +514,18 @@ fn validate_host(headers: &HeaderMap, port: u16) -> Result<&str, ApiError> {
     let address: SocketAddr = host
         .parse()
         .map_err(|_| ApiError::new(403, "host", "只接受设备的本地 IP 地址"))?;
-    if address.port() != port
-        || !match address.ip() {
-            IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
-            _ => false,
-        }
-    {
+    if address.port() != port || !(address.ip().is_loopback() || allowed.contains(&address.ip())) {
         return Err(ApiError::new(403, "host", "无效的 Host 地址"));
     }
     Ok(host)
 }
 
-fn validate_origin(headers: &HeaderMap, port: u16) -> Result<(), ApiError> {
-    let host = validate_host(headers, port)?;
+fn validate_origin(
+    headers: &HeaderMap,
+    port: u16,
+    allowed: &[std::net::IpAddr],
+) -> Result<(), ApiError> {
+    let host = validate_host(headers, port, allowed)?;
     if let Some(origin) = headers.get("origin")
         && origin.to_str().ok() != Some(&format!("http://{host}"))
     {
@@ -535,7 +579,14 @@ async fn handle_inner(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     // Check DNS-rebinding/port constraints even for the capability entry pages.
-    validate_host(request.headers(), context.port)?;
+    validate_host(
+        request.headers(),
+        context.port,
+        &context
+            .allowed_hosts
+            .read()
+            .unwrap_or_else(|p| p.into_inner()),
+    )?;
     if context.stop.load(Ordering::Acquire) {
         return Err(ApiError::new(503, "stopped", "Host 已停止"));
     }
@@ -587,7 +638,14 @@ async fn handle_inner(
         }
     }
     // APIs, authenticated assets and media keep the original origin checks.
-    validate_origin(request.headers(), context.port)?;
+    validate_origin(
+        request.headers(),
+        context.port,
+        &context
+            .allowed_hosts
+            .read()
+            .unwrap_or_else(|p| p.into_inner()),
+    )?;
     if path == "/api/health" && method == Method::GET && identity.loopback {
         return Ok(json_response(
             200,
@@ -597,6 +655,7 @@ async fn handle_inner(
     if matches!(
         path.as_str(),
         "/api/app/shutdown"
+            | "/api/app/export-status"
             | "/api/app/update/activate"
             | "/api/app/update/install"
             | "/api/app/update/cancel"
@@ -613,6 +672,13 @@ async fn handle_inner(
             })
         {
             return Err(ApiError::new(403, "shutdown", "关闭凭证无效"));
+        }
+        if path == "/api/app/export-status" {
+            let language = with_app(|app| Ok(app.native().ui_language))?;
+            return Ok(json_response(
+                200,
+                json!({"ok":true,"data":{"active":context.export_slots.available_permits() == 0,"language":language}}),
+            ));
         }
         if path.starts_with("/api/app/update/") {
             let bytes = axum::body::to_bytes(request.into_body(), 1024)
@@ -743,36 +809,37 @@ async fn event_stream(
     identity: Identity,
     host: bool,
 ) -> Result<Response, ApiError> {
-    let permit = context
-        .event_slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::new(429, "events_busy", "连接数量已达上限"))?;
     let (reader, mut writer) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        let _permit = permit;
         let mut last_revision = None;
         while !context.stop.load(Ordering::Acquire) {
+            // Register before reading state so a commit during the snapshot or
+            // response write cannot be missed. Slow clients still have a timeout.
+            let changed = crate::app_state::native_session::state_changes().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             let identity = identity.clone();
             let value = tokio::task::spawn_blocking(move || {
                 with_app(|app| {
                     app.native_authorize(&identity, false)?;
-                    app.native_snapshot(host)
+                    app.native_sse_frame(host)
                 })
             })
             .await;
-            let Ok(Ok(value)) = value else { break };
-            let revision = value["state_revision"].as_u64();
+            let Ok(Ok((current_revision, cached_frame))) = value else {
+                break;
+            };
+            let revision = Some(current_revision);
             let frame = if revision == last_revision {
                 // Named heartbeat reaches EventSource listeners; an SSE
                 // comment alone cannot detect a silently stalled connection.
                 format!(
                     "event: heartbeat\ndata: {{\"state_revision\":{}}}\n\n",
-                    revision.unwrap_or(0)
+                    current_revision
                 )
             } else {
                 last_revision = revision;
-                format!("event: state\ndata: {value}\n\n")
+                cached_frame.to_string()
             };
             if !matches!(
                 tokio::time::timeout(Duration::from_secs(5), writer.write_all(frame.as_bytes()))
@@ -781,7 +848,10 @@ async fn event_stream(
             ) {
                 break;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::select! {
+                _ = changed => {},
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            }
         }
     });
     Ok((
@@ -815,14 +885,27 @@ mod tests {
     fn rejects_dns_rebinding_and_foreign_origins() {
         let mut headers = HeaderMap::new();
         headers.insert("host", "127.0.0.1:4567".parse().unwrap());
-        assert!(validate_origin(&headers, 4567).is_ok());
+        assert!(validate_origin(&headers, 4567, &[]).is_ok());
         headers.insert("origin", "https://evil.test".parse().unwrap());
-        assert!(validate_origin(&headers, 4567).is_err());
+        assert!(validate_origin(&headers, 4567, &[]).is_err());
         headers.remove("origin");
         headers.insert("host", "evil.test:4567".parse().unwrap());
-        assert!(validate_origin(&headers, 4567).is_err());
+        assert!(validate_origin(&headers, 4567, &[]).is_err());
         headers.insert("host", "127.0.0.1:9999".parse().unwrap());
-        assert!(validate_origin(&headers, 4567).is_err());
+        assert!(validate_origin(&headers, 4567, &[]).is_err());
+    }
+    #[test]
+    fn advertised_public_link_local_and_cgnat_addresses_accept_remote_entry() {
+        for ip in ["203.0.113.7", "169.254.20.1", "100.64.2.3", "192.168.1.2"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("host", format!("{ip}:4567").parse().unwrap());
+            assert!(
+                validate_origin(&headers, 4567, &[ip.parse().unwrap()]).is_ok(),
+                "{ip}"
+            );
+            headers.insert("host", "198.51.100.99:4567".parse().unwrap());
+            assert!(validate_origin(&headers, 4567, &[]).is_err());
+        }
     }
     #[test]
     fn entry_accepts_only_document_navigation_when_metadata_is_present() {

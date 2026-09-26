@@ -258,6 +258,8 @@ const state = {
   bindingIntent: null,
   gatchaFavlistIntent: null,
   poolConfigOpener: null,
+  poolConfigRequester: "",
+  startupWarningSeen: "",
   bilikaraSecretOpener: null,
   developerTagResetOpener: null,
   ratingPromptOpener: null,
@@ -3032,7 +3034,6 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   for (const button of [elements.presentationHostBack, elements.presentationHostForward]) {
     if (button) {
       button.disabled = !hasPlayableMedia
-        || !durationAvailable
         || state.presentationHostControlBusy;
     }
   }
@@ -3541,7 +3542,7 @@ async function handlePresentationHostControl(action, button) {
       toggleMountedLocalPlayback();
     } else if (action === "seek" || action === "seek-relative") {
       if (!video) return;
-      const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Number.POSITIVE_INFINITY;
       const requestedTime = action === "seek-relative"
         ? Number(video.currentTime || 0) + Number(button.dataset.delta || 0)
         : Number(elements.presentationHostProgress?.value || 0);
@@ -6347,8 +6348,8 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
   return payload.data || { folders: [], items: [] };
 }
 
-async function fetchPoolConfig() {
-  const response = await fetch("/api/gatcha/pool-config", {
+async function fetchPoolConfig(requester = selectedRequesterName()) {
+  const response = await fetch(`/api/gatcha/pool-config?${new URLSearchParams({ requester_name: requester })}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6359,8 +6360,8 @@ async function fetchPoolConfig() {
   return payload.data || {};
 }
 
-async function savePoolConfig(payload) {
-  return apiPost("/api/gatcha/pool-config", payload);
+async function savePoolConfig(payload, requester = selectedRequesterName()) {
+  return apiPost("/api/gatcha/pool-config", { ...payload, requester_name: requester });
 }
 
 async function previewGatchaUid(uid) {
@@ -9108,7 +9109,7 @@ async function handleGatchaDraw(event = null) {
   setGatchaMessage(t("gatcha.drawing"));
   renderGatchaWorkspace();
   try {
-    const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
+    const response = await fetch(`/api/gatcha/candidate?${new URLSearchParams({ requester_name: selectedRequesterName() })}`, { headers: clientHeaders() });
     const payload = await response.json();
     if (state.gatchaDrawSequence !== drawSequence) {
       return false;
@@ -9456,6 +9457,7 @@ function disconnectClient() {
 }
 
 function render() {
+  if (state.desktopClosing) return;
   if (window.BilikaraNativeSession?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
@@ -11100,6 +11102,10 @@ function acceptHostStateSnapshot(snapshot) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  if (snapshot.startup_warning && state.startupWarningSeen !== snapshot.startup_warning) {
+    state.startupWarningSeen = snapshot.startup_warning;
+    setAppMessage(snapshot.startup_warning, true);
+  }
   if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     state.playerSettingsEchoSuppressUntil = 0;
     state.volumeSaveSeq += 1;
@@ -11616,7 +11622,7 @@ function manualTransitionOverlaySeconds(data = state.data) {
 
 function clampMediaTime(media, nextTime) {
   const target = Math.max(0, Number(nextTime || 0));
-  if (!Number.isFinite(media?.duration)) {
+  if (!Number.isFinite(media?.duration) || !(media.duration > 0)) {
     return target;
   }
   return Math.min(target, Number(media.duration));
@@ -15691,7 +15697,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
             const resumeAfterSeek = audio && isTauriWebKitRuntime()
               ? state.localShouldBePlaying
               : !video.paused || state.localShouldBePlaying;
-            const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Number.POSITIVE_INFINITY;
             const nextTime = action === "seek-absolute"
               ? Math.max(0, targetSeconds)
               : Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
@@ -17238,15 +17244,16 @@ async function openPoolConfigModal() {
   state.poolConfigLoading = true;
   state.poolConfigSaving = false;
   state.poolConfigOpener = document.activeElement;
+  state.poolConfigRequester = selectedRequesterName();
   state.poolConfigDraft = clonePoolConfigProjection(
-    state.poolConfigAccepted || state.data?.gatcha_pool_config || {},
+    {},
   );
   elements.poolConfigModal.classList.remove("hidden");
   poolConfigSetMessage(t("gatcha.poolLoading"));
   renderPoolConfigModal();
   elements.poolConfigModalClose?.focus({ preventScroll: true });
   try {
-    const loaded = await fetchPoolConfig();
+    const loaded = await fetchPoolConfig(state.poolConfigRequester);
     if (
       state.poolConfigLoadSequence !== loadSequence
       || state.poolConfigOpenGeneration !== openGeneration
@@ -17338,10 +17345,12 @@ function resetPoolConfigControls() {
 }
 
 function poolConfigExcludedValues(name) {
-  return [...document.querySelectorAll(`input[name="${name}"]`)]
-    .filter((input) => !input.checked)
-    .map((input) => String(input.value || "").trim())
-    .filter(Boolean);
+  const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
+  const shown = new Set(inputs.map((input) => String(input.value || "").trim()));
+  const field = name === "gatcha-pool-uid" ? "excluded_uids" : "excluded_favlist_folders";
+  const retained = (state.poolConfigDraft?.[field] || []).filter((value) => !shown.has(String(value)));
+  return [...new Set([...retained, ...inputs.filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim()).filter(Boolean)])];
 }
 
 async function submitPoolConfigModal() {
@@ -17362,7 +17371,7 @@ async function submitPoolConfigModal() {
   poolConfigSetMessage(t("gatcha.poolSaving"));
   renderPoolConfigModal();
   try {
-    const saved = await savePoolConfig(payload);
+    const saved = await savePoolConfig(payload, state.poolConfigRequester);
     if (
       state.poolConfigSaveSequence !== saveSequence
       || state.poolConfigOpenGeneration !== openGeneration
@@ -22073,6 +22082,14 @@ window.addEventListener("pagehide", () => {
   disconnectClient();
 });
 window.addEventListener("beforeunload", disconnectClient);
+// The shell requests this before waiting for backend cleanup. Keep the UI
+// thread free to unload the WebView media and stop Web Audio immediately.
+window.addEventListener("bilikara-before-close", () => {
+  state.desktopClosing = true;
+  teardownMountedPlayer();
+  disposeSharedAudioContext();
+  disconnectClient();
+});
 window.addEventListener("pageshow", () => {
   initializeLocalPresentation().catch(() => {});
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));

@@ -109,6 +109,44 @@ impl CachePolicy {
         value
     }
 
+    pub(crate) fn localized_unavailable(
+        &self,
+        language: Option<UiLanguage>,
+        bbdown: bool,
+        no_avc: bool,
+    ) -> &'static str {
+        let messages = if no_avc {
+            [
+                "Host 播放器不支持 AVC 解码，当前下载器需要 AVC 支持",
+                "Host player cannot decode AVC, which this downloader requires",
+                "Host プレーヤーは、このダウンローダーに必要な AVC をデコードできません",
+            ]
+        } else if matches!(self.download_source.as_str(), "yt-dlp" | "ytdlp") {
+            [
+                "yt-dlp 接口保留，当前版本暂不启用",
+                "The yt-dlp interface is retained but disabled in this version",
+                "yt-dlp インターフェースは保持されていますが、このバージョンでは無効です",
+            ]
+        } else if self.download_source == "bbdown" && !bbdown {
+            [
+                "BBDown 不可用：请配置 BB_DOWN_PATH 后重启 Host，或选择 Rust Native",
+                "BBDown unavailable: configure BB_DOWN_PATH and restart Host, or select Rust Native",
+                "BBDown が利用できません。BB_DOWN_PATH を設定して Host を再起動するか、Rust Native を選択してください",
+            ]
+        } else {
+            [
+                "导入的下载器或缓存设置不可用，请选择支持的设置",
+                "Imported downloader or cache preferences are unavailable; select supported settings",
+                "インポートしたダウンローダーまたはキャッシュ設定は利用できません。対応する設定を選択してください",
+            ]
+        };
+        messages[match language.unwrap_or(UiLanguage::Zh) {
+            UiLanguage::Zh => 0,
+            UiLanguage::En => 1,
+            UiLanguage::Ja => 2,
+        }]
+    }
+
     fn updated(&self, body: &Value) -> Result<Self, ApiError> {
         let fields = body
             .as_object()
@@ -116,6 +154,13 @@ impl CachePolicy {
             .ok_or_else(|| ApiError::invalid("没有可更新的缓存策略"))?;
         let mut next = json!(self);
         for (key, value) in fields {
+            if key == "download_source" && (value == "yt-dlp" || value == "ytdlp") {
+                return Err(ApiError::new(
+                    501,
+                    "cache_source_unavailable",
+                    "yt-dlp 接口保留，当前版本暂不启用",
+                ));
+            }
             if key == "download_source"
                 && (value == "native" || value == "bbdown" || value == "downkyi")
             {
@@ -304,6 +349,14 @@ pub(super) fn load(directory: &Path, desktop: bool) -> Result<Saved, ApiError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Saved {
                 schema_version: 1,
+                cache: CachePolicy {
+                    max_cache_items: if desktop {
+                        super::environment::initial_cache_items()
+                    } else {
+                        3
+                    },
+                    ..CachePolicy::default()
+                },
                 ..Saved::default()
             });
         }

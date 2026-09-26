@@ -148,7 +148,7 @@ fn lan_identity_removal_and_rename_require_fresh_registration_not_name_reuse() {
     assert_eq!(
         f.post("/api/remote-identity/rename", &first, json!({"name":"Bob"}))
             .status(),
-        409
+        400
     );
     assert_eq!(f.identity(&first)["name"], "Alice");
     assert_eq!(

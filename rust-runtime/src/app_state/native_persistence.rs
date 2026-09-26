@@ -13,6 +13,7 @@ fn restart_item(item: &mut PlaylistItem) {
 
 fn restart_seed(seed: &mut AppStateSeed) {
     seed.current_item_started = false;
+    seed.player_settings.local_av_delay_ms = 0;
     for item in seed.current_item.iter_mut().chain(seed.playlist.iter_mut()) {
         restart_item(item);
     }
@@ -31,6 +32,25 @@ fn restart_seed(seed: &mut AppStateSeed) {
 /// constructing another AppState or trusting saved media paths.
 #[cfg(feature = "native-host")]
 pub(crate) fn prepare_import(mut seed: AppStateSeed) -> Result<AppStateSeed, String> {
+    seed.playback_mode = default_playback_mode();
+    let mut seen = HashSet::new();
+    seed.session_users = seed
+        .session_users
+        .iter()
+        .map(|name| normalize_session_user_name(name))
+        .filter(|name| !name.is_empty() && seen.insert(name.clone()))
+        .take(MAX_SESSION_USERS)
+        .collect();
+    let settings = &mut seed.player_settings;
+    settings.volume_percent = settings.volume_percent.clamp(0, 100);
+    settings.key_shift = settings.key_shift.clamp(MIN_KEY_SHIFT, MAX_KEY_SHIFT);
+    settings.song_advance_delay_seconds = settings
+        .song_advance_delay_seconds
+        .clamp(0, MAX_SONG_ADVANCE_DELAY_SECONDS);
+    settings.global_av_delay_ms = settings.global_av_delay_ms.clamp(
+        -bilikara_rust::MAX_AV_DELAY_MS,
+        bilikara_rust::MAX_AV_DELAY_MS,
+    );
     restart_seed(&mut seed);
     validate_seed(&seed).map_err(|_| "Invalid desktop state contract".to_owned())?;
     Ok(seed)
@@ -47,6 +67,8 @@ impl AppStateData {
             history: self.history.clone(),
             session_history: self.session_history.clone(),
             session_users: self.session_users.clone(),
+            remote_identities: self.remote_identities.clone(),
+            gatcha_pool_preferences: self.gatcha_pool_preferences.clone(),
             session_started_at: self.session_started_at,
             session_played_file: self.session_played_file.clone(),
             session_played: self.session_played.clone(),
@@ -100,6 +122,8 @@ impl AppState {
             return execute_error_response(error);
         }
         restart_seed(&mut seed);
+        #[cfg(feature = "native-host")]
+        super::native_session::bound_saved_remote_state(&mut seed);
         self.native_storage = Some(storage);
         let response = self.initialize_once(seed);
         if response.error().is_some() {
@@ -172,6 +196,289 @@ mod tests {
             "session_played_file": "native-session.json", "session_users": ["Alice"]
         }))
         .unwrap()
+    }
+
+    fn played() -> SessionPlayedEntry {
+        serde_json::from_value(json!({"key":"song:1", "item_id":"song", "display_title":"Song", "title":"Song", "part_title":"P1", "original_url":"https://example.test/video", "resolved_url":"https://example.test/video?p=1", "bvid":"BV1z84y1p7oS", "aid":1, "cid":2, "page":1, "played_at":10})).unwrap()
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn opening_old_checkpoint_bounds_devices_without_discarding_user_configuration() {
+        let directory = TestDirectory::new();
+        let mut initial = seed();
+        for index in 0..300 {
+            initial
+                .remote_identities
+                .insert(format!("{index:064x}"), "Alice".into());
+            initial
+                .gatcha_pool_preferences
+                .insert(format!("user:{index}"), json!({"updated_at":index}));
+        }
+        let (mut storage, _) = NativeHostStorage::open(&directory.0).unwrap();
+        storage.save(initial).unwrap();
+        drop(storage);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        let data = app.data.as_ref().unwrap();
+        assert_eq!(data.remote_identities.len(), 256);
+        assert_eq!(data.gatcha_pool_preferences.len(), 300);
+        let saved = app
+            .native_storage
+            .as_ref()
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.remote_identities.len(), 256);
+        assert_eq!(saved.gatcha_pool_preferences.len(), 300);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn personal_pool_preferences_survive_restart_and_reset_all_users() {
+        let directory = TestDirectory::new();
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        app.native_save_pool_config(
+            "user:Alice".into(),
+            json!({"uid_weight":0,"favlist_weight":100}),
+        )
+        .unwrap();
+        app.native_save_pool_config(
+            "user:Bob".into(),
+            json!({"uid_weight":100,"favlist_weight":0}),
+        )
+        .unwrap();
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        assert_eq!(
+            app.native_pool_config("user:Alice", &Value::Null)["uid_weight"],
+            0
+        );
+        assert_eq!(
+            app.native_pool_config("user:Bob", &Value::Null)["uid_weight"],
+            100
+        );
+        snapshot(app.execute(AppStateRequest::ResetRuntime {
+            schema_version: 1,
+            new_session: SessionArchiveSeed {
+                file_name: "reset.json".into(),
+                session_started_at: 20.0,
+                items: vec![],
+            },
+            now: 20.0,
+        }));
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        assert_eq!(
+            app.native_pool_config("user:Alice", &json!({"uid_weight":0}))["uid_weight"],
+            50
+        );
+        assert_eq!(
+            app.native_pool_config("user:Bob", &json!({"uid_weight":0}))["uid_weight"],
+            50
+        );
+    }
+
+    #[test]
+    fn version_one_checkpoint_upgrades_without_losing_records() {
+        let directory = TestDirectory::new();
+        fs::create_dir_all(&directory.0).unwrap();
+        let mut initial = seed();
+        initial.session_played = vec![played()];
+        initial.session_archives = (0..1001)
+            .map(|n| SessionArchiveSeed {
+                file_name: format!("closed-{n}.json"),
+                session_started_at: 1.0,
+                items: vec![played()],
+            })
+            .collect();
+        fs::write(
+            directory.0.join("host-state.json"),
+            serde_json::to_vec(&json!({"schema_version":1,"state":initial})).unwrap(),
+        )
+        .unwrap();
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        snapshot(app.execute(AppStateRequest::AddSessionUser {
+            schema_version: 1,
+            name: "Bob".into(),
+            now: 20.0,
+        }));
+        drop(app);
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(directory.0.join("host-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["schema_version"], 3);
+        let saved = saved(&directory);
+        assert_eq!(saved.session_archives, initial.session_archives);
+        assert_eq!(saved.session_played, initial.session_played);
+        assert_eq!(saved.session_users, vec!["Alice", "Bob"]);
+    }
+
+    #[test]
+    fn reset_retains_closed_and_current_played_records_after_restart() {
+        let directory = TestDirectory::new();
+        let mut initial = seed();
+        initial.current_item = Some(item("queued"));
+        initial.session_played = vec![played()];
+        initial.session_archives = vec![SessionArchiveSeed {
+            file_name: "closed.json".into(),
+            session_started_at: 1.0,
+            items: vec![played()],
+        }];
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, initial.clone()));
+        snapshot(app.execute(AppStateRequest::ResetRuntime {
+            schema_version: 1,
+            new_session: SessionArchiveSeed {
+                file_name: "reset.json".into(),
+                session_started_at: 20.0,
+                items: vec![],
+            },
+            now: 20.0,
+        }));
+        drop(app);
+        let mut app = AppState::default();
+        let restored = snapshot(app.initialize_native(&directory.0, seed()));
+        assert!(
+            restored.current_item.is_none()
+                && restored.playlist.is_empty()
+                && restored.session_users.is_empty()
+        );
+        assert_eq!(restored.session_played, initial.session_played);
+        assert_eq!(saved(&directory).session_archives, initial.session_archives);
+        assert_eq!(
+            saved(&directory).session_played_file,
+            initial.session_played_file
+        );
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn native_previous_session_uses_checkpoint_archive_and_can_be_closed_again() {
+        let directory = TestDirectory::new();
+        let archive = SessionArchiveSeed {
+            file_name: "previous.json".into(),
+            session_started_at: 1.0,
+            items: vec![played()],
+        };
+        let mut initial = seed();
+        initial.previous_session = Some(archive.clone());
+        initial.session_archives = vec![archive.clone()];
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, initial));
+        let result = app
+            .native_execute(AppStateRequest::ContinuePreviousSession {
+                schema_version: 1,
+                archive: None,
+                now: 20.0,
+            })
+            .unwrap();
+        assert_eq!(result["changed"], true);
+        let restored = app.native_core_snapshot().unwrap();
+        assert_eq!(restored.session_played, archive.items);
+        assert!(!restored.previous_session.available);
+        assert!(saved(&directory).session_archives.is_empty());
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        resolve_session(&mut app, false);
+        assert_eq!(saved(&directory).session_archives, [archive]);
+    }
+
+    #[test]
+    fn local_av_delay_is_not_written_but_global_and_lock_survive() {
+        let directory = TestDirectory::new();
+        let mut initial = seed();
+        initial.player_settings.global_av_delay_ms = 120;
+        initial.player_settings.local_av_delay_ms = 300;
+        initial.player_settings.av_delay_locked = true;
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, initial));
+        assert_eq!(saved(&directory).player_settings.local_av_delay_ms, 0);
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        let settings = &app.data.as_ref().unwrap().player_settings;
+        assert_eq!(settings.local_av_delay_ms, 0);
+        assert_eq!(settings.global_av_delay_ms, 120);
+        assert!(settings.av_delay_locked);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn import_normalizes_legacy_names_and_settings_without_changing_checkpoint_validation() {
+        let mut initial = seed();
+        initial.playback_mode = "online".into();
+        initial.session_users = vec![" A  b ".into(), "A b".into(), " ".into()];
+        initial.player_settings.volume_percent = 150;
+        initial.player_settings.key_shift = -99;
+        initial.player_settings.song_advance_delay_seconds = 100;
+        initial.player_settings.global_av_delay_ms = 9000;
+        assert!(validate_seed(&initial).is_err());
+        let imported = prepare_import(initial).unwrap();
+        assert_eq!(imported.session_users, ["A b"]);
+        assert_eq!(imported.playback_mode, "local");
+        assert_eq!(imported.player_settings.volume_percent, 100);
+        assert_eq!(imported.player_settings.key_shift, -6);
+        assert_eq!(imported.player_settings.song_advance_delay_seconds, 30);
+        assert_eq!(imported.player_settings.global_av_delay_ms, 5000);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn remote_registration_survives_continue_but_is_revoked_by_new_session() {
+        use super::super::native_session::Identity;
+        let directory = TestDirectory::new();
+        let remote = Identity {
+            token: "private-remote-token".into(),
+            loopback: false,
+            client: "phone".into(),
+        };
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        app.native_join_remote("", remote.token.clone()).unwrap();
+        app.native_register(&remote, &json!({"name":"Alice","claim":true}), false, 11.0)
+            .unwrap();
+        assert!(
+            !String::from_utf8(directory.bytes())
+                .unwrap()
+                .contains(&remote.token)
+        );
+        assert!(
+            !app.native_snapshot(true)
+                .unwrap()
+                .to_string()
+                .contains("remote_identities")
+        );
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        resolve_session(&mut app, true);
+        assert_eq!(
+            app.native_identity(&remote).unwrap()["name"],
+            "Alice",
+            "a still-open phone reconnects without navigating to /remote"
+        );
+        assert_eq!(
+            app.native_join_remote(&remote.token, "unused".into())
+                .unwrap(),
+            remote.token
+        );
+        assert_eq!(app.native_identity(&remote).unwrap()["name"], "Alice");
+        drop(app);
+        let mut app = AppState::default();
+        snapshot(app.initialize_native(&directory.0, seed()));
+        resolve_session(&mut app, false);
+        assert_eq!(
+            app.native_join_remote(&remote.token, "new".into()).unwrap(),
+            "new"
+        );
+        assert!(saved(&directory).remote_identities.is_empty());
     }
 
     fn resolve_session(state: &mut AppState, continue_previous: bool) -> AppSnapshot {
@@ -274,10 +581,28 @@ mod tests {
     }
 
     fn saved(directory: &TestDirectory) -> AppStateSeed {
-        serde_json::from_value(
-            serde_json::from_slice::<Value>(&directory.bytes()).unwrap()["state"].clone(),
-        )
-        .unwrap()
+        let checkpoint: Value = serde_json::from_slice(&directory.bytes()).unwrap();
+        let mut state = checkpoint["state"].clone();
+        if let Some(fields) = checkpoint["records"].as_object() {
+            for (field, files) in fields {
+                let bytes: Vec<u8> = files
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|file| {
+                        fs::read(
+                            directory
+                                .0
+                                .join("host-records")
+                                .join(file.as_str().unwrap()),
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                state[field] = serde_json::from_slice(&bytes).unwrap();
+            }
+        }
+        serde_json::from_value(state).unwrap()
     }
 
     #[test]
@@ -575,6 +900,53 @@ mod tests {
             "new"
         );
         assert_eq!(saved(&directory).current_item.unwrap().id, "new");
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn remote_registration_failure_does_not_add_a_singer_or_discard_guest_preferences() {
+        use super::super::native_session::Identity;
+        let directory = TestDirectory::new();
+        let mut state = AppState::default();
+        snapshot(state.initialize_native(&directory.0, seed()));
+        state.native().host_token = "host".into();
+        let token = state.native_join_remote("", "guest".into()).unwrap();
+        let remote = Identity {
+            token,
+            loopback: false,
+            client: "phone".into(),
+        };
+        let key = state.native_pool_key(&remote, "").unwrap();
+        state
+            .native_save_pool_config(key.clone(), json!({"uid_weight":17}))
+            .unwrap();
+        let before = state.native_core_snapshot().unwrap();
+        let pending = directory.0.join("host-state.pending");
+        fs::create_dir(&pending).unwrap();
+        assert!(
+            state
+                .native_register(&remote, &json!({"name":"Bob"}), false, 20.0)
+                .is_err()
+        );
+        assert_eq!(state.native_core_snapshot().unwrap(), before);
+        assert_eq!(state.native_identity(&remote).unwrap()["registered"], false);
+        assert_eq!(
+            state.native_pool_config(&key, &Value::Null)["uid_weight"],
+            17
+        );
+        assert!(!saved(&directory).session_users.contains(&"Bob".into()));
+        fs::remove_dir(pending).unwrap();
+        state
+            .native_register(&remote, &json!({"name":"Bob"}), false, 21.0)
+            .unwrap();
+        let saved = saved(&directory);
+        assert!(saved.session_users.contains(&"Bob".into()));
+        assert!(saved.remote_identities.values().any(|name| name == "Bob"));
+        assert_eq!(saved.gatcha_pool_preferences["user:Bob"]["uid_weight"], 17);
+        assert_eq!(
+            state.native_core_snapshot().unwrap().revision,
+            before.revision + 1
+        );
     }
 
     #[test]
