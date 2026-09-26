@@ -203,13 +203,13 @@
       <div class="song-detail-surface">
         <article class="song-detail-card" role="document">
           <button type="button" class="song-detail-close" data-song-detail-close aria-label="${translate("common.close")}"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+          <h3 class="song-detail-title" data-song-detail-title></h3>
           <div class="song-detail-hero">
             <div class="song-detail-cover" data-song-detail-cover>
               <span class="song-detail-cover-fallback">Bili</span>
               <span class="song-detail-duration hidden" data-song-detail-duration></span>
             </div>
             <div class="song-detail-facts">
-              <h3 class="song-detail-title" data-song-detail-title></h3>
               <div class="song-detail-owner" data-song-detail-owner></div>
               <div class="song-detail-bvid hidden" data-song-detail-bvid></div>
               <a class="song-detail-bilibili-link hidden" data-song-detail-bilibili-link target="_blank" rel="noopener noreferrer"></a>

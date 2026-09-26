@@ -5,6 +5,10 @@
   --modal-card-border: 1px solid var(--line);
   --modal-surface-blur: 12px;
   --modal-backdrop-blur: 0px;
+  --panel-title-font-size: 18px;
+  --panel-title-line-height: 24px;
+  --panel-header-control-size: 32px;
+  --panel-header-control-offset: calc((var(--panel-title-line-height) - var(--panel-header-control-size)) / 2);
   --rating-card-shadow: 0 18px 48px rgba(35, 26, 20, 0.24);
 }
 :root[data-theme="dark"] {
@@ -19,6 +23,113 @@
   --modal-card-border: 1px solid var(--line);
   --rating-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
 }
+
+/* Every dialog title starts at the same inset, independent of action height. */
+:root :is(.selection-modal-head h2, .binding-sheet-head h2,
+  .remote-identity-card h2, .song-detail-title, .rating-title,
+  .volume-adjust-heading h2, .playback-sheet-status-label, .stage-control-tray-head > strong) {
+  margin: 0;
+  font-size: var(--panel-title-font-size);
+  font-weight: 700;
+  line-height: var(--panel-title-line-height);
+  letter-spacing: normal;
+  text-align: start;
+  white-space: normal;
+}
+:root :is(.selection-modal-head, .binding-sheet-head, .volume-adjust-heading, .stage-control-tray-head) {
+  min-height: var(--panel-header-control-size);
+  align-items: start;
+}
+/* Absolute close controls must reserve the same title-row space as flex/grid
+   headers. Extra title lines grow naturally. */
+:root :is(.song-detail-card > .song-detail-title, .rating-title, .remote-identity-card h2) {
+  min-height: var(--panel-header-control-size);
+}
+:root .selection-modal-head.host-peer-head > :not(.host-peer-heading) { align-self: start; }
+:root .pool-config-head-actions { align-items: start; }
+/* Header pills and close controls reuse ordinary secondary-button colors.
+   Center 32px controls on the title's 24px first line, while
+   preserving the header's flow height and its horizontal insets. */
+:root :is(.pool-config-head-actions > .toolbar-button,
+  .pool-config-head-actions > .ghost-button,
+  .playback-sheet-status-actions > #open-rating-button,
+  .playback-sheet-status-actions > #refresh-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--panel-header-control-size);
+  min-height: var(--panel-header-control-size);
+  margin-top: var(--panel-header-control-offset);
+  margin-bottom: calc(-1 * var(--panel-header-control-offset));
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+}
+:root :is(.selection-modal-head .banner-close, .binding-sheet-close,
+  .rating-close, .song-detail-close, .stage-control-tray-head .banner-close,
+  .playback-sheet-collapse),
+:root[data-host-layout="portrait"] #binding-modal .selection-modal-head .banner-close {
+  width: var(--panel-header-control-size);
+  min-width: var(--panel-header-control-size);
+  height: var(--panel-header-control-size);
+  min-height: var(--panel-header-control-size);
+  margin-top: var(--panel-header-control-offset);
+  margin-bottom: calc(-1 * var(--panel-header-control-offset));
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  transform: none;
+}
+:root :is(.selection-modal-card, .binding-sheet-panel, .remote-identity-card,
+  .history-export-dialog, .volume-adjust-popover, .rating-body) {
+  padding: 20px;
+}
+:root .song-detail-card {
+  padding-top: 20px;
+  padding-inline: 20px;
+}
+:root .song-detail-card > .song-detail-title,
+:root .rating-title { padding-right: 40px; }
+:root .rating-body > [data-rating-content] { display: grid; gap: 16px; }
+:root :is(.song-detail-card > .song-detail-close, .rating-card > .rating-close) {
+  top: 20px;
+  right: 20px;
+}
+:root .app-shell[data-stage-controls-layout="popup"] .stage-control-tray { padding: 20px; }
+:root .playback-sheet-status-header {
+  /* Controls have a -4px optical offset: both outer insets are 16px. */
+  padding: 20px 16px 4px 20px;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto minmax(min-content, 1fr);
+}
+:root .playback-sheet-status-label { grid-column: 1; grid-row: 1; }
+:root[data-ui-client="remote"] .playback-sheet-collapse { grid-column: 2; grid-row: 1; background: transparent; }
+/* Equal outer tracks center collapse; the actions' minimum width shifts it
+   left only when the right-hand buttons need more room. */
+:root .playback-sheet-status-actions { grid-column: 3; grid-row: 1; flex-wrap: nowrap; }
+:root .playback-sheet-status-header.is-stacked-actions { grid-template-columns: minmax(0, 1fr) auto; }
+:root .playback-sheet-status-header.is-stacked-actions .playback-sheet-collapse { grid-column: 2; }
+:root .playback-sheet-status-header.is-stacked-actions .playback-sheet-status-actions { grid-column: 1 / -1; grid-row: 2; }
+
+/* Scrolling does not add header/footer separators. */
+:root :is(.selection-modal-head, .binding-sheet-head, .playback-sheet-status-header,
+  .settings-workspace-head, .request-workspace-head, .request-mode-head, .pending-review-head) {
+  border-bottom: 0;
+}
+:root :is(.selection-modal-actions, .binding-sheet-actions, .pending-review-actions) {
+  border-top: 0;
+}
+
+/* This footer scrolls with the settings content; it cannot obscure that content. */
+:root .settings-workspace-body .cache-panel-footer { border-top-color: transparent; }
+
 :root :is(.confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,

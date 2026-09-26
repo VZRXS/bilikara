@@ -84,7 +84,6 @@
 
   --qr-popover-bg: rgba(255, 252, 247, 0.98);
   --qr-popover-border: 1px solid rgba(67, 53, 41, 0.1);
-  --qr-popover-close-bg: rgba(255, 255, 255, 0.8);
 
   --theme-switch-button-bg: #fffaf4;
   --theme-switch-button-border: 1px solid rgba(67, 53, 41, 0.08);
@@ -1185,10 +1184,9 @@ h1 {
   color: var(--muted);
 }
 
-/* Keep the one-line status slot after completion, without announcing empty text. */
-#current-cache-state.ready {
-  visibility: hidden;
-}
+/* Progress occupies the uploader's single line, never an additional row. */
+#current-cache-state { height: 20px; min-height: 20px; white-space: nowrap; }
+#current-meta:empty { display: none; }
 
 #current-cache-state .cache-state-text {
   min-width: 0;
@@ -1211,35 +1209,12 @@ h1 {
 .audio-variant-bar {
   position: relative;
   z-index: 9;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px;
+  display: flex;
   gap: 8px;
   align-items: center;
   min-width: 0;
   min-height: 44px;
   margin-top: 14px;
-}
-
-.audio-variant-summary {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  height: 44px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: var(--variant-toggle-bg);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.audio-variant-summary-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .audio-variant-popover[hidden] {
@@ -3803,12 +3778,6 @@ select:disabled {
   }
 }
 
-@media (max-width: 420px) {
-  #remote-av-sync-panel .remote-step-button .step-symbol {
-    display: none;
-  }
-}
-
 .rating-modal {
   position: fixed;
   inset: 0;
@@ -3980,7 +3949,7 @@ body.remote-identity-modal-open {
   height: 32px;
   border: 0;
   border-radius: 50%;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -4077,6 +4046,11 @@ body.remote-identity-modal-open {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.rating-actions [data-rating-submit] {
+  --remote-primary-button-disabled-bg: var(--remote-secondary-button-disabled-bg);
+  --remote-primary-button-disabled-color: var(--remote-secondary-button-disabled-color);
 }
 
 .rating-message {
@@ -4622,7 +4596,7 @@ body.remote-identity-modal-open {
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
-  padding: 14px 16px 10px;
+  padding: 8px 16px 10px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -4639,7 +4613,7 @@ body.remote-identity-modal-open {
 .playback-sheet-primary {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .playback-sheet-secondary {
@@ -4775,6 +4749,8 @@ body.remote-identity-modal-open {
 .playback-metadata-field[data-playback-metadata-field="owner"] .current-owner-line {
   display: flex;
   align-items: flex-start;
+  height: 20px;
+  line-height: 20px;
 }
 
 .playback-metadata-field[data-playback-metadata-field="owner"] .owner-badge {
@@ -4806,12 +4782,13 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet .current-cache-retry {
-  flex: 0 0 44px;
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
-  min-height: 44px;
-  margin-left: 2px;
+  flex: 0 0 20px;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin-left: 4px;
 }
 
 .playback-sheet-playback-group > .audio-variant-bar {
@@ -4819,9 +4796,10 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet-primary .audio-variant-button,
-.playback-sheet-primary .audio-variant-toggle,
-.playback-sheet button {
+.playback-sheet-primary .audio-variant-toggle {
+  height: 44px;
   min-height: 44px;
+  padding-block: 0;
 }
 
 .playback-sheet-primary .audio-variant-toggle {
@@ -4834,7 +4812,10 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet .player-control-row button {
+  width: 44px;
+  height: 44px;
   min-height: 44px;
+  padding: 0;
 }
 
 .playback-sheet-settings-card {
@@ -4918,7 +4899,9 @@ body.remote-identity-modal-open {
 .volume-adjust-popover .remote-step-button,
 .volume-adjust-popover .remote-reset-button,
 .volume-adjust-popover .remote-input-wrap {
+  height: 44px;
   min-height: 44px;
+  padding-block: 0;
 }
 
 .playback-sheet .remote-lock-button svg,
@@ -5194,7 +5177,6 @@ html.remote-modal-scroll-locked {
 
   --qr-popover-bg: rgba(30, 26, 23, 0.98);
   --qr-popover-border: 1px solid rgba(246, 241, 235, 0.12);
-  --qr-popover-close-bg: rgba(48, 41, 37, 0.8);
 
   --theme-switch-button-bg: #13110f;
   --theme-switch-button-border: 1px solid rgba(246, 241, 235, 0.12);
@@ -5307,7 +5289,6 @@ html.remote-modal-scroll-locked {
   --audio-variant-popover-bg: #111928;
   --qr-popover-bg: rgba(8, 18, 32, 0.98);
   --qr-popover-border: 1px solid rgba(148, 202, 233, 0.16);
-  --qr-popover-close-bg: rgba(15, 30, 50, 0.8);
   --theme-switch-button-bg: #020617;
   --theme-switch-button-border: 1px solid rgba(148, 202, 233, 0.18);
   --theme-preview-active-border: var(--on-accent);
@@ -5435,7 +5416,6 @@ html.remote-modal-scroll-locked {
   --variant-toggle-color: var(--accent);
   --qr-popover-bg: rgba(17, 25, 40, 0.98);
   --qr-popover-border: 1px solid rgba(255, 255, 255, 0.12);
-  --qr-popover-close-bg: rgba(30, 41, 59, 0.8);
   --theme-switch-button-bg: #050810;
   --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
   --rating-tab-bg: rgba(5, 8, 16, 0.54);
@@ -5692,7 +5672,7 @@ html.remote-modal-scroll-locked {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
   cursor: pointer;
@@ -5789,16 +5769,40 @@ html[data-remote-transport="internet-pending"] body {
 /* Touch controls keep their position on hover and press. */
 button:is(:hover, :active) { transform: none !important; }
 
-.audio-variant-bar.is-inline { display: block; }
-.audio-variant-bar.is-inline > :is(.audio-variant-summary, .audio-variant-toggle) { display: none; }
-.audio-variant-bar.is-inline > .audio-variant-list {
+.audio-variant-bar > .audio-variant-toggle { flex: 0 0 44px; margin-left: auto; }
+.audio-variant-bar.is-inline > .audio-variant-toggle { display: none; }
+.audio-variant-bar > .audio-variant-list {
   display: flex;
   gap: 8px;
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
-.audio-variant-bar.is-inline .audio-variant-button {
+.audio-variant-bar .audio-variant-button {
   flex: 0 0 auto;
   white-space: nowrap;
+  max-width: 100%;
+}
+.playback-metadata-field.is-marquee {
+  overflow: hidden;
+}
+.playback-metadata-field.is-marquee .playback-metadata-text {
+  display: block;
+  width: max-content;
+  max-width: none;
+  white-space: nowrap;
+  overflow: visible;
+  animation: playback-metadata-scroll var(--playback-marquee-duration, 12s) linear infinite;
+}
+@keyframes playback-metadata-scroll {
+  0%, 15% { transform: translateX(0); }
+  75%, 90% { transform: translateX(calc(-1 * var(--playback-marquee-distance, 0px))); }
+  100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .playback-metadata-field.is-marquee { overflow-x: auto; }
+  .playback-metadata-field.is-marquee .playback-metadata-text { animation: none; }
 }
 
 /* Match centered modal motion across Remote dialogs. */

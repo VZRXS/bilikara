@@ -809,7 +809,7 @@ p {
 }
 
 .banner-close {
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
   padding: 0;
@@ -821,7 +821,7 @@ p {
 
 .banner-close:hover,
 .banner-close:focus-visible {
-  background: var(--close-control-hover-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
 }
 
@@ -6967,7 +6967,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   display: grid;
   place-items: center;
   padding: 0;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
   cursor: pointer;
@@ -6978,7 +6978,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .rating-close:hover {
-  background: var(--close-control-hover-bg);
+  background: var(--btn-secondary-bg);
 }
 
 .rating-close:focus-visible {
@@ -10053,6 +10053,17 @@ body.is-presentation-stage-only .left-column {
   justify-self: end;
 }
 
+/* Dialogs without an eyebrow align their title and actions on one row. */
+.selection-modal-head.host-peer-head:not(:has(.section-tag)) {
+  grid-template-rows: auto;
+  row-gap: 0;
+}
+
+.selection-modal-head.host-peer-head:not(:has(.section-tag)) :is(h2, .binding-modal-title-row),
+.selection-modal-head.host-peer-head:not(:has(.section-tag)) > :not(.host-peer-heading) {
+  grid-row: 1;
+}
+
 .player-panel > .panel-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -10506,10 +10517,6 @@ body.is-presentation-stage-only .left-column {
 .app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-reset-button,
 .app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-lock-button {
   padding-inline: 5px;
-}
-
-.app-shell[data-stage-control-density="plain"] .av-sync-step-symbol {
-  display: none;
 }
 
 @media (max-width: 760px) {
@@ -11871,13 +11878,6 @@ html[data-host-platform="desktop"] #application-restart-row { display: none !imp
   line-height: 1.5;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-}
-:root :is(.selection-modal-head h2, .app-shell .song-detail-title, .rating-title, .volume-adjust-heading h2) {
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.35;
-  letter-spacing: normal;
-  white-space: normal;
 }
 html .song-detail-view, html .selection-modal-backdrop, html .rating-modal-backdrop {
   backdrop-filter: none;

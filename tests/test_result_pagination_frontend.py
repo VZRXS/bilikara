@@ -91,6 +91,21 @@ assert.equal(pages.items.length, 12);
 assert.equal(pages.peek(4)[0].id, 36);
 """)
 
+    def test_three_row_grids_support_odd_column_counts_without_resetting_pages(self):
+        self.run_case("""
+for (const size of [3, 9, 15, 21]) {
+  const pages = new Pages();
+  const options = initial({items:items(0, 80), total:80, hasMore:false, pageSize:size});
+  pages.update(options);
+  assert.equal(pages.pageSize, size);
+  await pages.goTo(2);
+  pages.update(options);
+  assert.equal(pages.page, 2);
+  assert.equal(pages.items[0].id, size);
+  assert.equal(pages.items.length, size);
+}
+""")
+
     def test_pending_and_failed_navigation_preserve_current_page_and_allow_retry(self):
         self.run_case("""
 let reject, calls = 0;
