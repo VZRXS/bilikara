@@ -34,6 +34,17 @@
   overscroll-behavior-y: auto;
 }
 
+/* A paged category home needs the same row gap as the search/source views. */
+.request-panel .category-browser-home:has(> .result-pager) {
+  display: grid;
+  gap: 12px;
+}
+
+/* Reserve focus-ring space inside the shared footer gap, not in addition to it. */
+.request-panel .has-result-pages {
+  padding-bottom: 2px;
+}
+
 .result-page-viewport,
 .has-result-pages,
 .has-result-pages .search-result-item,
@@ -68,8 +79,8 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
-  /* The containing grid already contributes 12px; leave 4px above the footer. */
-  margin-top: -8px;
+  /* 12px grid gap + 2px list padding - 10px leaves 4px above the footer. */
+  margin-top: -10px;
   color: var(--muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;

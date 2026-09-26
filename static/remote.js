@@ -2458,7 +2458,7 @@ function renderRatingPromptContent() {
   const owner = document.createElement("p");
   owner.className = "rating-owner";
   window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
-  copy.append(title, owner);
+  copy.append(owner);
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
@@ -2473,7 +2473,7 @@ function renderRatingPromptContent() {
   score.append(root.querySelector(".rating-stars"));
   copy.appendChild(score);
   media.appendChild(copy);
-  content.replaceChildren(media);
+  content.replaceChildren(title, media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
@@ -3250,11 +3250,27 @@ function scheduleRender() {
 
 function renderCacheStatusOnly(previousSnapshot = null) {
   const currentItem = state.data?.current_item;
-  if (currentItem) {
-    renderCurrentPlaybackState(currentItem);
+  const items = [currentItem, ...(state.data?.playlist || [])];
+  const identity = JSON.stringify([state.data?.state_epoch, ...items.filter(Boolean).map(item =>
+    [item.item_incarnation_id, item.cache_status])]);
+  const now = Date.now();
+  const elapsed = now - (state.cacheProgressPaintAt || 0);
+  if (identity !== state.cacheProgressPaintIdentity || elapsed >= 1000) {
+    window.clearTimeout(state.cacheProgressPaintTimer);
+    state.cacheProgressPaintTimer = null;
+    state.cacheProgressPaintIdentity = identity;
+    state.cacheProgressPaintAt = now;
+    if (currentItem) renderCurrentPlaybackState(currentItem);
+    renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
+  } else if (!state.cacheProgressPaintTimer) {
+    state.cacheProgressPaintTimer = window.setTimeout(() => {
+      state.cacheProgressPaintTimer = null;
+      renderCacheStatusOnly(state.data);
+    }, Math.max(1, 1000 - elapsed));
   }
-  renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
   if (playerStatusSignature(previousSnapshot) !== playerStatusSignature(state.data)) {
+    // Seek/pause/duration acknowledgements must not wait for the cache display.
+    if (currentItem?.cache_status === "ready") renderCurrentPlaybackState(currentItem);
     renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
   }
 }
@@ -3309,6 +3325,9 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   }
   syncRemoteIdentityWithSnapshot(snapshot);
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
+  if (JSON.stringify(previousSnapshot?.gatcha) !== JSON.stringify(snapshot.gatcha)) {
+    renderSourceManagementControls();
+  }
 
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
@@ -4129,6 +4148,66 @@ function renderSearchResultItems(container, items, emptyText = "") {
   pager.update(remoteResultPaginationOptions(container, Array.isArray(items) ? items : [], emptyText));
 }
 
+const remoteGridSources = new WeakMap();
+function renderRemoteGridPages(container, items, key, renderPage, {loading = false, emptyText = ""} = {}) {
+  let source = remoteGridSources.get(container);
+  const signature = JSON.stringify([key, items]);
+  if (!source || source.signature !== signature) {
+    source = {signature, items};
+    remoteGridSources.set(container, source);
+  }
+  let pager = remoteResultPagers.get(container);
+  if (!pager) {
+    pager = window.BilikaraResultPager.create(container, {
+      translate: t,
+      renderItems: (page, message, target = container) => renderPage(target, page, message),
+      reportError: message => setAppMessage(message, true),
+    });
+    remoteResultPagers.set(container, pager);
+  }
+  pager.update({key, items:source.items, total:items.length, pageSize:12, limited:true, hasMore:false,
+    loading, emptyText, language:state.language});
+}
+
+function renderSourceCardPage(container, entries, emptyText, favorites = false) {
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = emptyText;
+    container.append(empty);
+  }
+  for (const entry of entries) {
+    const id = String(favorites ? entry.id : entry.uid);
+    const title = favorites ? String(entry.title || id || t("favlist.folder")) : followOwnerDisplayName(entry);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = favorites ? "follow-up-button favlist-browse-button" : "follow-up-button";
+    button.dataset[favorites ? "folderId" : "uid"] = id;
+    button.title = title;
+    const name = document.createElement("span");
+    name.className = "follow-up-name";
+    name.textContent = title;
+    const count = document.createElement("span");
+    count.className = "follow-up-count";
+    count.textContent = t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
+      count:Number((favorites ? entry.media_count : entry.count) || entry.count || 0),
+    });
+    button.append(name, count);
+    if (entry.avatar_url) {
+      const avatar = document.createElement("img");
+      avatar.className = "follow-up-avatar";
+      avatar.alt = "";
+      avatar.loading = "lazy";
+      avatar.referrerPolicy = "no-referrer";
+      avatar.src = entry.avatar_url;
+      button.append(avatar);
+    }
+    window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
+    container.append(button);
+  }
+}
+
 function hideRemoteResultPager(container) {
   if (container) remoteResultPagers.get(container)?.hide();
 }
@@ -4665,9 +4744,8 @@ function renderCategoryBrowseView() {
   home?.classList.toggle("hidden", Boolean(selected));
   detail?.classList.toggle("hidden", !selected);
   if (grid && !selected) {
-    grid.innerHTML = "";
-    categories.forEach((category) => {
-      grid.appendChild(createCategoryBrowseCard(category));
+    renderRemoteGridPages(grid, categories, `categories:${state.language}`, (target, entries) => {
+      target.replaceChildren(...entries.map(category => createCategoryBrowseCard(category)));
     });
   }
   if (!selected) {
@@ -4812,46 +4890,11 @@ function renderFavlistBrowse() {
       elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
       elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
     }
-    elements.favlistGrid.innerHTML = "";
-    if (!folders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
-      elements.favlistGrid.appendChild(empty);
-    } else {
-      folders.forEach((folder) => {
-        const folderId = String(folder.id || "").trim();
-        const title = String(folder.title || folderId || t("favlist.folder")).trim();
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "follow-up-button favlist-browse-button";
-        button.dataset.folderId = folderId;
-        button.title = title;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name favlist-browse-name";
-        name.textContent = title;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count favlist-browse-count";
-        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (folder.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          avatar.src = folder.avatar_url;
-          button.append(avatar);
-        }
-
-        elements.favlistGrid.appendChild(button);
+    renderRemoteGridPages(elements.favlistGrid, folders, "favorites", (target, entries, message) =>
+      renderSourceCardPage(target, entries, message, true), {
+        loading:state.favlistBrowseLoading,
+        emptyText:t(state.favlistBrowseLoading ? "favlist.loadingFolders" : "favlist.noBrowseFolders"),
       });
-    }
     setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
     syncRemoteRequestPanelSizeTier();
     return;
@@ -5236,45 +5279,10 @@ function renderSourcesFollowBrowse() {
   if (!hasSelectedUid) {
     hideRemoteResultPager(elements.sourcesFollowResults);
     window.BilikaraBrowseSearch?.reset(elements.sourcesFollowSearchForm);
-    elements.sourcesFollowGrid.innerHTML = "";
-    if (!owners.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
-      elements.sourcesFollowGrid.appendChild(empty);
-    } else {
-      owners.forEach((owner) => {
-        const displayName = followOwnerDisplayName(owner);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "follow-up-button";
-        button.dataset.uid = String(owner.uid || "");
-        button.title = displayName;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name";
-        name.textContent = displayName;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count";
-        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (owner.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar";
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          avatar.src = owner.avatar_url;
-          button.append(avatar);
-        }
-
-        elements.sourcesFollowGrid.appendChild(button);
-      });
-    }
+    renderRemoteGridPages(elements.sourcesFollowGrid, owners, "uids", renderSourceCardPage, {
+      loading:state.followBrowseLoading,
+      emptyText:t(state.followBrowseLoading ? "follow.loadingOwners" : "follow.noOwners"),
+    });
     setSourcesFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
     syncRemoteRequestPanelSizeTier();
     return;
@@ -5636,11 +5644,12 @@ function syncPlaybackMetadataFieldVisibility() {
     const visible = Boolean(
       element
       && !element.classList.contains("hidden")
+      && !(wrapper.dataset.playbackMetadataField === "owner" && state.data?.current_item?.cache_status !== "ready")
       && element.textContent?.trim(),
     );
     wrapper.classList.toggle("hidden", !visible);
     if (!visible) {
-      wrapper.classList.remove("is-clamped", "is-disclosable");
+      wrapper.classList.remove("is-clamped", "is-disclosable", "is-marquee");
       wrapper.style.removeProperty("--playback-metadata-lines");
       wrapper.removeAttribute("role");
       wrapper.removeAttribute("tabindex");
@@ -5829,7 +5838,7 @@ function playbackMetadataLineHeight(element) {
 }
 
 function resetPlaybackMetadataFieldForMeasurement({ wrapper }) {
-  wrapper.classList.remove("is-clamped", "is-disclosable");
+  wrapper.classList.remove("is-clamped", "is-disclosable", "is-marquee");
   wrapper.style.removeProperty("--playback-metadata-lines");
   wrapper.removeAttribute("role");
   wrapper.removeAttribute("tabindex");
@@ -5840,7 +5849,8 @@ function resetPlaybackMetadataFieldForMeasurement({ wrapper }) {
 
 function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
   const { wrapper, element, labelKey } = entry;
-  const lines = Math.max(1, Math.min(naturalLines, visibleLines));
+  const lines = entry.key === "title" ? (naturalLines <= 2 ? naturalLines : 1)
+    : entry.key === "owner" ? 1 : Math.max(1, Math.min(naturalLines, visibleLines));
   const expectedClipping = lines < naturalLines;
   wrapper.style.setProperty("--playback-metadata-lines", String(lines));
   wrapper.classList.toggle("is-clamped", expectedClipping);
@@ -5853,6 +5863,13 @@ function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
     || clipsMultiline
   ));
   wrapper.classList.toggle("is-disclosable", truncated);
+  if (entry.key === "title" && truncated) {
+    wrapper.classList.remove("is-clamped");
+    wrapper.classList.add("is-marquee");
+    const distance = Math.max(0, element.scrollWidth - wrapper.clientWidth);
+    wrapper.style.setProperty("--playback-marquee-distance", `${distance}px`);
+    wrapper.style.setProperty("--playback-marquee-duration", `${Math.max(10, distance / 24 + 4)}s`);
+  }
   wrapper.dataset.naturalLines = String(naturalLines);
   wrapper.dataset.visibleLines = String(truncated ? lines : naturalLines);
   wrapper.dataset.truncated = String(truncated);
@@ -6581,16 +6598,27 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
 
 function syncAudioVariantLayout() {
   const bar = elements.audioVariantBar;
-  const list = bar?.querySelector(".audio-variant-list") || elements.audioVariantPopover?.querySelector(".audio-variant-list");
+  const list = bar?.querySelector(".audio-variant-list");
   if (!list || !bar.clientWidth) return;
   bar.classList.add("is-inline");
-  bar.append(list);
-  const fits = list.scrollWidth <= bar.clientWidth + 1;
+  const buttons = [...list.children];
+  buttons.forEach(button => button.classList.remove("hidden"));
+  const fits = list.scrollWidth <= list.clientWidth + 1;
   if (fits) {
     setAudioVariantPopoverOpen(false);
   } else {
     bar.classList.remove("is-inline");
-    elements.audioVariantPopover?.replaceChildren(list);
+    const available = list.clientWidth;
+    const gap = playbackCssPixels(getComputedStyle(list).columnGap);
+    const selected = buttons.find(button => button.classList.contains("active")) || buttons[0];
+    let used = selected?.getBoundingClientRect().width || 0;
+    for (const button of buttons) {
+      if (button === selected) continue;
+      const width = button.getBoundingClientRect().width;
+      const show = used + gap + width <= available + 1;
+      button.classList.toggle("hidden", !show);
+      if (show) used += gap + width;
+    }
   }
 }
 
@@ -6627,14 +6655,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
   elements.audioVariantBar.replaceChildren();
-
-  const summary = document.createElement("span");
-  summary.className = "audio-variant-summary";
-  const summaryLabel = document.createElement("span");
-  summaryLabel.className = "audio-variant-summary-label";
-  summaryLabel.textContent = selectedVariant?.label || variants[0]?.label || variants[0]?.id || "";
-  summary.title = summaryLabel.textContent;
-  summary.appendChild(summaryLabel);
 
   const toggleButton = document.createElement("button");
   toggleButton.type = "button";
@@ -6676,8 +6696,8 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     list.appendChild(button);
   });
 
-  elements.audioVariantPopover?.replaceChildren(list);
-  elements.audioVariantBar.append(summary, toggleButton);
+  elements.audioVariantPopover?.replaceChildren(list.cloneNode(true));
+  elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
   syncAudioVariantLayout();
   setAudioVariantPopoverOpen(state.audioVariantBarExpanded);
@@ -8100,7 +8120,8 @@ function syncCurrentCacheState(current) {
     }
   }
   const ready = current.cache_status === "ready";
-  elements.currentCacheState.classList.toggle("hidden", !label && !showRetry && !ready);
+  elements.currentCacheState.classList.toggle("hidden", ready || (!label && !showRetry));
+  syncPlaybackMetadataFieldVisibility();
   elements.currentCacheState.setAttribute("aria-hidden", String(ready));
 }
 

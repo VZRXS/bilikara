@@ -1,17 +1,3 @@
-/* Opaque close surfaces stay legible over arbitrary cover art in every theme. */
-:root {
-  --close-control-bg: #eee9e3;
-  --close-control-hover-bg: #e3dbd2;
-}
-:root[data-theme="dark"] {
-  --close-control-bg: #353230;
-  --close-control-hover-bg: #49433e;
-}
-:root[data-theme="blue"] {
-  --close-control-bg: #173c56;
-  --close-control-hover-bg: #234e69;
-}
-
 .song-detail-view {
   position: absolute;
   inset: 0;
@@ -95,7 +81,7 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   box-shadow: none;
   font: 400 20px/0 sans-serif;
@@ -112,7 +98,7 @@
   .request-workspace .song-detail-close:focus-visible,
   .selection-modal .song-detail-close:hover,
   .selection-modal .song-detail-close:focus-visible {
-    background: var(--close-control-hover-bg);
+    background: var(--btn-secondary-bg);
   }
 }
 

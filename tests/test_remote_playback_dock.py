@@ -366,7 +366,7 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
             self.script.index("function syncCurrentCacheState") :
             self.script.index("function currentCacheStateLabel")
         ]
-        self.assertIn('classList.toggle("hidden", !label && !showRetry && !ready)', cache_sync_source)
+        self.assertIn('classList.toggle("hidden", ready || (!label && !showRetry))', cache_sync_source)
         self.assertIn('setAttribute("aria-hidden", String(ready))', cache_sync_source)
 
     def test_audio_variant_bar_is_one_row_with_one_scrollable_popover_owner(self):
@@ -384,15 +384,14 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
             self.script,
         )
         self.assertIn("return elements.audioVariantPopover", render_source)
-        self.assertIn('summary.className = "audio-variant-summary"', render_source)
-        self.assertIn('summaryLabel.className = "audio-variant-summary-label"', render_source)
+        self.assertNotIn('"audio-variant-summary"', render_source)
         self.assertIn('label.className = "audio-variant-button-label"', render_source)
         self.assertIn('toggleButton.setAttribute("aria-controls", "audio-variant-popover")', render_source)
         self.assertIn('toggleButton.setAttribute("aria-haspopup", "true")', render_source)
         self.assertIn("popover.hidden = !nextOpen", render_source)
         self.assertIn("window.requestAnimationFrame(positionAudioVariantPopover)", render_source)
         self.assertIn('const direction = spaceAbove >= minimumUsefulHeight ? "up" : "down"', render_source)
-        self.assertIn("elements.audioVariantPopover?.replaceChildren(list)", render_source)
+        self.assertIn("elements.audioVariantPopover?.replaceChildren(list.cloneNode(true))", render_source)
         self.assertIn(
             'document.createElementNS("http://www.w3.org/2000/svg", "svg")',
             render_source,
@@ -403,18 +402,11 @@ console.log(JSON.stringify({{ ready: currentCacheStateLabel({{ cache_status: "re
         self.assertEqual(render_source.count("list.appendChild(button)"), 1)
 
         bar_rule = re.search(r"\.audio-variant-bar\s*\{([^}]*)\}", self.styles).group(1)
-        self.assertIn("grid-template-columns: minmax(0, 1fr) 44px", bar_rule)
+        self.assertIn("display: flex", bar_rule)
         self.assertIn("min-height: 44px", bar_rule)
-        summary_rule = re.search(r"\.audio-variant-summary\s*\{([^}]*)\}", self.styles).group(1)
-        self.assertIn("height: 44px", summary_rule)
-        self.assertNotIn("border:", summary_rule)
-        summary_label_rule = re.search(
-            r"\.audio-variant-summary-label\s*\{([^}]*)\}",
-            self.styles,
-        ).group(1)
-        self.assertIn("overflow: hidden", summary_label_rule)
-        self.assertIn("white-space: nowrap", summary_label_rule)
-        self.assertIn("text-overflow: ellipsis", summary_label_rule)
+        self.assertIn('elements.audioVariantBar.append(list, toggleButton)', render_source)
+        self.assertIn('button.classList.toggle("hidden", !show)', render_source)
+        self.assertIn('const fits = list.scrollWidth <= list.clientWidth + 1', render_source)
         popover_rule = re.search(r"\.audio-variant-popover\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("position: absolute", popover_rule)
         self.assertIn("z-index: 40", popover_rule)
@@ -661,7 +653,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
             self.assertIn(declaration, transport_button_rule)
         phone_rules = self.styles[
             self.styles.index("@media (max-width: 520px)") :
-            self.styles.index("@media (max-width: 420px)")
+            self.styles.index(".rating-modal {")
         ]
         self.assertNotIn(".player-control-row", phone_rules)
 
@@ -801,7 +793,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
     def test_sheet_is_content_sized_and_transport_reuses_one_dom_in_two_modes(self):
         body_rule = re.search(r"\.playback-sheet-body\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("flex: 0 1 auto", body_rule)
-        self.assertIn("padding: 14px 16px 10px", body_rule)
+        self.assertIn("padding: 8px 16px 10px", body_rule)
         panel_rule = re.search(r"\.playback-sheet-panel\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("padding-bottom: var(--remote-safe-area-bottom)", panel_rule)
         primary_rule = re.search(r"\.playback-sheet-primary\s*\{([^}]*)\}", self.styles).group(1)

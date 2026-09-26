@@ -1014,12 +1014,12 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertNotIn("transform: scale(1.04);", detail_css)
         self.assertNotIn(".song-detail-close:active", detail_css)
         self.assertNotIn("transform: translateY(-1px);", detail_css)
-        for css in (host_css, remote_css):
-            self.assertIn("background: var(--close-control-bg);", css)
+        shared_css = (ROOT / "static" / "ui-surfaces.css").read_text(encoding="utf-8")
+        for css in (host_css, remote_css, detail_css, shared_css):
+            self.assertIn("background: var(--btn-secondary-bg);", css)
+            self.assertNotIn("--close-control", css)
+            self.assertNotIn("--qr-popover-close-bg", css)
             self.assertNotIn("--rating-close-bg:", css)
-        self.assertIn("--close-control-bg: #eee9e3;", detail_css)
-        self.assertIn("--close-control-bg: #353230;", detail_css)
-        self.assertIn("--close-control-bg: #173c56;", detail_css)
         for selector in (".binding-sheet-close", ".rating-close"):
             self.assertIn(selector, remote_css)
         shared_remote_close_rule = re.search(
@@ -1027,7 +1027,7 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
             r"\.rating-close\s*\{([^}]*)\}",
             remote_css,
         ).group(1)
-        self.assertIn("background: var(--close-control-bg);", shared_remote_close_rule)
+        self.assertIn("background: var(--btn-secondary-bg);", shared_remote_close_rule)
         self.assertIn("transition: none;", shared_remote_close_rule)
 
     def test_mobile_remote_song_detail_close_is_svg_without_optical_correction(self):

@@ -5814,7 +5814,7 @@ function renderRatingPromptContent() {
   const owner = document.createElement("p");
   owner.className = "rating-owner";
   window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
-  copy.append(title, owner);
+  copy.append(owner);
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
@@ -5829,7 +5829,7 @@ function renderRatingPromptContent() {
   score.append(root.querySelector(".rating-stars"));
   copy.appendChild(score);
   media.appendChild(copy);
-  content.replaceChildren(media);
+  content.replaceChildren(title, media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);

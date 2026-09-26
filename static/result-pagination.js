@@ -39,7 +39,7 @@
     }
 
     update(options) {
-      const size = [6, 12, 18, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
+      const size = [3, 6, 9, 12, 15, 18, 21, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
       const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
       const firstItem = (this.page - 1) * this.pageSize;
       const changed = !sameSource || this.pageSize !== size;

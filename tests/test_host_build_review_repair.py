@@ -221,7 +221,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             ".selection-modal-actions .next-button",
             self.styles,
         )
-        self.assertIn("background: var(--close-control-bg)", self.styles)
+        self.assertIn("background: var(--btn-secondary-bg)", self.styles)
         self.assertNotIn(".banner-close:active:not(:disabled)", self.styles)
         self.assertNotIn(".rating-close:active:not(:disabled)", self.styles)
 
@@ -838,7 +838,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
     def test_stage_density_prefers_full_frame_and_checks_group_overflow(self):
         self.assertIn('data-stage-control-density="compact"', self.styles)
         self.assertIn('data-stage-control-density="plain"', self.styles)
-        self.assertIn('class="av-sync-step-symbol"', self.markup)
+        for markup, attribute in ((self.markup, "data-step"), (self.remote_markup, "data-av-step")):
+            for step in (-200, -50, 50, 200):
+                label = f"{step:+d}"
+                self.assertRegex(markup, rf'{attribute}="{step}">{re.escape(label)}</button>')
         self.assertIn("controls.scrollWidth <= controls.clientWidth + 1", self.script)
         self.assertIn("fullFrameWithInlineControlsFits", self.script)
         self.assertIn("findStageControlFit", self.script)

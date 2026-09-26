@@ -116,7 +116,7 @@
     const resetClass = isRemote ? "ghost-button remote-reset-button" : "toolbar-button ghost av-sync-reset-button";
     const inputClass = isRemote ? "remote-input-wrap" : "av-sync-input-wrap";
     dialog.innerHTML = `<form>
-      <div class="volume-adjust-heading"><h2></h2><button type="button" class="rating-close" data-volume-close>×</button></div>
+      <div class="volume-adjust-heading"><h2></h2><button type="button" class="rating-close" data-volume-close><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
       <div class="volume-adjust-fields">
         <button type="button" class="${stepClass}" data-volume-step="-10">−10</button>
         <label class="${inputClass}"><input type="number" min="0" max="500" step="1" inputmode="numeric" required><span>%</span></label>
