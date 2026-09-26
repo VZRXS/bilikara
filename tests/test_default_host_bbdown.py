@@ -278,20 +278,18 @@ class DefaultHostBBDownTest(unittest.TestCase):
         self.assertIn("BBDown unavailable", self.store.get_item(item.id).cache_message)
         self.assertEqual(len(self.receipts()), count)
 
-    def test_missing_login_fails_before_preparation_and_metadata_http_failure_is_safe(self):
-        item = self.add()
-        with patch("bilikara.cache.effective_bilibili_cookie", return_value=""), patch.object(
-            self.manager, "_ensure_bbdown", side_effect=AssertionError("preparation before login")):
+    def test_guest_download_succeeds_and_metadata_http_failure_is_safe(self):
+        item = self.add(pages=(1,))
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value=""), patch.dict(
+            os.environ, {"BILIKARA_BBDOWN_EXPECT_COOKIE": ";"}):
             self.manager.sync_with_playlist()
-            self.status(item, "failed")
-            self.assertIn("下载需要登录", self.store.get_item(item.id).cache_message)
-            with self.assertRaisesRegex(ValueError, "下载需要登录"):
-                self.manager.retry_item(item.id, expected_item_incarnation_id=item.item_incarnation_id)
-        self.assertEqual(self.receipts(), [])
+            self.status(item, "ready")
+        self.assertEqual(len(self.receipts()), 2)
         self.net.status = 412
-        self.manager.retry_item(item.id, expected_item_incarnation_id=item.item_incarnation_id)
+        item = self.add("http-failure", pages=(1,))
+        self.manager.sync_with_playlist()
         self.wait_for(lambda: "412" in self.store.get_item(item.id).cache_message)
-        self.assertEqual(self.receipts(), [])
+        self.assertEqual(len(self.receipts()), 2)
 
     def test_urgent_bbdown_and_legacy_handoff_drain_before_new_owner(self):
         current = self.add("current", pages=(1,))

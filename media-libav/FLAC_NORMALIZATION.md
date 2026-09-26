@@ -21,6 +21,10 @@ stream 都违反契约。源 `moov`/`mdat` envelope 使用既有 S3 检查：met
 `start_time`、initial/trailing padding、seek preroll、packet PTS/DTS/duration、skip/discard
 side data、`nb_frames`、stream duration 和已知 STREAMINFO sample count 检查可见偏移、
 间隙、裁剪、重复和配置改变；不兼容时返回 `unsupported_container_layout`。
+DASH 封装可能产生毫秒级时间戳量化（实测最大 1.5 ms）。FLAC 帧头解析器提供真实
+block sample count；逐帧边界与时长允许最多 2 ms 的容器舍入差，采样总数仍须与已知
+STREAMINFO 完全相等，demux PTS/DTS 仍须从零严格连续。不会累积舍入误差、重采样或
+按容器时长删减样本；超过该界限、偏移、间隙和裁剪仍拒绝。
 这不是任意 MP4 edit list 的证明/解析器；无法表达为该样本序列的 presentation timeline
 不在支持范围，raw FLAC 不保留容器 edit lists、gaps、trims 或 presentation offsets。
 不会通过改变音频样本修复时间。fixture 演示的是这个连续、未裁剪的常见 profile。

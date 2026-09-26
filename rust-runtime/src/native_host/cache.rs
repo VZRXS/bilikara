@@ -15,7 +15,12 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
         let mut last_error=String::new();
         let mut last_cleanup=std::time::Instant::now();
         let mut last_metrics=None::<std::time::Instant>;
+        let mut last_integrity_check=std::time::Instant::now();
         while !context.stop.load(Ordering::Acquire){
+            if last_integrity_check.elapsed() >= Duration::from_secs(2) {
+                fingerprint.clear();
+                last_integrity_check=std::time::Instant::now();
+            }
             let _ = with_app(|app| {
                 if app.native().updates.expire(now()) { app.native().revision += 1; }
                 Ok(())
@@ -153,6 +158,45 @@ fn tick(
     if fingerprint == *last_fingerprint {
         return Ok(());
     }
+    if usable {
+        let mut invalidated = false;
+        for item in &items {
+            let ready = if item.cache_status == "ready" {
+                match job(context, item, &cookie, &policy, &effective) {
+                    Ok(job) => crate::cache_runtime::existing_artifacts_ready(&job),
+                    Err(error) => {
+                        project_problem(item, &error.message, true)?;
+                        invalidated = true;
+                        continue;
+                    }
+                }
+            } else {
+                true
+            };
+            if !ready {
+                execute_cache_runtime(CacheRuntimeCommand::Cancel {
+                    item_id: item.id.clone(),
+                    reason: "缓存文件已清空，等待重新缓存".into(),
+                })
+                .map_err(cache_error)?;
+                project_problem(item, "缓存文件已清空，等待重新缓存", false)?;
+                selections.insert(
+                    item.id.clone(),
+                    (item.item_incarnation_id.clone(), effective.clone(), false),
+                );
+                invalidated = true;
+            } else if item.cache_status == "failed"
+                && item.cache_message.starts_with("缓存不可用: ")
+            {
+                project_problem(item, "等待缓存", false)?;
+                invalidated = true;
+            }
+        }
+        if invalidated {
+            last_fingerprint.clear();
+            return Ok(());
+        }
+    }
     let runtime = execute_cache_runtime(CacheRuntimeCommand::Snapshot {}).map_err(cache_error)?;
     let known = |value: &str| items.iter().any(|item| item.id == value);
     let ids = |key: &str| -> Vec<String> {
@@ -180,8 +224,8 @@ fn tick(
                 cache_ready: item.cache_status == "ready",
             })
             .collect(),
-        max_items: if usable { policy.max_cache_items } else { 0 },
-        retention_limit: 0,
+        max_items: policy.max_cache_items,
+        retention_limit: 3,
         active_item_ids: active,
         primary_active_item_id: primary,
         urgent_item_ids: ids("urgent_item_ids"),
@@ -228,7 +272,8 @@ fn tick(
     let jobs = items
         .iter()
         .filter(|item| {
-            plan.desired_ids.contains(&item.id)
+            usable
+                && plan.desired_ids.contains(&item.id)
                 && (item.cache_status != "failed" || replaced.contains(&item.id))
         })
         .map(|item| job(context, item, &cookie, &policy, &effective))
@@ -246,9 +291,73 @@ fn tick(
         preempt_item_id: plan.preempt_ids.first().cloned().unwrap_or_default(),
     })
     .map_err(cache_error)?;
+    if !usable {
+        let message = format!(
+            "缓存不可用: {}",
+            if !policy.available_with(context.bbdown.is_some(), context.aria2().is_some()) {
+                format!(
+                    "{} 下载工具或设置不可用，请在 Host 检查下载源",
+                    policy.download_source
+                )
+            } else {
+                "Host 播放器不支持所需的视频解码，请检查媒体能力".into()
+            }
+        );
+        for item in items
+            .iter()
+            .take(policy.max_cache_items)
+            .filter(|item| item.cache_status != "ready")
+        {
+            if item.cache_status != "failed" || item.cache_message != message {
+                project_problem(item, &message, true)?;
+            }
+        }
+    }
     collect_logs(&context.directory)?;
     *last_fingerprint = fingerprint;
     Ok(())
+}
+
+fn project_problem(item: &PlaylistItem, message: &str, failed: bool) -> Result<(), ApiError> {
+    with_app(|app| {
+        let snapshot = app.native_core_snapshot()?;
+        // Disk inspection happens off-lock. Never clear a newly published
+        // replacement or a different incarnation based on that stale inspection.
+        if !snapshot
+            .current_item
+            .iter()
+            .chain(&snapshot.playlist)
+            .any(|live| {
+                live.id == item.id
+                    && live.item_incarnation_id == item.item_incarnation_id
+                    && live.artifact_set_id == item.artifact_set_id
+                    && live.cache_status == item.cache_status
+            })
+        {
+            return Ok(());
+        }
+        let reservation = app
+            .reserve_runtime_attempt(&item.id, &item.item_incarnation_id)
+            .map_err(|e| ApiError::new(409, &e.kind, e.message))?;
+        let event = if failed {
+            crate::app_state::CacheEvent::Failed {
+                message: message.into(),
+            }
+        } else {
+            crate::app_state::CacheEvent::Evicted {
+                message: message.into(),
+            }
+        };
+        app.native_execute(crate::app_state::AppStateRequest::ApplyCacheEvent {
+            schema_version: 1,
+            item_id: item.id.clone(),
+            cache_attempt_token: reservation.cache_attempt_token,
+            event,
+            now: now(),
+        })?;
+        app.settle_artifact_reservation(&reservation);
+        Ok(())
+    })
 }
 
 fn collect_logs(directory: &Path) -> Result<(), ApiError> {
@@ -311,6 +420,12 @@ fn visit_song_logs(
     Ok(())
 }
 
+pub(super) fn clear_song_logs(directory: &Path) -> Result<(), ApiError> {
+    visit_song_logs(directory, |path, _| {
+        std::fs::remove_file(path).map_err(|_| ApiError::new(503, "cache_log", "无法清理缓存日志"))
+    })
+}
+
 fn item_log_path(directory: &Path, source: &str, item_id: &str) -> Result<PathBuf, ApiError> {
     // Imported identifiers must never turn a per-song log into a path outside logs.
     if item_id.is_empty()
@@ -354,7 +469,6 @@ fn job(
                 )
             })?,
             force_avc: true,
-            default_host: false,
         },
         _ => {
             return Err(ApiError::new(
@@ -464,6 +578,94 @@ pub(super) fn retry(
 #[cfg(test)]
 mod log_tests {
     use super::*;
+    #[test]
+    fn native_pump_retains_three_ready_items_self_heals_and_reports_unavailable_source() {
+        use crate::app_state::{AppStateRequest, CacheEvent};
+        let _guard = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("bilikara-cache-regression-{}", token().unwrap()));
+        let context = HostContext {
+            cache_root: directory.join("media"),
+            directory: directory.clone(),
+            assets: Arc::new(|_| None),
+            stop: Arc::new(AtomicBool::new(false)),
+            api_slots: Arc::new(Semaphore::new(1)),
+            export_slots: Arc::new(Semaphore::new(1)),
+            export_renderer: std::sync::OnceLock::new(),
+            port: 0,
+            desktop: false,
+            bind_address: std::net::Ipv4Addr::UNSPECIFIED,
+            allowed_hosts: Default::default(),
+            shutdown_token: None,
+            desktop_installation: None,
+            bbdown: None,
+            aria2: std::sync::Mutex::new(None),
+            aria2_prepare: std::sync::Mutex::new(()),
+            workers: std::sync::Mutex::new(vec![]),
+        };
+        with_app(|app| {
+            app.execute(AppStateRequest::Shutdown {schema_version:1});
+            let seed = serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1,"session_played_file":"test.json","updated_at":1})).unwrap();
+            app.native_execute(AppStateRequest::Initialize {schema_version:1,state:Box::new(seed)})?;
+            app.open_artifact_lifetime(&context.cache_root).unwrap();
+            for index in 0..5 {
+                let id = format!("song{index}");
+                let item = serde_json::from_value(json!({"id":id,"original_url":"https://example.test/song","resolved_url":"https://example.test/song","bvid":"BV1xx411c7mD","aid":1,"cid":index+1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[index+1],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[index+1],"available_durations":[120],"available_parts":["P1"]})).unwrap();
+                app.native_execute(AppStateRequest::AddItem {schema_version:1,item,position:"tail".into(),requester_name:"Alice".into(),reset_av_delay:false,allow_repeat:true,now:2.0})?;
+                let item = app.native_core_snapshot()?.current_item.into_iter().chain(app.native_core_snapshot()?.playlist).find(|i| i.id == id).unwrap();
+                let reservation = app.reserve_runtime_attempt(&id,&item.item_incarnation_id).unwrap();
+                let relative = &reservation.artifact_relative_directory;
+                let dir = context.cache_root.join(relative);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("video.mp4"),b"fixture video").unwrap();
+                std::fs::write(dir.join("audio.m4a"),b"fixture audio").unwrap();
+                let event: CacheEvent = serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),"audio_variants":[{"id":"p1_p1","label":"P1","page":1,"audio_url":format!("/media/{relative}/audio.m4a")}],"selected_audio_variant_id":"p1_p1","item_incarnation_id":reservation.item_incarnation_id,"artifact_set_id":reservation.artifact_set_id,"artifact_relative_directory":relative})).unwrap();
+                app.native_execute(AppStateRequest::ApplyCacheEvent {schema_version:1,item_id:id,cache_attempt_token:reservation.cache_attempt_token,event,now:3.0})?;
+            }
+            app.native().cache_policy.max_cache_items = 1;
+            Ok(())
+        }).unwrap();
+        execute_cache_runtime(CacheRuntimeCommand::Start {}).unwrap();
+        let mut fingerprint = String::new();
+        let mut selections = HashMap::new();
+        tick(&context, &mut fingerprint, &mut selections).unwrap();
+        tick(&context, &mut fingerprint, &mut selections).unwrap();
+        let snapshot = with_app(|app| app.native_core_snapshot()).unwrap();
+        assert_eq!(
+            snapshot
+                .playlist
+                .iter()
+                .map(|i| i.cache_status.as_str())
+                .collect::<Vec<_>>(),
+            ["ready", "ready", "ready", "pending"]
+        );
+        let current = snapshot.current_item.unwrap();
+        std::fs::remove_file(context.cache_root.join(&current.video_relative_path)).unwrap();
+        fingerprint.clear(); // The pump does this on its periodic integrity tick.
+        tick(&context, &mut fingerprint, &mut selections).unwrap();
+        let current =
+            with_app(|app| Ok(app.native_core_snapshot()?.current_item.unwrap())).unwrap();
+        assert_eq!(current.cache_status, "pending");
+        assert!(current.artifact_set_id.is_empty());
+        with_app(|app| {
+            app.native().cache_policy.download_source = "bbdown".into();
+            Ok(())
+        })
+        .unwrap();
+        tick(&context, &mut fingerprint, &mut selections).unwrap();
+        let failed = with_app(|app| Ok(app.native_core_snapshot()?.current_item.unwrap())).unwrap();
+        assert_eq!(failed.cache_status, "failed");
+        assert!(failed.cache_message.starts_with("缓存不可用: "));
+        execute_cache_runtime(CacheRuntimeCommand::Shutdown {}).unwrap();
+        with_app(|app| {
+            app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+            Ok(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn song_logs_are_separate_append_only_and_reject_path_components() {
         let root = std::env::temp_dir().join(format!(

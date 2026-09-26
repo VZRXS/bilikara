@@ -45,7 +45,6 @@ pub(crate) enum Executor {
     Bbdown {
         executable: bbdown::Executable,
         force_avc: bool,
-        default_host: bool,
     },
 }
 
@@ -275,6 +274,7 @@ struct RuntimeState {
     queued_priorities: HashMap<String, CacheJobPriority>,
     active: HashMap<String, ActiveJob>,
     primary_active_item_id: Option<String>,
+    manual_front: Option<(String, u64)>,
     cancel_reasons: HashMap<(String, u64), String>,
     completed: HashMap<String, CompletedJob>,
     terminal_events: HashMap<String, RuntimeEvent>,
@@ -936,6 +936,11 @@ impl CacheRuntime {
         let mut generations = serde_json::Map::new();
         let mut cache_attempt_tokens = serde_json::Map::new();
         let preempt_item_id = preempt_item_id.trim();
+        let priority_title = ordered_ids
+            .first()
+            .and_then(|id| jobs.iter().find(|job| &job.item_id == id))
+            .map(|job| job.display_title.clone())
+            .unwrap_or_default();
         for job in jobs {
             if existing_artifacts_ready(&job) {
                 continue;
@@ -943,8 +948,37 @@ impl CacheRuntime {
             if self.completed_artifacts_ready(&job, cache_root) {
                 continue;
             }
-            let replace = !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
-            let attempt = self.submit(job.clone(), CacheJobPriority::Normal, replace)?;
+            let manual = {
+                let state = lock_state(&self.shared);
+                state.manual_front.as_ref().is_some_and(|(id, generation)| {
+                    id == &job.item_id
+                        && state.jobs.get(id).is_some_and(|queued| {
+                            queued.generation == *generation
+                                && queued.spec.item_incarnation_id == job.item_incarnation_id
+                        })
+                })
+            };
+            let replace = !manual && !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
+            let attempt = if replace {
+                let mut state = lock_state(&self.shared);
+                let attempt = Self::submit_locked(
+                    &mut state,
+                    job.clone(),
+                    CacheJobPriority::Normal,
+                    true,
+                    |id, incarnation| self.reserve_attempt(id, incarnation),
+                )?;
+                Self::queued_message_locked(
+                    &mut state,
+                    &job.item_id,
+                    attempt.generation,
+                    &format!("等待优先缓存: {priority_title}"),
+                );
+                self.shared.wake.notify_all();
+                attempt
+            } else {
+                self.submit(job.clone(), CacheJobPriority::Normal, false)?
+            };
             generations.insert(job.item_id.clone(), json!(attempt.generation));
             cache_attempt_tokens.insert(job.item_id, json!(attempt.cache_attempt_token));
         }
@@ -961,10 +995,28 @@ impl CacheRuntime {
         self.shared.wake.notify_all();
     }
 
+    fn queued_message_locked(state: &mut RuntimeState, item: &str, generation: u64, message: &str) {
+        if let Some(event) = state.events.iter_mut().rev().find(|event| {
+            event.item_id == item && event.generation == generation && event.kind == "queued"
+        }) {
+            event.payload["message"] = json!(message);
+        }
+    }
+
     fn reorder_locked(state: &mut RuntimeState, ordered_ids: &[String]) {
         let queued: HashSet<String> = state.normal_queue.drain(..).collect();
+        if let Some((id, generation)) = &state.manual_front
+            && queued.contains(id)
+            && state
+                .jobs
+                .get(id)
+                .is_some_and(|job| job.generation == *generation)
+        {
+            state.normal_queue.push_back(id.clone());
+        }
         for item_id in ordered_ids {
             if queued.contains(item_id)
+                && !state.normal_queue.contains(item_id)
                 && state
                     .queued_priorities
                     .get(item_id)
@@ -990,6 +1042,13 @@ impl CacheRuntime {
     }
 
     fn cancel_item_locked(state: &mut RuntimeState, item_id: &str, reason: &str) -> bool {
+        if state
+            .manual_front
+            .as_ref()
+            .is_some_and(|(id, _)| id == item_id)
+        {
+            state.manual_front = None;
+        }
         state.completed.remove(item_id);
         let mut cancelled = false;
         if let Some(active) = state.active.get(item_id) {
@@ -1036,6 +1095,7 @@ impl CacheRuntime {
         state.normal_queue.clear();
         state.urgent_queue.clear();
         state.queued_priorities.clear();
+        state.manual_front = None;
         state.completed.clear();
         state.terminal_events.clear();
         for job in queued {
@@ -1309,6 +1369,13 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
 }
 
 fn settle_job_locked(state: &mut RuntimeState, job: &QueuedJob, outcome: JobOutcome) {
+    if state
+        .manual_front
+        .as_ref()
+        .is_some_and(|(id, generation)| id == &job.spec.item_id && *generation == job.generation)
+    {
+        state.manual_front = None;
+    }
     if state
         .active
         .get(&job.spec.item_id)
@@ -1634,9 +1701,7 @@ fn run_track(
                 track.label, attempt, TRACK_ATTEMPTS, last_error.message
             ),
         );
-        if is_terminal_track_error(&last_error)
-            || matches!(job.spec.executor, Executor::Downkyi { .. })
-        {
+        if is_terminal_track_error(&last_error) {
             return Err(last_error);
         }
         emit_track_progress(shared, job, track, "retrying", attempt, (0, 0));
@@ -1823,15 +1888,7 @@ fn resolve_track_stream(
     })?;
     match track.kind {
         ExpectedMediaKind::Video => select_video(&dash.video, job),
-        ExpectedMediaKind::Audio
-            if matches!(
-                job.executor,
-                Executor::Bbdown {
-                    default_host: true,
-                    ..
-                }
-            ) =>
-        {
+        ExpectedMediaKind::Audio if matches!(job.executor, Executor::Bbdown { .. }) => {
             bbdown::preflight_audio(&dash)
         }
         ExpectedMediaKind::Audio if matches!(job.executor, Executor::Downkyi { .. }) => {
@@ -2441,7 +2498,7 @@ fn clear_directory(root: &Path) -> Result<(), CacheRuntimeError> {
     Ok(())
 }
 
-fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
+pub(crate) fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
     if !job.reported_ready || job.existing_audio_variants.is_empty() {
         return false;
     }
@@ -2635,6 +2692,85 @@ mod tests {
         // Test-only Bilibili acquisition adapter. HTTP transfer, run_track,
         // media I/O, attempt paths and publication checks are real.
         pub(super) static ACQUIRED_STREAM: std::cell::RefCell<Option<BilibiliStream>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn downkyi_retries_a_truncated_media_download_and_publishes_the_second_attempt() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = publication_root("validation-retry");
+        fs::create_dir_all(&root).unwrap();
+        crate::media_backend::tests::write_h264_fixture(&root.join("valid.mp4"));
+        let executable = root.join("aria2-fixture");
+        fs::write(
+            &executable,
+            r#"#!/usr/bin/env python3
+import pathlib,sys
+root=pathlib.Path(__file__).parent
+count=root/'attempts'
+n=int(count.read_text())+1 if count.exists() else 1
+count.write_text(str(n))
+source=pathlib.Path(sys.argv[sys.argv.index('--input-file')+1]).read_text()
+name=next(line.strip()[4:] for line in source.splitlines() if line.strip().startswith('out='))
+pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').read_bytes())
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime =
+            CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("already reserved")));
+        let mut spec = job(&root);
+        spec.cookie = "SESSDATA=fixture; bili_jct=fixture".into();
+        spec.pages[0].duration_seconds = Some(25.0);
+        spec.executor = Executor::Downkyi {
+            executable: aria2::Executable {
+                path: executable,
+                version: "fixture".into(),
+                connections: 1,
+            },
+            force_avc: false,
+        };
+        let reservation = reservation(901);
+        let queued = QueuedJob {
+            generation: 1,
+            cache_attempt_token: reservation.cache_attempt_token,
+            reservation,
+            spec,
+        };
+        ACQUIRED_STREAM.with(|s| {
+            *s.borrow_mut() = Some(BilibiliStream {
+                url: "https://example.test/video".into(),
+                backup_urls: vec![],
+                codec_id: Some(7),
+                codec_name: Some("h264".into()),
+                codecs: None,
+                mime_type: None,
+                width: None,
+                height: None,
+                quality_id: None,
+                bandwidth: None,
+                order: None,
+            })
+        });
+        let track = TrackSpec {
+            key: "video".into(),
+            label: "video".into(),
+            order: 0,
+            page: queued.spec.pages[0].clone(),
+            kind: ExpectedMediaKind::Video,
+        };
+        let result = run_track(
+            &runtime.shared,
+            &queued,
+            &track,
+            &Arc::new(AtomicBool::new(false)),
+        );
+        ACQUIRED_STREAM.with(|s| *s.borrow_mut() = None);
+        let result = result.unwrap();
+        assert_eq!(fs::read_to_string(root.join("attempts")).unwrap(), "2");
+        assert!(result.temporary_path.is_file());
+        assert_eq!(result.probe.codec(), Some("h264"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3159,7 +3295,6 @@ mod tests {
         selected.executor = Executor::Bbdown {
             executable: bbdown::Executable::fixture(root.join("BBDown 空")),
             force_avc: true,
-            default_host: false,
         };
         selected.cookie = "synthetic-old-cookie".into();
         selected.audio_hires = true;

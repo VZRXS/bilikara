@@ -636,6 +636,9 @@ pub(crate) async fn save_backend_download(
     });
 
     let endpoint = validated.path.clone();
+    // Keep quit protection through destination selection and the final write,
+    // as well as through the independently owned backend worker below.
+    let _export_guard = state.begin_download();
     let host_cookie = state.host_cookie();
     let worker_endpoint = endpoint.clone();
     // Acquire before scheduling the worker, then move the lease into it. This
@@ -1019,6 +1022,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = serde_json::json!({"key":"song","item_id":"song","display_title":"Fixture song","title":"Fixture song","part_title":"P1","original_url":"","resolved_url":"","bvid":"BV1xx411c7mD","aid":1,"cid":2,"page":1,"played_at":1,"owner_name":"Fixture owner"});
+        std::fs::write(directory.join("host-state.json"), serde_json::to_vec(&serde_json::json!({"schema_version":1,"state":{"session_started_at":1,"session_played_file":"played.json","updated_at":1,"session_played":vec![entry;51]}})).unwrap()).unwrap();
         let packaged = std::env::var_os("BILIKARA_TEST_NATIVE_PACKAGE").map(PathBuf::from);
         let executable = packaged.clone().unwrap_or_else(|| {
             root.join("rust-runtime/target/debug")
@@ -1063,8 +1069,18 @@ mod tests {
             ))
             .unwrap();
             // Same private transport, with setup through the real session route.
-            user.path = "/api/session-users/add".into();
             user.method = "POST";
+            user.path = "/api/session/startup-choice".into();
+            user.body = r#"{"choice":"continue"}"#.into();
+            assert_eq!(
+                parse_backend_download_response(
+                    request_backend_download(base, &user, Some(&cookie)).unwrap()
+                )
+                .unwrap()
+                .status,
+                200
+            );
+            user.path = "/api/session-users/add".into();
             user.body = r#"{"name":"Export Fixture"}"#.into();
             assert_eq!(
                 parse_backend_download_response(
@@ -1074,9 +1090,15 @@ mod tests {
                 .status,
                 200
             );
-            for format in ["csv", "image"] {
+            for (format, page_size, extension) in [
+                ("csv", 100, "csv"),
+                ("image", 100, "png"),
+                ("image", 50, "zip"),
+            ] {
                 let request = validate_backend_download_request(&download_request(
-                    &format!("/api/playlist/export?format={format}&source=played&page_size=50"),
+                    &format!(
+                        "/api/playlist/export?format={format}&source=played&page_size={page_size}"
+                    ),
                     None,
                     Some("desktop-export-test"),
                 ))
@@ -1086,11 +1108,13 @@ mod tests {
                 )
                 .unwrap();
                 let validated = validate_backend_download_response(&response, &request).unwrap();
-                assert_eq!(
-                    validated.required_extension,
-                    if format == "csv" { "csv" } else { "png" }
-                );
+                assert_eq!(validated.required_extension, extension);
+                assert_eq!(export_dialog_spec(&validated).1, extension);
+                assert!(validated.filename.ends_with(&format!(".{extension}")));
                 assert!(!response.body.is_empty());
+                if extension == "zip" {
+                    assert!(response.body.starts_with(b"PK"));
+                }
             }
         });
         let stopped = crate::backend_process::request_backend_shutdown(

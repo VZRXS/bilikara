@@ -6,7 +6,7 @@ const vm = require('node:vm');
   const source = fs.readFileSync(file, 'utf8');
   const fn = source.slice(source.indexOf('function submitSongRating('), source.indexOf('function ratingItemUrl('));
   let resolve, calls = 0, errors = 0, payload;
-  const state = {ratingSubmittedKeys:new Set(),ratingPendingKeys:new Set(),ratingQueuedKeys:new Set(),ratingPromptSeenPlayIds:new Set(), pendingAutoRatings:new Map(),autoRatingFlushQueue:[],data:{}};
+  const state = {ratingSubmittedKeys:new Set(),ratingPendingKeys:new Set(),ratingQueuedKeys:new Set(),ratingSavedScores:new Map(),ratingPromptSeenPlayIds:new Set(), pendingAutoRatings:new Map(),autoRatingFlushQueue:[],data:{}};
   const button = {disabled:false, attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}};
   const context = {state, console:{warn(){}}, ratingLog(){}, ratingSubmissionUserName:()=>'Alice',
     ratingSubmissionPlayId:()=> 'played', ratingSubmissionKey:()=> 'alice::played',
@@ -38,7 +38,15 @@ const vm = require('node:vm');
   resolve({ok:true,json:async()=>({ok:true,data:{success:true,queued:true}})});await tick();
   assert.equal(state.ratingSubmittedKeys.size,0,'Deferred confirmation is not a submitted rating');
   assert.equal(state.ratingQueuedKeys.size,1);
-  assert.equal(context.submitSongRating(item,5,button),false);
+  if(file.endsWith('remote.js')) {
+    assert.equal(context.savedSongRatingScore(item),3);
+    assert.equal(context.submitSongRating(item,2,button),true,'Waiting score can be replaced');
+    assert.equal(context.submitSongRating(item,1,button),false,'Replacement still guards in-flight requests');
+    resolve({ok:true,json:async()=>({ok:true,data:{success:true,queued:true}})});await tick();
+    assert.equal(context.savedSongRatingScore(item),2);
+    state.data.song_ratings=[{play_id:'played',session_user_name:'Alice',status:'sending',score:2}];
+    assert.equal(context.submitSongRating(item,5,button),false,'Sending score cannot be replaced');
+  } else assert.equal(context.submitSongRating(item,5,button),false);
   state.data.song_ratings=[{play_id:'played',session_user_name:'Alice',status:'failed'}];
   assert.equal(context.serverRatingStatus(item),'failed');
   assert.equal(state.ratingQueuedKeys.size,0,'Server failure releases deferred dedup for explicit retry');

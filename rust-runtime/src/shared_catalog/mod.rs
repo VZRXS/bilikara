@@ -13,7 +13,8 @@ use crate::cloudflare_service::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 
@@ -182,7 +183,7 @@ impl CatalogError {
 #[derive(Debug, Default)]
 pub(crate) struct CatalogState {
     cache: VecDeque<(String, Instant, Value)>,
-    inflight: HashSet<String>,
+    inflight: HashMap<String, Arc<read::Flight>>,
     backoff: VecDeque<(String, Instant, CatalogError)>,
     generation: u64,
     sheets: sheets::SnapshotState,

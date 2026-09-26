@@ -14,6 +14,27 @@
   state.dragPointerId = null;
   state.dragMoved = false;
 
+  // A queue rerender replaces buttons while their requests may still be in
+  // flight. Keep admission by logical action, and restore every painted button.
+  const pendingQueueActions = new Map();
+
+  function queueActionKey(action, itemId) {
+    return JSON.stringify([state.data?.state_epoch, action, itemId]);
+  }
+
+  function syncQueueActionBusy(button, buttons = pendingQueueActions.get(
+    queueActionKey(button.dataset.action, button.dataset.id),
+  )) {
+    if (!buttons) {
+      return;
+    }
+    if (!buttons.has(button)) {
+      buttons.set(button, button.disabled);
+    }
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+
   const dragScrollThresholdPx = 56;
   const dragScrollStepPx = 18;
 
@@ -72,6 +93,7 @@
         if (button.dataset.action === "retry-cache") {
           button.dataset.itemIncarnationId = item.item_incarnation_id;
         }
+        syncQueueActionBusy(button);
       });
       if (state.openQueueMenuId === item.id) {
         const menu = node.querySelector(".menu-content");
@@ -178,7 +200,7 @@
   }
 
   async function reorderQueue(itemId, index) {
-    state.data = await apiPost("/api/playlist/reorder", { item_id: itemId, index });
+    applyStateSnapshot(await apiPost("/api/playlist/reorder", { item_id: itemId, index }), { forceRender: true });
     setFormMessage(typeof t === "function" ? t("remote.queueOrderUpdated") : "remote.queueOrderUpdated");
     render();
   }
@@ -223,24 +245,26 @@
       return;
     }
 
+    const actionKey = queueActionKey(action, itemId);
+    if (pendingQueueActions.has(actionKey) || button?.getAttribute("aria-busy") === "true") {
+      return;
+    }
+
     if (action === "remove" && !window.confirm(typeof t === "function" ? t("list.removeConfirm") : "list.removeConfirm")) {
       return;
     }
 
     if (action === "retry-cache") {
-      if (button?.getAttribute("aria-busy") === "true") {
-        return;
-      }
       const confirmText = typeof t === "function" ? t("cache.retryConfirm") : "确定要重新缓存吗？";
       if (!window.confirm(confirmText)) {
         return;
       }
     }
 
-    const originallyDisabled = button?.disabled;
-    if (action === "retry-cache" && button) {
-      button.disabled = true;
-      button.setAttribute("aria-busy", "true");
+    const busyButtons = new Map();
+    pendingQueueActions.set(actionKey, busyButtons);
+    if (button) {
+      syncQueueActionBusy(button, busyButtons);
     }
     try {
       if (action === "retry-cache") {
@@ -251,16 +275,17 @@
         }
         return;
       }
-      state.data = await apiPost(target.url, target.payload);
+      applyStateSnapshot(await apiPost(target.url, target.payload), { forceRender: true });
       setFormMessage(target.message);
       render();
     } catch (error) {
       setFormMessage(error.message, true);
     } finally {
-      if (action === "retry-cache" && button) {
-        button.disabled = originallyDisabled;
-        button.removeAttribute("aria-busy");
-      }
+      pendingQueueActions.delete(actionKey);
+      busyButtons.forEach((originallyDisabled, busyButton) => {
+        busyButton.disabled = originallyDisabled;
+        busyButton.removeAttribute("aria-busy");
+      });
     }
   }
 

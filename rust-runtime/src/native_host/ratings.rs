@@ -179,11 +179,31 @@ pub(super) fn prepare(
             "此歌曲未播放达到 50%，评分已失效",
         ));
     }
+    let payload = json!({"session_user_name":user,"play_id":play,"bvid":bvid,"score":score});
+    // Waiting ratings are still editable. Replace the payload under the same
+    // AppState lock used by take_ready, so the pump sends exactly one version.
+    let owner = app.native().host_token.clone();
+    let ledger = &mut app.native().ratings;
+    if ledger.generation == snapshot.session_generation
+        && let Some(entry) = ledger.entries.iter_mut().find(|entry| {
+            entry.user == user.to_lowercase() && entry.play == play && entry.status == "waiting"
+        })
+    {
+        entry.payload = payload.clone();
+        let id = entry.id;
+        app.native().revision += 1;
+        return Ok(Some(Submission {
+            owner,
+            id,
+            generation: snapshot.session_generation,
+            payload,
+            waiting: true,
+        }));
+    }
     let id = app
         .native()
         .ratings
         .reserve(snapshot.session_generation, &user, &play, !eligible)?;
-    let payload = json!({"session_user_name":user,"play_id":play,"bvid":bvid,"score":score});
     if let Some(id) = id {
         let entry = app
             .native()
@@ -305,7 +325,7 @@ impl RatingLedger {
                     || Some(entry.play.as_str()) == previous)
                 .map(|entry| json!({
                     "session_user_name":entry.user,"play_id":entry.play,
-                    "status":entry.status
+                    "status":entry.status,"score":entry.payload["score"]
                 }))
                 .collect::<Vec<_>>()
         )
@@ -491,7 +511,14 @@ mod tests {
             app.native_snapshot(false).unwrap()["song_ratings"][0]["status"],
             "waiting"
         );
-        assert!(prepare(&mut app, &host, &body).is_err());
+        let mut edited = body.clone();
+        edited["score"] = json!(2);
+        assert!(prepare(&mut app, &host, &edited).unwrap().unwrap().waiting);
+        assert_eq!(app.native().ratings.entries.len(), 1);
+        assert_eq!(
+            app.native_snapshot(false).unwrap()["song_ratings"][0]["score"],
+            2
+        );
         observe(&mut app, 59.99);
         assert!(take_ready(&mut app).unwrap().is_none());
         observe(&mut app, 60.0);
@@ -499,7 +526,11 @@ mod tests {
         skip(&mut app);
         let ready = take_ready(&mut app).unwrap().unwrap();
         assert!(!ready.waiting);
-        assert_eq!(ready.payload["score"], 3);
+        assert_eq!(ready.payload["score"], 2);
+        assert_eq!(
+            prepare(&mut app, &host, &body).err().unwrap().code,
+            "rating_pending"
+        );
         assert!(take_ready(&mut app).unwrap().is_none());
         send(&ready, |_| Ok(json!({"payload":{"success":true}}))).unwrap();
         finish(&mut app, &ready, true);

@@ -64,6 +64,8 @@ pub struct NativeVideoError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Value>,
+    #[serde(skip)]
+    pub missing_bvid: Option<String>,
 }
 impl NativeVideoError {
     fn invalid(message: &str) -> Self {
@@ -71,6 +73,7 @@ impl NativeVideoError {
             code: "invalid_video".into(),
             message: message.into(),
             binding: None,
+            missing_bvid: None,
         }
     }
 }
@@ -356,7 +359,19 @@ fn reference(input: &str) -> Result<(String, i64), NativeVideoError> {
     } else {
         format!("aid={}", &identifier[2..])
     };
-    let page = url::Url::parse(input.trim())
+    // Share text may join the title and URL without any intervening whitespace.
+    // Stop at prose punctuation without swallowing a valid query or fragment.
+    let link = input
+        .find("https://")
+        .or_else(|| input.find("http://"))
+        .map(|start| {
+            input[start..]
+                .split(|c: char| c.is_whitespace() || "】》」』\"<>，。".contains(c))
+                .next()
+                .unwrap_or_default()
+        })
+        .unwrap_or(input.trim());
+    let page = url::Url::parse(link)
         .ok()
         .and_then(|url| {
             url.query_pairs()
@@ -393,6 +408,7 @@ fn fetch_native_video_with(
         referer: "https://www.bilibili.com/".into(),
         timeout_ms: 15_000,
     };
+    let mut resolved_bvid = String::new();
     let result = (|| {
         let client = BilibiliHttpClient::for_video(cookie, USER_AGENT, &shared.referer, 15_000)?;
         // Preserve the native caller's accepted pasted identifiers; all ordinary
@@ -417,6 +433,7 @@ fn fetch_native_video_with(
             }
             Err(e) => return Err(e),
         };
+        resolved_bvid.clone_from(&resolved.bvid);
         execute_with_reference(&shared, resolved, &client, fetch)
     })();
     match result {
@@ -425,7 +442,7 @@ fn fetch_native_video_with(
                 .map_err(|_| NativeVideoError::invalid("B 站视频信息不完整"))?;
             item.original_url = request.url.clone();
             item.cover_url = item.cover_url.replace("http://", "https://");
-            item.cache_message = "等待 Rust 缓存队列".into();
+            item.cache_message = "等待缓存队列".into();
             Ok(item)
         }
         Err(e)
@@ -433,19 +450,21 @@ fn fetch_native_video_with(
                 || e.api_code.is_some()
                 || e.kind != "invalid_video" && e.kind != "manual_binding_required" =>
         {
-            Err(network_error(
-                crate::bilibili_service::BilibiliServiceError {
-                    kind: e.kind,
-                    message: e.message,
-                    status_code: e.status_code,
-                    api_code: e.api_code,
-                },
-            ))
+            let missing = e.api_code == Some(-404) && !resolved_bvid.is_empty();
+            let mut error = network_error(crate::bilibili_service::BilibiliServiceError {
+                kind: e.kind,
+                message: e.message,
+                status_code: e.status_code,
+                api_code: e.api_code,
+            });
+            error.missing_bvid = missing.then_some(resolved_bvid);
+            Err(error)
         }
         Err(e) => Err(NativeVideoError {
             code: e.kind,
             message: e.message,
             binding: e.binding,
+            missing_bvid: None,
         }),
     }
 }
@@ -467,6 +486,7 @@ fn network_error(error: crate::bilibili_service::BilibiliServiceError) -> Native
         code: error.kind,
         message,
         binding: None,
+        missing_bvid: None,
     }
 }
 
@@ -511,6 +531,7 @@ fn assemble(
     if manual && request.selected_video_page.is_none() && raw_audio.is_none_or(Vec::is_empty) {
         return Err(NativeVideoError {
             code: "manual_binding_required".into(),
+            missing_bvid: None,
             message: "该视频包含多个分P，请先选择视频和音频绑定关系".into(),
             binding: Some(
                 json!({"title":view.title,"preferred_page":preferred,"pages":view.pages}),
@@ -792,6 +813,47 @@ mod tests {
         assert!(
             desktop_reference("https://www.bilibili.com/video/av123?p=invalid", &client).is_err()
         );
+    }
+
+    #[test]
+    fn pasted_share_text_keeps_page_and_only_missing_video_carries_deletion_identity() {
+        for input in [
+            "【Song】https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            "分享https://www.bilibili.com/video/BV1xx411c7mD?p=2。更多",
+            "Song https://www.bilibili.com/video/BV1xx411c7mD?p=2 https://www.bilibili.com/video/av123?p=3",
+        ] {
+            assert_eq!(reference(input).unwrap().1, 2, "{input}");
+        }
+        assert_eq!(
+            reference("【Song】 https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+                .unwrap()
+                .1,
+            2
+        );
+        let request = NativeVideoRequest {
+            url: "BV1xx411c7mD".into(),
+            ..Default::default()
+        };
+        for code in [-404, -101, -412, 62002] {
+            let failure = fetch_native_video_with(&request, "", |_, _| {
+                Err(crate::bilibili_service::BilibiliServiceError {
+                    kind: "api".into(),
+                    message: "fixture".into(),
+                    status_code: None,
+                    api_code: Some(code),
+                })
+            })
+            .unwrap_err();
+            assert_eq!(
+                failure.missing_bvid.as_deref(),
+                (code == -404).then_some("BV1xx411c7mD")
+            );
+            assert!(
+                !serde_json::to_string(&failure)
+                    .unwrap()
+                    .contains("missing_bvid")
+            );
+        }
     }
     #[test]
     fn uses_current_metadata_api_and_reports_only_safe_upstream_errors() {

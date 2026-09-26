@@ -190,6 +190,10 @@ static void windows_long_path_tests(void) {
 #endif
 
 int main(void) {
+    assert(flac_time_matches(95856, (AVRational){1, 96000}, 96000, 96000));
+    assert(!flac_time_matches(95712, (AVRational){1, 96000}, 96000, 96000));
+    assert(!flac_time_matches(INT64_MAX, (AVRational){1, 1}, 96000, 96000));
+    assert(!flac_time_matches(0, (AVRational){1, 1}, INT64_MAX, 1));
 #ifdef _WIN32
     windows_long_path_tests();
 #endif

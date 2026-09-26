@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 
 class VideoFixture:
-    def __init__(self):
+    def __init__(self, certs=None):
+        self.certs = certs
         self.return_value = {"code": 0, "data": {
             "aid": 123, "bvid": "BV1xx411c7mD", "title": " 歌曲 🎤 ",
             "pic": "http://example.invalid/cover.jpg",
@@ -33,7 +34,7 @@ class VideoFixture:
         if not sys.platform.startswith("linux"):
             raise unittest.SkipTest("local TLS fixture uses Linux SSL_CERT_FILE trust; native Windows/macOS verifiers require platform trust setup")
         fixture = self
-        certs = Path(__file__).parent / "fixtures" / "video_service"
+        certs = self.certs or Path(__file__).parent / "fixtures" / "video_service"
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(certs / "cert.pem", certs / "key.pem")
 

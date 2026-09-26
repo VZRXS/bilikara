@@ -8,9 +8,6 @@ use std::{
     task::{Context, Poll},
 };
 
-const MAX_ROWS: usize = 10_000;
-const MAX_BYTES: u64 = 64 * 1024 * 1024;
-
 pub(super) fn clean_stale(directory: &Path) -> Result<(), ApiError> {
     let root = directory.join("remote-exports");
     if !root.exists() {
@@ -41,6 +38,7 @@ pub(super) fn clean_stale(directory: &Path) -> Result<(), ApiError> {
 #[derive(Serialize)]
 struct ExportRow {
     title: String,
+    csv_title: String,
     bvid: String,
     requester: String,
     owner: String,
@@ -63,6 +61,11 @@ fn project(
             history
                 .iter()
                 .map(|item| ExportRow {
+                    csv_title: if item.display_title.is_empty() {
+                        item.title.clone()
+                    } else {
+                        item.display_title.clone()
+                    },
                     title: bilikara_rust::clean_display_title(
                         &item.title,
                         &item.display_title,
@@ -86,6 +89,11 @@ fn project(
         "played" => played
             .iter()
             .map(|item| ExportRow {
+                csv_title: if item.display_title.is_empty() {
+                    item.title.clone()
+                } else {
+                    item.display_title.clone()
+                },
                 title: bilikara_rust::clean_display_title(
                     &item.title,
                     &item.display_title,
@@ -162,7 +170,7 @@ fn selected_rows(
 
 pub(super) fn sessions(identity: &Identity) -> Result<Value, ApiError> {
     let mut archives = with_app(|app| {
-        app.native_authorize(identity, true)?;
+        app.native_requester(identity, "")?;
         Ok(app.native_session_archives())
     })?;
     archives.sort_by(|a, b| b.session_started_at.total_cmp(&a.session_started_at));
@@ -172,22 +180,7 @@ pub(super) fn sessions(identity: &Identity) -> Result<Value, ApiError> {
 }
 
 fn encode(revision: u64, source: &str, rows: Vec<ExportRow>) -> Result<Value, ApiError> {
-    if rows.len() > MAX_ROWS {
-        return Err(ApiError::new(
-            413,
-            "export_too_large",
-            "导出记录过多，请选择本场记录",
-        ));
-    }
-    let result = json!({"schema_version":1,"revision":revision,"source":source,"rows":rows});
-    if result.to_string().len() > 16 * 1024 * 1024 {
-        return Err(ApiError::new(
-            413,
-            "export_too_large",
-            "导出记录过大，请选择本场记录",
-        ));
-    }
-    Ok(result)
+    Ok(json!({"schema_version":1,"revision":revision,"source":source,"rows":rows}))
 }
 
 struct Options {
@@ -296,17 +289,22 @@ pub(super) async fn download(
     let (scratch, permit, mime, filename, length) = tokio::task::spawn_blocking(move || {
         let (revision, rows) = with_app(|app| {
             app.native_requester(&identity, "")?;
-            if !["played", "history"].contains(&options.source.as_str()) { app.native_authorize(&identity, true)?; }
             selected_rows(app, &options.source)
         })?;
         let (mime, extension) = options.file_type(rows.len());
+        let started = std::time::Instant::now();
+        eprintln!("[playlist-export] stage=render status=start rows={} format={}", rows.len(), extension);
         let data = encode(revision, &options.source, rows)?;
         let spec = json!({"format":options.format,"source":options.source,"pageSize":options.page_size,"data":data}).to_string();
         let scratch = Scratch::create(&context.directory)?;
-        renderer(&spec, &scratch.0).map_err(|_| export_failed())?;
+        renderer(&spec, &scratch.0).map_err(|_| {
+            eprintln!("[playlist-export] stage=render status=failed elapsed_ms={}", started.elapsed().as_millis());
+            export_failed()
+        })?;
         let metadata = std::fs::symlink_metadata(&scratch.0).map_err(|_| export_failed())?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_BYTES { return Err(export_failed()); }
-        let filename = format!("bilikara-{}-{}.{}", options.source, (now() * 1000.0) as u64, extension);
+        if !metadata.is_file() || metadata.len() == 0 { return Err(export_failed()); }
+        eprintln!("[playlist-export] stage=render status=complete elapsed_ms={} bytes={}", started.elapsed().as_millis(), metadata.len());
+        let filename = format!("bilikara-{}-{}.{}", options.source.trim_end_matches(".json"), chrono::Local::now().format("%Y%m%d-%H%M%S"), extension);
         Ok((scratch, permit, mime, filename, metadata.len()))
     }).await.map_err(|_| export_failed())??;
     let reader = tokio::fs::File::open(&scratch.0)
@@ -391,9 +389,21 @@ mod tests {
         // Current and archived sessions share this projection.
         let rows = project(&[], std::slice::from_ref(&played), "played").unwrap();
         assert_eq!(rows[0].title, "七里香");
+        assert_eq!(rows[0].csv_title, "【卡拉OK】七里香 - P2");
         assert_eq!(rows[0].part, "P2");
         assert_eq!(serde_json::to_value(&history).unwrap(), history_before);
         assert_eq!(serde_json::to_value(&played).unwrap(), played_before);
+    }
+
+    #[test]
+    fn large_export_is_admitted_and_pagination_selects_zip() {
+        let entry: HistoryEntry = serde_json::from_value(json!({"key":"large", "display_title":"x".repeat(2048), "original_url":"", "resolved_url":"", "requested_at":1})).unwrap();
+        let rows = project(&vec![entry; 10_001], &[], "history").unwrap();
+        let options = Options::parse("format=image&source=history&page_size=200").unwrap();
+        assert_eq!(options.file_type(rows.len()), ("application/zip", "zip"));
+        let value = encode(1, "history", rows).unwrap();
+        assert_eq!(value["rows"].as_array().unwrap().len(), 10_001);
+        assert!(value.to_string().len() > 16 * 1024 * 1024);
     }
 
     #[test]

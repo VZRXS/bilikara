@@ -660,6 +660,8 @@ mod tests {
                 history: vec![],
                 session_history: vec![],
                 session_users: vec![],
+                remote_identities: Default::default(),
+                gatcha_pool_preferences: Default::default(),
                 session_started_at: 1.0,
                 session_played_file: "played.json".into(),
                 session_played: vec![],

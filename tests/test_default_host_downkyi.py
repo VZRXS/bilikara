@@ -333,15 +333,25 @@ class DefaultHostDownKyiTest(DownKyiFixture, unittest.TestCase):
                 self.manager.retry_item(item.id, expected_item_incarnation_id=item.item_incarnation_id)
         self.assertEqual(len(self.receipts()), 0)
 
-    def test_media_contract_and_authentication_are_terminal(self):
+    def test_terminal_errors_and_bounded_media_validation_retries(self):
         for mode in ["forbidden", "extra", "invalid"]:
             with self.subTest(mode=mode):
                 self.mode(mode)
                 item = self.add(mode, pages=(1,))
-                previous = len(self.receipts())
+                prior_receipts = set(self.receipts())
+                previous = len(prior_receipts)
                 self.manager.sync_with_playlist()
                 self.status(item, "failed")
-                self.assertLessEqual(len(self.receipts()) - previous, 2)
+                if mode == "invalid":
+                    own = [
+                        p.read_text().split(":")[0] for p in self.receipts()
+                        if p not in prior_receipts
+                    ]
+                    self.assertEqual(max(own.count(track) for track in set(own)), 10)
+                    self.assertLessEqual(len(own), 20)
+                    self.assertIn("10 attempts", self.store.get_item(item.id).cache_message)
+                else:
+                    self.assertLessEqual(len(self.receipts()) - previous, 2)
                 self.assertNotIn("credential-must-never-be-logged", self.store.get_item(item.id).cache_message)
                 self.store.remove_item(item.id)
 

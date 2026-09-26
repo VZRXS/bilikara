@@ -3060,6 +3060,14 @@ function ackRemotePlayerControl() {}
         self.assertEqual(result["appliedSeq"], 1)
         self.assertIn("remote-play-intent", result["startupEvents"])
 
+    def test_unknown_duration_keeps_absolute_seek_target_until_metadata_arrives(self):
+        source = self._slice("function clampMediaTime", "function setMediaCurrentTime")
+        result = self.run_node(
+            'console.log(JSON.stringify([0, NaN, 120].map(duration => clampMediaTime({duration}, 150))));',
+            "", source,
+        )
+        self.assertEqual(result, [150, 150, 120])
+
     def test_remote_program_relative_commands_reject_stale_same_id_programs_once(self):
         remote_control_source = self._slice(
             "function applyRemotePlayerControl",
@@ -3085,6 +3093,7 @@ applyRemotePlayerControl(
   currentItem,
   "local",
 );
+video.duration = 0;
 applyRemotePlayerControl(
   { seq: 2, action: "seek-relative", item_id: "same-song", delta_seconds: 15,
     playback_generation: 12 },

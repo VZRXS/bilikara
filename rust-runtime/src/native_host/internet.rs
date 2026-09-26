@@ -42,6 +42,7 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
             .collect::<Vec<_>>()
     );
     state["state_revision"] = snapshot["state_revision"].clone();
+    state["state_epoch"] = snapshot["state_epoch"].clone();
     let status = &snapshot["player_status"];
     state["player_status"] = if status.is_object() {
         json!({"playing":status["is_paused"] == false,
@@ -49,7 +50,7 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
     } else {
         Value::Null
     };
-    state["gatcha"] = public_data(&snapshot["gatcha"]);
+    state["gatcha"] = public_source_status(&snapshot["gatcha"]);
     state["bilibili_logged_in"] = json!(
         snapshot["bbdown"]["login"]["logged_in"] == true || snapshot["bbdown"]["logged_in"] == true
     );
@@ -74,12 +75,7 @@ pub(super) fn route(
             }
             Ok(json!({"image":access_qr_image(&value)?}))
         }
-        "/api/internet-remote/state" => {
-            let mut state = with_app(public_state)?;
-            state["gatcha_pool_config"] =
-                public_data(&library::read(context, "/api/gatcha/pool-config", "")?);
-            Ok(state)
-        }
+        "/api/internet-remote/state" => with_app(public_state),
         "/api/internet-remote/peer/open" | "/api/internet-remote/peer/close" => {
             let mut command = body.clone();
             command["command"] = json!(if path.ends_with("/open") {
@@ -199,12 +195,17 @@ fn effect(
         return Ok(reply);
     };
     let kind = effect["kind"].as_str().unwrap_or_default();
+    let library_identity = Identity {
+        client: format!("native-internet:{peer}"),
+        ..identity.clone()
+    };
     let page_fields = [
         ("q", "query"),
         ("limit", "limit"),
         ("offset", "offset"),
         ("uid", "uid"),
         ("folder_id", "folder_id"),
+        ("requester_name", "requester_name"),
     ];
     let result = match kind {
         "sync_cache" => return Ok(reply), // Native pump observes committed AppState.
@@ -226,8 +227,13 @@ fn effect(
             )?;
             return Ok(reply);
         }
-        "catalog_search" => catalog::read("/api/catalog/search", &query(&effect, &page_fields))?,
+        "catalog_search" => catalog::read(
+            context,
+            "/api/catalog/search",
+            &query(&effect, &page_fields),
+        )?,
         "catalog_browse" => catalog::read(
+            context,
             "/api/d1/browse",
             &query(
                 &effect,
@@ -243,6 +249,7 @@ fn effect(
             ),
         )?,
         "catalog_category_browse" => catalog::read(
+            context,
             "/api/d1/category-browse",
             &query(
                 &effect,
@@ -258,7 +265,11 @@ fn effect(
         "catalog_song_detail" => {
             let id = text(&effect, "catalog_item_id")?;
             let (bvid, page) = catalog_parts(&id)?;
-            let data = catalog::read("/api/catalog/search", &format!("q={bvid}&limit=20"))?;
+            let data = catalog::read(
+                context,
+                "/api/catalog/search",
+                &format!("q={bvid}&limit=20"),
+            )?;
             let mut item = data["items"]
                 .as_array()
                 .into_iter()
@@ -283,7 +294,12 @@ fn effect(
                 "gatcha_pool_config_get" => "/api/gatcha/pool-config",
                 _ => "/api/gatcha/candidate",
             };
-            let value = library::read(context, path, &query(&effect, &page_fields))?;
+            let value = library::read(
+                context,
+                &library_identity,
+                path,
+                &query(&effect, &page_fields),
+            )?;
             if kind == "gatcha_candidate" && !value.is_object() {
                 return Err(ApiError::new(
                     404,
@@ -309,7 +325,7 @@ fn effect(
             };
             let mut body = effect.clone();
             body.as_object_mut().unwrap().remove("kind");
-            library::write(context, identity, path, &body)?
+            library::write(context, &library_identity, path, &body)?
         }
         "fetch_playlist_item" => {
             let request_id = text(&reply, "request_id")?;
@@ -371,7 +387,12 @@ fn add(
         Ok(app.native().cookie.clone())
     })?;
     let request: NativeVideoRequest = serde_json::from_value(json!({"url":format!("https://www.bilibili.com/video/{bvid}?p={page}"),"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
-    let item = fetch_native_video(&request, &cookie).map_err(api::video_error)?;
+    let item = fetch_native_video(&request, &cookie).map_err(|error| {
+        if let Some(bvid) = &error.missing_bvid {
+            catalog::delete_invalid(bvid);
+        }
+        api::video_error(error)
+    })?;
     let (result, accepted_item) = with_app(|app| {
         if context.stop.load(Ordering::Acquire) {
             return Err(ApiError::new(503, "stopped", "Host 已停止"));
@@ -441,6 +462,30 @@ fn asset_url(value: &Value) -> String {
 /// No arbitrary nesting, caller URLs, filesystem paths, cookies or task results.
 fn public_data(value: &Value) -> Value {
     project_public_data(value, 0)
+}
+
+// Remote needs source progress and commit counters to update its library during
+// a refresh. Never forward the rest of the internal task result (paths/errors).
+fn public_source_status(value: &Value) -> Value {
+    let mut result = public_data(value);
+    if let Some(progress) = value
+        .pointer("/last_result/rebuild")
+        .filter(|v| v.is_object())
+    {
+        let mut public = json!({});
+        for key in ["phase", "current_uid", "current_folder_id"] {
+            if !progress[key].is_null() {
+                public[key] = json!(bounded(&progress[key], 80));
+            }
+        }
+        for key in ["generation", "uids", "favorites"] {
+            if let Some(count) = progress["sources"][key].as_u64() {
+                public["sources"][key] = json!(count);
+            }
+        }
+        result["last_result"] = json!({"rebuild": public});
+    }
+    result
 }
 
 fn project_public_data(value: &Value, depth: u8) -> Value {
@@ -616,6 +661,26 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn public_source_refresh_keeps_progress_and_commit_counters_only() {
+        let projected = public_source_status(&json!({
+            "busy": true, "background_busy": true, "last_status": "running",
+            "last_result": {"path": "private", "rebuild": {
+                "phase": "uid", "current_uid": "42", "cookie": "secret",
+                "sources": {"generation": 9, "uids": 2, "favorites": 1, "path": "private"}
+            }}
+        }));
+        assert_eq!(projected["background_busy"], true);
+        assert_eq!(
+            projected["last_result"]["rebuild"],
+            json!({
+                "phase": "uid", "current_uid": "42",
+                "sources": {"generation": 9, "uids": 2, "favorites": 1}
+            })
+        );
+        assert!(!projected.to_string().contains("secret"));
+        assert!(!projected.to_string().contains("private"));
+    }
+    #[test]
     fn rating_state_keeps_previous_eligibility_without_exporting_private_records() {
         let mut app = AppState::default();
         let played = (0..3)
@@ -634,7 +699,9 @@ mod tests {
             state: Box::new(seed),
         })
         .unwrap();
+        app.native().state_epoch = "fixture-host-epoch".into();
         let state = public_state(&mut app).unwrap();
+        assert_eq!(state["state_epoch"], "fixture-host-epoch");
         let played = state["session_played"].as_array().unwrap();
         assert_eq!(played.len(), 2);
         assert_eq!(played[0]["item_id"], "p1");

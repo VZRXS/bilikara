@@ -56,6 +56,9 @@ pub(crate) struct BackendProcess {
     shutdown_token: String,
     host_cookie: Arc<Mutex<Option<String>>>,
     active_downloads: Arc<AtomicUsize>,
+    pub(crate) export_close_prompt: Arc<AtomicBool>,
+    pub(crate) close_approved: Arc<AtomicBool>,
+    pub(crate) force_export_exit: Arc<AtomicBool>,
 }
 
 impl BackendProcess {
@@ -72,6 +75,14 @@ impl BackendProcess {
 
     pub(crate) fn begin_download(&self) -> ActiveBackendDownloadGuard {
         ActiveBackendDownloadGuard::acquire(self.active_downloads.clone())
+    }
+
+    pub(crate) fn remote_export_status(&self) -> Result<serde_json::Value, String> {
+        request_update(self, "/api/app/export-status", serde_json::json!({}))
+    }
+
+    pub(crate) fn export_in_progress(&self) -> bool {
+        self.active_downloads.load(Ordering::Acquire) > 0
     }
 }
 
@@ -561,6 +572,10 @@ pub(crate) fn launch(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    if let Some(log) = startup_log.as_ref() {
+        command.env("BILIKARA_DESKTOP_STARTUP_LOG", log.path());
+    }
+
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
 
@@ -613,6 +628,9 @@ pub(crate) fn launch(
         shutdown_token: shutdown_token.clone(),
         host_cookie: host_cookie.clone(),
         active_downloads: Arc::new(AtomicUsize::new(0)),
+        export_close_prompt: Arc::new(AtomicBool::new(false)),
+        close_approved: Arc::new(AtomicBool::new(false)),
+        force_export_exit: Arc::new(AtomicBool::new(false)),
     });
 
     if let Some(stderr) = stderr {
@@ -829,10 +847,12 @@ pub(crate) fn launch(
 }
 
 pub(crate) fn shutdown(state: &BackendProcess) {
-    wait_for_active_backend_downloads(
-        &state.active_downloads,
-        ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE,
-    );
+    if !state.force_export_exit.load(Ordering::Acquire) {
+        wait_for_active_backend_downloads(
+            &state.active_downloads,
+            ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE,
+        );
+    }
     desktop_diagnostics::append_desktop_diagnostic(
         "desktop_shutdown",
         format!(
@@ -931,9 +951,16 @@ mod tests {
             shutdown_token: "fixture-capability".into(),
             host_cookie: Arc::new(Mutex::new(None)),
             active_downloads: Arc::new(AtomicUsize::new(0)),
+            export_close_prompt: Arc::new(AtomicBool::new(false)),
+            close_approved: Arc::new(AtomicBool::new(false)),
+            force_export_exit: Arc::new(AtomicBool::new(false)),
         };
         activate_update(&backend, 7).unwrap();
         server.join().unwrap();
+        // A stopped/unreachable Host is unknown even when no shell download
+        // is active (the export may have originated on a Remote).
+        assert!(!backend.export_in_progress());
+        assert!(backend.remote_export_status().is_err());
     }
 
     #[test]

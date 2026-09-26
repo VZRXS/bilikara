@@ -625,6 +625,14 @@
     const payload = await response.json();
     if (!response.ok || !payload.ok) return;
     const remoteState = payload.data;
+    const nextEpoch = typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "";
+    if (state.retiredStateEpochs?.has(nextEpoch) || (state.stateEpoch && !nextEpoch)) return;
+    if (nextEpoch && nextEpoch !== state.stateEpoch) {
+      state.retiredStateEpochs ||= new Set();
+      if (state.stateEpoch) state.retiredStateEpochs.add(state.stateEpoch);
+      state.stateEpoch = nextEpoch;
+      state.stateRevision = -1;
+    }
     const nextRevision = Number(remoteState.state_revision || 0);
     if (!target && nextRevision <= state.stateRevision) return;
     state.stateRevision = Math.max(state.stateRevision, nextRevision);

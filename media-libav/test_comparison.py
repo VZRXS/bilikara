@@ -129,7 +129,7 @@ class LiveComparison(unittest.TestCase):
         tool = prefix / "bin/ffprobe"
         pidfile = prefix / "child-pid"
         # A fake reference is used only for deterministic error-path evidence.
-        tool.write_text('#!/bin/sh\necho $$ > "${0%/*}/../child-pid"\nexec /bin/sleep 30\n')
+        tool.write_text('#!/bin/sh\necho $$ > "${0%/*}/../child-pid"\nexec /bin/sleep 30\n', encoding="utf-8")
         tool.chmod(0o700)
         if pidfile.exists():
             pidfile.unlink()
@@ -141,7 +141,7 @@ class LiveComparison(unittest.TestCase):
             while not pidfile.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertTrue(pidfile.exists(), "reference must have actually started")
-            pid = int(pidfile.read_text())
+            pid = int(pidfile.read_text(encoding="utf-8"))
             process.send_signal(signal.SIGINT)
             output, _ = process.communicate(timeout=5)
             self.assertEqual(process.returncode, 1)
@@ -176,7 +176,7 @@ class LiveComparison(unittest.TestCase):
         prefix.mkdir(exist_ok=True)
         marker = prefix / "called"
         tool = prefix / "ffprobe"
-        tool.write_text('#!/bin/sh\ntouch "${0%/*}/called"\nexit 91\n')
+        tool.write_text('#!/bin/sh\ntouch "${0%/*}/called"\nexit 91\n', encoding="utf-8")
         tool.chmod(0o700)
         env = dict(os.environ, PATH=str(prefix) + os.pathsep + os.environ.get("PATH", ""),
                    BILIKARA_LIBAV_FFMPEG_PREFIX=str(prefix))
@@ -214,7 +214,7 @@ class LivePacketScan(LiveComparison):
                     if process.returncode is None:
                         process.kill()
                         process.wait()
-            (OPTIONS.out / "paired-maxrss-kib.txt").write_text(str(usage.ru_maxrss) + "\n")
+            (OPTIONS.out / "paired-maxrss-kib.txt").write_text(str(usage.ru_maxrss) + "\n", encoding="utf-8")
             result = subprocess.CompletedProcess(command, process.returncode, report.read_bytes())
         else:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
@@ -265,14 +265,14 @@ class LivePacketScan(LiveComparison):
                 if name == "scan-long":
                     summary = rows[0]["libav"]["selected"]
                     self.assertGreater(summary["pts_ticks"]["max"] / 96000, 299)
-                    memory = int((OPTIONS.out / "paired-maxrss-kib.txt").read_text().strip())
+                    memory = int((OPTIONS.out / "paired-maxrss-kib.txt").read_text(encoding="utf-8").strip())
                     self.assertGreater(memory, 0)
                     (OPTIONS.out / "memory-and-timing.json").write_text(json.dumps({
                         "scope": "Linux wait4 ru_maxrss of the driver with sequential native scans and CLI references; not a native-only allocation or constant-RSS guarantee",
                         "max_rss_kib": memory, "fixture_filesystem_bytes": source.stat().st_size,
                         "selected_packet_count": count, "selected_payload_bytes": summary["payload_bytes"],
                         "elapsed_us": [r["elapsed_us"] for r in rows],
-                    }, indent=2) + "\n")
+                    }, indent=2) + "\n", encoding="utf-8")
 
     def test_scan_late_truncation_observed_limit(self):
         # Four seconds from the accepted long fixture, with moov before payload.
@@ -365,7 +365,7 @@ class LivePacketScan(LiveComparison):
             "packet_count": len(packets), "payload_bytes": selected["payload_bytes"],
             "pts_ticks": selected["pts_ticks"], "dts_ticks": selected["dts_ticks"],
             "time_base": selected["time_base"], "compared": True,
-        }, indent=2) + "\n")
+        }, indent=2) + "\n", encoding="utf-8")
 
     def test_report_privacy_and_original_m1_invocation(self):
         super().test_report_privacy_and_original_m1_invocation()
@@ -449,7 +449,7 @@ class LiveCopyRemux(LivePacketScan):
                         "profile":row["profile"],"content_comparison":row["content_comparison"],
                         "clean_reference_execution":row["clean_reference_execution"],
                         "output_bytes":row["output_bytes"],"elapsed_us":row["elapsed_us"]})
-        (OPTIONS.out / "copy-remux-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        (OPTIONS.out / "copy-remux-summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
     def test_remux_rejections_and_old_capability(self):
         for label, filename, kind, expected in [
@@ -599,7 +599,7 @@ class LiveFlacNormalization(LiveCopyRemux):
                 self.assertTrue(actual == expected, "full source PCM must equal the known WAV samples")
                 self.assertTrue(source.read_bytes() == original, "source is read-only")
                 row["known_fixture_pcm"] = {"complete_source_pcm_equal":True,"samples_per_channel":rate}
-                (OPTIONS.out / ("flac-" + label + ".json")).write_text(json.dumps(row) + "\n")
+                (OPTIONS.out / ("flac-" + label + ".json")).write_text(json.dumps(row) + "\n", encoding="utf-8")
 
     def test_flac_explicit_rejections_and_missing_capability(self):
         for label, source, kind, expected in [
@@ -633,6 +633,54 @@ class LiveFlacNormalization(LiveCopyRemux):
         # Same accepted older library remains usable for its MP4 capability.
         code, _ = self.remux_pair("old-mp4-still-works", OPTIONS.fixtures / "aac.m4a", companion=OPTIONS.flac_old_companion)
         self.assertEqual(code, 0)
+
+    def test_flac_quantized_timeline_preserves_complete_encoded_samples(self):
+        # Reproduce DASH timestamp rounding without changing encoded frames.
+        # This fixture has a trailing moov, so resizing stts changes no offsets.
+        original = self.source.read_bytes()
+        moov = original.index(b"moov") - 4
+        self.assertEqual(moov + int.from_bytes(original[moov:moov+4], "big"), len(original))
+        stts = original.index(b"stts") - 4
+        old_size = int.from_bytes(original[stts:stts+4], "big")
+        count = int.from_bytes(original[stts+12:stts+16], "big")
+        lengths = []
+        for i in range(count):
+            pos = stts + 16 + i * 8
+            lengths.extend([int.from_bytes(original[pos+4:pos+8], "big")] *
+                           int.from_bytes(original[pos:pos+4], "big"))
+        self.assertEqual(sum(lengths), 96000)
+        for label, maximum_drift, accepted in (("rounded", 144, True), ("excess-drift", 288, False)):
+            with self.subTest(fixture=label):
+                boundaries = [0]
+                encoded = 0
+                for i, length in enumerate(lengths):
+                    encoded += length
+                    drift = 48 if i == len(lengths) - 1 else min((i + 1) * 32, maximum_drift)
+                    boundaries.append(encoded - drift)
+                entries = b"".join((1).to_bytes(4, "big") + (b - a).to_bytes(4, "big")
+                                   for a, b in zip(boundaries, boundaries[1:]))
+                replacement = ((16 + len(entries)).to_bytes(4, "big") + b"stts" + bytes(4) +
+                               len(lengths).to_bytes(4, "big") + entries)
+                data = bytearray(original)
+                for tag in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
+                    pos = original.index(tag) - 4
+                    size = int.from_bytes(data[pos:pos+4], "big") + len(replacement) - old_size
+                    data[pos:pos+4] = size.to_bytes(4, "big")
+                data[stts:stts+old_size] = replacement
+                source = self.root / (label + ".mp4")
+                source.write_bytes(data)
+                keep = self.root / (label + "-outputs")
+                code, row = self.remux_pair("flac-" + label, source, keep=keep, profile="--flac")
+                if accepted:
+                    self.assertEqual((code, row["outcome"]), (0, "success"))
+                    pcm = row["pcm_comparison"]
+                    self.assertEqual(pcm["source_samples_per_channel"], 96000)
+                    self.assertTrue(pcm["companion"]["complete_pcm_equal"])
+                    self.assertTrue(pcm["companion"]["claxon"]["complete_pcm_equal"])
+                    self.assertEqual(pcm["companion"]["streaminfo"]["total_samples"], 96000)
+                else:
+                    self.assertEqual((code, row["outcome"]), (1, "unsupported_container_layout"))
+                    self.assertEqual(list(keep.iterdir()), [])
 
     def test_flac_shared_actual_publisher_cancel_and_finalization_failure(self):
         self.rust_test("experimental_libav::remux::tests::live_flac_publication_cancellation_and_late_errors", {
@@ -686,7 +734,7 @@ def main():
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     (OPTIONS.out / "live-results.json").write_text(json.dumps({"tests_run": result.testsRun,
         "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped),
-        "passed": result.wasSuccessful()}, indent=2) + "\n")
+        "passed": result.wasSuccessful()}, indent=2) + "\n", encoding="utf-8")
     raise SystemExit(0 if result.wasSuccessful() else 1)
 
 

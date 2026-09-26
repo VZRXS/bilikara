@@ -66,6 +66,19 @@ static int flac_configuration(const AVCodecParameters *p) {
         (int)((packed >> 36) & 31) + 1 == p->bits_per_raw_sample;
 }
 
+/* DASH muxers can quantize FLAC packet timestamps to milliseconds even when
+ * their declared time base is 1/sample_rate. Encoded frame lengths, not those
+ * rounded durations, own the native FLAC sample count. Allow at most 2 ms of
+ * timestamp quantization (observed DASH drift: 1.5 ms). Bound the discrepancy
+ * at every boundary; this is not permission to accept gaps, offsets or trims. */
+static int flac_time_matches(int64_t ticks, AVRational base, int64_t samples, int rate) {
+    if (ticks < 0 || samples < 0) return 0;
+    int64_t actual = av_rescale_q(ticks, base, AV_TIME_BASE_Q);
+    int64_t expected = av_rescale_q(samples, (AVRational){1, rate}, AV_TIME_BASE_Q);
+    if (actual < 0 || expected < 0) return 0; /* rescale overflow */
+    return actual >= expected ? actual - expected <= 2000 : expected - actual <= 2000;
+}
+
 static uint32_t output_error(int code) {
     /* A write/trailer/close error describes the output, never invalid input. */
     if (code == AVERROR(EIO) || code == AVERROR(ENOSPC) ||
@@ -82,6 +95,8 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     AVFormatContext *out = NULL;
     AVPacket *packet = NULL;
     AVCodecParameters *configuration = NULL;
+    AVCodecParserContext *flac_parser = NULL;
+    AVCodecContext *flac_context = NULL;
     AVDictionary *options = NULL;
     RemuxOutput io = { .input = call, .path = q->staging_path };
     int ret = 0, close_ret = 0;
@@ -115,6 +130,14 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
         r->status = BM_BACKEND_FAILURE; goto done;
     }
     par = configuration;
+    if (flac) {
+        flac_parser = av_parser_init(AV_CODEC_ID_FLAC);
+        flac_context = avcodec_alloc_context3(NULL);
+        if (!flac_parser || !flac_context || avcodec_parameters_to_context(flac_context, par) < 0) {
+            r->status = BM_UNAVAILABLE; goto done;
+        }
+        flac_parser->flags = PARSER_FLAG_COMPLETE_FRAMES;
+    }
     if (av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_ENCRYPTION_INIT_INFO)) {
         r->status = BM_UNSUPPORTED_LAYOUT; goto done;
     }
@@ -178,6 +201,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (!packet) { r->status = BM_BACKEND_FAILURE; goto done; }
     int64_t last_dts = AV_NOPTS_VALUE;
     int64_t next_sample = 0;
+    int64_t next_demux_tick = 0;
     for (;;) {
         if (interrupted(call)) { r->status = BM_CANCELLED; goto done; }
         ret = av_read_frame(s, packet);
@@ -195,7 +219,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
                 if ((total && total != (uint64_t)next_sample) ||
                     (in->nb_frames > 0 && (uint64_t)in->nb_frames != scan->selected.packet_count) ||
                     (in->duration != AV_NOPTS_VALUE &&
-                     av_compare_ts(in->duration, in->time_base, next_sample, (AVRational){1, par->sample_rate}))) {
+                     !flac_time_matches(in->duration, in->time_base, next_sample, par->sample_rate))) {
                     r->status = BM_UNSUPPORTED_LAYOUT; goto done;
                 }
             }
@@ -224,14 +248,26 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
             r->status = BM_UNSUPPORTED_LAYOUT; goto done;
         }
         if (flac) {
-            AVRational samples = {1, par->sample_rate};
-            int64_t duration = av_rescale_q(packet->duration, in->time_base, samples);
-            if (packet->pts != packet->dts || duration <= 0 || duration > INT64_MAX - next_sample ||
-                av_compare_ts(packet->pts, in->time_base, next_sample, samples) ||
-                av_compare_ts(packet->duration, in->time_base, duration, samples)) {
+            uint8_t *frame = NULL;
+            int frame_size = 0;
+            flac_parser->duration = 0;
+            ret = av_parser_parse2(flac_parser, flac_context, &frame, &frame_size,
+                                  packet->data, packet->size, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+            int64_t duration = flac_parser->duration;
+            if (ret != packet->size || frame_size != packet->size || duration <= 0) {
+                r->status = BM_INVALID_MEDIA; goto done;
+            }
+            if (packet->pts != packet->dts || packet->pts != next_demux_tick ||
+                packet->duration > INT64_MAX - next_demux_tick || duration > INT64_MAX - next_sample ||
+                !flac_time_matches(packet->pts, in->time_base, next_sample, par->sample_rate) ||
+                !flac_time_matches(packet->duration, in->time_base, duration, par->sample_rate)) {
                 r->status = BM_UNSUPPORTED_LAYOUT; goto done;
             }
             next_sample += duration;
+            next_demux_tick += packet->duration;
+            if (!flac_time_matches(next_demux_tick, in->time_base, next_sample, par->sample_rate)) {
+                r->status = BM_UNSUPPORTED_LAYOUT; goto done;
+            }
         }
         av_packet_rescale_ts(packet, in->time_base, dst->time_base);
         if (packet->dts == AV_NOPTS_VALUE || packet->pts < packet->dts ||
@@ -283,6 +319,8 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
 write_error:
     r->status = interrupted(call) ? BM_CANCELLED : io.denied_open ? BM_CONTRACT : output_error(ret);
 done:
+    av_parser_close(flac_parser);
+    avcodec_free_context(&flac_context);
     av_packet_free(&packet);
     av_dict_free(&options);
     if (out && out->pb) close_ret = avio_closep(&out->pb);

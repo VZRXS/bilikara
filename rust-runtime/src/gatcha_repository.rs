@@ -4,7 +4,7 @@ use crate::gatcha_refresh::RefreshControl;
 pub(crate) use configured_refresh::execute_configured_refresh;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,6 +57,8 @@ pub enum GatchaOperation {
     Candidate {
         #[serde(default)]
         cookie_available: bool,
+        #[serde(default)]
+        pool_config: Option<Value>,
     },
     Search {
         query: String,
@@ -218,9 +220,10 @@ fn execute_gatcha_operation(
             excluded_uids.as_deref(),
             excluded_favlist_folders.as_deref(),
         ),
-        GatchaOperation::Candidate { cookie_available } => {
-            draw_candidate(&request.paths, *cookie_available)
-        }
+        GatchaOperation::Candidate {
+            cookie_available,
+            pool_config,
+        } => draw_candidate(&request.paths, *cookie_available, pool_config.as_ref()),
         GatchaOperation::Search {
             query,
             offset,
@@ -316,49 +319,86 @@ fn execute_gatcha_operation(
 pub(crate) fn initialize_native_uids(
     paths: &GatchaPaths,
     defaults: &[String],
-) -> Result<(), GatchaRepositoryError> {
+) -> Result<bool, GatchaRepositoryError> {
     let _guard = repository_guard()?;
     let marker = paths
         .uid_file
         .with_file_name("native-library-defaults.json");
-    let read = |path: &Path| -> Result<Option<Value>, GatchaRepositoryError> {
-        match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|_| error("library_storage", "曲库来源配置损坏，原文件已保留")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(error("library_storage", "无法读取曲库来源配置")),
-        }
+    let bytes = match fs::read(&paths.uid_file) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(error("library_storage", "无法读取曲库来源配置")),
     };
-    if let Some(version) = read(&marker)? {
-        if version["schema_version"] != 1 {
-            return Err(error("library_storage", "不支持的默认曲库版本"));
-        }
-        if paths.uid_file.exists() {
-            return Ok(());
+    let parsed = bytes
+        .as_ref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
+    if parsed.as_ref().is_some_and(|value| {
+        value["schema_version"]
+            .as_u64()
+            .is_some_and(|version| version > UID_SCHEMA_VERSION)
+    }) {
+        return Err(error(
+            "library_version",
+            "曲库配置来自更新版本，已保留原文件，请更新软件",
+        ));
+    }
+    let valid = parsed.as_ref().is_some_and(|v| {
+        (v["schema_version"].is_null() || v["schema_version"] == UID_SCHEMA_VERSION)
+            && v["profiles"].is_object()
+            && v["uids"].as_array().is_some_and(|uids| {
+                uids.iter()
+                    .all(|uid| uid.as_str().and_then(normalize_uid).is_some())
+            })
+    });
+    let recovered = bytes.is_some() && !valid;
+    if recovered {
+        use std::io::Write;
+        let base = paths.uid_file.with_file_name("gatcha_uids.corrupt.json");
+        let mut target = base.clone();
+        let mut sequence = 0;
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(mut file) => {
+                    file.write_all(bytes.as_ref().unwrap())
+                        .and_then(|_| file.sync_all())
+                        .map_err(|_| error("library_storage", "无法备份损坏的曲库来源配置"))?;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    sequence += 1;
+                    target = base.with_file_name(format!("gatcha_uids.corrupt-{sequence}.json"));
+                }
+                Err(_) => return Err(error("library_storage", "无法备份损坏的曲库来源配置")),
+            }
         }
     }
-    let mut payload = read(&paths.uid_file)?
-        .unwrap_or_else(|| json!({"schema_version":UID_SCHEMA_VERSION,"uids":[],"profiles":{}}));
-    let Some(existing) = payload.get("uids").and_then(Value::as_array) else {
-        return Err(error("library_storage", "曲库来源配置无效，原文件已保留"));
-    };
-    // Older refreshes persisted the UID snapshot without a schema_version.
-    if (!payload["schema_version"].is_null() && payload["schema_version"] != UID_SCHEMA_VERSION)
-        || !existing
-            .iter()
-            .all(|uid| uid.as_str().and_then(normalize_uid).is_some())
-        || !payload["profiles"].is_object()
+    let seeded = read_object(&marker).is_some_and(|v| v.get("schema_version") == Some(&json!(1)));
+    if valid && seeded {
+        return Ok(false);
+    }
+    let mut payload = if let Some(value) = parsed.filter(|v| v.is_object() && v["uids"].is_array())
     {
-        return Err(error("library_storage", "曲库来源配置无效，原文件已保留"));
-    }
+        value
+    } else {
+        json!({"schema_version":UID_SCHEMA_VERSION,"uids":[],"profiles":{}})
+    };
     let mut uids = normalized_uids_from_value(payload.get("uids"));
-    uids.extend_from_slice(defaults);
+    if !seeded || uids.is_empty() && recovered {
+        uids.extend_from_slice(defaults);
+    }
+    if !payload["profiles"].is_object() {
+        payload["profiles"] = json!({});
+    }
     payload["schema_version"] = json!(UID_SCHEMA_VERSION);
     payload["uids"] = json!(normalized_uids(&uids));
     payload["updated_at"] = json!(unix_timestamp());
     atomic_write_json(&paths.uid_file, &payload)?;
-    atomic_write_json(&marker, &json!({"schema_version":1}))
+    atomic_write_json(&marker, &json!({"schema_version":1}))?;
+    Ok(recovered)
 }
 
 fn uid_snapshot(path: &Path, default_uids: &[String]) -> Result<Value, GatchaRepositoryError> {
@@ -396,6 +436,11 @@ fn uid_snapshot(path: &Path, default_uids: &[String]) -> Result<Value, GatchaRep
 
 fn load_pool_config(path: &Path) -> Value {
     let payload = read_object(path).unwrap_or_default();
+    normalize_pool_config(&Value::Object(payload))
+}
+
+pub(crate) fn normalize_pool_config(value: &Value) -> Value {
+    let payload = value.as_object().cloned().unwrap_or_default();
     json!({
         "schema_version": POOL_CONFIG_SCHEMA_VERSION,
         "uid_weight": clamped_weight(payload.get("uid_weight"), 50),
@@ -630,7 +675,7 @@ fn add_uid(
             "added_count": added_count,
             "total_count": entries.len(),
         },
-        "entries": entries,
+        "entries": entries.into_iter().take(added_count).collect::<Vec<_>>(),
     }))
 }
 
@@ -646,7 +691,20 @@ fn refresh_all(
         let _guard = repository_guard()?;
         let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
         let raw_cache = read_object(&paths.cache_file).unwrap_or_default();
-        let configured = normalized_strings(uid_payload.get("uids"));
+        let mut configured = normalized_strings(uid_payload.get("uids"));
+        let previous = Value::Object(raw_cache.clone())["refresh_summary"].clone();
+        let retry = control.retries_failed_sources()
+            && previous["completed"] == true
+            && crate::gatcha_refresh::summary_has_errors(&previous);
+        if retry {
+            let failed: HashSet<String> = array(&previous, "errors")
+                .iter()
+                .filter_map(|v| v["uid"].as_str().map(str::to_owned))
+                .collect();
+            // Retry failed sources first, but a normal manual refresh must
+            // still advance healthy sources and retain the complete summary.
+            configured.sort_by_key(|uid| !failed.contains(uid));
+        }
         let initial_checkpoints =
             uid_refresh_checkpoints(&load_cache(&paths.cache_file), &configured);
         (
@@ -735,19 +793,28 @@ fn refresh_all(
         paths,
         client,
         control,
+        None,
         &|index, total, current| {
             notify(
-                json!({"phase":"favlist", "current_folder_id":current, "favlist_index":index, "favlist_total":total,
-            "sources":{"uids":results.len(), "favorites":index}}),
+                json!({"phase":"favlist","current_folder_id":current,"favlist_index":index,"favlist_total":total,
+                "sources":{"uids":results.len(),"favorites":index}}),
             );
         },
-    );
-    let favlist_error = favlist_result
-        .as_ref()
-        .err()
-        .map(|failure| failure.message.clone())
-        .unwrap_or_default();
-    control.commit(|| {
+    )?;
+    let favlist_errors = array(&favlist_result, "errors");
+    let favlist_error = favlist_errors
+        .iter()
+        .map(|failure| {
+            format!(
+                "{}:{} {}",
+                failure["uid"].as_str().unwrap_or_default(),
+                failure["folder_id"].as_str().unwrap_or_default(),
+                failure["error"].as_str().unwrap_or("收藏夹拉取失败")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut result = control.commit(|| {
         persist_refresh_summary(
             paths,
             &results,
@@ -756,7 +823,20 @@ fn refresh_all(
             true,
             configured.len(),
         )
-    })
+    })?;
+    result["refresh_summary"]["favlist_errors"] = json!(favlist_errors);
+    result["refresh_summary"]["favlist_succeeded"] = favlist_result["succeeded"].clone();
+    control.commit(|| {
+        let _guard = repository_guard()?;
+        let mut latest = load_cache(&paths.cache_file);
+        latest["refresh_summary"] = result["refresh_summary"].clone();
+        atomic_write_json(&paths.cache_file, &latest)?;
+        result = latest;
+        Ok(())
+    })?;
+    // Completion-only delta: never persist or re-upload a previous task's delta.
+    result["favlist_entries"] = favlist_result["entries"].clone();
+    Ok(result)
 }
 
 fn persist_refreshed_uid(
@@ -923,6 +1003,19 @@ fn refresh_favlist(
     let incoming = dedupe_entries(&incoming);
     let incoming_count = incoming.len();
     let mut current = load_favlist(&paths.favlist_file);
+    let mut known_bvids: HashSet<String> = array(&current, "items")
+        .iter()
+        .filter_map(|entry| entry["bvid"].as_str().map(str::to_owned))
+        .collect();
+    let additions: Vec<_> = incoming
+        .iter()
+        .filter(|entry| {
+            entry["bvid"]
+                .as_str()
+                .is_some_and(|bvid| known_bvids.insert(bvid.to_owned()))
+        })
+        .cloned()
+        .collect();
     let incoming_keys: HashSet<(String, String)> = matched
         .iter()
         .filter_map(Value::as_object)
@@ -981,7 +1074,7 @@ fn refresh_favlist(
         "matched_folder_count": matched.len(),
         "item_count": incoming_count,
         "updated_at": updated_at,
-        "entries": current["items"],
+        "entries": additions,
     }))
 }
 
@@ -989,46 +1082,80 @@ fn refresh_existing_favlist(
     paths: &GatchaPaths,
     client: &BilibiliHttpClient,
     control: &RefreshControl,
+    retry_folders: Option<&[Value]>,
     notify: &dyn Fn(usize, usize, Option<&str>),
-) -> Result<Option<Value>, GatchaRepositoryError> {
-    if !paths.favlist_file.exists() {
-        return Ok(None);
-    }
-    let mut payload = load_favlist(&paths.favlist_file);
-    let folders = array(&payload, "folders").to_vec();
-    if folders.is_empty() {
-        return Ok(None);
-    }
-    let mut refreshed = 0usize;
-    let mut added = 0usize;
-    let mut result = None;
-    for folder in folders.iter().filter_map(Value::as_object) {
+) -> Result<Value, GatchaRepositoryError> {
+    refresh_existing_favlist_with(
+        paths,
+        control,
+        retry_folders,
+        notify,
+        &|uid, folder, checkpoint| {
+            fetch_favlist_entries_controlled(client, uid, folder, checkpoint, control)
+        },
+    )
+}
+
+fn refresh_existing_favlist_with(
+    paths: &GatchaPaths,
+    control: &RefreshControl,
+    retry_folders: Option<&[Value]>,
+    notify: &dyn Fn(usize, usize, Option<&str>),
+    fetch: &impl Fn(
+        &str,
+        &Map<String, Value>,
+        Option<&str>,
+    ) -> Result<Vec<Value>, GatchaRepositoryError>,
+) -> Result<Value, GatchaRepositoryError> {
+    let payload = load_favlist(&paths.favlist_file);
+    let folders = array(&payload, "folders");
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+    let mut succeeded = 0;
+    for (index, folder) in folders.iter().filter_map(Value::as_object).enumerate() {
+        control.check()?;
         let uid =
             first_text(folder, &["uid", "mid"]).unwrap_or_else(|| text_value(&payload, "uid"));
-        if uid.is_empty() || folder_id(folder).is_empty() {
+        let id = folder_id(folder);
+        if uid.is_empty()
+            || id.is_empty()
+            || retry_folders.is_some_and(|failed| {
+                !failed.is_empty()
+                    && !failed
+                        .iter()
+                        .any(|v| v["uid"] == uid && v["folder_id"] == id)
+            })
+        {
             continue;
         }
-        notify(refreshed, folders.len(), Some(&folder_id(folder)));
-        let fresh = fetch_favlist_entries_controlled(client, &uid, folder, Some(1), control)?;
-        // Publish each folder before starting the next network operation. Read
-        // the latest file under the repository lock to retain concurrent edits.
-        let (added_count, total_count) = control.commit(|| {
+        let checkpoint = array(&payload, "items")
+            .iter()
+            .find(|v| v["fav_uid"] == uid && v["fav_folder_id"] == id)
+            .and_then(|v| v["bvid"].as_str());
+        notify(index, folders.len(), Some(&id));
+        let fresh = match fetch(&uid, folder, checkpoint) {
+            Ok(fresh) => fresh,
+            Err(failure) if failure.kind == "cancelled" => return Err(failure),
+            Err(failure) => {
+                errors.push(json!({"uid":uid,"folder_id":id,"error":failure.message}));
+                continue;
+            }
+        };
+        let added_entries = control.commit(|| {
             let _guard = repository_guard()?;
-            payload = load_favlist(&paths.favlist_file);
-            let (merged, added_count) = merge_incremental_entries(array(&payload, "items"), &fresh);
-            let total_count = merged.len();
-            payload["items"] = json!(merged);
-            payload["updated_at"] = json!(unix_timestamp());
-            atomic_write_json(&paths.favlist_file, &payload)?;
-            Ok((added_count, total_count))
+            let mut latest = load_favlist(&paths.favlist_file);
+            let (merged, added) = merge_incremental_entries(array(&latest, "items"), &fresh);
+            let added_entries = merged.iter().take(added).cloned().collect::<Vec<_>>();
+            latest["items"] = json!(merged);
+            latest["updated_at"] = json!(unix_timestamp());
+            atomic_write_json(&paths.favlist_file, &latest)?;
+            Ok(added_entries)
         })?;
-        refreshed += 1;
-        added += added_count;
-        result = Some(json!({"mode":"incremental", "folder_count":refreshed,
-            "added_count":added, "total_count":total_count}));
-        notify(refreshed, folders.len(), None);
+        entries.extend(added_entries);
+        succeeded += 1;
+        notify(index + 1, folders.len(), None);
     }
-    Ok(result)
+    Ok(json!({"entries":dedupe_entries(&entries),"errors":errors,"succeeded":succeeded}))
 }
 
 fn fetch_profile(client: &BilibiliHttpClient, uid: &str) -> Result<Value, GatchaRepositoryError> {
@@ -1152,7 +1279,7 @@ fn fetch_uid_entries_controlled(
             GATCHA_REQUEST_DELAY,
             |_| true,
             || {
-                client.get_wbi_json(
+                client.get_wbi_json_controlled(
                     SPACE_ARC_URL,
                     BTreeMap::from([
                         ("mid".to_owned(), uid.to_owned()),
@@ -1163,6 +1290,7 @@ fn fetch_uid_entries_controlled(
                         ("platform".to_owned(), "web".to_owned()),
                     ]),
                     "稿件列表拉取失败",
+                    || control.check().is_err(),
                 )
             },
         )?;
@@ -1212,8 +1340,11 @@ fn uid_page_entries(
             continue;
         }
         let owner_name = first_text(video, &["author", "owner_name"]).unwrap_or_default();
+        // A collaborator's space also lists joint submissions. Its UID is the
+        // source being scanned, while the video's mid identifies the uploader.
+        let owner_uid = first_text(video, &["mid", "owner_mid"]).unwrap_or_else(|| uid.to_owned());
         let mut entry = json!({
-            "mid": uid,
+            "mid": owner_uid,
             "bvid": bvid,
             "title": title,
             "url": format!("https://www.bilibili.com/video/{bvid}"),
@@ -1223,7 +1354,7 @@ fn uid_page_entries(
             object.insert("owner_name".to_owned(), Value::String(owner_name));
             object.insert(
                 "owner_url".to_owned(),
-                Value::String(format!("https://space.bilibili.com/{uid}")),
+                Value::String(format!("https://space.bilibili.com/{owner_uid}")),
             );
         }
         add_video_extras(object, video);
@@ -1303,16 +1434,16 @@ fn fetch_favlist_entries(
     client: &BilibiliHttpClient,
     uid: &str,
     folder: &Map<String, Value>,
-    max_pages: Option<usize>,
+    checkpoint: Option<&str>,
 ) -> Result<Vec<Value>, GatchaRepositoryError> {
-    fetch_favlist_entries_controlled(client, uid, folder, max_pages, &RefreshControl::default())
+    fetch_favlist_entries_controlled(client, uid, folder, checkpoint, &RefreshControl::default())
 }
 
 fn fetch_favlist_entries_controlled(
     client: &BilibiliHttpClient,
     uid: &str,
     folder: &Map<String, Value>,
-    max_pages: Option<usize>,
+    checkpoint: Option<&str>,
     control: &RefreshControl,
 ) -> Result<Vec<Value>, GatchaRepositoryError> {
     let media_id = folder_id(folder);
@@ -1340,9 +1471,10 @@ fn fetch_favlist_entries_controlled(
             FAVLIST_REQUEST_DELAY,
             |error| error.kind == "risk_control",
             || {
-                client.get_api_json(
+                client.get_api_json_controlled(
                     &format!("{FAVLIST_ITEMS_URL}?{query}"),
                     "收藏夹内容拉取失败",
+                    || control.check().is_err(),
                 )
             },
         )?;
@@ -1401,7 +1533,7 @@ fn fetch_favlist_entries_controlled(
             .and_then(|value| value.get("has_more"))
             .and_then(Value::as_bool);
         if medias.is_empty()
-            || max_pages.is_some_and(|limit| page >= limit)
+            || checkpoint.is_some_and(|bvid| page_contains_bvid(medias, bvid))
             || (media_count > 0 && page * page_size >= media_count)
             || (media_count == 0 && medias.len() < page_size)
             || has_more == Some(false)
@@ -1572,7 +1704,25 @@ fn encode_query(values: &[(&str, String)]) -> String {
 }
 
 fn required_uid(value: &str) -> Result<String, GatchaRepositoryError> {
-    normalize_uid(value).ok_or_else(|| error("invalid_request", "UID 格式不正确"))
+    let value = value.trim();
+    let parsed = url::Url::parse(value)
+        .or_else(|_| url::Url::parse(&format!("https://{value}")))
+        .ok();
+    let uid = parsed
+        .as_ref()
+        .and_then(|url| {
+            (matches!(url.scheme(), "http" | "https")
+                && url.host_str() == Some("space.bilibili.com"))
+            .then(|| {
+                url.path()
+                    .trim_matches('/')
+                    .split('/')
+                    .next()
+                    .unwrap_or_default()
+            })
+        })
+        .unwrap_or(value);
+    normalize_uid(uid).ok_or_else(|| error("invalid_request", "UID 格式不正确"))
 }
 
 fn valid_profile(value: &Value) -> bool {
@@ -1632,11 +1782,14 @@ where
 fn draw_candidate(
     paths: &GatchaPaths,
     cookie_available: bool,
+    pool_config: Option<&Value>,
 ) -> Result<Value, GatchaRepositoryError> {
     let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
     let cache = load_cache(&paths.cache_file);
     let favlist = load_favlist(&paths.favlist_file);
-    let config = load_pool_config(&paths.pool_config_file);
+    let config = pool_config
+        .map(normalize_pool_config)
+        .unwrap_or_else(|| load_pool_config(&paths.pool_config_file));
     let excluded_uids: HashSet<String> = normalized_strings(config.get("excluded_uids"))
         .into_iter()
         .collect();
@@ -1735,7 +1888,12 @@ fn search(
     }
     let cache = load_cache(&paths.cache_file);
     let favlist = load_favlist(&paths.favlist_file);
-    let mut values = all_cache_entries(&cache);
+    let configured = uid_snapshot(&paths.uid_file, &[])?;
+    let mut values: Vec<Value> = array(&configured, "uids")
+        .iter()
+        .filter_map(Value::as_str)
+        .flat_map(|uid| array(&cache["uids"], uid).iter().cloned())
+        .collect();
     values.extend(array(&favlist, "items").iter().cloned());
     let matches: Vec<_> = values
         .iter()
@@ -1759,6 +1917,78 @@ fn search(
         json!({"items": items, "matched_count": matched_count, "offset": offset,
         "next_offset": next_offset, "has_more": next_offset < matched_count}),
     )
+}
+
+/// Enrich read projections and return whether the local library has candidates.
+#[cfg(any(feature = "native-host", test))]
+pub(crate) fn annotate_local(
+    paths: &GatchaPaths,
+    items: &mut [Value],
+) -> Result<bool, GatchaRepositoryError> {
+    let configured = uid_snapshot(&paths.uid_file, &[])?;
+    let cache = load_cache(&paths.cache_file);
+    let favorites = load_favlist(&paths.favlist_file);
+    let followed: BTreeMap<_, _> = array(&configured, "uids")
+        .iter()
+        .filter_map(Value::as_str)
+        .flat_map(|uid| array(&cache["uids"], uid))
+        .filter_map(|entry| Some((entry["bvid"].as_str()?, entry)))
+        .collect();
+    let favorited: BTreeMap<_, _> = array(&favorites, "items")
+        .iter()
+        .filter_map(|entry| Some((entry["bvid"].as_str()?, entry)))
+        .collect();
+    let profiles: BTreeMap<_, _> = cache["profiles"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .chain(configured["profiles"].as_object().into_iter().flatten())
+        .collect();
+    for item in items {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        let bv = item.get("bvid").and_then(Value::as_str).unwrap_or_default();
+        if let Some(entry) = favorited.get(bv) {
+            item.insert("local_source".into(), json!("favlist"));
+            for key in ["fav_uid", "fav_folder_title"] {
+                item.entry(key).or_insert_with(|| entry[key].clone());
+            }
+        } else if let Some(entry) = followed.get(bv) {
+            item.insert("local_source".into(), json!("follow"));
+            item.entry("mid").or_insert_with(|| entry["mid"].clone());
+        }
+        if first_text(item, &["owner_avatar_url", "avatar_url"]).is_some() {
+            continue;
+        }
+        let name = first_text(item, &["owner_name", "author"])
+            .unwrap_or_default()
+            .to_lowercase();
+        let uid = first_text(item, &["owner_mid", "mid"]).unwrap_or_default();
+        let profile = profiles
+            .get(&uid)
+            .copied()
+            .filter(|profile| {
+                name.is_empty()
+                    || profile["name"].as_str().unwrap_or_default().to_lowercase() == name
+            })
+            .or_else(|| {
+                profiles
+                    .values()
+                    .find(|p| {
+                        !name.is_empty()
+                            && p["name"].as_str().unwrap_or_default().to_lowercase() == name
+                    })
+                    .copied()
+            });
+        if let Some(avatar) = profile
+            .and_then(|p| p["avatar_url"].as_str())
+            .filter(|s| !s.is_empty())
+        {
+            item.insert("owner_avatar_url".into(), json!(avatar));
+        }
+    }
+    Ok(!followed.is_empty() || !favorited.is_empty())
 }
 
 fn browse_uid(
@@ -1971,8 +2201,8 @@ fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&Stri
     payload.insert(
         "mid".to_owned(),
         Value::String(
-            uid.cloned()
-                .or_else(|| first_text(entry, &["mid"]))
+            first_text(entry, &["mid"])
+                .or_else(|| uid.cloned())
                 .unwrap_or_default(),
         ),
     );
@@ -2047,19 +2277,6 @@ fn entry_payload(entry: &Map<String, Value>) -> Value {
     Value::Object(payload)
 }
 
-fn all_cache_entries(cache: &Value) -> Vec<Value> {
-    cache
-        .get("uids")
-        .and_then(Value::as_object)
-        .map(|uids| {
-            uids.values()
-                .filter_map(Value::as_array)
-                .flat_map(|values| values.iter().cloned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn valid_entries(values: &[Value]) -> Vec<Value> {
     values
         .iter()
@@ -2097,12 +2314,40 @@ fn dedupe_entries(values: &[Value]) -> Vec<Value> {
     output
 }
 
+type CachedObject = (PathBuf, SystemTime, u64, Map<String, Value>);
+static READ_CACHE: OnceLock<Mutex<VecDeque<CachedObject>>> = OnceLock::new();
+
 fn read_object(path: &Path) -> Option<Map<String, Value>> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let cache = READ_CACHE.get_or_init(Mutex::default);
+    {
+        let mut cached = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(index) = cached.iter().position(|(key, stamp, len, _)| {
+            key == path && *stamp == modified && *len == metadata.len()
+        }) {
+            let entry = cached.remove(index).unwrap();
+            let value = entry.3.clone();
+            cached.push_back(entry);
+            return Some(value);
+        }
+    }
     let bytes = fs::read(path).ok()?;
-    serde_json::from_slice::<Value>(&bytes)
+    let value = serde_json::from_slice::<Value>(&bytes)
         .ok()?
-        .as_object()
-        .cloned()
+        .as_object()?
+        .clone();
+    // This is only a bounded read projection. Atomic repository writes evict it;
+    // external legacy writers are detected through modification time and size.
+    if bytes.len() <= 16 * 1024 * 1024 && fs::metadata(path).ok()?.modified().ok()? == modified {
+        let mut cached = cache.lock().unwrap_or_else(|p| p.into_inner());
+        cached.retain(|(key, _, _, _)| key != path);
+        while cached.len() >= 4 {
+            cached.pop_front();
+        }
+        cached.push_back((path.to_owned(), modified, metadata.len(), value.clone()));
+    }
+    Some(value)
 }
 
 fn atomic_write_json(path: &Path, payload: &Value) -> Result<(), GatchaRepositoryError> {
@@ -2122,7 +2367,14 @@ fn atomic_write_json(path: &Path, payload: &Value) -> Result<(), GatchaRepositor
     let encoded = serde_json::to_vec_pretty(payload)
         .map_err(|value| error("serialization", value.to_string()))?;
     fs::write(&temp, encoded).map_err(|value| error("filesystem", value.to_string()))?;
-    replace_file(&temp, path).map_err(|value| error("filesystem", value.to_string()))
+    replace_file(&temp, path).map_err(|value| error("filesystem", value.to_string()))?;
+    if let Some(cache) = READ_CACHE.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(key, _, _, _)| key != path);
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -2366,6 +2618,128 @@ mod tests {
     }
 
     #[test]
+    fn favorites_publish_only_new_entries_and_retry_only_failed_folders() {
+        let root = temp_root("partial-favorites");
+        fs::create_dir_all(&root).unwrap();
+        let paths = paths(&root);
+        atomic_write_json(
+            &paths.favlist_file,
+            &json!({"schema_version":FAVLIST_SCHEMA_VERSION,
+            "folders":[{"uid":"1","id":"10"},{"uid":"2","id":"20"}],
+            "items":[{"bvid":"BVexisting01","title":"old","fav_uid":"1","fav_folder_id":"10"}]}),
+        )
+        .unwrap();
+        let control = RefreshControl::default();
+        let first = refresh_existing_favlist_with(&paths,&control,None,&|_,_,_|{},&|uid,_,checkpoint| {
+            if uid == "2" { return Err(error("network","fixture failed")); }
+            assert_eq!(checkpoint,Some("BVexisting01"));
+            Ok(vec![json!({"bvid":"BVnew0000001","title":"new","fav_uid":"1","fav_folder_id":"10"}),
+                json!({"bvid":"BVexisting01","title":"updated","fav_uid":"1","fav_folder_id":"10"})])
+        }).unwrap();
+        assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(first["entries"][0]["bvid"], "BVnew0000001");
+        assert_eq!(first["errors"][0]["folder_id"], "20");
+        let second = refresh_existing_favlist_with(&paths,&control,first["errors"].as_array().map(Vec::as_slice),&|_,_,_|{},&|uid,_,checkpoint| {
+            assert_eq!(uid,"2");
+            assert_eq!(checkpoint,None);
+            Ok(vec![json!({"bvid":"BVnew0000002","title":"recovered","fav_uid":"2","fav_folder_id":"20"})])
+        }).unwrap();
+        assert!(second["errors"].as_array().unwrap().is_empty());
+        assert_eq!(second["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            load_favlist(&paths.favlist_file)["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uid_inputs_accept_space_links_and_reject_video_or_foreign_links() {
+        for input in [
+            "00042",
+            "space.bilibili.com/42",
+            "https://space.bilibili.com/42",
+            "http://space.bilibili.com/42/video?tid=0",
+        ] {
+            assert_eq!(required_uid(input).unwrap(), "42");
+        }
+        for input in [
+            "0",
+            "BV1z84y1p7oS",
+            "https://evil.test/42",
+            "https://space.bilibili.com.evil.test/42",
+        ] {
+            assert!(required_uid(input).is_err());
+        }
+    }
+
+    #[test]
+    fn joint_submission_uses_uploader_identity_and_avoids_collaborator_avatar() {
+        let entries = uid_page_entries(
+            "156933",
+            &[json!({
+                "bvid":"BV181Yv6NEyo", "title":"KANADE", "author":"VZRXS", "mid":671767
+            })],
+            &[],
+            &mut HashSet::new(),
+        );
+        assert_eq!(entries[0]["mid"], "671767");
+        assert_eq!(entries[0]["owner_url"], "https://space.bilibili.com/671767");
+        assert_eq!(
+            candidate_payload(
+                entries[0].as_object().unwrap(),
+                "cache",
+                Some(&"156933".into())
+            )["mid"],
+            "671767"
+        );
+        let root = temp_root("joint-owner");
+        fs::create_dir_all(&root).unwrap();
+        let p = paths(&root);
+        atomic_write_json(
+            &p.uid_file,
+            &json!({"schema_version":2,
+            "uids":["156933"], "profiles":{
+                "156933":{"name":"Tsuki-岭月","avatar_url":"https://image.test/collaborator"},
+                "671767":{"name":"VZRXS","avatar_url":"https://image.test/uploader"}
+            }}),
+        )
+        .unwrap();
+        // Earlier caches may still contain the source UID, alongside the actual author name.
+        let mut legacy = vec![json!({"bvid":"BV181Yv6NEyo", "mid":"156933", "owner_name":"VZRXS"})];
+        annotate_local(&p, &mut legacy).unwrap();
+        assert_eq!(legacy[0]["owner_avatar_url"], "https://image.test/uploader");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn catalog_badges_prefer_favorites_and_use_matching_owner_profiles() {
+        let root = temp_root("annotations");
+        fs::create_dir_all(&root).unwrap();
+        let p = paths(&root);
+        atomic_write_json(&p.uid_file, &json!({"schema_version":2,"uids":["42"],"profiles":{"1":{"name":"UP","avatar_url":"https://image.test/wrong"},"42":{"name":"UP","avatar_url":"https://image.test/up"}}})).unwrap();
+        atomic_write_json(&p.cache_file, &json!({"schema_version":3,"uids":{"42":[{"bvid":"BV1z84y1p7oS","title":"Song","mid":"42"}],"999":[{"bvid":"BV1xx411c7mD","title":"Unconfigured"}]},"profiles":{}})).unwrap();
+        let mut items =
+            vec![json!({"bvid":"BV1z84y1p7oS","owner_name":"UP","mid":"42","source":"cloudflare"})];
+        annotate_local(&p, &mut items).unwrap();
+        assert_eq!(items[0]["local_source"], "follow");
+        assert_eq!(items[0]["owner_avatar_url"], "https://image.test/up");
+        assert_eq!(items[0]["source"], "cloudflare");
+        atomic_write_json(&p.favlist_file, &json!({"schema_version":2,"items":[{"bvid":"BV1z84y1p7oS","title":"Song","fav_uid":"42","fav_folder_title":"Karaoke"}],"folders":[]})).unwrap();
+        annotate_local(&p, &mut items).unwrap();
+        assert_eq!(items[0]["local_source"], "favlist");
+        assert_eq!(items[0]["fav_folder_title"], "Karaoke");
+        assert_eq!(
+            search(&p, "Unconfigured", 0, 30).unwrap()["items"],
+            json!([])
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn wire_request_deserializes_flattened_operation() {
         let request: GatchaRepositoryRequest = serde_json::from_value(json!({
             "schema_version": 1,
@@ -2391,6 +2765,11 @@ mod tests {
         let root = temp_root("search-pages");
         let paths = paths(&root);
         fs::create_dir_all(&root).unwrap();
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version":2,"uids":["42"],"profiles":{}}),
+        )
+        .unwrap();
         let items: Vec<_> = (0..221)
             .map(|n| {
                 json!({
@@ -2815,7 +3194,7 @@ mod tests {
             &json!({"uid_weight": 100, "favlist_weight": 0, "excluded_uids": ["1"]}),
         )
         .expect("write config");
-        let result = draw_candidate(&paths, true).expect("draw candidate");
+        let result = draw_candidate(&paths, true, None).expect("draw candidate");
         assert_eq!(result["bvid"], "BVLIVE");
         assert_eq!(result["mid"], "2");
         let _ = fs::remove_dir_all(root);

@@ -22,6 +22,44 @@ fn supervise(
     )
 }
 
+// BBDown writes independent track/segment files. Report observed media bytes
+// without parsing console text (which may contain cookies or signed URLs).
+fn downloaded_bytes(directory: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let Ok(kind) = entry.file_type() else {
+                return 0;
+            };
+            if kind.is_dir() {
+                return downloaded_bytes(&entry.path());
+            }
+            if !kind.is_file() {
+                return 0;
+            }
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let extension = path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            if matches!(
+                extension.as_str(),
+                "mp4" | "m4a" | "m4s" | "flac" | "webm" | "ts" | "tmp" | "temp"
+            ) || name.chars().all(|c| c.is_ascii_digit())
+            {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .fold(0, u64::saturating_add)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Executable(PathBuf);
 
@@ -265,7 +303,14 @@ pub(super) fn run_track(
     let mut last_progress = Instant::now();
     supervise(command, cancel, Duration::from_secs(3600), false, || {
         if last_progress.elapsed() >= Duration::from_secs(1) {
-            emit_track_progress(shared, job, track, "downloading", 1, (0, 0));
+            emit_track_progress(
+                shared,
+                job,
+                track,
+                "downloading",
+                1,
+                (downloaded_bytes(&directory), 0),
+            );
             last_progress = Instant::now();
         }
     })?;
@@ -387,12 +432,7 @@ pub(super) fn default_passthrough(
     codec: Option<&str>,
 ) -> bool {
     let force_avc = match job.executor {
-        Executor::Bbdown {
-            default_host: true,
-            force_avc,
-            ..
-        }
-        | Executor::Downkyi { force_avc, .. } => force_avc,
+        Executor::Bbdown { force_avc, .. } | Executor::Downkyi { force_avc, .. } => force_avc,
         _ => return false,
     };
     match kind {
@@ -521,7 +561,6 @@ mod tests {
         spec.executor = Executor::Bbdown {
             executable: Executable::fixture(PathBuf::from("/trusted/BBDown")),
             force_avc: false,
-            default_host: true,
         };
         assert!(!arguments(&spec, &tracks[0], &directory).contains(&"-e".into()));
         assert!(default_passthrough(
@@ -560,10 +599,9 @@ mod tests {
         spec.executor = Executor::Bbdown {
             executable: Executable::fixture(PathBuf::from("/trusted/BBDown")),
             force_avc: true,
-            default_host: false,
         };
         assert!(arguments(&spec, &tracks[0], &directory).contains(&"avc".into()));
-        assert!(!default_passthrough(
+        assert!(default_passthrough(
             &spec,
             ExpectedMediaKind::Audio,
             Some("eac3")

@@ -69,8 +69,8 @@ class DesktopLoginTest(unittest.TestCase):
                 raise RuntimeError(message)
             return cookie
         with patch("bilikara.bilibili.cfg.COOKIE", ""):
-            with self.assertRaisesRegex(RuntimeError, "BBDown 下载需要登录"):
-                command()
+            self.assertEqual(command(), "")
+            self.assertIn("下载需要登录", self.manager._download_login_error("downkyi"))
             with LoginFixture():
                 generation = self.request("start", force=False)["generation"]
                 self.join(self.worker(generation))
@@ -80,10 +80,9 @@ class DesktopLoginTest(unittest.TestCase):
             authenticated = command()
             self.assertEqual(authenticated, bilibili.effective_bilibili_cookie())
             self.manager.logout_bbdown()
-            for source in ["bbdown", "downkyi"]:
-                self.assertIn("下载需要登录", self.manager._download_login_error(source))
-            with self.assertRaisesRegex(RuntimeError, "BBDown 下载需要登录"):
-                command()
+            self.assertEqual(self.manager._download_login_error("bbdown"), "")
+            self.assertIn("下载需要登录", self.manager._download_login_error("downkyi"))
+            self.assertEqual(command(), "")
 
     def test_success_png_downloader_readability_and_exactly_one_existing_hook(self):
         with LoginFixture() as fixture:

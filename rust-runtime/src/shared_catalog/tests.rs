@@ -141,26 +141,63 @@ fn bounded_concurrency_releases_lock_and_invalidated_inflight_data_cannot_return
         })
     });
     observed.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(
-        execute_with(&request("q=one"), &|_| panic!("duplicate fetch"))
-            .unwrap_err()
-            .kind,
-        "catalog_busy"
-    );
-    execute_with(&request("q=two"), &|_| {
-        assert_eq!(
-            execute_with(&request("q=three"), &|_| panic!("third fetch"))
-                .unwrap_err()
-                .kind,
-            "catalog_busy"
-        );
-        Ok(json!({"payload":[]}))
+    let duplicate =
+        std::thread::spawn(|| execute_with(&request("q=one"), &|_| panic!("duplicate fetch")));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !with_catalog(|state| {
+        Ok(state
+            .inflight
+            .values()
+            .any(|flight| flight.waiters.load(Ordering::SeqCst) > 0))
     })
-    .unwrap();
+    .unwrap()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "duplicate request did not join"
+        );
+        std::thread::yield_now();
+    }
     invalidate().unwrap();
     release.send(()).unwrap();
     assert_eq!(handle.join().unwrap().unwrap_err().kind, "catalog_changed");
+    assert_eq!(
+        duplicate.join().unwrap().unwrap_err().kind,
+        "catalog_changed"
+    );
     assert!(with_catalog(|s| Ok(s.inflight.is_empty() && s.cache.is_empty())).unwrap());
+    clear();
+}
+
+#[test]
+fn distinct_catalog_reads_wait_and_identical_reads_share_the_result() {
+    let _guard = CACHE_TEST.lock().unwrap();
+    clear();
+    let calls = AtomicUsize::new(0);
+    let active = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+    let fetch = |_: &CloudflareServiceRequest| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(60));
+        active.fetch_sub(1, Ordering::SeqCst);
+        Ok(json!({"payload":[]}))
+    };
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = ["q=one", "q=one", "q=two", "q=three"]
+            .into_iter()
+            .map(|query| {
+                let fetch = &fetch;
+                scope.spawn(move || execute_with(&request(query), fetch))
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), json!({"items":[]}));
+        }
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(peak.load(Ordering::SeqCst), 2);
     clear();
 }
 

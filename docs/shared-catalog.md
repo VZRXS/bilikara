@@ -65,8 +65,9 @@ a 32 MiB response bound, 100,000-row limit and 64 KiB field bound.
 
 The existing AppState owns all transient catalog cache metadata:
 
-- D1: 60-second TTL, 48 entries, 512 KiB per cached result, two uncached reads
-  in flight, and 30-second outage backoff.
+- D1: 60-second TTL, 48 entries, 512 KiB per cached result, two distinct uncached
+  reads in flight, and 30-second outage backoff. Identical reads share one result;
+  other reads wait for a slot within their caller's deadline.
 - Sheets: one shared normalized snapshot across keywords and adapters, 60-second
   TTL after fetch/parse completion, one refresh in flight and 30-second failure
   backoff. Competing refresh requests return `catalog_busy` and may retry.

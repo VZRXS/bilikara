@@ -5584,6 +5584,9 @@ class CacheManagerArtifactRetirementTest(unittest.TestCase):
         self.log_path = root / "cache.log"
         self.store = PlaylistStore(root / "state.json", root / "backup.json")
         self.store.add_session_user("retirement-user")
+        policy_patch = patch("bilikara.cache.CACHE_POLICY_FILE", root / "cache-policy.json")
+        policy_patch.start()
+        self.addCleanup(policy_patch.stop)
         self.cache_patch = patch("bilikara.cache.CACHE_DIR", self.cache_dir)
         self.worker_patch = patch.object(
             CacheManager, "_worker_loop", lambda _self: None

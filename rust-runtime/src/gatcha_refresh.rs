@@ -18,10 +18,25 @@ pub(crate) struct RefreshControl(Mutex<ControlState>);
 #[derive(Debug, Default)]
 struct ControlState {
     stopped: bool,
+    retry_failed: bool,
     host_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl RefreshControl {
+    #[cfg(feature = "native-host")]
+    pub(crate) fn retry_failed_sources(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_failed = true;
+    }
+    pub(crate) fn retries_failed_sources(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_failed
+    }
+
     pub(crate) fn stop(&self) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
     }
@@ -111,28 +126,25 @@ pub(crate) fn summary_has_errors(value: &Value) -> bool {
 
 #[cfg(feature = "native-host")]
 pub(crate) fn native_task(value: Option<&Value>) -> GachaTaskUpdate {
-    let status = match value {
-        None => GachaTaskStatus::Failed,
-        Some(value) if summary_has_errors(value) => GachaTaskStatus::Partial,
-        Some(_) => GachaTaskStatus::Success,
-    };
-    GachaTaskUpdate {
-        status,
-        message: if status == GachaTaskStatus::Success {
-            "本地曲库更新完成"
-        } else {
-            "曲库更新失败或部分更新，请稍后重试"
-        }
-        .into(),
-        error: String::new(),
-        result: None,
-        blocking: false,
-    }
+    let payload = value
+        .map(|value| {
+            if value.get("refresh_summary").is_some() {
+                value.clone()
+            } else {
+                json!({"refresh_summary": value})
+            }
+        })
+        .ok_or_else(|| GatchaRepositoryError {
+            kind: "refresh_failed".into(),
+            message: "曲库更新失败，请稍后重试".into(),
+        });
+    let mut task = interpret(payload, false).task;
+    task.blocking = false;
+    task
 }
 
 /// Preserve the default Host's result DTO and its distinction between no UID
-/// success and partial UID success. Native projection retains its older partial
-/// label for an aggregate repository result containing only errors.
+/// success and partial UID success for every Host.
 pub(crate) fn interpret(
     payload: Result<Value, GatchaRepositoryError>,
     rebuilt: bool,
@@ -151,7 +163,10 @@ pub(crate) fn interpret(
             let errors = summary["errors"].as_array().cloned().unwrap_or_default();
             let favlist_error = summary["favlist_error"].as_str().unwrap_or_default();
             let has_errors = summary_has_errors(cache);
-            let status = if has_errors && rows.is_empty() {
+            let status = if has_errors
+                && rows.is_empty()
+                && summary["favlist_succeeded"].as_u64().unwrap_or(0) == 0
+            {
                 GachaTaskStatus::Failed
             } else if has_errors {
                 GachaTaskStatus::Partial
@@ -172,6 +187,7 @@ pub(crate) fn interpret(
                 "uid_count": uids.map_or(0, |v| v.len()),
                 "entry_count": uids.map_or(0, |v| v.values().filter_map(Value::as_array).map(Vec::len).sum::<usize>()),
                 "uid_results": rows, "errors": errors, "favlist_error": favlist_error,
+                "favlist_errors": summary["favlist_errors"].as_array().cloned().unwrap_or_default(),
             });
             if rebuilt {
                 result["rebuild"] = cache["rebuild"].clone();
@@ -179,7 +195,7 @@ pub(crate) fn interpret(
             let entries = if status == GachaTaskStatus::Failed {
                 vec![]
             } else if rebuilt {
-                cache["favlist_entries"]
+                cache["catalog_entries"]
                     .as_array()
                     .cloned()
                     .unwrap_or_default()
@@ -203,8 +219,11 @@ pub(crate) fn interpret(
     }
 }
 
-fn added_entries(cache: &Value) -> Vec<Value> {
-    let mut entries = Vec::new();
+pub(crate) fn added_entries(cache: &Value) -> Vec<Value> {
+    let mut entries = cache["favlist_entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     for row in cache["refresh_summary"]["uids"]
         .as_array()
         .into_iter()
@@ -277,6 +296,20 @@ pub(crate) type RefreshTicket = (u64, Arc<RefreshControl>);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn native_refresh_distinguishes_total_failure_and_retains_diagnostics() {
+        let value = json!({"refresh_summary":{"uids":[],"errors":[{"uid":"42","error":"offline"}],"favlist_error":"blocked"}});
+        let task = native_task(Some(&value));
+        assert_eq!(task.status, GachaTaskStatus::Failed);
+        let result = task.result.unwrap();
+        assert_eq!(result["errors"][0]["error"], "offline");
+        assert_eq!(result["favlist_error"], "blocked");
+        let mut mixed = value;
+        mixed["refresh_summary"]["uids"] = json!([{"uid":"43"}]);
+        assert_eq!(native_task(Some(&mixed)).status, GachaTaskStatus::Partial);
+    }
     use crate::status_service::RuntimeStatusService;
 
     #[test]
@@ -306,8 +339,12 @@ mod tests {
         assert!(interpret(Ok(no_new.clone()), false).entries.is_empty());
         no_new["rebuild"] = json!({"completed":true});
         no_new["favlist_entries"] = json!([{"bvid":"BVFAVREBUILD"}]);
+        no_new["refresh_summary"]["uids"][0]["added_count"] = json!(2);
+        no_new["catalog_entries"] = json!([{"bvid":"BVFAVREBUILD"},{"bvid":"BVNEW0000001"}]);
         let rebuilt = interpret(Ok(no_new), true);
-        assert_eq!(rebuilt.entries, vec![json!({"bvid":"BVFAVREBUILD"})]);
+        assert_eq!(rebuilt.entries.len(), 2);
+        assert_eq!(rebuilt.entries[0], json!({"bvid":"BVFAVREBUILD"}));
+        assert_eq!(rebuilt.entries[1]["bvid"], "BVNEW0000001");
         assert!(!rebuilt.task.blocking);
     }
 

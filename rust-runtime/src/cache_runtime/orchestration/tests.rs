@@ -3,6 +3,73 @@ use crate::app_state::{AppStateRequest, CacheEvent};
 use crate::cache_application::{CacheApplication, HostContract};
 use std::sync::Barrier;
 
+#[cfg(feature = "native-host")]
+#[test]
+fn native_forced_retry_retires_ready_media_before_workers_publish_progress() {
+    let mut f = Fixture::new();
+    f.add("a");
+    f.run(Action::Reconcile).unwrap();
+    let job = f.state.jobs["a"].spec.clone();
+    f.flush();
+    f.ready("a");
+    assert_eq!(f.item("a").cache_status, "ready");
+    let previous_selection = f.item("a").selected_audio_variant_id;
+    retry_native_host_locked(&mut f.app, &mut f.state, job, true).unwrap();
+    let item = f.item("a");
+    assert_eq!(item.cache_status, "pending");
+    assert!(item.video_media_url.is_empty());
+    assert!(item.artifact_set_id.is_empty());
+    assert_eq!(item.selected_audio_variant_id, previous_selection);
+    assert!(!f.state.jobs["a"].reservation.refresh);
+    f.flush();
+    assert_eq!(f.item("a").cache_status, "queued");
+}
+
+#[cfg(feature = "native-host")]
+#[test]
+fn native_forced_retry_preempts_primary_and_survives_window_reordering() {
+    let mut f = Fixture::new();
+    f.add("a");
+    f.add("b");
+    f.add("c");
+    f.run(Action::Reconcile).unwrap();
+    let original = f.activate("a");
+    let job = f.state.jobs["b"].spec.clone();
+    retry_native_host_locked(&mut f.app, &mut f.state, job, true).unwrap();
+    assert!(f.state.active["a"].cancel.load(Ordering::Acquire));
+    assert!(f.state.jobs["a"].generation > original.generation);
+    assert_eq!(
+        f.state
+            .normal_queue
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["b", "a", "c"]
+    );
+    CacheRuntime::reorder_locked(&mut f.state, &["a".into(), "b".into(), "c".into()]);
+    assert_eq!(f.state.normal_queue.front().map(String::as_str), Some("b"));
+    CacheRuntime::cancel_item_locked(&mut f.state, "b", "left cache window");
+    assert!(f.state.manual_front.is_none());
+}
+
+#[cfg(feature = "native-host")]
+#[test]
+fn native_nonforced_retry_joins_tail_and_current_forced_retry_is_urgent() {
+    let mut f = Fixture::new();
+    f.add("a");
+    f.add("b");
+    f.add("c");
+    f.run(Action::Reconcile).unwrap();
+    f.activate("b");
+    let job = f.state.jobs["c"].spec.clone();
+    retry_native_host_locked(&mut f.app, &mut f.state, job, false).unwrap();
+    assert_eq!(f.state.normal_queue.back().map(String::as_str), Some("c"));
+    let job = f.state.jobs["a"].spec.clone();
+    retry_native_host_locked(&mut f.app, &mut f.state, job, true).unwrap();
+    assert!(!f.state.active["b"].cancel.load(Ordering::Acquire));
+    assert_eq!(f.state.urgent_queue.front().map(String::as_str), Some("a"));
+}
+
 #[test]
 fn downkyi_captures_preferences_and_urgent_external_handoff_without_double_reservation() {
     let mut f = Fixture::new();
@@ -810,7 +877,7 @@ fn source_handoff_waits_without_holding_appstate_or_worker_lock() {
 
 #[cfg(feature = "native-host")]
 #[test]
-fn native_host_reuses_builder_with_its_available_page_contract() {
+fn native_host_preserves_selected_order_with_available_metadata() {
     let mut f = Fixture::new();
     let mut item = f.add("a");
     item.available_pages = vec![2, 1];
@@ -840,7 +907,7 @@ fn native_host_reuses_builder_with_its_available_page_contract() {
             .iter()
             .map(|page| (page.page, page.cid, page.label.as_str()))
             .collect::<Vec<_>>(),
-        vec![(2, 22, "instrumental"), (1, 11, "original")]
+        vec![(1, 11, "original"), (2, 22, "instrumental")]
     );
     assert_eq!(job.video_page, 1);
     assert_eq!(job.executor.source(), "native");

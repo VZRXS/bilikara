@@ -150,7 +150,14 @@ impl CacheApplication {
             let default = matches!(contract, HostContract::Default { .. });
             let projections = match event.kind.as_str() {
                 "queued" => vec![CacheEvent::Queued {
-                    message: "等待 Rust 缓存队列".into(),
+                    message: payload["message"]
+                        .as_str()
+                        .unwrap_or(if default {
+                            "等待 Rust 缓存队列"
+                        } else {
+                            "等待缓存队列"
+                        })
+                        .into(),
                 }],
                 "started" => {
                     attempt.source = match payload["source"].as_str() {
@@ -218,11 +225,7 @@ impl CacheApplication {
                     } else {
                         let mut ready = payload.clone();
                         ready["kind"] = json!("ready");
-                        ready["message"] = json!(if default {
-                            format!("缓存完成，共 {count} 条音轨")
-                        } else {
-                            "已就绪".into()
-                        });
+                        ready["message"] = json!(format!("缓存完成，共 {count} 条音轨"));
                         match serde_json::from_value(ready) {
                             Ok(ready) => vec![ready],
                             Err(_) => {
@@ -246,12 +249,15 @@ impl CacheApplication {
                                 .unwrap_or("Rust 缓存任务失败")
                         )
                     } else {
-                        payload["message"]
-                            .as_str()
-                            .unwrap_or("媒体下载失败，请查看诊断或重试")
-                            .chars()
-                            .take(400)
-                            .collect()
+                        format!(
+                            "缓存失败: {}",
+                            payload["message"]
+                                .as_str()
+                                .unwrap_or("媒体下载失败，请查看诊断或重试")
+                                .chars()
+                                .take(394)
+                                .collect::<String>()
+                        )
                     },
                 }],
                 "cancelled" | "evicted" => {
@@ -269,10 +275,16 @@ impl CacheApplication {
                             }),
                         #[cfg(any(feature = "native-host", test))]
                         HostContract::Native => {
-                            if event.kind == "cancelled" {
+                            if payload["reason"] == "等待当前歌曲重新下载" {
+                                "等待当前歌曲重新下载".into()
+                            } else if event.kind == "cancelled" {
                                 "缓存任务已取消".into()
                             } else {
-                                "等待进入缓存窗口".into()
+                                #[cfg(feature = "native-host")]
+                                let max = app.native().cache_policy.max_cache_items;
+                                #[cfg(not(feature = "native-host"))]
+                                let max = 3;
+                                format!("仅自动缓存前 {max} 首，已释放本地缓存")
                             }
                         }
                     };

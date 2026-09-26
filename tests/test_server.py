@@ -536,6 +536,7 @@ class AppContextArtifactOwnershipBoundaryTest(unittest.TestCase):
         context.cache_manager = self.manager
         context._state_change_condition = threading.Condition()
         context._state_revision = 1
+        context._state_epoch = "fixture-host-epoch"
         context._client_lock = threading.RLock()
         context._host_client_last_seen = {"host-client": 1.0}
         context.auto_restored_backup = False
@@ -1061,11 +1062,24 @@ class BilikaraHandlerLocalClientTest(unittest.TestCase):
 
 
 class AddressArchitectureTest(unittest.TestCase):
-    def test_loopback_companion_is_defined_before_global_context_initialization(self):
-        source = Path(server_module.__file__).read_text(encoding="utf-8")
-        helper = source.index("def _loopback_companion_host(")
-        context = source.index("CONTEXT = AppContext()")
-        self.assertLess(helper, context)
+    def test_context_is_lazy_and_forwards_reads_writes_and_shutdown_to_one_adapter(self):
+        adapter = SimpleNamespace(value=1, shutdown=Mock())
+        with patch.object(server_module, "AppContext", return_value=adapter) as create:
+            context = server_module._LazyAppContext()
+            context.shutdown()
+            create.assert_not_called()
+            self.assertEqual(context.value, 1)
+            context.value = 2
+            self.assertEqual(adapter.value, 2)
+            self.assertEqual(context.value, 2)
+            with patch.object(context, "value", 3):
+                self.assertEqual(adapter.value, 3)
+            self.assertEqual(context.value, 2)
+            del context.value
+            self.assertFalse(hasattr(adapter, "value"))
+            create.assert_called_once_with()
+            context.shutdown()
+            adapter.shutdown.assert_called_once_with()
 
     def test_wildcard_bind_uses_loopback_for_local_ui(self):
         self.assertEqual(server_module._local_ui_host("0.0.0.0"), "127.0.0.1")

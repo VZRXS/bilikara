@@ -261,8 +261,8 @@ fn desktop_failed(message: &str) -> ApiError {
 const DESKTOP_NETWORK_ERROR: &str = "无法读取发布信息，请检查网络后重试";
 const DESKTOP_SCHEMA_ERROR: &str = "发布信息格式不正确，请稍后重试";
 
-/// Test builds may retarget the sources at a local fixture. Production builds
-/// have no such seam: the constants above are the only desktop sources.
+/// Test builds may retarget the sources at a local fixture. Explicit legacy
+/// environment fallbacks are appended after built-in sources in production.
 #[cfg(test)]
 static SOURCE_OVERRIDE: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
 
@@ -278,6 +278,7 @@ fn desktop_sources(preview: bool) -> Vec<String> {
     }
     .iter()
     .map(|url| (*url).to_owned())
+    .chain(super::environment::extra_sources(preview))
     .collect()
 }
 

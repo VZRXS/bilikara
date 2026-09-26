@@ -10,7 +10,13 @@ LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
 an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
 establishes a Remote device cookie and then shows username registration, matching
 the Python Host's direct-entry flow. An existing device cookie is reused; a stale
-cookie can rejoin after a Host restart. This does not grant Host management or
+cookie can rejoin after a Host restart. Registered singer bindings are stored as
+token digests in the private AppState checkpoint and survive “continue previous
+session”, including reconnecting phones that keep the page open. Starting a new
+session, removing a singer or resetting runtime data revokes those bindings.
+Historical visitors do not consume a ten-device admission quota. SSE streams
+receive commit notifications and do not share a twelve-stream admission quota;
+slow/disconnected streams still time out. This does not grant Host management or
 media access: those still require the private loopback Host session. Public-room
 passwords and signaling are separate and unchanged.
 
@@ -19,6 +25,9 @@ Internet probes. Changed LAN addresses and their QR image are published together
 through AppState; unchanged addresses do not regenerate the QR or advance the
 state revision. Host polling updates all entry surfaces automatically. With no
 LAN address, entry links and copy actions are disabled until one returns.
+The HTTP Host check accepts the advertised addresses, including public campus,
+link-local and CGNAT IPv4 addresses, and loopback. Other addresses, hostnames and
+cross-origin requests remain rejected.
 
 Addresses come from the OS interface and routing tables: IP Helper on Windows,
 `getifaddrs` with sysfs and `/proc/net/route` on Linux and Android, and
@@ -279,9 +288,15 @@ pagination does not deploy the Worker or apply its database migrations.
 
 Host-selected session users and identity-bound Remote users can rate a current
 or played song through the shared Rust rating service. HTTP and typed Internet
-Remote commands use the same bounded pending/completed ledger. A result reports
-success only after Catalog accepts it; failures release the reservation for an
-explicit retry. This is session-local duplicate protection, not durable
+Remote commands use the same bounded pending/completed ledger. A `queued: true`
+response acknowledges a score held by the Host until playback eligibility;
+only Catalog acceptance completes delivery. While an entry is `waiting`, the
+same user may replace its score under the AppState lock. Once sending starts,
+replacement is rejected; failures release the reservation for an explicit retry.
+The `song_ratings` snapshot includes `score` alongside `status` so Remote can
+reopen the saved value. Remote always labels its entry “评价” and permits viewing
+the dialog; eligibility disables its confirmation button rather than the entry.
+This is session-local duplicate protection, not durable
 exactly-once delivery across crashes or ambiguous network failures.
 
 Each successfully committed explicit song request can enqueue its seven public
@@ -326,3 +341,172 @@ under the worker/AppState locks before reserving a replacement attempt. Normal
 manual retries enter the front of the normal queue. Only a forced retry of the
 current song while a different song occupies the primary worker uses the urgent
 lane; `force` does not bypass cache-window or backend capability checks.
+
+### Audit compatibility decisions
+
+Native checkpoints now use schema 3. `host-state.json` atomically publishes a
+manifest; growing history, played records, session archives, backup records and
+all saved per-user Gacha preferences live in immutable, hash-checked pieces of
+at most 1 MiB in `host-records/`. Schema 1 and 2 are read automatically and
+converted on the next state write during startup. The original manifest bytes
+are saved once as `host-state.v1.backup.json` or `host-state.v2.backup.json`;
+record pieces referenced by the schema-2 backup are retained. Older binaries
+cannot read schema 3. To roll back, fully exit the app, copy the complete data
+directory to a separate backup, then restore the matching old manifest over
+`host-state.json` before starting the older version. This restores the state at
+the first upgrade, not subsequent edits. A new schema-3 installation has no old
+manifest backup. Migration preserves the loaded configuration; it cannot recover
+preferences already discarded by an earlier build.
+Copy the whole data directory, including `host-records/`, when backing up or moving data.
+The queue retains its admission limit; historical collections no longer share
+that queue limit. Resetting runtime data preserves played archives and resets
+all users' Gacha preferences to defaults.
+
+Gacha weights and exclusions belong to AppState and persist per singer. Host
+requests may name the selected singer with `requester_name`; LAN Remote uses its
+registered identity, and Internet Remote uses its validated session identity.
+Unregistered LAN devices and Internet peers have isolated, temporary preferences;
+LAN registration adopts these into the singer's preferences if none exist yet.
+Registered device bindings retain up to 256 devices, reclaiming older bindings
+without refusing new visitors. An evicted device can register again. Temporary
+preferences retain at most 256 keys and do not enlarge the checkpoint. Saved
+user preferences are neither evicted by user count nor limited to 64 KiB; they
+use the same split-record storage as history. Host requests may select only a
+singer in the current session. Registration commits the singer, device digest
+and adoption of temporary preferences atomically; a failed commit changes none
+of them. Preferences can change during a refresh: newly discovered sources join
+the available list, while saved weights and exclusions remain in effect. Sources
+temporarily absent from the list retain their exclusions. An explicit pool reset
+clears exclusions. On startup the old `gatcha_pool_config.json` is imported into
+AppState defaults if missing, then renamed to `gatcha_pool_config.legacy.backup.json`
+without overwriting an existing backup. Future writes use AppState only.
+
+
+A failed or partial manual refresh releases its cooldown immediately. The next
+manual refresh prioritizes failed UIDs and still refreshes every configured UID
+and favorite folder incrementally, preserving a complete summary; successful scans use
+a 60-second cooldown. Source preview/import does not consume that cooldown.
+Favorites refresh reads through the prior folder checkpoint, including more
+than one page of additions. Its new entries join the existing incremental UID
+append; cloud publication remains the existing bounded, best-effort queue.
+Explicit source imports also append only additions. Legacy schema rebuilds compare against the published local cache and append
+only newly discovered UID/favorite records, without reuploading existing data.
+Anonymous users may preview/import public favorites. Restricted favorites still
+use Bilibili's access checks. Corrupt source configuration is backed up without overwriting earlier backups,
+valid UID/profile entries are salvaged where possible, defaults are restored when
+needed, and a Host toast reports recovery. Unknown future versions fail explicitly
+without replacing the source file. A newly verified Bilibili account triggers its
+initial library refresh even during the previous account's success cooldown;
+repeated login refreshes for the same account respect the normal cooldown.
+
+Cloud reads retain two concurrent upstream requests, coalesce identical reads,
+and wait within a bounded deadline instead of immediately rejecting overlap.
+Bilibili JSON reads share a process-wide four-request limit and 250 ms start
+spacing; identical requests share a result within the same credential/header
+scope. Queued distinct reads use FIFO admission; refresh pagination waiters
+observe cancellation within 50 ms. A request already performing network I/O
+still uses its bounded network timeout. Repository page pacing (5 seconds for submissions, 3 for favorites) and
+bounded retries remain in force. DownKyi retries transient media validation
+failures within its ten-attempt budget; terminal authentication/capability errors
+remain terminal.
+
+BBDown and Native can attempt guest downloads; upstream access restrictions still
+apply. DownKyi retains its login requirement. BBDown can preserve an EAC3-only
+audio track on native desktop too. Its progress reports observed media/temporary
+file lengths once per second; total bytes remain unknown until the artifact is
+complete (this is not an exact wire-byte counter). yt-dlp interfaces remain,
+but both `yt-dlp` and `ytdlp` selections are unavailable: status reports disabled,
+and prepare/selection return 501 `cache_source_unavailable`. No native yt-dlp
+process is launched. Updates have no fixed total download deadline;
+read timeouts, cancellation and size checks remain active. Diagnostic exports
+redact OS login names from `USERNAME`, `USER` and `LOGNAME`, as well as singer names.
+They include bounded configuration snapshots, tool availability, cache item state,
+and the shell startup log passed through `BILIKARA_DESKTOP_STARTUP_LOG`. The shell
+log includes backend stderr and diagnostic/export stage timings. Log tails are
+limited to 64 KiB each, selected configs to 1 MiB, and symlinks are skipped.
+Diagnostic filenames include the local timestamp.
+Both HTTP and Internet Remote remove cloud entries only after upstream `-404`;
+deletions share a limit of eight distinct videos per minute, deduplicated by BV.
+
+`BILIKARA_BILIBILI_COOKIE` is a launch override, validated with Bilibili before
+use. An invalid/unverifiable override leaves saved login intact. Manual Cookie
+configuration also validates login and replaces the active credential. Logout
+clears the active credential and saved login; logout or a successful QR login
+records only the dismissed environment value's digest, preventing that same
+value from reappearing after restart. A different environment value is a new
+override. Desktop QR credentials remain in `BBDown.data`; active credentials are
+passed to BBDown through its `-c` argument. `bilikara_native` is a separate local
+Host/Remote browser identity cookie and is never a Bilibili credential.
+
+Zero or missing playback duration is accepted as a transient observation.
+Playback commands keep working; history-start and rating-threshold transitions
+wait for a positive observed duration. No duration from an earlier observation
+is substituted.
+
+Closing the desktop main window or using native menu Quit checks native exports, including Remote export
+transfers. While an export is active a native OS dialog offers forced exit or
+continuing the export. Forced exit skips the export grace period; normal backend
+shutdown still has a bounded cleanup period. On Windows the Host owns a
+kill-on-close Job Object and watches the shell process handle. Download children
+inherit the job; if shutdown hangs after shell death, a five-second watchdog
+exits the Host so the owning Job handle closes. The explicitly detached update
+installer can finish after Host exit. Windows process behavior and native dialogs still require platform testing.
+
+The supported HTTP surface follows this repository's Host/Remote callers.
+Registered LAN Remote actions include remove/play-now/move-next in the
+queue, recent-session listing, and exporting current or archived sessions. Raw
+export-data projections and queue-wide clearing remain Host-only; Internet
+Remote still does not expose file export.
+
+These legacy routes remain unavailable (501 `native_unavailable`):
+
+| Legacy route | Current in-repository workflow |
+| --- | --- |
+| `/api/playlist/move` | Ordered drag/drop through `/api/playlist/reorder` |
+| `/api/backup/restore` | Session-choice continuation; no direct restore caller |
+| `/api/player/av-offset` | `/api/player/av-delay-action`, `type: set_persistent` |
+| `/api/mode` | Local playback is the supported mode; the old mode button is hidden |
+| `/api/player/playback-selector` | Retired playback-selector interface |
+
+Short-link redirects keep complete-domain Bilibili validation. Metadata keeps
+`/x/web-interface/wbi/view`; the unsigned request was confirmed to return valid
+metadata during this audit, so no speculative endpoint change was made.
+
+### Compatibility environment and exports
+
+| Legacy input | Native behavior |
+| --- | --- |
+| `BILIKARA_HOST` | Bind to the requested local IPv4 address or IPv4 hostname; an explicit LAN bind retains a separate loopback listener for the shell. Default: all IPv4 interfaces. |
+| `BILIKARA_PORT` / `--port` | Standalone native launch accepts 0–65535; an explicit CLI argument wins. The desktop shell continues to pass `--port 0` for automatic allocation. |
+| `BILIKARA_MAX_CACHE_ITEMS` | First-run default, clamped to 1–5; saved preferences take precedence. Unset defaults to 3. |
+| `BILIKARA_APP_RELEASE_API_FALLBACKS` | Additional stable release metadata URLs. |
+| `BILIKARA_APP_RELEASES_API_FALLBACKS` | Additional preview release metadata URLs. Both lists accept comma, semicolon or newline separators and HTTP(S) only. |
+| `BILIKARA_UPDATE_DOWNLOAD_PROXY` / `_FIRST` | Restore the existing proxy template and proxy-first ordering, with ordinary download fallbacks. |
+| `BB_DOWN_PATH`, `ARIA2C_PATH`, `BILIKARA_TOOL_ASSET_BASE_URL` | Existing tool path / asset source overrides remain supported. |
+| `YT_DLP_PATH` | Retained legacy adapter interface only; it does not enable native yt-dlp. |
+
+CSV preserves the raw display title and the historical `播放时间` header. Image
+exports keep `bilikara 歌单导出`. Filenames use
+`bilikara-{source}-{YYYYmmdd-HHMMSS}` and the actual format extension. One image
+page is PNG; multiple pages are rendered sequentially and packaged as ZIP. HTTP
+MIME, filename and desktop save-dialog filters all follow that result. The
+10,000-row / 16 MiB input and 64 MiB native output cutoffs are removed. A single
+export slot still bounds simultaneous rendering/transfers; the desktop download
+transport retains its separate 512 MiB response guard. Extremely large exports
+remain subject to available memory/disk and are not streamed row-by-row.
+
+In v0.7.2, `bilikara/bilibili.py::resolve_video_reference` recognized `b23.tv` and
+`bili2233.cn`, opened them through urllib and used the final response URL. It did
+not offer arbitrary third-party short-link input. Native keeps these supported
+entry domains and validates redirect targets; share text without a space before
+the URL preserves the selected `p` value. The historical urllib implementation
+had broader downstream redirect behavior, which is not restored.
+
+Startup owner enrichment is limited to 32 attempts, retries failed records no
+sooner than 24 hours later, and persists only hashed URL attempt timestamps.
+Untried records precede old failures. Host-header validation uses a read-only
+projection of actual interface addresses (refreshed every five seconds), and SSE
+clients share serialized state frames per revision and role. Checkpoint writes
+still serialize and durably publish under AppState's commit lock; the redundant
+whole-state JSON tree has been removed, but history cloning/chunk rewriting is
+not an append-only persistence engine.

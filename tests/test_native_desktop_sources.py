@@ -20,21 +20,21 @@ class NativeDesktopSourceTests(unittest.TestCase):
             home = Path(temporary)
             data = home / "data"
             data.mkdir()
-            (data / ".bilikara-desktop-rust-preview").write_text("desktop-rust-preview-v1\n")
+            (data / ".bilikara-desktop-rust-preview").write_text("desktop-rust-preview-v1\n", encoding="utf-8")
             for name, value in {
                 "native-library-defaults.json": {"schema_version": 1},
                 "gatcha_uids.json": {"schema_version": 2, "uids": [], "profiles": {}},
                 "gatcha_cache.json": {"schema_version": 3, "uids": {}, "profiles": {}},
                 "gatcha_favlist.json": {"schema_version": 2, "folders": [], "items": []},
             }.items():
-                (data / name).write_text(json.dumps(value))
+                (data / name).write_text(json.dumps(value), encoding="utf-8")
             videos = [{"bvid": "BV1xx411c7mD", "title": "karaoke first", "author": "fixture", "pic": "", "length": "1:30"}]
 
             def respond(target):
                 url = urlsplit(target)
                 uid = parse_qs(url.query).get("mid", ["123"])[0]
                 if url.path.endswith("/nav"):
-                    return {"code": 0, "data": {"wbi_img": {"img_url": "https://i0.hdslb.com/" + "a" * 32 + ".png", "sub_url": "https://i0.hdslb.com/" + "b" * 32 + ".png"}}}
+                    return {"code": 0, "data": {"isLogin": True, "wbi_img": {"img_url": "https://i0.hdslb.com/" + "a" * 32 + ".png", "sub_url": "https://i0.hdslb.com/" + "b" * 32 + ".png"}}}
                 if url.path.endswith("/acc/info"):
                     return {"code": 0, "data": {"mid": uid, "name": "fixture", "face": ""}}
                 if url.path.endswith("/arc/search"):
@@ -67,6 +67,23 @@ class NativeDesktopSourceTests(unittest.TestCase):
                         time.sleep(.02)
                     self.fail("source refresh did not finish")
 
+                def refresh_when_ready(request):
+                    # Successful refreshes have a real 60-second cooldown.
+                    # Assert the rejection contract, then wait for admission;
+                    # never disable the product timer to make the fixture pass.
+                    deadline = time.monotonic() + 75
+                    while True:
+                        try:
+                            result = request()
+                            self.assertTrue(result["started"])
+                            return wait_refresh()
+                        except urllib.error.HTTPError as error:
+                            self.assertEqual(error.code, 429)
+                            self.assertEqual(json.load(error)["code"], "library_cooldown")
+                            if time.monotonic() >= deadline:
+                                self.fail("refresh was not admitted after cooldown")
+                            time.sleep(1)
+
                 def records(expected, required=None):
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
@@ -87,17 +104,13 @@ class NativeDesktopSourceTests(unittest.TestCase):
                 wait_refresh()
                 self.assertFalse((data / "BBDown.data").exists(), "Old runtime override does not overwrite QR credentials")
                 self.assertEqual(provider.posts, [])
-                host.api("/api/config/cookie", {})  # Reuse current effective credential.
-                wait_refresh()
                 added = host.api("/api/gatcha/uids/add", {"uid": "123"})
                 self.assertNotIn("entries", added)
                 self.assertEqual(records(1)[0]["bvid"], videos[0]["bvid"])
                 videos.insert(0, {**videos[0], "bvid": "BV1zz411c7mD", "title": "karaoke new"})
-                host.api("/api/gatcha/refresh", {})
-                wait_refresh()
+                refresh_when_ready(lambda: host.api("/api/gatcha/refresh", {}))
                 self.assertEqual([row["bvid"] for row in records(2)], ["BV1xx411c7mD", "BV1zz411c7mD"])
-                host.api("/api/gatcha/refresh", {})
-                wait_refresh()
+                refresh_when_ready(lambda: host.api("/api/gatcha/refresh", {}))
                 self.assertEqual(len(records(2)), 2, "Unchanged full refresh must not resubmit the entire library")
 
                 epoch, peer, seq = "abcdefghijklmnopqrstuv", "fixture-peer", 0
@@ -110,6 +123,9 @@ class NativeDesktopSourceTests(unittest.TestCase):
                     self.assertNotIn("entries", result.get("data", {}))
                     return result["data"]
                 remote("session.set_identity", {"name": "source fixture"})
+                preference_fields = ("uid_weight", "favlist_weight", "excluded_uids", "excluded_favlist_folders")
+                host_pool = host.api("/api/gatcha/pool-config")
+                host_preferences = {key: host_pool[key] for key in preference_fields}
                 for kind, body in (
                     ("gatcha.pool_config_set", {"uid_weight": 60, "favlist_weight": 40, "excluded_uids": [], "excluded_favlist_folders": []}),
                     ("gatcha.uid_preview", {"uid": "123"}),
@@ -119,12 +135,22 @@ class NativeDesktopSourceTests(unittest.TestCase):
                     ("gatcha.refresh", {}),
                 ):
                     try:
-                        remote(kind, body)
+                        if kind == "gatcha.refresh":
+                            refresh_when_ready(lambda: remote(kind, body))
+                        else:
+                            remote(kind, body)
                     except urllib.error.HTTPError as error:
                         self.fail(f"{kind}: {error.code} {error.read().decode()}")
                     wait_refresh()
                 self.assertIn("BV1yy411c7mD", [row["bvid"] for row in records(3, "BV1yy411c7mD")])
-                self.assertEqual(host.api("/api/gatcha/pool-config")["uid_weight"], 60)
+                self.assertEqual(remote("gatcha.pool_config_get", {})["uid_weight"], 60)
+                # Source rows are shared and change after the favorite import;
+                # only the user's saved preferences must remain independent.
+                host_pool = host.api("/api/gatcha/pool-config")
+                self.assertEqual({key: host_pool[key] for key in preference_fields}, host_preferences,
+                                 "Remote preferences must not overwrite Host preferences")
+                host.api("/api/config/cookie", {})  # Reuse current effective credential.
+                self.assertFalse((data / "BBDown.data").exists())
                 # A view-only peer must remain unable to write sources.
                 host.api("/api/internet-remote/peer/open", {"peer_id": "viewer", "epoch": epoch, "profile": "viewer"})
                 peer, seq = "viewer", 0

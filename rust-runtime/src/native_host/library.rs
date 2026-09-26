@@ -75,9 +75,42 @@ fn default_uids() -> Vec<String> {
     serde_json::from_str(include_str!("default_uids.json")).expect("bundled default UP list")
 }
 
-pub(super) fn initialize(directory: &Path) -> Result<(), ApiError> {
-    crate::gatcha_repository::initialize_native_uids(&paths(directory), &default_uids())
-        .map_err(|error| ApiError::new(503, &error.kind, error.message))
+pub(super) fn initialize(directory: &Path) -> Result<bool, ApiError> {
+    let recovered =
+        crate::gatcha_repository::initialize_native_uids(&paths(directory), &default_uids())
+            .map_err(|error| ApiError::new(503, &error.kind, error.message))?;
+    Ok(recovered)
+}
+
+pub(super) fn migrate_pool(directory: &Path) -> Result<(), ApiError> {
+    let legacy = paths(directory).pool_config_file;
+    if legacy.exists() {
+        let config = execute(directory, GatchaOperation::PoolConfigSnapshot)?;
+        with_app(|app| app.native_migrate_pool_default(config))?;
+        // The new checkpoint is durable before retiring the legacy input. Keep
+        // a byte-for-byte backup; an interrupted rename is safe to retry.
+        let backup = directory.join("gatcha_pool_config.legacy.backup.json");
+        if !backup.exists() {
+            std::fs::rename(&legacy, backup)
+                .map_err(|_| ApiError::new(503, "pool_config_migration", "无法备份旧卡池配置"))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn publish_favorites_timestamp(directory: &Path) {
+    if let Ok(value) = execute(directory, GatchaOperation::FavlistUpdatedAt)
+        && let Some(updated) = value["updated_at"].as_f64().filter(|v| v.is_finite())
+    {
+        let _ = with_app(|app| {
+            let session = app.native();
+            if session.favlist_updated_at != updated {
+                session.favlist_updated_at = updated;
+                session.revision += 1;
+            }
+            Ok(())
+        });
+    }
 }
 
 fn execute(directory: &Path, operation: GatchaOperation) -> Result<Value, ApiError> {
@@ -114,8 +147,20 @@ pub(super) fn query_number(
         .ok_or_else(|| ApiError::invalid(format!("无效的 {key}")))
 }
 
-fn pool(directory: &Path) -> Result<Value, ApiError> {
-    let mut config = execute(directory, GatchaOperation::PoolConfigSnapshot)?;
+fn saved_pool(directory: &Path, key: &str) -> Result<Value, ApiError> {
+    let saved = with_app(|app| Ok(app.native_pool_config(key, &Value::Null)))?;
+    if !saved.is_null() {
+        return Ok(saved);
+    }
+    let config = execute(directory, GatchaOperation::PoolConfigSnapshot)?;
+    with_app(|app| {
+        app.native_migrate_pool_default(config)?;
+        Ok(app.native_pool_config(key, &Value::Null))
+    })
+}
+
+fn pool(directory: &Path, key: &str) -> Result<Value, ApiError> {
+    let mut config = saved_pool(directory, key)?;
     config["uid_options"] = execute(
         directory,
         GatchaOperation::BrowseUid {
@@ -139,7 +184,13 @@ fn pool(directory: &Path) -> Result<Value, ApiError> {
     Ok(config)
 }
 
-pub(super) fn read(context: &HostContext, path: &str, query: &str) -> Result<Value, ApiError> {
+pub(super) fn read(
+    context: &HostContext,
+    identity: &Identity,
+    path: &str,
+    query: &str,
+) -> Result<Value, ApiError> {
+    let key = with_app(|app| app.native_pool_key(identity, &query_value(query, "requester_name")))?;
     let search = query_value(query, "q");
     if search.chars().count() > 120 {
         return Err(ApiError::invalid("搜索内容过长"));
@@ -155,7 +206,7 @@ pub(super) fn read(context: &HostContext, path: &str, query: &str) -> Result<Val
     let limit = query_number(query, "limit", default_limit, 10_000)?.clamp(1, 10_000);
     let operation = match path {
         "/api/gatcha/uids" => GatchaOperation::UidSnapshot,
-        "/api/gatcha/pool-config" => return pool(&context.directory),
+        "/api/gatcha/pool-config" => return pool(&context.directory, &key),
         "/api/gatcha/search" => GatchaOperation::Search {
             query: search,
             offset,
@@ -175,10 +226,27 @@ pub(super) fn read(context: &HostContext, path: &str, query: &str) -> Result<Val
         },
         "/api/gatcha/candidate" => GatchaOperation::Candidate {
             cookie_available: with_app(|app| Ok(!app.native().cookie.is_empty()))?,
+            pool_config: Some(saved_pool(&context.directory, &key)?),
         },
         _ => return Err(ApiError::new(404, "not_found", "未知曲库操作")),
     };
-    execute(&context.directory, operation)
+    let mut value = execute(&context.directory, operation)?;
+    if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {
+        let available = crate::gatcha_repository::annotate_local(&paths(&context.directory), items)
+            .map_err(|error| ApiError::new(503, &error.kind, error.message))?;
+        if path == "/api/gatcha/search"
+            && !query_value(query, "q").is_empty()
+            && !available
+            && with_app(|app| Ok(app.native().cookie.is_empty()))?
+        {
+            return Err(ApiError::new(
+                400,
+                "missing_cookie",
+                "请登录 Bilibili 账号或输入 Cookie",
+            ));
+        }
+    }
+    Ok(value)
 }
 
 fn network_operation(path: &str, body: &Value, cookie: &str) -> Result<GatchaOperation, ApiError> {
@@ -240,12 +308,67 @@ fn partial_refresh(value: &Value) -> bool {
     crate::gatcha_refresh::summary_has_errors(value)
 }
 
+fn credential_scope(cookie: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let account = cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("DedeUserID="))
+        .filter(|id| !id.is_empty())
+        .unwrap_or(cookie);
+    format!("{:x}", Sha256::digest(account.as_bytes()))
+}
+
+fn automatic_refresh(
+    session: &crate::app_state::native_session::NativeSession,
+    trigger: &str,
+    has_identity: bool,
+) -> bool {
+    if session.desktop && !has_identity && matches!(trigger, "login_success" | "credential_restore")
+    {
+        !session.startup_library_refresh_attempted
+            || session.library_credential_scope != credential_scope(&session.cookie)
+    } else {
+        !has_identity && trigger != "cookie_config"
+    }
+}
+
+fn pending_refresh_ready(session: &crate::app_state::native_session::NativeSession) -> bool {
+    let Some(trigger) = session.pending_library_refresh else {
+        return false;
+    };
+    if session.cookie.is_empty()
+        || session.library_refresh_active
+        || session.login.gacha_snapshot().busy
+        || (!automatic_refresh(session, trigger, false)
+            && session
+                .library_cooldown_until
+                .is_some_and(|until| until > Instant::now()))
+    {
+        return false;
+    }
+    true
+}
+
 impl TaskLease {
     fn acquire(
         identity: Option<&Identity>,
         trigger: &'static str,
         configured: bool,
+        allow_guest: bool,
     ) -> Result<(Self, String), ApiError> {
+        Self::acquire_current(identity, Some(trigger), configured, allow_guest)
+    }
+
+    // None means the current credential transaction's pending intent. Resolve
+    // it, capture its cookie and consume it only after admission, under one lock.
+    // Callers never carry an old trigger across transactions or requeue failures.
+    fn acquire_current(
+        identity: Option<&Identity>,
+        mut trigger: Option<&'static str>,
+        configured: bool,
+        allow_guest: bool,
+    ) -> Result<(Self, String), ApiError> {
+        let pending = trigger.is_none();
         let started = Instant::now();
         let result = with_app(|app| {
             // Source edits retain the desktop's registered Remote behavior.
@@ -253,17 +376,24 @@ impl TaskLease {
                 app.native_requester(identity, "")?;
             }
             let session = app.native();
-            // preview.1 granted only the first startup/login refresh the
-            // nonblocking startup path. Later logins use the normal task lease.
-            let automatic = if session.desktop
+            if pending {
+                trigger = session.pending_library_refresh;
+            }
+            let trigger = trigger
+                .ok_or_else(|| ApiError::new(409, "no_pending_refresh", "没有待执行的曲库刷新"))?;
+            let login_trigger = session.desktop
                 && identity.is_none()
-                && matches!(trigger, "login_success" | "credential_restore")
-            {
-                !std::mem::replace(&mut session.startup_library_refresh_attempted, true)
-            } else {
-                identity.is_none() && trigger != "cookie_config"
-            };
-            Self::reserve(session, automatic)?;
+                && matches!(trigger, "login_success" | "credential_restore");
+            let scope = credential_scope(&session.cookie);
+            let automatic = automatic_refresh(session, trigger, identity.is_some());
+            Self::reserve_for(session, automatic, allow_guest, configured)?;
+            if pending {
+                session.pending_library_refresh = None;
+            }
+            if login_trigger {
+                session.startup_library_refresh_attempted = true;
+                session.library_credential_scope = scope;
+            }
             let ticket = if configured {
                 // Reserve keeps native authorization/cooldown policy. Transfer
                 // its lease to the shared task owner under the same AppState lock.
@@ -295,24 +425,36 @@ impl TaskLease {
                 session.cookie.clone(),
             ))
         });
-        match &result {
-            Ok(_) => record(trigger, "started", started, None, None),
-            Err(error) => record(
-                trigger,
-                "skipped",
-                started,
-                Some(&Err(ApiError::new(error.status, &error.code, ""))),
-                None,
-            ),
+        if let Some(trigger) = trigger {
+            match &result {
+                Ok(_) => record(trigger, "started", started, None, None),
+                Err(error) => record(
+                    trigger,
+                    "skipped",
+                    started,
+                    Some(&Err(ApiError::new(error.status, &error.code, ""))),
+                    None,
+                ),
+            }
         }
         result
     }
 
+    #[cfg(test)]
     fn reserve(
         session: &mut crate::app_state::native_session::NativeSession,
         automatic: bool,
     ) -> Result<(), ApiError> {
-        if session.cookie.is_empty() {
+        Self::reserve_for(session, automatic, false, true)
+    }
+
+    fn reserve_for(
+        session: &mut crate::app_state::native_session::NativeSession,
+        automatic: bool,
+        allow_guest: bool,
+        configured: bool,
+    ) -> Result<(), ApiError> {
+        if session.cookie.is_empty() && !allow_guest {
             return Err(ApiError::new(
                 400,
                 "missing_cookie",
@@ -320,6 +462,7 @@ impl TaskLease {
             ));
         }
         if !automatic
+            && configured
             && session
                 .library_cooldown_until
                 .is_some_and(|until| until > Instant::now())
@@ -327,7 +470,7 @@ impl TaskLease {
             return Err(ApiError::new(
                 429,
                 "library_cooldown",
-                "上次曲库拉取失败，正在冷却，请稍后再试",
+                "曲库刚刚更新完成，请稍后再刷新",
             ));
         }
         // One internal I/O lease still prevents overlapping scans. It is
@@ -401,17 +544,34 @@ impl TaskLease {
                 return Ok(());
             }
             let session = app.native();
+            let cancelled = Err(ApiError::new(
+                409,
+                "cancelled",
+                "账号已切换，曲库任务已取消",
+            ));
+            let result = if self
+                .ticket
+                .as_ref()
+                .is_some_and(|ticket| ticket.1.check().is_err())
+            {
+                &cancelled
+            } else {
+                result
+            };
             if let Some(ticket) = &self.ticket {
                 if !session.login.owns_configured_refresh(ticket) {
                     return Ok(());
                 }
                 // Native status text/cooldown remain an entry-specific projection.
-                let task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+                let mut task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+                if let Err(error) = result {
+                    task.error.clone_from(&error.message);
+                }
                 session
                     .login
                     .finish_configured_refresh(ticket.0, !self.automatic, task);
             }
-            Self::publish_session(session, result, self.automatic);
+            Self::publish_session(session, result, self.automatic, self.ticket.is_some());
             Ok(())
         })
     }
@@ -420,19 +580,23 @@ impl TaskLease {
         session: &mut crate::app_state::native_session::NativeSession,
         result: &Result<Value, ApiError>,
         automatic: bool,
+        configured: bool,
     ) {
-        let task = crate::gatcha_refresh::native_task(result.as_ref().ok());
-        let failed = task.status != GachaTaskStatus::Success;
+        let mut task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+        if let Err(error) = result {
+            task.error.clone_from(&error.message);
+        }
+        let succeeded = task.status == GachaTaskStatus::Success;
         session.library_refresh_active = false;
         if !automatic {
             session.login.release_gacha_refresh();
         }
         session.login.set_gacha_task(task);
-        // This cooldown is shared by all phones; playback/cache downloads
-        // and cached browsing are not blocked by a failed library fetch.
-        if !automatic {
+        // Only a successful scan consumes the manual refresh cooldown.
+        // Failed/partial scans can immediately retry their missing sources.
+        if !automatic && configured {
             session.library_cooldown_until =
-                failed.then(|| Instant::now() + Duration::from_secs(60));
+                succeeded.then(|| Instant::now() + Duration::from_secs(60));
         }
         session.revision += 1;
     }
@@ -458,12 +622,13 @@ impl Drop for TaskLease {
 fn refresh(
     context: &HostContext,
     identity: Option<&Identity>,
-    trigger: &'static str,
+    trigger: Option<&'static str>,
 ) -> Result<Value, ApiError> {
     if context.stop.load(Ordering::Acquire) {
         return Err(ApiError::new(503, "stopped", "Host 已停止"));
     }
-    let (mut lease, cookie) = TaskLease::acquire(identity, trigger, true)?;
+    let (mut lease, cookie) = TaskLease::acquire_current(identity, trigger, true, false)?;
+    let trigger = lease.trigger;
     lease.stop = Some(context.stop.clone());
     let control = lease
         .ticket
@@ -472,6 +637,9 @@ fn refresh(
         .1
         .clone();
     control.follow_host(context.stop.clone());
+    if trigger == "manual_refresh" {
+        control.retry_failed_sources();
+    }
     let operation = network_operation("/api/gatcha/refresh", &json!({}), &cookie)?;
     let request = crate::gatcha_refresh::RefreshRequest {
         repository: GatchaRepositoryRequest {
@@ -508,21 +676,50 @@ fn refresh(
                     });
                 });
                 crate::gatcha_refresh::complete_catalog(&request, &outcome, &control);
-                outcome
-                    .payload
+                control
+                    .check()
+                    .and(outcome.payload)
                     .map_err(|e| ApiError::new(400, &e.kind, e.message))
             };
+            if !stop.load(Ordering::Acquire) && control.check().is_ok() {
+                publish_favorites_timestamp(
+                    request.repository.paths.favlist_file.parent().unwrap(),
+                );
+            }
             let _ = lease.finish(&result);
         })
         .map_err(|_| ApiError::new(503, "library_task", "无法启动曲库任务"))?;
     Ok(json!({"started":true}))
 }
 
-pub(super) fn refresh_after_login(context: &HostContext, trigger: &'static str) {
-    // A library failure must not turn a successful login into a failed login.
-    // The first desktop startup/login refresh uses the nonblocking startup
-    // path; later logins retain the ordinary refresh admission rules.
-    let _ = refresh(context, None, trigger);
+pub(super) fn invalidate_credentials(
+    session: &mut crate::app_state::native_session::NativeSession,
+) {
+    session.login.cancel_configured_refresh();
+    session.pending_library_refresh = None;
+}
+
+pub(super) fn refresh_after_login(context: &HostContext) {
+    // The credential transaction already queued its intent. A late caller may
+    // try the newest intent, but cannot replace it or resurrect a consumed one.
+    // Busy/cooldown leaves the intent intact for the coordinator.
+    let _ = refresh(context, None, None);
+}
+
+pub(super) fn start_coordinator(context: Arc<HostContext>) -> Result<(), ApiError> {
+    let worker_context = context.clone();
+    context
+        .spawn("native-library-coordinator", move || {
+            while !worker_context.stop.load(Ordering::Acquire) {
+                let ready =
+                    with_app(|app| Ok(pending_refresh_ready(app.native()))).unwrap_or(false);
+                if ready {
+                    refresh_after_login(&worker_context);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .map_err(|_| ApiError::new(503, "library_task", "无法启动曲库调度"))
 }
 
 pub(super) fn write(
@@ -532,34 +729,63 @@ pub(super) fn write(
     body: &Value,
 ) -> Result<Value, ApiError> {
     if path == "/api/gatcha/pool-config" {
-        with_app(|app| app.native_requester(identity, ""))?;
+        let key = with_app(|app| {
+            app.native_pool_key(
+                identity,
+                body["requester_name"].as_str().unwrap_or_default(),
+            )
+        })?;
         let mut value = body.clone();
+        value
+            .as_object_mut()
+            .ok_or_else(|| ApiError::invalid("卡池设置无效"))?
+            .remove("requester_name");
         value["operation"] = json!("pool_config_update");
         let operation: GatchaOperation =
             serde_json::from_value(value).map_err(|_| ApiError::invalid("卡池设置无效"))?;
-        // Do not queue behind a long import's repository lock.
-        if with_app(|app| Ok(app.native().login.gacha_snapshot().busy))? {
-            return Err(ApiError::new(
-                409,
-                "library_busy",
-                "拉取任务执行中，请等待任务结束",
-            ));
-        }
-        execute(&context.directory, operation)?;
+        let GatchaOperation::PoolConfigUpdate {
+            uid_weight,
+            favlist_weight,
+            excluded_uids,
+            excluded_favlist_folders,
+        } = operation
+        else {
+            unreachable!()
+        };
+        let legacy = saved_pool(&context.directory, &key)?;
         with_app(|app| {
-            app.native().revision += 1;
-            Ok(())
+            let mut config = app.native_pool_config(&key, &legacy);
+            if let Some(value) = uid_weight {
+                config["uid_weight"] = json!(value);
+            }
+            if let Some(value) = favlist_weight {
+                config["favlist_weight"] = json!(value);
+            }
+            if let Some(value) = excluded_uids {
+                config["excluded_uids"] = json!(value);
+            }
+            if let Some(value) = excluded_favlist_folders {
+                config["excluded_favlist_folders"] = json!(value);
+            }
+            config["updated_at"] = json!(now());
+            app.native_save_pool_config(key.clone(), config)
         })?;
-        return pool(&context.directory);
+        return pool(&context.directory, &key);
     }
     // Validate the route/body before acquiring a lease or beginning any I/O.
     network_operation(path, body, "")?;
     if path == "/api/gatcha/refresh" {
-        return refresh(context, Some(identity), "manual_refresh");
+        return refresh(context, Some(identity), Some("manual_refresh"));
     }
-    let (lease, cookie) = TaskLease::acquire(Some(identity), "manual_source", false)?;
+    let (lease, cookie) = TaskLease::acquire(
+        Some(identity),
+        "manual_source",
+        false,
+        path.starts_with("/api/gatcha/favlist"),
+    )?;
     let operation = network_operation(path, body, &cookie)?;
     let result = execute(&context.directory, operation);
+    publish_favorites_timestamp(&context.directory);
     lease.finish(&result)?;
     let mut value = result?;
     // Restore preview.1's post-write moderation append, stripping candidates
@@ -653,7 +879,7 @@ mod tests {
         let cache: Value =
             serde_json::from_slice(&std::fs::read(paths(&directory).cache_file).unwrap()).unwrap();
         assert_eq!(cache["refresh_summary"]["completed"], true);
-        let (mut late, _) = TaskLease::acquire(None, "test_late", true).unwrap();
+        let (mut late, _) = TaskLease::acquire(None, "test_late", true, false).unwrap();
         late.stop = Some(host.context.stop.clone());
         late.ticket
             .as_ref()
@@ -672,6 +898,202 @@ mod tests {
         drop(host);
         crate::execute_app_state(crate::AppStateRequest::Shutdown { schema_version: 1 });
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pending_cookie_refresh_survives_cooldown_without_changing_login_admission() {
+        let mut session = crate::app_state::native_session::NativeSession::default();
+        session.desktop = true;
+        session.cookie = "DedeUserID=3; SESSDATA=account-c".into();
+        session.startup_library_refresh_attempted = true;
+        session.library_credential_scope = credential_scope("DedeUserID=2");
+        session.library_cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+        session.pending_library_refresh = Some("cookie_config");
+        for _ in 0..3 {
+            assert!(!pending_refresh_ready(&session));
+            assert_eq!(session.pending_library_refresh, Some("cookie_config"));
+        }
+        assert_eq!(
+            TaskLease::reserve_for(&mut session, false, false, true)
+                .unwrap_err()
+                .code,
+            "library_cooldown"
+        );
+        // Existing new-account QR policy still bypasses cooldown, but never
+        // the outstanding worker's lease.
+        session.pending_library_refresh = Some("login_success");
+        session.library_refresh_active = true;
+        assert!(!pending_refresh_ready(&session));
+        session.library_refresh_active = false;
+        assert!(pending_refresh_ready(&session));
+        assert_eq!(session.pending_library_refresh, Some("login_success"));
+        session.pending_library_refresh = Some("cookie_config");
+        session.library_cooldown_until = Some(Instant::now() - Duration::from_secs(1));
+        assert!(pending_refresh_ready(&session));
+        assert_eq!(session.pending_library_refresh, Some("cookie_config"));
+        // Logout removes deferred intent as well as cancelling the old task.
+        session.pending_library_refresh = Some("cookie_config");
+        invalidate_credentials(&mut session);
+        assert_eq!(session.pending_library_refresh, None);
+    }
+
+    // Pause an older caller after failed admission, commit newer credentials,
+    // then resume it. Both the immediate path and coordinator use this same
+    // acquisition function; there is no caller-owned trigger to write back.
+    fn check_pending_handoff(old: &'static str, latest: &'static str, same_cookie: bool) {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        with_app(|app| {
+            let session = app.native();
+            *session = crate::app_state::native_session::NativeSession::default();
+            session.desktop = true;
+            session.cookie = "DedeUserID=3; SESSDATA=old".into();
+            session.startup_library_refresh_attempted = true;
+            session.library_credential_scope = credential_scope("DedeUserID=2");
+            session.library_cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+            session.library_refresh_active = true;
+            session.pending_library_refresh = Some(old);
+            Ok(())
+        })
+        .unwrap();
+        let (rejected_tx, rejected_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let error = TaskLease::acquire_current(None, None, true, false)
+                .err()
+                .unwrap();
+            rejected_tx.send(error.code).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            TaskLease::acquire_current(None, None, true, false)
+        });
+        assert_eq!(
+            rejected_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            if old == "login_success" {
+                "library_busy"
+            } else {
+                "library_cooldown"
+            }
+        );
+        with_app(|app| {
+            let session = app.native();
+            if !same_cookie {
+                invalidate_credentials(session);
+                session.cookie = "DedeUserID=4; SESSDATA=new".into();
+            }
+            session.pending_library_refresh = Some(latest);
+            session.library_refresh_active = false;
+            Ok(())
+        })
+        .unwrap();
+        resume_tx.send(()).unwrap();
+        let result = worker.join().unwrap();
+        let (lease, cookie) = if latest == "cookie_config" {
+            assert_eq!(result.err().unwrap().code, "library_cooldown");
+            with_app(|app| {
+                let session = app.native();
+                assert_eq!(session.pending_library_refresh, Some(latest));
+                assert!(!pending_refresh_ready(session));
+                session.library_cooldown_until = None;
+                Ok(())
+            })
+            .unwrap();
+            TaskLease::acquire_current(None, None, true, false).unwrap()
+        } else {
+            result.unwrap()
+        };
+        assert_eq!(lease.trigger, latest);
+        assert_eq!(lease.automatic, latest == "login_success");
+        assert_eq!(
+            cookie,
+            if same_cookie {
+                "DedeUserID=3; SESSDATA=old"
+            } else {
+                "DedeUserID=4; SESSDATA=new"
+            }
+        );
+        // Another delayed caller cannot duplicate the consumed intent, during
+        // or after execution, even when the current pending slot is empty.
+        assert_eq!(
+            TaskLease::acquire_current(None, None, true, false)
+                .err()
+                .unwrap()
+                .code,
+            "no_pending_refresh"
+        );
+        lease.finish(&Ok(json!({}))).unwrap();
+        assert_eq!(
+            TaskLease::acquire_current(None, None, true, false)
+                .err()
+                .unwrap()
+                .code,
+            "no_pending_refresh"
+        );
+        with_app(|app| {
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn old_qr_attempt_cannot_bypass_new_cookie_cooldown() {
+        check_pending_handoff("login_success", "cookie_config", false);
+    }
+
+    #[test]
+    fn old_cookie_attempt_cannot_delay_new_qr_refresh() {
+        check_pending_handoff("cookie_config", "login_success", false);
+    }
+
+    #[test]
+    fn same_cookie_commit_still_replaces_older_trigger_semantics() {
+        check_pending_handoff("login_success", "cookie_config", true);
+        check_pending_handoff("cookie_config", "login_success", true);
+    }
+
+    #[test]
+    fn delayed_refresh_after_logout_cannot_recreate_pending_intent() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        with_app(|app| {
+            let session = app.native();
+            *session = crate::app_state::native_session::NativeSession::default();
+            session.cookie = "synthetic".into();
+            session.library_refresh_active = true;
+            session.pending_library_refresh = Some("login_success");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            TaskLease::acquire_current(None, None, true, false)
+                .err()
+                .unwrap()
+                .code,
+            "library_busy"
+        );
+        with_app(|app| {
+            let session = app.native();
+            invalidate_credentials(session);
+            session.cookie.clear();
+            session.library_refresh_active = false;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            TaskLease::acquire_current(None, None, true, false)
+                .err()
+                .unwrap()
+                .code,
+            "no_pending_refresh"
+        );
+        with_app(|app| {
+            assert_eq!(app.native().pending_library_refresh, None);
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -735,11 +1157,11 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let (configured, _) = TaskLease::acquire(None, "cookie_config", true).unwrap();
+        let (configured, _) = TaskLease::acquire(None, "cookie_config", true, false).unwrap();
         assert!(!configured.automatic);
         assert!(!with_app(|app| Ok(app.native().startup_library_refresh_attempted)).unwrap());
         configured.finish(&Ok(json!({}))).unwrap();
-        let (first, _) = TaskLease::acquire(None, "credential_restore", true).unwrap();
+        let (first, _) = TaskLease::acquire(None, "credential_restore", true, false).unwrap();
         assert!(first.automatic);
         with_app(|app| {
             let status = app.native().login.gacha_snapshot();
@@ -748,9 +1170,36 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(TaskLease::acquire(None, "login_success", true).is_err());
+        assert!(TaskLease::acquire(None, "login_success", true, false).is_err());
         first.finish(&Ok(json!({}))).unwrap();
-        let (next, _) = TaskLease::acquire(None, "login_success", true).unwrap();
+        assert_eq!(
+            TaskLease::acquire(None, "login_success", true, false)
+                .err()
+                .unwrap()
+                .code,
+            "library_cooldown"
+        );
+        with_app(|app| {
+            app.native().cookie = "different-account".into();
+            Ok(())
+        })
+        .unwrap();
+        let (changed_account, _) = TaskLease::acquire(None, "login_success", true, false).unwrap();
+        assert!(
+            changed_account.automatic,
+            "new account needs its own source refresh"
+        );
+        changed_account.finish(&Ok(json!({}))).unwrap();
+        assert!(
+            TaskLease::acquire(None, "login_success", true, false).is_err(),
+            "same account still observes cooldown"
+        );
+        with_app(|app| {
+            app.native().library_cooldown_until = None;
+            Ok(())
+        })
+        .unwrap();
+        let (next, _) = TaskLease::acquire(None, "login_success", true, false).unwrap();
         assert!(!next.automatic);
         with_app(|app| {
             let status = app.native().login.gacha_snapshot();
@@ -765,6 +1214,22 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn preview_then_import_does_not_consume_or_obey_full_refresh_cooldown() {
+        let mut session = crate::app_state::native_session::NativeSession::default();
+        session.library_cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+        TaskLease::reserve_for(&mut session, false, true, false).unwrap();
+        TaskLease::publish_session(&mut session, &Ok(json!({})), false, false);
+        TaskLease::reserve_for(&mut session, false, true, false).unwrap();
+        TaskLease::publish_session(
+            &mut session,
+            &Err(ApiError::invalid("fixture")),
+            false,
+            false,
+        );
+        assert!(session.library_cooldown_until.is_some());
     }
 
     #[test]
@@ -784,24 +1249,26 @@ mod tests {
             "No overlapping automatic scans"
         );
         let failed = Err(ApiError::new(503, "test", "offline failure"));
-        TaskLease::publish_session(&mut session, &failed, true);
+        TaskLease::publish_session(&mut session, &failed, true, true);
+        assert_eq!(session.login.gacha_snapshot().last_error, "offline failure");
         assert!(session.library_cooldown_until.is_none());
         TaskLease::reserve(&mut session, false).unwrap();
         assert!(session.login.gacha_snapshot().busy);
-        TaskLease::publish_session(&mut session, &failed, false);
+        TaskLease::publish_session(&mut session, &failed, false, true);
+        assert!(session.library_cooldown_until.is_none());
+        TaskLease::reserve(&mut session, false).unwrap();
+        TaskLease::publish_session(&mut session, &Ok(json!({})), false, true);
         let cooldown = session.library_cooldown_until;
         assert!(cooldown.is_some());
         assert!(TaskLease::reserve(&mut session, false).is_err());
         TaskLease::reserve(&mut session, true).unwrap();
-        TaskLease::publish_session(&mut session, &Ok(json!({})), true);
-        assert_eq!(
-            session.library_cooldown_until, cooldown,
-            "Auto refresh must not reset a manual cooldown either"
-        );
+        TaskLease::publish_session(&mut session, &failed, true, true);
+        assert_eq!(session.library_cooldown_until, cooldown);
         session.library_cooldown_until = None;
-        TaskLease::reserve(&mut session, false).unwrap();
-        TaskLease::publish_session(&mut session, &Ok(json!({})), false);
-        assert!(session.library_cooldown_until.is_none());
+        session.cookie.clear();
+        TaskLease::reserve_for(&mut session, false, true, true).unwrap();
+        TaskLease::publish_session(&mut session, &failed, false, true);
+        assert!(TaskLease::reserve_for(&mut session, false, false, true).is_err());
     }
     #[test]
     fn default_ups_seed_once_and_migrate_old_alpha_without_resetting_user_sources() {
@@ -858,9 +1325,17 @@ mod tests {
         let corrupt = directory.join("corrupt");
         std::fs::create_dir_all(&corrupt).unwrap();
         std::fs::write(paths(&corrupt).uid_file, b"broken").unwrap();
-        assert!(initialize(&corrupt).is_err());
-        assert_eq!(std::fs::read(paths(&corrupt).uid_file).unwrap(), b"broken");
-        assert!(!corrupt.join("native-library-defaults.json").exists());
+        assert!(initialize(&corrupt).unwrap());
+        assert_eq!(
+            std::fs::read(corrupt.join("gatcha_uids.corrupt.json")).unwrap(),
+            b"broken"
+        );
+        assert_eq!(
+            execute(&corrupt, GatchaOperation::UidSnapshot).unwrap()["count"],
+            27
+        );
+        assert!(corrupt.join("native-library-defaults.json").exists());
+        assert!(!initialize(&corrupt).unwrap());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

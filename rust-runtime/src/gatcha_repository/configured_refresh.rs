@@ -161,6 +161,7 @@ fn rebuild_schema(
             atomic_write_json(&temp.progress, &progress)
         })?;
     }
+    let mut known_bvids = HashSet::new();
     control.commit(|| {
         let _guard = repository_guard()?;
         // Keep source edits made during the nonblocking startup rebuild. As in
@@ -175,6 +176,20 @@ fn rebuild_schema(
         uid_temp["uids"] = json!(all_uids);
         merge_missing(&mut uid_temp, &latest_uid, "profiles");
         let latest_cache = load_cache(&paths.cache_file);
+        // A schema rebuild may rediscover the whole library. Only records that
+        // were not already published locally belong in completion indexing.
+        for entries in latest_cache["uids"].as_object().into_iter().flatten() {
+            for entry in entries.1.as_array().into_iter().flatten() {
+                if let Some(bvid) = entry["bvid"].as_str() {
+                    known_bvids.insert(bvid.to_owned());
+                }
+            }
+        }
+        for entry in array(&load_favlist(&paths.favlist_file), "items") {
+            if let Some(bvid) = entry["bvid"].as_str() {
+                known_bvids.insert(bvid.to_owned());
+            }
+        }
         merge_missing(&mut cache_temp, &latest_cache, "uids");
         merge_missing(&mut cache_temp, &latest_cache, "profiles");
         for payload in [&mut uid_temp, &mut cache_temp, &mut fav_temp] {
@@ -220,6 +235,15 @@ fn rebuild_schema(
     cache_temp["rebuild"] =
         json!({"completed":true,"uid_count":configured.len(),"favlist_folder_count":folders.len()});
     cache_temp["favlist_entries"] = fav_temp["items"].clone();
+    let additions: Vec<_> = crate::gatcha_refresh::added_entries(&cache_temp)
+        .into_iter()
+        .filter(|entry| {
+            entry["bvid"]
+                .as_str()
+                .is_some_and(|bvid| known_bvids.insert(bvid.to_owned()))
+        })
+        .collect();
+    cache_temp["catalog_entries"] = json!(additions);
     Ok(cache_temp)
 }
 

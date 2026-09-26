@@ -536,6 +536,7 @@
     const current = localItem(remoteState.current_item);
     return {
       schema_version: 1,
+      state_epoch: typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "",
       state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
@@ -576,16 +577,26 @@
 
   function publishState(next) {
     if (!state.authorized || !next || typeof next !== "object") return;
+    const nextEpoch = typeof next.state_epoch === "string" ? next.state_epoch : "";
+    const currentEpoch = state.remoteState?.state_epoch || "";
+    if (state.retiredStateEpochs?.has(nextEpoch) || (currentEpoch && !nextEpoch)) return;
+    const restarted = Boolean(nextEpoch && nextEpoch !== currentEpoch);
     const currentRevision = Number(
       state.remoteState?.state_revision ?? state.remoteState?.revision ?? -1,
     );
     const nextRevision = Number(next.state_revision ?? next.revision ?? -1);
     if (
       state.remoteState
+      && !restarted
       && Number.isFinite(currentRevision)
       && Number.isFinite(nextRevision)
       && nextRevision < currentRevision
     ) return;
+    if (restarted) {
+      state.retiredStateEpochs ||= new Set();
+      if (currentEpoch) state.retiredStateEpochs.add(currentEpoch);
+      state.remoteState = null;
+    }
     state.remoteState = {
       ...state.remoteState,
       ...next,

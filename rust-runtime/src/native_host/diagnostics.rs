@@ -47,6 +47,87 @@ fn environment(body: &Value, timestamp: f64) -> Value {
     system
 }
 
+fn home_username(path: &Path, names: &mut Vec<String>) {
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        names.push(name.to_owned());
+    }
+}
+
+fn local_account_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for key in ["USERNAME", "USER", "LOGNAME"] {
+        if let Ok(name) = std::env::var(key) {
+            names.push(name);
+        }
+    }
+    if let Some(home) = std::env::home_dir() {
+        home_username(&home, &mut names);
+    }
+    system_account_names(&mut names);
+    names
+}
+
+#[cfg(unix)]
+fn system_account_names(names: &mut Vec<String>) {
+    use std::ffi::CStr;
+    // Reentrant account lookup also works when login environment variables
+    // are absent or HOME points at an isolated application directory.
+    let mut buffer = vec![0u8; 16384];
+    loop {
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        // SAFETY: all output pointers refer to writable storage for this call.
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == libc::ERANGE && buffer.len() < 1024 * 1024 {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        if status == 0 && !result.is_null() {
+            // SAFETY: successful getpwuid_r initialized entry and its strings
+            // point into buffer, which stays alive while they are copied.
+            let entry = unsafe { entry.assume_init() };
+            if !entry.pw_name.is_null() {
+                names.push(
+                    unsafe { CStr::from_ptr(entry.pw_name) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            if !entry.pw_dir.is_null() {
+                let home = unsafe { CStr::from_ptr(entry.pw_dir) }.to_string_lossy();
+                home_username(Path::new(home.as_ref()), names);
+            }
+        }
+        break;
+    }
+}
+
+#[cfg(windows)]
+fn system_account_names(names: &mut Vec<String>) {
+    let mut buffer = vec![0u16; 257];
+    let mut size = buffer.len() as u32;
+    // SAFETY: buffer contains size writable UTF-16 elements.
+    if unsafe {
+        windows_sys::Win32::System::WindowsProgramming::GetUserNameW(buffer.as_mut_ptr(), &mut size)
+    } != 0
+    {
+        names.push(String::from_utf16_lossy(
+            &buffer[..size.saturating_sub(1) as usize],
+        ));
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn system_account_names(_names: &mut Vec<String>) {}
+
 fn artifact(
     context: &HostContext,
     identity: &Identity,
@@ -83,12 +164,30 @@ fn artifact(
             version
         });
     }
+    let mut local_usernames = snapshot.session_users;
+    local_usernames.extend(local_account_names());
     let request = DiagnosticRequest {
         app_home: context.directory.clone(),
         log_dir: context.directory.join("logs"),
-        config_files: Vec::new(),
+        additional_logs: if context.desktop {
+            std::env::var_os("BILIKARA_DESKTOP_STARTUP_LOG")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        },
+        config_files: [
+            "native-preferences.json",
+            "gatcha_uids.json",
+            "native-library-defaults.json",
+        ]
+        .iter()
+        .map(|name| context.directory.join(name))
+        .collect(),
         system,
-        tools_and_tasks: json!({"tools":{"rust_native":{"installed":true,"version":env!("CARGO_PKG_VERSION"),"state":"ready","message":"In-process media downloader and normalizer"}}}),
+        tools_and_tasks: json!({"tools":{"rust_native":{"installed":true,"version":env!("CARGO_PKG_VERSION"),"state":"ready","message":"In-process media downloader and normalizer"},"bbdown":{"installed":context.bbdown.is_some(),"enabled":cache_policy["download_source"] == "bbdown"},"aria2c":{"installed":aria2_available,"enabled":cache_policy["download_source"] == "downkyi"},"yt-dlp":{"installed":false,"enabled":false,"state":"disabled"}}}),
         cache_policy,
         runtime_state: json!({"revision":snapshot.revision,"playback_generation":snapshot.playback_generation,"items":items,"diagnostics":events}),
         export_diagnostics: body["export_diagnostics"]
@@ -99,7 +198,7 @@ fn artifact(
             .as_array()
             .map(|v| v.iter().take(64).cloned().collect())
             .unwrap_or_default(),
-        local_usernames: snapshot.session_users,
+        local_usernames,
         connectivity_override: None,
         connectivity_targets: [
             (
@@ -118,8 +217,15 @@ fn artifact(
         .into(),
         connectivity_timeout_ms: 5000,
     };
-    build_diagnostic_artifact(&request)
-        .map_err(|_| ApiError::new(503, "diagnostics", "无法生成原生诊断信息"))
+    let started = std::time::Instant::now();
+    eprintln!("[diagnostics] stage=package status=start");
+    let result = build_diagnostic_artifact(&request);
+    eprintln!(
+        "[diagnostics] stage=package status={} elapsed_ms={}",
+        if result.is_ok() { "complete" } else { "failed" },
+        started.elapsed().as_millis()
+    );
+    result.map_err(|_| ApiError::new(503, "diagnostics", "无法生成原生诊断信息"))
 }
 
 pub(super) fn package(
@@ -139,9 +245,12 @@ pub(super) fn package(
     headers.insert("cache-control", "no-store".parse().unwrap());
     headers.insert(
         "content-disposition",
-        "attachment; filename=\"bilikara-diagnostics.zip\""
-            .parse()
-            .unwrap(),
+        format!(
+            "attachment; filename=\"bilikara-diagnostics-{}.zip\"",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        )
+        .parse()
+        .unwrap(),
     );
     Ok(response)
 }
