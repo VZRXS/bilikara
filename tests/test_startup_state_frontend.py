@@ -29,6 +29,9 @@ class StartupStateFrontendTest(unittest.TestCase):
             "function isSafeHostSnapshotInteger",
             "function syncCachePanelVisibility",
         )
+        remote_access_failure = self.source_slice(
+            "function updateRemoteAccessFailure", "function localRemoteAccessView"
+        )
         script = f"""
 const responseSpecs = {json.dumps(responses)};
 let responseIndex = 0;
@@ -43,6 +46,9 @@ const state = {{
   lastPollRenderSignature: "",
   pendingHostPlaybackProgramReconciliation: null,
   hostPlaybackSession: null,
+  remoteAccessFailure: null,
+  remoteAccessRequestSequence: 0,
+  remoteAccessOutcomeSequence: 0,
 }};
 
 function makeResponse(spec) {{
@@ -82,6 +88,8 @@ function scheduleFavlistBrowseReloadFromState() {{}}
 function renderSignatureForData(data) {{ return JSON.stringify(data); }}
 function render() {{}}
 function renderPlayer() {{ renderPlayerCalls += 1; }}
+function renderRemoteAccess() {{}}
+function publishPresentationOutputState() {{}}
 function hasDownloadingItems() {{ return false; }}
 function refreshRetryButtons() {{}}
 function resyncMountedLocalPlayerIfOffsetChanged() {{}}
@@ -91,6 +99,7 @@ function setAppMessage(message, isError) {{
 
 {response_parser}
 {snapshot_acceptance}
+{remote_access_failure}
 {fetch_state}
 
 async function pollOnce() {{
@@ -118,6 +127,7 @@ async function pollOnce() {{
     ready: state.hasValidStateResponse,
     messages: [...messages],
     jsonCalls,
+    remoteAccessFailure: state.remoteAccessFailure,
   }};
   const secondError = await pollOnce();
   console.log(JSON.stringify({{
@@ -129,6 +139,7 @@ async function pollOnce() {{
     messages,
     jsonCalls,
     renderPlayerCalls,
+    remoteAccessFailure: state.remoteAccessFailure,
   }}));
 }})().catch((error) => {{
   console.error(error);
@@ -187,7 +198,9 @@ async function pollOnce() {{
         self.assertFalse(result["afterFirst"]["ready"])
         self.assertEqual(result["afterFirst"]["messages"], [])
         self.assertEqual(result["afterFirst"]["jsonCalls"], 0)
+        self.assertEqual(result["afterFirst"]["remoteAccessFailure"], {"kind": "invalid", "status": 200})
         self.assertIsNone(result["secondError"])
+        self.assertIsNone(result["remoteAccessFailure"])
         self.assertTrue(result["finalReady"])
         self.assertEqual(result["finalData"]["state_revision"], 1)
         self.assertEqual(result["messages"], [])
@@ -225,6 +238,7 @@ async function pollOnce() {{
         self.assertIsNone(result["firstError"])
         self.assertTrue(result["afterFirst"]["ready"])
         self.assertEqual(result["secondError"]["kind"], "non_json_response")
+        self.assertEqual(result["remoteAccessFailure"], {"kind": "http", "status": 502})
         self.assertFalse(result["secondError"]["backendNotReady"])
         self.assertEqual(
             result["messages"],

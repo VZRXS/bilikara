@@ -672,10 +672,19 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
             "position: fixed",
             "inset: 0",
             "z-index: var(--remote-layer-modal)",
-            "env(safe-area-inset-top, 0px)",
-            "env(safe-area-inset-bottom, 0px)",
+            "var(--remote-modal-inset-top)",
+            "var(--remote-modal-inset-bottom)",
         ):
             self.assertIn(declaration, detail_rule.group(1))
+        for edge in ("top", "bottom"):
+            self.assertIn(
+                f"--remote-modal-inset-{edge}: calc(14px + var(--remote-safe-area-{edge}));",
+                self.styles,
+            )
+            self.assertIn(
+                f"--remote-safe-area-{edge}: env(safe-area-inset-{edge}, 0px);",
+                self.styles,
+            )
         self.assertNotIn(".request-panel > .song-detail-view", self.styles)
 
     def test_tab_controller_keeps_nodes_state_focus_and_networks_independent(self):

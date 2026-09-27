@@ -13,7 +13,6 @@ use std::{
     path::Path,
 };
 
-const LIMIT: u64 = 32 * 1024 * 1024;
 const LIBRARY_FILES: [&str; 4] = [
     "gatcha_uids.json",
     "gatcha_cache.json",
@@ -27,7 +26,7 @@ fn failure(name: &str) -> String {
 
 // Every existing component must be a real directory/file, never an indirect
 // reference out of the explicitly selected source. Contents never enter errors.
-fn read(root: &Path, relative: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
+fn read(root: &Path, relative: &Path, limit: Option<u64>) -> Result<Option<Vec<u8>>, String> {
     let mut path = root.to_owned();
     for component in relative.components() {
         if !matches!(component, std::path::Component::Normal(_)) {
@@ -41,21 +40,24 @@ fn read(root: &Path, relative: &Path, limit: u64) -> Result<Option<Vec<u8>>, Str
         }
     }
     let meta = fs::symlink_metadata(&path).map_err(|_| failure("source file"))?;
-    if !meta.is_file() || meta.len() > limit {
+    if !meta.is_file() || limit.is_some_and(|limit| meta.len() > limit) {
         return Err(failure("source file size/type"));
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
-        .and_then(|f| f.take(limit + 1).read_to_end(&mut bytes))
+        .and_then(|f| {
+            f.take(limit.map_or(u64::MAX, |limit| limit.saturating_add(1)))
+                .read_to_end(&mut bytes)
+        })
         .map_err(|_| failure("source file"))?;
-    if bytes.len() as u64 > limit {
+    if limit.is_some_and(|limit| bytes.len() as u64 > limit) {
         return Err(failure("source file size"));
     }
     Ok(Some(bytes))
 }
 
 fn object(root: &Path, relative: &str) -> Result<Option<Value>, String> {
-    read(root, Path::new(relative), LIMIT)?
+    read(root, Path::new(relative), None)?
         .map(|bytes| {
             let value: Value = serde_json::from_slice(&bytes).map_err(|_| failure(relative))?;
             if !value.is_object() {
@@ -193,9 +195,6 @@ impl Import {
                     if !super::exports::valid_source(&name) {
                         return Err(failure("archive filename"));
                     }
-                    if archives.len() >= 1000 {
-                        return Err(failure("archive count"));
-                    }
                     let value = object(&data, &format!("played_sessions/{name}"))?
                         .ok_or_else(|| failure("archive"))?;
                     let archive = json!({"file_name":name,"session_started_at":value["session_started_at"],"items":value["items"]});
@@ -294,7 +293,7 @@ impl Import {
         report["cache_available"] = json!(cache.available());
         report["download_source"] = json!(cache.download_source);
         let credential = Path::new("tools/bbdown/BBDown.data");
-        let bytes = read(source, credential, 16384)?;
+        let bytes = read(source, credential, Some(16384))?;
         let result = desktop_login::execute(desktop_login::LoginCommand::ReadCookie {
             data_path: source.join(credential),
             configured_cookie: configured_cookie.into(),
@@ -451,7 +450,8 @@ pub(super) fn restore(
         let directory = desktop::preview_root(destination)?;
         let (_storage, seed) = NativeHostStorage::open(&directory).map_err(|e| e.message)?;
         app_state::prepare_import(seed.ok_or_else(|| failure("existing destination checkpoint"))?)?;
-        preferences::load(&directory).map_err(|_| failure("existing destination preferences"))?;
+        preferences::load(&directory, true)
+            .map_err(|_| failure("existing destination preferences"))?;
         super::login::load_desktop(&directory)
             .map_err(|_| failure("existing destination credentials"))?;
         return Ok(());
@@ -476,12 +476,15 @@ pub(super) fn restore(
         return Err("Desktop source and destination must not overlap".into());
     }
     let import = Import::read(&source, configured_cookie)?;
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = fs::DirBuilder::new();
     builder
         .create(&directory)
         .map_err(|_| failure("new destination"))?;
@@ -589,7 +592,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(seed.playlist[0].cache_status, "pending");
-        let prefs = preferences::load(&f.dest()).unwrap();
+        let prefs = preferences::load(&f.dest(), true).unwrap();
         assert_eq!(prefs.cache.download_source, "bbdown");
         assert!(!prefs.cache.available());
         assert_eq!(prefs.cache.retained_settings["cache_policy"]["unknown"], 7);

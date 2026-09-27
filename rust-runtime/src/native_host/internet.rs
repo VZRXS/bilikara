@@ -9,7 +9,40 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         .native_execute(AppStateRequest::InternetRemoteState { schema_version: 1 })?["remote_state"]
         .clone();
     let snapshot = app.native_snapshot(false)?;
+    state["song_ratings"] = snapshot["song_ratings"].clone();
+    // Rating navigation needs only the current/previous plays. Explicitly
+    // project public fields; catalog projection wraps arrays and omits eligibility.
+    state["session_played"] = json!(
+        snapshot["session_played"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|entry| {
+                let mut item = json!({});
+                for key in [
+                    "item_id",
+                    "bvid",
+                    "title",
+                    "display_title",
+                    "part_title",
+                    "cover_url",
+                    "owner_mid",
+                    "owner_name",
+                    "threshold_reached",
+                ] {
+                    item[key] = entry[key].clone();
+                }
+                item
+            })
+            .collect::<Vec<_>>()
+    );
     state["state_revision"] = snapshot["state_revision"].clone();
+    state["state_epoch"] = snapshot["state_epoch"].clone();
     let status = &snapshot["player_status"];
     state["player_status"] = if status.is_object() {
         json!({"playing":status["is_paused"] == false,
@@ -17,7 +50,7 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
     } else {
         Value::Null
     };
-    state["gatcha"] = public_data(&snapshot["gatcha"]);
+    state["gatcha"] = public_source_status(&snapshot["gatcha"]);
     state["bilibili_logged_in"] = json!(
         snapshot["bbdown"]["login"]["logged_in"] == true || snapshot["bbdown"]["logged_in"] == true
     );
@@ -40,14 +73,9 @@ pub(super) fn route(
             {
                 return Err(ApiError::invalid("无效的公网 Remote 链接"));
             }
-            Ok(json!({"image":qr_image(&value)?}))
+            Ok(json!({"image":access_qr_image(&value)?}))
         }
-        "/api/internet-remote/state" => {
-            let mut state = with_app(public_state)?;
-            state["gatcha_pool_config"] =
-                public_data(&library::read(context, "/api/gatcha/pool-config", "")?);
-            Ok(state)
-        }
+        "/api/internet-remote/state" => with_app(public_state),
         "/api/internet-remote/peer/open" | "/api/internet-remote/peer/close" => {
             let mut command = body.clone();
             command["command"] = json!(if path.ends_with("/open") {
@@ -167,25 +195,17 @@ fn effect(
         return Ok(reply);
     };
     let kind = effect["kind"].as_str().unwrap_or_default();
-    if context.desktop
-        && matches!(
-            kind,
-            "gatcha_pool_config_set"
-                | "gatcha_uid_preview"
-                | "gatcha_uid_add"
-                | "gatcha_refresh"
-                | "gatcha_favlist_preview"
-                | "gatcha_favlist_refresh"
-        )
-    {
-        return Err(desktop::unavailable());
-    }
+    let library_identity = Identity {
+        client: format!("native-internet:{peer}"),
+        ..identity.clone()
+    };
     let page_fields = [
         ("q", "query"),
         ("limit", "limit"),
         ("offset", "offset"),
         ("uid", "uid"),
         ("folder_id", "folder_id"),
+        ("requester_name", "requester_name"),
     ];
     let result = match kind {
         "sync_cache" => return Ok(reply), // Native pump observes committed AppState.
@@ -202,13 +222,18 @@ fn effect(
                 "/api/cache/retry",
                 "",
                 json!({
-                    "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"]
+                    "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"], "force":effect["force"]
                 }),
             )?;
             return Ok(reply);
         }
-        "catalog_search" => catalog::read("/api/catalog/search", &query(&effect, &page_fields))?,
+        "catalog_search" => catalog::read(
+            context,
+            "/api/catalog/search",
+            &query(&effect, &page_fields),
+        )?,
         "catalog_browse" => catalog::read(
+            context,
             "/api/d1/browse",
             &query(
                 &effect,
@@ -224,6 +249,7 @@ fn effect(
             ),
         )?,
         "catalog_category_browse" => catalog::read(
+            context,
             "/api/d1/category-browse",
             &query(
                 &effect,
@@ -239,7 +265,11 @@ fn effect(
         "catalog_song_detail" => {
             let id = text(&effect, "catalog_item_id")?;
             let (bvid, page) = catalog_parts(&id)?;
-            let data = catalog::read("/api/catalog/search", &format!("q={bvid}&limit=20"))?;
+            let data = catalog::read(
+                context,
+                "/api/catalog/search",
+                &format!("q={bvid}&limit=20"),
+            )?;
             let mut item = data["items"]
                 .as_array()
                 .into_iter()
@@ -264,7 +294,12 @@ fn effect(
                 "gatcha_pool_config_get" => "/api/gatcha/pool-config",
                 _ => "/api/gatcha/candidate",
             };
-            let value = library::read(context, path, &query(&effect, &page_fields))?;
+            let value = library::read(
+                context,
+                &library_identity,
+                path,
+                &query(&effect, &page_fields),
+            )?;
             if kind == "gatcha_candidate" && !value.is_object() {
                 return Err(ApiError::new(
                     404,
@@ -290,7 +325,7 @@ fn effect(
             };
             let mut body = effect.clone();
             body.as_object_mut().unwrap().remove("kind");
-            library::write(context, identity, path, &body)?
+            library::write(context, &library_identity, path, &body)?
         }
         "fetch_playlist_item" => {
             let request_id = text(&reply, "request_id")?;
@@ -352,7 +387,12 @@ fn add(
         Ok(app.native().cookie.clone())
     })?;
     let request: NativeVideoRequest = serde_json::from_value(json!({"url":format!("https://www.bilibili.com/video/{bvid}?p={page}"),"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
-    let item = fetch_native_video(&request, &cookie).map_err(api::video_error)?;
+    let item = fetch_native_video(&request, &cookie).map_err(|error| {
+        if let Some(bvid) = &error.missing_bvid {
+            catalog::delete_invalid(bvid);
+        }
+        api::video_error(error)
+    })?;
     let (result, accepted_item) = with_app(|app| {
         if context.stop.load(Ordering::Acquire) {
             return Err(ApiError::new(503, "stopped", "Host 已停止"));
@@ -422,6 +462,30 @@ fn asset_url(value: &Value) -> String {
 /// No arbitrary nesting, caller URLs, filesystem paths, cookies or task results.
 fn public_data(value: &Value) -> Value {
     project_public_data(value, 0)
+}
+
+// Remote needs source progress and commit counters to update its library during
+// a refresh. Never forward the rest of the internal task result (paths/errors).
+fn public_source_status(value: &Value) -> Value {
+    let mut result = public_data(value);
+    if let Some(progress) = value
+        .pointer("/last_result/rebuild")
+        .filter(|v| v.is_object())
+    {
+        let mut public = json!({});
+        for key in ["phase", "current_uid", "current_folder_id"] {
+            if !progress[key].is_null() {
+                public[key] = json!(bounded(&progress[key], 80));
+            }
+        }
+        for key in ["generation", "uids", "favorites"] {
+            if let Some(count) = progress["sources"][key].as_u64() {
+                public["sources"][key] = json!(count);
+            }
+        }
+        result["last_result"] = json!({"rebuild": public});
+    }
+    result
 }
 
 fn project_public_data(value: &Value, depth: u8) -> Value {
@@ -596,6 +660,57 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_source_refresh_keeps_progress_and_commit_counters_only() {
+        let projected = public_source_status(&json!({
+            "busy": true, "background_busy": true, "last_status": "running",
+            "last_result": {"path": "private", "rebuild": {
+                "phase": "uid", "current_uid": "42", "cookie": "secret",
+                "sources": {"generation": 9, "uids": 2, "favorites": 1, "path": "private"}
+            }}
+        }));
+        assert_eq!(projected["background_busy"], true);
+        assert_eq!(
+            projected["last_result"]["rebuild"],
+            json!({
+                "phase": "uid", "current_uid": "42",
+                "sources": {"generation": 9, "uids": 2, "favorites": 1}
+            })
+        );
+        assert!(!projected.to_string().contains("secret"));
+        assert!(!projected.to_string().contains("private"));
+    }
+    #[test]
+    fn rating_state_keeps_previous_eligibility_without_exporting_private_records() {
+        let mut app = AppState::default();
+        let played = (0..3)
+            .map(|n| {
+                json!({"key":format!("p{n}"),"item_id":format!("p{n}"),
+            "bvid":"BV1z84y1p7oS","title":"song","display_title":"song","part_title":"P1",
+            "original_url":"https://private.test/token","resolved_url":"https://private.test/token",
+            "aid":1,"cid":2,"page":1,"played_at":n+1,"threshold_reached":n==1})
+            })
+            .collect::<Vec<_>>();
+        let seed = serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1,
+            "updated_at":4,"session_played_file":"private.json","session_played":played}))
+        .unwrap();
+        app.native_execute(AppStateRequest::Initialize {
+            schema_version: 1,
+            state: Box::new(seed),
+        })
+        .unwrap();
+        app.native().state_epoch = "fixture-host-epoch".into();
+        let state = public_state(&mut app).unwrap();
+        assert_eq!(state["state_epoch"], "fixture-host-epoch");
+        let played = state["session_played"].as_array().unwrap();
+        assert_eq!(played.len(), 2);
+        assert_eq!(played[0]["item_id"], "p1");
+        assert_eq!(played[0]["threshold_reached"], true);
+        assert_eq!(played[1]["threshold_reached"], false);
+        assert_eq!(state["song_ratings"], json!([]));
+        assert!(!state["session_played"].to_string().contains("private"));
+    }
+
     #[test]
     fn public_effect_results_keep_covers_and_pagination_but_never_secrets_or_paths() {
         let value = public_data(

@@ -79,6 +79,8 @@ def main():
             elif name == "/fixture/login-wait":
                 fixture.codes = [86101]
                 body = {}
+            elif name == "/fixture/login-stats":
+                body = {"generations": fixture.stages.count("generate")}
             elif name == "/x/web-interface/nav":
                 body = {"code": 0, "data": {"wbi_img": {"img_url": "https://i0.hdslb.com/bfs/wbi/" + "a"*32 + ".png", "sub_url": "https://i0.hdslb.com/bfs/wbi/" + "b"*32 + ".png"}}}
             elif name in ["/x/web-interface/wbi/view", "/x/web-interface/view"]:

@@ -79,7 +79,18 @@ pub fn launch_update_helper(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0000_0200 | 0x0000_0008);
+        let flags = 0x0000_0200 | 0x0000_0008;
+        #[cfg(feature = "native-host")]
+        let flags = if crate::native_host::desktop_process::JOB_OWNED
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            // The installer intentionally survives Host shutdown to replace the
+            // application. Download/media children retain the default job.
+            flags | 0x0100_0000 // CREATE_BREAKAWAY_FROM_JOB
+        } else {
+            flags
+        };
+        command.creation_flags(flags);
     }
     #[cfg(unix)]
     {

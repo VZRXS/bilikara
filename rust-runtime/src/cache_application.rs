@@ -1,7 +1,8 @@
 //! CacheRuntime event application shared by both Hosts. The runtime owns this
 //! state and serializes draining, recovery and application; Hosts only observe.
 use crate::app_state::{
-    AppState, AppStateRequest, AppStateResponse, CacheEvent, PersistenceEffects,
+    AppState, AppStateRequest, AppStateResponse, CacheDownloadProgress, CacheDownloadTrack,
+    CacheEvent, PersistenceEffects,
 };
 use crate::cache_runtime::RuntimeEvent;
 use serde::{Deserialize, Serialize};
@@ -149,7 +150,14 @@ impl CacheApplication {
             let default = matches!(contract, HostContract::Default { .. });
             let projections = match event.kind.as_str() {
                 "queued" => vec![CacheEvent::Queued {
-                    message: "等待 Rust 缓存队列".into(),
+                    message: payload["message"]
+                        .as_str()
+                        .unwrap_or(if default {
+                            "等待 Rust 缓存队列"
+                        } else {
+                            "等待缓存队列"
+                        })
+                        .into(),
                 }],
                 "started" => {
                     attempt.source = match payload["source"].as_str() {
@@ -166,15 +174,7 @@ impl CacheApplication {
                         .filter(|t| !t.key.is_empty())
                         .map(|t| (t.key.clone(), t))
                         .collect();
-                    let message = if attempt.source == "downkyi" {
-                        "DownKyi/aria2c 正在下载视频及音轨".into()
-                    } else if default {
-                        format!("正在缓存 1 路视频轨 + {count} 路音轨")
-                    } else if payload["source"] == "bbdown" {
-                        "BBDown 正在下载视频及音轨".into()
-                    } else {
-                        "正在下载视频及音轨".into()
-                    };
+                    let message = format!("正在缓存 1 路视频轨 + {count} 路音轨");
                     let mut projections = vec![CacheEvent::Started { message }];
                     if !attempt.tracks.is_empty() {
                         projections.push(progress(attempt, 0.0));
@@ -225,11 +225,7 @@ impl CacheApplication {
                     } else {
                         let mut ready = payload.clone();
                         ready["kind"] = json!("ready");
-                        ready["message"] = json!(if default {
-                            format!("缓存完成，共 {count} 条音轨")
-                        } else {
-                            "已就绪".into()
-                        });
+                        ready["message"] = json!(format!("缓存完成，共 {count} 条音轨"));
                         match serde_json::from_value(ready) {
                             Ok(ready) => vec![ready],
                             Err(_) => {
@@ -253,12 +249,15 @@ impl CacheApplication {
                                 .unwrap_or("Rust 缓存任务失败")
                         )
                     } else {
-                        payload["message"]
-                            .as_str()
-                            .unwrap_or("媒体下载失败，请查看诊断或重试")
-                            .chars()
-                            .take(400)
-                            .collect()
+                        format!(
+                            "缓存失败: {}",
+                            payload["message"]
+                                .as_str()
+                                .unwrap_or("媒体下载失败，请查看诊断或重试")
+                                .chars()
+                                .take(394)
+                                .collect::<String>()
+                        )
                     },
                 }],
                 "cancelled" | "evicted" => {
@@ -276,10 +275,16 @@ impl CacheApplication {
                             }),
                         #[cfg(any(feature = "native-host", test))]
                         HostContract::Native => {
-                            if event.kind == "cancelled" {
+                            if payload["reason"] == "等待当前歌曲重新下载" {
+                                "等待当前歌曲重新下载".into()
+                            } else if event.kind == "cancelled" {
                                 "缓存任务已取消".into()
                             } else {
-                                "等待进入缓存窗口".into()
+                                #[cfg(feature = "native-host")]
+                                let max = app.native().cache_policy.max_cache_items;
+                                #[cfg(not(feature = "native-host"))]
+                                let max = 3;
+                                format!("仅自动缓存前 {max} 首，已释放本地缓存")
                             }
                         }
                     };
@@ -404,6 +409,7 @@ fn progress(attempt: &Attempt, previous: f64) -> CacheEvent {
     if attempt.source == "downkyi" {
         lines[0].insert_str(0, "DownKyi/aria2c · ");
     }
+    let mut download_tracks = Vec::new();
     for t in tracks {
         let mut label = if t.label.is_empty() {
             "轨道".into()
@@ -420,6 +426,20 @@ fn progress(attempt: &Attempt, previous: f64) -> CacheEvent {
             }
             _ => {}
         }
+        download_tracks.push(CacheDownloadTrack {
+            key: t.key.clone(),
+            label: label.clone(),
+            current_bytes: if t.target_bytes > 0 {
+                t.current_bytes.min(t.target_bytes)
+            } else {
+                t.current_bytes
+            },
+            target_bytes: t.target_bytes,
+            done: t.done,
+            phase: t.phase.clone(),
+            attempt: t.attempt,
+            max_attempts: t.max_attempts,
+        });
         lines.push(format!(
             "{label}：{} / {}",
             bytes(if t.target_bytes > 0 {
@@ -435,6 +455,11 @@ fn progress(attempt: &Attempt, previous: f64) -> CacheEvent {
         ));
     }
     CacheEvent::Progress {
+        download: Some(CacheDownloadProgress {
+            current_bytes: current,
+            total_bytes: if known { target } else { 0 },
+            tracks: download_tracks,
+        }),
         progress: value.max(previous).min(99.0),
         message: Some(lines.join("\n")),
     }
@@ -572,6 +597,8 @@ pub(crate) mod tests {
         let completed = apply(&mut service, &mut app, vec![ready_event.clone()]);
         assert_eq!(item(&completed).cache_status, "ready");
         assert_eq!(item(&completed).cache_progress, 100.0);
+        assert_eq!(item(&completed).cache_download_current_bytes, 0);
+        assert!(item(&completed).cache_download_tracks.is_empty());
         assert_eq!(item(&completed).cache_message, "缓存完成，共 2 条音轨");
         assert_eq!(item(&completed).selected_audio_variant_id, "p2");
         assert_eq!(completed.settlements.len(), 1);
@@ -877,8 +904,89 @@ pub(crate) mod tests {
                 assert!(song.cache_message.contains("视频P1：80 B / 100 B"));
                 assert!(song.cache_message.contains("音轨P2："));
                 assert_eq!(song.cache_activity_at, now);
+                assert_eq!(song.cache_download_current_bytes, 80 + current);
+                assert_eq!(song.cache_download_total_bytes, 200);
+                assert_eq!(song.cache_download_tracks.len(), 2);
+                assert_eq!(song.cache_download_tracks[0].key, "v");
+                assert_eq!(song.cache_download_tracks[1].current_bytes, current);
             }
         }
+    }
+
+    #[test]
+    fn byte_snapshot_retains_unknown_track_sizes_and_clears_terminal_state() {
+        let (mut app, reservation) = fixture();
+        let mut service = CacheApplication::default();
+        let result = apply(
+            &mut service,
+            &mut app,
+            vec![event(
+                &reservation,
+                1,
+                1,
+                "started",
+                json!({"source":"native","tracks":[
+                    {"key":"v","label":"Video","order":0,"current_bytes":120,"target_bytes":100},
+                    {"key":"a","label":"Audio","order":1,"current_bytes":30,"target_bytes":0}
+                ]}),
+            )],
+        );
+        assert_eq!(item(&result).cache_download_current_bytes, 130);
+        assert_eq!(
+            item(&result).cache_download_total_bytes,
+            0,
+            "one unknown track means total is unknown"
+        );
+        assert_eq!(item(&result).cache_download_tracks[0].current_bytes, 100);
+        let result = apply(
+            &mut service,
+            &mut app,
+            vec![event(
+                &reservation,
+                2,
+                1,
+                "progress",
+                json!({"track":{
+                    "key":"a","label":"Audio","order":1,"phase":"validating","current_bytes":0,"target_bytes":0
+                }}),
+            )],
+        );
+        assert_eq!(
+            item(&result).cache_download_current_bytes,
+            130,
+            "validation retains transferred bytes"
+        );
+        let result = apply(
+            &mut service,
+            &mut app,
+            vec![event(
+                &reservation,
+                3,
+                1,
+                "failed",
+                json!({"message":"fixture failure"}),
+            )],
+        );
+        assert_eq!(item(&result).cache_download_current_bytes, 0);
+        assert_eq!(item(&result).cache_download_total_bytes, 0);
+        assert!(item(&result).cache_download_tracks.is_empty());
+        let result = apply(
+            &mut service,
+            &mut app,
+            vec![event(
+                &reservation,
+                2,
+                1,
+                "progress",
+                json!({"track":{
+                    "key":"a","current_bytes":999,"target_bytes":1000
+                }}),
+            )],
+        );
+        assert!(
+            item(&result).cache_download_tracks.is_empty(),
+            "late events cannot restore stale bytes"
+        );
     }
 
     #[test]

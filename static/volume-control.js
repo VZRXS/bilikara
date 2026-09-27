@@ -116,7 +116,7 @@
     const resetClass = isRemote ? "ghost-button remote-reset-button" : "toolbar-button ghost av-sync-reset-button";
     const inputClass = isRemote ? "remote-input-wrap" : "av-sync-input-wrap";
     dialog.innerHTML = `<form>
-      <div class="volume-adjust-heading"><h2></h2><button type="button" class="rating-close" data-volume-close>×</button></div>
+      <div class="volume-adjust-heading"><h2></h2><button type="button" class="rating-close" data-volume-close><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
       <div class="volume-adjust-fields">
         <button type="button" class="${stepClass}" data-volume-step="-10">−10</button>
         <label class="${inputClass}"><input type="number" min="0" max="500" step="1" inputmode="numeric" required><span>%</span></label>
@@ -183,9 +183,14 @@
       errorMessage.hidden = true;
       input.value = String(bounded(getValue()));
       reset.disabled = bounded(getValue()) === 100;
+      // showModal performs native autofocus before our anchored positioning.
+      // Preserve the underlying sheet's scroll offset across that focus step.
+      const scrollers = isRemote ? [...document.querySelectorAll('.playback-sheet-body')]
+        .map(element => [element, element.scrollTop, element.scrollLeft]) : [];
       dialog.showModal();
       value.setAttribute("aria-expanded", "true");
       position();
+      for (const [element, top, left] of scrollers) element.scrollTo({top, left, behavior: "instant"});
       // Opening the mobile editor should not immediately summon its keyboard.
       if (isRemote) close.focus({ preventScroll: true });
       else {
@@ -228,7 +233,7 @@
     // Keep a button click from first blurring/submitting the numeric draft.
     // The step/reset action applies its final value in one request.
     form.addEventListener("pointerdown", (event) => {
-      if (document.activeElement === input && event.target.closest("button")) event.preventDefault();
+      if ((isRemote || document.activeElement === input) && event.target.closest("button")) event.preventDefault();
     });
     dialog.querySelectorAll("[data-volume-step]").forEach((button) => {
       button.addEventListener("click", () => {

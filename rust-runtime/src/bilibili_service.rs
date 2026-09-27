@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::form_urlencoded;
 
+mod request_gate;
+
 const NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
 const PLAYURL_URL: &str = "https://api.bilibili.com/x/player/wbi/playurl";
 const WBI_CACHE_TTL: Duration = Duration::from_secs(600);
@@ -116,6 +118,8 @@ static WBI_KEYS: OnceLock<Mutex<Option<CachedWbiKeys>>> = OnceLock::new();
 
 pub(crate) struct BilibiliHttpClient {
     client: Client,
+    scope: String,
+    timeout: Duration,
 }
 
 impl BilibiliHttpClient {
@@ -174,7 +178,16 @@ impl BilibiliHttpClient {
             .default_headers(request_headers(&request)?)
             .build()
             .map_err(|error| service_error("client", error.to_string(), None))?;
-        Ok(Self { client })
+        use sha2::{Digest, Sha256};
+        let scope = format!(
+            "{:x}",
+            Sha256::digest(format!("{cookie}\0{user_agent}\0{referer}"))
+        );
+        Ok(Self {
+            client,
+            scope,
+            timeout: Duration::from_millis(timeout_ms.max(100) + 2000),
+        })
     }
 
     // Video input resolution must never grant public Remote arbitrary URL I/O.
@@ -225,6 +238,12 @@ impl BilibiliHttpClient {
     }
 
     pub(crate) fn get_video_json(&self, url: &str) -> Result<Value, BilibiliServiceError> {
+        request_gate::run(&self.scope, url, self.timeout, || {
+            self.get_video_json_unshared(url)
+        })
+    }
+
+    fn get_video_json_unshared(&self, url: &str) -> Result<Value, BilibiliServiceError> {
         use std::io::Read;
         const MAX_BYTES: u64 = 4 * 1024 * 1024;
         let response = self
@@ -254,7 +273,9 @@ impl BilibiliHttpClient {
     }
 
     pub(crate) fn get_json(&self, url: &str) -> Result<Value, BilibiliServiceError> {
-        get_json(&self.client, url)
+        request_gate::run(&self.scope, url, self.timeout, || {
+            get_json(&self.client, url)
+        })
     }
 
     pub(crate) fn get_api_json(
@@ -267,15 +288,44 @@ impl BilibiliHttpClient {
         Ok(payload)
     }
 
+    pub(crate) fn get_api_json_controlled(
+        &self,
+        url: &str,
+        fallback: &str,
+        stopped: impl Fn() -> bool,
+    ) -> Result<Value, BilibiliServiceError> {
+        let payload =
+            request_gate::run_controlled(&self.scope, url, self.timeout, stopped, || {
+                get_json(&self.client, url)
+            })?;
+        ensure_api_success(&payload, fallback)?;
+        Ok(payload)
+    }
+
     pub(crate) fn get_wbi_json(
         &self,
         url: &str,
         params: BTreeMap<String, String>,
         fallback: &str,
     ) -> Result<Value, BilibiliServiceError> {
-        let (img_key, sub_key) = cached_wbi_keys(&self.client)?;
-        let query = sign_params(params, &img_key, &sub_key, unix_timestamp());
-        self.get_api_json(&format!("{url}?{query}"), fallback)
+        self.get_wbi_json_controlled(url, params, fallback, || false)
+    }
+
+    pub(crate) fn get_wbi_json_controlled(
+        &self,
+        url: &str,
+        params: BTreeMap<String, String>,
+        fallback: &str,
+        stopped: impl Fn() -> bool,
+    ) -> Result<Value, BilibiliServiceError> {
+        let key = format!("{url}:{params:?}");
+        request_gate::run_controlled(&self.scope, &key, self.timeout, stopped, || {
+            let (img_key, sub_key) = cached_wbi_keys(&self.client)?;
+            let query = sign_params(params, &img_key, &sub_key, unix_timestamp());
+            let payload = get_json(&self.client, &format!("{url}?{query}"))?;
+            ensure_api_success(&payload, fallback)?;
+            Ok(payload)
+        })
     }
 }
 
@@ -283,7 +333,7 @@ pub fn fetch_dash_playurl(
     request: &BilibiliDashRequest,
 ) -> Result<BilibiliDashResult, BilibiliServiceError> {
     fetch_dash_playurl_with(request, |client, params| {
-        client.get_wbi_json(PLAYURL_URL, params, "playurl request failed")
+        client.get_wbi_json(PLAYURL_URL, params, "获取播放地址失败")
     })
 }
 
@@ -315,7 +365,7 @@ fn fetch_dash_playurl_with(
     if !request.bvid.trim().is_empty() {
         params.insert("bvid".to_owned(), request.bvid.trim().to_owned());
     }
-    let payload = fetch(&client, params)?;
+    let payload = fetch(&client, params).map_err(playurl_error)?;
     parse_playurl_payload(&payload)
 }
 
@@ -516,12 +566,23 @@ fn ensure_api_success(payload: &Value, fallback: &str) -> Result<(), BilibiliSer
     Err(error)
 }
 
+fn playurl_error(mut error: BilibiliServiceError) -> BilibiliServiceError {
+    match error.api_code {
+        Some(-404 | -403 | 62002) => {
+            error.message = format!("视频播放地址不可用: {}", error.message)
+        }
+        Some(-352) => error.message = format!("请求被风控拦截: {}", error.message),
+        _ => {}
+    }
+    error
+}
+
 fn parse_playurl_payload(payload: &Value) -> Result<BilibiliDashResult, BilibiliServiceError> {
-    ensure_api_success(payload, "playurl request failed")?;
+    ensure_api_success(payload, "获取播放地址失败").map_err(playurl_error)?;
     let data = payload
         .get("data")
         .and_then(Value::as_object)
-        .ok_or_else(|| service_error("invalid_response", "playurl data is missing", None))?;
+        .ok_or_else(|| service_error("invalid_response", "播放地址响应格式异常", None))?;
     let Some(dash) = data.get("dash").and_then(Value::as_object) else {
         let video: Vec<BilibiliStream> = data
             .get("durl")
@@ -998,6 +1059,7 @@ mod tests {
             .expect_err("risk-control response must fail");
         assert_eq!(error.kind, "risk_control");
         assert_eq!(error.api_code, Some(-352));
+        assert_eq!(error.message, "请求被风控拦截: risk");
     }
 
     #[test]
@@ -1012,6 +1074,7 @@ mod tests {
             .expect_err("forbidden response must fail");
         assert_eq!(forbidden.kind, "forbidden");
         assert_eq!(forbidden.api_code, Some(-403));
+        assert_eq!(forbidden.message, "视频播放地址不可用: forbidden");
 
         let unavailable = parse_playurl_payload(&json!({"code": 62002, "message": "unavailable"}))
             .expect_err("unavailable response must fail");

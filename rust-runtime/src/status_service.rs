@@ -146,6 +146,15 @@ impl RuntimeStatusService {
             current.0 == ticket.0 && std::sync::Arc::ptr_eq(&current.1, &ticket.1)
         })
     }
+    #[cfg(feature = "native-host")]
+    pub(crate) fn cancel_configured_refresh(&mut self) {
+        // Keep ownership until the worker retires; cancellation fences writes
+        // without admitting a second concurrent repository task.
+        if let Some((_, control)) = &self.configured_refresh {
+            control.stop();
+        }
+    }
+
     pub(crate) fn begin_configured_refresh(
         &mut self,
         global_lock: bool,
@@ -168,11 +177,20 @@ impl RuntimeStatusService {
         Some(ticket)
     }
 
-    pub(crate) fn configured_refresh_progress(&mut self, generation: u64, progress: Value) {
+    pub(crate) fn configured_refresh_progress(&mut self, generation: u64, mut progress: Value) {
         if self.configured_refresh.as_ref().map(|t| t.0) == Some(generation) {
+            let incremental = progress.get("sources").is_some();
+            if incremental {
+                progress["sources"]["generation"] = serde_json::json!(generation);
+            }
             self.set_gacha_task(GachaTaskUpdate {
                 status: GachaTaskStatus::Running,
-                message: "正在重建抽卡缓存格式...".into(),
+                message: if incremental {
+                    "正在拉取来源..."
+                } else {
+                    "正在重建抽卡缓存格式..."
+                }
+                .into(),
                 error: String::new(),
                 result: Some(serde_json::json!({"rebuild":progress})),
                 blocking: false,

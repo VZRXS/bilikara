@@ -14,6 +14,7 @@ static int test_read_frame(AVFormatContext *s, AVPacket *p) {
         reads++;
         if (inject_after && reads == inject_after && inject_corrupt) p->flags |= AV_PKT_FLAG_CORRUPT;
         if (remux_fault == 5 && reads == 3) p->dts = AV_NOPTS_VALUE;
+        if (remux_fault == 7 && reads == 3) s->streams[p->stream_index]->nb_frames += 1;
         if (remux_fault == 6 && reads == 3) {
             AVCodecParameters *par = s->streams[p->stream_index]->codecpar;
             uint8_t *side = av_packet_new_side_data(p, AV_PKT_DATA_NEW_EXTRADATA, par->extradata_size);
@@ -190,6 +191,19 @@ static void windows_long_path_tests(void) {
 #endif
 
 int main(void) {
+    assert(flac_time_matches(95856, (AVRational){1, 96000}, 96000, 96000));
+    assert(flac_time_matches(95712, (AVRational){1, 96000}, 96000, 96000));
+    /* Both sides of the inclusive 200 ms boundary, in microseconds. */
+    assert(flac_time_matches(1199999, (AVRational){1, 1000000}, 96000, 96000));
+    assert(flac_time_matches(1200000, (AVRational){1, 1000000}, 96000, 96000));
+    assert(!flac_time_matches(1200001, (AVRational){1, 1000000}, 96000, 96000));
+    assert(flac_time_matches(800001, (AVRational){1, 1000000}, 96000, 96000));
+    assert(flac_time_matches(800000, (AVRational){1, 1000000}, 96000, 96000));
+    assert(!flac_time_matches(799999, (AVRational){1, 1000000}, 96000, 96000));
+    assert(!flac_time_matches(-1, (AVRational){1, 1000000}, 96000, 96000));
+    assert(!flac_time_matches(1000000, (AVRational){1, 1000000}, -1, 96000));
+    assert(!flac_time_matches(INT64_MAX, (AVRational){1, 1}, 96000, 96000));
+    assert(!flac_time_matches(0, (AVRational){1, 1}, INT64_MAX, 1));
 #ifdef _WIN32
     windows_long_path_tests();
 #endif

@@ -10,7 +10,8 @@ const fragment = source.slice(source.indexOf("function maybeStartBBDownLogin("),
   const button = () => ({disabled:false, attrs:{}, setAttribute(k,v){this.attrs[k]=v;}, removeAttribute(k){delete this.attrs[k];}});
   const controls = [button(),button()];
   const state = {cacheSettingsOpen:true,bbdownLoginRequesting:false};
-  const context = {state, elements:{bbdownLoginButton:controls[0],bbdownLoginRefresh:controls[1]},
+  const document = {documentElement:{dataset:{hostPlatform:"android"}}};
+  const context = {state, document, elements:{bbdownLoginButton:controls[0],bbdownLoginRefresh:controls[1]},
     BilikaraHostLayout:{isPortrait:()=>portrait},render(){},setAppMessage(){},
     apiPostStateSnapshot(){requests++;return new Promise(resolve=>{finish=resolve;});}};
   vm.createContext(context);
@@ -41,5 +42,13 @@ const fragment = source.slice(source.indexOf("function maybeStartBBDownLogin("),
   const refresh=context.startBBDownLogin({force:true});
   assert.equal(requests,4,"Explicit refresh still starts a new QR request");
   finish(); await refresh;
-  console.log("PASS explicit portrait login, duplicate guard and desktop behavior");
+  document.documentElement.dataset.hostPlatform="desktop";
+  portrait=true;
+  context.maybeStartBBDownLogin({state:"idle"});
+  assert.equal(requests,5,"A narrow desktop still starts login when Settings opens");
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  state.cacheSettingsOpen=false;
+  context.maybeStartBBDownLogin({state:"idle"});
+  assert.equal(requests,5,"A closed desktop account/settings surface does not start login");
+  console.log("PASS explicit Android portrait login, desktop width independence and duplicate guards");
 })().catch(error=>{console.error(error);process.exitCode=1;});

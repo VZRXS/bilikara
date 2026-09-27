@@ -28,14 +28,17 @@ const notes=path.resolve(output);
  const fixture=createServer((req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||80);
-  calls.push({path:url.pathname,offset,limit,method:req.method});
+  const format=url.searchParams.get('format');
+  calls.push({path:url.pathname,offset,limit,format,method:req.method});
   let data;
   if(url.pathname==='/browse' && !url.searchParams.get('tag')) {
    const query=url.searchParams.get('q')||'';
    data={items:[],tags:Array.from({length:40},(_,n)=>({tag:`Artist ${n}`,letter:'A',count:221})).filter(t=>t.tag.includes(query))};
-  } else if(url.searchParams.get('keyword')==='missing') data={items:[],offset:0,total:0,has_more:false,next_offset:0};
-  else if(url.searchParams.get('keyword')==='legacy') data=items.slice(0,limit);
-  else data={items:items.slice(offset,offset+limit),offset,total:221,has_more:offset+limit<221,next_offset:Math.min(offset+limit,221)};
+  } else if(url.searchParams.get('keyword')==='missing') data={items:[],tags:[],offset:0,matched_count:0,has_more:false,next_offset:0};
+  // Worker keeps legacy arrays/ignored offsets until the Rust client opts in.
+  // "legacy" also exercises an old deployment that ignores the new parameter.
+  else if(format!=='paged' || url.searchParams.get('keyword')==='legacy') data=items.slice(0,limit);
+  else data={items:items.slice(offset,offset+limit),tags:[],offset,limit,matched_count:221,has_more:offset+limit<221,next_offset:Math.max(offset,Math.min(offset+limit,221)),result_kind:'songs'};
   res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data));
  });
  fixture.listen(0,'127.0.0.1');await once(fixture,'listening');
@@ -65,8 +68,8 @@ const notes=path.resolve(output);
   browser=await ({firefox,chromium,webkit}[browserName]).launch({headless:true,
    ...(browserName==='firefox'?{firefoxUserPrefs:{'browser.chrome.site_icons':false,'browser.chrome.favicons':false}}:{})});
   measurements.browser=browserName;
-  async function context(viewport) {
-   const c=await browser.newContext({viewport,locale:'zh-CN'});
+  async function context(viewport,options={}) {
+   const c=await browser.newContext({viewport,locale:'zh-CN',...options});
    await c.route('**/*',r=>{
     const url=new URL(r.request().url());
     const image=/^\/bfs\/archive\/ui-fixture-([0-3])\.jpg$/.exec(url.pathname);
@@ -100,17 +103,18 @@ const notes=path.resolve(output);
   const selectedChecks=new Set((process.env.BILIKARA_TEST_UI_CHECKS||'').split(',').filter(Boolean));
   const check=async(name,fn)=>{if(selectedChecks.size&&!selectedChecks.has(name))return;try{await fn();measurements[name]={...measurements[name],passed:true};}catch(e){failures.push(`${name}: ${e.stack}`);}};
   async function assertBackdropPolicy(page) {
+   await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
    const layers=await page.evaluate(()=>{
     const remote=document.documentElement.dataset.uiClient==='remote';
-    const dimColor=document.documentElement.dataset.theme==='blue'?'rgba(2, 6, 23, 0.38)':'rgba(29, 26, 24, 0.24)';
+
     const read=(e,pseudo)=>{const s=getComputedStyle(e,pseudo);
      const dimmed=remote && (e.matches('.remote-identity-backdrop,.song-detail-backdrop,.rating-modal-backdrop,.binding-sheet-backdrop,.playback-sheet-backdrop') || (pseudo && e.matches('.history-export-dialog')));
-     return {name:e.className+(pseudo||''),background:s.backgroundColor,blur:s.backdropFilter,expected:dimmed?dimColor:'rgba(0, 0, 0, 0)'};
+     return {name:e.className+(pseudo||''),background:s.backgroundColor,blur:s.backdropFilter,expected:dimmed?(document.documentElement.dataset.theme==='blue'?'rgba(2, 6, 23, 0.38)':'rgba(29, 26, 24, 0.24)'):'rgba(0, 0, 0, 0)',expectedBlur:'none'};
     };
     const overlays=[...document.querySelectorAll('.selection-modal-backdrop,.rating-modal-backdrop,.binding-sheet-backdrop,.remote-identity-backdrop,.song-detail-backdrop,.playback-sheet-backdrop,.stage-control-backdrop,.audio-variant-backdrop,.song-detail-view')].filter(e=>e.getClientRects().length).map(e=>read(e));
     return overlays.concat([...document.querySelectorAll('.history-export-dialog[open],.volume-adjust-popover[open]')].map(e=>read(e,'::backdrop')));
    });
-   for(const layer of layers){assert.equal(layer.background,layer.expected,`${layer.name}: only Remote modal backdrops dim the page`);assert.equal(layer.blur,'none');}
+   for(const layer of layers){assert.equal(layer.background,layer.expected,`${layer.name}: client-specific backdrop`);assert.equal(layer.blur,layer.expectedBlur);}
   }
   async function closeControl(page, card, button, remoteControl=false) {
    await page.mouse.move(0,0);
@@ -173,7 +177,7 @@ const notes=path.resolve(output);
   await check('privateLanSharing',async()=>{
    assert.equal((await fetch(base+'/api/remote-access')).status,403);
    const response=await remote.request.get(base+'/api/remote-access');assert.equal(response.status(),200);
-   const data=(await response.json()).data;assert.ok(new URL(data.local_url).searchParams.has('invite'));
+   const data=(await response.json()).data;assert.equal(new URL(data.local_url).search,'');assert.equal(new URL(data.local_url).pathname,'/remote');
    const publicUrl='https://rtc.kevinx96.icu/remote.html#room=QUIET-ZONE-FIXTURE&join='+'A'.repeat(43);
    const publicQrResponse=await host.request.post(base+'/api/internet-remote/qr',{data:{url:publicUrl}});
    assert.equal(publicQrResponse.status(),200);
@@ -183,10 +187,9 @@ const notes=path.resolve(output);
     const size=Number(/viewBox="0 0 (\d+) /.exec(svg)[1]);
     const rects=[...svg.matchAll(/M(\d+) (\d+)h(\d+)v(\d+)H/g)].map(m=>m.slice(1).map(Number));
     assert.ok(rects.length>0);
-    const module=rects[0][2];
     const border=[Math.min(...rects.map(r=>r[0])),Math.min(...rects.map(r=>r[1])),
      size-Math.max(...rects.map(r=>r[0]+r[2])),size-Math.max(...rects.map(r=>r[1]+r[3]))];
-    assert.deepEqual(border,[4,4,4,4].map(n=>n*module),'LAN and public QR images carry four-module quiet zones');
+    assert.deepEqual(border,[0,0,0,0],'Host access QR images use only the outer CSS frame, matching the shipped Python desktop');
    }
 
    assert.equal((await remote.request.get(base+'/api/remote-access',{headers:{Origin:'https://foreign.invalid'}})).status(),403);
@@ -199,11 +202,125 @@ const notes=path.resolve(output);
    });
    assert.match(menuSurface.background,/, 0\.9\)$/);assert.equal(menuSurface.radius,'18px');assert.equal(menuSurface.blur,'blur(12px)');
    assert.equal(menuSurface.contentBackground,'rgba(0, 0, 0, 0)');assert.equal(menuSurface.contentShadow,'none','An inline QR section must not add a second floating surface');
-   const link=remote.locator('#remote-popover-url-link');assert.equal(await link.textContent(),new URL(await link.getAttribute('href')).origin);
+   const link=remote.locator('#remote-popover-url-link');assert.equal(await link.textContent(),new URL(await link.getAttribute('href')).origin+'/remote');
+   await remote.locator('#remote-menu-panel').screenshot({path:path.join(notes,'remote-access-link.png')});
    await remote.locator('#remote-menu-toggle').click();
-   assert.equal(await host.locator('#remote-popover-url-link').textContent(),new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).origin);
+   assert.equal(await host.locator('#remote-popover-url-link').textContent(),new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).origin+'/remote');
    assert.equal(await host.locator('#internet-remote-local-address-detail').count(),0);
    await host.waitForFunction(()=>['remote-popover-qr-image','player-fullscreen-remote-qr-image'].every(id=>document.getElementById(id)?.naturalWidth>0));
+   assert.equal(new URL(await host.locator('#remote-popover-url-link').getAttribute('href')).search,'');
+   await host.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedInvitation=text;}}}));
+   await host.locator('#remote-mini-trigger').click();
+   await host.locator('#remote-popover-copy-link').click();
+   await host.waitForFunction(()=>Boolean(window.copiedInvitation));
+   const copied=await host.evaluate(()=>window.copiedInvitation);
+   assert.equal(new URL(copied).pathname,'/remote');assert.equal(new URL(copied).search,'');
+   const freshContext=await context({width:392,height:817});
+   await freshContext.route(new URL(copied).origin+'/**',route=>route.continue());
+   const fresh=await freshContext.newPage();
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'A fresh device can open /remote directly');
+   await fresh.goto(copied);await fresh.waitForURL(new URL('/remote',copied).href);
+   assert.ok((await freshContext.cookies()).some(cookie=>cookie.httpOnly));
+   assert.equal((await fresh.request.get(new URL('/remote',copied).href)).status(),200,'The device can reuse /remote without another entry document');
+   await fresh.locator('#remote-identity-input').fill('Direct LAN entry');
+   await fresh.locator('#remote-identity-submit').click();
+   await fresh.waitForFunction(()=>state.remoteIdentity?.registered);
+   const beforeCookie=(await freshContext.cookies()).find(cookie=>cookie.name==='bilikara_native').value;
+   await fresh.reload();await fresh.waitForFunction(()=>state.remoteIdentity?.registered);
+   assert.equal((await freshContext.cookies()).find(cookie=>cookie.name==='bilikara_native').value,beforeCookie);
+   assert.equal((await fresh.request.post(new URL('/api/session-users/add',copied).href,{data:{name:'Forbidden'}})).status(),403);
+   await freshContext.close();
+   await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'host-access-link.png')});
+   await host.locator('#remote-mini-popover-close').click();
+
+  });
+  await check('localEntryFailureStates',async()=>{
+   let mode='ok';
+   const pattern='**/api/state';
+   const handler=async route=>{
+    if(mode==='ok')return route.continue();
+    if(mode==='network')return route.abort('connectionrefused');
+    if(mode==='http')return route.fulfill({status:503,contentType:'text/html',body:'Unavailable fixture'});
+    if(mode==='invalid')return route.fulfill({contentType:'application/json',body:'{"ok":true,"data":null}'});
+    const response=await route.fetch();const body=await response.json();
+    body.data.remote_access={local_url:base+'/remote',preferred_url:base+'/remote',lan_urls:[]};
+    if(mode==='switched') {
+     const url=`http://192.168.50.8:${new URL(base).port}/remote`;
+     body.data.remote_access={...body.data.remote_access,preferred_url:url,lan_urls:[url],
+      qr_image:'data:image/svg+xml;base64,'+Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><text y="20">Changed network fixture</text></svg>').toString('base64')};
+    }
+    return route.fulfill({response,json:body});
+   };
+   await hostContext.route(pattern,handler);
+   const unavailable=async()=>{
+    for(const id of ['remote-url-link','remote-popover-url-link']) {
+     assert.equal(await host.locator('#'+id).getAttribute('href'),null);
+     assert.equal(await host.locator('#'+id).getAttribute('aria-disabled'),'true');
+    }
+    for(const id of ['copy-remote-url-button','remote-popover-copy-link'])assert.equal(await host.locator('#'+id).isDisabled(),true);
+    for(const id of ['remote-qr-image','remote-popover-qr-image','remote-mini-qr-image','player-fullscreen-remote-qr-image']) {
+     assert.equal(await host.locator('#'+id).getAttribute('src'),null);
+     assert.equal(await host.locator('#'+id).evaluate(e=>e.classList.contains('hidden')),true);
+    }
+   };
+   try {
+    await host.locator('#remote-mini-trigger').click();
+    await host.evaluate(()=>{
+     window.previousQrLoad=document.querySelector('#remote-popover-qr-image').onload;
+     Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:()=>new Promise(resolve=>{window.finishCopy=resolve;})}});
+    });
+    await host.locator('#remote-popover-copy-link').click();
+    await host.waitForFunction(()=>Boolean(window.finishCopy));
+    mode='http';await host.evaluate(()=>fetchState().catch(()=>{}));
+    await host.evaluate(()=>{window.previousQrLoad?.();window.finishCopy();});
+    await host.waitForFunction(()=>!document.querySelector('#remote-popover-copy-link').hasAttribute('aria-busy'));
+    await unavailable();
+    mode='ok';await host.evaluate(()=>fetchState());
+    for(const failure of ['http','network','invalid','no-lan']) {
+     mode=failure;await host.evaluate(()=>fetchState().catch(()=>{}));
+     await unavailable();
+     const text=await host.locator('#remote-popover-url-hint').textContent();
+     assert.match(text,({http:/HTTP 503/,network:/无法连接/,invalid:/无效/, 'no-lan':/局域网/})[failure]);
+     if(failure==='http')await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'local-entry-http-error.png')});
+     mode='ok'; // Recovery must come from the real timer, without a click/fetch call.
+     await host.waitForFunction(()=>document.querySelector('#remote-popover-qr-image').naturalWidth>0&&!document.querySelector('#remote-popover-qr-image').classList.contains('hidden'));
+     assert.equal(await host.locator('#remote-popover-copy-link').isEnabled(),true);
+    }
+    await host.evaluate(()=>{
+     const request=++state.remoteAccessRequestSequence;
+     updateRemoteAccessFailure({kind:'timeout'},request);
+     updateRemoteAccessFailure({kind:'http',status:403},request-1);
+    });
+    await unavailable();assert.match(await host.locator('#remote-popover-url-hint').textContent(),/超时/);
+    await host.evaluate(()=>fetchState());
+    mode='switched';
+    await host.waitForFunction(()=>document.querySelector('#remote-popover-url-link').href.includes('192.168.50.8'));
+    assert.match(await host.locator('#remote-popover-qr-image').getAttribute('src'),/^data:image\/svg\+xml;base64,/);
+    assert.equal(await host.locator('#remote-popover-copy-link').isEnabled(),true);
+    mode='no-lan';
+    await host.waitForFunction(()=>!document.querySelector('#remote-popover-url-link').hasAttribute('href'));
+    await unavailable();
+    mode='ok';
+    await host.waitForFunction(()=>document.querySelector('#remote-popover-copy-link').disabled===false);
+   } finally {await hostContext.unroute(pattern,handler);await host.locator('#remote-mini-popover-close').click();}
+  });
+  await check('publicRoomFailureDetails',async()=>{
+   const pattern='https://rtc.kevinx96.icu/v1/rooms';let requests=0;
+   const handler=route=>{requests++;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"offline_fixture"}'});};
+   await hostContext.route(pattern,handler);
+   try {
+    await host.locator('#remote-mini-trigger').click();
+    if(!await host.locator('#internet-remote-restart').isVisible())await host.locator('#internet-remote-disclosure').click();
+    await host.locator('#internet-remote-restart').click();
+    await host.waitForFunction(()=>document.querySelector('#internet-remote-status').textContent.includes('HTTP 503'));
+    assert.equal(requests,1);
+    assert.equal(await host.locator('#internet-remote-copy-link').isDisabled(),true);
+    assert.equal(await host.locator('#internet-remote-url').getAttribute('href'),null);
+    assert.equal(await host.locator('#internet-remote-qr').getAttribute('src'),null);
+    const status=await host.locator('#internet-remote-status').evaluate(e=>({height:e.getBoundingClientRect().height,clip:getComputedStyle(e).clip}));
+    assert.ok(status.height>10);assert.equal(status.clip,'auto');
+    await host.locator('#remote-mini-popover').screenshot({path:path.join(notes,'public-room-http-error.png')});
+   } finally {await hostContext.unroute(pattern,handler);await host.locator('#remote-mini-popover-close').click();}
   });
   const settled=async page=>page.evaluate(async()=>{
    // Sheet openers schedule their entry classes on the next animation frame.
@@ -211,6 +328,30 @@ const notes=path.resolve(output);
    await Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));
    // WebKit may resolve finished before applying the final layout frame.
    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  });
+  await check('windowsCaptionGeometry',async()=>{
+   const c=await context({width:1280,height:900},{hasTouch:true,deviceScaleFactor:2,storageState:await hostContext.storageState()});
+   try {
+    const page=await c.newPage();await page.goto(base);await page.waitForFunction(()=>typeof state!=='undefined'&&state.data?.capabilities);
+    await page.evaluate(()=>{
+     document.body.dataset.tauriPlatform='windows';
+     document.querySelector('#window-controls').hidden=false;
+    });
+    await page.locator('#window-close').hover();await settled(page);
+    assert.equal(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches),true);
+    const geometry=await page.locator('#window-controls').evaluate(e=>({row:e.getBoundingClientRect().toJSON(),buttons:[...e.querySelectorAll('button')].map(b=>b.getBoundingClientRect().toJSON())}));
+    assert.equal(geometry.row.height,32);
+    for(const button of geometry.buttons){assert.equal(button.width,46);assert.equal(button.height,32);assert.equal(button.bottom,geometry.row.bottom);}
+    measurements.windowsCaptionGeometry=geometry;
+    await page.screenshot({path:path.join(notes,'windows-caption-fixed.png'),clip:{x:830,y:0,width:450,height:100}});
+    // Reproduce the inherited touch minimum for a visual comparison only.
+    const old=await page.addStyleTag({content:'body[data-tauri-platform="windows"] .window-control-button { min-height:44px;max-height:none; }'});
+    await page.screenshot({path:path.join(notes,'windows-caption-before.png'),clip:{x:830,y:0,width:450,height:100}});
+    await old.evaluate(e=>e.remove());
+    // Return to mouse metrics; button geometry must not depend on touch support.
+    await page.locator('#cache-settings-toggle').click();await settled(page);
+    assert.equal(await page.locator('#cache-settings-toggle').getAttribute('aria-expanded'),'true');
+   } finally {await c.close();}
   });
   await check('nativePreferencesAndEntryPoints',async()=>{
    const policy=await host.evaluate(()=>state.data.cache_policy);
@@ -317,15 +458,27 @@ const notes=path.resolve(output);
    const pager=remote.locator(selector).locator('..').locator('+ .result-pager');
    await pager.locator('input').fill(String(page));await pager.locator('input').press('Enter');
    await remote.waitForFunction(({selector,page})=>document.querySelector(selector).parentElement.nextElementSibling.dataset.page===String(page),{selector,page},{timeout:5000});
+   // A page-number change can precede its entry animation. Finish that motion
+   // before a subsequent drag checks finger tracking, especially under CI load.
+   await remote.locator(selector).evaluate(e=>Promise.all(e.getAnimations().map(a=>a.finished.catch(()=>{}))));
   }
   await check('sharedAndLocalSearch',async()=>{
    await remote.locator('#remote-request-search-tab').click();
    await remote.locator('#lark-search-query').fill('Offline');await remote.locator('#lark-search-button').click();
    await remote.waitForFunction(()=>canonicalBilikaraSearch.items.length===80 && !canonicalBilikaraSearch.loading);
    assert.match(await remote.locator('#lark-search-results').locator('..').locator('+ .result-pager').textContent(),/221/);
+   const backwardBatch=remote.waitForResponse(r=>r.url().includes('/api/catalog/search?') && new URL(r.url()).searchParams.get('offset')==='156');
    await jump('#lark-search-results',37);
+   await (await backwardBatch).finished();await settled(remote);
    assert.equal(await remote.locator('#lark-search-results .search-result-item').count(),5);
    assert.match(await remote.locator('#lark-search-results').textContent(),/Offline song 216/);
+   const reverseReads=calls.length;
+   for(const page of [36,35,34,33]) {
+    await jump('#lark-search-results',page);
+    assert.match(await remote.locator('#lark-search-results').textContent(),new RegExp(`Offline song ${(page-1)*6}`));
+   }
+   assert.equal(calls.length,reverseReads,'Reverse navigation consumes prefetched pages without additional provider reads');
+   await jump('#lark-search-results',37);
    const readCount=calls.length;await jump('#lark-search-results',1);await jump('#lark-search-results',37);assert.equal(calls.length,readCount);
    await remote.locator('[data-remote-search-mode="local"]').click();await assertPadding();
    await remote.locator('#search-query').fill('Offline');await remote.locator('#search-button').click();
@@ -408,6 +561,25 @@ const notes=path.resolve(output);
    }
    await settled(remote);await remote.screenshot({path:path.join(notes,'name-mobile.png')});
   });
+  await check('selectedGroupSongWindows',async()=>{
+   for(const kind of ['name','artist']) {
+    await primary();await remote.locator('#remote-request-discover-tab').click();
+    await remote.locator(`[data-remote-discover-mode="${kind}"]`).click();
+    const panel=remote.locator(`#remote-discover-${kind}-panel`);
+    const back=panel.locator('[data-d1-browse-back]');
+    if(await back.isVisible())await back.click();
+    await panel.locator('[data-letter="A"]').click();
+    await panel.locator('[data-tag="Artist 0"]').click();
+    const selector=`#remote-discover-${kind}-panel [data-d1-browse-results]`;
+    const results=remote.locator(selector),pager=results.locator('..').locator('+ .result-pager');
+    await results.locator('.search-result-item').first().waitFor();
+    assert.match(await pager.locator('.result-pager-items-total').textContent(),/221/);
+    await jump(selector,37);
+    assert.equal(await results.locator('.search-result-item').count(),5);
+    assert.match(await results.textContent(),/Offline song 216/);
+    await panel.locator('[data-d1-browse-back]').click();
+   }
+  });
   await check('rootAndEmptyViews',async()=>{
    await primary();await remote.locator('#remote-request-discover-tab').click();
    await remote.locator('[data-remote-discover-mode="categories"]').click();
@@ -464,7 +636,30 @@ const notes=path.resolve(output);
     await settled(remote);
     assert.ok(Math.abs(await remote.evaluate(()=>scrollY)-y)<2,`${action} keeps scroll position`);
    }
-   assert.match(await pager.locator('.result-pager-items-total').innerText(),/共 221 条/);
+   assert.equal(await pager.locator('.result-pager-items-total > [aria-hidden]').innerText(),'221 条');
+   await jump('#lark-search-results',37);
+   assert.equal(await pager.locator('.result-pager-count').innerText(),'217–221');
+   for(const width of [360,392,768]) {
+    await remote.setViewportSize({width,height:817});await settled(remote);
+    await pager.evaluate(e=>e.scrollIntoView({block:'center'}));
+    await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#lark-search-results').parentElement.nextElementSibling.querySelector('.result-pager-editor')).opacity==='1');
+    const geometry=await pager.evaluate(e=>{
+     const r=e.getBoundingClientRect(),c=e.querySelector('.result-pager-controls').getBoundingClientRect();
+     const t=e.querySelector('.result-pager-items-total').getBoundingClientRect();
+     const range=e.querySelector('.result-pager-count').getBoundingClientRect();
+     const arrows=[...e.querySelectorAll('[data-page-action] svg')].map(svg=>svg.getBoundingClientRect());
+     return {center:Math.abs((c.left+c.right-r.left-r.right)/2),gap:t.left-c.right,
+      inside:t.right<=r.right+1,rangeGap:c.left-range.right,rangeInside:range.left>=r.left-1,
+      arrowsCentered:arrows.length===4 && arrows.every(a=>Math.abs((a.top+a.bottom-c.top-c.bottom)/2)<1)};
+    });
+    assert.ok(geometry.center<1,`${width}: page controls centered`);
+    assert.ok(geometry.gap>=3 && geometry.inside,`${width}: total fits without overlap`);
+    assert.ok(geometry.rangeGap>=3 && geometry.rangeInside,`${width}: current range fits`);
+    assert.ok(geometry.arrowsCentered,`${width}: arrow icons vertically centered`);
+    await pager.screenshot({path:path.join(notes,`pager-${width}.png`)});
+   }
+   await jump('#lark-search-results',1);
+   await remote.setViewportSize({width:392,height:817});await settled(remote);
    await pager.screenshot({path:path.join(notes,'pager-buttons.png')});
   });
   await check('searchClearGeometryAndDock',async()=>{
@@ -561,8 +756,17 @@ const notes=path.resolve(output);
    await controller.waitForFunction(()=>['controller-remote-qr-image','controller-internet-remote-qr-image'].every(id=>{
     const image=document.getElementById(id);return image.naturalWidth>0&&!image.classList.contains('hidden');
    }));
-   assert.equal(await controller.locator('#controller-remote-url-link').textContent(),new URL(await controller.locator('#controller-remote-url-link').getAttribute('href')).origin);
+   assert.equal(await controller.locator('#controller-remote-url-link').textContent(),new URL(await controller.locator('#controller-remote-url-link').getAttribute('href')).origin+'/remote');
    assert.match(await controller.locator('.presentation-output-remote-popover').evaluate(e=>getComputedStyle(e).transitionDuration),/^0\.2s/);
+   await host.evaluate(()=>{
+    const channel=new BroadcastChannel(BilikaraPresentationSync.channelName);
+    channel.postMessage(BilikaraPresentationSync.makeEnvelope('master-state',{
+     language:'zh',scene:{generation:1},remoteAccess:{preferred_url:'',local_url:'',qr_image:'',unavailable_message:'HTTP 503 fixture'},internetRemote:{active:false}
+    },{senderId:'offline-qr-fixture',sequence:2}));channel.close();
+   });
+   await controller.waitForFunction(()=>document.querySelector('#controller-remote-url-hint').textContent.includes('503'));
+   assert.equal(await controller.locator('#controller-remote-url-link').getAttribute('href'),null);
+   assert.equal(await controller.locator('#controller-remote-qr-image').getAttribute('src'),null);
    measurements.presentationQrUnderNativeCsp={transport:'fixture shell IPC and real native HTTP/CSP',publicRoomCreated:false};
    await controller.close();
   });
@@ -635,6 +839,7 @@ const notes=path.resolve(output);
    measurements.warningThemeColors=colors;
   });
   await check('sourceRefreshPresentationAndReload',async()=>{
+   const disabledStyles={};
    await host.locator('#work-rail-request').click();await host.locator('[data-request-view="sources"]').click();
    await host.locator('[data-sources-mode="uids"]').click();
    await primary();await remote.locator('#remote-request-sources-tab').click();await remote.locator('[data-remote-sources-mode="uids"]').click();
@@ -643,26 +848,59 @@ const notes=path.resolve(output);
    cache.uids['123'].push({...items[0],bvid:'BV9999999999',url:'https://www.bilibili.com/video/BV9999999999',title:'New fixture entry'});
    await fs.writeFile(path.join(directory,'gatcha_cache.json'),JSON.stringify(cache));
    for(const [name,page] of [['host',host],['remote',remote]]) {
+    let task={busy:true,background_busy:true,last_status:'running',last_message:'本地曲库更新中',last_result:{rebuild:{phase:'uid',current_uid:'123',sources:{generation:1,uids:0,favorites:0}}}};
+    const stateHandler=async route=>{
+     const response=await route.fetch();const body=await response.json();body.data.gatcha=task;
+     return route.fulfill({response,json:body});
+    };
+    await page.route('**/api/state',stateHandler);
+    try {
     await page.evaluate(()=>document.documentElement.dataset.theme='light');
     const panel=page.locator(name==='host'?'#request-sources-uids':'#remote-sources-uids-panel');
     await page.evaluate(name=>{
-     state.data.gatcha={busy:true,background_busy:true,last_status:'running',last_message:'本地曲库更新中'};
+     state.data.gatcha={busy:true,background_busy:true,last_status:'running',last_message:'本地曲库更新中',last_result:{rebuild:{phase:'uid',current_uid:'123',sources:{generation:1,uids:0,favorites:0}}}};
      if(name==='host')renderGatchaUidFace();else renderSourceManagementControls();
     },name);
-    assert.match(await panel.locator('.source-task-status').textContent(),/正在拉取/);
+    assert.equal(await panel.locator('.source-task-status').count(),0);
+    assert.equal(await panel.locator('[data-uid="123"] .source-card-spinner').isVisible(),true);
     assert.equal(await panel.locator('#refresh-gatcha-cache-button').getAttribute('aria-busy'),'true');
+    disabledStyles[name]={};
+    for(const theme of ['light','dark','blue']) {
+     await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+     await settled(page);
+     disabledStyles[name][theme]=await panel.locator('#refresh-gatcha-cache-button').evaluate(button=>{
+      const s=getComputedStyle(button);return {background:s.backgroundColor,color:s.color,opacity:s.opacity};
+     });
+    }
+    await page.evaluate(()=>document.documentElement.dataset.theme='light');
     await settled(page);
     await panel.screenshot({path:path.join(notes,name+'-source-fetching.png')});
     let reads=0;const observe=r=>{if(new URL(r.url()).pathname==='/api/gatcha/browse')reads++;};page.on('request',observe);
-    await page.evaluate(name=>{
-     state.data.gatcha={busy:false,background_busy:false,last_status:'success',last_message:'更新完成',last_updated_at:Date.now()/1000};
+    task={busy:true,last_status:'running',last_updated_at:1,last_result:{rebuild:{phase:'uid',sources:{generation:1,uids:1,favorites:0}}}};
+    await page.evaluate(({name,task})=>{
+     state.data.gatcha=task;
      if(name==='host')renderGatchaUidFace();else renderSourceManagementControls();
-    },name);
+    },{name,task});
+    await page.waitForFunction(()=>!state.followBrowseLoading && state.followBrowseData?.owners?.[0]?.count===222);
+    assert.equal(reads,1,'The first source is visible before the batch finishes');
+    assert.equal(await page.evaluate(()=>state.data.gatcha.busy),true);
+    assert.equal(await panel.locator('.source-card-spinner').count(),0,'Completed source stops spinning');
+    reads=0;
+    task={busy:false,background_busy:false,last_status:'success',last_message:'更新完成',last_updated_at:1};
+    await page.evaluate(({name,task})=>{
+     state.data.gatcha=task;
+     if(name==='host')renderGatchaUidFace();else renderSourceManagementControls();
+    },{name,task});
     await page.waitForFunction(()=>!state.followBrowseLoading && state.followBrowseData?.owners?.[0]?.count===222);
     await page.evaluate(name=>{for(let n=0;n<3;n++){if(name==='host')renderGatchaUidFace();else renderSourceManagementControls();}},name);
     assert.equal(reads,1,'One completed task reloads the open source browser once');
     page.off('request',observe);
     assert.equal(await panel.locator('.source-task-status').isVisible(),false);
+    } finally {
+     // This scenario owns the page routes. Drain any polled state fetch before
+     // restoring the context's network guard or moving to the next scenario.
+     await page.unrouteAll({behavior:'wait'});
+    }
    }
    measurements.sourceRefreshPresentationAndReload={taskState:'local UI fixture',browse:'real native HTTP and modified task-owned records',autoRefreshReadsPerClient:1};
    for(const [name,page] of [['host',host],['remote',remote]]) {
@@ -690,7 +928,7 @@ const notes=path.resolve(output);
      cache.uids['123'].push({...items[0],bvid:`BV${String(count).padStart(10,'0')}`,title:`New fixture entry ${count}`});
      await fs.writeFile(path.join(directory,'gatcha_cache.json'),JSON.stringify(cache));
      await page.evaluate(name=>{
-      state.data.gatcha={busy:false,last_status:'success',last_updated_at:Date.now()/1000+1};
+      state.data.gatcha={busy:false,last_status:'success',last_updated_at:2};
       if(name==='host')renderGatchaUidFace();else renderSourceManagementControls();
      },name);
      assert.equal(requests,1,'Completion waits for the existing browse read');
@@ -699,11 +937,56 @@ const notes=path.resolve(output);
      assert.equal(requests,2,'Exactly one follow-up read replaces the stale in-flight result');
     } finally {release();await page.unroute('**/api/gatcha/browse*',holdFirst);}
    }
+   assert.deepEqual(disabledStyles.host,disabledStyles.remote,'Source buttons share disabled colors and opacity in every theme');
+   measurements.sourceRefreshPresentationAndReload.disabledStyles=disabledStyles;
    measurements.sourceRefreshPresentationAndReload.completionDuringBrowse='one deferred refresh per client';
    await host.locator('#follow-up-grid [data-uid="123"]').click();
    await host.locator('#follow-search-form.browse-search-form').waitFor();
    assert.equal(await host.locator('#follow-search-form button[type="submit"]').getAttribute('aria-expanded'),'false');
    await host.locator('#request-sources-uids').screenshot({path:path.join(notes,'host-uploader-search.png')});
+  });
+  await check('sourceManualRefreshCompletion',async()=>{
+   await host.locator('#work-rail-request').click();await host.locator('[data-request-view="sources"]').click();
+   await host.locator('[data-sources-mode="uids"]').click();
+   await primary();await remote.locator('#remote-request-sources-tab').click();await remote.locator('[data-remote-sources-mode="uids"]').click();
+   for(const [name,page] of [['host',host],['remote',remote]]) {
+    if(name==='remote' && await page.locator('#sources-follow-back').isVisible())await page.locator('#sources-follow-back').click();
+    await page.waitForFunction(()=>state.followBrowseData?.owners?.length && !state.followBrowseLoading);
+    let task={busy:false,background_busy:false,last_status:'idle'};
+    const revision=await page.evaluate(()=>state.data.state_revision+100);
+    const stateHandler=async route=>{
+     const response=await route.fetch();const body=await response.json();
+     body.data.gatcha=task;body.data.state_revision=revision;
+     return route.fulfill({response,json:body});
+    };
+    let release,reached;const gate=new Promise(resolve=>release=resolve),posted=new Promise(resolve=>reached=resolve);
+    const refreshHandler=async route=>{reached();await gate;await route.fulfill({json:{ok:true,data:{started:true}}});};
+    await page.route('**/api/state',stateHandler);await page.route('**/api/gatcha/refresh',refreshHandler);
+    try {
+     await page.evaluate(()=>fetchState());
+     await page.waitForFunction(()=>!document.querySelector('#refresh-gatcha-cache-button').disabled);
+     await page.locator('#refresh-gatcha-cache-button').click();await posted;
+     assert.equal(await page.locator('#refresh-gatcha-cache-button').isDisabled(),true);
+     assert.equal(await page.locator('#refresh-gatcha-cache-button').getAttribute('aria-busy'),'true');
+     const cache=JSON.parse(await fs.readFile(path.join(directory,'gatcha_cache.json'),'utf8'));
+     const count=cache.uids['123'].length+1;
+     cache.uids['123'].push({...items[0],bvid:`BV${String(count).padStart(10,'0')}`,title:'Fast completed refresh'});
+     await fs.writeFile(path.join(directory,'gatcha_cache.json'),JSON.stringify(cache));
+     task={busy:false,background_busy:false,last_status:'success',last_message:'更新完成',last_updated_at:1};
+     // A completion arrives through polling/SSE before the POST response.
+     await page.evaluate(({name,task,revision})=>{
+      const next={...state.data,state_revision:revision+1,gatcha:task};
+      if(name==='host'){acceptHostStateSnapshot(next);render();}else applyStateSnapshot(next);
+     },{name,task,revision});
+     release();
+     await page.waitForFunction(count=>!state.gatchaRefreshSaving && !state.followBrowseLoading && state.followBrowseData?.owners?.[0]?.count===count,count);
+     assert.equal(await page.locator('#refresh-gatcha-cache-button').isEnabled(),true);
+     assert.equal(await page.evaluate(()=>state.data.gatcha.last_status),'success');
+    } finally {
+     release();await page.unrouteAll({behavior:'wait'});
+     await page.reload();await page.waitForFunction(()=>state.data?.capabilities);
+    }
+   }
   });
   await check('hostInlineSearchContexts',async()=>{
    async function draft(form,render) {
@@ -766,7 +1049,7 @@ const notes=path.resolve(output);
     await card.screenshot({path:path.join(notes,`host-binding-${theme}.png`)});
     await host.locator('#binding-modal-close').click();await card.waitFor({state:'hidden'});
     await host.locator('#work-rail-queue').click();
-    await host.evaluate(item=>openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true}),items[0]);
+    await host.evaluate(item=>{if(elements.requesterSelect)elements.requesterSelect.value='UI fixture';state.data.session_played.push({...item,item_id:'ui-rating-fixture',threshold_reached:true});openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true});},items[0]);
     const rating=host.locator('.rating-card');await rating.waitFor();await settled(host);
     const style=await rating.evaluate(e=>{const s=getComputedStyle(e);return [s.backgroundColor,s.border,s.borderRadius,s.boxShadow];});
     try {assert.deepEqual(style,styles.volume);await closeControl(host,rating,rating.locator('.rating-close'));await rating.screenshot({path:path.join(notes,`host-rating-${theme}.png`)});await host.screenshot({path:path.join(notes,`host-rating-${theme}-scope.png`)});}
@@ -811,7 +1094,7 @@ const notes=path.resolve(output);
     await closeControl(remote,detail,detail.locator('.song-detail-close'),true);
     await detail.screenshot({path:path.join(notes,`remote-detail-${theme}.png`)});
     await detail.locator('.song-detail-close').click();await detail.waitFor({state:'hidden'});
-    await remote.evaluate(item=>openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true}),items[0]);
+    await remote.evaluate(item=>{if(elements.requesterSelect)elements.requesterSelect.value='UI fixture';state.data.session_played.push({...item,item_id:'ui-rating-fixture',threshold_reached:true});openRatingPrompt({...item,id:'ui-rating-fixture'},{manual:true});},items[0]);
     const rating=remote.locator('.rating-card');await rating.waitFor();
     try {
      await closeControl(remote,rating,rating.locator('.rating-close'),true);
@@ -938,6 +1221,30 @@ const notes=path.resolve(output);
     for(let step=1;step<=8;step++)await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x+step*20,y}]});
     await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
     await remote.waitForFunction(()=>document.querySelector('#blank-swipe-fixture').children.length===6);
+    await settled(remote);
+    const start=await viewport.boundingBox(),sx=start.x+start.width-35,sy=start.y+240;
+    const scrollBefore=await remote.evaluate(()=>scrollY);
+    await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:sx,y:sy}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:sx-12,y:sy-8}]});
+    for(let step=1;step<=8;step++)await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:sx-12-step*15,y:sy-8-step*18}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await remote.waitForFunction(()=>document.querySelector('#blank-swipe-fixture').children.length===1);
+    assert.equal(await remote.evaluate(()=>scrollY),scrollBefore,'A horizontal start stays locked through later vertical drift');
+    await settled(remote);
+    const vertical=await viewport.boundingBox(),vx=vertical.x+vertical.width/2,vy=vertical.y+250;
+    await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:vx,y:vy}]});
+    for(let step=1;step<=8;step++)await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:vx+step,y:vy-step*16}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await settled(remote);
+    assert.ok(await remote.evaluate(()=>scrollY)>scrollBefore,'An intentional vertical gesture retains native page scrolling');
+    assert.equal(await pager.getAttribute('data-page'),'2','Vertical scrolling cannot turn a page');
+    // Let that deliberate native fling finish before removing its content or
+    // starting an unrelated modal's scroll-position assertion.
+    await remote.evaluate(()=>new Promise(resolve=>{
+     let previous=scrollY,stable=0;
+     const frame=()=>{stable=scrollY===previous?stable+1:0;previous=scrollY;if(stable>=12)resolve();else requestAnimationFrame(frame)};
+     requestAnimationFrame(frame);
+    }));
     await session.detach();
    }
    await remote.evaluate(()=>{const grid=document.querySelector('#blank-swipe-fixture');grid.parentElement.nextElementSibling.remove();grid.parentElement.remove()});
@@ -945,21 +1252,40 @@ const notes=path.resolve(output);
   await check('playbackSheetStableScrollAndVolumeAnchor',async()=>{
    await remote.evaluate(item=>{
     disconnectClient();document.documentElement.dataset.theme='light';
-    state.data.current_item={...item,id:'cache-ui',item_incarnation_id:'i-fixture',display_title:'多音轨缓存展示',requester_name:'UI fixture',cache_status:'downloading',cache_progress:58.8,cache_message:'总计：120 B / 200 B\n视频P1：80 B / 100 B\n音轨P2：40 B / 100 B',cache_activity_at:100};
+    state.data.current_item={...item,id:'cache-ui',item_incarnation_id:'i-fixture',display_title:'多音轨缓存展示',requester_name:'UI fixture',cache_status:'downloading',cache_progress:58.8,cache_message:'总计：120 B / 200 B\n视频P1：80 B / 100 B\n音轨P2：40 B / 100 B',cache_activity_at:100,cache_download_current_bytes:125829120,cache_download_total_bytes:209715200,cache_download_tracks:[{key:'video-p1',label:'视频P1',current_bytes:83886080,target_bytes:104857600,done:false,phase:'downloading',attempt:1,max_attempts:10},{key:'audio-p2',label:'音轨P2',current_bytes:41943040,target_bytes:104857600,done:false,phase:'downloading',attempt:1,max_attempts:10}]};
     state.data.player_settings.volume_percent=100;render();
     window.scrollTo(0,150);
    },items[0]);
    const before=await remote.evaluate(()=>scrollY);
    await remote.locator('#playback-dock').click();await settled(remote);
-   assert.equal(await remote.evaluate(()=>scrollY),before,'Opening keeps root scroll position');
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Opening keeps the actual document scroll position');
+   assert.equal(await remote.evaluate(()=>document.activeElement.id==='playback-sheet-collapse'),false,'Pointer opening does not move keyboard focus');
    assert.notEqual(await remote.locator('body').evaluate(e=>getComputedStyle(e).position),'fixed');
+   assert.equal(await remote.locator('html').evaluate(e=>e.classList.contains('remote-modal-scroll-locked')),true);
+   const sheet=await remote.locator('#playback-sheet-panel').evaluate(e=>({bottom:e.getBoundingClientRect().bottom,viewport:innerHeight,radius:getComputedStyle(e).borderBottomLeftRadius}));
+   assert.equal(sheet.radius,'0px');assert.ok(Math.abs(sheet.bottom-sheet.viewport)<1,'Sheet meets viewport bottom');
+   await assertBackdropPolicy(remote);
    await remote.mouse.move(12,150);await remote.mouse.wheel(0,200);await settled(remote);
-   assert.equal(await remote.evaluate(()=>scrollY),before,'Backdrop cannot scroll the page');
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Backdrop cannot change the actual document scroll position');
+   await remote.keyboard.press('PageDown');await settled(remote);
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Keyboard cannot scroll the background');
+   await remote.setViewportSize({width:392,height:560});await settled(remote);
+   const body=remote.locator('#playback-sheet-body');
+   await body.evaluate(e=>e.scrollTop=0);
+   const bodyBox=await body.boundingBox();
+   await remote.mouse.move(bodyBox.x+bodyBox.width/2,bodyBox.y+100);await remote.mouse.wheel(0,150);await settled(remote);
+   await remote.waitForFunction(()=>document.querySelector('#playback-sheet-body').scrollTop>0);
+   assert.ok(await body.evaluate(e=>e.scrollTop)>0,'The sheet remains scrollable');
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Internal scrolling cannot chain to the page');
+   await body.evaluate(e=>e.scrollTop=0);
+   await remote.setViewportSize({width:392,height:817});await settled(remote);
    const cache=remote.locator('#current-cache-state');
+   assert.match(await cache.innerText(),/120(?:\.0)? MB \/ 200(?:\.0)? MB/,'Remote displays aggregate downloaded and total sizes');
    const normal=await cache.boundingBox();
    await remote.evaluate(()=>{state.retryActivityById['cache-ui'].observedAt=Date.now()/1000-10;syncCurrentCacheState(state.data.current_item)});
    assert.equal(await remote.locator('#current-cache-retry').isVisible(),true);
-   assert.equal((await cache.boundingBox()).height,normal.height,'Retry does not add a line');
+   assert.ok(normal.height<=30,'The ordinary progress text has no artificial 44px row');
+   assert.ok((await cache.boundingBox()).height<=44,'Retry retains one compact touch-target row');
    await remote.evaluate(()=>{state.data.current_item.cache_activity_at=101;syncCurrentCacheState(state.data.current_item)});
    assert.equal(await remote.locator('#current-cache-retry').isVisible(),false,'Activity without a rounded percent change hides retry');
    const value=remote.locator('#remote-volume-value');await value.click();await settled(remote);
@@ -967,11 +1293,337 @@ const notes=path.resolve(output);
    const slider=await remote.locator('#remote-volume-slider').boundingBox(),popup=await panel.boundingBox();
    assert.ok(popup.y+popup.height<=slider.y+1 && slider.y-popup.y-popup.height<14,'Volume panel is directly above the slider');
    assert.ok(Math.abs(popup.x+popup.width-slider.x-slider.width)<35,'Volume panel aligns with the right thumb');
+   const sheetScroll=await remote.locator('#playback-sheet-body').evaluate(e=>e.scrollTop);
+   await remote.route('**/api/player/volume',async route=>{
+    const percent=route.request().postDataJSON().volume_percent;
+    const data=await remote.evaluate(percent=>({...state.data,player_settings:{...state.data.player_settings,volume_percent:percent},state_revision:(state.data.state_revision||0)+100}),percent);
+    await route.fulfill({json:{ok:true,data}});
+   });
+   for(const [selector,expected] of [['[data-volume-step="10"]','110'],['[data-volume-reset]','100']]) {
+    await panel.locator(selector).click();await remote.waitForFunction(()=>!document.querySelector('.volume-adjust-popover [aria-busy]'));
+    assert.equal(await panel.locator('input').inputValue(),expected,'Volume action committed');
+    assert.equal(await remote.locator('#playback-sheet-body').evaluate(e=>e.scrollTop),sheetScroll,'Volume writes keep the sheet position');
+    assert.equal(await remote.evaluate(()=>scrollY),before);
+   }
+   await remote.unrouteAll({behavior:'wait'});
+   await remote.mouse.move(8,140);await remote.mouse.wheel(0,200);await settled(remote);
+   assert.equal(await remote.locator('#playback-sheet-body').evaluate(e=>e.scrollTop),sheetScroll,'Nested volume editor locks the sheet beneath it');
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Nested volume editor locks the page');
    await remote.screenshot({path:path.join(notes,'remote-volume-anchored.png')});
    await panel.locator('[data-volume-close]').click();await remote.waitForFunction(()=>!document.querySelector('.volume-adjust-popover').open);
+   await assertBackdropPolicy(remote);
    await remote.screenshot({path:path.join(notes,'remote-cache-sheet.png')});
    await remote.locator('#playback-sheet-collapse').click();await settled(remote);
    assert.equal(await remote.evaluate(()=>scrollY),before,'Closing keeps root scroll position');
+   await remote.setViewportSize({width:844,height:390});await settled(remote);
+   const landscapeBefore=await remote.evaluate(()=>scrollY);
+   await remote.locator('#playback-dock').click();await settled(remote);
+   const landscape=await remote.locator('#playback-sheet-panel').evaluate(e=>({bottom:e.getBoundingClientRect().bottom,viewport:innerHeight,style:getComputedStyle(e).borderBottomLeftRadius,blur:getComputedStyle(e).backdropFilter}));
+   assert.equal(landscape.style,'18px');assert.equal(landscape.blur,'blur(12px)');
+   assert.ok(landscape.viewport-landscape.bottom>=8,'Landscape card stays inside its bottom margin');
+   assert.equal(await remote.evaluate(()=>scrollY),landscapeBefore,'Landscape opening keeps scroll position');
+   await remote.screenshot({path:path.join(notes,'remote-sheet-landscape.png')});
+   await remote.locator('#playback-sheet-collapse').click();await settled(remote);
+   assert.equal(await remote.evaluate(()=>scrollY),landscapeBefore,'Landscape closing keeps scroll position');
+   await remote.setViewportSize({width:392,height:817});await settled(remote);
+  });
+  await check('playbackSafeAreaAndCacheStability',async()=>{
+   await remote.setViewportSize({width:390,height:844});
+   await remote.evaluate(item=>{
+    disconnectClient();const root=document.documentElement;
+    root.style.setProperty('--remote-safe-area-top','47px');root.style.setProperty('--remote-safe-area-bottom','34px');
+    state.data.current_item={...item,id:'safe-cache',display_title:'稳定标题',requester_name:'UI fixture',cache_status:'downloading',cache_progress:50,cache_activity_at:100};render();
+   },items[0]);
+   try {
+    await remote.locator('#playback-dock').click();await settled(remote);
+    const geometry=()=>remote.evaluate(()=>{
+     const panel=document.querySelector('#playback-sheet-panel'),body=document.querySelector('#playback-sheet-body');
+     const rect=panel.getBoundingClientRect(),style=getComputedStyle(panel);
+     return {top:rect.top,left:rect.left,right:rect.right,bottom:rect.bottom,radius:style.borderBottomLeftRadius,
+      bodyBottom:body.getBoundingClientRect().bottom,width:innerWidth,height:innerHeight};
+    });
+    let bounds=await geometry();assert.equal(bounds.radius,'18px');
+    assert.ok(bounds.top>=47 && Math.abs(bounds.bottom-bounds.height)<1);
+    assert.ok(bounds.bodyBottom<=bounds.height-34,'Controls stop above the empty bottom safe area');
+    const measure=()=>remote.evaluate(()=>Object.fromEntries(['current-title','current-owner','current-cache-state','player-control-panel'].map(id=>{
+     const rect=document.getElementById(id).getBoundingClientRect();return [id,{top:rect.top,height:rect.height}];
+    })));
+    const downloading=await measure();
+    assert.ok(Math.abs(downloading['current-cache-state'].height-downloading['current-owner'].height)<1,'Cache and UP use the same one-line height');
+    await remote.screenshot({path:path.join(notes,'remote-safe-portrait-downloading.png')});
+    await remote.evaluate(()=>{state.data.current_item.cache_status='ready';render();schedulePlaybackSheetAdaptiveLayout({force:true})});await settled(remote);
+    const ready=await measure();
+    for(const id of Object.keys(downloading)) {
+     assert.ok(Math.abs(downloading[id].top-ready[id].top)<1,`${id}: completion keeps position`);
+     assert.ok(Math.abs(downloading[id].height-ready[id].height)<1,`${id}: completion keeps height`);
+    }
+    assert.equal(await remote.locator('#current-cache-state').getAttribute('aria-hidden'),'true');
+    await remote.screenshot({path:path.join(notes,'remote-safe-portrait-ready.png')});
+    await remote.setViewportSize({width:844,height:390});
+    await remote.evaluate(()=>{
+     for(const [side,value] of Object.entries({top:0,right:47,bottom:21,left:47}))document.documentElement.style.setProperty(`--remote-safe-area-${side}`,`${value}px`);
+     schedulePlaybackSheetAdaptiveLayout({force:true});
+    });await settled(remote);
+    bounds=await geometry();assert.equal(bounds.radius,'18px');
+    assert.ok(bounds.left>=47 && bounds.right<=bounds.width-47 && bounds.top>=8 && bounds.bottom<=bounds.height-21,'Landscape card respects all four safe edges');
+    await remote.screenshot({path:path.join(notes,'remote-safe-landscape.png')});
+   } finally {
+    await remote.evaluate(()=>{closePlaybackSheet({immediate:true,restoreFocus:false});for(const side of ['top','right','bottom','left'])document.documentElement.style.removeProperty(`--remote-safe-area-${side}`)});
+    await remote.setViewportSize({width:392,height:817});await settled(remote);
+   }
+  });
+  await check('desktopCompactLoginBaseline',async()=>{
+   const original=host.viewportSize();let starts=0;
+   const handler=async route=>{
+    starts++;
+    const data=await host.evaluate(()=>({...state.data,bbdown:{...state.data.bbdown,login:{state:'waiting',logged_in:false,message:'Offline QR fixture',qr_image:''}}}));
+    await route.fulfill({json:{ok:true,data}});
+   };
+   await host.route('**/api/bbdown/login/start',handler);
+   try {
+    await host.setViewportSize({width:640,height:850});await settled(host);
+    await host.evaluate(()=>{state.data.bbdown={...state.data.bbdown,login:{state:'idle',logged_in:false}};});
+    await host.locator('[data-android-page="my"]').click();
+    await host.waitForFunction(()=>!state.bbdownLoginRequesting && state.data.bbdown.login.state==='waiting');
+    assert.equal(starts,1,'Opening desktop account controls prepares QR even at compact width');
+    assert.equal(await host.locator('#bbdown-login-panel').isVisible(),true);
+    await host.screenshot({path:path.join(notes,'desktop-compact-account.png')});
+   } finally {await host.unroute('**/api/bbdown/login/start',handler);await host.setViewportSize(original);}
+  });
+  await check('hostPreviewParity',async()=>{
+   await host.setViewportSize({width:1000,height:1100});
+   await host.locator('#work-rail-request').click();
+   await host.locator('[data-request-view="quick"]').click();
+   await settled(host);
+   const requestGap=await host.locator('.request-workspace-head').evaluate(e=>e.querySelector('h2').getBoundingClientRect().top-e.querySelector('.section-tag').getBoundingClientRect().bottom);
+   await host.locator('#work-rail-users').click();await settled(host);
+   const project=host.locator('#developer-mode-trigger');
+   assert.equal(await project.isVisible(),true,'Desktop retains the project/admin entry');
+   await host.evaluate(()=>{
+    state.data.session_users=['Alice','Bob'];state.sessionUsersRenderSignature='';
+    renderSessionUsers(state.data.session_users);
+   });
+   const badge=host.locator('.session-user-badge').first();
+   assert.equal(await badge.getAttribute('draggable'),'true','Portrait desktop still supports mouse dragging');
+   const metrics=await badge.evaluate(e=>{
+    const n=e.querySelector('.session-user-name');return {height:e.offsetHeight,nameHeight:n.offsetHeight,bg:getComputedStyle(n).backgroundColor};
+   });
+   assert.equal(metrics.height,36);assert.equal(metrics.bg,'rgba(0, 0, 0, 0)');
+   const userGap=await host.locator('#session-users-panel').evaluate(e=>e.querySelector('h2').getBoundingClientRect().top-e.querySelector('.section-tag').getBoundingClientRect().bottom);
+   assert.ok(Math.abs(requestGap-userGap)<1,`Request ${requestGap}, users ${userGap}`);
+   const box=await badge.boundingBox();await host.mouse.move(box.x+box.width/2,box.y+box.height/2);await host.mouse.down();
+   await host.mouse.move(box.x+box.width/2+50,box.y+box.height/2+12,{steps:8});
+   assert.equal(await badge.evaluate(e=>e.classList.contains('dragging')),true,'Dragging from the name starts the existing reorder flow');
+   await host.keyboard.press('Escape');await host.mouse.up();
+   await host.screenshot({path:path.join(notes,'host-preview-parity.png')});
+  });
+  await check('remoteTouchBackgroundLock',async()=>{
+   if(browserName!=='chromium')return;
+   await remote.route('**/api/player/volume',async route=>{
+    const percent=route.request().postDataJSON().volume_percent;
+    const data=await remote.evaluate(percent=>({...state.data,player_settings:{...state.data.player_settings,volume_percent:percent},state_revision:(state.data.state_revision||0)+100}),percent);
+    await route.fulfill({json:{ok:true,data}});
+   });
+   await remote.locator('#playback-dock').click();await settled(remote);
+   const before=await remote.evaluate(()=>scrollY);
+   const session=await remoteContext.newCDPSession(remote);
+   const swipe=async(x,y,dy)=>{
+    await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+    for(let i=1;i<=8;i++)await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x,y:y+dy*i/8}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+   };
+   try {
+    await swipe(8,120,-80);await settled(remote);
+    assert.equal(await remote.evaluate(()=>scrollY),before,'Touching the backdrop cannot scroll the page');
+    await remote.setViewportSize({width:392,height:560});await settled(remote);
+    const body=remote.locator('#playback-sheet-body');await body.evaluate(e=>e.scrollTop=0);
+    const box=await body.boundingBox();await swipe(box.x+8,box.y+220,-120);
+    await remote.waitForFunction(()=>document.querySelector('#playback-sheet-body').scrollTop>0);
+    assert.equal(await remote.evaluate(()=>scrollY),before,'Touch scrolling stays inside the sheet');
+    await remote.setViewportSize({width:392,height:817});await settled(remote);
+    const slider=remote.locator('#remote-volume-slider');const range=await slider.boundingBox();
+    const x=range.x+range.width-10,y=range.y+range.height/2;
+    await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+    for(let i=1;i<=8;i++)await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x-i*10,y}]});
+    assert.ok(Number(await slider.inputValue())<90,'The scroll lock preserves native touch range dragging');
+    await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    assert.equal(await remote.evaluate(()=>scrollY),before,'Adjusting the slider cannot move the background');
+   } finally {
+    await session.detach();await remote.unrouteAll({behavior:'wait'});
+    await remote.setViewportSize({width:392,height:817});
+    await remote.locator('#playback-sheet-collapse').click();await settled(remote);
+   }
+  });
+  await check('remoteBackdropMotion',async()=>{
+   const sample=async closing=>remote.evaluate(async({item,closing})=>{
+    if(closing)document.querySelector('.song-detail-close').click();
+    else searchDetailController.open(item);
+    const backdrop=document.querySelector('.song-detail-backdrop');
+    getComputedStyle(backdrop).backdropFilter;
+    const animation=backdrop.getAnimations().find(a=>a.animationName===`remote-backdrop-${closing?'out':'in'}`);
+    if(!animation)return null;
+    animation.pause();animation.currentTime=100;
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    const style=getComputedStyle(backdrop);
+    const result={blur:style.backdropFilter,opacity:Number(style.opacity)};
+    animation.finish();animation.cancel();return result;
+   },{item:items[0],closing});
+   for(const closing of [false,true]) {
+    const frame=await sample(closing);
+    assert.ok(frame && frame.blur==='none' && frame.opacity>0 && frame.opacity<1,`Dimming ${closing?'exit':'entry'} has an intermediate frame: ${JSON.stringify(frame)}`);
+    await settled(remote);
+   }
+   await remote.emulateMedia({reducedMotion:'reduce'});
+   await remote.evaluate(item=>searchDetailController.open(item),items[0]);await settled(remote);
+   assert.equal(await remote.locator('.song-detail-backdrop').evaluate(e=>getComputedStyle(e).animationDuration),'0.001s');
+   await remote.locator('.song-detail-close').click();await settled(remote);
+   await remote.emulateMedia({reducedMotion:'no-preference'});
+  });
+  await check('remoteModalBackgroundLock',async()=>{
+   await remote.evaluate(()=>window.scrollTo(0,130));const before=await remote.evaluate(()=>scrollY);
+   await remote.evaluate(item=>searchDetailController.open(item),items[0]);await settled(remote);
+   assert.notEqual(await remote.locator('body').evaluate(e=>getComputedStyle(e).position),'fixed');
+   assert.equal(await remote.locator('html').evaluate(e=>e.classList.contains('remote-modal-scroll-locked')),true);
+   await assertBackdropPolicy(remote);
+   await remote.mouse.move(8,140);await remote.mouse.wheel(0,300);await settled(remote);
+   assert.equal(await remote.evaluate(()=>scrollY),before);
+   await remote.evaluate(()=>{
+    const update=document.createElement('div');update.id='modal-background-update';update.style.height='80px';
+    document.querySelector('.remote-shell').prepend(update);
+   });await settled(remote);
+   assert.equal(await remote.evaluate(()=>scrollY),before,'Background content updates cannot scroll-anchor the page behind a modal');
+   await remote.evaluate(()=>document.getElementById('modal-background-update').remove());await settled(remote);
+   await remote.screenshot({path:path.join(notes,'remote-detail-dim.png')});
+   await remote.locator('.song-detail-close').click();await settled(remote);
+   assert.equal(await remote.evaluate(()=>scrollY),before);
+   assert.notEqual(await remote.locator('body').evaluate(e=>getComputedStyle(e).position),'fixed');
+  });
+  await check('remoteOtherModalScrollLocks',async()=>{
+   const flows=[
+    ['rename',()=>openRemoteIdentityRename(),'.remote-identity-card',()=>closeRemoteIdentityRename()],
+    ['export',()=>openHistoryExportDialog(),'.history-export-dialog',()=>closeHistoryExportDialog({restoreFocus:false})],
+    ['rating',item=>{state.data.session_played.push({...item,item_id:'ui-scroll-rating',threshold_reached:true});openRatingPrompt({...item,id:'ui-scroll-rating'},{manual:true});},'.rating-card',()=>closeRatingPrompt({submit:false,restoreFocus:false})],
+    ['pool',()=>openPoolConfigSheet(),'#gatcha-pool-config-sheet .binding-sheet-panel',()=>closePoolConfigSheet()],
+   ];
+   for(const [name,open,selector,close] of flows) {
+    await remote.evaluate(()=>window.scrollTo(0,130));const before=await remote.evaluate(()=>scrollY);
+    await remote.evaluate(open,items[0]);await settled(remote);
+    try {
+     const panel=remote.locator(selector);await panel.waitFor();
+     assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: opening preserves page position`);
+     assert.equal(await panel.evaluate(e=>getComputedStyle(e).backdropFilter),'blur(12px)');
+     await assertBackdropPolicy(remote);
+     await remote.mouse.move(8,140);await remote.mouse.wheel(0,300);await settled(remote);
+     assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: background wheel is locked`);
+     await remote.keyboard.press('PageDown');await settled(remote);
+     assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: background keyboard scrolling is locked`);
+    } finally {await remote.evaluate(close);await settled(remote);}
+    assert.equal(await remote.evaluate(()=>scrollY),before,`${name}: closing preserves page position`);
+   }
+  });
+  await check('ratingEligibilityAndDismissal',async()=>{
+   await require('./remote_rating_dialog.cjs')(remote,items[0],notes);
+   measurements.remoteRatingEligibility={passed:true};
+   for(const [client,page] of [['host',host]]) {
+    const requests=[];let fail=false,release=null,queued=false;
+    await page.route('**/api/rating/submit',async route=>{
+     requests.push(route.request().postDataJSON());
+     if(release)await new Promise(resolve=>{release=resolve;});
+     await route.fulfill({status:fail?503:200,contentType:'application/json',body:JSON.stringify(fail?{ok:false,error:'Fixture rating failed'}:{ok:true,data:{success:true,queued}})});
+    });
+    try {
+     if(client==='host') {await page.locator('#requester-select').selectOption({label:'UI fixture'},{force:true});await page.locator('#work-rail-queue').click();}
+     await page.evaluate(({item,client})=>{
+      fetchState=async()=>{};state.eventSource?.close();
+      state.ratingOptOut=true;state.ratingSubmittedKeys.clear();state.ratingPendingKeys.clear();state.ratingQueuedKeys.clear();
+      const current={...item,id:'rating-current',title:'Current song',display_title:'Current song',requester_name:'UI fixture',cache_status:'pending'};
+      const previous={...item,id:'rating-previous',item_id:'rating-previous',title:'Previous song',display_title:'Previous song',bvid:'BV0000000001',threshold_reached:false};
+      state.data={...state.data,song_ratings:[],current_item:current,session_played:[previous,{...current,item_id:current.id,threshold_reached:false}]};
+      if(client==='host')renderQueueCurrent(current);else {renderCurrentItem(current);openPlaybackSheet();}
+      renderCurrentRatingButton(current);
+     },{item:items[0],client});
+     const button=page.locator('#open-rating-button'),modal=page.locator('.rating-modal:not(.closing)');
+     assert.equal(await button.isDisabled(),false,'Current song can be confirmed before halfway');
+     await button.click();await modal.waitFor();
+     assert.equal(await modal.locator('[data-rating-tab="current"]').getAttribute('aria-selected'),'true');
+     assert.equal(await modal.locator('[data-rating-tab="previous"]').isDisabled(),true,'Skipped ineligible previous song cannot be rated');
+     await page.evaluate(()=>setRatingPromptActiveTab('previous'));
+     assert.equal(await page.evaluate(()=>state.ratingPromptActiveTab),'current');
+     await settled(page);await page.screenshot({path:path.join(notes,`${client}-rating-before-half.png`)});
+     await modal.locator('.rating-close').click();await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     await button.click();await modal.locator('[data-rating-score="4"]').click();
+     await page.keyboard.press('Escape');await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     await button.click();await modal.locator('.rating-modal-backdrop').click({position:{x:2,y:2}});
+     await modal.waitFor({state:'hidden'});assert.equal(requests.length,0);
+     queued=true;
+     await button.click();await modal.locator('[data-rating-score="3"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>state.ratingQueuedKeys.size===1 && state.ratingPendingKeys.size===0);
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.queued')));
+     assert.equal(await button.isDisabled(),true);
+     assert.equal(await page.evaluate(()=>hasSubmittedSongRating(state.data.current_item)),false);
+     await page.evaluate(()=>{
+      state.data.song_ratings=[{play_id:'rating-current',session_user_name:ratingSubmissionUserName(state.data.current_item),status:'waiting',score:3}];
+      state.ratingQueuedKeys.clear();renderCurrentRatingButton(state.data.current_item);
+     });
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.queued')),'Pending state survives loss of local UI state');
+     await settled(page);await page.screenshot({path:path.join(notes,`${client}-rating-pending.png`)});
+     // Server acknowledgement, rather than opening/closing or local progress, means rated.
+     await page.evaluate(()=>{state.data.session_played[1].threshold_reached=true;state.data.song_ratings[0].status='accepted';renderCurrentRatingButton(state.data.current_item);});
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.rated')));
+     assert.equal(await button.isDisabled(),true);assert.equal(requests.length,1,'UI must not resubmit the deferred rating');
+     // A deferred network failure re-enables explicit retry.
+     await page.evaluate(()=>{state.data.song_ratings[0].status='failed';renderCurrentRatingButton(state.data.current_item);});
+     assert.equal(await button.isDisabled(),false);
+     if(client==='remote') {
+      const autoQueued=await page.evaluate(()=>{
+       const clock=currentPlaybackClockSeconds;
+       currentPlaybackClockSeconds=()=>({currentSeconds:60,durationSeconds:120});
+       state.pendingAutoRatings.clear();state.ratingPromptSeenPlayIds.delete('rating-current');
+       try {maybeUpdateRemoteRatingPrompt(state.data.current_item);return state.pendingAutoRatings.has('rating-current');}
+       finally {currentPlaybackClockSeconds=clock;}
+      });
+      assert.equal(autoQueued,false,'Failed confirmed score must not be replaced by automatic five stars');
+     }
+     queued=false;fail=true;release=true;
+     await button.click();await modal.locator('[data-rating-score="2"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>state.ratingPendingKeys.size===1);
+     assert.equal(await button.isDisabled(),true);assert.equal(await button.getAttribute('aria-busy'),'true');
+     while(typeof release!=='function')await new Promise(r=>setTimeout(r,10));
+     release();release=null;await page.waitForFunction(()=>state.ratingPendingKeys.size===0);
+     assert.equal(await button.isDisabled(),false);fail=false;
+     await button.click();await modal.locator('[data-rating-score="4"]').click();await modal.locator('[data-rating-submit]').click();
+     await page.waitForFunction(()=>hasSubmittedSongRating(state.data.current_item));
+     assert.equal(await button.innerText(),await page.evaluate(()=>t('rating.rated')));
+     assert.deepEqual(requests.map(r=>[r.play_id,r.score]),[['rating-current',3],['rating-current',2],['rating-current',4]]);
+     // A valid previous song stays available without a current song; an early skip does not.
+     await page.evaluate(()=>{
+      state.data.current_item=null;state.data.session_played.pop();state.ratingSubmittedKeys.clear();
+      state.data.song_ratings=[{play_id:'rating-previous',session_user_name:ratingSubmissionUserName(state.data.session_played[0]),status:'discarded'}];
+      renderCurrentRatingButton(null);
+     });
+     assert.equal(await button.isDisabled(),true);
+     await page.evaluate(()=>{state.data.session_played[0].threshold_reached=true;state.data.song_ratings=[];renderCurrentRatingButton(null);});
+     await button.click();assert.equal(await page.evaluate(()=>state.ratingPromptActiveTab),'previous');
+     await modal.locator('.rating-close').click();
+     if(client==='remote') {
+      const flushed=await page.evaluate(()=>{
+       const calls=[];const original=submitSongRating;submitSongRating=(item,score)=>{calls.push([item.id,score]);return true;};
+       try {
+        state.ratingOptOut=false;state.pendingAutoRatings.clear();state.autoRatingFlushQueue=[];state.ratingCurrentPlayId='a';
+        state.pendingAutoRatings.set('a',{playId:'a',item:{id:'a',bvid:'BV0000000000'}});
+        maybeUpdateRemoteRatingPrompt({id:'b',bvid:'BV0000000001'});
+        if(calls.length)throw Error('previous song auto-rated before manual opportunity');
+        maybeUpdateRemoteRatingPrompt({id:'c',bvid:'BV0000000002'});return calls;
+       } finally {submitSongRating=original;state.ratingOptOut=true;state.pendingAutoRatings.clear();state.autoRatingFlushQueue=[];}
+      });assert.deepEqual(flushed,[['a',5]]);
+     }
+     measurements[`rating-${client}`]={closeSubmissions:0,explicitRequests:requests.length,deferred:true,serverAcknowledgement:true,previousFallback:true,retry:true};
+    } finally {
+     if(typeof release==='function')release();
+     await page.evaluate(()=>closeRatingPrompt({submit:false}));await page.unroute('**/api/rating/submit');
+     await page.reload();await page.waitForFunction(()=>state.data?.capabilities);
+    }
+   }
   });
   await check('hostRatingPills',async()=>{
    await host.setViewportSize({width:1440,height:900});
@@ -992,6 +1644,23 @@ const notes=path.resolve(output);
    assert.equal(await host.locator('.empty-hint').innerText(),'总计：120 B / 200 B\n视频P1：80 B / 100 B\n音轨P2：40 B / 100 B');
    assert.equal(await host.locator('.empty-hint').evaluate(e=>getComputedStyle(e).whiteSpace),'pre-line');
    await host.locator('.player-panel').screenshot({path:path.join(notes,'host-all-cache-tracks.png')});
+  });
+  await check('remoteReconnectsAfterDataReset',async()=>{
+   assert.equal(await remote.evaluate(()=>state.remoteIdentity.registered),true);
+   const reentered=remote.waitForEvent('framenavigated',{predicate:frame=>frame===remote.mainFrame(),timeout:7000});
+   const reset=await host.evaluate(async()=>{
+    const response=await fetch('/api/data/reset',{method:'POST',headers:clientHeaders({'Content-Type':'application/json'}),body:'{}'});
+    return {status:response.status,payload:await response.json()};
+   });
+   assert.equal(reset.status,200);assert.equal(reset.payload.ok,true);
+   await reentered;
+   await remote.locator('#remote-identity-input').waitFor({state:'visible'});
+   await remote.waitForFunction(()=>!state.remoteIdentityChecking);
+   assert.equal(await remote.evaluate(()=>state.remoteIdentity.registered),false);
+   await remote.locator('#remote-identity-input').fill('New session user');
+   await remote.locator('#remote-identity-submit').click();
+   await remote.waitForFunction(()=>state.remoteIdentity.registered && state.remoteIdentity.name==='New session user');
+   measurements.remoteReconnectsAfterDataReset={reentered:true,reregistered:true};
   });
   await fs.writeFile(path.join(notes,'ui-results.json'),JSON.stringify({directory,measurements,failures,errors,calls,productionRequests:0},null,2));
   console.log(JSON.stringify({directory,measurements,failures,errors,calls,productionRequests:0},null,2));

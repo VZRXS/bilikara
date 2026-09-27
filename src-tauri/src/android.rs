@@ -211,6 +211,8 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
             history: Vec::new(),
             session_history: Vec::new(),
             session_users: Vec::new(),
+            remote_identities: Default::default(),
+            gatcha_pool_preferences: Default::default(),
             session_started_at: now,
             session_played_file: "native-session.json".to_owned(),
             session_played: Vec::new(),

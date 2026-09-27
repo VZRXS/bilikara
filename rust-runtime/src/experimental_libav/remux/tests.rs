@@ -75,6 +75,60 @@ fn live_flac_publication_cancellation_and_late_errors() {
     publication_cancellation_and_late_errors(CopyProfile::Flac);
 }
 
+#[test]
+#[ignore = "requires real FLAC companion and accepted 96 kHz fixture"]
+fn live_flac_metadata_tolerance() {
+    let probe = unsafe { LibavMetadataProbe::load(&env_path("BILIKARA_LIBAV_COMPANION")) }.unwrap();
+    let source = env_path("BILIKARA_LIBAV_FIXTURES").join("flac.mp4");
+    let original = fs::read(&source).unwrap();
+    let info = original.windows(4).position(|v| v == b"dfLa").unwrap() + 12;
+    let packed = u64::from_be_bytes(original[info + 10..info + 18].try_into().unwrap());
+    assert_eq!(packed & ((1 << 36) - 1), 96000);
+    let root = Scratch::new(&std::env::temp_dir()).unwrap();
+    let baseline = root.directory.join("baseline.flac");
+    let flag = AtomicBool::new(false);
+    probe
+        .copy_profile(&request(&source, &baseline), CopyProfile::Flac, &flag)
+        .unwrap();
+    let decode = |path: &Path| {
+        claxon::FlacReader::open(path)
+            .unwrap()
+            .samples()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let expected = decode(&baseline);
+    assert_eq!(expected.len(), 96000 * 2);
+    let baseline_bytes = fs::read(&baseline).unwrap();
+    for delta in [-19201_i64, -19200, -4800, 0, 4800, 19200, 19201] {
+        let mut bytes = original.clone();
+        let total = (96000 + delta) as u64;
+        bytes[info + 10..info + 18]
+            .copy_from_slice(&((packed & !((1 << 36) - 1)) | total).to_be_bytes());
+        let input = root.directory.join(format!("input-{delta}.mp4"));
+        let output = root.directory.join(format!("output-{delta}.flac"));
+        fs::write(&input, &bytes).unwrap();
+        let result = probe.copy_profile(&request(&input, &output), CopyProfile::Flac, &flag);
+        if delta.abs() <= 19200 {
+            let result = result.unwrap();
+            assert_eq!(result.flac_streaminfo.unwrap().total_samples, Some(96000));
+            // Independent full decode and exact output bytes: the corrected
+            // field cannot truncate samples or alter MD5/audio/configuration.
+            assert_eq!(decode(&output), expected);
+            assert_eq!(fs::read(&output).unwrap(), baseline_bytes);
+        } else {
+            assert_kind(
+                result.unwrap_err(),
+                MediaErrorKind::UnsupportedContainerLayout,
+            );
+            assert!(!output.exists());
+        }
+        assert_eq!(fs::read(input).unwrap(), bytes, "source is read-only");
+    }
+    assert_eq!(fs::read(source).unwrap(), original);
+    fs::remove_dir_all(&root.directory).unwrap();
+}
+
 fn publication_cancellation_and_late_errors(profile: CopyProfile) {
     let probe = unsafe { LibavMetadataProbe::load(&env_path("BILIKARA_LIBAV_COMPANION")) }.unwrap();
     assert!(probe.copy_profile_available(profile));
@@ -235,6 +289,15 @@ fn publication_cancellation_and_late_errors(profile: CopyProfile) {
             assert!(!destination.exists());
             assert_eq!(scratch_count(), 0);
         }
+    }
+    if profile == CopyProfile::Flac {
+        unsafe {
+            set_fault(7, cancel, (&flag as *const AtomicBool).cast_mut().cast());
+        }
+        flag.store(false, Ordering::Relaxed);
+        faults.copy_profile(&q, profile, &flag).unwrap();
+        fs::remove_file(&destination).unwrap();
+        assert_eq!(scratch_count(), 0);
     }
     assert_eq!(fds(), before, "all writable/read descriptors must close");
     assert_eq!(fs::read(&source).unwrap(), original);

@@ -42,7 +42,7 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_host_exposes_local_and_internet_modes_without_replacing_local_remote(self):
         self.assertIn('id="internet-remote-local-content"', self.host_html)
         self.assertIn('id="internet-remote-disclosure"', self.host_html)
-        self.assertIn('href="/remote"', self.host_html)
+        self.assertRegex(self.host_html, r'id="remote-popover-url-link"[^>]+aria-disabled="true"')
         self.assertIn('state.mode = "local"', self.host_js)
 
     def test_host_uses_one_mobile_remote_entry_with_a_collapsed_public_menu(self):
@@ -277,11 +277,9 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         render_start = self.host_app_js.index("function renderRemoteAccess")
         render_end = self.host_app_js.index("function renderRemoteQr", render_start)
         render = self.host_app_js[render_start:render_end]
-        self.assertIn(
-            "elements.remotePopoverUrlHint,\n    t(\"internetRemote.localSameNetwork\")",
-            render,
-        )
-        self.assertIn('localHint: t("internetRemote.localSameNetwork")', render)
+        self.assertIn("setTextContent(elements.remotePopoverUrlHint, displayHint)", render)
+        self.assertIn("localHint: displayHint", render)
+        self.assertIn('hint: t("internetRemote.localSameNetwork")', self.host_app_js)
 
     def test_host_remote_entry_controls_use_shared_control_geometry(self):
         self.assertIn('class="internet-remote-config-row"', self.host_html)
@@ -396,9 +394,27 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn("function remoteUrlUsesLoopback", self.host_app_js)
         self.assertIn('hostname.startsWith("127.")', self.host_app_js)
         self.assertIn('hostname === "::1"', self.host_app_js)
-        self.assertIn("!remoteUrlUsesLoopback(url)", self.host_app_js)
+        self.assertIn("!remoteUrlUsesLoopback(value)", self.host_app_js)
         self.assertIn("renderRemoteQr(shareableUrl", self.host_app_js)
-        self.assertIn('t("internetRemote.openOnThisDevice")', self.host_app_js)
+        self.assertIn('button.disabled = !shareableUrl', self.host_app_js)
+
+    def test_missing_remote_address_never_becomes_host_homepage(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required")
+        program = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync('static/app.js','utf8');
+const helpers=source.slice(source.indexOf('function normalizedRemoteHttpUrl('),source.indexOf('function renderRemoteAccess('));
+const context={URL,window:{location:{href:'http://10.45.66.136:8080/'}}};
+vm.createContext(context);vm.runInContext(helpers,context);
+for(const value of [undefined,null,'','   ']) assert.equal(context.normalizedRemoteHttpUrl(value),'');
+context.candidates=['',undefined,'http://10.45.66.136:8080/remote'];
+assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>url&&!remoteUrlUsesLoopback(url))',context),'http://10.45.66.136:8080/remote');
+context.candidates=['',undefined,'http://127.0.0.1:8080/remote'];
+assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>url&&!remoteUrlUsesLoopback(url))',context),undefined);
+'''
+        result = subprocess.run([node, "-e", program], cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_public_qr_failure_keeps_the_valid_room_result(self):
         start = self.host_js.index("async function startRoom")
@@ -485,6 +501,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
             cache,
         )
 
+        self.assertIn("force: Boolean(body.force)", cache)
+
         variant_start = self.remote_transport.index(
             'url.pathname === "/api/player/audio-variant"'
         )
@@ -536,6 +554,23 @@ const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\
   assert.deepEqual(calls, ["player.set_volume"]);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''.replace("BODY", json.dumps(body))
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_retry_transport_preserves_force_true_false_and_legacy_absence(self):
+        start = self.remote_transport.index('response = await request("cache.retry", {')
+        end = self.remote_transport.index('\n      } else if', start)
+        script = r'''const assert = require("node:assert/strict");
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const send = new AsyncFunction("body", "request", "expectedRevision", "let response;\n" + BODY + "\nreturn response;");
+(async()=>{
+  for(const force of [undefined,false,true]){
+    let observed;
+    await send({item_id:"song",expected_item_incarnation_id:"incarnation",force},async(kind,body)=>{observed={kind,body};},()=>12);
+    assert.deepEqual(observed,{kind:"cache.retry",body:{item_id:"song",expected_item_incarnation_id:"incarnation",force:force===true,expected_revision:12}});
+  }
+})().catch(error=>{console.error(error);process.exitCode=1;});'''.replace("BODY", json.dumps(self.remote_transport[start:end]))
         result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -851,7 +886,12 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
   data.player_settings.av_delay_lock_button_enabled = true;
   data.bilibili_logged_in = true;
   data.current_item.cache_status = "ready";
+  data.session_played = [{item_id: "previous", bvid: "BV1z84y1p7oS", threshold_reached: true}];
+  data.song_ratings = [{session_user_name: "Alice", play_id: "fixture", status: "waiting"}];
   local = localState(data);
+  assert.equal(local.session_played[0].item_id, "previous");
+  assert.equal(local.session_played[0].threshold_reached, true);
+  assert.equal(local.song_ratings[0].status, "waiting");
   assert.equal(local.player_settings.av_delay.has_local_adjustment, true);
   assert.equal(local.player_settings.av_delay.lock_button_enabled, true);
   assert.equal(local.bbdown.logged_in, true);
@@ -874,6 +914,18 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
     await Promise.resolve(); assert.deepEqual(reconnectEvents, ["error"]);
     replacement.close();
   }
+  state.authorized = true; state.remoteState = {...data,state_epoch:"old-host",state_revision:35};
+  const restarting = createStateSource(); const revisions = [];
+  restarting.addEventListener("state", e => revisions.push(JSON.parse(e.data)));
+  await Promise.resolve();
+  handleDataMessage({type:"state",data:{...data,state_epoch:"new-host",state_revision:4}});
+  handleDataMessage({type:"state",data:{...data,state_epoch:"old-host",state_revision:99}});
+  handleDataMessage({type:"state",data:{...data,state_epoch:"new-host",state_revision:3}});
+  assert.equal(revisions.length,2);
+  assert.equal(revisions[1].state_revision,4);
+  assert.equal(revisions[1].state_epoch,"new-host");
+  assert.equal(state.remoteState.state_epoch,"new-host");
+  restarting.close();
   state.authorized = true; state.remoteState = data;
   const events = []; const stream = createStateSource();
   stream.addEventListener("state", e => events.push(e.type));

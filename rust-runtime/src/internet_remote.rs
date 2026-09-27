@@ -492,6 +492,22 @@ fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
         cache_status: cache_status(&item.cache_status),
         cache_progress: item.cache_progress.clamp(0.0, 100.0) as f32,
         cache_activity_at: item.cache_activity_at,
+        cache_download_current_bytes: item.cache_download_current_bytes,
+        cache_download_total_bytes: item.cache_download_total_bytes,
+        cache_download_tracks: item
+            .cache_download_tracks
+            .iter()
+            .map(|track| bilikara_rust::RemoteCacheDownloadTrackV1 {
+                key: track.key.clone(),
+                label: track.label.clone(),
+                current_bytes: track.current_bytes,
+                target_bytes: track.target_bytes,
+                done: track.done,
+                phase: track.phase.clone(),
+                attempt: track.attempt,
+                max_attempts: track.max_attempts,
+            })
+            .collect(),
         selected_pages,
         selected_durations,
         selected_parts,
@@ -644,6 +660,8 @@ mod tests {
                 history: vec![],
                 session_history: vec![],
                 session_users: vec![],
+                remote_identities: Default::default(),
+                gatcha_pool_preferences: Default::default(),
                 session_started_at: 1.0,
                 session_played_file: "played.json".into(),
                 session_played: vec![],
@@ -866,6 +884,15 @@ mod tests {
             cache_status: "ready".to_owned(),
             cache_progress: 100.0,
             cache_activity_at: 0.0,
+            cache_download_current_bytes: 120,
+            cache_download_total_bytes: 200,
+            cache_download_tracks: vec![crate::app_state::CacheDownloadTrack {
+                key: "audio-p2".into(),
+                label: "音轨P2".into(),
+                current_bytes: 120,
+                target_bytes: 200,
+                ..Default::default()
+            }],
             cache_message: "ready".to_owned(),
             video_relative_path: "private/video.mp4".to_owned(),
             video_media_url: "/media/private/video.mp4".to_owned(),
@@ -875,6 +902,10 @@ mod tests {
         };
 
         let projected = project_item(&item);
+        assert_eq!(projected.cache_download_current_bytes, 120);
+        assert_eq!(projected.cache_download_total_bytes, 200);
+        assert_eq!(projected.cache_download_tracks[0].key, "audio-p2");
+        assert_eq!(projected.cache_download_tracks[0].current_bytes, 120);
 
         assert_eq!(projected.display_title, "Song");
         assert_eq!(projected.selected_pages, vec![1]);

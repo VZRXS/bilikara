@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "main",
+        "url": "desktop-startup.html",
         "fullscreen": false,
         "height": 700,
         "minWidth": 700,

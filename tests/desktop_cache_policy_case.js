@@ -58,7 +58,7 @@ module.exports=async ({api,okay,capture,browser,evidence,getPage,restart,inspect
   const refreshed=snapshot.current_item.artifact_set_id;
   await caps(4,true,false);
   await page.waitForFunction(()=>!state.data.cache_policy.enabled && !state.data.current_item.video_media_url);
-  const unsupported=await api("/api/cache/retry",{item_id:snapshot.current_item.id,expected_item_incarnation_id:snapshot.current_item.item_incarnation_id});
+  const unsupported=await api("/api/cache/retry",{item_id:snapshot.current_item.id,expected_item_incarnation_id:snapshot.current_item.item_incarnation_id,force:true});
   assert.equal(unsupported.status,501);assert.equal(unsupported.body.code,"player_media_unavailable");
   await caps(4,true,true);
   await page.waitForFunction(old=>state.data.current_item.cache_status==="ready" && state.data.current_item.artifact_set_id!==old,refreshed,{timeout:25000});

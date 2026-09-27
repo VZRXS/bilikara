@@ -5,6 +5,14 @@ controls, song cards, dialogs and translations. Both consume the authoritative
 Rust Host state. Remote remains a controller with its own page and permissions;
 the audience page remains a presentation surface.
 
+The behavior baseline is the shipped preview.1 Python desktop Host plus later
+user-approved changes. Android reuses those shared components; improvements
+from Android may supplement the desktop when they preserve its existing flows.
+Viewport width, input method and native capabilities are separate concerns:
+a compact desktop must not inherit Android-only action restrictions. The compact
+Android account page waits for an explicit login action, while opening desktop
+Settings retains automatic QR preparation even in a narrow window.
+
 `native-session.js` presents the persisted-session choice on either Host.
 Continuing keeps the saved session; dismissing the banner or letting its
 10-second countdown finish starts a new session through the same Rust command.
@@ -35,7 +43,8 @@ style, rather than a shared initial render followed by a separate phone render:
   including pending state, translations and retry feedback. Existing badge and
   button nodes survive reordering and responsive changes. Both layouts expose
   the same keyboard-accessible actions; pointer layouts also retain dragging.
-  Narrow width or a coarse pointer selects the larger touch targets.
+  Touch targets adapt to input capability; narrow width alone does not disable
+  desktop dragging. A mixed mouse/touch device retains its mouse operations.
 - `index.html` groups account status and login into one section. Layout code
   moves that section and the cache-settings container as units. Cache fields
   retain their common order and wrap through shared Flex rules; a new field

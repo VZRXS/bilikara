@@ -357,6 +357,8 @@ pub enum RemoteRequestV1 {
     RatingSubmit { play_id: String, score: u8 },
     #[serde(rename = "cache.retry")]
     CacheRetry {
+        #[serde(default)]
+        force: bool,
         item_id: String,
         expected_item_incarnation_id: String,
         expected_revision: u64,
@@ -576,6 +578,8 @@ struct ItemMutationBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IncarnationMutationBody {
+    #[serde(default)]
+    force: bool,
     item_id: String,
     expected_item_incarnation_id: String,
     expected_revision: u64,
@@ -964,6 +968,7 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
             item_id,
             expected_item_incarnation_id,
             expected_revision,
+            ..
         } => {
             valid_item(item_id)
                 && valid_item_incarnation_id(expected_item_incarnation_id)
@@ -1149,6 +1154,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
         "cache.retry" => {
             let body: IncarnationMutationBody = body(value)?;
             RemoteRequestV1::CacheRetry {
+                force: body.force,
                 item_id: body.item_id,
                 expected_item_incarnation_id: body.expected_item_incarnation_id,
                 expected_revision: body.expected_revision,
@@ -1335,6 +1341,19 @@ pub struct RemoteAudioVariantV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RemoteCacheDownloadTrackV1 {
+    pub key: String,
+    pub label: String,
+    pub current_bytes: u64,
+    pub target_bytes: u64,
+    pub done: bool,
+    pub phase: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemotePlaylistItemV1 {
     pub id: String,
     pub item_incarnation_id: String,
@@ -1349,6 +1368,12 @@ pub struct RemotePlaylistItemV1 {
     pub cache_progress: f32,
     #[serde(default)]
     pub cache_activity_at: f64,
+    #[serde(default)]
+    pub cache_download_current_bytes: u64,
+    #[serde(default)]
+    pub cache_download_total_bytes: u64,
+    #[serde(default)]
+    pub cache_download_tracks: Vec<RemoteCacheDownloadTrackV1>,
     pub selected_pages: Vec<u32>,
     pub selected_durations: Vec<u32>,
     pub selected_parts: Vec<String>,
@@ -1908,6 +1933,32 @@ mod tests {
     }
 
     #[test]
+    fn cache_retry_preserves_optional_force_and_rejects_non_booleans() {
+        let mut body = json!({"item_id":"item-1", "expected_item_incarnation_id":"i-0123456789abcdef0123456789abcdef-0000000000000001", "expected_revision":4});
+        for force in [None, Some(false), Some(true)] {
+            if let Some(force) = force {
+                body["force"] = json!(force);
+            }
+            let decoded = decode_remote_request_v1(
+                &request("cache.retry", body.clone()),
+                context(RemoteProfile::Controller),
+            )
+            .unwrap();
+            assert!(
+                matches!(decoded.request, RemoteRequestV1::CacheRetry { force: actual, .. } if actual == force.unwrap_or(false))
+            );
+        }
+        body["force"] = json!("true");
+        assert_eq!(
+            decode_remote_request_v1(
+                &request("cache.retry", body),
+                context(RemoteProfile::Controller)
+            ),
+            Err(RemoteProtocolError::InvalidRequestBody)
+        );
+    }
+
+    #[test]
     fn envelope_rejects_unknown_fields_version_lane_epoch_replay_and_bad_ids() {
         let extra = json!({
             "v": 1,
@@ -2152,6 +2203,9 @@ mod tests {
                 cache_status: RemoteCacheStatusV1::Ready,
                 cache_progress: 1.0,
                 cache_activity_at: 0.0,
+                cache_download_current_bytes: 0,
+                cache_download_total_bytes: 0,
+                cache_download_tracks: Vec::new(),
                 selected_pages: vec![1],
                 selected_durations: vec![180],
                 selected_parts: vec!["伴奏".into()],

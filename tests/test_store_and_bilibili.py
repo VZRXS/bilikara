@@ -1830,7 +1830,7 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual(cache_payload["uids"]["1"][0]["cover_url"], "https://example.com/cover.jpg")
             self.assertEqual(favlist_payload["schema_version"], 2)
             self.assertEqual(favlist_payload["items"][0]["cover_url"], "https://example.com/fav-cover.jpg")
-            self.assertEqual(fixture.appended_bvids(1), ["BVFAVREBUILD"])
+            self.assertEqual(fixture.appended_bvids(2), ["BVFAVREBUILD", "BVNEW0000001"])
 
 
     def test_nonblocking_gatcha_rebuild_status_does_not_report_busy(self):
@@ -2301,14 +2301,14 @@ class BilibiliParserTest(unittest.TestCase):
             bilibili_module.rust_runtime.release_gatcha_refresh()
 
 
-    def test_startup_schema_rebuild_uploads_only_favlist_candidates(self):
+    def test_startup_schema_rebuild_uploads_new_uid_and_favlist_candidates(self):
         with ConfiguredRefreshFixture(legacy=True) as fixture:
             fixture.add_folder()
             self.assertTrue(fixture.start(use_global_lock=False, startup_schema_rebuild=True))
             status = fixture.wait()
             self.assertEqual(status["last_status"], "success")
             self.assertFalse(status["blocking"])
-            self.assertEqual(fixture.appended_bvids(1), ["BVFAVREBUILD"])
+            self.assertEqual(fixture.appended_bvids(2), ["BVFAVREBUILD", "BVNEW0000001"])
 
 
     def test_background_gatcha_refresh_records_failure_status(self):

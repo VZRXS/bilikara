@@ -30,6 +30,7 @@
       this.version = 0;
       this.cache = new Map();
       this.page = 1;
+      this.direction = 1;
       this.items = [];
       this.busy = false;
       this.externalBusy = false;
@@ -38,7 +39,7 @@
     }
 
     update(options) {
-      const size = [6, 12, 18, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
+      const size = [3, 6, 9, 12, 15, 18, 21, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
       const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
       const firstItem = (this.page - 1) * this.pageSize;
       const changed = !sameSource || this.pageSize !== size;
@@ -63,6 +64,7 @@
         this.hasMore = Boolean(options.hasMore);
         this.initialHasMore = this.hasMore;
         this.page = sameSource ? Math.floor(firstItem / size) + 1 : 1;
+        this.direction = 1;
         this.items = options.items.slice((this.page - 1) * size, this.page * size);
         this.cache.clear();
         for (let start = 0; start < options.items.length; start += size) {
@@ -79,6 +81,7 @@
     }
 
     remember(page, items) {
+      this.cache.delete(page);
       this.cache.set(page, items);
       while (this.cache.size > 12) {
         const oldest = Array.from(this.cache.keys()).find(key => key !== this.page);
@@ -119,10 +122,17 @@
     async prefetch() {
       if (!this.prefetchEnabled || !this.readAhead || this.loading || this.prefetchPending
         || typeof this.load !== "function" || this.shouldPrefetch?.() === false) return;
-      const page = Array.from({length:this.readAhead}, (_, index) => this.page + index + 1)
-        .find(next => next <= this.lastPage && this.peek(next) === null
-          && (this.total !== null || this.hasMore));
-      if (!page) return;
+      const neighbors = [this.direction, -this.direction].flatMap(direction =>
+        Array.from({length:this.readAhead}, (_, index) => this.page + direction * (index + 1)));
+      const missing = neighbors.find(next => next >= 1 && next <= this.lastPage && this.peek(next) === null
+        && (next < this.page || this.total !== null || this.hasMore));
+      if (!missing) return;
+      // Backward reads include the current/adjacent page so filling the bounded
+      // cache cannot evict the very page the next reverse swipe will need.
+      const page = missing < this.page
+        ? Math.max(1, this.page - Math.max(this.readAhead, Math.ceil(this.readSize / this.pageSize) - 2))
+        : missing;
+      const originPage = this.page;
       const version = this.version;
       const attempt = `${version}:${this.page}:${page}`;
       if (this.prefetchAttempt === attempt) return;
@@ -149,6 +159,7 @@
           // may retry, but SSE renders must not repeatedly hit the provider.
         } finally {
           if (this.prefetchPending === pending) this.prefetchPending = null;
+          if (version !== this.version || this.page !== originPage) void this.prefetch();
         }
       })();
       await pending.promise;
@@ -160,6 +171,7 @@
       if (!Number.isSafeInteger(page) || page < 1 || page > this.lastPage) {
         throw new RangeError("page_out_of_range");
       }
+      this.direction = page < this.page ? -1 : 1;
       const pending = this.prefetchPending;
       if (pending && page >= pending.page && page < pending.end) {
         const version = this.version;
@@ -219,8 +231,8 @@
     }
   }
 
-  function swipeDirection(dx, dy) {
-    return Math.abs(dx) >= 64 && Math.abs(dx) > Math.abs(dy) * 1.6
+  function swipeDirection(dx, dy, horizontalLocked = false) {
+    return Math.abs(dx) >= 64 && (horizontalLocked || Math.abs(dx) > Math.abs(dy) * 1.15)
       ? (dx < 0 ? 1 : -1) : 0;
   }
 
@@ -243,15 +255,19 @@
     const pager = document.createElement("nav");
     pager.className = "result-pager";
     pager.tabIndex = 0;
+    // Font chevrons follow the text baseline and appear below the page number.
+    // Center actual icon geometry in the same 44px control row instead.
+    const arrow = (action, path) => `<button type="button" data-page-action="${action}">`
+      + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="${path}"/></svg></button>`;
     pager.innerHTML = '<span class="result-pager-count"></span>'
       + '<div class="result-pager-controls">'
-      + '<button type="button" data-page-action="first">«</button><button type="button" data-page-action="previous">‹</button>'
+      + arrow("first", "M11 6 5 12 11 18 M19 6 13 12 19 18") + arrow("previous", "M15 6 9 12 15 18")
       + '<div class="result-pager-position"><span class="result-pager-dots" aria-hidden="true"></span>'
       + '<form class="result-pager-editor"><label class="result-pager-input"><input type="text" inputmode="numeric"'
       + ' pattern="[0-9]*" maxlength="5" enterkeyhint="go" data-page-input></label><span class="result-pager-total">'
       + '<span aria-hidden="true"></span><span class="result-pager-exact"></span></span>'
       + '<button type="submit" data-page-go>✓</button></form></div>'
-      + '<button type="button" data-page-action="next">›</button><button type="button" data-page-action="last">»</button></div>'
+      + arrow("next", "M9 6 15 12 9 18") + arrow("last", "M5 6 11 12 5 18 M13 6 19 12 13 18") + '</div>'
       + '<span class="result-pager-items-total"><span aria-hidden="true"></span><span class="result-pager-exact"></span></span>'
       + '<span class="result-pager-announcement" role="status" aria-live="polite"></span>';
     viewport.after(pager);
@@ -411,7 +427,7 @@
       summary.setAttribute("aria-label", translate("pagination.range", { start, end }));
       const countKey = model.total === null ? "pagination.countUnknown"
         : model.limited ? "pagination.countReturned" : "pagination.countTotal";
-      setCountLabel(itemTotal, translate(countKey, { count: compactCount(model.total, options.language) }),
+      setCountLabel(itemTotal, translate("pagination.countShort", { count: compactCount(model.total, options.language) }),
         translate(countKey, { count: model.total }));
       drawDots();
       for (const control of [input, submit]) {
@@ -568,11 +584,13 @@
 
     function finishDrag(event, cancelled = false) {
       if (!drag || drag.id !== event.pointerId) return;
-      const direction = cancelled ? 0 : swipeDirection(event.clientX - drag.x, event.clientY - drag.y);
       const horizontal = drag.horizontal;
+      // Once the initial movement selected paging, later vertical drift must
+      // not reclassify this gesture as page scrolling or cancel the page turn.
+      const direction = cancelled || !horizontal ? 0 : swipeDirection(event.clientX - drag.x, event.clientY - drag.y, true);
       const displacement = drag.displacement || 0;
       drag = null;
-      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+      if (typeof event.pointerId === "number" && viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
       if (horizontal) rest();
       if (!direction) {
         if (horizontal) void restoreDrag(displacement);
@@ -585,17 +603,17 @@
     }
     viewport.addEventListener("pointerdown", event => {
       suppressClick = false;
-      if (!event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (event.pointerType === "touch" || !event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, horizontal: false };
     }, { passive: true });
-    viewport.addEventListener("pointermove", event => {
+    function moveDrag(event) {
       if (!drag || drag.id !== event.pointerId) return;
       const dx = Math.abs(event.clientX - drag.x), dy = Math.abs(event.clientY - drag.y);
-      if (!drag.horizontal && dy > 12 && dy >= dx) { drag = null; return; }
-      if (!drag.horizontal && dx > 12 && dx > dy * 1.6) {
+      if (!drag.horizontal && dy >= 8 && dy > dx * 1.15) { drag = null; return; }
+      if (!drag.horizontal && dx >= 8 && dx > dy * 1.15) {
         drag.horizontal = true;
         suppressClick = true;
-        viewport.setPointerCapture(event.pointerId);
+        if (typeof event.pointerId === "number") viewport.setPointerCapture(event.pointerId);
         showDots();
       }
       if (drag.horizontal) {
@@ -607,8 +625,47 @@
         if (canTurn) dragPreview(distance < 0 ? 1 : -1, drag.displacement);
         else { preview?.remove();preview=null; }
       }
+    }
+    viewport.addEventListener("pointermove", event => {
+      // Pointer motion arrives before the first touchmove's browser slop
+      // threshold. Remember that initial intent, without capturing touch.
+      moveDrag(event.pointerType === "touch"
+        ? {pointerId:"touch", clientX:event.clientX, clientY:event.clientY} : event);
     }, { passive: true });
-    viewport.addEventListener("pointercancel", event => finishDrag(event, true));
+    // Touch Events let us cancel native vertical panning only after a sideways
+    // intent is clear. Passive Pointer Events alone cannot stop Safari from
+    // taking a diagonal drag and issuing pointercancel partway through it.
+    viewport.addEventListener("touchstart", event => {
+      if (event.touches.length !== 1) {
+        if (drag?.id === "touch") finishDrag({pointerId:"touch"}, true);
+        return;
+      }
+      suppressClick = false;
+      if (model.loading || settling) return;
+      const point = event.touches[0];
+      drag = {id:"touch", touchId:point.identifier, x:point.clientX, y:point.clientY, horizontal:false};
+    }, {passive:true});
+    viewport.addEventListener("touchmove", event => {
+      if (drag?.id !== "touch" || event.touches.length !== 1) return;
+      if (!event.cancelable) {
+        finishDrag({pointerId:"touch"}, true);
+        return;
+      }
+      const point = [...event.touches].find(point => point.identifier === drag.touchId);
+      if (!point) return;
+      moveDrag({pointerId:"touch", clientX:point.clientX, clientY:point.clientY});
+      if (drag?.horizontal) event.preventDefault();
+    }, {passive:false});
+    viewport.addEventListener("touchend", event => {
+      if (drag?.id !== "touch") return;
+      const point = [...event.changedTouches].find(point => point.identifier === drag.touchId);
+      if (point) finishDrag({pointerId:"touch", clientX:point.clientX, clientY:point.clientY});
+    }, {passive:true});
+    viewport.addEventListener("touchcancel", () => {
+      if (drag?.id === "touch") finishDrag({pointerId:"touch"}, true);
+    }, {passive:true});
+    viewport.addEventListener("pointercancel", event => finishDrag(
+      event.pointerType === "touch" ? {pointerId:"touch"} : event, true));
     viewport.addEventListener("lostpointercapture", event => {
       // Touch starts with implicit capture on the card's child. Transferring
       // it to the viewport emits a bubbling loss on that child, not a cancellation.

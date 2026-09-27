@@ -610,7 +610,7 @@ impl LibavMetadataProbe {
             checking_depth: if profile == CopyProfile::Mp4 {
                 "streamcopy; exact decoder config, packet traversal, single-stream reopen, moov/mdat envelope; no full decode, playback certificate or cache-ready authority"
             } else {
-                "streamcopy; complete STREAMINFO preserved; demux-visible continuous untrimmed sequence; packet traversal/payload length/reopen/header; no full decode, exhaustive edit-list or codec-corruption validation, playback certificate or cache-ready authority"
+                "streamcopy; decoder parameters preserved, known STREAMINFO count corrected within 200 ms; demux-visible continuous untrimmed sequence; packet traversal/payload length/reopen/header; no full decode, exhaustive edit-list or codec-corruption validation, playback certificate or cache-ready authority"
             },
             input,
             input_metadata: metadata,

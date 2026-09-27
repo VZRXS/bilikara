@@ -65,26 +65,27 @@
 :root:is([data-theme="dark"], [data-theme="blue"]) .tool-status-indicator.is-warning { color: rgb(var(--status-warning-rgb)); }
 .tool-status-indicator.is-warning::after { content: "!"; }
 /* Refresh state belongs beside source controls, not in result-list footers. */
-.source-task-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
+.source-action-button:disabled {
+  background: rgba(var(--status-wait-rgb), 0.16) !important;
+  color: rgb(var(--status-wait-rgb)) !important;
+  opacity: 0.62;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
 }
-.source-task-status[hidden] { display: none; }
-.source-task-status::before {
-  content: "";
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border: 2px solid currentColor;
+/* Inline indicators belong to the source being fetched, without a status row. */
+.source-card-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline-start: 6px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent);
   border-right-color: transparent;
   border-radius: 50%;
   animation: source-task-spin 900ms linear infinite;
 }
 @keyframes source-task-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .source-task-status::before { animation: none; }
+  .source-card-spinner { animation: none; }
 }

@@ -2,6 +2,7 @@
 
 use bilikara_runtime::{
     AppStateRequest, AppStateSeed, execute_app_state, initialize_native_host,
+    local_lan_ipv4_addresses,
     native_host::{Asset, NativeHost},
 };
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .as_nanos()
     ));
     let seed: AppStateSeed = serde_json::from_value(
-        json!({"session_started_at":1.0,"session_played_file":"test.json","updated_at":1.0}),
+        json!({"session_started_at":1.0,"session_played_file":"test.json","updated_at":1.0,"session_archives":[{"file_name":"played-2026-09-25_12-00.json","session_started_at":1.0,"items":[]}]}),
     )
     .unwrap();
     assert!(initialize_native_host(&directory, seed).error().is_none());
@@ -88,6 +89,21 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         .next()
         .unwrap()
         .to_owned();
+    let mut streams = Vec::new();
+    for _ in 0..13 {
+        let response = client
+            .get(format!("{base}/api/events"))
+            .header("cookie", &cookie)
+            .send()
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "SSE admission must not depend on a lifetime/global twelve-stream quota"
+        );
+        streams.push(response);
+    }
+    drop(streams);
     assert!(
         bootstrap.headers()["set-cookie"]
             .to_str()
@@ -212,16 +228,38 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     assert_eq!(snapshot["data"]["session_users"], json!(["Alice"]));
     assert_eq!(snapshot["data"]["capabilities"]["native_host"], true);
     assert!(!snapshot.to_string().contains("host-token"));
-    let invite = snapshot["data"]["remote_access"]["local_url"]
+    let remote_url = snapshot["data"]["remote_access"]["local_url"]
         .as_str()
         .unwrap();
+    assert_eq!(remote_url, format!("{base}/remote"));
+    let port = url::Url::parse(&base).unwrap().port();
+    let lan_urls = snapshot["data"]["remote_access"]["lan_urls"]
+        .as_array()
+        .unwrap();
+    let mut published = Vec::new();
+    for address in lan_urls {
+        let url = url::Url::parse(address.as_str().unwrap()).unwrap();
+        assert_eq!(url.path(), "/remote");
+        assert!(url.query().is_none());
+        assert_eq!(url.port(), port);
+        published.push(url.host_str().unwrap().to_owned());
+    }
+    // The running Host publishes the shared LAN policy's current addresses.
+    assert_eq!(published, local_lan_ipv4_addresses());
+    assert_eq!(
+        snapshot["data"]["remote_access"]["preferred_url"],
+        lan_urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| json!(remote_url))
+    );
     for (mode, dest) in [
         ("cors", "empty"),
         ("no-cors", "image"),
         ("navigate", "iframe"),
     ] {
         let forbidden = client
-            .get(invite)
+            .get(remote_url)
             .header("sec-fetch-mode", mode)
             .header("sec-fetch-dest", dest)
             .send()
@@ -230,7 +268,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         assert!(forbidden.headers().get("set-cookie").is_none());
     }
     let join = client
-        .get(invite)
+        .get(remote_url)
         .header("sec-fetch-site", "cross-site")
         .header("sec-fetch-mode", "navigate")
         .header("sec-fetch-dest", "document")
@@ -249,6 +287,29 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let entry_html = join.text().unwrap();
     assert!(entry_html.contains("url=/remote\""));
     assert!(!entry_html.contains(remote_cookie.split('=').nth(1).unwrap()));
+    // A refresh renders the page directly, reusing either Remote or Host
+    // identity. Opening Remote in the Host's browser must not replace its cookie.
+    for existing in [&remote_cookie, &cookie] {
+        let page = client
+            .get(remote_url)
+            .header("cookie", existing)
+            .send()
+            .unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(page.headers().get("set-cookie").is_none());
+        assert!(page.text().unwrap().contains("shared UI"));
+    }
+    // First visits, legacy links and a stale cookie after restart all join
+    // without invitation validation. These are still Remote-only identities.
+    for suffix in ["/remote/", "/remote.html", "/remote?invite=expired"] {
+        let entry = client
+            .get(format!("{base}{suffix}"))
+            .header("cookie", "bilikara_native=previous-host-lifetime")
+            .send()
+            .unwrap();
+        assert_eq!(entry.status(), 200);
+        assert!(entry.headers().get("set-cookie").is_some());
+    }
     assert_eq!(
         post(
             "/api/session-users/add",
@@ -637,8 +698,15 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         after_stale["data"]["player_settings"]["volume_percent"],
         500
     );
+    let clamped = post("/api/player/volume", json!({"volume_percent":501}), &cookie);
+    assert_eq!(clamped.status(), 200);
     assert_eq!(
-        post("/api/player/volume", json!({"volume_percent":501}), &cookie).status(),
+        clamped.json::<Value>().unwrap()["data"]["player_settings"]["volume_percent"],
+        500
+    );
+    assert_eq!(post("/api/player/volume", json!({}), &cookie).status(), 400);
+    assert_eq!(
+        post("/api/history/remove", json!({"key":"  "}), &cookie).status(),
         400
     );
     let delay: Value = post(
@@ -741,13 +809,30 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .status(),
         400
     );
-    let diagnostic: Value = post("/api/diagnostics/markdown", json!({}), &cookie)
-        .json()
-        .unwrap();
+    let os_paths: Vec<String> = ["USERNAME", "USER", "LOGNAME"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .filter(|name| name.len() >= 3)
+        .map(|name| format!("/Users/{name}/native-diagnostic-fixture"))
+        .collect();
+    let diagnostic: Value = post(
+        "/api/diagnostics/markdown",
+        json!({"browser":{"user_agent":os_paths.join(" ")}}),
+        &cookie,
+    )
+    .json()
+    .unwrap();
     let markdown = diagnostic["data"]["markdown"].as_str().unwrap();
     assert!(markdown.contains("rust-native"));
     assert!(!markdown.contains(cookie.split('=').nth(1).unwrap()));
     assert!(!markdown.contains("bilibili-login.json"));
+    for path in os_paths {
+        assert!(
+            !markdown.contains(&path),
+            "OS usernames must be redacted from diagnostic paths"
+        );
+        assert!(markdown.contains("native-diagnostic-fixture"));
+    }
     // Browser export uses the native renderer callback, not a Host IPC bridge.
     // Inject only the platform renderer here; use real auth/projection/HTTP.
     let mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -816,6 +901,38 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         exported.bytes().unwrap().as_ref(),
         b"\xef\xbb\xbfCSV fixture"
     );
+    let sessions: Value = client
+        .get(format!("{base}/api/played-sessions"))
+        .header("cookie", &remote_cookie)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(sessions["data"][0]["id"], "played-2026-09-25_12-00.json");
+    assert_eq!(sessions["data"][0]["started_at"], 1.0);
+    let archived = client
+        .get(format!(
+            "{base}/api/playlist/export?format=csv&source=played-2026-09-25_12-00.json"
+        ))
+        .header("cookie", &remote_cookie)
+        .send()
+        .unwrap();
+    assert_eq!(archived.status(), 200);
+    assert_eq!(
+        archived.bytes().unwrap().as_ref(),
+        b"\xef\xbb\xbfCSV fixture"
+    );
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/playlist/export?format=csv&source=played-missing.json"
+            ))
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+            .status(),
+        404
+    );
     mode.store(1, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
         client
@@ -861,7 +978,81 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         0,
         "Completed and failed renders leave no private files"
     );
+    for index in 0..3 {
+        let item = serde_json::from_value(json!({"id":format!("queue-{index}"),"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":index+1,"page":index+1,"title":"Fixture","part_title":"Fixture","display_title":"Fixture","cover_url":"","embed_url":""})).unwrap();
+        assert!(
+            execute_app_state(AppStateRequest::AddItem {
+                schema_version: 1,
+                item,
+                position: "tail".into(),
+                requester_name: "Alice".into(),
+                reset_av_delay: false,
+                allow_repeat: true,
+                now: 10.0
+            })
+            .error()
+            .is_none()
+        );
+    }
+    let read_queue = || -> Value {
+        client
+            .get(format!("{base}/api/state"))
+            .header("cookie", &remote_cookie)
+            .send()
+            .unwrap()
+            .json::<Value>()
+            .unwrap()["data"]
+            .clone()
+    };
+    assert_eq!(
+        post(
+            "/api/playlist/move-next",
+            json!({"item_id":"queue-2"}),
+            &remote_cookie
+        )
+        .status(),
+        200
+    );
+    assert_eq!(read_queue()["playlist"][0]["id"], "queue-2");
+    assert_eq!(
+        post(
+            "/api/playlist/play-now",
+            json!({"item_id":"queue-1"}),
+            &remote_cookie
+        )
+        .status(),
+        200
+    );
+    assert_eq!(read_queue()["current_item"]["id"], "queue-1");
+    assert_eq!(
+        post(
+            "/api/playlist/remove",
+            json!({"item_id":"queue-2"}),
+            &remote_cookie
+        )
+        .status(),
+        200
+    );
+    assert!(
+        !read_queue()["playlist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == "queue-2")
+    );
+    assert_eq!(
+        post("/api/playlist/clear", json!({}), &remote_cookie).status(),
+        403
+    );
+    let song_log = directory.join("logs/native/exit-fixture.log");
+    std::fs::create_dir_all(song_log.parent().unwrap()).unwrap();
+    std::fs::write(&song_log, b"download log").unwrap();
+    let diagnostic = directory.join("logs/startup.log");
+    std::fs::write(&diagnostic, b"keep startup diagnostic").unwrap();
     drop(host);
+    assert!(!song_log.exists());
+    assert!(diagnostic.exists());
+    assert!(untouched.join("keep.txt").is_file());
     std::thread::sleep(Duration::from_millis(500));
     execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });
     // Only this test's uniquely named private directory is removed.

@@ -536,6 +536,7 @@
     const current = localItem(remoteState.current_item);
     return {
       schema_version: 1,
+      state_epoch: typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "",
       state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
@@ -544,7 +545,8 @@
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
       history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
       session_history: [],
-      session_played: [],
+      session_played: (remoteState.session_played || []).map(localHistoryItem).filter(Boolean),
+      song_ratings: remoteState.song_ratings || [],
       session_users: Array.isArray(remoteState.session_users) ? remoteState.session_users : [],
       remote_session_id: `internet-${roomId}`,
       player_settings: {
@@ -575,16 +577,26 @@
 
   function publishState(next) {
     if (!state.authorized || !next || typeof next !== "object") return;
+    const nextEpoch = typeof next.state_epoch === "string" ? next.state_epoch : "";
+    const currentEpoch = state.remoteState?.state_epoch || "";
+    if (state.retiredStateEpochs?.has(nextEpoch) || (currentEpoch && !nextEpoch)) return;
+    const restarted = Boolean(nextEpoch && nextEpoch !== currentEpoch);
     const currentRevision = Number(
       state.remoteState?.state_revision ?? state.remoteState?.revision ?? -1,
     );
     const nextRevision = Number(next.state_revision ?? next.revision ?? -1);
     if (
       state.remoteState
+      && !restarted
       && Number.isFinite(currentRevision)
       && Number.isFinite(nextRevision)
       && nextRevision < currentRevision
     ) return;
+    if (restarted) {
+      state.retiredStateEpochs ||= new Set();
+      if (currentEpoch) state.retiredStateEpochs.add(currentEpoch);
+      state.remoteState = null;
+    }
     state.remoteState = {
       ...state.remoteState,
       ...next,
@@ -767,6 +779,7 @@
         response = await request(kinds[url.pathname], { item_id: String(body.item_id || ""), expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/cache/retry") {
         response = await request("cache.retry", {
+          force: Boolean(body.force),
           item_id: String(body.item_id || ""),
           expected_item_incarnation_id: String(body.expected_item_incarnation_id || ""),
           expected_revision: expectedRevision(),

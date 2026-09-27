@@ -13,7 +13,8 @@ use crate::cloudflare_service::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 
@@ -105,7 +106,16 @@ impl Default for CatalogRequest {
 impl CatalogRequest {
     /// Host-owned configuration; never supplied by an HTTP/Internet client.
     pub fn for_host() -> Self {
-        let mut request = Self::default();
+        let mut request = Self {
+            review_keywords: [
+                "卡拉", "カラ", "投屏", "KTV", "纯K", "纯k", "kara", "Kara", "karaoke", "Karaoke",
+                "vocal", "Vocal", "伴奏",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ..Self::default()
+        };
         if let Ok(base) = std::env::var("BILIKARA_CF_API_URL")
             && !base.trim().is_empty()
         {
@@ -173,7 +183,7 @@ impl CatalogError {
 #[derive(Debug, Default)]
 pub(crate) struct CatalogState {
     cache: VecDeque<(String, Instant, Value)>,
-    inflight: HashSet<String>,
+    inflight: HashMap<String, Arc<read::Flight>>,
     backoff: VecDeque<(String, Instant, CatalogError)>,
     generation: u64,
     sheets: sheets::SnapshotState,

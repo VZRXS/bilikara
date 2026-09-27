@@ -257,8 +257,6 @@ const state = {
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
-  gatchaTaskLastMessageSignature: "",
-  gatchaTaskWatchStartedAt: Date.now() / 1000,
   remoteRequestView: "quick",
   remoteRequestTabsExpanded: false,
   remoteSearchMode: "shared",
@@ -313,6 +311,7 @@ const state = {
   },
   remoteIdentityChecking: true,
   remoteIdentitySaving: false,
+  remoteSessionReentering: false,
   remoteIdentityModalMode: "register",
   remoteIdentityError: "",
   dataRenderSignature: "",
@@ -340,6 +339,9 @@ const state = {
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingPendingKeys: new Set(),
+  ratingQueuedKeys: new Set(),
+  ratingSavedScores: new Map(),
+  ratingPromptScoreDirty: false,
   ratingOptOut: false,
   // Deferred auto-ratings: items that crossed the play threshold but whose
   // auto score=5 has not been submitted yet. The auto-rating fires TWO songs
@@ -777,7 +779,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
   state.sourcesFollowBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
-  state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
@@ -1558,7 +1559,7 @@ function renderRemoteAccess(remoteAccess) {
   card.classList.toggle("is-dual", Boolean(localUrl && internet));
   if (elements.remotePopoverUrlLink) {
     elements.remotePopoverUrlLink.href = localUrl;
-    elements.remotePopoverUrlLink.textContent = localUrl ? new URL(localUrl).origin : "";
+    elements.remotePopoverUrlLink.textContent = localUrl ? (new URL(localUrl).origin + new URL(localUrl).pathname) : "";
   }
   elements.remotePopoverUrlHint.textContent = t("internetRemote.localSameNetwork");
   renderRemoteQr(localUrl, [{ image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder }]);
@@ -1903,6 +1904,7 @@ async function fetchRemoteIdentity({ showExpired = false } = {}) {
       headers: clientHeaders(),
     });
     const payload = await response.json();
+    if (reenterExpiredLocalRemote(response, payload)) return;
     if (!response.ok || !payload.ok) {
       throw new Error(localizedApiMessage(payload.error) || t("error.requestFailed"));
     }
@@ -1950,7 +1952,7 @@ function openRemoteIdentityRename() {
     elements.remoteIdentityInput.value = state.remoteIdentity.name;
   }
   renderRemoteIdentity();
-  elements.remoteIdentityInput?.focus();
+  elements.remoteIdentityInput?.focus({ preventScroll: true });
   elements.remoteIdentityInput?.select();
 }
 
@@ -2036,7 +2038,7 @@ function submitSongRating(item, score, trigger = null) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || state.ratingPendingKeys.has(submissionKey))) {
+  if (submissionKey && (hasSubmittedSongRating(item) || serverRatingStatus(item) === "sending" || state.ratingPendingKeys.has(submissionKey))) {
     ratingLog("submit BLOCKED by dedup: playId=" + playId + " score=" + score);
     return false;
   }
@@ -2063,6 +2065,7 @@ function submitSongRating(item, score, trigger = null) {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   }
+  renderCurrentRatingButton(state.data?.current_item);
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
@@ -2070,10 +2073,21 @@ function submitSongRating(item, score, trigger = null) {
     keepalive: true,
   }).then(async (response) => {
     const result = await response.json();
-    if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success === false) {
+    if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success !== true) {
       throw new Error(result?.error || t("error.requestFailed"));
     }
-    if (submissionKey) state.ratingSubmittedKeys.add(submissionKey);
+    if (submissionKey) {
+      if (result?.data?.queued) state.ratingQueuedKeys.add(submissionKey);
+      else state.ratingSubmittedKeys.add(submissionKey);
+      if (!result?.data?.duplicate) {
+        state.ratingSavedScores.set(submissionKey, payload.score);
+        const entry = (state.data?.song_ratings || []).find(entry => (
+          entry.play_id === playId
+          && String(entry.session_user_name || "").toLowerCase() === sessionUserName.toLowerCase()
+        ));
+        if (entry) entry.score = payload.score;
+      }
+    }
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
@@ -2252,7 +2266,7 @@ function ratingSubmissionUserName(item) {
 
 function ratingSubmissionPlayId(item) {
   const bvid = String(item?.bvid || "").trim();
-  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
 function ratingSubmissionKey(item) {
@@ -2263,9 +2277,35 @@ function ratingSubmissionKey(item) {
   return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
+function serverRatingStatus(item) {
+  const playId = ratingSubmissionPlayId(item);
+  const user = ratingSubmissionUserName(item).toLowerCase();
+  const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
+    && String(entry.session_user_name || "").toLowerCase() === user);
+  const key = ratingSubmissionKey(item);
+  if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
+  if (entry) return entry.status;
+  if (playId !== ratingSubmissionPlayId(state.data?.current_item)) state.ratingQueuedKeys.delete(key);
+  return state.ratingQueuedKeys.has(key) ? "waiting" : "";
+}
+
+function isSongRatingQueued(item) {
+  return ["waiting", "sending"].includes(serverRatingStatus(item));
+}
+
 function hasSubmittedSongRating(item) {
   const key = ratingSubmissionKey(item);
-  return Boolean(key && state.ratingSubmittedKeys.has(key));
+  return serverRatingStatus(item) === "accepted" || Boolean(key && state.ratingSubmittedKeys.has(key));
+}
+
+function savedSongRatingScore(item) {
+  if (!item) return 5;
+  const entry = (state.data?.song_ratings || []).find(entry => (
+    entry.play_id === ratingSubmissionPlayId(item)
+    && String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase()
+  ));
+  const score = Number(entry?.score ?? state.ratingSavedScores.get(ratingSubmissionKey(item)) ?? 5);
+  return Math.max(1, Math.min(5, Math.trunc(score) || 5));
 }
 
 function normalizeRatingPromptItem(item) {
@@ -2304,13 +2344,37 @@ function ratingPromptItemsForItem(item) {
 }
 
 function isItemRateable(item, isCurrent = false) {
-  const bvid = String(item?.bvid || "").trim();
-  if (!item || !bvid) {
-    return false;
+  if (!item?.bvid || !selectedRequesterName() || state.data?.capabilities?.song_rating === false) return false;
+  const playId = ratingSubmissionPlayId(item);
+  const played = (state.data?.session_played || []).find(entry => String(entry.item_id || entry.id || "") === playId);
+  // Current-song confirmation may be held by the Host until its accepted
+  // playback observation reaches 50%; a skipped, ineligible song cannot be rated.
+  return (Boolean(state.data?.current_item && playId === ratingSubmissionPlayId(state.data.current_item)) || Boolean(played?.threshold_reached))
+    && !hasSubmittedSongRating(item)
+    && serverRatingStatus(item) !== "sending"
+    && !state.ratingPendingKeys.has(ratingSubmissionKey(item));
+}
+
+function refreshOpenRatingPrompt(current) {
+  if (!state.ratingPromptElement) return;
+  const items = ratingPromptItemsForItem(current);
+  const selectedItem = activeRatingPromptItem();
+  const selectedId = selectedItem ? ratingSubmissionPlayId(selectedItem) : "";
+  const tab = ["current", "previous"].find(key => items[key]
+    && ratingSubmissionPlayId(items[key]) === selectedId)
+    || (items.current ? "current" : "previous");
+  const changed = (items[tab] ? ratingSubmissionPlayId(items[tab]) : "") !== selectedId;
+  state.ratingPromptItems = items;
+  state.ratingPromptActiveTab = tab;
+  state.ratingPromptItem = items[tab];
+  state.ratingPromptItemId = String(items[tab]?.id || "");
+  if (changed) state.ratingPromptScoreDirty = false;
+  if (!state.ratingPromptScoreDirty || !isItemRateable(items[tab])) {
+    state.ratingPromptScore = savedSongRatingScore(items[tab]);
+    state.ratingPromptScoreDirty = false;
   }
-  // Manual rating is no longer gated by the play threshold. The user can
-  // rate at any time — the auto-rating defers to the user's choice.
-  return true;
+  if (changed) renderRatingPromptContent();
+  else syncRatingPromptControls();
 }
 
 function activeRatingPromptItem() {
@@ -2333,22 +2397,32 @@ function renderRatingStars() {
   });
 }
 
+function syncRatingPromptControls() {
+  const root = state.ratingPromptElement;
+  if (!root) return;
+  const item = activeRatingPromptItem();
+  const rateable = isItemRateable(item);
+  root.querySelectorAll("[data-rating-tab]").forEach(button => {
+    button.disabled = !state.ratingPromptItems?.[button.dataset.ratingTab]?.bvid;
+    button.classList.toggle("active", button.dataset.ratingTab === state.ratingPromptActiveTab);
+    button.setAttribute("aria-selected", button.dataset.ratingTab === state.ratingPromptActiveTab ? "true" : "false");
+  });
+  const submit = root.querySelector("[data-rating-submit]");
+  submit.disabled = !rateable;
+  if (state.ratingPendingKeys.has(ratingSubmissionKey(item))) submit.setAttribute("aria-busy", "true");
+  else submit.removeAttribute("aria-busy");
+  root.querySelectorAll("[data-rating-score]").forEach(button => { button.disabled = !rateable; });
+  renderRatingStars();
+}
+
 function renderRatingPromptContent() {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
   }
-  const activeItem = activeRatingPromptItem();
+  const activeItem = activeRatingPromptItem() || {};
   state.ratingPromptItem = activeItem;
   state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
-
-  root.querySelectorAll("[data-rating-tab]").forEach((button) => {
-    const tab = button.dataset.ratingTab;
-    const isRateable = tab === "current" ? state.ratingPromptCurrentRateable : state.ratingPromptPreviousRateable;
-    button.disabled = !isRateable;
-    button.classList.toggle("active", tab === state.ratingPromptActiveTab);
-    button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
-  });
 
   const content = root.querySelector("[data-rating-content]");
   if (!content || !activeItem) {
@@ -2384,7 +2458,7 @@ function renderRatingPromptContent() {
   const owner = document.createElement("p");
   owner.className = "rating-owner";
   window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
-  copy.append(title, owner);
+  copy.append(owner);
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
@@ -2396,25 +2470,27 @@ function renderRatingPromptContent() {
   }
   const score = document.createElement("div");
   score.className = "song-detail-metric rating-score";
-  score.append(root.querySelector(".rating-stars"), root.querySelector(".rating-hint"));
+  score.append(root.querySelector(".rating-stars"));
   copy.appendChild(score);
   media.appendChild(copy);
-  content.replaceChildren(media);
+  content.replaceChildren(title, media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
     addUpButton.disabled = addUpButton.hasAttribute("aria-busy") || !ownerUid;
     addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
   }
-  renderRatingStars();
+  syncRatingPromptControls();
 }
 
 function setRatingPromptActiveTab(tab) {
-  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]?.bvid) {
     return;
   }
   state.ratingPromptActiveTab = tab;
   const activeItem = state.ratingPromptItems[tab];
+  state.ratingPromptScore = savedSongRatingScore(activeItem);
+  state.ratingPromptScoreDirty = false;
   state.ratingPromptItemId = String(activeItem?.id || activeItem?.bvid || "").trim();
   renderRatingPromptContent();
 }
@@ -2423,14 +2499,14 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null } = {}) {
+function closeRatingPrompt({ submit = false, restoreFocus = true, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
   }
   const promptItem = activeRatingPromptItem();
   const bvid = state.ratingPromptBvid;
-  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && bvid && isItemRateable(activeRatingPromptItem());
   const previousFocus = state.ratingPromptPreviousFocus;
   const returnFocusToDock = state.ratingPromptReturnFocusToDock;
   state.ratingPromptSubmitted = true;
@@ -2481,9 +2557,8 @@ function closeRatingPrompt({ submit = true, restoreFocus = true, trigger = null 
 }
 
 function openRatingPrompt(item, { manual = false } = {}) {
-  const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
+  const playId = String(item?.id || "").trim();
+  if (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId))) {
     return;
   }
 
@@ -2491,7 +2566,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const currentRateable = isItemRateable(promptItems.current, true);
   const previousRateable = isItemRateable(promptItems.previous, false);
 
-  if (!currentRateable && !previousRateable) {
+  if (!manual && (!currentRateable && !previousRateable)) {
     return;
   }
   if (
@@ -2505,27 +2580,23 @@ function openRatingPrompt(item, { manual = false } = {}) {
     return;
   }
 
-  closeRatingPrompt({ submit: true, restoreFocus: false });
+  closeRatingPrompt({ submit: false, restoreFocus: false });
   const previousFocus = document.activeElement;
   const returnFocusToDock = false; // Rating overlays the existing playback sheet.
 
-  const defaultTab = currentRateable ? "current" : "previous";
+  const defaultTab = promptItems.current ? "current" : "previous";
   const activeItem = promptItems[defaultTab];
   const activePlayId = String(activeItem?.id || activeItem?.bvid || "").trim();
 
-  if (activePlayId) {
-    state.ratingPromptSeenPlayIds.add(activePlayId);
-  }
 
   state.ratingPromptItems = promptItems;
   state.ratingPromptActiveTab = defaultTab;
   state.ratingPromptItem = activeItem;
   state.ratingPromptItemId = activePlayId;
   state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
-  state.ratingPromptScore = 5;
+  state.ratingPromptScore = savedSongRatingScore(activeItem);
+  state.ratingPromptScoreDirty = false;
   state.ratingPromptSubmitted = false;
-  state.ratingPromptCurrentRateable = currentRateable;
-  state.ratingPromptPreviousRateable = previousRateable;
 
   const root = document.createElement("div");
   root.className = "rating-modal";
@@ -2573,7 +2644,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const doneButton = document.createElement("button");
   doneButton.type = "button";
   doneButton.className = "primary-button";
-  doneButton.dataset.ratingClose = "";
+  doneButton.dataset.ratingSubmit = "";
   doneButton.textContent = t("rating.done");
   actions.append(addUpButton, doneButton);
 
@@ -2598,13 +2669,9 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const message = document.createElement("p");
   message.className = "rating-message";
   message.dataset.ratingMessage = "";
-  const hint = document.createElement("p");
-  hint.className = "rating-hint";
-  hint.dataset.i18n = "rating.hint";
-  hint.textContent = t("rating.hint");
   const body = document.createElement("div");
   body.className = "rating-body";
-  body.append(content, stars, hint, actions, tabs, message);
+  body.append(content, stars, actions, tabs, message);
   card.append(closeButton, body);
   root.append(backdrop, card);
   document.body.appendChild(root);
@@ -2650,7 +2717,7 @@ function flushPendingAutoRating(playId, itemData) {
   }
   // If the user already submitted a manual rating, skip the auto-rating.
   const submissionKey = ratingSubmissionKey({ ...pending.item, play_id: playId });
-  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || isSongRatingQueued(pending.item))) {
     ratingLog("flush: skipping " + playId + " (user already rated)");
     return;
   }
@@ -2671,48 +2738,7 @@ function flushAllPendingAutoRatings() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
-  const promptItems = ratingPromptItemsForItem(currentItem);
-  const currentRateable = isItemRateable(promptItems.current, true);
-  const previousRateable = isItemRateable(promptItems.previous, false);
-
-  if (elements.openRatingButton) {
-    elements.openRatingButton.disabled = !currentRateable && !previousRateable;
-  }
-
-  // Handle live-update, tab switching, and auto-closing of an already-open rating modal.
-  if (state.ratingPromptElement && state.ratingPromptItemId) {
-    const currentPromptId = String(promptItems.current?.id || promptItems.current?.bvid || "").trim();
-    const previousPromptId = String(promptItems.previous?.id || promptItems.previous?.bvid || "").trim();
-
-    if (state.ratingPromptItemId === currentPromptId && currentRateable) {
-      // The item being rated is still the current item, and is rateable.
-      const tabsChanged =
-        state.ratingPromptCurrentRateable !== currentRateable
-        || state.ratingPromptPreviousRateable !== previousRateable;
-      state.ratingPromptItems = promptItems;
-      state.ratingPromptCurrentRateable = currentRateable;
-      state.ratingPromptPreviousRateable = previousRateable;
-      if (tabsChanged) {
-        renderRatingPromptContent();
-      }
-    } else if (state.ratingPromptItemId === previousPromptId && previousRateable) {
-      // The item being rated is the previous item, and is rateable.
-      const needsTabTransition = state.ratingPromptActiveTab !== "previous";
-      const tabsChanged =
-        state.ratingPromptCurrentRateable !== currentRateable
-        || state.ratingPromptPreviousRateable !== previousRateable;
-      state.ratingPromptItems = promptItems;
-      state.ratingPromptActiveTab = "previous";
-      state.ratingPromptCurrentRateable = currentRateable;
-      state.ratingPromptPreviousRateable = previousRateable;
-      if (needsTabTransition || tabsChanged) {
-        renderRatingPromptContent();
-      }
-    } else {
-      // The item being rated is no longer rateable (neither current nor previous, or not rateable).
-      closeRatingPrompt({ submit: false });
-    }
-  }
+  renderCurrentRatingButton(currentItem);
 
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
@@ -2734,10 +2760,9 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
       state.autoRatingFlushQueue.push(entry);
       ratingLog("moved " + prevPlayId + " to flush queue (len=" + state.autoRatingFlushQueue.length + ")");
     }
-    // Flush the head of the queue — it's the oldest song that hasn't been
-    // manually rated. If the user rated it, submitSongRating already removed
-    // it from the queue, so the head is always a genuinely pending auto-rating.
-    if (state.autoRatingFlushQueue.length > 0) {
+    // Keep the immediate previous song available for manual rating. Flush
+    // older songs only after that one-song opportunity has passed.
+    while (state.autoRatingFlushQueue.length > 0 && state.autoRatingFlushQueue[0].playId !== prevPlayId) {
       const headEntry = state.autoRatingFlushQueue.shift();
       flushPendingAutoRating(headEntry.playId, headEntry);
     }
@@ -2756,7 +2781,8 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
     ratingLog("threshold reached: playId=" + playId + " ratio=" + ratio.toFixed(2)
       + " seen=" + state.ratingPromptSeenPlayIds.has(playId));
   }
-  if (ratio >= remoteRatingPromptThreshold) {
+  if (ratio >= remoteRatingPromptThreshold && isItemRateable(currentItem, true) && !isSongRatingQueued(currentItem)
+      && serverRatingStatus(currentItem) !== "failed") {
     // Mark as seen so the auto-prompt can fire, but do NOT auto-submit
     // score=5 immediately. Instead, queue it as a pending auto-rating
     // that will be flushed when the next song starts or on session close.
@@ -2817,9 +2843,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
-  if (state.data?.current_item) {
-    openRatingPrompt(state.data.current_item, { manual: true });
-  }
+  openRatingPrompt(state.data?.current_item, { manual: true });
 });
 
 function setHistoryExportMessage(message, isError = false) {
@@ -2966,11 +2990,25 @@ async function fetchState(options = {}) {
   const { force = true } = options;
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
+  if (reenterExpiredLocalRemote(response, payload)) return;
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   applyStateSnapshot(payload.data, { forceRender: force || !state.data });
   noteRemoteFallbackSuccess();
+}
+
+function reenterExpiredLocalRemote(response, payload) {
+  if (response.status !== 403 || payload?.code !== "forbidden"
+    || window.BilikaraRemoteTransport?.mode === "internet") return false;
+  // A native data reset invalidates the device cookie as well as its name.
+  // Re-enter through the existing navigation-only LAN handshake before asking
+  // for a new name; repeatedly submitting with the retired cookie cannot work.
+  if (!state.remoteSessionReentering) {
+    state.remoteSessionReentering = true;
+    window.location.replace("/remote");
+  }
+  return true;
 }
 
 function clearRemoteConnectionOfflineTimer() {
@@ -3132,6 +3170,15 @@ function currentStateRevision(snapshot = state.data) {
   return Number.isFinite(revision) && revision >= 0 ? revision : 0;
 }
 
+// Revisions are ordered only within a Host lifetime. Remember retired epochs
+// so an old HTTP response cannot roll the page back after SSE reconnects.
+function stateEpochTransition(snapshot) {
+  const next = typeof snapshot?.state_epoch === "string" ? snapshot.state_epoch : "";
+  const current = typeof state.data?.state_epoch === "string" ? state.data.state_epoch : "";
+  if (state.retiredStateEpochs?.has(next) || (current && !next)) return "stale";
+  return next && next !== current ? "restart" : "same";
+}
+
 const CACHE_VOLATILE_ITEM_KEYS = new Set([
   "cache_activity_at",
   "cache_download_current_bytes",
@@ -3203,11 +3250,27 @@ function scheduleRender() {
 
 function renderCacheStatusOnly(previousSnapshot = null) {
   const currentItem = state.data?.current_item;
-  if (currentItem) {
-    renderCurrentPlaybackState(currentItem);
+  const items = [currentItem, ...(state.data?.playlist || [])];
+  const identity = JSON.stringify([state.data?.state_epoch, ...items.filter(Boolean).map(item =>
+    [item.item_incarnation_id, item.cache_status])]);
+  const now = Date.now();
+  const elapsed = now - (state.cacheProgressPaintAt || 0);
+  if (identity !== state.cacheProgressPaintIdentity || elapsed >= 1000) {
+    window.clearTimeout(state.cacheProgressPaintTimer);
+    state.cacheProgressPaintTimer = null;
+    state.cacheProgressPaintIdentity = identity;
+    state.cacheProgressPaintAt = now;
+    if (currentItem) renderCurrentPlaybackState(currentItem);
+    renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
+  } else if (!state.cacheProgressPaintTimer) {
+    state.cacheProgressPaintTimer = window.setTimeout(() => {
+      state.cacheProgressPaintTimer = null;
+      renderCacheStatusOnly(state.data);
+    }, Math.max(1, 1000 - elapsed));
   }
-  renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
   if (playerStatusSignature(previousSnapshot) !== playerStatusSignature(state.data)) {
+    // Seek/pause/duration acknowledgements must not wait for the cache display.
+    if (currentItem?.cache_status === "ready") renderCurrentPlaybackState(currentItem);
     renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
   }
 }
@@ -3216,13 +3279,19 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   if (!snapshot || typeof snapshot !== "object") {
     return false;
   }
+  const epochTransition = stateEpochTransition(snapshot);
+  if (epochTransition === "stale") return false;
+  if (epochTransition === "restart") {
+    state.retiredStateEpochs ||= new Set();
+    if (state.data?.state_epoch) state.retiredStateEpochs.add(state.data.state_epoch);
+    forceRender = true;
+  }
   const nextRevision = currentStateRevision(snapshot);
   const currentRevision = currentStateRevision(state.data);
-  if (!forceRender && state.data) {
-    if (nextRevision > 0 && nextRevision <= currentRevision) {
-      return false;
-    }
-    if (nextRevision === 0 && currentRevision > 0) {
+  if (state.data && epochTransition !== "restart") {
+    // forceRender requests a redraw, never permission to roll state back.
+    if (nextRevision < currentRevision
+      || (!forceRender && nextRevision > 0 && nextRevision === currentRevision)) {
       return false;
     }
   }
@@ -3239,7 +3308,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
-  if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
+  if (epochTransition === "restart" || previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     clearRemoteVolumeCommitTimer();
     state.remoteVolumeSaveSeq += 1;
     state.remoteSettingsEchoSuppressUntil = 0;
@@ -3256,6 +3325,9 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   }
   syncRemoteIdentityWithSnapshot(snapshot);
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
+  if (JSON.stringify(previousSnapshot?.gatcha) !== JSON.stringify(snapshot.gatcha)) {
+    renderSourceManagementControls();
+  }
 
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
@@ -3358,7 +3430,9 @@ function eventStreamStateIsCurrent(snapshot) {
   if (!Number.isFinite(nextRevision) || nextRevision < 0) {
     return false;
   }
-  return !state.data || nextRevision >= currentStateRevision();
+  const epochTransition = stateEpochTransition(snapshot);
+  return epochTransition !== "stale"
+    && (epochTransition === "restart" || !state.data || nextRevision >= currentStateRevision());
 }
 
 function remoteConnectionRecoveryPhase() {
@@ -3674,49 +3748,35 @@ function gatchaTaskBusyMessage() {
 }
 
 function syncGatchaTaskTerminalMessage() {
-  const task = state.data?.gatcha || {};
-  if (task.busy || state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving) {
-    return;
+  const task = state.data?.gatcha;
+  if (!task) return;
+  const changedSources = window.BilikaraSourceStatus?.takeSourceChanges?.(task) || [];
+  const completed = window.BilikaraSourceStatus?.takeCompletion(task,
+    state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving);
+  if (!completed && !changedSources.length) return;
+  if (completed) {
+    const status = String(task.last_status || "");
+    const fallback =
+      status === "success"
+        ? t("gatcha.refreshDone")
+        : status === "partial"
+          ? t("gatcha.refreshPartial")
+          : t("gatcha.refreshFailed");
+    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const detail = task.last_error ? `${message} ${task.last_error}` : message;
+    setGatchaUidMessage(detail, status !== "success");
   }
-  const status = String(task.last_status || "");
-  if (!["success", "partial", "failed"].includes(status)) {
-    return;
-  }
-  const updatedAt = Number(task.last_updated_at || 0);
-  if (updatedAt && updatedAt < state.gatchaTaskWatchStartedAt - 1) {
-    return;
-  }
-  const signature = JSON.stringify({
-    status,
-    message: task.last_message || "",
-    error: task.last_error || "",
-    updatedAt,
+  // Each committed source becomes visible while the rest of the batch runs.
+  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+    state.sourcesFollowBrowseRenderSignature = "";
+    void loadFollowBrowse({uid:state.followBrowseSelectedUid,
+      query:String(state.followBrowseData?.query || ""), keepQuery:true});
   });
-  if (signature === state.gatchaTaskLastMessageSignature) {
-    return;
-  }
-  state.gatchaTaskLastMessageSignature = signature;
-  const fallback =
-    status === "success"
-      ? t("gatcha.refreshDone")
-      : status === "partial"
-        ? t("gatcha.refreshPartial")
-        : t("gatcha.refreshFailed");
-  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
-  const detail = task.last_error ? `${message} ${task.last_error}` : message;
-  setGatchaUidMessage(detail, status !== "success");
-  if (status !== "failed") {
-    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
-      state.sourcesFollowBrowseRenderSignature = "";
-      void loadFollowBrowse({uid:state.followBrowseSelectedUid,
-        query:String(state.followBrowseData.query || ""), keepQuery:true});
-    });
-    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
-      state.favlistBrowseRenderSignature = "";
-      void loadFavlistBrowse({folderId:state.favlistBrowseSelectedFolderId,
-        query:String(state.favlistBrowseData.query || ""), keepQuery:true});
-    });
-  }
+  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+    state.favlistBrowseRenderSignature = "";
+    void loadFavlistBrowse({folderId:state.favlistBrowseSelectedFolderId,
+      query:String(state.favlistBrowseData?.query || ""), keepQuery:true});
+  });
 }
 
 function gatchaUidResultMessage(result, fallbackUid = "") {
@@ -4086,6 +4146,66 @@ function renderSearchResultItems(container, items, emptyText = "") {
     remoteResultPagers.set(container, pager);
   }
   pager.update(remoteResultPaginationOptions(container, Array.isArray(items) ? items : [], emptyText));
+}
+
+const remoteGridSources = new WeakMap();
+function renderRemoteGridPages(container, items, key, renderPage, {loading = false, emptyText = ""} = {}) {
+  let source = remoteGridSources.get(container);
+  const signature = JSON.stringify([key, items]);
+  if (!source || source.signature !== signature) {
+    source = {signature, items};
+    remoteGridSources.set(container, source);
+  }
+  let pager = remoteResultPagers.get(container);
+  if (!pager) {
+    pager = window.BilikaraResultPager.create(container, {
+      translate: t,
+      renderItems: (page, message, target = container) => renderPage(target, page, message),
+      reportError: message => setAppMessage(message, true),
+    });
+    remoteResultPagers.set(container, pager);
+  }
+  pager.update({key, items:source.items, total:items.length, pageSize:12, limited:true, hasMore:false,
+    loading, emptyText, language:state.language});
+}
+
+function renderSourceCardPage(container, entries, emptyText, favorites = false) {
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = emptyText;
+    container.append(empty);
+  }
+  for (const entry of entries) {
+    const id = String(favorites ? entry.id : entry.uid);
+    const title = favorites ? String(entry.title || id || t("favlist.folder")) : followOwnerDisplayName(entry);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = favorites ? "follow-up-button favlist-browse-button" : "follow-up-button";
+    button.dataset[favorites ? "folderId" : "uid"] = id;
+    button.title = title;
+    const name = document.createElement("span");
+    name.className = "follow-up-name";
+    name.textContent = title;
+    const count = document.createElement("span");
+    count.className = "follow-up-count";
+    count.textContent = t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
+      count:Number((favorites ? entry.media_count : entry.count) || entry.count || 0),
+    });
+    button.append(name, count);
+    if (entry.avatar_url) {
+      const avatar = document.createElement("img");
+      avatar.className = "follow-up-avatar";
+      avatar.alt = "";
+      avatar.loading = "lazy";
+      avatar.referrerPolicy = "no-referrer";
+      avatar.src = entry.avatar_url;
+      button.append(avatar);
+    }
+    window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
+    container.append(button);
+  }
 }
 
 function hideRemoteResultPager(container) {
@@ -4624,9 +4744,8 @@ function renderCategoryBrowseView() {
   home?.classList.toggle("hidden", Boolean(selected));
   detail?.classList.toggle("hidden", !selected);
   if (grid && !selected) {
-    grid.innerHTML = "";
-    categories.forEach((category) => {
-      grid.appendChild(createCategoryBrowseCard(category));
+    renderRemoteGridPages(grid, categories, `categories:${state.language}`, (target, entries) => {
+      target.replaceChildren(...entries.map(category => createCategoryBrowseCard(category)));
     });
   }
   if (!selected) {
@@ -4771,45 +4890,11 @@ function renderFavlistBrowse() {
       elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
       elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
     }
-    elements.favlistGrid.innerHTML = "";
-    if (!folders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
-      elements.favlistGrid.appendChild(empty);
-    } else {
-      folders.forEach((folder) => {
-        const folderId = String(folder.id || "").trim();
-        const title = String(folder.title || folderId || t("favlist.folder")).trim();
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "follow-up-button favlist-browse-button";
-        button.dataset.folderId = folderId;
-        button.title = title;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name favlist-browse-name";
-        name.textContent = title;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count favlist-browse-count";
-        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
-
-        button.append(name, count);
-
-        if (folder.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          avatar.src = folder.avatar_url;
-          button.append(avatar);
-        }
-
-        elements.favlistGrid.appendChild(button);
+    renderRemoteGridPages(elements.favlistGrid, folders, "favorites", (target, entries, message) =>
+      renderSourceCardPage(target, entries, message, true), {
+        loading:state.favlistBrowseLoading,
+        emptyText:t(state.favlistBrowseLoading ? "favlist.loadingFolders" : "favlist.noBrowseFolders"),
       });
-    }
     setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
     syncRemoteRequestPanelSizeTier();
     return;
@@ -5194,44 +5279,10 @@ function renderSourcesFollowBrowse() {
   if (!hasSelectedUid) {
     hideRemoteResultPager(elements.sourcesFollowResults);
     window.BilikaraBrowseSearch?.reset(elements.sourcesFollowSearchForm);
-    elements.sourcesFollowGrid.innerHTML = "";
-    if (!owners.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
-      elements.sourcesFollowGrid.appendChild(empty);
-    } else {
-      owners.forEach((owner) => {
-        const displayName = followOwnerDisplayName(owner);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "follow-up-button";
-        button.dataset.uid = String(owner.uid || "");
-        button.title = displayName;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name";
-        name.textContent = displayName;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count";
-        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
-
-        button.append(name, count);
-
-        if (owner.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar";
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          avatar.src = owner.avatar_url;
-          button.append(avatar);
-        }
-
-        elements.sourcesFollowGrid.appendChild(button);
-      });
-    }
+    renderRemoteGridPages(elements.sourcesFollowGrid, owners, "uids", renderSourceCardPage, {
+      loading:state.followBrowseLoading,
+      emptyText:t(state.followBrowseLoading ? "follow.loadingOwners" : "follow.noOwners"),
+    });
     setSourcesFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
     syncRemoteRequestPanelSizeTier();
     return;
@@ -5593,11 +5644,12 @@ function syncPlaybackMetadataFieldVisibility() {
     const visible = Boolean(
       element
       && !element.classList.contains("hidden")
+      && !(wrapper.dataset.playbackMetadataField === "owner" && state.data?.current_item?.cache_status !== "ready")
       && element.textContent?.trim(),
     );
     wrapper.classList.toggle("hidden", !visible);
     if (!visible) {
-      wrapper.classList.remove("is-clamped", "is-disclosable");
+      wrapper.classList.remove("is-clamped", "is-disclosable", "is-marquee");
       wrapper.style.removeProperty("--playback-metadata-lines");
       wrapper.removeAttribute("role");
       wrapper.removeAttribute("tabindex");
@@ -5786,7 +5838,7 @@ function playbackMetadataLineHeight(element) {
 }
 
 function resetPlaybackMetadataFieldForMeasurement({ wrapper }) {
-  wrapper.classList.remove("is-clamped", "is-disclosable");
+  wrapper.classList.remove("is-clamped", "is-disclosable", "is-marquee");
   wrapper.style.removeProperty("--playback-metadata-lines");
   wrapper.removeAttribute("role");
   wrapper.removeAttribute("tabindex");
@@ -5797,7 +5849,8 @@ function resetPlaybackMetadataFieldForMeasurement({ wrapper }) {
 
 function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
   const { wrapper, element, labelKey } = entry;
-  const lines = Math.max(1, Math.min(naturalLines, visibleLines));
+  const lines = entry.key === "title" ? (naturalLines <= 2 ? naturalLines : 1)
+    : entry.key === "owner" ? 1 : Math.max(1, Math.min(naturalLines, visibleLines));
   const expectedClipping = lines < naturalLines;
   wrapper.style.setProperty("--playback-metadata-lines", String(lines));
   wrapper.classList.toggle("is-clamped", expectedClipping);
@@ -5810,6 +5863,13 @@ function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
     || clipsMultiline
   ));
   wrapper.classList.toggle("is-disclosable", truncated);
+  if (entry.key === "title" && truncated) {
+    wrapper.classList.remove("is-clamped");
+    wrapper.classList.add("is-marquee");
+    const distance = Math.max(0, element.scrollWidth - wrapper.clientWidth);
+    wrapper.style.setProperty("--playback-marquee-distance", `${distance}px`);
+    wrapper.style.setProperty("--playback-marquee-duration", `${Math.max(10, distance / 24 + 4)}s`);
+  }
   wrapper.dataset.naturalLines = String(naturalLines);
   wrapper.dataset.visibleLines = String(truncated ? lines : naturalLines);
   wrapper.dataset.truncated = String(truncated);
@@ -6313,18 +6373,13 @@ function renderCurrentItem(current, playbackMode) {
 
 function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
-  if (!button) {
-    return;
-  }
-  const enabled = Boolean(current?.bvid);
-  const submitted = enabled && hasSubmittedSongRating(current);
-  const pending = state.ratingPendingKeys.has(ratingSubmissionKey(current));
-  button.disabled = !enabled || submitted || pending;
-  button.classList.toggle("hidden", !enabled);
-  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
-  if (pending) button.setAttribute("aria-busy", "true");
-  else button.removeAttribute("aria-busy");
-  button.title = submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
+  if (!button) return;
+  button.classList.remove("hidden");
+  button.disabled = false;
+  button.textContent = t("rating.rate");
+  button.title = t("rating.rateTitle");
+  button.removeAttribute("aria-busy");
+  refreshOpenRatingPrompt(current);
 }
 
 function audioVariantsForItem(item) {
@@ -6543,16 +6598,27 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
 
 function syncAudioVariantLayout() {
   const bar = elements.audioVariantBar;
-  const list = bar?.querySelector(".audio-variant-list") || elements.audioVariantPopover?.querySelector(".audio-variant-list");
+  const list = bar?.querySelector(".audio-variant-list");
   if (!list || !bar.clientWidth) return;
   bar.classList.add("is-inline");
-  bar.append(list);
-  const fits = list.scrollWidth <= bar.clientWidth + 1;
+  const buttons = [...list.children];
+  buttons.forEach(button => button.classList.remove("hidden"));
+  const fits = list.scrollWidth <= list.clientWidth + 1;
   if (fits) {
     setAudioVariantPopoverOpen(false);
   } else {
     bar.classList.remove("is-inline");
-    elements.audioVariantPopover?.replaceChildren(list);
+    const available = list.clientWidth;
+    const gap = playbackCssPixels(getComputedStyle(list).columnGap);
+    const selected = buttons.find(button => button.classList.contains("active")) || buttons[0];
+    let used = selected?.getBoundingClientRect().width || 0;
+    for (const button of buttons) {
+      if (button === selected) continue;
+      const width = button.getBoundingClientRect().width;
+      const show = used + gap + width <= available + 1;
+      button.classList.toggle("hidden", !show);
+      if (show) used += gap + width;
+    }
   }
 }
 
@@ -6589,14 +6655,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
   elements.audioVariantBar.replaceChildren();
-
-  const summary = document.createElement("span");
-  summary.className = "audio-variant-summary";
-  const summaryLabel = document.createElement("span");
-  summaryLabel.className = "audio-variant-summary-label";
-  summaryLabel.textContent = selectedVariant?.label || variants[0]?.label || variants[0]?.id || "";
-  summary.title = summaryLabel.textContent;
-  summary.appendChild(summaryLabel);
 
   const toggleButton = document.createElement("button");
   toggleButton.type = "button";
@@ -6638,8 +6696,8 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     list.appendChild(button);
   });
 
-  elements.audioVariantPopover?.replaceChildren(list);
-  elements.audioVariantBar.append(summary, toggleButton);
+  elements.audioVariantPopover?.replaceChildren(list.cloneNode(true));
+  elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
   syncAudioVariantLayout();
   setAudioVariantPopoverOpen(state.audioVariantBarExpanded);
@@ -7124,6 +7182,10 @@ function setPoolConfigChecked(name, checked) {
 }
 
 function resetPoolConfigControls() {
+  if (state.poolConfigData) {
+    state.poolConfigData.excluded_uids = [];
+    state.poolConfigData.excluded_favlist_folders = [];
+  }
   if (elements.poolConfigWeightSlider) {
     elements.poolConfigWeightSlider.value = "50";
   }
@@ -7134,10 +7196,12 @@ function resetPoolConfigControls() {
 }
 
 function poolConfigExcludedValues(name) {
-  return [...document.querySelectorAll(`input[name="${name}"]`)]
-    .filter((input) => !input.checked)
-    .map((input) => String(input.value || "").trim())
-    .filter(Boolean);
+  const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
+  const shown = new Set(inputs.map((input) => String(input.value || "").trim()));
+  const field = name === "gatcha-pool-uid" ? "excluded_uids" : "excluded_favlist_folders";
+  const retained = (state.poolConfigData?.[field] || []).filter((value) => !shown.has(String(value)));
+  return [...new Set([...retained, ...inputs.filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim()).filter(Boolean)])];
 }
 
 async function submitPoolConfigSheet() {
@@ -7247,10 +7311,10 @@ async function confirmReorderConfirmSheet() {
   }
 
   try {
-    state.data = await apiPost("/api/playlist/reorder", {
+    applyStateSnapshot(await apiPost("/api/playlist/reorder", {
       item_id: intent.itemId,
       index: intent.targetIndex,
-    });
+    }));
     closeReorderConfirmSheet();
     setFormMessage(t("remote.queueOrderUpdated"));
     render();
@@ -7444,6 +7508,10 @@ async function dispatchRemoteAvDelayAction(action) {
   if (state.remoteAvDelaySaving) {
     return;
   }
+  // Incoming playback snapshots replace state.data. A bare AV decision has
+  // no authoritative revision: apply it only while the captured snapshot is
+  // still current (including across restart and song changes).
+  const requestedSnapshot = state.data;
   const activeElement = document.activeElement;
   activeElement?.setAttribute?.("aria-busy", "true");
   state.remoteAvDelaySaving = true;
@@ -7454,6 +7522,7 @@ async function dispatchRemoteAvDelayAction(action) {
       action,
       { timeoutMs: avDelayRequestTimeoutMs },
     );
+    if (state.data !== requestedSnapshot) return;
     state.data = {
       ...state.data,
       player_settings: {
@@ -8050,7 +8119,10 @@ function syncCurrentCacheState(current) {
       delete retryBtn.dataset.itemIncarnationId;
     }
   }
-  elements.currentCacheState.classList.toggle("hidden", !label && !showRetry);
+  const ready = current.cache_status === "ready";
+  elements.currentCacheState.classList.toggle("hidden", ready || (!label && !showRetry));
+  syncPlaybackMetadataFieldVisibility();
+  elements.currentCacheState.setAttribute("aria-hidden", String(ready));
 }
 
 
@@ -8494,9 +8566,26 @@ async function handleAddByHistory(url, position) {
 }
 
 async function resortPlaylistByCycle() {
-  state.data = await apiPost("/api/playlist/resort");
-  applyStateSnapshot(state.data, { forceRender: true });
-  setFormMessage(t("list.resorted"));
+  if (state.resortingPlaylist) {
+    return;
+  }
+  state.resortingPlaylist = true;
+  const button = elements.resortPlaylistButton;
+  const originallyDisabled = button?.disabled;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    applyStateSnapshot(await apiPost("/api/playlist/resort"), { forceRender: true });
+    setFormMessage(t("list.resorted"));
+  } finally {
+    state.resortingPlaylist = false;
+    if (button) {
+      button.disabled = originallyDisabled;
+      button.removeAttribute("aria-busy");
+    }
+  }
 }
 
 async function addByUrl(url, position = "tail", source = "search") {
@@ -9661,6 +9750,8 @@ document.addEventListener("click", async (event) => {
   }
   const scoreButton = event.target.closest("[data-rating-score]");
   if (scoreButton) {
+    if (scoreButton.disabled || !isItemRateable(activeRatingPromptItem())) return;
+    state.ratingPromptScoreDirty = true;
     state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
     renderRatingStars();
     return;
@@ -9688,12 +9779,19 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  const submitButton = event.target.closest("[data-rating-submit]");
+  if (submitButton) {
+    if (submitButton.disabled || !isItemRateable(activeRatingPromptItem())) return;
+    closeRatingPrompt({ submit: true, trigger: submitButton });
+    return;
+  }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
+    closeRatingPrompt({ submit: false, trigger: event.target.closest("[data-rating-close]") });
   }
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (state.gatchaRefreshSaving) return;
   if (gatchaTaskBusy()) {
     setGatchaUidMessage(gatchaTaskBusyMessage(), true);
     renderSourceManagementControls();
@@ -9704,14 +9802,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   setGatchaUidLoadingMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
-    if (result?.started !== false && state.data) {
-      state.data.gatcha = {
-        ...(state.data.gatcha || {}),
-        busy: true,
-        message: gatchaTaskBusyMessage(),
-        last_status: "running",
-      };
-    }
+    await fetchState({ force: false });
     setGatchaUidMessage(result?.started === false ? t("gatcha.busyFallback") : t("gatcha.refreshStarted"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
@@ -10099,7 +10190,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (state.ratingPromptElement) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: false });
   } else if (state.audioVariantBarExpanded) {
     setAudioVariantPopoverOpen(false, { restoreFocus: true });
   } else if (playbackSheetIsOpen()) {
@@ -10206,8 +10297,8 @@ function lockPlaybackSheetDocumentScroll() {
   if (state.playbackSheetScrollLock) {
     return;
   }
-  // Keep the document in flow: fixing body resets the root scroll position
-  // and changes Safari's toolbar/safe-area presentation when opening a sheet.
+  // Keep the playback lifecycle marker until its closing animation finishes.
+  // The shared modal observer contains scroll input without repositioning the page.
   state.playbackSheetScrollLock = true;
   document.body.classList.add("playback-sheet-scroll-locked");
 }
@@ -10280,7 +10371,9 @@ function openPlaybackSheet() {
   void elements.playbackSheetPanel?.offsetHeight;
   elements.playbackSheet.classList.add("is-open");
   schedulePlaybackSheetAdaptiveLayout({ force: true });
-  elements.playbackSheetCollapse?.focus?.({ preventScroll: true });
+  if (document.documentElement.dataset.remoteInputModality === "keyboard") {
+    elements.playbackSheetCollapse?.focus?.({ preventScroll: true });
+  }
   return true;
 }
 
@@ -10328,6 +10421,7 @@ function closePlaybackSheet({ immediate = false, restoreFocus = true } = {}) {
     syncRemoteShellInert();
     if (
       restoreFocus
+      && document.documentElement.dataset.remoteInputModality === "keyboard"
       && state.data?.current_item
       && elements.playbackDock
       && !elements.playbackDock.classList.contains("hidden")
@@ -10355,7 +10449,7 @@ function retireTransientPlaybackModalForModal() {
   if (elements.historyExportDialog?.open) closeHistoryExportDialog({ restoreFocus: false });
   const retiredPlaybackSheet = retirePlaybackSheetForModal();
   if (state.ratingPromptElement) {
-    closeRatingPrompt({ submit: true, restoreFocus: false });
+    closeRatingPrompt({ submit: false, restoreFocus: false });
   }
   return retiredPlaybackSheet;
 }
@@ -10391,5 +10485,77 @@ async function startRemoteSession() {
   }
   connectStateStream();
 }
+
+// One document lock for every visible Remote modal, including nested editors.
+// Keep it until the last closing animation finishes; the top menu is not modal.
+(function installRemoteModalScrollLock() {
+  const selector = '.song-detail-view, .rating-modal, .binding-sheet, .remote-identity-modal, .playback-sheet, dialog';
+  let locked = false;
+  let touch = null;
+  const visible = element => (element.tagName !== 'DIALOG' || element.open)
+    && !element.closest('[hidden], .hidden') && element.getClientRects().length;
+  function sync() {
+    const open = [...document.querySelectorAll(selector)].some(visible);
+    if (open === locked) return;
+    locked = open;
+    document.documentElement.classList.toggle('remote-modal-scroll-locked', locked);
+  }
+  // Keep the root in normal flow: fixing body changes scrollY/viewport geometry
+  // even when its negative top visually disguises the jump. Consume only input
+  // that would scroll the background, including chaining at a panel boundary.
+  function scrollable(target, dx, dy) {
+    const boundary = target?.closest?.(selector);
+    if (!boundary || !visible(boundary)) return null;
+    const horizontal = Math.abs(dx) > Math.abs(dy);
+    const delta = horizontal ? dx : dy;
+    for (let element = target; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      const overflow = horizontal ? style.overflowX : style.overflowY;
+      const position = horizontal ? element.scrollLeft : element.scrollTop;
+      const extent = horizontal ? element.scrollWidth - element.clientWidth : element.scrollHeight - element.clientHeight;
+      if (/^(auto|scroll)$/.test(overflow) && extent > 1
+        && (delta < 0 ? position > 0 : position < extent - 1)) return element;
+      if (element === boundary) break;
+    }
+    return null;
+  }
+  document.addEventListener('wheel', event => {
+    if (locked && !event.ctrlKey && !scrollable(event.target, event.deltaX, event.deltaY)) event.preventDefault();
+  }, {passive:false});
+  document.addEventListener('touchstart', event => {
+    touch = event.touches.length === 1 ? {x:event.touches[0].clientX, y:event.touches[0].clientY} : null;
+  }, {passive:true});
+  document.addEventListener('touchmove', event => {
+    if (!touch || event.touches.length !== 1) return;
+    const next = {x:event.touches[0].clientX, y:event.touches[0].clientY};
+    const dx = touch.x - next.x, dy = touch.y - next.y;
+    // Native range dragging also uses touchmove's default action. Keep that
+    // horizontal gesture inside the panel while blocking background scrolling.
+    const rangeDrag = Math.abs(dx) > Math.abs(dy)
+      && event.target.matches?.('input[type="range"]:not(:disabled)')
+      && event.target.closest(selector);
+    if (locked && !rangeDrag && !scrollable(event.target, dx, dy)) event.preventDefault();
+    touch = next;
+  }, {passive:false});
+  document.addEventListener('keydown', event => {
+    if (!locked || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
+      || !['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End',' '].includes(event.key)
+      || event.target.closest?.('input,textarea,select,[contenteditable="true"]')
+      || (event.key === ' ' && event.target.closest?.('button,[role="button"]'))) return;
+    const delta = ['ArrowUp','ArrowLeft','PageUp','Home'].includes(event.key) || (event.key === ' ' && event.shiftKey) ? -1 : 1;
+    const horizontal = ['ArrowLeft','ArrowRight'].includes(event.key);
+    const element = scrollable(event.target, horizontal ? delta : 0, horizontal ? 0 : delta);
+    event.preventDefault();
+    if (element) {
+      const amount = ['Home','End'].includes(event.key) ? element.scrollHeight
+        : event.key.startsWith('Arrow') ? 40 : element.clientHeight * 0.9;
+      element.scrollBy(horizontal ? delta * amount : 0, horizontal ? 0 : delta * amount);
+    }
+  });
+  new MutationObserver(sync).observe(document.body, {
+    subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open'],
+  });
+  sync();
+})();
 
 startRemoteSession();

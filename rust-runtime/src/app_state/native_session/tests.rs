@@ -1,6 +1,208 @@
 use super::*;
 
 #[test]
+fn sse_projection_is_shared_until_revision_changes_and_separates_host_fields() {
+    let (mut app, _) = setup();
+    app.native().startup_warning = "host warning".into();
+    let (revision, host) = app.native_sse_frame(true).unwrap();
+    let (_, same) = app.native_sse_frame(true).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&host, &same));
+    let (_, remote) = app.native_sse_frame(false).unwrap();
+    assert!(host.contains("host warning"));
+    assert!(!remote.contains("host warning"));
+    app.native_execute(AppStateRequest::AddSessionUser {
+        schema_version: 1,
+        name: "Frame Test".into(),
+        now: 2.0,
+    })
+    .unwrap();
+    let (changed, next) = app.native_sse_frame(true).unwrap();
+    assert!(changed > revision);
+    assert!(!std::sync::Arc::ptr_eq(&host, &next));
+    assert!(next.contains("Frame Test"));
+}
+
+#[test]
+fn remote_churn_is_bounded_without_permanently_refusing_new_devices() {
+    let (mut app, _) = setup();
+    for index in 0..MAX_REMOTE_DEVICES + 20 {
+        let token = format!("phone-{index}");
+        app.native_join_remote("", token.clone()).unwrap();
+        let remote = Identity {
+            token,
+            loopback: false,
+            client: "phone".into(),
+        };
+        app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+            .unwrap();
+        assert_eq!(app.native_identity(&remote).unwrap()["registered"], true);
+        assert!(app.native_session.devices.len() <= MAX_REMOTE_DEVICES);
+        assert!(app.data.as_ref().unwrap().remote_identities.len() <= MAX_REMOTE_DEVICES);
+    }
+    let old = app
+        .native_join_remote("phone-0", "replacement".into())
+        .unwrap();
+    assert_eq!(old, "replacement");
+    let recent = format!("phone-{}", MAX_REMOTE_DEVICES + 19);
+    assert_eq!(
+        app.native_join_remote(&recent, "unused".into()).unwrap(),
+        recent
+    );
+}
+
+#[test]
+fn guest_preferences_migrate_to_the_user_and_internet_guests_do_not_change_host_defaults() {
+    let (mut app, host) = setup();
+    let token = app.native_join_remote("", "guest-phone".into()).unwrap();
+    let remote = Identity {
+        token,
+        loopback: false,
+        client: "phone".into(),
+    };
+    let guest = app.native_pool_key(&remote, "").unwrap();
+    app.native_save_pool_config(guest.clone(), json!({"uid_weight":17}))
+        .unwrap();
+    assert!(
+        app.data
+            .as_ref()
+            .unwrap()
+            .gatcha_pool_preferences
+            .is_empty()
+    );
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    assert!(
+        !app.native_session
+            .guest_pool_preferences
+            .contains_key(&guest)
+    );
+    assert_eq!(
+        app.native_pool_config("user:Alice", &Value::Null)["uid_weight"],
+        17
+    );
+    assert!(app.native_pool_key(&host, "Unregistered").is_err());
+    let peer = Identity {
+        client: "native-internet:guest-1".into(),
+        ..host.clone()
+    };
+    let key = app.native_pool_key(&peer, "").unwrap();
+    app.native_save_pool_config(key.clone(), json!({"uid_weight":29}))
+        .unwrap();
+    assert_eq!(app.native_pool_config(&key, &Value::Null)["uid_weight"], 29);
+    assert_eq!(
+        app.native_pool_config("host", &json!({"uid_weight":50}))["uid_weight"],
+        50
+    );
+    assert!(
+        !app.data
+            .as_ref()
+            .unwrap()
+            .gatcha_pool_preferences
+            .contains_key(&key)
+    );
+    let exclusions: Vec<String> = (0..20_000).map(|i| format!("1234567{i}")).collect();
+    app.native_save_pool_config("user:Alice".into(), json!({"excluded_uids":exclusions}))
+        .unwrap();
+    assert_eq!(
+        app.native_pool_config("user:Alice", &Value::Null)["excluded_uids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        20_000
+    );
+}
+
+#[test]
+fn loading_old_remote_state_bounds_devices_and_preserves_every_user_preference() {
+    let mut seed: AppStateSeed = serde_json::from_value(
+        json!({"session_started_at":1,"session_played_file":"test.json","updated_at":1}),
+    )
+    .unwrap();
+    for index in 0..300 {
+        seed.remote_identities
+            .insert(format!("digest-{index}"), "Alice".into());
+        seed.gatcha_pool_preferences
+            .insert(format!("user:{index}"), json!({"updated_at":index}));
+    }
+    seed.gatcha_pool_preferences
+        .insert("device:old".into(), json!({}));
+    seed.gatcha_pool_preferences
+        .insert("host".into(), json!({"uid_weight":23}));
+    bound_saved_remote_state(&mut seed);
+    assert_eq!(seed.remote_identities.len(), MAX_REMOTE_DEVICES);
+    assert_eq!(seed.gatcha_pool_preferences.len(), 302);
+    assert!(seed.gatcha_pool_preferences.contains_key("user:299"));
+    assert!(seed.gatcha_pool_preferences.contains_key("user:0"));
+    assert!(seed.gatcha_pool_preferences.contains_key("device:old"));
+    assert_eq!(seed.gatcha_pool_preferences["host"]["uid_weight"], 23);
+}
+
+#[test]
+fn pool_preferences_are_user_owned_and_editable_while_refresh_is_running() {
+    let (mut app, host) = setup();
+    app.native_execute(AppStateRequest::AddSessionUser {
+        schema_version: 1,
+        name: "Bob".into(),
+        now: 1.0,
+    })
+    .unwrap();
+    let token = app.native_join_remote("", "alice-phone".into()).unwrap();
+    let remote = Identity {
+        token,
+        loopback: false,
+        client: "remote".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice","claim":true}), false, 2.0)
+        .unwrap();
+    let alice = app.native_pool_key(&remote, "Bob").unwrap();
+    assert_eq!(alice, "user:Alice");
+    assert_eq!(alice, app.native_pool_key(&host, "Alice").unwrap());
+    let bob = app.native_pool_key(&host, "Bob").unwrap();
+    app.native().library_refresh_active = true;
+    app.native_save_pool_config(
+        alice.clone(),
+        json!({"uid_weight":0,"favlist_weight":100,"excluded_uids":["42"]}),
+    )
+    .unwrap();
+    app.native_save_pool_config(bob.clone(), json!({"uid_weight":100,"favlist_weight":0}))
+        .unwrap();
+    app.native().library_refresh_active = false;
+    assert_eq!(
+        app.native_pool_config(&alice, &Value::Null)["uid_weight"],
+        0
+    );
+    assert_eq!(
+        app.native_pool_config(&bob, &Value::Null)["uid_weight"],
+        100
+    );
+    assert_eq!(
+        app.native_pool_config(&alice, &Value::Null)["excluded_uids"],
+        json!(["42"])
+    );
+    assert!(
+        app.native_snapshot(false)
+            .unwrap()
+            .get("gatcha_pool_preferences")
+            .is_none()
+    );
+    app.native_execute(AppStateRequest::ResetRuntime {
+        schema_version: 1,
+        new_session: SessionArchiveSeed {
+            file_name: "reset.json".into(),
+            session_started_at: 3.0,
+            items: vec![],
+        },
+        now: 3.0,
+    })
+    .unwrap();
+    for key in [alice, bob] {
+        let reset = app.native_pool_config(&key, &json!({"uid_weight":1}));
+        assert_eq!(reset["uid_weight"], 50);
+        assert_eq!(reset["excluded_uids"], json!([]));
+    }
+}
+
+#[test]
 fn login_diagnostics_are_bounded_not_evicted_by_playback_and_not_in_remote_snapshots() {
     let (mut app, _) = setup();
     for generation in 1..=60 {
@@ -39,13 +241,35 @@ fn setup() -> (AppState, Identity) {
         .is_none()
     );
     app.native().host_token = "host-token".into();
-    app.native().invite = "invite-token".into();
     let identity = Identity {
         token: "host-token".into(),
         loopback: true,
         client: "host-webview".into(),
     };
     (app, identity)
+}
+
+#[test]
+fn state_commit_wakes_sse_waiters_without_waiting_for_a_poll_tick() {
+    let (mut app, _) = setup();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let changed = state_changes().notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        app.native_execute(AppStateRequest::AddSessionUser {
+            schema_version: 1,
+            name: "Bob".into(),
+            now: 2.0,
+        })
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(100), changed)
+            .await
+            .expect("committed state wakes subscribers");
+    });
 }
 
 fn ready(app: &mut AppState) -> (AppSnapshot, Value) {
@@ -94,7 +318,7 @@ fn ready_at(app: &mut AppState, cache_root: Option<&Path>) -> (AppSnapshot, Valu
 }
 
 #[test]
-fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
+fn local_ip_is_not_host_authority_and_old_visitors_do_not_fill_the_room() {
     let (mut app, host) = setup();
     assert!(app.native_authorize(&host, true).unwrap());
     let forged = Identity {
@@ -114,18 +338,16 @@ fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
         loopback: false,
         client: "phone".into(),
     };
-    assert!(app.native_redeem("wrong", "", "remote0".into()).is_err());
-    for index in 0..10 {
-        app.native_redeem("invite-token", "", format!("remote{index}"))
+    for index in 0..64 {
+        app.native_join_remote("", format!("remote{index}"))
             .unwrap();
     }
-    assert!(
-        app.native_redeem("invite-token", "", "overflow".into())
-            .is_err()
+    assert_eq!(
+        app.native_join_remote("", "visitor65".into()).unwrap(),
+        "visitor65"
     );
     assert_eq!(
-        app.native_redeem("invite-token", "remote0", "unused".into())
-            .unwrap(),
+        app.native_join_remote("remote0", "unused".into()).unwrap(),
         "remote0"
     );
     assert!(app.native_authorize(&remote, true).is_err());
@@ -145,6 +367,250 @@ fn local_ip_is_not_host_authority_and_remote_limit_is_enforced() {
     );
     app.execute(AppStateRequest::Shutdown { schema_version: 1 });
     assert!(app.native_authorize(&host, true).is_err());
+}
+
+#[test]
+fn runtime_reset_reclaims_remote_devices_only_after_a_successful_commit() {
+    let (mut app, host) = setup();
+    app.data.as_mut().unwrap().native_session_choice_pending = true;
+    for index in 0..10 {
+        app.native_join_remote("", format!("remote{index}"))
+            .unwrap();
+    }
+    let remote = Identity {
+        token: "remote0".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    let reset = |file_name: &str| AppStateRequest::ResetRuntime {
+        schema_version: 1,
+        new_session: SessionArchiveSeed {
+            file_name: file_name.into(),
+            session_started_at: 3.0,
+            items: vec![],
+        },
+        now: 3.0,
+    };
+    assert!(app.native_execute(reset("../invalid.json")).is_err());
+    assert!(app.native_session_choice_pending());
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "Alice");
+    assert_eq!(
+        app.native_session.devices.len(),
+        10,
+        "failed reset must preserve admitted devices"
+    );
+    app.native_execute(reset("next.json")).unwrap();
+    assert!(!app.native_session_choice_pending());
+    assert!(app.native_authorize(&host, true).unwrap());
+    assert!(app.native_authorize(&remote, false).is_err());
+    assert!(app.native_core_snapshot().unwrap().session_users.is_empty());
+    assert_eq!(
+        app.native_join_remote("remote0", "new-remote".into())
+            .unwrap(),
+        "new-remote"
+    );
+    assert_eq!(
+        app.native_identity(&Identity {
+            token: "new-remote".into(),
+            ..remote
+        })
+        .unwrap()["registered"],
+        false
+    );
+}
+
+#[test]
+fn remote_identity_revocation_survives_same_name_reuse_and_failed_commits() {
+    let (mut app, _) = setup();
+    let root = std::env::temp_dir().join(format!(
+        "bilikara-identity-revocation-{}",
+        crate::native_host::token().unwrap()
+    ));
+    let seed: AppStateSeed = serde_json::from_value(json!({
+        "session_users":["Alice"], "session_started_at":1.0,
+        "session_played_file":"native.json", "updated_at":1.0
+    }))
+    .unwrap();
+    app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+    assert!(app.initialize_native(&root, seed).error().is_none());
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    let identity_before = app.native_identity(&remote).unwrap();
+    let remove = || AppStateRequest::RemoveSessionUser {
+        schema_version: 1,
+        name: "Alice".into(),
+        now: 3.0,
+    };
+    // A storage rejection cannot revoke a still-committed singer's identity.
+    let before = std::fs::read(root.join("host-state.json")).unwrap();
+    std::fs::create_dir(root.join("host-state.pending")).unwrap();
+    assert!(app.execute(remove()).error().is_some());
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "Alice");
+    assert_eq!(app.native_identity(&remote).unwrap(), identity_before);
+    assert_eq!(std::fs::read(root.join("host-state.json")).unwrap(), before);
+    std::fs::remove_dir(root.join("host-state.pending")).unwrap();
+
+    // Use the shared command boundary, not just the HTTP adapter wrapper.
+    assert!(app.execute(remove()).error().is_none());
+    assert!(app.native_requester(&remote, "Alice").is_err());
+    // SSE may coalesce remove+add into one snapshot with the same user list.
+    // Its identity marker must still tell the frontend to recheck registration.
+    assert_ne!(
+        app.native_snapshot(false).unwrap()["remote_session_id"],
+        identity_before["session_id"]
+    );
+    assert!(
+        app.execute(AppStateRequest::AddSessionUser {
+            schema_version: 1,
+            name: "Alice".into(),
+            now: 4.0,
+        })
+        .error()
+        .is_none()
+    );
+    assert!(app.native_requester(&remote, "Alice").is_err());
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), true, 5.0)
+            .unwrap_err()
+            .code,
+        "identity_required"
+    );
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), false, 5.0)
+            .unwrap_err()
+            .code,
+        "session_user_already_exists"
+    );
+    // Explicitly claiming a name still works; revocation is not a device ban.
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 5.0)
+        .unwrap();
+    assert_eq!(app.native_requester(&remote, "Spoof").unwrap(), "Alice");
+    assert!(app.native_authorize(&remote, true).is_err());
+    app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stale_remote_identity_cannot_use_rename_to_register_in_a_new_session() {
+    let (mut app, _) = setup();
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    app.native_register(&remote, &json!({"name":"Alice", "claim":true}), false, 2.0)
+        .unwrap();
+    app.data.as_mut().unwrap().native_session_choice_pending = true;
+    app.native_execute(AppStateRequest::ResolveNativeSession {
+        schema_version: 1,
+        continue_previous: false,
+        new_session: SessionArchiveSeed {
+            file_name: "new-session.json".into(),
+            session_started_at: 3.0,
+            items: vec![],
+        },
+        now: 3.0,
+    })
+    .unwrap();
+    assert_eq!(app.native_identity(&remote).unwrap()["registered"], false);
+    assert_eq!(
+        app.native_register(&remote, &json!({"name":"Alice"}), true, 4.0)
+            .unwrap_err()
+            .code,
+        "identity_required"
+    );
+    assert!(app.native_core_snapshot().unwrap().session_users.is_empty());
+}
+
+#[test]
+fn remote_registration_claim_and_rename_share_the_session_name_policy() {
+    let (mut app, _) = setup();
+    app.native_join_remote("", "remote".into()).unwrap();
+    let remote = Identity {
+        token: "remote".into(),
+        loopback: false,
+        client: "phone".into(),
+    };
+    let registered = app
+        .native_register(&remote, &json!({"name":"  Alice\t Smith  "}), false, 2.0)
+        .unwrap();
+    assert_eq!(registered["registered"], true);
+    assert_eq!(registered["name"], "Alice Smith");
+    assert_eq!(
+        app.native_requester(&remote, "Spoof").unwrap(),
+        "Alice Smith"
+    );
+
+    app.native_join_remote("", "claimant".into()).unwrap();
+    let claimant = Identity {
+        token: "claimant".into(),
+        ..remote.clone()
+    };
+    assert_eq!(
+        app.native_register(&claimant, &json!({"name":"Alice   Smith"}), false, 2.0)
+            .unwrap_err()
+            .code,
+        "session_user_already_exists"
+    );
+    app.native_register(
+        &claimant,
+        &json!({"name":"Alice   Smith", "claim":true}),
+        false,
+        2.0,
+    )
+    .unwrap();
+    let renamed = app
+        .native_register(&remote, &json!({"name":" New\n Name "}), true, 3.0)
+        .unwrap();
+    assert_eq!(renamed["name"], "New Name");
+    assert_eq!(app.native_requester(&remote, "").unwrap(), "New Name");
+    assert_eq!(app.native_identity(&claimant).unwrap()["registered"], false);
+}
+
+#[test]
+fn missing_duration_accepts_status_and_playback_commands_without_history() {
+    let (mut app, host) = setup();
+    let (snapshot, claim) = ready(&mut app);
+    app.native_claim(&host, &claim, false).unwrap();
+    let generation = snapshot.playback_generation;
+    app.native_player_status(
+        &host,
+        &json!({"item_id":"first","playback_generation":generation,
+        "status_sequence":1,"observed_phase":"playing","is_paused":false,"current_time":25.0}),
+        4.0,
+    )
+    .unwrap();
+    assert_eq!(
+        app.native_snapshot(false).unwrap()["player_status"]["duration"].as_f64(),
+        Some(0.0)
+    );
+    assert!(!app.native_core_snapshot().unwrap().current_item_started);
+    for action in ["play", "pause", "seek-absolute", "next-track"] {
+        app.native_control(
+            &host,
+            &json!({"item_id":"first","playback_generation":generation,
+            "action":action,"target_seconds":30.0}),
+            4.0,
+        )
+        .unwrap();
+    }
+    app.native_execute(AppStateRequest::AdvanceToNext {
+        schema_version: 1,
+        expected_playback_generation: generation,
+        reset_av_delay: false,
+        now: 5.0,
+    })
+    .unwrap();
+    assert!(app.native_core_snapshot().unwrap().history.is_empty());
 }
 
 #[test]
@@ -437,8 +903,7 @@ fn desktop_player_facts_are_host_owned_transient_and_separate_from_backend_suppo
             .is_err()
     );
     assert_eq!(app.native().player_media, before);
-    app.native_redeem("invite-token", "", "remote".into())
-        .unwrap();
+    app.native_join_remote("", "remote".into()).unwrap();
     let remote = Identity {
         token: "remote".into(),
         loopback: false,
@@ -535,4 +1000,47 @@ fn desktop_next_consumes_reset_preference_without_resetting_global_delay() {
             if reset { 0 } else { 300 }
         );
     }
+}
+
+#[test]
+fn public_titles_use_legacy_cleanup_without_changing_raw_records() {
+    let (mut app, _) = setup();
+    ready(&mut app);
+    let mut seed: AppStateSeed = serde_json::from_value(
+        json!({"session_started_at":1.0,"session_played_file":"titles.json","updated_at":1.0}),
+    )
+    .unwrap();
+    let mut item = app.native_core_snapshot().unwrap().current_item.unwrap();
+    item.title = "【ニコカラ】Song [on vocal]".into();
+    item.display_title = "【ニコカラ】Song [on vocal] - P1".into();
+    seed.current_item = Some(item.clone());
+    let mut queued = item.clone();
+    queued.id = "queued".into();
+    seed.playlist.push(queued);
+    let entry: HistoryEntry = serde_json::from_value(json!({"key":"song:1", "title":item.title,
+        "display_title":item.display_title,"part_title":"P1", "original_url":item.original_url,
+        "resolved_url":item.resolved_url,"requested_at":1.0}))
+    .unwrap();
+    seed.history.push(entry.clone());
+    seed.session_history.push(entry);
+    app.execute(AppStateRequest::Initialize {
+        schema_version: 1,
+        state: Box::new(seed),
+    });
+    for host in [true, false] {
+        let public = app.native_snapshot(host).unwrap();
+        assert_eq!(public["current_item"]["display_title"], "Song [on vocal]");
+        for key in ["playlist", "history", "session_history"] {
+            assert_eq!(public[key][0]["display_title"], "Song [on vocal]", "{key}");
+            assert_eq!(public[key][0]["title"], item.title);
+        }
+    }
+    assert_eq!(
+        app.native_core_snapshot()
+            .unwrap()
+            .current_item
+            .unwrap()
+            .display_title,
+        item.display_title
+    );
 }

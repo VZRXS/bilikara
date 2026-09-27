@@ -402,26 +402,36 @@ class CatalogFixtureTest(unittest.TestCase):
         self.assertEqual(catalog.search_catalog("delete"),[])
         self.assertEqual(len(self.calls),3)
 
-    def test_concurrent_ffi_search_rejects_duplicate_and_refreshes_once(self):
+    def test_concurrent_ffi_search_shares_duplicate_and_refreshes_once(self):
         entered=threading.Event()
         release=threading.Event()
+        completed=threading.Event()
         def reply(*_):
             entered.set()
             self.assertTrue(release.wait(5))
             return 200,[self.item]
         self.reply=reply
         results=[]
-        worker=threading.Thread(target=lambda: results.append(catalog.search_catalog("concurrent")))
-        worker.start()
+        errors=[]
+        def search():
+            try:
+                results.append(catalog.search_catalog("concurrent"))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                completed.set()
+        workers=[threading.Thread(target=search) for _ in range(2)]
+        for worker in workers: worker.start()
         try:
             self.assertTrue(entered.wait(3))
-            with self.assertRaises(catalog.CatalogError) as error:
-                catalog.search_catalog("concurrent")
-            self.assertEqual(error.exception.code,"catalog_busy")
+            self.assertFalse(completed.wait(.05), "both callers wait for the shared upstream result")
         finally:
             release.set()
-            worker.join(5)
-        self.assertFalse(worker.is_alive())
+            for worker in workers: worker.join(5)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results),2)
+        self.assertEqual(results[0],results[1])
         self.assertEqual(catalog.search_catalog("concurrent"),results[0])
         self.assertEqual(len(self.calls),1)
 

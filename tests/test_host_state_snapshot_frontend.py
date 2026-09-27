@@ -971,6 +971,9 @@ process.stdout.write(JSON.stringify(cases));
             "async function fetchState",
             "function renderSignatureForData",
         )
+        remote_access_failure = self.source_slice(
+            "function updateRemoteAccessFailure", "function localRemoteAccessView"
+        )
         script = f"""
 (async () => {{
   const window = {{ location: {{ href: "http://127.0.0.1:8080/" }} }};
@@ -997,6 +1000,7 @@ process.stdout.write(JSON.stringify(cases));
     data: make(42, 42, 42, "current"), hasValidStateResponse: false,
     localPreferencesHydrated: true, lastPollRenderSignature: "",
     hostPlaybackSession: null, pendingHostPlaybackProgramReconciliation: null,
+    remoteAccessFailure: null, remoteAccessRequestSequence: 0, remoteAccessOutcomeSequence: 0,
   }};
   let candidate = make(41, 41, 41, "stale");
   let sideEffects = 0;
@@ -1014,6 +1018,8 @@ process.stdout.write(JSON.stringify(cases));
   function renderSignatureForData(data) {{ return JSON.stringify(data); }}
   function render() {{ sideEffects += 1; }}
   function renderPlayer() {{ sideEffects += 1; }}
+  function renderRemoteAccess() {{ sideEffects += 1; }}
+  function publishPresentationOutputState() {{ sideEffects += 1; }}
   function frontendPlaybackMode(mode) {{ return mode || "local"; }}
   function isCurrentHostPlaybackSession() {{ return false; }}
   function hasDownloadingItems() {{ return false; }}
@@ -1023,6 +1029,7 @@ process.stdout.write(JSON.stringify(cases));
   function rememberedMuted() {{ return false; }}
   async function apiPostStateSnapshot() {{ throw new Error("not used"); }}
   {guard}
+  {remote_access_failure}
   {fetch_state}
   await fetchState();
   const stale = {{ marker: state.data.marker, valid: state.hasValidStateResponse, sideEffects }};

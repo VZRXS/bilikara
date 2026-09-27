@@ -122,6 +122,9 @@ def _decorate_remote_state(context: Any, state: dict[str, Any]) -> dict[str, Any
             public["state_revision"] = max(0, int(revision_snapshot()))
         else:
             public["state_revision"] = max(0, int(public.get("revision") or 0))
+        epoch_snapshot = getattr(context, "state_epoch_snapshot", None)
+        if callable(epoch_snapshot):
+            public["state_epoch"] = epoch_snapshot()
         public["player_status"] = _public_player_status(status)
         login_status = getattr(getattr(context, "cache_manager", None), "bbdown_login_status", None)
         public["bilibili_logged_in"] = bool(
@@ -208,7 +211,7 @@ def _run_host_effect(
         context.retry_cache_item(
             str(effect["item_id"]),
             expected_item_incarnation_id=str(effect["item_incarnation_id"]),
-            force=True,
+            force=bool(effect.get("force", False)),
         )
         return public_response
     if kind == "submit_rating":

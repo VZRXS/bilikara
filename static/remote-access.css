@@ -244,6 +244,26 @@
   overflow-wrap: anywhere;
 }
 
+:is(.remote-access-link, .remote-url-link)[aria-disabled="true"] {
+  color: var(--muted);
+  text-decoration: none;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.internet-remote-live-region.is-error {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 10px 0 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+  color: var(--danger-btn-color, var(--red));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .remote-access-password {
   display: flex;
   max-width: 100%;

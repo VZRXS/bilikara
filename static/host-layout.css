@@ -366,11 +366,9 @@ html[data-host-layout="portrait"] #binding-modal .selection-modal-card {
   width: 100%;
   max-width: 480px;
   max-height: calc(100dvh - 24px);
-  padding: 16px;
   border-radius: 20px;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
-html[data-host-layout="portrait"] #binding-modal .selection-modal-head h2 { font-size: 20px; }
 html[data-host-layout="portrait"] #binding-modal .selection-modal-head .section-tag { font-size: 10px; }
 html[data-host-layout="portrait"] #binding-modal .selection-modal-grid {
   grid-template-columns: minmax(0, 1fr);

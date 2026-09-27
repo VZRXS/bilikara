@@ -71,6 +71,18 @@ class FakeContext:
 
 
 class InternetRemoteAdapterTest(unittest.TestCase):
+    def test_retry_adapter_preserves_validated_force_instead_of_forcing_all_requests(self):
+        for force in (None, False, True):
+            with self.subTest(force=force):
+                effect = {"kind": "retry_cache", "item_id": "song", "item_incarnation_id": "incarnation"}
+                if force is not None:
+                    effect["force"] = force
+                context = FakeContext(response(effect=effect))
+                calls = []
+                context.retry_cache_item = lambda item_id, **kwargs: calls.append((item_id, kwargs))
+                internet_remote.dispatch(context, "peer", "control", "message")
+                self.assertEqual(calls, [("song", {"expected_item_incarnation_id": "incarnation", "force": force is True})])
+
     def test_remote_state_adds_host_transport_revision_and_live_player_status(self):
         class StateStore:
             def internet_remote_state(self):
@@ -93,6 +105,7 @@ class InternetRemoteAdapterTest(unittest.TestCase):
             store=StateStore(),
             cache_manager=SimpleNamespace(bbdown_login_status=lambda: {"logged_in": True, "cookie": "private-fixture"}),
             state_revision_snapshot=lambda: 19,
+            state_epoch_snapshot=lambda: "fixture-host-epoch",
             player_status_snapshot=lambda _snapshot: {
                 "is_paused": False,
                 "current_time": 12.5,
@@ -109,6 +122,7 @@ class InternetRemoteAdapterTest(unittest.TestCase):
         self.assertTrue(projected["bilibili_logged_in"])
         self.assertNotIn("private-fixture", str(projected))
         self.assertEqual(projected["state_revision"], 19)
+        self.assertEqual(projected["state_epoch"], "fixture-host-epoch")
         self.assertEqual(projected["history"], [{"display_title": "Earlier"}])
         self.assertEqual(
             projected["player_status"],

@@ -71,6 +71,27 @@ fn default_playback_mode() -> String {
     "local".to_owned()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheDownloadTrack {
+    pub key: String,
+    pub label: String,
+    pub current_bytes: u64,
+    pub target_bytes: u64,
+    pub done: bool,
+    pub phase: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheDownloadProgress {
+    pub current_bytes: u64,
+    pub total_bytes: u64,
+    pub tracks: Vec<CacheDownloadTrack>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlaylistItem {
@@ -127,6 +148,12 @@ pub struct PlaylistItem {
     pub cache_progress: f64,
     #[serde(default)]
     pub cache_activity_at: f64,
+    #[serde(default)]
+    pub cache_download_current_bytes: u64,
+    #[serde(default)]
+    pub cache_download_total_bytes: u64,
+    #[serde(default)]
+    pub cache_download_tracks: Vec<CacheDownloadTrack>,
     #[serde(default = "default_cache_message")]
     pub cache_message: String,
     #[serde(default)]
@@ -273,6 +300,11 @@ pub struct AppStateSeed {
     pub session_history: Vec<HistoryEntry>,
     #[serde(default)]
     pub session_users: Vec<String>,
+    /// Private LAN registration digests, never bearer tokens or public state.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub remote_identities: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gatcha_pool_preferences: HashMap<String, Value>,
     pub session_started_at: f64,
     pub session_played_file: String,
     #[serde(default)]
@@ -331,6 +363,8 @@ pub enum CacheEvent {
         message: String,
     },
     Progress {
+        #[serde(default)]
+        download: Option<CacheDownloadProgress>,
         progress: f64,
         #[serde(default)]
         message: Option<String>,
@@ -507,6 +541,15 @@ pub enum AppStateRequest {
         item_id: String,
         expected_item_incarnation_id: String,
         variant_id: String,
+        now: f64,
+    },
+    RegisterRemoteUser {
+        schema_version: u32,
+        name: String,
+        current_name: Option<String>,
+        digest: String,
+        resident_devices: Vec<String>,
+        guest_config: Option<Value>,
         now: f64,
     },
     AddSessionUser {
@@ -707,6 +750,7 @@ impl AppStateRequest {
             | Self::SetKeyShift { schema_version, .. }
             | Self::SetAudioVariant { schema_version, .. }
             | Self::AddSessionUser { schema_version, .. }
+            | Self::RegisterRemoteUser { schema_version, .. }
             | Self::RemoveSessionUser { schema_version, .. }
             | Self::RenameSessionUser { schema_version, .. }
             | Self::MoveSessionUserToIndex { schema_version, .. }
@@ -763,6 +807,7 @@ impl AppStateRequest {
             | Self::SetKeyShift { now, .. }
             | Self::SetAudioVariant { now, .. }
             | Self::AddSessionUser { now, .. }
+            | Self::RegisterRemoteUser { now, .. }
             | Self::RemoveSessionUser { now, .. }
             | Self::RenameSessionUser { now, .. }
             | Self::MoveSessionUserToIndex { now, .. }
@@ -965,6 +1010,8 @@ struct AppStateData {
     history: Vec<HistoryEntry>,
     session_history: Vec<HistoryEntry>,
     session_users: Vec<String>,
+    remote_identities: HashMap<String, String>,
+    gatcha_pool_preferences: HashMap<String, Value>,
     session_started_at: f64,
     session_played_file: String,
     session_played: Vec<SessionPlayedEntry>,
@@ -1217,7 +1264,14 @@ fn derive_playback_program(item: &PlaylistItem) -> Result<PlaybackProgram, Execu
     })
 }
 
+fn clear_download_progress(item: &mut PlaylistItem) {
+    item.cache_download_current_bytes = 0;
+    item.cache_download_total_bytes = 0;
+    item.cache_download_tracks.clear();
+}
+
 fn clear_committed_artifact(item: &mut PlaylistItem, clear_selected_audio_variant: bool) {
+    clear_download_progress(item);
     item.video_relative_path.clear();
     item.video_media_url.clear();
     item.audio_variants.clear();
@@ -1657,12 +1711,6 @@ fn validate_archive(archive: &SessionArchiveSeed) -> Result<(), ExecuteError> {
         ));
     }
     validate_time(archive.session_started_at, "session_started_at")?;
-    if archive.items.len() > MAX_ITEMS {
-        return Err(rejected(
-            "too_many_items",
-            "too many session played entries",
-        ));
-    }
     for entry in &archive.items {
         validate_session_played_entry(entry)?;
     }
@@ -1700,6 +1748,16 @@ fn validate_backup(backup: &BackupSeed) -> Result<(), ExecuteError> {
 }
 
 fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
+    if seed.remote_identities.iter().any(|(digest, name)| {
+        digest.len() != 64
+            || !digest.bytes().all(|c| c.is_ascii_hexdigit())
+            || !seed.session_users.contains(name)
+    }) {
+        return Err(rejected(
+            "invalid_initial_state",
+            "invalid remote registration",
+        ));
+    }
     validate_time(seed.updated_at, "updated_at")?;
     validate_time(seed.session_started_at, "session_started_at")?;
     if !valid_string(&seed.playback_mode, MAX_STRING_BYTES, false)
@@ -1748,26 +1806,11 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
         ));
     }
     validate_item_collection(seed.current_item.as_ref(), &seed.playlist)?;
-    if seed.history.len() > MAX_ITEMS
-        || seed.session_history.len() > MAX_ITEMS
-        || seed.session_played.len() > MAX_ITEMS
-    {
-        return Err(rejected(
-            "too_many_items",
-            "history or session state is too large",
-        ));
-    }
     for entry in seed.history.iter().chain(seed.session_history.iter()) {
         validate_history_entry(entry)?;
     }
     for entry in &seed.session_played {
         validate_session_played_entry(entry)?;
-    }
-    if seed.session_archives.len() > 1000 {
-        return Err(rejected(
-            "too_many_sessions",
-            "session archive limit reached",
-        ));
     }
     let mut archive_names = HashSet::new();
     for archive in &seed.session_archives {
@@ -1815,6 +1858,8 @@ impl AppStateData {
             history: seed.history,
             session_history: seed.session_history,
             session_users: seed.session_users,
+            remote_identities: seed.remote_identities,
+            gatcha_pool_preferences: seed.gatcha_pool_preferences,
             session_started_at: seed.session_started_at,
             session_played_file: seed.session_played_file,
             session_played: seed.session_played,
@@ -2622,6 +2667,9 @@ fn apply_cache_event(
     let item = data
         .find_item_mut(item_id)
         .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
+    if !matches!(event, CacheEvent::Progress { .. }) {
+        clear_download_progress(item);
+    }
     match event {
         CacheEvent::Queued { message } => {
             if !active.refresh {
@@ -2640,7 +2688,11 @@ fn apply_cache_event(
                 clear_committed_artifact(item, false);
             }
         }
-        CacheEvent::Progress { progress, message } => {
+        CacheEvent::Progress {
+            progress,
+            message,
+            download,
+        } => {
             if !progress.is_finite() {
                 return Err(rejected(
                     "invalid_cache_progress",
@@ -2651,6 +2703,11 @@ fn apply_cache_event(
                 item.cache_status = "downloading".to_owned();
             }
             item.cache_progress = progress.clamp(0.0, 100.0);
+            if let Some(download) = download {
+                item.cache_download_current_bytes = download.current_bytes;
+                item.cache_download_total_bytes = download.total_bytes;
+                item.cache_download_tracks.clone_from(&download.tracks);
+            }
             if let Some(message) = message {
                 item.cache_message.clone_from(message);
             }
@@ -3176,6 +3233,76 @@ fn apply_mutation(
                 true,
             ))
         }
+        AppStateRequest::RegisterRemoteUser {
+            name,
+            current_name,
+            digest,
+            resident_devices,
+            guest_config,
+            now,
+            ..
+        } => {
+            if digest.len() != 64 || !digest.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return Err(rejected("invalid_identity", "Invalid device digest"));
+            }
+            let name = normalize_session_user_name(&name);
+            let command = if let Some(current_name) = current_name {
+                Some(AppStateRequest::RenameSessionUser {
+                    schema_version: 1,
+                    current_name,
+                    new_name: name.clone(),
+                    now,
+                })
+            } else if !data.session_users.contains(&name) {
+                Some(AppStateRequest::AddSessionUser {
+                    schema_version: 1,
+                    name: name.clone(),
+                    now,
+                })
+            } else {
+                None
+            };
+            if let Some(command) = command {
+                apply_mutation(
+                    data,
+                    command,
+                    issued_cache_attempt_tokens,
+                    identity_namespace,
+                    next_item_incarnation_id,
+                )?;
+            }
+            data.remote_identities.insert(digest.clone(), name.clone());
+            while data.remote_identities.len() > 256 {
+                let oldest = data
+                    .remote_identities
+                    .keys()
+                    .filter(|key| **key != digest && !resident_devices.contains(*key))
+                    .min()
+                    .cloned()
+                    .or_else(|| {
+                        resident_devices
+                            .iter()
+                            .find(|key| {
+                                **key != digest && data.remote_identities.contains_key(*key)
+                            })
+                            .cloned()
+                    });
+                if let Some(oldest) = oldest {
+                    data.remote_identities.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            let guest_key = format!("device:{digest}");
+            if let Some(config) =
+                guest_config.or_else(|| data.gatcha_pool_preferences.remove(&guest_key))
+            {
+                data.gatcha_pool_preferences
+                    .entry(format!("user:{name}"))
+                    .or_insert(config);
+            }
+            Ok(MutationResult::changed(json!({"name":name}), true))
+        }
         AppStateRequest::AddSessionUser { name, .. } => {
             let normalized = normalize_session_user_name(&name);
             if normalized.is_empty() {
@@ -3236,6 +3363,13 @@ fn apply_mutation(
                 return Ok(MutationResult::unchanged(json!({"name": renamed})));
             }
             data.session_users[index] = renamed.clone();
+            if let Some(config) = data
+                .gatcha_pool_preferences
+                .remove(&format!("user:{current}"))
+            {
+                data.gatcha_pool_preferences
+                    .insert(format!("user:{renamed}"), config);
+            }
             if let Some(item) = &mut data.current_item
                 && item.requester_name == current
             {
@@ -3376,6 +3510,8 @@ fn apply_mutation(
                 return Ok(MutationResult::changed(mutation_value(false), false));
             }
             replace_session_archive(data, &archive);
+            data.session_archives
+                .retain(|closed| closed.file_name != archive.file_name);
             increment_session_generation(data)?;
             Ok(MutationResult::changed(mutation_value(true), false))
         }
@@ -3413,12 +3549,6 @@ fn apply_mutation(
                     ));
                 }
                 if !data.session_played.is_empty() {
-                    if data.session_archives.len() >= 1000 {
-                        return Err(rejected(
-                            "too_many_sessions",
-                            "session archive limit reached; existing records were preserved",
-                        ));
-                    }
                     data.session_archives.push(SessionArchiveSeed {
                         file_name: data.session_played_file.clone(),
                         session_started_at: data.session_started_at,
@@ -3442,14 +3572,19 @@ fn apply_mutation(
             validate_archive(&new_session)?;
             data.playback_mode = "local".to_owned();
             data.player_settings = PlayerSettingsSeed::default();
+            data.gatcha_pool_preferences = HashMap::from([(
+                ":default".into(),
+                crate::gatcha_repository::normalize_pool_config(&Value::Null),
+            )]);
             reset_current_identity(data);
             data.history.clear();
-            data.session_archives.clear();
             data.session_history.clear();
             data.session_users.clear();
-            replace_session_archive(data, &new_session);
+            // Reset data promises to keep played records, including this
+            // session. The queue/settings reset must not rotate that archive.
             data.previous_session = None;
             data.backup = None;
+            data.native_session_choice_pending = false;
             increment_session_generation(data)?;
             let mut result = MutationResult::changed(mutation_value(true), false);
             result.effects = PersistenceEffects {
@@ -3533,7 +3668,8 @@ fn apply_mutation(
                 ));
             }
 
-            let started_changed = (!is_paused || current_time > 0.0) && !data.current_item_started;
+            let started_changed =
+                duration > 0.0 && (!is_paused || current_time > 0.0) && !data.current_item_started;
             if started_changed {
                 data.current_item_started = true;
             }
@@ -3921,7 +4057,9 @@ impl AppState {
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "gatcha_pool_config_get"})),
+                    Some(
+                        json!({"kind": "gatcha_pool_config_get", "requester_name":validation.session_name}),
+                    ),
                     false,
                 );
             }
@@ -3930,7 +4068,9 @@ impl AppState {
                     data,
                     &validation,
                     Value::Null,
-                    Some(json!({"kind": "gatcha_candidate"})),
+                    Some(
+                        json!({"kind": "gatcha_candidate", "requester_name":validation.session_name}),
+                    ),
                     false,
                 );
             }
@@ -3946,6 +4086,7 @@ impl AppState {
                     Value::Null,
                     Some(json!({
                         "kind": "gatcha_pool_config_set",
+                        "requester_name": validation.session_name,
                         "uid_weight": uid_weight,
                         "favlist_weight": favlist_weight,
                         "excluded_uids": excluded_uids,
@@ -4304,6 +4445,7 @@ impl AppState {
                 );
             }
             RemoteRequestV1::CacheRetry {
+                force,
                 item_id,
                 expected_item_incarnation_id,
                 ..
@@ -4314,6 +4456,7 @@ impl AppState {
                     json!(project_remote_state(&snapshot)),
                     Some(json!({
                         "kind": "retry_cache",
+                        "force": force,
                         "item_id": item_id,
                         "item_incarnation_id": expected_item_incarnation_id,
                     })),
@@ -4869,6 +5012,12 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 if mutation.changed {
+                    if current.session_generation != next.session_generation {
+                        next.remote_identities.clear();
+                    } else {
+                        next.remote_identities
+                            .retain(|_, name| next.session_users.contains(name));
+                    }
                     let after_program = match next.playback_program() {
                         Ok(program) => program,
                         Err(error) => return execute_error_response(error),
@@ -4932,11 +5081,19 @@ impl AppState {
                     if let Err(error) = self.persist_native(&next) {
                         return storage_error_response(error);
                     }
+                    // Revoke retired LAN singer bindings at the shared commit
+                    // boundary, after persistence succeeds. A later same-name
+                    // user must not restore an old device's registration.
+                    #[cfg(feature = "native-host")]
+                    self.native_session
+                        .reconcile_identities(&next.session_users, next.session_generation);
                     if clears_controls {
                         self.player_controls.clear();
                     }
                     self.data = Some(next);
                     self.next_item_incarnation_id = next_item_incarnation_id;
+                    #[cfg(feature = "native-host")]
+                    native_session::state_changes().notify_waiters();
                     AppStateResponse::Success(Box::new(AppStateSuccess {
                         schema_version: SCHEMA_VERSION,
                         status: "completed",
@@ -5440,6 +5597,9 @@ mod tests {
             cache_status: "pending".to_owned(),
             cache_progress: 0.0,
             cache_activity_at: 0.0,
+            cache_download_current_bytes: 0,
+            cache_download_total_bytes: 0,
+            cache_download_tracks: Vec::new(),
             cache_message: "等待缓存".to_owned(),
             video_relative_path: String::new(),
             video_media_url: String::new(),
@@ -5500,6 +5660,8 @@ mod tests {
             history: Vec::new(),
             session_history: Vec::new(),
             session_users: vec!["Alice".to_owned(), "Bob".to_owned()],
+            remote_identities: HashMap::new(),
+            gatcha_pool_preferences: HashMap::new(),
             session_started_at: 10.0,
             session_played_file: "played-current.json".to_owned(),
             session_played: Vec::new(),
@@ -6016,6 +6178,22 @@ mod tests {
             assert_eq!(rejected.result["stale"], json!(true), "{kind}");
             assert!(rejected.result.get("_host_effect").is_none(), "{kind}");
             assert_eq!(state.data, data_before, "{kind}");
+        }
+        for (seq, force) in [(5, false), (6, true)] {
+            let accepted = remote_message(
+                &mut state,
+                peer_id,
+                epoch,
+                seq,
+                "cache.retry",
+                json!({
+                    "item_id":"b", "expected_item_incarnation_id":live_incarnation,
+                    "expected_revision":live.revision, "force":force,
+                }),
+                25.0 + seq as f64,
+            );
+            assert_eq!(accepted.result["accepted"], true);
+            assert_eq!(accepted.result["_host_effect"]["force"], force);
         }
     }
 
@@ -6895,6 +7073,7 @@ mod tests {
                 message: "started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 50.0,
                 message: Some("progress".to_owned()),
             },
@@ -6960,6 +7139,7 @@ mod tests {
                 message: "refresh started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 75.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -7243,6 +7423,7 @@ mod tests {
                 message: "started refresh".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 80.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -7861,6 +8042,38 @@ mod tests {
     }
 
     #[test]
+    fn zero_duration_status_does_not_start_history_or_rating_threshold() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.session_played = vec![played("a", "Alice")];
+        let mounted = initialize(&mut state, initial);
+        let zero = success(apply_player_status_observation(
+            &mut state,
+            mounted.playback_generation,
+            "a",
+            false,
+            50.0,
+            0.0,
+            11.0,
+        ));
+        assert_eq!(zero.result["started_changed"], false);
+        assert!(!state.data.as_ref().unwrap().current_item_started);
+        assert!(!state.data.as_ref().unwrap().session_played[0].threshold_reached);
+        let valid = success(apply_player_status_observation(
+            &mut state,
+            mounted.playback_generation,
+            "a",
+            false,
+            50.0,
+            100.0,
+            12.0,
+        ));
+        assert_eq!(valid.result["started_changed"], true);
+        assert_eq!(valid.result["threshold_changed"], true);
+    }
+
+    #[test]
     fn exact_generation_player_status_applies_both_marks_without_program_bump() {
         let mut state = AppState::default();
         let mut initial = seed();
@@ -8335,6 +8548,7 @@ mod tests {
                 message: "refresh started".to_owned(),
             },
             CacheEvent::Progress {
+                download: None,
                 progress: 64.0,
                 message: Some("refresh progress".to_owned()),
             },
@@ -8517,6 +8731,7 @@ mod tests {
                 "a",
                 token,
                 CacheEvent::Progress {
+                    download: None,
                     progress: 50.0,
                     message: Some("stale".to_owned()),
                 },
@@ -8539,6 +8754,7 @@ mod tests {
             "a",
             current,
             CacheEvent::Progress {
+                download: None,
                 progress: 50.0,
                 message: Some("current".to_owned()),
             },
@@ -8752,6 +8968,7 @@ mod tests {
             ),
             (
                 CacheEvent::Progress {
+                    download: None,
                     progress: 60.0,
                     message: None,
                 },
@@ -8840,6 +9057,9 @@ mod tests {
             "cache_status",
             "cache_progress",
             "cache_activity_at",
+            "cache_download_current_bytes",
+            "cache_download_total_bytes",
+            "cache_download_tracks",
             "cache_message",
             "video_relative_path",
             "video_media_url",

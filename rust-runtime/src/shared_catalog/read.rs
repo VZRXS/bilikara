@@ -35,6 +35,11 @@ fn plan(path: &str, query: &str) -> Result<Query, CatalogError> {
     };
     let mut params = url::form_urlencoded::Serializer::new(String::new());
     params.append_pair("limit", &limit.to_string());
+    // Opt in song windows only. Group lists stay legacy until Host/Remote
+    // consume server-side group counts and fetch subsequent windows.
+    if path != "/api/d1/browse" || !query_value(query, "tag").is_empty() {
+        params.append_pair("format", "paged");
+    }
     if let Some(offset) = search_offset.filter(|offset| *offset > 0) {
         params.append_pair("offset", &offset.to_string());
     }
@@ -277,13 +282,67 @@ fn normalize(query: &Query, payload: &Value) -> Result<Value, CatalogError> {
     Ok(result)
 }
 
-struct Inflight(String);
+#[derive(Debug, Default)]
+pub(super) struct Flight {
+    #[cfg(test)]
+    pub(super) waiters: std::sync::atomic::AtomicUsize,
+    result: Mutex<Option<Result<Value, CatalogError>>>,
+    released: std::sync::atomic::AtomicBool,
+    changed: Condvar,
+}
+impl Flight {
+    fn finish(&self, result: Result<Value, CatalogError>) {
+        *self.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+        self.changed.notify_all();
+    }
+    fn wait(&self, timeout: Duration, require_release: bool) -> Result<Value, CatalogError> {
+        #[cfg(test)]
+        self.waiters
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let value = self.result.lock().unwrap_or_else(|e| e.into_inner());
+        let (value, _) = self
+            .changed
+            .wait_timeout_while(value, timeout, |v| {
+                v.is_none()
+                    || (require_release
+                        && !self.released.load(std::sync::atomic::Ordering::Acquire))
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        value.clone().unwrap_or_else(|| {
+            Err(CatalogError::new(
+                429,
+                "catalog_busy",
+                "曲库请求繁忙，请稍后重试",
+            ))
+        })
+    }
+}
+
+struct Inflight(String, Arc<Flight>);
 impl Drop for Inflight {
     fn drop(&mut self) {
         let _ = with_catalog(|state| {
-            state.inflight.remove(&self.0);
+            if state
+                .inflight
+                .get(&self.0)
+                .is_some_and(|flight| Arc::ptr_eq(flight, &self.1))
+            {
+                state.inflight.remove(&self.0);
+            }
             Ok(())
         });
+        let mut result = self.1.result.lock().unwrap_or_else(|e| e.into_inner());
+        if result.is_none() {
+            *result = Some(Err(CatalogError::new(
+                503,
+                "catalog_interrupted",
+                "曲库请求已中断",
+            )));
+        }
+        self.1
+            .released
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.1.changed.notify_all();
     }
 }
 
@@ -301,36 +360,61 @@ pub(super) fn read_with(
         "{}\n{}\n{:?}:{}",
         request.base_url, query.path, query.search_offset, query.limit
     );
-    let (cached, generation) = with_catalog(|state| {
-        let now = Instant::now();
-        // Expired data is never served on error, including a D1 outage.
-        state
-            .cache
-            .retain(|(_, at, _)| now.duration_since(*at) < CACHE_TTL);
-        state.backoff.retain(|(_, until, _)| *until > now);
-        if let Some((_, _, value)) = state.cache.iter().find(|(k, _, _)| *k == key) {
-            return Ok((Some(value.clone()), state.generation));
+    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms.saturating_add(2000));
+    let (generation, flight) = loop {
+        let (cached, generation, pending, mine) = with_catalog(|state| {
+            let now = Instant::now();
+            // Expired data is never served on error, including a D1 outage.
+            state
+                .cache
+                .retain(|(_, at, _)| now.duration_since(*at) < CACHE_TTL);
+            state.backoff.retain(|(_, until, _)| *until > now);
+            if let Some((_, _, value)) = state.cache.iter().find(|(k, _, _)| *k == key) {
+                return Ok((Some(value.clone()), state.generation, None, None));
+            }
+            if let Some((_, _, error)) = state
+                .backoff
+                .iter()
+                .find(|(base, _, _)| *base == request.base_url)
+            {
+                return Err(error.clone());
+            }
+            if let Some(flight) = state.inflight.get(&key) {
+                return Ok((None, state.generation, Some((flight.clone(), true)), None));
+            }
+            if state.inflight.len() >= 2 {
+                return Ok((
+                    None,
+                    state.generation,
+                    state.inflight.values().next().map(|f| (f.clone(), false)),
+                    None,
+                ));
+            }
+            let flight = Arc::new(Flight::default());
+            state.inflight.insert(key.clone(), flight.clone());
+            Ok((None, state.generation, None, Some(flight)))
+        })?;
+        if let Some(value) = cached {
+            return Ok(value);
         }
-        if let Some((_, _, error)) = state
-            .backoff
-            .iter()
-            .find(|(base, _, _)| *base == request.base_url)
-        {
-            return Err(error.clone());
+        if let Some((pending, same_request)) = pending {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let result = pending.wait(remaining, !same_request);
+            if same_request {
+                return result;
+            }
+            if Instant::now() >= deadline {
+                return Err(CatalogError::new(
+                    429,
+                    "catalog_busy",
+                    "曲库请求繁忙，请稍后重试",
+                ));
+            }
+            continue;
         }
-        if state.inflight.len() >= 2 || !state.inflight.insert(key.clone()) {
-            return Err(CatalogError::new(
-                429,
-                "catalog_busy",
-                "Catalog request already in flight",
-            ));
-        }
-        Ok((None, state.generation))
-    })?;
-    if let Some(value) = cached {
-        return Ok(value);
-    }
-    let _inflight = Inflight(key.clone());
+        break (generation, mine.expect("admitted catalog request"));
+    };
+    let _inflight = Inflight(key.clone(), flight.clone());
     let result = fetch(&cloud_request(
         request,
         CloudflareOperation::Request {
@@ -347,7 +431,7 @@ pub(super) fn read_with(
     let cacheable = result
         .as_ref()
         .is_ok_and(|v| v.to_string().len() <= 512 * 1024);
-    with_catalog(|state| {
+    let publication = with_catalog(|state| {
         if generation != state.generation {
             return Err(CatalogError::new(
                 409,
@@ -375,7 +459,12 @@ pub(super) fn read_with(
             _ => {}
         }
         Ok(())
-    })?;
+    });
+    if let Err(error) = publication {
+        flight.finish(Err(error.clone()));
+        return Err(error);
+    }
+    flight.finish(result.clone());
     result
 }
 
@@ -397,7 +486,10 @@ mod tests {
             "q=%E9%AB%98%E8%BE%BE&limit=80&path=/batch-add",
         )
         .unwrap();
-        assert_eq!(query.path, "/search?limit=80&keyword=%E9%AB%98%E8%BE%BE");
+        assert_eq!(
+            query.path,
+            "/search?limit=80&format=paged&keyword=%E9%AB%98%E8%BE%BE"
+        );
         assert!(plan("/api/lark/search", "q=%20").unwrap().empty);
         assert!(plan("/api/d1/category-browse", "q=x").unwrap().empty);
         assert!(plan("/api/admin", "").is_err());
@@ -406,7 +498,19 @@ mod tests {
             plan("/api/d1/category-browse", "tag=z&tag=a&tag=z&offset=100")
                 .unwrap()
                 .path,
-            "/browse-category?limit=80&offset=100&tag=a&tag=z"
+            "/browse-category?limit=80&format=paged&offset=100&tag=a&tag=z"
+        );
+        assert!(
+            !plan("/api/d1/browse", "kind=name")
+                .unwrap()
+                .path
+                .contains("format=paged")
+        );
+        assert!(
+            plan("/api/d1/browse", "kind=artist&tag=Singer")
+                .unwrap()
+                .path
+                .contains("format=paged")
         );
     }
     #[test]

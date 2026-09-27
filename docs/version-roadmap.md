@@ -519,14 +519,15 @@ cannot stop its replacement.
 The native Host calls the same typed Rust service directly. Manual
 authorization/cooldown, automatic-login eligibility and status text remain
 Host-specific. Native desktop automatic bulk refresh is disabled, and native
-refresh does not upload completion records. Aggregate repository errors with
-no UID success mean `failed` in the default Host and `partial` in the native
-Host; these are distinct projections of the shared result.
+refresh shares the bounded incremental completion append. Aggregate repository
+errors with no successful UID or favorite folder mean `failed`; a mix of success
+and failure means `partial` in both Hosts.
 
-Normal default-Host completion queues only newly added UID records through
-the existing bounded Catalog append facility. Startup schema rebuilding uses
+Normal completion and explicit source imports queue newly added UID/favorite
+records through the existing bounded Catalog append facility. Startup schema rebuilding uses
 Rust repository fetches, temporary/checkpoint paths, UID/folder resume and
-per-file atomic publication; it indexes only favorite entries. Repository page
+per-file atomic publication; it indexes only records absent from the previously
+published local library. Repository page
 retries are bounded. Rebuild publication is not an atomic three-file
 transaction. This task service does not perform monthly or account-wide scans.
 

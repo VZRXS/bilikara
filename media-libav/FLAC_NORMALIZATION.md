@@ -19,8 +19,18 @@ stream 都违反契约。源 `moov`/`mdat` envelope 使用既有 S3 检查：met
 **时间语义**：按原顺序保留完整编码样本，保留 sample rate/channels/precision。
 本 profile 支持从零开始、连续、无裁剪的样本序列。用 9.0.1 demuxer 提供的
 `start_time`、initial/trailing padding、seek preroll、packet PTS/DTS/duration、skip/discard
-side data、`nb_frames`、stream duration 和已知 STREAMINFO sample count 检查可见偏移、
+side data、stream duration 和已知 STREAMINFO sample count 检查可见偏移、
 间隙、裁剪、重复和配置改变；不兼容时返回 `unsupported_container_layout`。
+DASH 封装可能产生毫秒级时间戳量化（实测最大 1.5 ms）。FLAC 帧头解析器提供真实
+block sample count；按本次选择的兼容策略，逐帧边界与时长允许最多 **200 ms** 的
+容器时间差（包含边界）。这是放宽后的兼容阈值，不是实测舍入误差的典型范围。
+已知 STREAMINFO 总采样数与实际帧累计总数也采用同一 200 ms 容差；范围内的
+非零错误总数在输出头部修正为实际帧累计值，未知零值原样保留。`nb_frames` 仅作
+容器提示，不再因它与遍历包数不符单独拒绝；包遍历、payload 和实际帧时长检查仍保留。
+demux PTS/DTS 仍须从零严格连续，不把实际偏移、裁剪或间隙当成舍入差。
+不会累积容差、重采样或按容器时长删减样本；超过 200 ms 的差异仍拒绝。
+这一策略容忍源端元数据不准确，不是完整下载或完整音频的证明；若源端缺失本身
+仍形成连续可读流、差异又在阈值内，不能单凭此窗口识别。
 这不是任意 MP4 edit list 的证明/解析器；无法表达为该样本序列的 presentation timeline
 不在支持范围，raw FLAC 不保留容器 edit lists、gaps、trims 或 presentation offsets。
 不会通过改变音频样本修复时间。fixture 演示的是这个连续、未裁剪的常见 profile。
@@ -29,12 +39,13 @@ side data、`nb_frames`、stream duration 和已知 STREAMINFO sample count 检�
 `codec_par.h`、`packet.h` 及 `flacenc.c`、`flacenc_header.c`、`flacdec.c`、`mov.c`。
 `mov_read_dfla` 导出完整 STREAMINFO；`avcodec_parameters_copy` 深拷贝配置；
 FLAC muxer 用 `write_header=1` 写正常头，音频 packet 原样写入。输出重开后逐字节检查
-完整 extradata 和解码配置，包含 bit depth。新增协商 exports 为 `bm_flac_info_v1`、
+预期 extradata 和解码配置，包含 bit depth；仅允许上面明确修正的总采样数字段
+变化，其余 STREAMINFO 字节（包括已有 MD5）保持不变。新增协商 exports 为 `bm_flac_info_v1`、
 `bm_copy_flac_v1`，使用原 M5 request/result layout/release；旧 companion 的 FLAC 请求
 显式 `unavailable`，其原有 MP4/probe/scan 仍可用。
 
 STREAMINFO 的 rate/channels/bits 和 mandatory block bounds 只做窄检查，已知 total samples
-与可见样本时间一致。min/max frame size、total samples、MD5 的合法零值表示 unknown，
+与实际样本时间相差不得超过 200 ms。min/max frame size、total samples、MD5 的合法零值表示 unknown，
 原样保留，不补造、不以 unknown 判坏；已有 MD5 也不替代实际 PCM 校验。
 不复制输入 tags/chapters/artwork，允许 muxer 自己的 vendor comment、默认 padding，以及
 必要的 channel-mask metadata。CLI 使用 `-map 0:0 -c copy -map_metadata -1
@@ -114,6 +125,13 @@ python media-libav/test_comparison.py \
 不以 metadata/comments/padding 的差异代替 PCM 比较。
 FLAC-specific 拒绝集包括 wrong codec/kind、audio+video、两 audio、raw 输入、missing-mdat、
 mandatory STREAMINFO length 错误，以及有实际 edit list 的 offset/trim fixture。
+时间容差覆盖正负 200 ms 边界与超界拒绝、曾被旧阈值拒绝的 3 ms 偏差，以及
+中途超界但结尾回到范围内的拒绝。C shim 另验证正负边界内外 1 微秒；通过的
+容器时间差样例仍须保持整段 PCM、Claxon 独立解码结果和真实采样总数一致。
+已知 STREAMINFO 总数比实际帧多或少 50 ms、200 ms 的样例放行并修正，超过
+200 ms 一个采样点拒绝。放行样例通过 Claxon 完整解码，并要求输出逐字节等于
+未改源元数据的基准输出，源文件不变。未知总数仍保留为未知。额外的 nb_frames
+提示误差不阻断规范化，真实 corrupt packet/非 EOF 错误和裁剪拒绝断言保持。
 同一个实际 publisher/lifecycle helper 以 `CopyProfile::Flac` 再运行，覆盖 collision、
 第三次真实写包后的取消、真实 trailer 后注入 EIO、非 EOF read error/corrupt/配置变化、
 晚取消、cleanup warning、源字节不变、零 owned scratch 和 fd 数稳定。

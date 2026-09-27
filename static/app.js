@@ -122,14 +122,17 @@ const state = {
   sessionUserActionsName: "",
   sessionUserActionPending: null,
   remoteAccessRenderSignature: "",
+  remoteAccessFailure: null,
+  remoteAccessRequestSequence: 0,
+  remoteAccessOutcomeSequence: 0,
+  remoteAccessQrFailure: "",
+  statePollInFlight: false,
   internetRemoteDisplay: null,
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
   gatchaUidFaceRenderSignature: "",
-  gatchaTaskLastMessageSignature: "",
   gatchaUidLastToastSignature: "",
   confirmPopoverRenderSignature: "",
-  gatchaTaskWatchStartedAt: Date.now() / 1000,
   historyRenderSignature: "",
   playlistEmptyRenderSignature: "",
   cacheSliderRenderSignature: "",
@@ -255,6 +258,8 @@ const state = {
   bindingIntent: null,
   gatchaFavlistIntent: null,
   poolConfigOpener: null,
+  poolConfigRequester: "",
+  startupWarningSeen: "",
   bilikaraSecretOpener: null,
   developerTagResetOpener: null,
   ratingPromptOpener: null,
@@ -409,6 +414,7 @@ const state = {
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingPendingKeys: new Set(),
+  ratingQueuedKeys: new Set(),
   ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
@@ -1131,7 +1137,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.followBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
   state.gatchaUidFaceRenderSignature = "";
-  state.gatchaTaskLastMessageSignature = "";
   state.currentTitleRenderSignature = "";
   state.remoteAccessRenderSignature = "";
   state.listHeaderRenderSignature = "";
@@ -1716,7 +1721,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     scene,
     clock,
     language: state.language,
-    remoteAccess: state.data?.remote_access || null,
+    remoteAccess: remoteAccessForPresentation(),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
       hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
@@ -3029,7 +3034,6 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   for (const button of [elements.presentationHostBack, elements.presentationHostForward]) {
     if (button) {
       button.disabled = !hasPlayableMedia
-        || !durationAvailable
         || state.presentationHostControlBusy;
     }
   }
@@ -3538,7 +3542,7 @@ async function handlePresentationHostControl(action, button) {
       toggleMountedLocalPlayback();
     } else if (action === "seek" || action === "seek-relative") {
       if (!video) return;
-      const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Number.POSITIVE_INFINITY;
       const requestedTime = action === "seek-relative"
         ? Number(video.currentTime || 0) + Number(button.dataset.delta || 0)
         : Number(elements.presentationHostProgress?.value || 0);
@@ -4701,7 +4705,7 @@ function closeHighestRequestTaskLayerForEscape() {
     return true;
   }
   if (state.ratingPromptElement) {
-    closeRatingPrompt({ submit: true });
+    closeRatingPrompt({ submit: false });
     return true;
   }
   return false;
@@ -5524,7 +5528,7 @@ function submitSongRating(item, score, trigger = null) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && (state.ratingSubmittedKeys.has(submissionKey) || state.ratingPendingKeys.has(submissionKey))) {
+  if (submissionKey && (hasSubmittedSongRating(item) || isSongRatingQueued(item) || state.ratingPendingKeys.has(submissionKey))) {
     return false;
   }
   if (submissionKey) {
@@ -5542,6 +5546,7 @@ function submitSongRating(item, score, trigger = null) {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   }
+  renderCurrentRatingButton(state.data?.current_item);
   fetch("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
@@ -5552,7 +5557,10 @@ function submitSongRating(item, score, trigger = null) {
     if (!response.ok || result?.ok !== true || result?.success === false || result?.data?.success !== true) {
       throw new Error(result?.error || t("error.requestFailed"));
     }
-    if (submissionKey) state.ratingSubmittedKeys.add(submissionKey);
+    if (submissionKey) {
+      if (result?.data?.queued) state.ratingQueuedKeys.add(submissionKey);
+      else state.ratingSubmittedKeys.add(submissionKey);
+    }
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
@@ -5621,7 +5629,7 @@ function ratingSubmissionUserName(item) {
 
 function ratingSubmissionPlayId(item) {
   const bvid = String(item?.bvid || "").trim();
-  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
 function ratingSubmissionKey(item) {
@@ -5635,20 +5643,39 @@ function ratingSubmissionKey(item) {
 function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
   if (!button) return;
-  const item = current || previousRatingPromptItem(null);
-  const enabled = Boolean(item?.bvid && selectedRequesterName())
-    && state.data?.capabilities?.song_rating !== false;
-  const submitted = enabled && hasSubmittedSongRating(item);
-  const pending = state.ratingPendingKeys.has(ratingSubmissionKey(item));
-  button.disabled = !enabled || submitted || pending;
-  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  const items = ratingPromptItemsForItem(current);
+  const candidates = [items.current, items.previous].filter(Boolean);
+  const enabled = Boolean(selectedRequesterName()) && candidates.some(item => isItemRateable(item));
+  const pending = !enabled && candidates.some(item => state.ratingPendingKeys.has(ratingSubmissionKey(item)));
+  const queued = candidates.some(isSongRatingQueued);
+  const submitted = !enabled && !pending && !queued && candidates.some(hasSubmittedSongRating);
+  button.disabled = !enabled;
+  button.textContent = queued ? t("rating.queued") : submitted ? t("rating.rated") : t("rating.rate");
+  button.title = queued ? t("rating.queuedTitle") : submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
   if (pending) button.setAttribute("aria-busy", "true");
   else button.removeAttribute("aria-busy");
+  refreshOpenRatingPrompt(current);
+}
+
+function serverRatingStatus(item) {
+  const playId = ratingSubmissionPlayId(item);
+  const user = ratingSubmissionUserName(item).toLowerCase();
+  const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
+    && String(entry.session_user_name || "").toLowerCase() === user);
+  const key = ratingSubmissionKey(item);
+  if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
+  if (entry) return entry.status;
+  if (playId !== ratingSubmissionPlayId(state.data?.current_item)) state.ratingQueuedKeys.delete(key);
+  return state.ratingQueuedKeys.has(key) ? "waiting" : "";
+}
+
+function isSongRatingQueued(item) {
+  return ["waiting", "sending"].includes(serverRatingStatus(item));
 }
 
 function hasSubmittedSongRating(item) {
   const key = ratingSubmissionKey(item);
-  return Boolean(key && state.ratingSubmittedKeys.has(key));
+  return serverRatingStatus(item) === "accepted" || Boolean(key && state.ratingSubmittedKeys.has(key));
 }
 
 function normalizeRatingPromptItem(item) {
@@ -5686,6 +5713,37 @@ function ratingPromptItemsForItem(item) {
   };
 }
 
+function isItemRateable(item, isCurrent = false) {
+  if (!item?.bvid || state.data?.capabilities?.song_rating === false) return false;
+  const playId = ratingSubmissionPlayId(item);
+  const played = (state.data?.session_played || []).find(entry => String(entry.item_id || entry.id || "") === playId);
+  // Current-song confirmation may be held by the Host until its accepted
+  // playback observation reaches 50%; a skipped, ineligible song cannot be rated.
+  return (playId === ratingSubmissionPlayId(state.data?.current_item) || Boolean(played?.threshold_reached))
+    && !hasSubmittedSongRating(item)
+    && !isSongRatingQueued(item)
+    && !state.ratingPendingKeys.has(ratingSubmissionKey(item));
+}
+
+function refreshOpenRatingPrompt(current) {
+  if (!state.ratingPromptElement) return;
+  const items = ratingPromptItemsForItem(current);
+  const selectedId = ratingSubmissionPlayId(activeRatingPromptItem());
+  const tab = ["current", "previous"].find(key => items[key]
+    && ratingSubmissionPlayId(items[key]) === selectedId && isItemRateable(items[key], key === "current"));
+  if (!tab) { closeRatingPrompt({ submit: false }); return; }
+  const currentRateable = isItemRateable(items.current, true);
+  const previousRateable = isItemRateable(items.previous, false);
+  const changed = state.ratingPromptActiveTab !== tab
+    || state.ratingPromptCurrentRateable !== currentRateable
+    || state.ratingPromptPreviousRateable !== previousRateable;
+  state.ratingPromptItems = items;
+  state.ratingPromptActiveTab = tab;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
+  if (changed) renderRatingPromptContent();
+}
+
 function activeRatingPromptItem() {
   return normalizeRatingPromptItem(
     state.ratingPromptItems?.[state.ratingPromptActiveTab]
@@ -5717,8 +5775,7 @@ function renderRatingPromptContent() {
 
   root.querySelectorAll("[data-rating-tab]").forEach((button) => {
     const tab = button.dataset.ratingTab;
-    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
-    button.disabled = !hasItem;
+    button.disabled = !isItemRateable(state.ratingPromptItems?.[tab], tab === "current");
     button.classList.toggle("active", tab === state.ratingPromptActiveTab);
     button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
   });
@@ -5757,7 +5814,7 @@ function renderRatingPromptContent() {
   const owner = document.createElement("p");
   owner.className = "rating-owner";
   window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
-  copy.append(title, owner);
+  copy.append(owner);
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
@@ -5769,10 +5826,10 @@ function renderRatingPromptContent() {
   }
   const score = document.createElement("div");
   score.className = "song-detail-metric rating-score";
-  score.append(root.querySelector(".rating-stars"), root.querySelector(".rating-hint"));
+  score.append(root.querySelector(".rating-stars"));
   copy.appendChild(score);
   media.appendChild(copy);
-  content.replaceChildren(media);
+  content.replaceChildren(title, media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
@@ -5783,21 +5840,23 @@ function renderRatingPromptContent() {
 }
 
 function setRatingPromptActiveTab(tab) {
-  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+  if (!state.ratingPromptElement || !isItemRateable(state.ratingPromptItems?.[tab], tab === "current")) {
     return;
   }
   state.ratingPromptActiveTab = tab;
+  state.ratingPromptItemId = ratingSubmissionPlayId(state.ratingPromptItems[tab]);
+  state.ratingPromptScore = 5;
   renderRatingPromptContent();
 }
 
-function closeRatingPrompt({ submit = true, trigger = null } = {}) {
+function closeRatingPrompt({ submit = false, trigger = null } = {}) {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
   }
   const item = state.data?.current_item;
   const bvid = state.ratingPromptBvid;
-  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && bvid && isItemRateable(activeRatingPromptItem());
   state.ratingPromptSubmitted = true;
   const promptItem = activeRatingPromptItem();
   root.classList.add("closing");
@@ -5830,22 +5889,27 @@ function setRatingOptOut(enabled) {
 
 function openRatingPrompt(item, { manual = false } = {}) {
   if (state.data?.capabilities?.song_rating === false) return;
-  const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
+  const playId = String(item?.id || "").trim();
+  if (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId))) {
     return;
   }
   if (fullscreenElement()) {
     return;
   }
   const promptItems = ratingPromptItemsForItem(item);
-  closeRatingPrompt({ submit: true });
-  state.ratingPromptSeenPlayIds.add(playId);
-  state.ratingPromptItemId = playId;
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+  if (!selectedRequesterName() || (!currentRateable && !previousRateable)) return;
+  closeRatingPrompt({ submit: false });
+  const tab = currentRateable ? "current" : "previous";
+  const activeItem = promptItems[tab];
+  state.ratingPromptItemId = ratingSubmissionPlayId(activeItem);
   state.ratingPromptItems = promptItems;
-  state.ratingPromptActiveTab = "current";
-  state.ratingPromptItem = promptItems.current;
-  state.ratingPromptBvid = bvid;
+  state.ratingPromptActiveTab = tab;
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptBvid = activeItem.bvid;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
   state.ratingPromptScore = 5;
   state.ratingPromptSubmitted = false;
   state.ratingPromptOpener = document.activeElement;
@@ -5891,7 +5955,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const doneButton = document.createElement("button");
   doneButton.type = "button";
   doneButton.className = "next-button";
-  doneButton.dataset.ratingClose = "";
+  doneButton.dataset.ratingSubmit = "";
   doneButton.textContent = t("rating.done");
   const addUpButton = document.createElement("button");
   addUpButton.type = "button";
@@ -5908,10 +5972,11 @@ function openRatingPrompt(item, { manual = false } = {}) {
   previousTab.type = "button";
   previousTab.dataset.ratingTab = "previous";
   previousTab.setAttribute("role", "tab");
-  previousTab.disabled = !promptItems.previous;
+  previousTab.disabled = !previousRateable;
   previousTab.textContent = t("rating.previousTab");
   const currentTab = document.createElement("button");
   currentTab.type = "button";
+  currentTab.disabled = !currentRateable;
   currentTab.dataset.ratingTab = "current";
   currentTab.setAttribute("role", "tab");
   currentTab.textContent = t("rating.currentTab");
@@ -5920,13 +5985,9 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const message = document.createElement("p");
   message.className = "rating-message";
   message.dataset.ratingMessage = "";
-  const hint = document.createElement("p");
-  hint.className = "rating-hint";
-  hint.dataset.i18n = "rating.hint";
-  hint.textContent = t("rating.hint");
   const body = document.createElement("div");
   body.className = "rating-body";
-  body.append(content, stars, hint, actions, tabs, message);
+  body.append(content, stars, actions, tabs, message);
   card.append(closeButton, body);
   root.append(backdrop, card);
   document.body.appendChild(root);
@@ -5939,14 +6000,7 @@ function maybeShowRatingPromptForProgress(item, currentTime, duration) {
 }
 
 function handleRatingCurrentItemChange(currentItem) {
-  if (!state.ratingPromptElement) {
-    return;
-  }
-  const currentId = String(currentItem?.id || "");
-  if (!currentId || currentId !== state.ratingPromptItemId) {
-    closeRatingPrompt({ submit: true });
-    return;
-  }
+  refreshOpenRatingPrompt(currentItem);
 }
 
 function handleRequesterSelectionChange() {
@@ -6042,13 +6096,24 @@ async function reportMediaCapabilities() {
 async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
   const previousData = state.data;
-  const response = await fetch("/api/state", {
-    headers: clientHeaders(),
-  });
-  const payload = await parseApiResponse(response, "/api/state");
-  if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
+  const sequence = ++state.remoteAccessRequestSequence;
+  let response, payload;
+  try {
+    response = await fetch("/api/state", {
+      headers: clientHeaders(), signal: AbortSignal.timeout(10_000),
+    });
+    payload = await parseApiResponse(response, "/api/state");
+    if (!response.ok || !payload.ok || !validatedHostSnapshotIdentity(payload.data)) {
+      throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
+    }
+  } catch (error) {
+    const kind = response && !response.ok ? "http"
+      : response ? "invalid"
+      : ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network";
+    updateRemoteAccessFailure({ kind, status: response?.status }, sequence);
+    throw error;
   }
+  updateRemoteAccessFailure(null, sequence);
   if (!acceptHostStateSnapshot(payload.data)) {
     return false;
   }
@@ -6283,8 +6348,8 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
   return payload.data || { folders: [], items: [] };
 }
 
-async function fetchPoolConfig() {
-  const response = await fetch("/api/gatcha/pool-config", {
+async function fetchPoolConfig(requester = selectedRequesterName()) {
+  const response = await fetch(`/api/gatcha/pool-config?${new URLSearchParams({ requester_name: requester })}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6295,8 +6360,8 @@ async function fetchPoolConfig() {
   return payload.data || {};
 }
 
-async function savePoolConfig(payload) {
-  return apiPost("/api/gatcha/pool-config", payload);
+async function savePoolConfig(payload, requester = selectedRequesterName()) {
+  return apiPost("/api/gatcha/pool-config", { ...payload, requester_name: requester });
 }
 
 async function previewGatchaUid(uid) {
@@ -8558,6 +8623,7 @@ function renderFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (owner.avatar_url) {
           const avatar = document.createElement("img");
@@ -8702,6 +8768,7 @@ function renderFavlistBrowse() {
         count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
 
         button.append(name, count);
+        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
 
         if (folder.avatar_url) {
           const avatar = document.createElement("img");
@@ -9042,7 +9109,7 @@ async function handleGatchaDraw(event = null) {
   setGatchaMessage(t("gatcha.drawing"));
   renderGatchaWorkspace();
   try {
-    const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
+    const response = await fetch(`/api/gatcha/candidate?${new URLSearchParams({ requester_name: selectedRequesterName() })}`, { headers: clientHeaders() });
     const payload = await response.json();
     if (state.gatchaDrawSequence !== drawSequence) {
       return false;
@@ -9273,55 +9340,41 @@ function gatchaTaskBusyMessage() {
 }
 
 function syncGatchaTaskTerminalMessage() {
-  const task = state.data?.gatcha || {};
-  if (task.busy || state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving) {
-    return;
+  const task = state.data?.gatcha;
+  if (!task) return;
+  const changedSources = window.BilikaraSourceStatus?.takeSourceChanges?.(task) || [];
+  const completed = window.BilikaraSourceStatus?.takeCompletion(task,
+    state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving);
+  if (!completed && !changedSources.length) return;
+  if (completed) {
+    const status = String(task.last_status || "");
+    const fallback =
+      status === "success"
+        ? t("gatcha.refreshDone")
+        : status === "partial"
+          ? t("gatcha.refreshPartial")
+          : t("gatcha.refreshFailed");
+    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const detail = task.last_error ? `${message} ${task.last_error}` : message;
+    setGatchaUidMessage(detail, status !== "success");
   }
-  const status = String(task.last_status || "");
-  if (!["success", "partial", "failed"].includes(status)) {
-    return;
-  }
-  const updatedAt = Number(task.last_updated_at || 0);
-  if (updatedAt && updatedAt < state.gatchaTaskWatchStartedAt - 1) {
-    return;
-  }
-  const signature = JSON.stringify({
-    status,
-    message: task.last_message || "",
-    error: task.last_error || "",
-    updatedAt,
+  // Each committed source becomes visible while the rest of the batch runs.
+  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+    state.followBrowseRenderSignature = "";
+    void loadFollowBrowse({
+      uid: state.followBrowseSelectedUid,
+      query: state.followBrowseQuery,
+      keepQuery: true,
+    });
   });
-  if (signature === state.gatchaTaskLastMessageSignature) {
-    return;
-  }
-  state.gatchaTaskLastMessageSignature = signature;
-  const fallback =
-    status === "success"
-      ? t("gatcha.refreshDone")
-      : status === "partial"
-        ? t("gatcha.refreshPartial")
-        : t("gatcha.refreshFailed");
-  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
-  const detail = task.last_error ? `${message} ${task.last_error}` : message;
-  setGatchaUidMessage(detail, status !== "success");
-  if (status !== "failed") {
-    if (state.followBrowseData) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
-      state.followBrowseRenderSignature = "";
-      void loadFollowBrowse({
-        uid: state.followBrowseSelectedUid,
-        query: state.followBrowseQuery,
-        keepQuery: true,
-      });
+  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+    state.favlistBrowseRenderSignature = "";
+    void loadFavlistBrowse({
+      folderId: state.favlistBrowseSelectedFolderId,
+      query: state.favlistBrowseQuery,
+      keepQuery: true,
     });
-    if (state.favlistBrowseData) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
-      state.favlistBrowseRenderSignature = "";
-      void loadFavlistBrowse({
-        folderId: state.favlistBrowseSelectedFolderId,
-        query: state.favlistBrowseQuery,
-        keepQuery: true,
-      });
-    });
-  }
+  });
 }
 
 function renderGatchaUidFace() {
@@ -9404,6 +9457,7 @@ function disconnectClient() {
 }
 
 function render() {
+  if (state.desktopClosing) return;
   if (window.BilikaraNativeSession?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
@@ -9540,7 +9594,7 @@ function renderSessionUsers(sessionUsers) {
       item.dataset.name = userName;
       item.innerHTML = `
         <span class="session-user-order-number"></span>
-        <button type="button" class="session-user-name android-user-toggle" aria-expanded="false">${escapeHtml(userName)}</button>
+        <span class="session-user-name android-user-toggle" role="button" tabindex="0" aria-expanded="false">${escapeHtml(userName)}</span>
         <div class="android-user-actions" hidden>${SESSION_USER_ACTIONS.map(action => `
           <button type="button" data-user-action="${action.id}" aria-label="${escapeHtml(t(action.label))}">${action.glyph || htmlT(action.label)}</button>
         `).join("")}</div>
@@ -9557,8 +9611,8 @@ function renderSessionUsers(sessionUsers) {
 function syncSessionUserControls() {
   const users = state.data?.session_users || [];
   if (!users.includes(state.sessionUserActionsName)) state.sessionUserActionsName = "";
-  const touch = Boolean(window.BilikaraHostLayout?.isPortrait()
-    || window.matchMedia?.("(any-pointer: coarse)").matches);
+  const touch = Boolean(window.matchMedia?.("(pointer: coarse)").matches
+    && !window.matchMedia?.("(any-pointer: fine)").matches);
   document.documentElement.dataset.hostTouchUsers = String(touch);
   const help = document.querySelector('[data-i18n="session.help"], [data-i18n="mobile.sessionHelp"]');
   if (help) {
@@ -9614,7 +9668,7 @@ function syncHostAccountPresentation() {
   const compact = Boolean(window.BilikaraHostLayout?.isPortrait());
   const idle = !login?.state || login.state === "idle";
   // One account component owns its QR visibility in either placement. Visiting
-  // the compact My page must not start login; active QR/polling stays shared.
+  // Android compact account page must not start login; active QR/polling stays shared.
   elements.bbdownLoginPanel.classList.toggle("hidden", Boolean(login?.logged_in) || (compact && idle));
   document.getElementById("host-account-settings")?.classList.toggle("is-logged", Boolean(login?.logged_in));
 }
@@ -9923,8 +9977,10 @@ function renderPlayerFullscreenRemoteAccess({
   elements.playerFullscreenRemotePopover?.querySelector(".remote-access-card")
     ?.classList.toggle("is-local-only-preview", !internetActive);
   setTextContent(elements.playerFullscreenRemoteUrl,
-    normalizedLocalDisplayUrl ? new URL(normalizedLocalDisplayUrl).origin : "");
-  elements.playerFullscreenRemoteUrl?.classList.toggle("hidden", !normalizedLocalDisplayUrl);
+    normalizedLocalDisplayUrl ? (new URL(normalizedLocalDisplayUrl).origin + new URL(normalizedLocalDisplayUrl).pathname) : "");
+  elements.playerFullscreenRemoteUrl?.classList.remove("hidden");
+  elements.playerFullscreenRemoteUrl?.setAttribute("aria-disabled", String(!normalizedLocalDisplayUrl));
+  if (!normalizedLocalDisplayUrl) setTextContent(elements.playerFullscreenRemoteUrl, t("remote.noAddress"));
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
   setTextContent(
     elements.playerFullscreenPublicMeta,
@@ -9947,7 +10003,7 @@ function renderPlayerFullscreenRemoteAccess({
     image: elements.playerFullscreenRemoteQrImage,
     placeholder: elements.playerFullscreenRemoteQrPlaceholder,
     size: 220,
-    emptyMessage: t("internetRemote.notReady"),
+    emptyMessage: localHint || t("internetRemote.notReady"),
   }]);
   renderProvidedRemoteQr(
     internetActive ? internetQrImage : "",
@@ -9961,6 +10017,8 @@ function renderPlayerFullscreenRemoteAccess({
 
 function normalizedRemoteHttpUrl(value) {
   const candidate = String(value || "").trim();
+  // An absent snapshot/address is not a link to the current Host page.
+  if (!candidate) return "";
   try {
     const parsed = new URL(candidate, window.location.href);
     return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
@@ -9984,22 +10042,52 @@ function remoteUrlUsesLoopback(value) {
     || hostname.startsWith("::ffff:127.");
 }
 
+function updateRemoteAccessFailure(failure, sequence) {
+  if (sequence < state.remoteAccessOutcomeSequence) return;
+  state.remoteAccessOutcomeSequence = sequence;
+  if (JSON.stringify(failure) === JSON.stringify(state.remoteAccessFailure)) return;
+  state.remoteAccessFailure = failure;
+  renderRemoteAccess(state.data?.remote_access);
+  publishPresentationOutputState();
+}
+
+function localRemoteAccessView(remoteAccess) {
+  const failure = state.remoteAccessFailure;
+  if (failure) {
+    const key = failure.kind === "http" && [401, 403].includes(failure.status)
+      ? "remote.accessDenied" : `remote.access${failure.kind[0].toUpperCase()}${failure.kind.slice(1)}`;
+    return { url: "", hint: t(key, { status: failure.status }) };
+  }
+  if (!remoteAccess) return { url: "", hint: t(state.hasValidStateResponse ? "remote.accessInvalid" : "remote.accessWaiting") };
+  const candidates = [remoteAccess.preferred_url, ...(Array.isArray(remoteAccess.lan_urls) ? remoteAccess.lan_urls : []), remoteAccess.local_url];
+  const urls = candidates.map(normalizedRemoteHttpUrl).filter(value => {
+    if (!value) return false;
+    const url = new URL(value);
+    return !url.username && !url.password && ["/remote", "/remote/", "/remote.html"].includes(url.pathname);
+  });
+  const url = urls.find(value => !remoteUrlUsesLoopback(value)) || "";
+  if (!url) return { url: "", hint: t(urls.length ? "remote.noLanHint" : "remote.accessInvalid") };
+  const source = String(remoteAccess.qr_image || "");
+  const qrKey = JSON.stringify([url, source]);
+  if (state.remoteAccessQrFailure === qrKey || (document.documentElement.dataset.nativeHost === "true" && !source.startsWith("data:image/svg+xml;base64,"))) {
+    return { url: "", hint: t("remote.qrFailed") };
+  }
+  return { url, hint: t("internetRemote.localSameNetwork") };
+}
+
+function remoteAccessForPresentation() {
+  const access = state.data?.remote_access;
+  const view = localRemoteAccessView(access);
+  return { ...access, preferred_url: view.url, local_url: view.url,
+    qr_image: view.url ? access?.qr_image || "" : "", unavailable_message: view.url ? "" : view.hint };
+}
+
 function renderRemoteAccess(remoteAccess) {
-  const preferredUrl = String(remoteAccess?.preferred_url || "");
-  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
-  const localUrl = String(remoteAccess?.local_url || "");
-  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
-  const shareableUrl = [preferredUrl, ...lanUrls, localUrl]
-    .map(normalizedRemoteHttpUrl)
-    .find((url) => url && !remoteUrlUsesLoopback(url)) || "";
-  const localOpenUrl = normalizedRemoteHttpUrl(localUrl)
-    || normalizedRemoteHttpUrl(`${window.location.origin}/remote`);
-  const popoverTargetUrl = shareableUrl || localOpenUrl;
-  const displayHint = lanUrls.length > 1
-    ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
-    : lanUrls.length === 1
-      ? t("remote.defaultHint")
-      : t("remote.noLanHint");
+  const view = localRemoteAccessView(remoteAccess);
+  const displayUrl = view.url;
+  const shareableUrl = view.url;
+  const popoverTargetUrl = view.url;
+  const displayHint = view.hint;
   const internetDisplay = state.internetRemoteDisplay;
   const internetActive = Boolean(
     internetDisplay?.mode === "internet"
@@ -10016,7 +10104,6 @@ function renderRemoteAccess(remoteAccess) {
     displayUrl,
     displayHint,
     shareableUrl,
-    localOpenUrl,
     internetActive,
     internetQrImage,
     internetPassword,
@@ -10031,54 +10118,45 @@ function renderRemoteAccess(remoteAccess) {
   }
   state.remoteAccessRenderSignature = signature;
 
-  [elements.remoteUrlLink].forEach((link) => {
-    if (!link) {
-      return;
-    }
-    if (link.getAttribute("href") !== displayUrl) {
-      link.href = displayUrl;
-    }
-    setTextContent(link, new URL(displayUrl).origin);
-  });
-  if (elements.remotePopoverUrlLink) {
-    elements.remotePopoverUrlLink.href = popoverTargetUrl || "";
-    elements.remotePopoverUrlLink.dataset.shareable = String(Boolean(shareableUrl));
-    elements.remotePopoverUrlLink.classList.toggle("hidden", !popoverTargetUrl);
-    elements.remotePopoverUrlLink.textContent = popoverTargetUrl ? new URL(popoverTargetUrl).origin : "";
-    elements.remotePopoverUrlLink.title = shareableUrl
-      ? popoverTargetUrl
-      : t("internetRemote.openOnThisDevice");
+  for (const link of [elements.remoteUrlLink, elements.remotePopoverUrlLink]) {
+    if (!link) continue;
+    link.classList.remove("hidden");
+    if (displayUrl) link.setAttribute("href", displayUrl);
+    else link.removeAttribute("href");
+    link.setAttribute("aria-disabled", String(!displayUrl));
+    link.tabIndex = displayUrl ? 0 : -1;
+    link.dataset.shareable = String(Boolean(displayUrl));
+    link.textContent = displayUrl ? new URL(displayUrl).origin + new URL(displayUrl).pathname : t("remote.noAddress");
+    link.title = displayUrl || displayHint;
+  }
+  setTextContent(elements.remoteUrlHint, displayHint);
+  setTextContent(elements.remotePopoverUrlHint, displayHint);
+  for (const button of [elements.copyRemoteUrlButton, elements.remotePopoverCopyLink]) {
+    button?.classList.remove("hidden");
+    if (button) button.disabled = !shareableUrl || button.getAttribute("aria-busy") === "true";
   }
 
-  setTextContent(elements.remoteUrlHint, displayHint);
-  setTextContent(
-    elements.remotePopoverUrlHint,
-    t("internetRemote.localSameNetwork"),
-  );
-  elements.remotePopoverCopyLink?.classList.toggle("hidden", !shareableUrl);
-  if (elements.remotePopoverCopyLink) elements.remotePopoverCopyLink.disabled = !shareableUrl;
-
   renderRemoteQr(displayUrl, [
-    { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
+    { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220, emptyMessage: displayHint },
   ]);
   renderRemoteQr(shareableUrl, [
     {
       image: elements.remotePopoverQrImage,
       placeholder: elements.remotePopoverQrPlaceholder,
       size: 220,
-      emptyMessage: t("internetRemote.notReady"),
+      emptyMessage: displayHint,
     },
     {
       image: elements.remoteMiniQrImage,
       placeholder: elements.remoteMiniQrPlaceholder,
       size: 132,
-      emptyMessage: t("internetRemote.notReady"),
+      emptyMessage: displayHint,
     },
   ]);
   renderPlayerFullscreenRemoteAccess({
     localQrUrl: shareableUrl,
     localDisplayUrl: popoverTargetUrl,
-    localHint: t("internetRemote.localSameNetwork"),
+    localHint: displayHint,
     internetActive,
     internetQrImage,
     internetPassword,
@@ -10148,6 +10226,9 @@ function renderRemoteQr(url, targets = []) {
       image.classList.add("hidden");
       placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
+      state.remoteAccessQrFailure = JSON.stringify([normalizedUrl, String(state.data?.remote_access?.qr_image || "")]);
+      renderRemoteAccess(state.data?.remote_access);
+      publishPresentationOutputState();
     };
     image.src = qrUrl;
   });
@@ -10536,7 +10617,10 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
-  if (!force && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
+  // Android's compact account page requires an explicit login action. Window
+  // width alone must not disable the desktop Settings login workflow.
+  if (!force && document.documentElement.dataset.hostPlatform === "android"
+    && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
   const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -11018,6 +11102,10 @@ function acceptHostStateSnapshot(snapshot) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  if (snapshot.startup_warning && state.startupWarningSeen !== snapshot.startup_warning) {
+    state.startupWarningSeen = snapshot.startup_warning;
+    setAppMessage(snapshot.startup_warning, true);
+  }
   if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     state.playerSettingsEchoSuppressUntil = 0;
     state.volumeSaveSeq += 1;
@@ -11534,7 +11622,7 @@ function manualTransitionOverlaySeconds(data = state.data) {
 
 function clampMediaTime(media, nextTime) {
   const target = Math.max(0, Number(nextTime || 0));
-  if (!Number.isFinite(media?.duration)) {
+  if (!Number.isFinite(media?.duration) || !(media.duration > 0)) {
     return target;
   }
   return Math.min(target, Number(media.duration));
@@ -15609,7 +15697,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
             const resumeAfterSeek = audio && isTauriWebKitRuntime()
               ? state.localShouldBePlaying
               : !video.paused || state.localShouldBePlaying;
-            const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Number.POSITIVE_INFINITY;
             const nextTime = action === "seek-absolute"
               ? Math.max(0, targetSeconds)
               : Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
@@ -17156,15 +17244,16 @@ async function openPoolConfigModal() {
   state.poolConfigLoading = true;
   state.poolConfigSaving = false;
   state.poolConfigOpener = document.activeElement;
+  state.poolConfigRequester = selectedRequesterName();
   state.poolConfigDraft = clonePoolConfigProjection(
-    state.poolConfigAccepted || state.data?.gatcha_pool_config || {},
+    {},
   );
   elements.poolConfigModal.classList.remove("hidden");
   poolConfigSetMessage(t("gatcha.poolLoading"));
   renderPoolConfigModal();
   elements.poolConfigModalClose?.focus({ preventScroll: true });
   try {
-    const loaded = await fetchPoolConfig();
+    const loaded = await fetchPoolConfig(state.poolConfigRequester);
     if (
       state.poolConfigLoadSequence !== loadSequence
       || state.poolConfigOpenGeneration !== openGeneration
@@ -17256,10 +17345,12 @@ function resetPoolConfigControls() {
 }
 
 function poolConfigExcludedValues(name) {
-  return [...document.querySelectorAll(`input[name="${name}"]`)]
-    .filter((input) => !input.checked)
-    .map((input) => String(input.value || "").trim())
-    .filter(Boolean);
+  const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
+  const shown = new Set(inputs.map((input) => String(input.value || "").trim()));
+  const field = name === "gatcha-pool-uid" ? "excluded_uids" : "excluded_favlist_folders";
+  const retained = (state.poolConfigDraft?.[field] || []).filter((value) => !shown.has(String(value)));
+  return [...new Set([...retained, ...inputs.filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim()).filter(Boolean)])];
 }
 
 async function submitPoolConfigModal() {
@@ -17280,7 +17371,7 @@ async function submitPoolConfigModal() {
   poolConfigSetMessage(t("gatcha.poolSaving"));
   renderPoolConfigModal();
   try {
-    const saved = await savePoolConfig(payload);
+    const saved = await savePoolConfig(payload, state.poolConfigRequester);
     if (
       state.poolConfigSaveSequence !== saveSequence
       || state.poolConfigOpenGeneration !== openGeneration
@@ -19329,6 +19420,12 @@ document.addEventListener("drop", (e) => {
 
 // 3. Handle drag start for badge items.
 elements.sessionUserList.addEventListener("click", handleSessionUserAction);
+elements.sessionUserList.addEventListener("keydown", event => {
+  if (event.target.matches('.android-user-toggle') && ['Enter', ' '].includes(event.key)) {
+    event.preventDefault();
+    handleSessionUserAction(event);
+  }
+});
 elements.sessionUserList.addEventListener("contextmenu", event => {
   if (document.documentElement.dataset.hostTouchUsers === "true") event.preventDefault();
 });
@@ -19337,7 +19434,9 @@ document.addEventListener("click", event => {
   state.sessionUserActionsName = "";
   syncSessionUserControls();
 });
-window.matchMedia?.("(any-pointer: coarse)")?.addEventListener?.("change", syncSessionUserControls);
+for (const query of ["(pointer: coarse)", "(any-pointer: fine)"]) {
+  window.matchMedia?.(query)?.addEventListener?.("change", syncSessionUserControls);
+}
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
   if (!badge || !badge.draggable) { e.preventDefault(); return; }
@@ -19525,7 +19624,7 @@ elements.resortPlaylistButton?.addEventListener("click", async () => {
 });
 
 elements.copyRemoteUrlButton.addEventListener("click", async () => {
-  await copyRemoteUrl();
+  await copyRemoteAction(elements.copyRemoteUrlButton, elements.remoteUrlLink);
 });
 
 async function copyRemoteAction(button, link) {
@@ -19535,7 +19634,7 @@ async function copyRemoteAction(button, link) {
   try {
     await copyRemoteUrlFromLink(link);
   } finally {
-    button.disabled = false;
+    button.disabled = !link?.getAttribute("href") || link.getAttribute("aria-disabled") === "true";
     button.removeAttribute("aria-busy");
   }
 }
@@ -21182,13 +21281,18 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  const submitButton = event.target.closest("[data-rating-submit]");
+  if (submitButton) {
+    closeRatingPrompt({ submit: true, trigger: submitButton });
+    return;
+  }
   if (event.target.closest("[data-rating-close]")) {
-    closeRatingPrompt({ submit: true, trigger: event.target.closest("[data-rating-close]") });
+    closeRatingPrompt({ submit: false, trigger: event.target.closest("[data-rating-close]") });
   }
 });
 
 elements.openRatingButton?.addEventListener("click", () => {
-  openRatingPrompt(state.data?.current_item || previousRatingPromptItem(null), { manual: true });
+  openRatingPrompt(state.data?.current_item, { manual: true });
 });
 
 function handleRatingFullscreenChange() {
@@ -21808,6 +21912,7 @@ elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (state.gatchaRefreshSaving) return;
   if (gatchaTaskBusy()) {
     setGatchaUidMessage(gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
@@ -21818,14 +21923,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   setGatchaUidInlineMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
-    if (result?.started !== false && state.data) {
-      state.data.gatcha = {
-        ...(state.data.gatcha || {}),
-        busy: true,
-        message: gatchaTaskBusyMessage(),
-        last_status: "running",
-      };
-    }
+    await fetchState();
     setGatchaUidMessage(result?.started === false ? t("gatcha.refreshAlreadyRunning") : t("gatcha.refreshStarted"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
@@ -21868,14 +21966,18 @@ async function startPolling() {
   // Do this once at bootstrap, not on polling or progress snapshots.
   syncNativeWindowTheme();
   window.setInterval(async () => {
+    if (state.statePollInFlight) return;
+    state.statePollInFlight = true;
     try {
       await fetchState();
+      await restartHostPlaybackAfterBootstrap();
     } catch (error) {
       if (shouldReportStateFetchError(error)) {
         setAppMessage(error.message, true);
       }
+    } finally {
+      state.statePollInFlight = false;
     }
-    await restartHostPlaybackAfterBootstrap();
   }, pollIntervalMs);
 }
 
@@ -21980,6 +22082,14 @@ window.addEventListener("pagehide", () => {
   disconnectClient();
 });
 window.addEventListener("beforeunload", disconnectClient);
+// The shell requests this before waiting for backend cleanup. Keep the UI
+// thread free to unload the WebView media and stop Web Audio immediately.
+window.addEventListener("bilikara-before-close", () => {
+  state.desktopClosing = true;
+  teardownMountedPlayer();
+  disposeSharedAudioContext();
+  disconnectClient();
+});
 window.addEventListener("pageshow", () => {
   initializeLocalPresentation().catch(() => {});
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));

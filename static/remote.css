@@ -1,6 +1,14 @@
 @import url("./accent-palette.css");
 
 :root {
+  --remote-safe-area-top: env(safe-area-inset-top, 0px);
+  --remote-safe-area-right: env(safe-area-inset-right, 0px);
+  --remote-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --remote-safe-area-left: env(safe-area-inset-left, 0px);
+  --remote-modal-inset-top: calc(14px + var(--remote-safe-area-top));
+  --remote-modal-inset-right: calc(14px + var(--remote-safe-area-right));
+  --remote-modal-inset-bottom: calc(14px + var(--remote-safe-area-bottom));
+  --remote-modal-inset-left: calc(14px + var(--remote-safe-area-left));
   --bg: #f4efe6;
   --panel: rgba(255, 252, 247, 0.92);
   --line: rgba(67, 53, 41, 0.1);
@@ -76,7 +84,6 @@
 
   --qr-popover-bg: rgba(255, 252, 247, 0.98);
   --qr-popover-border: 1px solid rgba(67, 53, 41, 0.1);
-  --qr-popover-close-bg: rgba(255, 255, 255, 0.8);
 
   --theme-switch-button-bg: #fffaf4;
   --theme-switch-button-border: 1px solid rgba(67, 53, 41, 0.08);
@@ -193,6 +200,8 @@ body {
   background:
     radial-gradient(circle at top, var(--bg-glow), transparent 30%),
     linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  /* Give browser edge/overscroll sampling an opaque, theme-aware base. */
+  background-color: var(--bg);
 }
 
 body {
@@ -270,15 +279,9 @@ textarea::placeholder {
   inset: 0;
   z-index: var(--remote-layer-modal);
   padding:
-    calc(14px + env(safe-area-inset-top, 0px))
-    calc(14px + env(safe-area-inset-right, 0px))
-    calc(14px + env(safe-area-inset-bottom, 0px))
-    calc(14px + env(safe-area-inset-left, 0px));
+    var(--remote-modal-inset-top) var(--remote-modal-inset-right)
+    var(--remote-modal-inset-bottom) var(--remote-modal-inset-left);
   overscroll-behavior: contain;
-}
-
-.remote-shell.has-playback-dock > .song-detail-view {
-  padding-bottom: calc(102px + env(safe-area-inset-bottom, 0px));
 }
 
 .eyebrow,
@@ -1169,15 +1172,21 @@ h1 {
 
 #current-cache-state {
   width: fit-content;
-  margin-top: 8px;
+  margin: 0;
   margin-left: 0;
   background: transparent;
   padding: 0;
-  min-height: 44px;
+  min-height: 1.4em;
+  font-size: 13px;
+  line-height: 1.4;
   max-width: 100%;
   gap: 2px;
   color: var(--muted);
 }
+
+/* Progress occupies the uploader's single line, never an additional row. */
+#current-cache-state { height: 20px; min-height: 20px; white-space: nowrap; }
+#current-meta:empty { display: none; }
 
 #current-cache-state .cache-state-text {
   min-width: 0;
@@ -1200,35 +1209,12 @@ h1 {
 .audio-variant-bar {
   position: relative;
   z-index: 9;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px;
+  display: flex;
   gap: 8px;
   align-items: center;
   min-width: 0;
   min-height: 44px;
   margin-top: 14px;
-}
-
-.audio-variant-summary {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  height: 44px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: var(--variant-toggle-bg);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.audio-variant-summary-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .audio-variant-popover[hidden] {
@@ -3792,19 +3778,15 @@ select:disabled {
   }
 }
 
-@media (max-width: 420px) {
-  #remote-av-sync-panel .remote-step-button .step-symbol {
-    display: none;
-  }
-}
-
 .rating-modal {
   position: fixed;
   inset: 0;
   z-index: var(--remote-layer-modal);
   display: grid;
   place-items: center;
-  padding: 14px;
+  /* Match song details even when the playback dock or sheet is visible. */
+  padding: var(--remote-modal-inset-top) var(--remote-modal-inset-right)
+    var(--remote-modal-inset-bottom) var(--remote-modal-inset-left);
 }
 
 body.remote-identity-modal-open {
@@ -3921,17 +3903,13 @@ body.remote-identity-modal-open {
 }
 
 .rating-body {
-  max-height: calc(100vh - 48px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-  max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  max-height: calc(100vh - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px);
+  max-height: calc(100dvh - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px;
   border-radius: inherit;
-}
-
-.rating-modal {
-  padding: calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
 .rating-modal.closing .rating-card {
@@ -3971,7 +3949,7 @@ body.remote-identity-modal-open {
   height: 32px;
   border: 0;
   border-radius: 50%;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -4029,7 +4007,6 @@ body.remote-identity-modal-open {
 }
 
 .rating-kicker,
-.rating-hint,
 .rating-owner,
 .rating-message {
   margin: 0;
@@ -4039,13 +4016,6 @@ body.remote-identity-modal-open {
 .rating-kicker {
   font-size: 12px;
   text-transform: uppercase;
-}
-
-.rating-hint {
-  margin: 0 0 12px;
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.55;
 }
 
 .rating-stars {
@@ -4076,6 +4046,11 @@ body.remote-identity-modal-open {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.rating-actions [data-rating-submit] {
+  --remote-primary-button-disabled-bg: var(--remote-secondary-button-disabled-bg);
+  --remote-primary-button-disabled-color: var(--remote-secondary-button-disabled-color);
 }
 
 .rating-message {
@@ -4458,7 +4433,8 @@ body.remote-identity-modal-open {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-top: max(12px, env(safe-area-inset-top, 0px));
+  padding: max(12px, var(--remote-safe-area-top)) var(--remote-safe-area-right)
+    0 var(--remote-safe-area-left);
   overflow: hidden;
 }
 
@@ -4479,6 +4455,8 @@ body.remote-identity-modal-open {
   z-index: 1;
   display: flex;
   flex-direction: column;
+  /* The surface extends into the bottom safe area; controls never occupy it. */
+  padding-bottom: var(--remote-safe-area-bottom);
   width: 100%;
   max-height: 86vh;
   max-height: 86dvh;
@@ -4618,7 +4596,7 @@ body.remote-identity-modal-open {
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
-  padding: 14px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: 8px 16px 10px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -4635,7 +4613,7 @@ body.remote-identity-modal-open {
 .playback-sheet-primary {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .playback-sheet-secondary {
@@ -4771,6 +4749,8 @@ body.remote-identity-modal-open {
 .playback-metadata-field[data-playback-metadata-field="owner"] .current-owner-line {
   display: flex;
   align-items: flex-start;
+  height: 20px;
+  line-height: 20px;
 }
 
 .playback-metadata-field[data-playback-metadata-field="owner"] .owner-badge {
@@ -4798,16 +4778,17 @@ body.remote-identity-modal-open {
 
 .playback-sheet-summary-copy .current-cache-state {
   justify-self: start;
-  margin-top: 2px;
+  margin: 0;
 }
 
 .playback-sheet .current-cache-retry {
-  flex: 0 0 44px;
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
-  min-height: 44px;
-  margin-left: 2px;
+  flex: 0 0 20px;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin-left: 4px;
 }
 
 .playback-sheet-playback-group > .audio-variant-bar {
@@ -4815,9 +4796,10 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet-primary .audio-variant-button,
-.playback-sheet-primary .audio-variant-toggle,
-.playback-sheet button {
+.playback-sheet-primary .audio-variant-toggle {
+  height: 44px;
   min-height: 44px;
+  padding-block: 0;
 }
 
 .playback-sheet-primary .audio-variant-toggle {
@@ -4830,7 +4812,10 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet .player-control-row button {
+  width: 44px;
+  height: 44px;
   min-height: 44px;
+  padding: 0;
 }
 
 .playback-sheet-settings-card {
@@ -4914,7 +4899,9 @@ body.remote-identity-modal-open {
 .volume-adjust-popover .remote-step-button,
 .volume-adjust-popover .remote-reset-button,
 .volume-adjust-popover .remote-input-wrap {
+  height: 44px;
   min-height: 44px;
+  padding-block: 0;
 }
 
 .playback-sheet .remote-lock-button svg,
@@ -4932,23 +4919,18 @@ body.remote-identity-modal-open {
 
 html:has(body.playback-sheet-scroll-locked),
 body.playback-sheet-scroll-locked {
-  overflow: hidden;
   overscroll-behavior: none;
 }
 
+html.remote-modal-scroll-locked {
+  overscroll-behavior: none;
+  /* SSE updates behind a modal must not move the root scroll anchor either. */
+  overflow-anchor: none;
+}
+
 @media (max-width: 699px) and (min-height: 521px) {
-  .playback-sheet {
-    padding-top: 0;
-  }
-
   .playback-sheet-panel {
-    max-height: 100vh;
-    max-height: 100dvh;
-  }
-
-  .playback-sheet-status-header {
-    min-height: calc(56px + env(safe-area-inset-top, 0px));
-    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+    max-height: calc(100dvh - max(12px, var(--remote-safe-area-top)));
   }
 }
 
@@ -4974,14 +4956,15 @@ body.playback-sheet-scroll-locked {
 
 @media (min-width: 700px) {
   .playback-sheet {
-    padding: max(16px, env(safe-area-inset-top, 0px))
-      max(16px, env(safe-area-inset-right, 0px))
-      max(16px, env(safe-area-inset-bottom, 0px))
-      max(16px, env(safe-area-inset-left, 0px));
+    padding: max(16px, var(--remote-safe-area-top))
+      max(16px, var(--remote-safe-area-right))
+      max(16px, var(--remote-safe-area-bottom))
+      max(16px, var(--remote-safe-area-left));
   }
 
   .playback-sheet-panel {
     width: min(880px, 100%);
+    padding-bottom: 0;
     max-height: min(86dvh, 760px);
     border-bottom: var(--modal-card-border);
     border-radius: 24px;
@@ -4999,17 +4982,23 @@ body.playback-sheet-scroll-locked {
   }
 }
 
-@media (min-width: 700px) and (max-height: 520px) {
+@media (orientation: landscape) {
   .playback-sheet {
-    padding: max(8px, env(safe-area-inset-top, 0px))
-      max(8px, env(safe-area-inset-right, 0px))
-      max(8px, env(safe-area-inset-bottom, 0px))
-      max(8px, env(safe-area-inset-left, 0px));
+    padding: max(8px, var(--remote-safe-area-top))
+      max(8px, var(--remote-safe-area-right))
+      max(8px, var(--remote-safe-area-bottom))
+      max(8px, var(--remote-safe-area-left));
   }
 
   .playback-sheet-panel {
-    max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    width: min(880px, 100%);
+    max-height: calc(100dvh - max(8px, var(--remote-safe-area-top)) - max(8px, var(--remote-safe-area-bottom)));
+    padding-bottom: 0;
+    border-bottom: var(--modal-card-border);
   }
+}
+
+@media (min-width: 700px) and (max-height: 520px) {
 
   .playback-sheet-status-header {
     min-height: 52px;
@@ -5188,7 +5177,6 @@ body.playback-sheet-scroll-locked {
 
   --qr-popover-bg: rgba(30, 26, 23, 0.98);
   --qr-popover-border: 1px solid rgba(246, 241, 235, 0.12);
-  --qr-popover-close-bg: rgba(48, 41, 37, 0.8);
 
   --theme-switch-button-bg: #13110f;
   --theme-switch-button-border: 1px solid rgba(246, 241, 235, 0.12);
@@ -5301,7 +5289,6 @@ body.playback-sheet-scroll-locked {
   --audio-variant-popover-bg: #111928;
   --qr-popover-bg: rgba(8, 18, 32, 0.98);
   --qr-popover-border: 1px solid rgba(148, 202, 233, 0.16);
-  --qr-popover-close-bg: rgba(15, 30, 50, 0.8);
   --theme-switch-button-bg: #020617;
   --theme-switch-button-border: 1px solid rgba(148, 202, 233, 0.18);
   --theme-preview-active-border: var(--on-accent);
@@ -5429,7 +5416,6 @@ body.playback-sheet-scroll-locked {
   --variant-toggle-color: var(--accent);
   --qr-popover-bg: rgba(17, 25, 40, 0.98);
   --qr-popover-border: 1px solid rgba(255, 255, 255, 0.12);
-  --qr-popover-close-bg: rgba(30, 41, 59, 0.8);
   --theme-switch-button-bg: #050810;
   --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
   --rating-tab-bg: rgba(5, 8, 16, 0.54);
@@ -5686,7 +5672,7 @@ body.playback-sheet-scroll-locked {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--close-control-bg);
+  background: var(--btn-secondary-bg);
   color: var(--ink);
   font: 400 20px/0 sans-serif;
   cursor: pointer;
@@ -5783,16 +5769,40 @@ html[data-remote-transport="internet-pending"] body {
 /* Touch controls keep their position on hover and press. */
 button:is(:hover, :active) { transform: none !important; }
 
-.audio-variant-bar.is-inline { display: block; }
-.audio-variant-bar.is-inline > :is(.audio-variant-summary, .audio-variant-toggle) { display: none; }
-.audio-variant-bar.is-inline > .audio-variant-list {
+.audio-variant-bar > .audio-variant-toggle { flex: 0 0 44px; margin-left: auto; }
+.audio-variant-bar.is-inline > .audio-variant-toggle { display: none; }
+.audio-variant-bar > .audio-variant-list {
   display: flex;
   gap: 8px;
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
-.audio-variant-bar.is-inline .audio-variant-button {
+.audio-variant-bar .audio-variant-button {
   flex: 0 0 auto;
   white-space: nowrap;
+  max-width: 100%;
+}
+.playback-metadata-field.is-marquee {
+  overflow: hidden;
+}
+.playback-metadata-field.is-marquee .playback-metadata-text {
+  display: block;
+  width: max-content;
+  max-width: none;
+  white-space: nowrap;
+  overflow: visible;
+  animation: playback-metadata-scroll var(--playback-marquee-duration, 12s) linear infinite;
+}
+@keyframes playback-metadata-scroll {
+  0%, 15% { transform: translateX(0); }
+  75%, 90% { transform: translateX(calc(-1 * var(--playback-marquee-distance, 0px))); }
+  100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .playback-metadata-field.is-marquee { overflow-x: auto; }
+  .playback-metadata-field.is-marquee .playback-metadata-text { animation: none; }
 }
 
 /* Match centered modal motion across Remote dialogs. */
