@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "announcements": [
+    {
+      "id": "example-release-0.8.0",
+      "kind": "release",
+      "version": "0.8.0",
+      "published_at": "2026-09-01T09:00:00+09:00",
+      "platforms": [],
+      "title": { "zh": "版本公告示例（请替换后再发布）", "en": "Example release notes", "ja": "更新情報の例" },
+      "body_markdown": { "zh": "## 本次更新\n- 在这里填写真正的更新内容。\n- **公告 ID 不变**时，修改文案不会重复弹出。", "en": "Replace this example with actual release notes.", "ja": "実際の更新内容に置き換えてください。" }
+    },
+    {
+      "id": "example-service-20260901",
+      "kind": "notice",
+      "published_at": "2026-09-01T10:00:00+09:00",
+      "starts_at": "2026-09-01T10:00:00+09:00",
+      "ends_at": "2026-09-02T09:00:00+09:00",
+      "platforms": [],
+      "title": { "zh": "限时公告示例（已结束）", "en": "Example service notice", "ja": "期間限定のお知らせの例" },
+      "body_markdown": { "zh": "这里可以说明临时服务异常、影响范围及预计恢复时间。\n\n本条只是格式示例，**不代表实际服务状态**。", "en": "Example only; this is not a real service incident.", "ja": "形式の例です。実際の障害情報ではありません。" }
+    }
+  ]
+}

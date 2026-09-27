@@ -1,0 +1,30 @@
+/* Shared surface tokens remain in ui-surfaces.css; only this panel's layout. */
+#announcements-button { padding: 6px 12px; min-height: 32px; font-size: 13px; white-space: nowrap; }
+#announcements-modal { padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+#announcements-modal .announcement-card {
+  width: min(680px, 100%);
+  max-height: min(82dvh, 760px);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  box-sizing: border-box;
+}
+#announcements-modal .selection-modal-head { display: flex; justify-content: space-between; gap: 16px; margin: 0; }
+#announcements-close { flex-shrink: 0; }
+#announcements-status { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+#announcements-status:empty { display: none; }
+#announcements-content { grid-row: 3; overflow-y: auto; min-height: 0; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 4px; outline-offset: -2px; }
+.announcement-item { padding: 4px 0 22px; overflow-wrap: anywhere; }
+.announcement-item + .announcement-item { padding-top: 20px; border-top: 1px solid var(--line); }
+.announcement-item h3 { font-size: 18px; line-height: 1.45; margin: 8px 0; }
+.announcement-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.announcement-kind { border-radius: 999px; padding: 3px 9px; background: var(--btn-secondary-bg); color: var(--ink); }
+.is-active-notice .announcement-kind { color: var(--accent); font-weight: 700; }
+.announcement-detail { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
+.announcement-markdown { font-size: 14px; line-height: 1.75; }
+.announcement-markdown p { white-space: pre-line; margin: 10px 0; }
+.announcement-markdown h4 { font-size: 15px; margin: 16px 0 6px; }
+.announcement-markdown ul, .announcement-markdown ol { padding-left: 22px; }
+.announcement-markdown a { color: var(--accent); text-decoration: underline; }
+.announcement-markdown pre { overflow-x: auto; border-radius: 8px; background: var(--btn-secondary-bg); padding: 12px; }
+.announcement-empty { margin: 12px 0 20px; color: var(--muted); font-size: 14px; }
+@media (max-width: 480px) { #announcements-modal .announcement-card { max-height: 88dvh; } }

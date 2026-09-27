@@ -1,5 +1,6 @@
 //! Opt-in native Host transport. Desktop's Python adapter does not start this
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
+mod announcements;
 mod api;
 mod cache;
 mod catalog;
@@ -129,6 +130,17 @@ impl NativeHost {
     }
     pub fn local_port(&self) -> u16 {
         self.context.port
+    }
+    /// Trusted shell package metadata, never a version supplied by HTTP/Remote.
+    pub fn set_app_version(&self, version: &str) -> Result<(), String> {
+        if version.is_empty() || version.len() > 128 {
+            return Err("Invalid installed application version".into());
+        }
+        with_app(|app| {
+            app.native().announcements.version = version.to_owned();
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
     }
     pub fn set_export_renderer(&self, renderer: RemoteExportRenderer) -> Result<(), String> {
         // The bootstrap may be checked again; the renderer is installed once.
@@ -310,6 +322,20 @@ fn start(
     };
     let (saved_cookie, cookie_warning) = login::launch_cookie(&directory, saved_cookie);
     let saved_preferences = preferences::load(&directory, desktop)?;
+    let facts = desktop::update_facts();
+    let saved_announcements = crate::announcements::State::load(
+        &directory,
+        if desktop {
+            facts.version
+        } else {
+            String::new()
+        },
+        if desktop {
+            facts.platform
+        } else {
+            "android".into()
+        },
+    );
     let bbdown = if desktop {
         crate::cache_runtime::bbdown::Executable::discover(&directory)
     } else {
@@ -348,6 +374,7 @@ fn start(
         }
         let session = app.native();
         session.desktop = desktop;
+        session.announcements = saved_announcements;
         if desktop {
             // One authority for the check-only update loop: the same state the
             // status route and the SSE projection read.

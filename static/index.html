@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
+  <link rel="stylesheet" href="/announcements.css" />
 </head>
 
 <body>
@@ -877,6 +878,7 @@
                     <div class="cache-app-update-heading">
                       <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
                       <span class="app-update-version-badge hidden" id="update-version-badge"></span>
+                      <button type="button" class="toolbar-button hidden" id="announcements-button" data-i18n="announcements.title">更新公告</button>
                     </div>
                     <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
                       aria-live="polite"></p>
@@ -1840,6 +1842,18 @@
     </div>
   </div>
 
+  <div class="selection-modal hidden" id="announcements-modal" role="dialog" aria-modal="true" aria-labelledby="announcements-title">
+    <div class="selection-modal-backdrop" id="announcements-backdrop"></div>
+    <div class="selection-modal-card announcement-card">
+      <div class="selection-modal-head">
+        <h2 id="announcements-title" data-i18n="announcements.title">更新公告</h2>
+        <button type="button" id="announcements-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+      </div>
+      <p id="announcements-status" role="status" aria-live="polite"></p>
+      <div id="announcements-content" tabindex="0"></div>
+    </div>
+  </div>
+
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
@@ -1862,6 +1876,7 @@
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>
   <script src="/native-session.js" defer></script>
+  <script src="/announcements.js" defer></script>
   <script src="/host-layout-preferences.js" defer></script>
   <script src="/android-layout.js" defer></script>
   <script src="/host-layout.js" defer></script>

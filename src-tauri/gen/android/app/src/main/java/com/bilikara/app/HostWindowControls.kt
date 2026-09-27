@@ -19,6 +19,7 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
   private var active = false
   private var previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
   private var installed = false
+  private var announcementOpen = false
   // Device-local window preferences, not playlist/session/player state. Native
   // storage survives the loopback origin's port changing between launches.
   // MainActivity constructs this helper before ContextWrapper is attached.
@@ -44,6 +45,12 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
       !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
     val back = object : OnBackPressedCallback(false) {
       override fun handleOnBackPressed() {
+        if (announcementOpen) {
+          announcementOpen = false
+          isEnabled = active
+          webView.evaluateJavascript("window.BilikaraAnnouncements?.close()", null)
+          return
+        }
         setFullscreen(false)
         isEnabled = false
         webView.evaluateJavascript("document.exitFullscreen().catch(() => {})", null)
@@ -58,14 +65,19 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
       val page = Uri.parse(webView.url ?: "")
       if (page.scheme != expected.scheme || page.authority != expected.authority ||
         page.path !in listOf("/", "/index.html")) return@addWebMessageListener
-      if (message.data in listOf("enter", "exit")) {
-        val enabled = message.data == "enter"
+      val raw = message.data ?: return@addWebMessageListener
+      if (raw in listOf("announcements-open", "announcements-close")) {
+        announcementOpen = raw == "announcements-open"
+        back.isEnabled = active || announcementOpen
+        return@addWebMessageListener
+      }
+      if (raw in listOf("enter", "exit")) {
+        val enabled = raw == "enter"
         setFullscreen(enabled)
-        back.isEnabled = enabled
+        back.isEnabled = enabled || announcementOpen
         reply.postMessage(if (enabled) "entered" else "exited")
         return@addWebMessageListener
       }
-      val raw = message.data ?: return@addWebMessageListener
       if (raw.length > 1024) return@addWebMessageListener
       val input = try { JSONObject(raw) } catch (_: Exception) { return@addWebMessageListener }
       val id = input.optString("id")

@@ -16,6 +16,11 @@ class MainActivity : TauriActivity() {
   private val hostPlatform = HostPlatform(this)
   private val hostPresentation by lazy { HostPresentation(this) }
 
+  // Gradle's APK versionName can differ from Tauri's base SemVer, especially
+  // for preview/test builds. Rust reads this directly, not through HTTP input.
+  @Keep
+  fun installedAppVersion(): String = BuildConfig.VERSION_NAME
+
   @Keep
   fun installHostWindowControls(webView: WebView, origin: String): Boolean {
     hostExports.install(webView, origin)

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "announcements": [
+    {
+      "id": "announcement-board-test-20260927",
+      "kind": "notice",
+      "published_at": "2026-09-27T15:23:56+09:00",
+      "starts_at": "2026-09-27T15:23:56+09:00",
+      "ends_at": "2026-09-28T00:00:00+09:00",
+      "platforms": [],
+      "title": {
+        "zh": "公告板限时测试",
+        "en": "Announcement board test",
+        "ja": "お知らせ機能の期間限定テスト"
+      },
+      "body_markdown": {
+        "zh": "这是一条**测试公告**，用于确认桌面端和 Android 端的公告拉取、滚动显示及仅自动弹出一次的行为。\n\n- 有效期至 **2026 年 9 月 27 日 24:00（日本时间 UTC+9）**。\n- 本测试不会中断播放，也不代表服务异常。\n- 可随时点击右上角关闭；之后可从设置中的「更新公告」重新查看。\n\n如果你看到了这条通知，说明公告内容已成功从 Cloudflare 加载。",
+        "en": "This is a **test announcement** for checking loading, scrolling and one-time automatic display on desktop and Android.\n\n- Active until **midnight at the end of September 27, 2026 (Japan time, UTC+9)**.\n- This test does not interrupt playback or indicate a service outage.\n- Close it at any time using the top-right button. Open Announcements in Settings to read it again.\n\nSeeing this notice confirms that the announcement content was loaded from Cloudflare.",
+        "ja": "これは、デスクトップ版と Android 版で、お知らせの取得・スクロール表示・一度だけの自動表示を確認するための**テスト通知**です。\n\n- 有効期限は **2026 年 9 月 27 日 24:00（日本時間 UTC+9）**です。\n- 再生を中断することはなく、サービス障害を示すものでもありません。\n- 右上のボタンでいつでも閉じられます。設定のお知らせから再び確認できます。\n\nこの通知が表示されていれば、Cloudflare からお知らせを取得できています。"
+      }
+    }
+  ]
+}

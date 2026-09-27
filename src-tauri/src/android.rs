@@ -15,6 +15,8 @@ struct AndroidBootstrap {
     host: Option<NativeHost>,
 }
 
+type AndroidHostSetup = (bool, RemoteExportRenderer, String);
+
 #[derive(Serialize)]
 struct AndroidAlphaStatus {
     schema_version: u32,
@@ -58,11 +60,17 @@ async fn android_alpha_status(
     window
         .with_webview(move |webview| {
             webview.jni_handle().exec(move |env, activity, view| {
-                let result: Result<(bool, RemoteExportRenderer), jni::errors::Error> = (|| {
+                let result: Result<AndroidHostSetup, jni::errors::Error> = (|| {
                     let vm = env.get_java_vm()?;
                     // Retain the class, not Activity/WebView, for HTTP workers.
                     let class = env.get_object_class(activity)?;
                     let class = env.new_global_ref(class)?;
+                    let version = env
+                        .call_method(activity, "installedAppVersion", "()Ljava/lang/String;", &[])?
+                        .l()?;
+                    let version: String = env
+                        .get_string(&jni::objects::JString::from(version))?
+                        .into();
                     let origin = env.new_string(origin)?;
                     let ready = env
                         .call_method(
@@ -102,9 +110,8 @@ async fn android_alpha_status(
                             _ => Err("export_render".into()),
                         }
                     });
-                    Ok((ready, renderer))
-                })(
-                );
+                    Ok((ready, renderer, version))
+                })();
                 if result.is_err() {
                     let _ = env.exception_clear();
                 }
@@ -120,8 +127,10 @@ async fn android_alpha_status(
     })
     .await
     .map_err(|_| "Cannot initialize Android window controls".to_owned())?;
-    let window_controls_ready = if let Some((ready, renderer)) = bridge {
+    let window_controls_ready = if let Some((ready, renderer, version)) = bridge {
         host.set_export_renderer(renderer)?;
+        // Missing version facts disable release popups, never Host startup.
+        let _ = host.set_app_version(&version);
         ready
     } else {
         false
