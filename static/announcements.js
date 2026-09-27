@@ -97,9 +97,12 @@
       windowBridge()?.postMessage("announcements-close");
       if (focusBefore?.isConnected) focusBefore.focus({ preventScroll: true });
     }
-    function date(value) {
+    function date(value, withTime = false) {
       const parsed = new Date(value);
-      return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString(language()) : value;
+      return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString(language(), {
+        year: "numeric", month: "numeric", day: "numeric",
+        ...(withTime ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" } : {}),
+      }) : value;
     }
     function render() {
       document.getElementById("announcements-title").textContent = t("announcements.title");
@@ -119,9 +122,9 @@
         body.append(markdown(document, localized(item.body_markdown, language())));
         article.append(meta, title);
         if (item.version || item.ends_at) {
-          const detail = document.createElement("p"); detail.className = "announcement-detail";
-          detail.textContent = item.version ? `v${item.version.replace(/^v/, "")}` : `${t("announcements.validUntil")} ${date(item.ends_at)}`;
-          article.append(detail);
+          const detail = document.createElement("span"); detail.className = "announcement-detail";
+          detail.textContent = item.version ? `v${item.version.replace(/^v/, "")}` : `${t("announcements.validUntil")} ${date(item.ends_at, true)}`;
+          meta.append(detail);
         }
         article.append(body); nodes.append(article);
       }
