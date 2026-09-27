@@ -686,6 +686,8 @@ const elements = {
   confirmPageSize: document.getElementById("confirm-page-size"),
   confirmPageSizeNote: document.getElementById("confirm-page-size-note"),
   confirmCancel: document.getElementById("confirm-cancel"),
+  confirmClose: document.getElementById("confirm-close"),
+  confirmTitle: document.getElementById("confirm-title"),
   confirmSecondary: document.getElementById("confirm-secondary"),
   confirmOk: document.getElementById("confirm-ok"),
   bindingModal: document.getElementById("binding-modal"),
@@ -1108,6 +1110,13 @@ function applyStaticI18n(root = document) {
     setElementAttribute(node, "alt", t(node.dataset.i18nAlt));
   });
   document.title = t("document.title");
+  root.querySelectorAll("[data-duration-seconds]").forEach((node) => {
+    const seconds = Number(node.dataset.durationSeconds);
+    node.textContent = seconds > 0 ? t("player.durationSeconds", { seconds }) : t("player.durationUnknown");
+  });
+  root.querySelectorAll("[data-rating-score]").forEach((node) => {
+    node.setAttribute("aria-label", t("rating.scoreAria", { score: Number(node.dataset.ratingScore) }));
+  });
   document.documentElement.lang = state.language === "ja" ? "ja" : state.language === "en" ? "en" : "zh-CN";
 }
 
@@ -1159,6 +1168,7 @@ function setLanguage(language) {
   }
   state.language = nextLanguage;
   writeLocalPreference(storageKeys.language, nextLanguage);
+  publishHostAppearance();
   invalidateLanguageSensitiveRenderCache();
   applyStaticI18n();
   announceStaticI18n();
@@ -1174,8 +1184,23 @@ function applyTheme(theme) {
   state.theme = nextTheme;
   document.documentElement.setAttribute("data-theme", nextTheme);
   writeLocalPreference(storageKeys.theme, nextTheme);
+  publishHostAppearance();
   renderThemeSwitch();
   syncNativeWindowTheme();
+}
+
+function publishHostAppearance() {
+  // WebKit does not consistently deliver storage events to secondary windows.
+  // This UI-only message has no backend state or network traffic.
+  try {
+    if (typeof window.BroadcastChannel !== "function") return;
+    const channel = new window.BroadcastChannel("bilikara-host-appearance");
+    try {
+      channel.postMessage({ theme: state.theme, language: state.language });
+    } finally {
+      channel.close();
+    }
+  } catch { /* The storage listener remains available where channels are not. */ }
 }
 
 function syncNativeWindowTheme() {
@@ -4808,7 +4833,9 @@ function measureStageControlTrayNaturalSize(width, { layout = "", density = "" }
     .every((button) => button.scrollWidth <= button.clientWidth + 1);
   const size = {
     width: Math.ceil(tray.scrollWidth || width),
-    height: Math.ceil(tray.scrollHeight || 0),
+    // scrollHeight excludes borders; max-height uses the border box. Measuring
+    // the untransformed box avoids a permanent two-pixel vertical overflow.
+    height: Math.max(tray.offsetHeight, tray.scrollHeight + tray.offsetHeight - tray.clientHeight),
     contentFits: controlsStayOnOneRow && panelColumnsStayAligned && labelledButtonsFit,
   };
   tray.classList.remove("is-measuring");
@@ -5810,6 +5837,7 @@ function renderRatingPromptContent() {
   copy.className = "song-detail-facts";
   const title = document.createElement("h2");
   title.className = "song-detail-title rating-title";
+  title.dataset.i18n = "rating.title";
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
@@ -5818,6 +5846,7 @@ function renderRatingPromptContent() {
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
+    link.dataset.i18n = "search.openOnBilibili";
     link.href = url;
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -5834,7 +5863,8 @@ function renderRatingPromptContent() {
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
     addUpButton.disabled = addUpButton.hasAttribute("aria-busy") || !ownerUid;
-    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+    addUpButton.dataset.i18n = ownerUid ? "rating.addUp" : "rating.missingUid";
+    addUpButton.textContent = t(addUpButton.dataset.i18n);
   }
   renderRatingStars();
 }
@@ -5925,12 +5955,14 @@ function openRatingPrompt(item, { manual = false } = {}) {
   card.className = "rating-card";
   card.setAttribute("role", "dialog");
   card.setAttribute("aria-modal", "true");
+  card.dataset.i18nAriaLabel = "rating.dialogLabel";
   card.setAttribute("aria-label", t("rating.dialogLabel"));
 
   const closeButton = document.createElement("button");
   closeButton.type = "button";
   closeButton.className = "rating-close";
   closeButton.dataset.ratingClose = "";
+  closeButton.dataset.i18nAriaLabel = "rating.closeLabel";
   closeButton.setAttribute("aria-label", t("rating.closeLabel"));
   closeButton.innerHTML = '<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>';
 
@@ -5940,6 +5972,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const stars = document.createElement("div");
   stars.className = "rating-stars";
   stars.setAttribute("role", "radiogroup");
+  stars.dataset.i18nAriaLabel = "rating.scoreLabel";
   stars.setAttribute("aria-label", t("rating.scoreLabel"));
   [1, 2, 3, 4, 5].forEach((score) => {
     const button = document.createElement("button");
@@ -5956,6 +5989,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   doneButton.type = "button";
   doneButton.className = "next-button";
   doneButton.dataset.ratingSubmit = "";
+  doneButton.dataset.i18n = "rating.done";
   doneButton.textContent = t("rating.done");
   const addUpButton = document.createElement("button");
   addUpButton.type = "button";
@@ -5967,18 +6001,21 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const tabs = document.createElement("div");
   tabs.className = "rating-tabs";
   tabs.setAttribute("role", "tablist");
+  tabs.dataset.i18nAriaLabel = "rating.dialogLabel";
   tabs.setAttribute("aria-label", t("rating.dialogLabel"));
   const previousTab = document.createElement("button");
   previousTab.type = "button";
   previousTab.dataset.ratingTab = "previous";
   previousTab.setAttribute("role", "tab");
   previousTab.disabled = !previousRateable;
+  previousTab.dataset.i18n = "rating.previousTab";
   previousTab.textContent = t("rating.previousTab");
   const currentTab = document.createElement("button");
   currentTab.type = "button";
   currentTab.disabled = !currentRateable;
   currentTab.dataset.ratingTab = "current";
   currentTab.setAttribute("role", "tab");
+  currentTab.dataset.i18n = "rating.currentTab";
   currentTab.textContent = t("rating.currentTab");
   tabs.append(previousTab, currentTab);
 
@@ -6153,7 +6190,15 @@ function renderSignatureForData(data) {
   if (!data) {
     return "";
   }
-  const { player_status: _playerStatus, ...renderedData } = data;
+  // Transport revisions advance with playback observations, too. They guard
+  // snapshot acceptance, but are not visual changes to the Host workspace.
+  const {
+    player_status: _playerStatus,
+    state_revision: _stateRevision,
+    revision: _revision,
+    updated_at: _updatedAt,
+    ...renderedData
+  } = data;
   return JSON.stringify(renderedData);
 }
 
@@ -7863,8 +7908,8 @@ function ensurePendingReviewView() {
   view.innerHTML = `
     <div class="pending-review-head">
       <div class="pending-review-title-block">
-        <p class="section-tag" data-pending-review-eyebrow></p>
-        <h2 data-pending-review-title></h2>
+        <p class="section-tag" data-pending-review-eyebrow data-i18n="search.reviewTag"></p>
+        <h2 data-pending-review-title data-i18n="search.reviewPending"></h2>
       </div>
       <button type="button" class="toolbar-button" data-pending-review-refresh></button>
     </div>
@@ -7892,7 +7937,7 @@ function renderPendingReviewView() {
   const items = Array.isArray(state.pendingReviewItems) ? state.pendingReviewItems : [];
 
   if (eyebrow) {
-    eyebrow.textContent = "D1 REVIEW";
+    eyebrow.textContent = t("search.reviewTag");
   }
   if (title) {
     title.textContent = t("search.reviewPending");
@@ -8097,8 +8142,8 @@ function ensureBlacklistView() {
   view.innerHTML = `
     <div class="pending-review-head">
       <div class="pending-review-title-block">
-        <p class="section-tag">D1 BLACKLIST</p>
-        <h2 data-blacklist-title></h2>
+        <p class="section-tag" data-blacklist-eyebrow data-i18n="search.blacklistTag"></p>
+        <h2 data-blacklist-title data-i18n="search.blacklistTitle"></h2>
       </div>
       <button type="button" class="toolbar-button" data-blacklist-refresh></button>
     </div>
@@ -8122,6 +8167,7 @@ function renderBlacklistView() {
   if (!view) {
     return;
   }
+  const eyebrow = view.querySelector("[data-blacklist-eyebrow]");
   const title = view.querySelector("[data-blacklist-title]");
   const refreshButton = view.querySelector("[data-blacklist-refresh]");
   const queryInput = view.querySelector("[data-blacklist-query]");
@@ -8130,6 +8176,7 @@ function renderBlacklistView() {
   const message = view.querySelector("[data-blacklist-message]");
   const previousButton = view.querySelector("[data-blacklist-previous]");
   const nextButton = view.querySelector("[data-blacklist-next]");
+  if (eyebrow) eyebrow.textContent = t("search.blacklistTag");
   if (title) title.textContent = t("search.blacklistTitle");
   if (refreshButton) {
     refreshButton.textContent = t("search.blacklistRefresh");
@@ -14524,6 +14571,7 @@ function positionAudioVariantPopover() {
   popover.style.left = `${left}px`;
   popover.style.top = `${Math.max(inset, Math.round(top))}px`;
   popover.style.maxHeight = `${Math.round(maxHeight)}px`;
+  window.BilikaraPartSelector?.syncLabels(popover);
 }
 
 function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
@@ -14540,7 +14588,13 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
   elements.audioVariantBackdrop.inert = !nextOpen;
   elements.audioVariantBackdrop.setAttribute("aria-hidden", String(!nextOpen));
   if (!nextOpen) {
-    clearAudioVariantPopoverPosition();
+    // Keep geometry through the exit animation; clearing it immediately
+    // changes wrapping and panel size while the panel is still visible.
+    const closing = elements.audioVariantPopover;
+    const sequence = closing.__closeSequence = (closing.__closeSequence || 0) + 1;
+    Promise.allSettled((closing.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+      if (!state.audioVariantBarExpanded && closing.__closeSequence === sequence) clearAudioVariantPopoverPosition();
+    });
     if (restoreFocus) toggle.focus({ preventScroll: true });
     return;
   }
@@ -14555,25 +14609,32 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
 function syncAudioVariantOverflow() {
   const bar = elements.audioVariantBar;
   const popover = elements.audioVariantPopover;
-  const list = bar?.querySelector(".audio-variant-list") || popover?.querySelector(".audio-variant-list");
+  const list = bar?.querySelector(".audio-variant-list");
   if (!list || elements.audioVariantAnchor.hidden || !bar.clientWidth) return false;
-  const scrollTop = popover.scrollTop;
-  // Reuse Remote's fit/move behavior: one ordered list, no truncated second copy.
   bar.classList.add("is-inline");
   elements.audioVariantToggle.classList.add("hidden");
-  bar.append(list);
+  const buttons = [...list.children];
+  buttons.forEach(button => button.classList.remove("hidden"));
   const fits = list.scrollWidth <= bar.clientWidth + 1;
   if (fits) {
     setAudioVariantPopoverOpen(false);
   } else {
     bar.classList.remove("is-inline");
     elements.audioVariantToggle.classList.remove("hidden");
-    popover.replaceChildren(list);
-    if (state.audioVariantBarExpanded) {
-      positionAudioVariantPopover();
-      popover.scrollTop = scrollTop;
+    const available = list.clientWidth;
+    const gap = Number.parseFloat(getComputedStyle(list).columnGap) || 0;
+    const selected = buttons.find(button => button.classList.contains("active")) || buttons[0];
+    let used = selected?.getBoundingClientRect().width || 0;
+    for (const button of buttons) {
+      if (button === selected) continue;
+      const width = button.getBoundingClientRect().width;
+      const show = used + gap + width <= available + 1;
+      button.classList.toggle("hidden", !show);
+      if (show) used += gap + width;
     }
+    if (state.audioVariantBarExpanded) positionAudioVariantPopover();
   }
+  window.BilikaraPartSelector?.syncLabels(bar);
   return !fits;
 }
 
@@ -14654,19 +14715,20 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   elements.audioVariantBar.replaceChildren();
   elements.audioVariantPopover.replaceChildren();
-  const summary = document.createElement("div");
-  summary.className = "audio-variant-summary";
-  summary.textContent = selectedVariant?.label || variants[0].label;
-  summary.title = summary.textContent;
-  elements.audioVariantBar.append(summary);
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "audio-variant-button";
-    button.textContent = variant.label || variant.id;
-    button.title = button.textContent;
+    const label = document.createElement("span");
+    label.className = "audio-variant-button-label";
+    const text = document.createElement("span");
+    text.className = "audio-variant-button-text";
+    text.textContent = variant.label || variant.id;
+    label.append(text);
+    button.append(label);
+    button.title = text.textContent;
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
     button.dataset.page = String(variant.page || "");
@@ -14683,6 +14745,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   );
   elements.audioVariantToggle.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
 
+  elements.audioVariantPopover.append(list.cloneNode(true));
   elements.audioVariantBar.append(list);
   elements.audioVariantBar.classList.toggle("is-expanded", state.audioVariantBarExpanded);
   setClassToggle(elements.audioVariantBar, "hidden", false);
@@ -16634,6 +16697,7 @@ function confirmPopoverRenderSignature(intent) {
   const anchorRect = confirmPopoverAnchorRect(intent);
   return JSON.stringify({
     type: intent.type || "",
+    language: state.language,
     message: intent.message || "",
     primaryLabel: intent.primaryLabel || "",
     secondaryLabel: intent.secondaryLabel || "",
@@ -16732,6 +16796,11 @@ function renderConfirmPopover() {
   const hasSourceSelect = Boolean(intent.sourceSelect);
   const hasPageSizeSelect = Boolean(intent.pageSizeSelect);
   const hideMessage = Boolean(intent.hideMessage);
+  const isExport = intent.type === "export-history";
+  elements.confirmTitle?.classList.toggle("hidden", !isExport);
+  elements.confirmCancel.classList.toggle("hidden", isExport);
+  elements.confirmPopover.classList.toggle("is-export", isExport);
+  elements.confirmPopover.setAttribute("aria-labelledby", isExport ? "confirm-title" : "confirm-text");
 
   elements.confirmText.textContent = intent.message || "";
   elements.confirmText.classList.toggle("hidden", hideMessage);
@@ -16767,9 +16836,9 @@ function renderConfirmPopover() {
       controls.remove();
     }
   }
-  elements.confirmOk.textContent = intent.primaryLabel || t("common.confirm");
+  elements.confirmOk.textContent = isExport ? t("history.exportImage") : intent.primaryLabel || t("common.confirm");
   if (elements.confirmSecondary) {
-    elements.confirmSecondary.textContent = intent.secondaryLabel || "";
+    elements.confirmSecondary.textContent = isExport ? t("history.exportCsv") : intent.secondaryLabel || "";
     elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
   }
   elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect || hasPageSizeSelect);
@@ -16944,6 +17013,7 @@ function renderBindingOption(inputType, name, entry, checked) {
   title.textContent = `P${entry.page} · ${entry.part}`;
   const meta = document.createElement("div");
   meta.className = "selection-option-meta";
+  meta.dataset.durationSeconds = String(entry.duration || 0);
   meta.textContent = entry.duration > 0 ? t("player.durationSeconds", { seconds: entry.duration }) : t("player.durationUnknown");
   copy.append(title, meta);
 
@@ -20614,13 +20684,15 @@ elements.historyList.addEventListener("click", async (event) => {
   }
 });
 
-elements.confirmCancel.addEventListener("click", () => {
+function cancelConfirm() {
   const intent = state.confirmIntent;
   closeConfirm();
   if (intent?.type === "reorder-item" && intent.focusItemId) {
     focusPlaylistItemMenuTrigger(intent.focusItemId);
   }
-});
+}
+elements.confirmCancel.addEventListener("click", cancelConfirm);
+elements.confirmClose?.addEventListener("click", cancelConfirm);
 
 elements.confirmSource?.addEventListener("change", () => {
   updateConfirmHistoryExportSource();
@@ -20955,33 +21027,16 @@ elements.confirmOk.addEventListener("click", async () => {
   }
 });
 
+// Dismiss before the next action's click, so opening clicks need no permanent
+// exceptions for entire forms or lists. Do not steal focus from the new target.
+document.addEventListener("pointerdown", (event) => {
+  if (state.confirmIntent && !event.target.closest("#confirm-popover")) {
+    closeConfirm({ restoreFocus: false });
+  }
+});
+
 document.addEventListener("click", (event) => {
-  if (event.target.closest("#confirm-popover")) {
-    return;
-  }
-  if (state.confirmIntent) {
-    if (
-      event.target.closest("#clear-playlist-button") ||
-      event.target.closest("#history-export-button") ||
-      event.target.closest("#clear-history-button") ||
-      event.target.closest('button[data-action="remove"]') ||
-      event.target.closest("#queue-next-button") ||
-      event.target.closest("#data-reset-button") ||
-      event.target.closest("#current-cache-retry-button") ||
-      event.target.closest("#player-reset-button") ||
-      event.target.closest("#update-check-button") ||
-      event.target.closest("#application-restart-button") ||
-      event.target.closest("#cache-download-source-select") ||
-      event.target.closest("#add-form") ||
-      event.target.closest("#gatcha-uid-form") ||
-      event.target.closest("#modal-follow-uid-form") ||
-      event.target.closest("#refresh-gatcha-cache-button") ||
-      event.target.closest("#history-list")
-    ) {
-      return;
-    }
-    closeConfirm();
-  }
+  if (event.target.closest("#confirm-popover")) return;
 
   if (!event.target.closest(".cache-contextual-info-region")) {
     closeCacheAdvancedInfo();

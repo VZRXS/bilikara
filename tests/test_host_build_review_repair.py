@@ -9,10 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HostBuildReviewRepairTest(unittest.TestCase):
+    def test_progress_revisions_do_not_invalidate_workspace_rendering(self):
+        subprocess.run(
+            ["node", "tests/render_signatures.cjs"], cwd=ROOT, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+
     def test_runtime_settings_account_and_media_status_presentation(self):
         subprocess.run(
             ["node", "tests/runtime_settings_status.cjs"], cwd=ROOT, check=True,
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
 
     @classmethod
@@ -421,15 +427,15 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         languages = self.translations["languages"]
         self.assertEqual(
             languages["zh"]["binding.help"],
-            "选择一个要下载的视频画面，和要绑定的音频轨道",
+            "选择一个分 P 作为视频画面，再选择至少一个分 P 作为可切换的音频。",
         )
         self.assertEqual(
             languages["en"]["binding.help"],
-            "Choose one video track to download and the audio track to bind to it.",
+            "Choose one part for the video and at least one part for the audio. You can switch between the selected audio tracks during playback.",
         )
         self.assertEqual(
             languages["ja"]["binding.help"],
-            "ダウンロードする映像を1つと、バインドするオーディオトラックを選択します。",
+            "映像に使うパートを1つ、音声に使うパートを1つ以上選んでください。選んだ音声は再生中に切り替えられます。",
         )
 
     def test_queue_and_history_are_direct_and_next_is_queue_current_owned(self):
@@ -978,7 +984,10 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("function setAudioVariantPopoverOpen", self.script)
         self.assertIn('dataset.popoverDirection', self.script)
         self.assertIn('const fits = list.scrollWidth <= bar.clientWidth + 1', self.script)
-        self.assertIn('popover.replaceChildren(list)', self.script)
+        self.assertIn('elements.audioVariantPopover.append(list.cloneNode(true))', self.script)
+        renderer = self.script[self.script.index("function renderAudioVariantBar(") : self.script.index("function renderAvSyncControls(")]
+        self.assertNotIn('summary.className = "audio-variant-summary"', renderer)
+        self.assertIn('elements.audioVariantBar.append(list)', renderer)
 
     def test_narrow_stage_keeps_song_title_peer_size(self):
         narrow = self.styles[

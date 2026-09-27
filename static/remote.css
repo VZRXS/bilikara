@@ -317,6 +317,11 @@ h1 {
   padding: 0 2px;
 }
 
+.remote-header:has(.remote-menu-toggle[aria-expanded="true"]) {
+  /* The anchored menu must remain clickable over the fixed playback dock. */
+  z-index: calc(var(--remote-layer-dock) + 1);
+}
+
 .remote-brand {
   min-width: 0;
   margin: 0;
@@ -501,8 +506,10 @@ h1 {
   scrollbar-gutter: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 4px;
+  /* Rows already contain vertical whitespace, but their icons and rounded
+     panel corners still need breathing room beyond the text line boxes. */
+  padding: 8px 16px;
   border-radius: 20px;
   background: var(--settings-panel-bg);
   border: var(--settings-panel-border);
@@ -513,6 +520,9 @@ h1 {
 }
 
 .remote-menu-panel > * { flex-shrink: 0; }
+.remote-menu-panel:has(.remote-menu-settings-content:not(.hidden)) {
+  padding-bottom: 16px;
+}
 .remote-menu-panel .remote-tooltip-bubble:not(.is-visible) { display: none; }
 .remote-menu-panel:has(.remote-share-card.is-dual) { width: min(390px, calc(100vw - 32px)); }
 .remote-menu-panel .remote-share-card {
@@ -526,7 +536,7 @@ h1 {
 }
 .remote-share-card.is-dual { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .remote-share-card:not(.is-dual) .remote-access-entry { padding: 0; border: 0; justify-items: center; }
-.remote-menu-panel .remote-share-card .remote-access-qr { width: 160px; height: 160px; max-width: 100%; padding: 0; justify-self: center; }
+.remote-menu-panel .remote-share-card .remote-access-qr { width: 160px; height: 160px; max-width: 100%; justify-self: center; }
 .remote-share-card .remote-popover-url-link { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
 .remote-share-card .remote-access-entry[hidden] { display: none; }
 .remote-share-card .remote-access-entry p { margin: 0; font-size: 12px; line-height: 1.5; }
@@ -558,6 +568,7 @@ h1 {
 
 .remote-menu-status-row {
   display: flex;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -614,7 +625,7 @@ h1 {
   background: none;
   border: none;
   padding: 10px 0;
-  margin: -10px 0;
+  margin: 0;
   cursor: pointer;
   border-radius: 8px;
   transition: background 0.2s ease;
@@ -2566,7 +2577,7 @@ select:disabled {
 
 .history-export-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: 8px;
   margin: 0;
 }
@@ -2592,8 +2603,8 @@ select:disabled {
 }
 .history-export-dialog .history-export-field { display: grid; min-width: 0; gap: 8px; }
 .history-export-dialog .history-export-field label { color: var(--ink); font-size: 14px; font-weight: 700; }
-.history-export-dialog .history-export-row { margin-top: 18px; gap: 18px; }
-.history-export-dialog .remote-tooltip-bubble:not(.is-visible) { display: none; }
+.history-export-dialog .history-export-row { margin-top: 12px; gap: 12px; }
+.remote-tooltip-bubble:not(.is-visible) { display: none; }
 .history-export-dialog .remote-tooltip-bubble[popover] {
   position: fixed;
   inset: auto;
@@ -2603,7 +2614,7 @@ select:disabled {
 .history-export-dialog [role="status"]:not(.app-toast) { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 14px 0; }
 .history-export-dialog [role="status"]:not(.app-toast):empty { display: none; }
 .history-export-dialog .history-export-actions { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
-.history-export-dialog .history-export-actions > button { flex: 1 1 120px; }
+.history-export-dialog .history-export-actions > button { flex: 1 1 120px; min-height: 44px; padding: 10px 12px; }
 
 
 .history-export-source,

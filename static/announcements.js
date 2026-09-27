@@ -120,7 +120,8 @@
         const title = document.createElement("h3"); title.textContent = localized(item.title, language());
         const body = document.createElement("div"); body.className = "announcement-markdown";
         body.append(markdown(document, localized(item.body_markdown, language())));
-        article.append(meta, title);
+        const heading = document.createElement("header"); heading.className = "announcement-heading";
+        heading.append(title, meta); article.append(heading);
         if (item.version || item.ends_at) {
           const detail = document.createElement("span"); detail.className = "announcement-detail";
           detail.textContent = item.version ? `v${item.version.replace(/^v/, "")}` : `${t("announcements.validUntil")} ${date(item.ends_at, true)}`;

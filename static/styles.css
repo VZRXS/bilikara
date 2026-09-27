@@ -376,7 +376,7 @@ p {
 }
 
 .confirm-popover.confirm-popover-wide {
-  width: min(420px, calc(100vw - 24px));
+  width: min(560px, calc(100vw - 24px));
 }
 
 .confirm-popover.hidden {
@@ -621,6 +621,9 @@ p {
   font-size: 13px;
   line-height: 1.45;
   color: var(--ink);
+  padding-right: 40px;
+  min-height: 32px;
+  margin: 0;
 }
 
 .confirm-source,
@@ -632,20 +635,23 @@ p {
 
 .confirm-export-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 2px;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .export-field { min-width: 0; display: grid; gap: 8px; }
 .export-field.hidden { display: none; }
-.export-field label { font-size: 13px; font-weight: 700; }
+.export-field label { font-size: 14px; font-weight: 700; }
 .cache-advanced-tooltip[popover] {
   position: fixed;
   inset: auto;
   margin: 0;
   overflow: visible;
 }
+/* Invisible help must not enlarge a narrow dialog's scrollable box. Retain
+   top-layer bubbles during their existing exit transition. */
+.cache-advanced-info:not(.is-visible) > .cache-advanced-tooltip:not(:popover-open) { display: none; }
 
 .confirm-export-controls .confirm-source,
 .confirm-export-controls .confirm-page-size {
@@ -668,11 +674,13 @@ p {
 }
 
 .confirm-popover-wide .confirm-actions {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .confirm-popover-wide .confirm-actions button {
-  white-space: nowrap;
+  flex: 1 1 120px;
+  min-height: 44px;
+  white-space: normal;
 }
 
 .backup-title,
@@ -3094,12 +3102,14 @@ body.is-tauri-fullscreen-active {
 
 .audio-variant-bar.is-inline { display: block; }
 .audio-variant-bar.is-inline > .audio-variant-summary { display: none; }
-.audio-variant-bar.is-inline > .audio-variant-list {
+.audio-variant-bar > .audio-variant-list {
   display: flex;
   gap: 8px;
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
-.audio-variant-bar.is-inline .audio-variant-button { flex: 0 0 auto; }
+.audio-variant-bar .audio-variant-button { flex: 0 0 auto; max-width: 100%; }
 
 .audio-variant-popover[hidden] { display: none; }
 .audio-variant-popover {
@@ -3118,12 +3128,6 @@ body.is-tauri-fullscreen-active {
 }
 .audio-variant-popover[hidden] { opacity: 0; transform: scale(0.96); }
 @starting-style { .audio-variant-popover { opacity: 0; transform: scale(0.96); } }
-.audio-variant-popover .audio-variant-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-.audio-variant-popover .audio-variant-button { width: 100%; }
 
 .audio-variant-toggle {
   display: inline-grid;
@@ -3482,6 +3486,9 @@ body.is-tauri-fullscreen-active {
 }
 
 .audio-variant-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   min-width: 0;
   overflow: hidden;
   border: var(--variant-btn-border);

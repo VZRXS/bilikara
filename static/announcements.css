@@ -5,19 +5,19 @@
   width: min(680px, 100%);
   max-height: min(82dvh, 760px);
   grid-template-rows: auto minmax(0, 1fr);
-  /* The 32px header already reserves 8px below its 24px title line. */
-  gap: calc(12px - (var(--panel-header-control-size) - var(--panel-title-line-height)));
+  gap: 12px;
   box-sizing: border-box;
 }
-#announcements-modal .announcement-card:has(> #announcements-status:not(:empty)) { grid-template-rows: auto auto minmax(0, 1fr); }
+#announcements-modal .announcement-card:has(> #announcements-status:not(:empty)) { grid-template-rows: auto minmax(0, 1fr) auto; }
 #announcements-modal .announcement-card:has(> #announcements-content:empty) { grid-template-rows: auto auto; }
-#announcements-modal .selection-modal-head { display: flex; justify-content: space-between; gap: 16px; margin: 0; }
+#announcements-modal .selection-modal-head { display: flex; justify-content: space-between; gap: 16px; margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 #announcements-close { flex-shrink: 0; }
-#announcements-status { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+#announcements-status { margin: 0; color: var(--accent); font-size: 13px; font-weight: 500; line-height: 1.5; }
 #announcements-status:empty { display: none; }
 #announcements-content { overflow-y: auto; min-height: 0; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 4px; outline-offset: -2px; }
 #announcements-content:empty { display: none; }
 .announcement-item { display: grid; gap: 12px; overflow-wrap: anywhere; }
+.announcement-heading { display: grid; gap: 6px; }
 .announcement-item + .announcement-item { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
 .announcement-item h3 { font-size: 16px; line-height: 24px; margin: 0; }
 .announcement-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; line-height: 18px; color: var(--muted); }

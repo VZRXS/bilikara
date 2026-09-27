@@ -191,7 +191,7 @@
       <section class="panel request-panel" data-request-size="compact">
         <div class="panel-head remote-request-head">
           <div>
-            <p class="panel-tag" data-i18n="request.tag">Song Request</p>
+            <p class="panel-tag" data-i18n="request.tag">Request</p>
             <h2 class="panel-title" data-i18n="request.title">点歌</h2>
           </div>
         </div>
@@ -432,7 +432,7 @@
       <section class="panel queue-panel">
         <div class="panel-head panel-head-stack queue-panel-head">
           <div class="queue-panel-heading">
-            <p class="panel-tag" id="list-tag" data-i18n="list.tag">Requests</p>
+            <p class="panel-tag" id="list-tag" data-i18n="list.tag">Request List</p>
             <h2 class="list-heading" id="list-title">
               <span id="list-title-text" data-i18n="list.title">点歌列表</span>
               <span id="list-count" class="list-count">(0首)</span>
@@ -493,12 +493,12 @@
             </span>
           </div>
           <select id="history-export-page-size" class="history-export-page-size" aria-label="图片每页歌曲数" data-i18n-aria-label="history.exportPageSizeLabel">
-            <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
-            <option value="150" data-i18n="history.exportPageSize150">图片每页 150 首</option>
-            <option value="100" data-i18n="history.exportPageSize100">图片每页 100 首</option>
-            <option value="80" data-i18n="history.exportPageSize80">图片每页 80 首</option>
-            <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
-            <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
+            <option value="200" selected data-i18n="history.exportPageSize200">每页 200 首</option>
+            <option value="150" data-i18n="history.exportPageSize150">每页 150 首</option>
+            <option value="100" data-i18n="history.exportPageSize100">每页 100 首</option>
+            <option value="80" data-i18n="history.exportPageSize80">每页 80 首</option>
+            <option value="60" data-i18n="history.exportPageSize60">每页 60 首</option>
+            <option value="50" data-i18n="history.exportPageSize50">每页 50 首</option>
           </select>
           </div>
           <div class="history-export-actions">
@@ -515,7 +515,7 @@
       <section class="panel gatcha-panel">
         <div class="panel-head">
           <div>
-            <p class="panel-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha Draw</p>
+            <p class="panel-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha</p>
             <h2 class="panel-title" id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
           </div>
           <div class="gatcha-head-actions">
@@ -550,13 +550,13 @@
           <div class="binding-sheet-head">
             <div class="binding-sheet-heading">
               <div class="binding-sheet-title-row remote-contextual-info-region">
-                <h2 id="binding-sheet-title" data-i18n="binding.title">选择分P绑定</h2>
+                <h2 id="binding-sheet-title" data-i18n="binding.title">选择分 P</h2>
                 <span class="info-trigger-wrap">
                   <button type="button" class="remote-info-button" aria-expanded="false"
                     aria-describedby="binding-sheet-help" data-i18n-aria-label="common.moreInfo"
                     aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
                   <span class="remote-tooltip-bubble" id="binding-sheet-help" role="tooltip"
-                    data-i18n="binding.help">选择一个要下载的视频画面，和要绑定的音频轨道</span>
+                    data-i18n="binding.help">选择一个分 P 作为视频画面，再选择至少一个分 P 作为可切换的音频。</span>
                 </span>
               </div>
             </div>
@@ -571,7 +571,7 @@
               aria-expanded="false"
               aria-controls="binding-sheet-video-options-wrap"
             >
-              <span data-i18n="binding.video">视频</span>
+              <span data-i18n="binding.video">视频画面（选一个）</span>
               <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
             </button>
             <div id="binding-sheet-video-options-wrap" class="binding-accordion-panel hidden">
@@ -586,7 +586,7 @@
               aria-expanded="false"
               aria-controls="binding-sheet-audio-options-wrap"
             >
-              <span data-i18n="binding.audio">音频</span>
+              <span data-i18n="binding.audio">音频轨道（至少选一个）</span>
               <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
             </button>
             <div id="binding-sheet-audio-options-wrap" class="binding-accordion-panel hidden">
@@ -1107,6 +1107,7 @@
     <script src="/result-pagination.js" defer></script>
     <script src="/browse-search.js" defer></script>
     <script src="/volume-control.js" defer></script>
+    <script src="/part-selector.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>
