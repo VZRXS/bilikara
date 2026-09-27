@@ -39,7 +39,8 @@ pub fn plan(
     now: i64,
     shown: &BTreeSet<String>,
 ) -> Plan {
-    let version = installed_version.trim().trim_start_matches('v');
+    let version = installed_version.trim();
+    let version = version.strip_prefix('v').unwrap_or(version);
     let mut history: Vec<_> = entries
         .iter()
         .enumerate()
@@ -75,7 +76,9 @@ pub fn plan(
         .filter(|entry| match &entries[entry.index].kind {
             Kind::Notice { .. } => !entry.expired,
             Kind::Release { version: target } => {
-                entry.unseen && !version.is_empty() && target.trim_start_matches('v') == version
+                entry.unseen
+                    && !version.is_empty()
+                    && target.strip_prefix('v').unwrap_or(target) == version
             }
         })
         .collect();
@@ -132,6 +135,41 @@ mod tests {
             plan(&entries, "0.8.0", "android", 4, &shown).history.len(),
             3
         );
+    }
+
+    #[test]
+    fn release_version_normalization_removes_at_most_one_v() {
+        for (installed, target, expected_match) in [
+            ("0.8.0", "0.8.0", true),
+            ("v0.8.0", "0.8.0", true),
+            ("0.8.0", "v0.8.0", true),
+            ("v0.8.0", "v0.8.0", true),
+            (" \tv0.8.0\n", "0.8.0", true),
+            ("0.8.0-preview.1", "v0.8.0-preview.1", true),
+            ("v0.8.0-preview.1", "0.8.0-preview.1", true),
+            ("0.8.0-preview.1", "0.8.0", false),
+            ("vv0.8.0", "0.8.0", false),
+            ("0.8.0", "vv0.8.0", false),
+            ("vv0.8.0", "v0.8.0", false),
+            ("v0.8.0", "vv0.8.0", false),
+            ("vvv0.8.0", "0.8.0", false),
+            ("0.8.0", "vvv0.8.0", false),
+            (" \tvv0.8.0\n", "0.8.0", false),
+            ("vv0.8.0-preview.1", "0.8.0-preview.1", false),
+            ("0.8.0-preview.1", "vv0.8.0-preview.1", false),
+            ("", "", false),
+            ("v", "v", false),
+        ] {
+            let entries = [release("release", target, 1)];
+            let result = plan(&entries, installed, "android", 2, &BTreeSet::new());
+            assert_eq!(
+                result.automatic == [0],
+                expected_match,
+                "installed={installed:?}, target={target:?}",
+            );
+            // A non-matching release remains available in manual history.
+            assert_eq!(result.history.len(), 1);
+        }
     }
 
     #[test]
