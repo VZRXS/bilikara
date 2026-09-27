@@ -1,3 +1,5 @@
+#[cfg(feature = "native-host")]
+pub mod announcements;
 mod app_state;
 mod artifact_service;
 mod bilibili_service;

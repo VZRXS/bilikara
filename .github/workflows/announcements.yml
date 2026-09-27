@@ -1,0 +1,69 @@
+name: Announcements
+
+on:
+  pull_request:
+    paths:
+      - 'announcements/**'
+      - 'rust/src/announcement_policy.rs'
+      - 'rust-runtime/src/announcements/**'
+      - 'rust-runtime/src/announcements.rs'
+      - 'rust-runtime/src/native_host/announcements.rs'
+      - 'rust-runtime/examples/validate_announcements.rs'
+      - 'static/announcements.*'
+      - 'tests/announcements_browser.cjs'
+      - '.github/workflows/announcements.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish announcements/index.json to the existing R2 release bucket'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: announcements-${{ github.event_name == 'workflow_dispatch' && 'publish' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust
+            rust-runtime
+      - run: cargo test --manifest-path rust/Cargo.toml --locked announcement_policy
+      - run: cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host announcements
+      - run: cargo run --manifest-path rust-runtime/Cargo.toml --locked --features native-host --example validate_announcements -- announcements/index.json
+      - run: node --check static/announcements.js
+
+  publish:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-24.04
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Publish one bounded manifest (never sync or delete the bucket)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$R2_ACCOUNT_ID"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          aws s3 cp announcements/index.json "s3://${R2_BUCKET}/bilikara/announcements/index.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type 'application/json; charset=utf-8' \
+            --cache-control 'public, max-age=300, must-revalidate' \
+            --only-show-errors

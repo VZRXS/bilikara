@@ -95,6 +95,9 @@ pub(super) fn dispatch(
     if !body.is_object() {
         return Err(ApiError::invalid("请求必须为 JSON 对象"));
     }
+    if path.starts_with("/api/announcements/") {
+        return announcements::route(context, identity, path, &body);
+    }
     if admin::handles(path) {
         return admin::route(context, identity, path, &body);
     }

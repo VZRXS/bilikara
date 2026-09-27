@@ -1,3 +1,4 @@
+pub mod announcement_policy;
 mod archive;
 mod asset_selection;
 mod asset_tokens;

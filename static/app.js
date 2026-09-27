@@ -6118,6 +6118,7 @@ async function fetchState() {
     return false;
   }
   state.hasValidStateResponse = true;
+  window.BilikaraAnnouncements?.sync();
   scheduleStartupAppUpdateCheck();
   maybeShowIncomingRequestToast(previousData, state.data);
 
@@ -9458,6 +9459,7 @@ function disconnectClient() {
 
 function render() {
   if (state.desktopClosing) return;
+  window.BilikaraAnnouncements?.sync();
   if (window.BilikaraNativeSession?.syncSessionChoice()) return;
   const data = state.data;
   if (!data) {
