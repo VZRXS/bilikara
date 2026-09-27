@@ -1,6 +1,6 @@
 # 公告板实现与验证记录（2026-09-27）
 
-基线：`dev`，`5d333bf`（Merge upstream work/v0.8.0 into dev）。本次未 commit，未 push，未创建 PR，未发布 R2 对象，也未执行 Cloudflare/D1 线上操作。
+基线：`dev`，`5d333bf`（Merge upstream work/v0.8.0 into dev）。以下保留首次实现阶段的检查记录；后续用户授权的提交、发布和本机环境补齐见文末。未创建 PR。
 
 ## 交付范围与架构
 
@@ -133,3 +133,54 @@ $env:ANDROID_HOME='C:\Users\kevin\AppData\Local\Android\Sdk'
 - R2 对象上传、域名绑定、CDN JSON Cache Rule、实际 HTTP 200/304 和客户端跨安装升级的线上验收尚未执行。先写真实公告，再明确发布；不会把示例服务异常发给用户。
 
 因此，本次功能代码及针对性验证已完成，**不是全量发布门禁通过的声明**。
+
+## 2026-09-27 发布与本机环境补齐
+
+- `96d4d2b` — `feat(announcements): add persistent shared Host announcement board`。
+- `0e91d83` — `chore(announcements): schedule September 27 test notice`。
+- 两个提交均以普通 fast-forward push 推送到 `origin/dev`，未 force push，未改动无关 Worker 补丁。
+- 线上对象：`bilikara-releases/bilikara/announcements/index.json`，2056 字节。线上原来没有此对象，没有覆盖其他公告或发布资产。
+- 测试公告 ID：`announcement-board-test-20260927`。有效期 **2026-09-27 15:23:56+09:00 ≤ 当前时间 < 2026-09-28 00:00:00+09:00**，中英日均明确标记测试，不代表服务故障。
+- 直接通过现有 Wrangler OAuth 上传一个静态 R2 对象。新 workflow 尚未进入默认分支 `main`，这次没有绕过校验触发不存在的 Actions 工作流；本机先运行同一 Rust 校验器。
+- 控制台新增 Cache Rule `Bilikara announcements - 5 minute cache`，ID `8af03da566a34a90ae920a953c703f50`。表达式只匹配 `download.kevinx96.icu` 的 `/bilikara/announcements/index.json`；Eligible for cache，Edge TTL 有源站 Cache-Control 时遵循它、没有时不缓存，Browser TTL 遵循源站。没有改域名其他缓存设置、权限、Worker 或 D1。
+- 公网验证：200、JSON Content-Type、`Cache-Control: public, max-age=300, must-revalidate`、ETag、条件 GET 304 均通过；配置前 DYNAMIC，配置后连续两次 GET 为 MISS → HIT（NRT）。公告展示截止时间由内容判断，不依赖 CDN 自动删除。
+
+发布命令（在验证和 push 之后执行）：
+
+```powershell
+wrangler r2 object put bilikara-releases/bilikara/announcements/index.json --remote --file announcements/index.json --content-type 'application/json; charset=utf-8' --cache-control 'public, max-age=300, must-revalidate'
+```
+
+本机环境变更（均不把机器路径或凭证提交到配置文件）：
+
+- 当前 Python 3.13 / Miniconda：`python -m pip install -r requirements-test-qr.txt`，安装 `zxing-cpp==2.3.0`，保留符合约束的 Pillow 11.2.1。
+- `python -m pip install -r requirements-packaging.txt`：补齐项目固定的 `truststore==0.10.4`；现有 pefile/certifi 满足约束。
+- 从 MSYS2 官方 `2026-06-11` release 下载并校验 SHA-256 `a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221`，解压至已忽略的 `tools/local-build/msys64`。仅在此隔离目录升级并安装 make/diffutils/pkgconf/perl/nasm/curl/gnupg，没有添加全局 PATH。
+- 使用现有 Visual Studio Installer 给 Build Tools 补装 en-US 语言包，保留中文。原来的 `cl.exe` 只输出中文 banner，FFmpeg configure 无法识别 MSVC，误用 `-o` 产生损坏的链接输入。补装后本地构建脚本设置 `VSLANG=1033`，英文 banner 和编译器配置检查通过；没有改 FFmpeg 源码或放宽检查。
+- 已忽略的 `tools/local-build/env.ps1` 提供本机构建变量：libav 前缀/缓存、固定 BBDown 来源元数据、Android SDK/NDK/JDK、MSYS2 及 Edge 浏览器测试环境。无需复制这些机器专用路径到仓库公共配置。
+- 按仓库现有脚本构建 FFmpeg 9.0.1 的 MSVC `/MD` 共享库和 companion，固定签名者 `FCF986EA15E6E293A5644F10B4322F04D67658D8` 验签通过。源码 SHA-256 为 `cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635`。前缀位于已忽略的 `tools/local-build/libav-windows-x64`；同源归档、许可证、PE 依赖闭包和架构校验均通过。
+- Bilikara libav/FFmpeg 来源和 BBDown 来源的 13 个专用变量持久化到当前用户环境；只填补空值，不覆盖不同的既有值。没有改全局 PATH、JAVA_HOME 或 Android 环境。当前已打开的终端可以执行 `. ./tools/local-build/env.ps1` 立即载入；Android 与测试环境也由此脚本按进程提供。
+- 编译器在仓库根目录生成的四个临时 import 文件已移至已忽略的 `tools/local-build/compiler-import-artifacts`，未删除用户文件、未提交构建产物。
+
+本轮复查：
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test --manifest-path rust/Cargo.toml --locked announcement_policy` | 3 通过 |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host announcements` | 8 通过 |
+| `cargo run --manifest-path rust-runtime/Cargo.toml --locked --features native-host --example validate_announcements -- announcements/index.json` | 测试公告清单 2056 字节，校验通过 |
+| `node tests/announcements_browser.cjs`（上文 Edge 环境） | 三种布局与交互检查通过 |
+| `node --check static/announcements.js` | 通过 |
+| `yaml.BaseLoader` 工作流检查：路径无重复、默认不发布、publish 依赖 validate | 通过 |
+| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest discover -s tests -v` | **1774 项，OK，127 项原条件 skips**；原缺依赖错误消失 |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host` | **441 通过、2 失败、5 ignored**；仍是上述网卡事实与 Windows canonicalize 路径测试，不是缺依赖；未修改断言 |
+| `. ./tools/local-build/env.ps1; ./scripts/setup_msvc.ps1 -Arch x64` 后，`tools/local-build/msys64/usr/bin/bash.exe -lc 'cd /d/bilikara/bilikara && bash media-libav/build-windows.sh'` | 通过；companion 的 4 组测试、Windows Unicode/长路径 I/O 检查通过；第三方头文件有 C4819 代码页警告 |
+| 同一环境下 `./media-libav/prepare-windows.ps1` | 通过；release metadata/test driver、PE 闭包、MSVC 许可证与重分发清单齐全 |
+| `. ./tools/local-build/env.ps1; python -c "from scripts.libav_bundle import package_prefix; print(package_prefix())"` | 返回有效的 Windows x64 前缀 |
+| `. ./tools/local-build/env.ps1; npm run build` | **通过**，消除原缺少 libav 前缀的阻碍；生成本地 `dist/bilikara`，未发布软件版本或安装到用户现用目录 |
+| `. ./tools/local-build/env.ps1; python scripts/check_native_desktop_bundle.py dist/bilikara/_internal/bilikara-desktop-host.exe` | **通过**，实际原生资源布局、无 Python 依赖、bootstrap、SSE、跨站拒绝、关停后重启检查全通过；在全新含中文路径的临时副本中离线运行，未碰现用数据 |
+| `git diff --check` | 通过 |
+
+最终测试包的 FFmpeg/BBDown 来源说明均已包含 SHA-256。本机入口是 `dist/bilikara/bilikara-desktop.exe`，需要保留同级 `_internal` 和 `license` 目录一起使用；不是单文件发行包。原本缺少环境造成的 Python 错误与桌面 bundle 失败已经解决，剩余两项 Rust Windows 测试问题未改动。
+
+这是本地验证和一条公告的发布，不是应用商店/正式软件版本发布，也不是全量发布门禁通过声明。桌面和 Android 实机验收仍独立进行。

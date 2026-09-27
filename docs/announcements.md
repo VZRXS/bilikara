@@ -35,6 +35,14 @@ cargo run --manifest-path rust-runtime/Cargo.toml --locked --features native-hos
 
 工作流 `.github/workflows/announcements.yml`：PR 只校验；手动运行默认也只校验。选中 `publish` 才上传**当前所选分支**的 index.json，须先核对分支和内容。复用现有 `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` 和可选 `R2_BUCKET`（默认 bilikara-releases）。只覆盖 `bilikara/announcements/index.json` 一个对象，不会 sync/delete 整桶，不会随版本发布自动制造公告。内容回滚使用 Git 历史。
 
+GitHub 的手动工作流需要先进入仓库默认分支；仅推送到 `dev` 不会使它立即可手动触发。首次发布已在本机通过上述 Rust 校验，再使用具有该 R2 桶权限的 Wrangler 登录上传同一个文件：
+
+```powershell
+wrangler r2 object put bilikara-releases/bilikara/announcements/index.json --remote --file announcements/index.json --content-type 'application/json; charset=utf-8' --cache-control 'public, max-age=300, must-revalidate'
+```
+
+2026-09-27 已完成首次发布及下述精确路径 Cache Rule，实测公网响应从 MISS 转为 HIT；部署与本机环境验证详见 [验证记录](announcements-validation.md)。以后沿用规则，不要重复创建。
+
 首次上线前确认 download.kevinx96.icu 已绑定这个 R2 bucket，为**精确路径** `/bilikara/announcements/index.json` 设置 Cache Rule：Eligible for cache，尊重 `Cache-Control: public, max-age=300, must-revalidate`（或固定 Edge TTL 300 秒）。JSON 默认不一定进入 CDN 缓存。不要使用开发用途的 r2.dev 或依赖目录列表。本功能不自动改 Cloudflare 账号配置，不新增 Worker 路由或 D1 表。
 
 上传成功与公网可读是两件事：部署后检查 HTTP 200、JSON Content-Type、ETag、Cache-Control，并确认 If-None-Match 可返回 304，再验收真实桌面/Android 安装。首次未上传时 404 为静默非阻塞失败，可以稍后从设置重试。
