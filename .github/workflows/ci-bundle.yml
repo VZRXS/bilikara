@@ -741,7 +741,7 @@ jobs:
 
           const current = mirrorRelease(JSON.parse(fs.readFileSync("release-metadata/current-github.json", "utf8")));
           const releases = JSON.parse(fs.readFileSync("release-metadata/releases-github.json", "utf8"))
-            .filter((release) => release && typeof release === "object")
+            .filter((release) => release && typeof release === "object" && !release.draft)
             .map(mirrorRelease);
 
           fs.writeFileSync("release-metadata/tag.json", JSON.stringify(current, null, 2));
@@ -796,3 +796,27 @@ jobs:
           name: r2-release-verification
           path: r2-verification/verification.json
           if-no-files-found: error
+
+      # User-authorized withdrawal: retain the original GitHub tag/draft as a
+      # historical record, remove only the six known preview.2 R2 objects.
+      - name: Withdraw broken preview.2 mirror after preview.3 verification
+        if: github.ref_name == 'v0.8.0-preview.3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api /repos/${GITHUB_REPOSITORY}/releases/397933434 --jq '.draft')" = true
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for asset in \
+            bilikara-v0.8.0-preview.2-windows-x64.zip \
+            bilikara-v0.8.0-preview.2-windows-arm64.zip \
+            bilikara-v0.8.0-preview.2-macos-x64.zip \
+            bilikara-v0.8.0-preview.2-macos-arm64.zip \
+            bilikara-v0.8.0-preview.2-android-arm64.apk; do
+            key="bilikara/releases/download/v0.8.0-preview.2/${asset}"
+            aws s3 rm "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint" --only-show-errors
+            aws s3api wait object-not-exists --bucket "$R2_BUCKET" --key "$key" --endpoint-url "$endpoint"
+          done
+          key="bilikara/releases/tags/v0.8.0-preview.2.json"
+          aws s3 rm "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint" --only-show-errors
+          aws s3api wait object-not-exists --bucket "$R2_BUCKET" --key "$key" --endpoint-url "$endpoint"
