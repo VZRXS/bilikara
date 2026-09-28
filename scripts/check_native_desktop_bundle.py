@@ -31,11 +31,15 @@ def package_root(executable: Path) -> Path:
 def inspect_package(executable: Path) -> dict:
     root = resources(executable)
     package = package_root(executable)
-    facts = json.loads((root / "native-desktop.json").read_text())
+    facts = json.loads((root / "native-desktop.json").read_text(encoding="utf-8"))
     assert facts["backend"] == "rust" and facts["schema_version"] == 1
     assert facts["resource_layout"] == "internal-v1"
     assert facts["development"] is False, "Expected a release product layout"
-    assert (root / "APP_VERSION").read_text().strip() == facts["version"]
+    assert (root / "APP_VERSION").read_text(encoding="utf-8").strip() == facts["version"]
+    expected_version = os.environ.get("BILIKARA_EXPECT_RELEASE_VERSION", "")
+    assert not expected_version or facts["version"] == expected_version, (
+        f"Release version mismatch: expected {expected_version}, got {facts['version']}"
+    )
     assert (root / "static/fonts/SourceHanSans-VF.ttf").is_file()
     assert (root / "vendor/signalsmith-stretch/SignalsmithStretch.js").is_file()
     assert not (root / "static/vendor").exists(), "Third-party assets must share the internal vendor directory"
@@ -179,8 +183,8 @@ def check(executable: Path) -> dict:
                 proc = Path(f"/proc/{host.process.pid}")
                 if proc.is_dir():
                     assert Path(os.readlink(proc / "exe")) == executable.resolve()
-                    assert not re.search(r"(?:libpython|site-packages|_MEI)", (proc / "maps").read_text())
-                    assert not (proc / "task" / str(host.process.pid) / "children").read_text().strip()
+                    assert not re.search(r"(?:libpython|site-packages|_MEI)", (proc / "maps").read_text(encoding="utf-8"))
+                    assert not (proc / "task" / str(host.process.pid) / "children").read_text(encoding="utf-8").strip()
             finally:
                 host.close()
         if facts["platform"] == "windows":

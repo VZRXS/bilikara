@@ -6,6 +6,11 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      repair_preview2_windows_identity:
+        description: 'Repair the two known preview.2 Windows version records (preserve tagged binaries)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -15,6 +20,7 @@ env:
 
 jobs:
   test:
+    if: ${{ !inputs.repair_preview2_windows_identity }}
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     env:
@@ -153,8 +159,10 @@ jobs:
   bundle:
     name: Bundle (${{ matrix.label }})
     needs: test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !inputs.repair_preview2_windows_identity && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ matrix.os }}
+    env:
+      BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -612,6 +620,56 @@ jobs:
           if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
             rm -f -- "$ANDROID_KEYSTORE_PATH"
           fi
+
+  repair-preview2-windows-identity:
+    name: Repair preview.2 identity (Windows ${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch' && inputs.repair_preview2_windows_identity
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, arch: x64}
+          - {os: windows-11-arm, arch: arm64}
+    env:
+      BILIKARA_EXPECT_RELEASE_VERSION: v0.8.0-preview.2
+      REPAIR_ARCH: ${{ matrix.arch }}
+      REPAIR_ASSET: bilikara-v0.8.0-preview.2-windows-${{ matrix.arch }}.zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Test identity guards and compiler output isolation
+        run: python -m unittest tests.test_release_identity_repair tests.test_libav_compiler_outputs -v
+      - name: Download the original tagged archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.8.0-preview.2 --pattern "$env:REPAIR_ASSET" --dir original
+      - name: Repair only the known version records and verify every other byte
+        run: |
+          python scripts/repair_preview2_windows_identity.py "original/$env:REPAIR_ASSET" "repaired/$env:REPAIR_ASSET" --arch "$env:REPAIR_ARCH" > repair-proof.json
+          if ($LASTEXITCODE -ne 0) { throw 'Archive identity repair failed' }
+          python -m zipfile -e "repaired/$env:REPAIR_ASSET" "$env:RUNNER_TEMP/Bilikara identity 空"
+      - name: Verify the actual repaired native application
+        run: |
+          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara identity 空/bilikara/_internal/bilikara-desktop-host.exe'
+          python scripts/check_native_desktop_bundle.py "$backend" > native-proof.json
+          if ($LASTEXITCODE -ne 0) { throw 'Repaired native application failed validation' }
+          Get-Content repair-proof.json, native-proof.json
+      - name: Preserve verified repair evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: preview2-identity-repair-${{ matrix.arch }}
+          path: |
+            repaired/*.zip
+            repair-proof.json
+            native-proof.json
+          if-no-files-found: error
+      - name: Replace the verified release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.8.0-preview.2 "repaired/$env:REPAIR_ASSET" --clobber
 
   mirror-release-r2:
     name: Mirror Release To R2
