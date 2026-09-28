@@ -114,6 +114,9 @@ jobs:
           python -m compileall -q bilikara
           python -m py_compile start_bilikara.py build_bundle.py
 
+      - name: Test release mirror verification
+        run: node --test tests/release_mirror.test.mjs
+
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
@@ -503,6 +506,7 @@ jobs:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          draft: true
 
   android-bundle:
     name: Android ARM64 APK
@@ -613,6 +617,7 @@ jobs:
           files: ${{ steps.android.outputs.apk }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          draft: true
 
       - name: Remove temporary signing file
         if: always()
@@ -700,6 +705,10 @@ jobs:
           gh api -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
             > release-metadata/current-github.json
+          # Publish only after every desktop package and the APK passed.
+          release_id="$(node -p 'JSON.parse(require("fs").readFileSync("release-metadata/current-github.json", "utf8")).id')"
+          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false > release-metadata/current-github.json
           gh api -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
             > release-metadata/releases-github.json
@@ -712,8 +721,10 @@ jobs:
           const tag = process.env.GITHUB_REF_NAME;
           const baseUrl = String(process.env.RELEASE_DOWNLOAD_BASE_URL || "").replace(/\/+$/, "");
 
-          function assetUrl(assetName, tagName = tag) {
-            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(assetName)}`;
+          function assetUrl(asset, tagName = tag) {
+            const digest = /^sha256:[a-f0-9]{64}$/.test(asset.digest || "")
+              ? `?sha256=${asset.digest.slice(7)}` : "";
+            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(asset.name)}${digest}`;
           }
 
           function mirrorRelease(release) {
@@ -722,7 +733,7 @@ jobs:
               assets: Array.isArray(release.assets)
                 ? release.assets.map((asset) => ({
                     ...asset,
-                    browser_download_url: assetUrl(asset.name, release.tag_name || tag),
+                    browser_download_url: assetUrl(asset, release.tag_name || tag),
                   }))
                 : [],
             };
@@ -747,7 +758,7 @@ jobs:
           aws s3 cp release-assets "s3://${R2_BUCKET}/bilikara/releases/download/${tag}/" \
             --recursive \
             --endpoint-url "$endpoint" \
-            --cache-control "public, max-age=31536000, immutable" \
+            --cache-control "public, max-age=0, must-revalidate" \
             --only-show-errors
           aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
             --endpoint-url "$endpoint" \
@@ -766,3 +777,22 @@ jobs:
               --cache-control "public, max-age=300" \
               --only-show-errors
           fi
+
+      - name: Verify uploaded R2 bytes and release metadata
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p r2-verification/assets r2-verification/metadata
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/download/${GITHUB_REF_NAME}/" r2-verification/assets \
+            --recursive --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/tags/${GITHUB_REF_NAME}.json" r2-verification/metadata/tag.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/releases.json" r2-verification/metadata/releases.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          node scripts/verify_release_mirror.mjs release-metadata release-assets r2-verification
+
+      - name: Preserve R2 verification receipts
+        uses: actions/upload-artifact@v7
+        with:
+          name: r2-release-verification
+          path: r2-verification/verification.json
+          if-no-files-found: error
