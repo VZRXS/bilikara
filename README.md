@@ -235,6 +235,8 @@ Host 会依据系统路由推荐局域网地址。VPN、多网卡或容器环境
 
 开发桌面界面可运行 `npm ci`、`npm run dev:rust`；媒体库仍须事先准备。Node.js 和编译工具是开发构建依赖，最终用户无需安装。
 
+干净的发布 tag 构建保留正式版本号或 `preview.N`；分支构建显示 `work/v0.8.0-g<提交号>`、`dev-g<提交号>` 等标识，有未提交改动时附加 `-dirty`。更新器将这些标识视为开发版，提供切换到正式版或预览版；系统安装信息仍使用数字版本。详见 [构建标识与更新渠道](docs/native-desktop.md#build-identity-and-update-channels)。
+
 - 发布包包含 Rust Native、libav/companion 和固定版本 BBDown，不包含外部 `ffmpeg` / `ffprobe`；选择 DownKyi / aria2c 时按需准备下载工具
 - 静态页面、原生库及工具资源随应用打包；运行数据与日志写入可写目录
 - Windows 桌面版将数据和缓存保存在可执行文件旁的 `runtime/data/`，日志在 `runtime/logs/`；macOS 使用 `~/Library/Application Support/bilikara/data/`。可通过 `BILIKARA_NATIVE_DATA_DIR` 指定原生数据目录；Python 兼容入口仍使用 `BILIKARA_HOME`

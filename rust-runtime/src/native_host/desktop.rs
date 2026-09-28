@@ -238,7 +238,7 @@ fn sane_version(value: &str) -> Option<String> {
         || value.len() > 80
         || !value
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b".-+_".contains(&c))
+            .all(|c| c.is_ascii_alphanumeric() || b".-+_/".contains(&c))
     {
         return None;
     }
@@ -449,6 +449,11 @@ mod tests {
         // The bundle build writes APP_VERSION beside the shared assets.
         std::fs::write(root.join("APP_VERSION"), "0.8.0\n").unwrap();
         assert_eq!(facts_from(None, &assets).version, "0.8.0");
+        for label in ["work/v0.8.0-gabcdef123456", "dev-gabcdef123456-dirty"] {
+            std::fs::write(root.join("APP_VERSION"), label).unwrap();
+            assert_eq!(facts_from(None, &assets).version, label);
+        }
+        std::fs::write(root.join("APP_VERSION"), "0.8.0\n").unwrap();
         // The launcher override takes precedence over the packaged file.
         assert_eq!(
             facts_from(Some("v0.8.0-preview.1"), &assets).version,
