@@ -199,7 +199,7 @@
   grid-template-columns: minmax(0, 1fr) auto minmax(min-content, 1fr);
 }
 :root .playback-sheet-status-label { grid-column: 1; grid-row: 1; }
-:root[data-ui-client="remote"] .playback-sheet-collapse { grid-column: 2; grid-row: 1; background: transparent; }
+:root[data-ui-client="remote"] #playback-sheet-collapse { grid-column: 2; grid-row: 1; background: transparent; }
 /* Equal outer tracks center collapse; the actions' minimum width shifts it
    left only when the right-hand buttons need more room. */
 :root .playback-sheet-status-actions { grid-column: 3; grid-row: 1; flex-wrap: nowrap; }

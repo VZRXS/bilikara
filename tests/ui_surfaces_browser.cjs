@@ -75,8 +75,35 @@ async function run() {
     await edges();
     await page.locator("#right").evaluate(el => el.replaceChildren());
     await edges();
+
+    // Shared close-button rules must not paint the drawer's icon-only collapse.
+    await page.setContent(`
+      <header class="playback-sheet-status-header">
+        <span class="playback-sheet-status-label">正在播放</span>
+        <button id="playback-sheet-collapse" class="playback-sheet-collapse">⌄</button>
+        <div class="playback-sheet-status-actions">
+          <button id="open-rating-button">评价</button>
+          <button id="refresh-button">刷新</button>
+        </div>
+      </header>
+    `);
+    await page.evaluate(() => { document.documentElement.dataset.uiClient = "remote"; });
+    await page.addStyleTag({ path: path.join(__dirname, "../static/remote.css") });
+    await page.addStyleTag({ path: path.join(__dirname, "../static/ui-surfaces.css") });
+    for (const theme of ["light", "dark", "blue"]) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      await page.locator("#playback-sheet-collapse").focus();
+      await page.locator("#playback-sheet-collapse").hover();
+      const controls = await page.locator("#playback-sheet-collapse, #open-rating-button").evaluateAll(nodes =>
+        nodes.map(node => ({ background: getComputedStyle(node).backgroundColor, height: node.getBoundingClientRect().height })),
+      );
+      assert.equal(controls[0].background, "rgba(0, 0, 0, 0)", theme);
+      assert.equal(controls[0].height, 32, theme);
+      assert.equal(controls[1].height, 32, theme);
+      assert.notEqual(controls[1].background, "rgba(0, 0, 0, 0)", theme);
+    }
     assert.deepEqual(errors, []);
-    console.log("PASS: no separators at scroll endpoints, in independent columns, after resizing or panel reinsertion; stable geometry");
+    console.log("PASS: no scroll separators; stable geometry; icon-only collapse and filled header actions in all themes");
   } finally {
     await browser.close();
   }
