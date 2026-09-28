@@ -118,6 +118,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     );
     let entry_html = bootstrap.text().unwrap();
     assert!(entry_html.contains("url=/\""));
+    assert!(entry_html.contains("正在进入 bilikara…"));
     assert!(!entry_html.contains(cookie.split('=').nth(1).unwrap()));
     // A fresh identifier WebView has no cookie. Its protected bootstrap must
     // commit the Strict session before the same-origin document navigation.
@@ -142,6 +143,8 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .starts_with(&cookie)
     );
     let html = entry.text().unwrap();
+    assert!(html.contains("<body></body>"));
+    assert!(!html.contains("正在进入"));
     assert!(html.contains(
         "url=/display-identifier.html?number=2&amp;theme=dark&amp;language=ja&amp;role=audience"
     ));

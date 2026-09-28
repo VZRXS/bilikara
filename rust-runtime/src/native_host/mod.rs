@@ -829,6 +829,7 @@ fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
 }
 
 fn session_entry(page: EntryPage, token: &str) -> Response {
+    let silent_entry = matches!(&page, EntryPage::DisplayIdentifier(_));
     let (location, lifetime) = match page {
         EntryPage::Host => ("/".to_owned(), ""),
         // Preserve ordinary Remote recognition when the browser is closed.
@@ -837,12 +838,19 @@ fn session_entry(page: EntryPage, token: &str) -> Response {
         EntryPage::DisplayIdentifier(query) => (format!("/display-identifier.html?{query}"), ""),
     };
     let location = location.replace('&', "&amp;");
+    // Identifier overlays are non-interactive. Keep their intermediate document
+    // empty even if a WebView exposes it before the target page finishes loading.
+    let content = if silent_entry {
+        String::new()
+    } else {
+        format!(r#"正在进入 bilikara… <a href="{location}" rel="noreferrer">继续</a>"#)
+    };
     // A 303 keeps the navigation cross-site and can withhold a Strict cookie
     // on the redirect target. Commit a local document first, then navigate
     // within that origin. No token or external resource appears in this
     // document, and the zero-delay refresh replaces the entry URL.
     let mut response = Html(format!(
-        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url={location}"><title>bilikara</title><body>正在进入 bilikara… <a href="{location}" rel="noreferrer">继续</a></body></html>"#
+        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url={location}"><title>bilikara</title><body>{content}</body></html>"#
     )).into_response();
     response.headers_mut().insert(
         "content-security-policy",
@@ -948,6 +956,9 @@ mod tests {
         ));
         assert!(!html.contains("private-host"));
         assert!(!html.contains("evil.test"));
+        assert!(html.contains("<body></body>"));
+        assert!(!html.contains("正在进入"));
+        assert!(!html.contains("<a "));
         assert!(matches!(host_entry_page("").unwrap(), EntryPage::Host));
         for invalid in [
             "page=https://evil.test",
@@ -976,6 +987,17 @@ mod tests {
         let cookie = host.headers()["set-cookie"].to_str().unwrap();
         assert!(!cookie.contains("Max-Age"));
         assert!(!cookie.contains("Expires"));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for response in [host, remote] {
+            let body = runtime
+                .block_on(axum::body::to_bytes(response.into_body(), 4096))
+                .unwrap();
+            let html = std::str::from_utf8(&body).unwrap();
+            assert!(html.contains("正在进入 bilikara…"));
+            assert!(html.contains(">继续</a>"));
+        }
     }
     #[test]
     fn rejects_dns_rebinding_and_foreign_origins() {
