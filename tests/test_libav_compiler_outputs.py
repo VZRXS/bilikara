@@ -15,7 +15,8 @@ class LibavCompilerOutputTests(unittest.TestCase):
         builder = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(builder)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # Windows TEMP can use an 8.3 alias; compare canonical directories.
+            root = Path(directory).resolve()
             checkout, prefix, output = root / "checkout", root / "prefix", root / "产物"
             checkout.mkdir()
             (prefix / "bin").mkdir(parents=True)
