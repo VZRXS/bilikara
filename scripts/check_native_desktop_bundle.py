@@ -98,6 +98,7 @@ class RunningHost:
             ready = json.loads(line)
             assert ready["backend"] == "rust"
             self.base = ready["baseUrl"]
+            self.bootstrap_url = ready["bootstrapUrl"]
             self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                 urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
             self.client.open(ready["bootstrapUrl"], timeout=5).close()
@@ -130,6 +131,35 @@ class RunningHost:
             self.process.communicate(timeout=10)
 
 
+def check_auxiliary_window_entry(host: RunningHost) -> None:
+    """New WebViews must authenticate without borrowing the main window's jar."""
+    for page, query, document in (
+        ("controller", "presentationGeneration=42", "controller.html"),
+        ("display-identifier", "number=2&theme=dark&language=ja&role=audience", "display-identifier.html"),
+    ):
+        cookies = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+            urllib.request.HTTPCookieProcessor(cookies))
+        target = host.base + "/" + document + "?" + query
+        try:
+            client.open(target, timeout=5).close()
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        else:
+            raise AssertionError("Auxiliary document accepted an unauthenticated window")
+        with client.open(host.bootstrap_url + "?page=" + page + "&" + query, timeout=5) as response:
+            html = response.read().decode("utf-8")
+            assert '<body></body>' in html, "Auxiliary entry must not flash Host entry text"
+            assert "url=/" + document + "?" + query.replace("&", "&amp;") in html
+            cookie = response.headers["Set-Cookie"]
+            assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+            assert "Max-Age" not in cookie
+        with client.open(target, timeout=5) as response:
+            assert "text/html" in response.headers["Content-Type"]
+            assert document.replace(".html", ".js").encode() in response.read()
+        assert len(cookies) == 1
+
+
 def check(executable: Path) -> dict:
     facts = inspect_package(executable)
     with tempfile.TemporaryDirectory(prefix="native-package-home-") as directory:
@@ -159,6 +189,7 @@ def check(executable: Path) -> dict:
                     assert json.load(response)["backend"] == "rust"
                 state = host.api("/api/state")
                 assert state["app"]["version"] == facts["version"]
+                check_auxiliary_window_entry(host)
                 assert host.api("/api/app/update/status")["auto_update_supported"] is False
                 with host.request("/vendor/signalsmith-stretch/SignalsmithStretch.js") as response:
                     assert "javascript" in response.headers["Content-Type"]
@@ -191,6 +222,7 @@ def check(executable: Path) -> dict:
             assert (destination / "runtime/data/host-state.json").is_file()
             assert {p: p.read_bytes() for p in external.rglob("*") if p.is_file()} == external_files
     return {"nativeReleaseBackend": True, "pythonFreeLayout": True, "bootstrap": True,
+            "auxiliaryWindowBootstrap": True,
             "resources": True, "sse": True, "shutdownAndReopen": True, "version": facts["version"]}
 
 

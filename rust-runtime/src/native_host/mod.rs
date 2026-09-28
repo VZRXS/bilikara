@@ -801,6 +801,7 @@ enum EntryPage {
     Host,
     Remote,
     DisplayIdentifier(String),
+    Controller(u64),
 }
 
 fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
@@ -812,10 +813,29 @@ fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
     if pages.is_empty() {
         return Ok(EntryPage::Host);
     }
-    if pages.len() != 1 || pages[0].1 != "display-identifier" {
+    if pages.len() != 1 {
         return Err(ApiError::invalid("Invalid Host entry page"));
     }
-    // Only this fixed local document is an entry target. Its presentation-only
+    if pages[0].1 == "controller" {
+        let generations = parameters
+            .iter()
+            .filter(|(key, _)| key == "presentationGeneration")
+            .collect::<Vec<_>>();
+        if generations.len() != 1 {
+            return Err(ApiError::invalid("Invalid presentation generation"));
+        }
+        let generation = generations[0]
+            .1
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| ApiError::invalid("Invalid presentation generation"))?;
+        return Ok(EntryPage::Controller(generation));
+    }
+    if pages[0].1 != "display-identifier" {
+        return Err(ApiError::invalid("Invalid Host entry page"));
+    }
+    // Only fixed local documents are entry targets. Their presentation-only
     // parameters are encoded again; no caller-supplied path or HTML is used.
     let query = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(
@@ -829,16 +849,23 @@ fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
 }
 
 fn session_entry(page: EntryPage, token: &str) -> Response {
-    let silent_entry = matches!(&page, EntryPage::DisplayIdentifier(_));
+    let silent_entry = matches!(
+        &page,
+        EntryPage::DisplayIdentifier(_) | EntryPage::Controller(_)
+    );
     let (location, lifetime) = match page {
         EntryPage::Host => ("/".to_owned(), ""),
         // Preserve ordinary Remote recognition when the browser is closed.
         // This does not extend the lifetime of process-private Host authority.
         EntryPage::Remote => ("/remote".to_owned(), "; Max-Age=31536000"),
         EntryPage::DisplayIdentifier(query) => (format!("/display-identifier.html?{query}"), ""),
+        EntryPage::Controller(generation) => (
+            format!("/controller.html?presentationGeneration={generation}"),
+            "",
+        ),
     };
     let location = location.replace('&', "&amp;");
-    // Identifier overlays are non-interactive. Keep their intermediate document
+    // Auxiliary windows must not flash entry text. Keep their intermediate document
     // empty even if a WebView exposes it before the target page finishes loading.
     let content = if silent_entry {
         String::new()
@@ -973,6 +1000,40 @@ mod tests {
             panic!("identifier target required")
         };
         assert_eq!(encoded, "role=%22%3E%3Cscript%3E");
+    }
+
+    #[test]
+    fn controller_entry_is_silent_fixed_local_and_requires_one_valid_generation() {
+        let page = host_entry_page(
+            "page=controller&presentationGeneration=42&next=https%3A%2F%2Fevil.test",
+        )
+        .unwrap();
+        let response = session_entry(page, "private-host");
+        assert_eq!(
+            response.headers()["set-cookie"],
+            "bilikara_native=private-host; Path=/; HttpOnly; SameSite=Strict"
+        );
+        let body = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(axum::body::to_bytes(response.into_body(), 4096))
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("url=/controller.html?presentationGeneration=42"));
+        assert!(html.contains("<body></body>"));
+        assert!(!html.contains("private-host"));
+        assert!(!html.contains("evil.test"));
+        for invalid in [
+            "page=controller",
+            "page=controller&presentationGeneration=0",
+            "page=controller&presentationGeneration=-1",
+            "page=controller&presentationGeneration=18446744073709551616",
+            "page=controller&presentationGeneration=1&presentationGeneration=2",
+            "page=controller&presentationGeneration=1&page=display-identifier",
+            "page=controller&presentationGeneration=%22%3E%3Cscript%3E",
+        ] {
+            assert!(host_entry_page(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
