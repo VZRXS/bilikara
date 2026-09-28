@@ -702,11 +702,11 @@ jobs:
         run: |
           mkdir -p release-assets release-metadata
           gh release download "$GITHUB_REF_NAME" --dir release-assets --clobber
-          gh api -H "Accept: application/vnd.github+json" \
-            "/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
-            > release-metadata/current-github.json
-          # Publish only after every desktop package and the APK passed.
-          release_id="$(node -p 'JSON.parse(require("fs").readFileSync("release-metadata/current-github.json", "utf8")).id')"
+          # The by-tag REST endpoint excludes drafts. Find the authenticated
+          # draft in the release list, then publish after every package passed.
+          release_id="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | jq -r --arg tag "$GITHUB_REF_NAME" '.[] | select(.tag_name == $tag) | .id')"
+          [[ "$release_id" =~ ^[0-9]+$ ]]
           gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -F draft=false > release-metadata/current-github.json
           gh api -H "Accept: application/vnd.github+json" \
