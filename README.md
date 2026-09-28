@@ -6,6 +6,8 @@
 
 架构演进与后续计划见 [版本路线图](docs/version-roadmap.md)。
 
+主界面、播放、搜索、详情、评分与设置截图已于 2026-09-28 按当前 `dev` 界面更新，包含 v0.8.0-preview.1 以来的 UI 调整。本次重拍的移动端页面采用 375px 逻辑宽度；曲目、用户和播放状态为示例。
+
 <p align="center">
   <img src="images/host.png" alt="Host 界面" width="900"><br>
   <sub>Host 界面</sub>
@@ -23,7 +25,7 @@
     </td>
     <td align="center" valign="top" width="33%">
       <img src="images/remote_control_panel.png" alt="Remote 播放抽屉" width="170"><br>
-      <sub>播放抽屉</sub>
+      <sub>播放抽屉：音轨与播放控制</sub>
     </td>
   </tr>
 </table>
@@ -36,7 +38,7 @@
     </td>
     <td align="center" valign="top" width="50%">
       <img src="images/song_detail.png" alt="Remote 歌曲详情页" width="220"><br>
-      <sub>歌曲详情</sub>
+      <sub>歌曲详情：稿件信息与点歌</sub>
     </td>
   </tr>
 </table>
@@ -110,8 +112,8 @@
 - 在远程搜索和历史结果中展示评分人数与平均分
 
 <p align="center">
-  <img src="images/rating_remote.png" alt="Remote 竖屏视频打分窗口" width="320"><br>
-  <sub>视频打分窗口</sub>
+  <img src="images/rating_remote.png" alt="Remote 视频打分窗口，示例选择四星" width="320"><br>
+  <sub>视频打分：选择星级后确认评分</sub>
 </p>
 
 ### 控制、设置与界面体验
