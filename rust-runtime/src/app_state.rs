@@ -4131,7 +4131,11 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::GatchaFavlistRefresh { uid, folder_ids } => {
+            RemoteRequestV1::GatchaFavlistRefresh {
+                uid,
+                folder_ids,
+                folder_titles,
+            } => {
                 return internet_remote_reply(
                     data,
                     &validation,
@@ -4140,6 +4144,7 @@ impl AppState {
                         "kind": "gatcha_favlist_refresh",
                         "uid": uid,
                         "folder_ids": folder_ids,
+                        "folder_titles": folder_titles,
                     })),
                     false,
                 );

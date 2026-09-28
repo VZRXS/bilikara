@@ -157,7 +157,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo build --manifest-path rust-runtime/Cargo.toml --features native-host --bin bilikara-desktop-host --locked
-          BILIKARA_TEST_NATIVE_PACKAGE="$GITHUB_WORKSPACE/rust-runtime/target/debug/bilikara-desktop-host" python -m unittest tests.test_native_desktop_sources -v
+          BILIKARA_TEST_NATIVE_PACKAGE="$GITHUB_WORKSPACE/rust-runtime/target/debug/bilikara-desktop-host" python -m unittest tests.test_native_desktop_sources tests.test_native_source_queue -v
 
   bundle:
     name: Bundle (${{ matrix.label }})

@@ -8,6 +8,8 @@ use crate::gatcha_repository::{
 };
 use crate::status_service::{GachaTaskStatus, GachaTaskUpdate};
 use std::time::Instant;
+mod source_queue;
+pub(crate) use source_queue::SourceQueue;
 
 /// Internal, bounded observations, not arbitrary upstream text/URLs or cookies.
 #[derive(Clone, serde::Serialize)]
@@ -587,6 +589,9 @@ impl TaskLease {
             task.error.clone_from(&error.message);
         }
         let succeeded = task.status == GachaTaskStatus::Success;
+        if configured && let Ok(value) = result {
+            session.library_queue.remember_refresh_result(value);
+        }
         session.library_refresh_active = false;
         if !automatic {
             session.login.release_gacha_refresh();
@@ -697,6 +702,7 @@ pub(super) fn invalidate_credentials(
 ) {
     session.login.cancel_configured_refresh();
     session.pending_library_refresh = None;
+    session.library_queue.clear();
 }
 
 pub(super) fn refresh_after_login(context: &HostContext) {
@@ -711,6 +717,9 @@ pub(super) fn start_coordinator(context: Arc<HostContext>) -> Result<(), ApiErro
     context
         .spawn("native-library-coordinator", move || {
             while !worker_context.stop.load(Ordering::Acquire) {
+                if source_queue::run_next(&worker_context) {
+                    continue;
+                }
                 let ready =
                     with_app(|app| Ok(pending_refresh_ready(app.native()))).unwrap_or(false);
                 if ready {
@@ -776,6 +785,24 @@ pub(super) fn write(
     network_operation(path, body, "")?;
     if path == "/api/gatcha/refresh" {
         return refresh(context, Some(identity), Some("manual_refresh"));
+    }
+    if path.ends_with("/preview") {
+        let cookie = with_app(|app| {
+            app.native_requester(identity, "")?;
+            let cookie = app.native().cookie.clone();
+            if path == "/api/gatcha/uids/preview" && cookie.is_empty() {
+                return Err(ApiError::new(
+                    400,
+                    "missing_cookie",
+                    "请先在 Host 设置中登录 Bilibili",
+                ));
+            }
+            Ok(cookie)
+        })?;
+        return execute(&context.directory, network_operation(path, body, &cookie)?);
+    }
+    if body["queue"] == true {
+        return source_queue::enqueue(identity, path, body);
     }
     let (lease, cookie) = TaskLease::acquire(
         Some(identity),

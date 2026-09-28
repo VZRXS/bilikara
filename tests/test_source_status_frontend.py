@@ -111,6 +111,24 @@ state.followBrowseLoading=false;BilikaraSourceStatus.flush('uids');
 assert.equal(reads.length,4,'Coalesce concurrent commits into one fresh read');
 """)
 
+    def test_queued_completion_is_not_lost_when_next_job_already_started(self):
+        for client in ("app", "remote"):
+            with self.subTest(client=client):
+                self.run_client(client, """
+state.data.gatcha={busy:true,last_status:'running',source_queue:{completed:{uids:1,favorites:0}}};
+syncGatchaTaskTerminalMessage();
+assert.deepEqual(reads.map(r=>r[0]),['uids']);
+syncGatchaTaskTerminalMessage();assert.equal(reads.length,1);
+const task={last_status:'running',background_busy:true,last_result:{rebuild:{
+ current_uid:'2',phase:'uid',pending_uids:['3'],failed_uids:['1']}}};
+assert.equal(BilikaraSourceStatus.sourceState(task,{uid:'1'}),'failed');
+assert.equal(BilikaraSourceStatus.sourceState(task,{uid:'2'}),'running');
+assert.equal(BilikaraSourceStatus.sourceState(task,{uid:'3'}),'queued');
+task.source_queue={pending:[{uid:'7',folder_ids:['42']}]};
+assert.equal(BilikaraSourceStatus.sourceState(task,{folderId:'7:42'}),'queued');
+assert.equal(BilikaraSourceStatus.sourceState(task,{folderId:'8:42'}),'');
+""")
+
 
 if __name__ == "__main__":
     unittest.main()

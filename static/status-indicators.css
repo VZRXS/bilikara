@@ -89,3 +89,6 @@
 @media (prefers-reduced-motion: reduce) {
   .source-card-spinner { animation: none; }
 }
+
+.source-card-status { margin-inline-start: 5px; font-size: 11px; color: var(--muted); }
+.source-card-failed .source-card-status { color: var(--red); }

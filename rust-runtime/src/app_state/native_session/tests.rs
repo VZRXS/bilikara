@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn lan_connections_count_devices_not_tabs_and_exclude_host() {
+    let (mut app, host) = setup();
+    assert!(app.native_open_lan_connection(&host).unwrap().is_none());
+    let token = app.native_join_remote("", "lan-phone".into()).unwrap();
+    let phone = Identity {
+        token,
+        loopback: false,
+        client: "tab-one".into(),
+    };
+    let first = app.native_open_lan_connection(&phone).unwrap().unwrap();
+    let revision = app.native().revision;
+    let second = app.native_open_lan_connection(&phone).unwrap().unwrap();
+    assert_eq!(app.native().revision, revision);
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["remote_access"]["connected_count"],
+        1
+    );
+    assert!(
+        app.native_snapshot(false)
+            .unwrap()
+            .get("remote_access")
+            .is_none()
+    );
+    app.native_close_lan_connection(&first);
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["remote_access"]["connected_count"],
+        1
+    );
+    app.native_close_lan_connection(&second);
+    assert_eq!(
+        app.native_snapshot(true).unwrap()["remote_access"]["connected_count"],
+        0
+    );
+    assert!(
+        app.native_open_lan_connection(&Identity {
+            token: "forged".into(),
+            ..phone
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn sse_projection_is_shared_until_revision_changes_and_separates_host_fields() {
     let (mut app, _) = setup();
     app.native().startup_warning = "host warning".into();

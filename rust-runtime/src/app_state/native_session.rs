@@ -37,6 +37,7 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    pub library_queue: crate::native_host::SourceQueue,
     // Written with credential commits; read/consumed with task admission.
     // Failed or delayed callers must never write an intent back afterward.
     pub pending_library_refresh: Option<&'static str>,
@@ -57,6 +58,8 @@ pub(crate) struct NativeSession {
     pub login: RuntimeStatusService,
     pub login_generation: Option<u64>,
     pub remote_access: Value,
+    // Live LAN SSE streams grouped by device, excluding Host and WebRTC peers.
+    lan_connections: HashMap<String, usize>,
     pub revision: u64,
     devices: HashMap<String, Device>,
     device_order: VecDeque<String>,
@@ -210,6 +213,36 @@ impl AppState {
             Ok(host)
         } else {
             Err(ApiError::new(403, "forbidden", "请重新打开手机点歌页面"))
+        }
+    }
+
+    pub(crate) fn native_open_lan_connection(
+        &mut self,
+        identity: &Identity,
+    ) -> Result<Option<String>, ApiError> {
+        if self.native_authorize(identity, false)? {
+            return Ok(None);
+        }
+        let key = device_digest(&identity.token);
+        let streams = self
+            .native_session
+            .lan_connections
+            .entry(key.clone())
+            .or_default();
+        *streams += 1;
+        if *streams == 1 {
+            self.native_session.revision += 1;
+        }
+        Ok(Some(key))
+    }
+
+    pub(crate) fn native_close_lan_connection(&mut self, key: &str) {
+        if let Some(streams) = self.native_session.lan_connections.get_mut(key) {
+            *streams -= 1;
+            if *streams == 0 {
+                self.native_session.lan_connections.remove(key);
+                self.native_session.revision += 1;
+            }
         }
     }
 
@@ -541,6 +574,7 @@ impl AppState {
             self.native().ratings.rename(&old, &new);
         }
         if reset_runtime {
+            self.native_session.library_queue.clear();
             self.native_session.guest_pool_preferences.clear();
             // Python rotated the identity registry on data reset. Invalidating
             // names alone leaves old tokens occupying every Remote device slot.
@@ -724,6 +758,9 @@ impl AppState {
                 .count()
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
+        value["gatcha"]["source_queue"] = session.library_queue.snapshot();
+        value["capabilities"]["source_queue"] = json!(true);
+        value["capabilities"]["source_queue_titles"] = json!(true);
         value["gatcha_favlist_updated_at"] = json!(session.favlist_updated_at);
         if host {
             // One authoritative update status for both platforms. The desktop
@@ -755,6 +792,7 @@ impl AppState {
             }
             value["bbdown"]["login"] = login;
             value["remote_access"] = session.remote_access.clone();
+            value["remote_access"]["connected_count"] = json!(session.lan_connections.len());
         }
         Ok(value)
     }

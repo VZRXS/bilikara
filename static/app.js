@@ -6492,7 +6492,10 @@ async function previewGatchaUid(uid) {
 }
 
 async function addGatchaUid(uid) {
-  return apiPost("/api/gatcha/uids/add", { uid: String(uid || "").trim() });
+  return apiPost("/api/gatcha/uids/add", {
+    uid: String(uid || "").trim(),
+    queue: Boolean(state.data?.capabilities?.source_queue),
+  });
 }
 
 async function refreshGatchaCache() {
@@ -6505,12 +6508,14 @@ async function previewGatchaFavlist(uid) {
 
 async function pullGatchaFavlist(uid, folderIds = []) {
   return apiPost("/api/gatcha/favlist", {
+    queue: Boolean(state.data?.capabilities?.source_queue),
     uid: String(uid || "").trim(),
     folder_ids: Array.isArray(folderIds) ? folderIds : [],
   });
 }
 
 function gatchaUidResultMessage(result, fallbackUid = "") {
+  if (result?.queued) return t(result.duplicate ? "gatcha.sourceAlreadyQueued" : "gatcha.sourceQueued");
   const cache = result?.cache || {};
   const addedCount = Number(cache.added_count || 0);
   const totalCount = Number(cache.total_count || 0);
@@ -6531,7 +6536,7 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 async function confirmGatchaUidAdd(intent) {
   closeConfirm();
   const messageTarget = intent.messageTarget || "gatcha";
-  if (gatchaTaskBusy()) {
+  if (gatchaSourceBusy()) {
     setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
@@ -8779,6 +8784,7 @@ function renderFollowBrowse() {
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
     selected: state.followBrowseSelectedUid,
+    sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {uid: state.followBrowseSelectedUid}),
     owners,
     items,
     language: state.language,
@@ -8858,7 +8864,7 @@ function renderFollowBrowse() {
   renderSearchResultItems(
     elements.followSongResults,
     items,
-    state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
+    state.followBrowseLoading ? t("follow.loadingItems") : window.BilikaraSourceStatus.emptyText(state.data?.gatcha, {uid: state.followBrowseSelectedUid}, t, t("follow.noItems")),
   );
   setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
   window.BilikaraBrowseSearch?.sync(elements.followSearchForm,
@@ -8922,6 +8928,7 @@ function renderFavlistBrowse() {
   const signature = JSON.stringify({
     loading: state.favlistBrowseLoading,
     selected: state.favlistBrowseSelectedFolderId,
+    sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}),
     folders,
     items,
     language: state.language,
@@ -9003,7 +9010,7 @@ function renderFavlistBrowse() {
   renderSearchResultItems(
     elements.favlistSongResults,
     items,
-    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : window.BilikaraSourceStatus.emptyText(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}, t, t("favlist.noItems")),
   );
   setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
   window.BilikaraBrowseSearch?.sync(elements.favlistSearchForm,
@@ -9095,7 +9102,7 @@ async function previewGatchaUidAddFromInput(input, {
     return;
   }
 
-  if (gatchaTaskBusy()) {
+  if (gatchaSourceBusy()) {
     setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
@@ -9138,7 +9145,7 @@ async function previewGatchaFavlistFromInput(input, {
     return;
   }
 
-  if (gatchaTaskBusy()) {
+  if (gatchaSourceBusy()) {
     setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
@@ -9499,6 +9506,10 @@ function gatchaTaskBusy() {
   return Boolean(state.data?.gatcha?.busy || state.data?.gatcha?.background_busy);
 }
 
+function gatchaSourceBusy() {
+  return gatchaTaskBusy() && !state.data?.capabilities?.source_queue;
+}
+
 function localizedGatchaTaskMessage(message, status = "") {
   const raw = String(message || "").trim();
   if (!raw) {
@@ -9579,6 +9590,7 @@ function renderGatchaUidFace() {
     task:state.data?.gatcha, loading:state.gatchaUidSaving || state.gatchaFavlistSaving || state.gatchaRefreshSaving, translate:t,
   });
   const taskBusy = gatchaTaskBusy();
+  const sourceBusy = gatchaSourceBusy();
   const signature = JSON.stringify({
     saving: state.gatchaUidSaving,
     refreshing: state.gatchaRefreshSaving,
@@ -9600,14 +9612,14 @@ function renderGatchaUidFace() {
     elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
   }
   if (elements.modalFollowUidInput) {
-    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || sourceBusy;
   }
   if (elements.modalFavlistUidInput) {
-    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || sourceBusy;
   }
   if (elements.modalAddFollowUidButton) {
-    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    window.BilikaraSourceStatus.setBusy(elements.modalAddFollowUidButton, state.gatchaUidSaving || taskBusy);
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || sourceBusy;
+    window.BilikaraSourceStatus.setBusy(elements.modalAddFollowUidButton, state.gatchaUidSaving || sourceBusy);
     elements.modalAddFollowUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
@@ -9616,18 +9628,18 @@ function renderGatchaUidFace() {
     elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
   }
   if (elements.modalPullFavlistButton) {
-    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    window.BilikaraSourceStatus.setBusy(elements.modalPullFavlistButton, state.gatchaFavlistSaving || taskBusy);
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || sourceBusy;
+    window.BilikaraSourceStatus.setBusy(elements.modalPullFavlistButton, state.gatchaFavlistSaving || sourceBusy);
     elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.pulling");
     }
-    if (elements.modalAddFollowUidButton) {
+    if (sourceBusy && elements.modalAddFollowUidButton) {
       elements.modalAddFollowUidButton.textContent = t("gatcha.pulling");
     }
-    if (elements.modalPullFavlistButton) {
+    if (sourceBusy && elements.modalPullFavlistButton) {
       elements.modalPullFavlistButton.textContent = t("gatcha.pulling");
     }
   }
@@ -17271,7 +17283,7 @@ async function confirmGatchaFavlistModal() {
     setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
-  if (gatchaTaskBusy()) {
+  if (gatchaSourceBusy()) {
     setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
@@ -17285,7 +17297,8 @@ async function confirmGatchaFavlistModal() {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
     setGatchaUidFlowMessage(
       messageTarget,
-      t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
+      result?.queued ? t(result.duplicate ? "gatcha.sourceAlreadyQueued" : "gatcha.sourceQueued")
+        : t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
     );
     await refreshFavlistBrowseAfterPull();
   } catch (error) {

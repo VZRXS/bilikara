@@ -724,7 +724,9 @@ fn refresh_all(
         control.check()?;
         notify(
             json!({"phase":"uid", "current_uid":uid, "uid_index":index + 1, "uid_total":configured.len(),
-            "sources":{"uids":results.len(), "favorites":0}}),
+            "pending_uids":&configured[index+1..],
+            "failed_uids":errors.iter().map(|v: &Value|v["uid"].clone()).collect::<Vec<_>>(),
+            "sources":{"uids":results.len()+errors.len(), "favorites":0}}),
         );
         let result = (|| {
             let (known_profile, existing) = {
@@ -775,18 +777,18 @@ fn refresh_all(
             }))
         })();
         match result {
-            Ok(value) => {
-                results.push(value);
-                notify(
-                    json!({"phase":"uid", "uid_index":index + 1, "uid_total":configured.len(),
-                    "sources":{"uids":results.len(), "favorites":0}}),
-                );
-            }
+            Ok(value) => results.push(value),
             Err(failure) => errors.push(json!({"uid": uid, "error": failure.message})),
         }
         control.commit(|| {
             persist_refresh_summary(paths, &results, &errors, "", false, configured.len())
         })?;
+        notify(
+            json!({"phase":"uid","uid_index":index+1,"uid_total":configured.len(),
+            "pending_uids":&configured[index+1..],
+            "failed_uids":errors.iter().map(|v|v["uid"].clone()).collect::<Vec<_>>(),
+            "sources":{"uids":results.len()+errors.len(),"favorites":0}}),
+        );
     }
     control.check()?;
     let favlist_result = refresh_existing_favlist(
@@ -797,7 +799,8 @@ fn refresh_all(
         &|index, total, current| {
             notify(
                 json!({"phase":"favlist","current_folder_id":current,"favlist_index":index,"favlist_total":total,
-                "sources":{"uids":results.len(),"favorites":index}}),
+                "failed_uids":errors.iter().map(|v|v["uid"].clone()).collect::<Vec<_>>(),
+                "sources":{"uids":results.len()+errors.len(),"favorites":index}}),
             );
         },
     )?;
@@ -1703,7 +1706,7 @@ fn encode_query(values: &[(&str, String)]) -> String {
     serializer.finish()
 }
 
-fn required_uid(value: &str) -> Result<String, GatchaRepositoryError> {
+pub(crate) fn required_uid(value: &str) -> Result<String, GatchaRepositoryError> {
     let value = value.trim();
     let parsed = url::Url::parse(value)
         .or_else(|_| url::Url::parse(&format!("https://{value}")))

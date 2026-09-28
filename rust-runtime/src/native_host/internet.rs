@@ -51,6 +51,8 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         Value::Null
     };
     state["gatcha"] = public_source_status(&snapshot["gatcha"]);
+    state["capabilities"]["source_queue"] = json!(true);
+    state["capabilities"]["source_queue_titles"] = json!(true);
     state["bilibili_logged_in"] = json!(
         snapshot["bbdown"]["login"]["logged_in"] == true || snapshot["bbdown"]["logged_in"] == true
     );
@@ -325,6 +327,11 @@ fn effect(
             };
             let mut body = effect.clone();
             body.as_object_mut().unwrap().remove("kind");
+            // Native source additions share the same bounded queue on both
+            // transports. The existing public protocol carries only UID/folders.
+            if matches!(kind, "gatcha_uid_add" | "gatcha_favlist_refresh") {
+                body["queue"] = json!(true);
+            }
             library::write(context, &library_identity, path, &body)?
         }
         "fetch_playlist_item" => {
@@ -468,6 +475,14 @@ fn public_data(value: &Value) -> Value {
 // a refresh. Never forward the rest of the internal task result (paths/errors).
 fn public_source_status(value: &Value) -> Value {
     let mut result = public_data(value);
+    if value["source_queue"].is_object() {
+        result["source_queue"] = value["source_queue"].clone();
+    }
+    for key in ["errors", "favlist_errors"] {
+        if let Some(errors) = value["last_result"][key].as_array() {
+            result["last_result"][key] = json!(errors.iter().take(1000).map(|v| json!({"uid":bounded(&v["uid"],80),"folder_id":bounded(&v["folder_id"],80)})).collect::<Vec<_>>());
+        }
+    }
     if let Some(progress) = value
         .pointer("/last_result/rebuild")
         .filter(|v| v.is_object())
@@ -478,12 +493,22 @@ fn public_source_status(value: &Value) -> Value {
                 public[key] = json!(bounded(&progress[key], 80));
             }
         }
+        for key in ["pending_uids", "failed_uids"] {
+            if let Some(ids) = progress[key].as_array() {
+                public[key] = json!(
+                    ids.iter()
+                        .take(1000)
+                        .map(|id| bounded(id, 80))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
         for key in ["generation", "uids", "favorites"] {
             if let Some(count) = progress["sources"][key].as_u64() {
                 public["sources"][key] = json!(count);
             }
         }
-        result["last_result"] = json!({"rebuild": public});
+        result["last_result"]["rebuild"] = public;
     }
     result
 }
@@ -581,6 +606,8 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
         "already_followed",
         "added",
         "started",
+        "queued",
+        "duplicate",
     ] {
         if let Some(value) = object.get(key).and_then(Value::as_bool) {
             result[key] = json!(value);

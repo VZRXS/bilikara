@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub const INTERNET_REMOTE_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 16 * 1024;
@@ -268,6 +269,8 @@ pub enum RemoteRequestV1 {
     GatchaFavlistRefresh {
         uid: String,
         folder_ids: Vec<String>,
+        #[serde(default)]
+        folder_titles: BTreeMap<String, String>,
     },
     #[serde(rename = "playlist.add")]
     PlaylistAdd {
@@ -545,6 +548,8 @@ struct GatchaUidBody {
 struct GatchaFavlistRefreshBody {
     uid: String,
     folder_ids: Vec<String>,
+    #[serde(default)]
+    folder_titles: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -855,10 +860,18 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::GatchaUidPreview { uid }
         | RemoteRequestV1::GatchaUidAdd { uid }
         | RemoteRequestV1::GatchaFavlistPreview { uid } => valid_numeric_id(uid),
-        RemoteRequestV1::GatchaFavlistRefresh { uid, folder_ids } => {
+        RemoteRequestV1::GatchaFavlistRefresh {
+            uid,
+            folder_ids,
+            folder_titles,
+        } => {
             valid_numeric_id(uid)
                 && !folder_ids.is_empty()
                 && valid_exclusions(folder_ids, valid_numeric_id)
+                && folder_titles.len() <= 100
+                && folder_titles
+                    .iter()
+                    .all(|(id, title)| folder_ids.contains(id) && title.chars().count() <= 200)
         }
         RemoteRequestV1::PlaylistAdd {
             catalog_item_id,
@@ -1120,6 +1133,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::GatchaFavlistRefresh {
                 uid: body.uid,
                 folder_ids: body.folder_ids,
+                folder_titles: body.folder_titles,
             }
         }
         "playlist.add" => {

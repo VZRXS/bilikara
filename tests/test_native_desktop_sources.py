@@ -62,7 +62,8 @@ class NativeDesktopSourceTests(unittest.TestCase):
                     deadline = time.monotonic() + 8
                     while time.monotonic() < deadline:
                         state = host.api("/api/state")
-                        if not state["gatcha"].get("background_busy"):
+                        queue = state["gatcha"].get("source_queue", {})
+                        if not state["gatcha"].get("background_busy") and not queue.get("pending") and not queue.get("active"):
                             return state
                         time.sleep(.02)
                     self.fail("source refresh did not finish")

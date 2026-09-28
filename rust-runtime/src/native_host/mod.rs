@@ -15,7 +15,7 @@ mod exports;
 mod files;
 mod internet;
 mod library;
-pub(crate) use library::LibraryDiagnostic;
+pub(crate) use library::{LibraryDiagnostic, SourceQueue};
 mod login;
 pub(crate) use login::LoginDiagnostic;
 mod admin;
@@ -899,8 +899,21 @@ async fn event_stream(
     identity: Identity,
     host: bool,
 ) -> Result<Response, ApiError> {
+    struct LanConnection(Option<String>);
+    impl Drop for LanConnection {
+        fn drop(&mut self) {
+            if let Some(key) = &self.0 {
+                let _ = with_app(|app| {
+                    app.native_close_lan_connection(key);
+                    Ok(())
+                });
+            }
+        }
+    }
+    let connection = LanConnection(with_app(|app| app.native_open_lan_connection(&identity))?);
     let (reader, mut writer) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
+        let _connection = connection;
         let mut last_revision = None;
         while !context.stop.load(Ordering::Acquire) {
             // Register before reading state so a commit during the snapshot or
