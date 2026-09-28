@@ -190,6 +190,23 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   color: var(--ink);
   transform: none;
 }
+/* Desktop pointer feedback shares the existing secondary/danger palette. */
+:root:not([data-ui-client="remote"]) :is(.banner-close, .binding-sheet-close,
+  #confirm-close, .rating-close, .song-detail-close) {
+  transition: background-color 120ms ease, color 120ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-ui-client="remote"]) :is(.banner-close, .binding-sheet-close,
+    #confirm-close, .rating-close, .song-detail-close):hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--btn-secondary-bg) 88%, var(--ink) 12%);
+    color: var(--danger-btn-color, var(--red));
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-ui-client="remote"]) :is(.banner-close, .binding-sheet-close,
+    #confirm-close, .rating-close, .song-detail-close) { transition: none; }
+}
 :root :is(.selection-modal-card, .binding-sheet-panel, .remote-identity-card,
   .confirm-popover, .history-export-dialog, .volume-adjust-popover, .rating-body) {
   padding: 20px;
@@ -215,7 +232,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   height: 44px;
   min-height: 44px;
   padding: 0 36px 0 12px;
-  border: var(--input-border);
+  border: 1px solid var(--line);
   border-radius: 14px;
   background-color: var(--input-bg);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%2388817b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
@@ -315,8 +332,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
   .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
-  .app-shell[data-stage-controls-layout="popup"] .stage-control-tray,
-  .cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble) {
+  .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
   border: var(--modal-card-border);
   border-radius: 18px;
@@ -398,3 +414,320 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
     transition-duration: 1ms !important;
   }
 }
+
+/* Info bubbles share Remote's shape/copy and Host's short fade/slide motion.
+   They are annotations in the top layer, not another modal surface. */
+:root :is(.cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble) {
+  --info-bubble-arrow-left: var(--remote-tooltip-arrow-left, var(--contextual-tooltip-arrow-left, 13px));
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--modal-card-bg);
+  color: var(--muted);
+  box-shadow: var(--rating-card-shadow);
+  backdrop-filter: blur(var(--modal-surface-blur));
+  -webkit-backdrop-filter: blur(var(--modal-surface-blur));
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transform: translateY(3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 0s linear 120ms;
+}
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  overflow: visible;
+}
+:root :is(.cache-advanced-info.is-visible .cache-advanced-tooltip, .remote-tooltip-bubble.is-visible) {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)::before,
+:root :is(.cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble)::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  bottom: auto;
+  left: var(--info-bubble-arrow-left);
+  width: 0;
+  height: 0;
+  background: transparent;
+  transform: none;
+  border: 6px solid transparent;
+  border-top-color: var(--modal-card-bg);
+}
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)::before {
+  left: calc(var(--info-bubble-arrow-left) - 1px);
+  border-width: 7px;
+  border-top-color: var(--line);
+  z-index: -1;
+}
+:root :is(.cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble)[data-tooltip-direction="down"]::after,
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)[data-tooltip-direction="down"]::before {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--modal-card-bg);
+}
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)[data-tooltip-direction="down"]::before {
+  border-bottom-color: var(--line);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root :is(.cache-advanced-info .cache-advanced-tooltip, .remote-tooltip-bubble) { transition-duration: 1ms; transition-delay: 0s; }
+}
+
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)[data-i18n],
+:root :is(.cache-advanced-tooltip, .remote-tooltip-bubble) [data-i18n] { white-space: pre-line; }
+
+/* Peer cards align their corner axes within each row/column. Keep the
+   established outer panel and insets; exact concentric subtraction would
+   flatten small cards into nearly square corners. */
+:root { --request-inner-card-radius: 16px; }
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .request-panel,
+  .gatcha-panel, .selection-modal, .binding-sheet)
+  :is(.follow-up-button, .tag-browser-tag, .category-browser-card, .search-result-item) {
+  border-radius: var(--request-inner-card-radius);
+}
+
+/* Compact entries keep two title lines above one metadata line. */
+:root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
+  :is(.follow-up-button, .tag-browser-tag) {
+  box-sizing: border-box;
+  height: 72px;
+  min-height: 72px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 32px 16px;
+  align-content: start;
+  gap: 2px;
+  text-align: left;
+}
+:root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
+  :is(.follow-up-name, .tag-browser-tag-name) {
+  margin: 0;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  display: flex;
+  flex-direction: column;
+}
+:root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
+  :is(.follow-up-count, .tag-browser-tag-count) {
+  margin: 0;
+  min-width: 0;
+  height: 16px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+:root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
+  .follow-up-button:has(.follow-up-avatar) .follow-up-count {
+  padding-inline-end: 32px;
+}
+:root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
+  .follow-up-avatar {
+  width: 24px;
+  height: 24px;
+  right: 10px;
+  bottom: 10px;
+}
+
+/* Cover cards keep 16:9 media, with the same two-line title box below it. */
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-item {
+  gap: 10px;
+  padding-bottom: 10px;
+}
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-meta {
+  padding-inline: 10px;
+  gap: 6px;
+}
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-title {
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 20px;
+}
+:root[data-ui-client="remote"] .category-browser-card-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 20px;
+  max-height: 52px;
+}
+
+.request-card-title-line {
+  display: block;
+  flex: none;
+  box-sizing: content-box;
+  height: 16px;
+  line-height: 16px;
+  /* Keep the 16px text rhythm, but leave ink room for emoji/diacritics.
+     The matching negative margins preserve both title and metadata positions. */
+  padding-block: 4px;
+  margin-block: -4px;
+  overflow: hidden;
+  white-space: pre;
+}
+.follow-up-button:has(.follow-up-avatar) .request-card-title-remainder {
+  width: calc(100% - 32px);
+}
+.request-card-title-track {
+  display: block;
+  width: max-content;
+  max-width: none;
+  white-space: nowrap;
+}
+.is-card-title-overflowing .request-card-title-track {
+  animation: request-card-title-scroll var(--request-card-title-duration, 8s) linear infinite;
+  animation-play-state: paused;
+}
+.is-card-title-overflowing.is-card-title-visible .request-card-title-track {
+  animation-play-state: running;
+}
+@keyframes request-card-title-scroll {
+  0%, 15% { transform: translateX(0); }
+  75%, 90% { transform: translateX(calc(-1 * var(--request-card-title-distance))); }
+  100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root :is(.follow-up-name, .tag-browser-tag-name).is-card-title-overflowing .request-card-title-remainder {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .is-card-title-overflowing .request-card-title-remainder::-webkit-scrollbar { display: none; }
+  .is-card-title-overflowing .request-card-title-track { animation: none; }
+}
+
+/* Shared discovery controls and a single inline status inside the list. */
+:root .tag-browser-alphabet {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px;
+}
+:root .tag-letter-button {
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--btn-secondary-bg);
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: none;
+}
+:root .tag-letter-button.active {
+  color: var(--accent-deep);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, var(--btn-secondary-bg));
+}
+:root[data-theme] :is(.tag-browser, .category-browser, .follow-browser, .favlist-browser) .search-empty {
+  grid-column: 1 / -1;
+  align-self: start;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: center;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-ui-client="remote"]) .browse-search-bar:not(.is-open) .browse-search-form:not([aria-busy="true"]):hover,
+  :root:not([data-ui-client="remote"]) .browse-search-cancel:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: none;
+  }
+}
+:root:not([data-ui-client="remote"]) .browse-search-bar .browse-search-form,
+:root:not([data-ui-client="remote"]) .browse-search-cancel {
+  transition: width 220ms cubic-bezier(.2, .8, .2, 1), transform 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-ui-client="remote"]) .browse-search-bar .browse-search-form,
+  :root:not([data-ui-client="remote"]) .browse-search-cancel { transition: none; transform: none; }
+}
+
+/* The expanded input owns its submit hover; keep the base state still. */
+:root .browse-search-bar .browse-search-form > button {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Related browse back actions share one role across Host and Remote. */
+:root :is(.tag-browser-back, #follow-browse-back, #favlist-browse-back, #catalog-advanced-back, #sources-follow-back) {
+  height: var(--host-control-height, 44px);
+  min-height: var(--host-control-height, 44px);
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  box-shadow: none;
+}
+:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+  #follow-browse-back, #favlist-browse-back, #catalog-advanced-back) {
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back):hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: var(--sync-button-hover-border);
+  }
+  :root:not([data-ui-client="remote"]) .browse-search-bar.is-open .browse-search-form > button:hover:not(:disabled) {
+    transform: translateY(-2px);
+  }
+}
+:root :is(.tag-letter-button, .tag-browser-back, #follow-browse-back,
+  #favlist-browse-back, #sources-follow-back, #catalog-advanced-back):focus-visible,
+:root:not([data-ui-client="remote"]) :is(.av-sync-step-button, .av-sync-reset-button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back) { transition: none; }
+}
+
+:root:not([data-ui-client="remote"]) .browse-search-bar:has(> .category-browser-tabs) { --browse-track-inset: 2px; }
+:root:not([data-ui-client="remote"]) .category-browser-tabs { padding-top: 2px; }

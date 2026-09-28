@@ -112,9 +112,9 @@ class AvDelayFrontendTest(unittest.TestCase):
         self.assertIn(".cache-advanced-info:hover .cache-advanced-info-button", self.host_css)
         self.assertNotIn(".cache-contextual-info-region:hover .cache-advanced-info-button", self.host_css)
         self.assertIn(".cache-advanced-info.is-visible .cache-advanced-tooltip", self.host_css)
-        self.assertIn("@media (hover: hover) and (pointer: fine)", self.remote_css)
+        self.assertNotIn(":hover", self.remote_css)
         self.assertIn("@media (hover: none), (pointer: coarse)", self.remote_css)
-        self.assertIn(".remote-contextual-info-region:hover .remote-info-button", self.remote_css)
+        self.assertIn(".remote-info-button:focus-visible", self.remote_css)
         self.assertIn(".info-trigger-wrap.is-visible .remote-tooltip-bubble", self.remote_css)
         self.assertNotIn(".info-trigger-wrap.show-tooltip", self.remote_css)
 
@@ -122,7 +122,8 @@ class AvDelayFrontendTest(unittest.TestCase):
         self.assertIn("const cacheAdvancedInfoHoverDelayMs = 160;", self.host_js)
         self.assertIn("function showCacheAdvancedInfoTransient", self.host_js)
         self.assertIn('classList.contains("is-pinned")', self.host_js)
-        self.assertIn("const remoteContextualInfoHoverDelayMs = 160;", self.remote_js)
+        self.assertNotIn("remoteContextualInfoHoverDelayMs", self.remote_js)
+        self.assertIn('region.addEventListener("focusin"', self.remote_js)
         self.assertIn("function showRemoteContextualInfoTransient", self.remote_js)
         self.assertNotIn('classList.contains("show-tooltip")', self.remote_js)
 

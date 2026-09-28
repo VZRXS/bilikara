@@ -51,6 +51,7 @@
     submit.removeAttribute("data-i18n");
     submit.innerHTML = searchIcon + busyIcon;
     function render() {
+      if (!submit.querySelector("svg")) submit.innerHTML = searchIcon + busyIcon;
       const busy = submit.getAttribute("aria-busy") === "true";
       submit.setAttribute("aria-label", translate(busy ? "search.browseLoading" : "search.submit"));
       submit.title = submit.getAttribute("aria-label");
@@ -91,6 +92,7 @@
       bar.classList.toggle("is-open", opened);
       bar.classList.toggle("has-search", available);
       form.hidden = !available;
+      form.inert = !opened;
       context.inert = opened;
       context.setAttribute("aria-hidden", String(opened));
       input.value = draft;
@@ -104,9 +106,12 @@
       submit.setAttribute("aria-label", loading ? translate("search.browseLoading")
         : opened ? translate("search.submit") : scope);
       submit.title = submit.getAttribute("aria-label");
-      cancel.setAttribute("aria-label", translate("search.cancelInline"));
+      cancel.innerHTML = opened ? closeIcon : searchIcon;
+      cancel.setAttribute("aria-expanded", String(opened));
+      cancel.setAttribute("aria-controls", input.id);
+      cancel.setAttribute("aria-label", opened ? translate("search.cancelInline") : scope);
       cancel.title = cancel.getAttribute("aria-label");
-      cancel.hidden = !opened || !available;
+      cancel.hidden = !available;
       for (const element of [input, submit, cancel]) {
         element.disabled = loading;
         if (loading) element.setAttribute("aria-busy", "true");
@@ -130,7 +135,7 @@
       opened = false;
       input.blur();
       render();
-      submit.focus({ preventScroll: true });
+      cancel.focus({ preventScroll: true });
       // Reuse the existing request owner to restore unfiltered results.
       // A draft that was never submitted does not trigger a request.
       if (clearing) form.requestSubmit(submit);
@@ -159,7 +164,7 @@
       event.stopPropagation();
       close();
     });
-    cancel.addEventListener("click", close);
+    cancel.addEventListener("click", () => opened ? close() : open());
 
     return {
       sync(value) {

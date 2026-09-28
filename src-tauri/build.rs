@@ -27,6 +27,8 @@ fn main() {
         "send_presentation_command",
         "acknowledge_presentation_command",
         "publish_presentation_playback_state",
+        "publish_presentation_output_state",
+        "request_presentation_output_state",
         "deactivate_local_presentation",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(app_manifest))

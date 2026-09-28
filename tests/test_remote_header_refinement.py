@@ -618,8 +618,8 @@ console.log(JSON.stringify({
             queue_action["border-radius"], "var(--remote-peer-action-radius)"
         )
         self.assertIn(".remote-menu-toggle:focus-visible", self.styles)
-        self.assertIn("var(--remote-menu-trigger-hover-bg)", self.styles)
-        self.assertIn("var(--remote-menu-trigger-hover-border)", self.styles)
+        self.assertNotIn(".remote-menu-toggle:hover", self.styles)
+        self.assertIn(".remote-menu-toggle:active:not(:disabled)", self.styles)
         expanded_trigger_rule = re.search(
             r'\.remote-menu-toggle\[aria-expanded="true"\]\s*\{([^}]*)\}',
             self.styles,

@@ -130,5 +130,71 @@ assert.equal(BilikaraSourceStatus.sourceState(task,{folderId:'8:42'}),'');
 """)
 
 
+    def test_folder_titles_are_sent_only_to_capable_hosts(self):
+        for client in ("app", "remote"):
+            source = (ROOT / "static" / f"{client}.js").read_text(encoding="utf-8")
+            start = source.index("async function pullGatchaFavlist(")
+            function = source[start:source.index("\n}\n", start) + 2]
+            script = """
+const assert = require('node:assert/strict');
+const state = {data:{capabilities:{source_queue:true}}};
+const apiPost = async (_path, body) => body;
+""" + function + """
+(async () => {
+ const folders = [{id:'42',title:'🎤 收藏'}, {id:'43',title:'Unselected'}];
+ const legacy = await pullGatchaFavlist('7',['42'],folders);
+ assert.equal(Object.hasOwn(legacy,'folder_titles'),false);
+ state.data.capabilities.source_queue_titles=true;
+ const current = await pullGatchaFavlist('7',['42'],folders);
+ assert.deepEqual(current.folder_titles, {'42':'🎤 收藏'});
+ assert.deepEqual(current.folder_ids, ['42']);
+ assert.equal(current.queue,true);
+})().catch(error=>{console.error(error);process.exitCode=1});
+"""
+            result = subprocess.run(["node", "-"], input=script, text=True,
+                                    encoding="utf-8", capture_output=True, timeout=10, cwd=ROOT)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_queued_sources_are_placeholders_until_the_library_lists_them(self):
+        shared = (ROOT / "static" / "source-status.js").read_text(encoding="utf-8")
+        result = subprocess.run(["node", "-"], input=f"""
+const assert = require('node:assert/strict');
+const window = globalThis;
+{shared}
+const status = BilikaraSourceStatus;
+status.rememberSource({{uid:'7', title:'Seven'}});
+status.rememberSource({{folderId:'9:77', title:'Weekend'}});
+const task = {{source_queue:{{
+  active:{{uid:'7', folder_ids:null}},
+  pending:[{{uid:'8', folder_ids:null}}, {{uid:'7', folder_ids:null}}, {{uid:'9', folder_ids:['77', '78']}}],
+  failed:[{{uid:'10', folder_ids:null}}],
+}}}};
+// Waiting and running UPs appear once; listed or failed sources do not.
+assert.deepEqual(status.queuedSources(task, 'uids', []),
+  [{{placeholder:true, uid:'7', name:'Seven'}}, {{placeholder:true, uid:'8', name:''}}]);
+assert.deepEqual(status.queuedSources(task, 'uids', ['8']), [{{placeholder:true, uid:'7', name:'Seven'}}]);
+// Folder jobs use plain ids; browse cards use "uid:folder".
+assert.deepEqual(status.queuedSources(task, 'favorites', ['9:78']),
+  [{{placeholder:true, uid:'9', id:'9:77', folder_id:'77', title:'Weekend'}}]);
+assert.deepEqual(status.queuedSources(task, 'favorites', ['77', '78']), []);
+// A second browser has no local remembered title; shared queue metadata wins.
+task.source_queue.pending[2].folder_titles = {{'77':'Shared folder name', '78':'別の收藏夹'}};
+assert.equal(status.queuedSources(task, 'favorites', [])[0].title, 'Shared folder name');
+assert.equal(status.queuedSources(task, 'favorites', [])[1].title, '別の收藏夹');
+assert.equal(status.sourceState(task, {{uid:'7'}}), 'running');
+assert.equal(status.sourceState(task, {{uid:'8'}}), 'queued');
+assert.equal(status.sourceState(task, {{folderId:'9:77'}}), 'queued');
+assert.deepEqual(status.queuedSources({{}}, 'uids', []), []);
+assert.deepEqual(status.queuedSources({{source_queue:{{active:null, pending:[]}}}}, 'favorites', []), []);
+""", text=True, encoding="utf-8", capture_output=True, timeout=10, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for client in ("app", "remote"):
+            with self.subTest(client=client):
+                source = (ROOT / "static" / f"{client}.js").read_text(encoding="utf-8")
+                self.assertIn('queuedSources?.(state.data?.gatcha, "uids"', source)
+                self.assertIn('queuedSources?.(state.data?.gatcha, "favorites"', source)
+                self.assertIn("rememberSource(", source)
+                self.assertIn("source-card-placeholder", source)
+
 if __name__ == "__main__":
     unittest.main()

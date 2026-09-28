@@ -4,6 +4,12 @@
   "use strict";
   const root = document.documentElement;
   if (root.dataset.nativeHost !== "true") return;
+  // Desktop keeps its existing narrow workspace/rail layout. Phone navigation
+  // belongs to Android, not to every native WebView below the width threshold.
+  if (root.dataset.hostPlatform !== "android") {
+    root.dataset.hostLayout = "landscape";
+    return;
+  }
 
   const byId = (id) => document.getElementById(id);
   // Only the phone layout embeds this selector in Settings. The desktop layout

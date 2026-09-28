@@ -38,8 +38,18 @@
         <div class="presentation-output-remote-card remote-access-card">
           <section class="presentation-output-remote-entry remote-access-entry remote-access-entry--local">
             <div class="remote-access-heading">
-            <strong class="presentation-output-entry-title remote-access-title"
-              data-i18n="internetRemote.localEntry">本地入口</strong>
+              <strong class="presentation-output-entry-title remote-access-title"
+                data-i18n="internetRemote.localEntry">本地入口</strong>
+              <span class="remote-access-public-state">
+                <span class="remote-access-status remote-access-public-status is-active" data-local-connection-label></span>
+                <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                    <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                  </svg>
+                  <span data-local-connection-count>0</span>
+                </span>
+              </span>
             </div>
             <div class="presentation-output-share-layout remote-access-entry-content">
               <div class="presentation-output-qr-wrap remote-access-qr">
@@ -85,7 +95,7 @@
               <div class="presentation-output-remote-copy remote-access-details">
                 <p class="remote-access-copy-title" data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
                 <small class="presentation-output-password remote-access-password">
-                  <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                  <span data-i18n="internetRemote.currentPassword">房间密码</span>
                   <strong id="controller-internet-remote-password"></strong>
                 </small>
               </div>

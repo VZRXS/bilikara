@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-publish-presentation-output-state"
+description = "Enables the publish_presentation_output_state command without any pre-configured scope."
+commands.allow = ["publish_presentation_output_state"]
+
+[[permission]]
+identifier = "deny-publish-presentation-output-state"
+description = "Denies the publish_presentation_output_state command without any pre-configured scope."
+commands.deny = ["publish_presentation_output_state"]

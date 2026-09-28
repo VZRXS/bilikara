@@ -70,6 +70,7 @@ class InternetRemoteDeploymentTest(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

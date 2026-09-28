@@ -542,6 +542,11 @@ const notes=path.resolve(output);
     await remote.locator('.request-panel').screenshot({path:path.join(notes,kind+'-letters.png')});
     await panel.locator('[data-letter="A"]').click();await panel.locator('[data-tag="Artist 0"]').waitFor();
     assert.equal(await panel.locator('[data-tag]').count(),12);
+    const back=panel.locator('.tag-browser-back:visible');
+    const geometry=await back.evaluate(n=>{const c=getComputedStyle(n);return{height:c.height,font:c.fontSize,weight:c.fontWeight,radius:c.borderRadius,shadow:c.boxShadow}});
+    assert.deepEqual(geometry,{height:'44px',font:'16px',weight:'400',radius:'14px',shadow:'none'});
+    await back.hover();await settled(remote);
+    assert.equal(await back.evaluate(n=>getComputedStyle(n).transform),'none');
     await remote.locator('.request-panel').screenshot({path:path.join(notes,kind+'-six-rows.png')});
     await remote.setViewportSize({width:1024,height:900});
     await remote.waitForFunction(kind=>document.querySelectorAll(`#remote-discover-${kind}-panel [data-tag]`).length===24,kind);
@@ -550,7 +555,7 @@ const notes=path.resolve(output);
     await remote.waitForFunction(kind=>document.querySelectorAll(`#remote-discover-${kind}-panel [data-tag]`).length===12,kind);
     const tagsSelector=`#remote-discover-${kind}-panel [data-d1-browse-tags]`;
     await jump(tagsSelector,4);assert.equal(await panel.locator('[data-tag]').count(),4);
-    await jump(tagsSelector,1);await panel.locator('.browse-search-form button[type=submit]').click();
+    await jump(tagsSelector,1);await panel.locator('.browse-search-cancel').click();
     await panel.locator('.browse-search-form input').fill('Artist 39');await panel.locator('.browse-search-form').evaluate(e=>e.requestSubmit());
     await panel.locator('[data-tag="Artist 39"]').waitFor();assert.equal(await panel.locator('[data-tag]').count(),1);
     await panel.locator('.browse-search-cancel').click();
@@ -989,10 +994,26 @@ const notes=path.resolve(output);
    }
   });
   await check('hostInlineSearchContexts',async()=>{
+   await host.locator('#work-rail-request').click();
+   await host.locator('[data-request-view="sources"]').click();
+   await host.locator('[data-sources-mode="uids"]').click();
+   if(await host.locator('#follow-up-grid [data-uid="123"]').isVisible())await host.locator('#follow-up-grid [data-uid="123"]').click();
    async function draft(form,render) {
-    await form.waitFor();const submit=form.locator('button[type="submit"]');
+    await form.waitFor({state:'attached'});const submit=form.locator('button[type="submit"]');
+    const back=form.locator('..').locator('.tag-browser-back, #follow-browse-back, #favlist-browse-back').first();
+    if(await back.count()) {
+     await back.waitFor({state:'visible'});await settled(host);
+     const geometry=await back.evaluate(n=>{const c=getComputedStyle(n);return{height:c.height,font:c.fontSize,weight:c.fontWeight,radius:c.borderRadius,shadow:c.boxShadow}});
+     assert.deepEqual(geometry,{height:'40px',font:'16px',weight:'400',radius:'14px',shadow:'none'});
+    }
     await host.waitForFunction(e=>!e.disabled,await submit.elementHandle());
-    assert.equal(await submit.getAttribute('aria-expanded'),'false');await submit.click();
+    const toggle=form.locator('..').locator('.browse-search-cancel');
+    await host.mouse.move(0,0);await settled(host);
+    const before=await toggle.boundingBox();
+    assert.equal(await submit.getAttribute('aria-expanded'),'false');await toggle.click();
+    await host.mouse.move(0,0);await settled(host);
+    const after=await toggle.boundingBox();
+    assert.ok(Math.abs(before.x-after.x)<1 && Math.abs(before.y-after.y)<1,'Search toggle stays in place when becoming Close');
     const input=form.locator('input');await input.fill('Draft to clear');
     await host.evaluate(render);
     assert.equal(await input.inputValue(),'Draft to clear','Repeated state rendering retains the draft');
@@ -1016,7 +1037,7 @@ const notes=path.resolve(output);
     await panel.locator('[data-letter="A"]').click();await panel.locator('[data-tag="Artist 0"]').waitFor();
     const form=panel.locator('.browse-search-form');
     await draft(form,()=>renderD1BrowseView());
-    await form.locator('button[type="submit"]').click();await form.locator('input').fill('Artist 39');
+    await form.locator('..').locator('.browse-search-cancel').click();await form.locator('input').fill('Artist 39');
     await form.locator('button[type="submit"]').click();await panel.locator('[data-tag="Artist 39"]').waitFor();
     assert.equal(await panel.locator('[data-tag]').count(),1);
     const gap=await panel.evaluate(e=>e.querySelector('[data-tag]').getBoundingClientRect().top-e.querySelector('.browse-search-bar').getBoundingClientRect().bottom);
@@ -1119,19 +1140,24 @@ const notes=path.resolve(output);
    await host.locator('[data-request-view="discover"]').click();
    await host.locator('[data-discover-mode="categories"]').click();
    const sizes=[];
-   for(const width of [1280,1536,1707,1920,412]) {
-    await host.setViewportSize({width,height:width===412?817:960});
-    if(width===412)await host.locator('[data-android-page="request"]').click();
+   for(const width of [700,1280,1536,1707,1920]) {
+    await host.setViewportSize({width,height:960});
     const grid=host.locator('#request-discover-categories .category-browser-grid');
     await grid.waitFor({state:'visible'});await settled(host);
     sizes.push(await grid.evaluate((e,width)=>({viewport:width,width:e.getBoundingClientRect().width,
+     minimum:parseFloat(getComputedStyle(e).getPropertyValue('--request-song-card-min-inline-size')),
+     gap:parseFloat(getComputedStyle(e).columnGap),
      columns:getComputedStyle(e).gridTemplateColumns.split(' ').length,noOverflow:e.scrollWidth<=e.clientWidth+1}),width));
-    if(width===1707||width===412)await host.screenshot({path:path.join(notes,'category-'+width+'.png')});
+    assert.equal(await host.locator('[data-android-page="request"]').isVisible(),false,'Narrow desktop retains desktop navigation');
+    if(width===1707||width===700)await host.screenshot({path:path.join(notes,'category-'+width+'.png')});
    }
    measurements.hostCategoryColumns={sizes};
    assert.equal(sizes.find(s=>s.viewport===1707).columns,2,'2K / 150% Host should show two category columns');
    assert.equal(sizes.find(s=>s.viewport===1280).columns,1,'Narrow desktop stays readable');
-   assert.equal(sizes.find(s=>s.viewport===412).columns,2,'Phone keeps its compact two columns');
+   for(const size of sizes) {
+    assert.equal(size.minimum,200,'Category covers reuse the song-card minimum');
+    assert.equal(size.columns,Math.max(1,Math.floor((size.width+size.gap+0.1)/(200+size.gap))),'Column count follows available width and gap');
+   }
    assert.ok(sizes.every(s=>s.noOverflow));
   });
   await check('portraitContextualTabs',async()=>{

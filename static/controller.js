@@ -32,6 +32,7 @@
     cursorHideTimer: null,
     remoteQrPinned: false,
     lastPointerType: "",
+    outputRequestTimer: null,
   };
 
   const elements = {
@@ -138,13 +139,18 @@
   }
 
   function normalizedHttpUrl(value) {
-    const normalized = String(value || "").trim();
-    return normalized.startsWith("http://") || normalized.startsWith("https://")
-      ? normalized
-      : "";
+    try {
+      const url = new URL(String(value || "").trim());
+      return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+    } catch { return ""; }
   }
 
   function renderRemoteAccess(candidate) {
+    const count = Math.max(0, Math.trunc(Number(candidate?.connected_count) || 0));
+    document.querySelectorAll("[data-local-connection-count]").forEach(node => { node.textContent = String(count); });
+    document.querySelectorAll("[data-local-connection-label]").forEach(node => {
+      node.textContent = t("remote.connectionCount").replace("{count}", String(count));
+    });
     const preferredUrl = normalizedHttpUrl(candidate?.preferred_url);
     const localUrl = normalizedHttpUrl(candidate?.local_url);
     const url = preferredUrl || localUrl;
@@ -370,6 +376,36 @@
     }
   }
 
+  // Ask the Host, through the shell, to replay its current output. Browser
+  // channels are only a fast path; desktop WebViews need not share storage.
+  function requestOutputState() {
+    const generation = state.session?.generation;
+    if (
+      androidDisplay
+      || state.failedClosed
+      || !Number.isSafeInteger(generation)
+      || !["activating", "active"].includes(state.session?.phase)
+    ) {
+      return;
+    }
+    invoke("request_presentation_output_state", { generation }).catch(() => {});
+  }
+
+  function requestOutputStateUntilReceived() {
+    requestOutputState();
+    if (androidDisplay || state.outputRequestTimer !== null) return;
+    let attempts = 0;
+    state.outputRequestTimer = window.setInterval(() => {
+      attempts += 1;
+      if (state.lastMasterEnvelope || state.failedClosed || attempts > 10) {
+        window.clearInterval(state.outputRequestTimer);
+        state.outputRequestTimer = null;
+        return;
+      }
+      requestOutputState();
+    }, 1500);
+  }
+
   function postEnvelope(type, payload = {}) {
     if (!sync) return;
     const envelope = sync.makeEnvelope(type, payload, {
@@ -550,6 +586,8 @@
 
   async function start() {
     await loadTranslations();
+    renderRemoteAccess(null);
+    renderInternetRemote(null);
     if (
       typeof invoke !== "function"
       || typeof listen !== "function"
@@ -580,6 +618,11 @@
         // Ignore malformed same-origin fallback messages.
       }
     });
+    if (!androidDisplay) {
+      state.unlisteners.push(await listen("bilikara-presentation-output-state", (event) => {
+        handleMasterMessage(event?.payload);
+      }));
+    }
     state.unlisteners.push(await listen("bilikara-presentation-state", async (event) => {
       const session = applySession(event?.payload?.session);
       try {
@@ -591,6 +634,7 @@
     const session = applySession(await invoke("get_presentation_session"));
     await ensureOutputReady(session);
     postEnvelope("output-ready", { generation: expectedGeneration });
+    requestOutputStateUntilReceived();
     window.setInterval(() => {
       applyClock();
       renderOverlay();
@@ -646,6 +690,7 @@
   window.addEventListener("pagehide", () => {
     retireVideo();
     if (state.cursorHideTimer) window.clearTimeout(state.cursorHideTimer);
+    if (state.outputRequestTimer !== null) window.clearInterval(state.outputRequestTimer);
     state.unlisteners.splice(0).forEach((unlisten) => unlisten?.());
     state.channel?.close();
   });

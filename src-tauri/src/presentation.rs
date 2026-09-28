@@ -23,6 +23,11 @@ const STATE_EVENT: &str = "bilikara-presentation-state";
 const HOST_COMPOSITION_EVENT: &str = "bilikara-presentation-host-composition";
 const HOST_COMMAND_EVENT: &str = "bilikara-presentation-host-command";
 const PLAYBACK_STATE_EVENT: &str = "bilikara-presentation-playback-state";
+const OUTPUT_STATE_EVENT: &str = "bilikara-presentation-output-state";
+const OUTPUT_REQUEST_EVENT: &str = "bilikara-presentation-output-request";
+// The scene and two QR data URIs fit well inside this bound; it only keeps an
+// oversized relay out of the audience WebView.
+const MAX_OUTPUT_STATE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PENDING_COMMANDS: usize = 32;
 const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_MEDIA_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
@@ -332,6 +337,12 @@ struct HostCompositionEvent {
     composition: HostComposition,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputRequestEvent {
+    generation: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeLifecycleOwner {
     Activation(u64),
@@ -537,6 +548,20 @@ impl PresentationState {
             || runtime.session.phase != PresentationPhase::Active
         {
             return Err("presentation active generation is stale".to_string());
+        }
+        Ok(())
+    }
+
+    fn ensure_output_generation(&self, generation: u64) -> Result<(), String> {
+        let runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.mode != PresentationMode::LocalDualScreen
+            || !matches!(
+                runtime.session.phase,
+                PresentationPhase::Activating | PresentationPhase::Active
+            )
+        {
+            return Err("presentation output generation is stale".to_string());
         }
         Ok(())
     }
@@ -1749,6 +1774,9 @@ fn create_display_identifier_window(
     let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url));
     #[cfg(windows)]
     let builder = builder.data_directory(crate::desktop_storage::webview_directory(app.config())?);
+    #[cfg(windows)]
+    let builder =
+        builder.additional_browser_args(crate::desktop_storage::WINDOWS_WEBVIEW_BROWSER_ARGS);
     let window = builder
         .on_navigation(move |candidate| {
             crate::backend_process::window_origin_authorized(
@@ -2125,6 +2153,9 @@ fn create_controller_window(
     let builder = WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url));
     #[cfg(windows)]
     let builder = builder.data_directory(crate::desktop_storage::webview_directory(app.config())?);
+    #[cfg(windows)]
+    let builder =
+        builder.additional_browser_args(crate::desktop_storage::WINDOWS_WEBVIEW_BROWSER_ARGS);
     builder
         .on_navigation(move |candidate| {
             crate::backend_process::window_origin_authorized(
@@ -2227,6 +2258,25 @@ fn emit_playback_state(
     }
     app.emit_to("controller", PLAYBACK_STATE_EVENT, playback_state)
         .map_err(|error| error.to_string())
+}
+
+fn validate_output_state(envelope: &serde_json::Value, generation: u64) -> Result<(), String> {
+    let object = envelope
+        .as_object()
+        .ok_or_else(|| "presentation output state must be an object".to_string())?;
+    if object.get("type").and_then(serde_json::Value::as_str) != Some("master-state") {
+        return Err("presentation output state has an unsupported type".to_string());
+    }
+    if envelope["payload"]["scene"]["generation"].as_u64() != Some(generation) {
+        return Err("presentation output state belongs to another generation".to_string());
+    }
+    let size = serde_json::to_vec(envelope)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > MAX_OUTPUT_STATE_BYTES {
+        return Err("presentation output state is too large".to_string());
+    }
+    Ok(())
 }
 
 fn close_controller(app: &tauri::AppHandle) -> Result<(), String> {
@@ -3076,6 +3126,47 @@ pub(crate) fn publish_presentation_playback_state(
     Ok(publication.envelope)
 }
 
+// Browser channels between the Host and audience WebViews are not guaranteed
+// to share storage. Relay the Host's output through the shell, the channel both
+// windows already use for session state; the controller validates each envelope.
+#[tauri::command]
+pub(crate) fn publish_presentation_output_state(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+    state: tauri::State<'_, PresentationState>,
+    generation: u64,
+    envelope: serde_json::Value,
+) -> Result<(), String> {
+    authorize_window(&window, &backend, &["main"])?;
+    validate_output_state(&envelope, generation)?;
+    state.ensure_output_generation(generation)?;
+    if app.get_webview_window("controller").is_none() {
+        return Ok(());
+    }
+    app.emit_to("controller", OUTPUT_STATE_EVENT, &envelope)
+        .map_err(|error| format!("failed to relay presentation output state: {error}"))
+}
+
+// A newly loaded audience page asks the Host to replay its current output state.
+#[tauri::command]
+pub(crate) fn request_presentation_output_state(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+    state: tauri::State<'_, PresentationState>,
+    generation: u64,
+) -> Result<(), String> {
+    authorize_window(&window, &backend, &["controller"])?;
+    state.ensure_output_generation(generation)?;
+    app.emit_to(
+        "main",
+        OUTPUT_REQUEST_EVENT,
+        OutputRequestEvent { generation },
+    )
+    .map_err(|error| format!("failed to request presentation output state: {error}"))
+}
+
 #[tauri::command]
 pub(crate) fn deactivate_local_presentation(
     app: tauri::AppHandle,
@@ -3260,13 +3351,14 @@ fn start_generation_watchers(app: tauri::AppHandle, generation: u64, selected_di
 mod tests {
     use super::{
         ActivationAttemptGuard, ControllerCommand, ControllerCommandRequest,
-        ControllerPlaybackState, HostWindowPlacement, MAX_PENDING_COMMANDS, MAX_SAFE_JS_INTEGER,
-        MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
-        PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
-        WindowRole, deliver_main_thread_operation_result, display_identifier_margin_offset,
-        display_source_is_mirrored, native_window_entry_url, next_sequence, readable_display_name,
-        run_activation_readiness_step, validate_controller_command,
-        validate_display_identifier_order, validate_playback_state, visible_restore_placement,
+        ControllerPlaybackState, HostWindowPlacement, MAX_OUTPUT_STATE_BYTES, MAX_PENDING_COMMANDS,
+        MAX_SAFE_JS_INTEGER, MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity,
+        PresentationMode, PresentationPhase, PresentationRecoveryReason, PresentationSession,
+        PresentationState, WindowRole, deliver_main_thread_operation_result,
+        display_identifier_margin_offset, display_source_is_mirrored, native_window_entry_url,
+        next_sequence, readable_display_name, run_activation_readiness_step,
+        validate_controller_command, validate_display_identifier_order, validate_output_state,
+        validate_playback_state, visible_restore_placement,
     };
     use crate::desktop_diagnostics::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
     use std::cell::RefCell;
@@ -3529,6 +3621,48 @@ mod tests {
         let (state, generation) = begin_state();
         assert!(state.mark_ready(generation + 1, WindowRole::Host).is_err());
         assert!(!state.snapshot().expect("snapshot").host_ready);
+    }
+
+    #[test]
+    fn output_relay_accepts_only_the_current_dual_screen_generation() {
+        assert!(
+            PresentationState::default()
+                .ensure_output_generation(0)
+                .is_err()
+        );
+        let (state, generation) = begin_state();
+        state
+            .ensure_output_generation(generation)
+            .expect("an activating audience may receive output state");
+        assert!(state.ensure_output_generation(generation + 1).is_err());
+        let (state, generation) = active_state();
+        state
+            .ensure_output_generation(generation)
+            .expect("an active audience may receive output state");
+        assert!(state.ensure_output_generation(generation - 1).is_err());
+        state
+            .begin_recovery(Some(generation), PresentationRecoveryReason::User)
+            .expect("recovery should begin");
+        assert!(state.ensure_output_generation(generation).is_err());
+    }
+
+    #[test]
+    fn output_relay_carries_only_bounded_master_state_for_its_generation() {
+        let envelope = |generation: u64, qr_image: &str| {
+            serde_json::json!({
+                "protocol": 1, "type": "master-state", "senderId": "host", "sequence": 1,
+                "payload": {"scene": {"generation": generation}, "remoteAccess": {"qr_image": qr_image}},
+            })
+        };
+        validate_output_state(&envelope(7, "data:image/svg+xml;base64,AA"), 7)
+            .expect("the current generation's master state should relay");
+        assert!(validate_output_state(&envelope(6, ""), 7).is_err());
+        assert!(validate_output_state(&serde_json::json!("master-state"), 7).is_err());
+        let mut readiness = envelope(7, "");
+        readiness["type"] = serde_json::json!("output-ready");
+        assert!(validate_output_state(&readiness, 7).is_err());
+        let oversized = "A".repeat(MAX_OUTPUT_STATE_BYTES);
+        assert!(validate_output_state(&envelope(7, &oversized), 7).is_err());
     }
 
     #[test]

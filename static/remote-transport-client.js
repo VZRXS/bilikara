@@ -541,6 +541,12 @@
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
       playback_mode: remoteState.playback_mode || "local",
+      // This capability describes the Host, not the SSE transport. Do not
+      // forward local-only transport capabilities such as event_heartbeat.
+      capabilities: {
+        source_queue: remoteState.capabilities?.source_queue === true,
+        source_queue_titles: remoteState.capabilities?.source_queue_titles === true,
+      },
       current_item: current,
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
       history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
@@ -754,6 +760,7 @@
         response = await request("gatcha.favlist_refresh", {
           uid: String(body.uid || ""),
           folder_ids: Array.isArray(body.folder_ids) ? body.folder_ids.map(String) : [],
+          ...(body.folder_titles ? {folder_titles: body.folder_titles} : {}),
         }, "bulk", 300_000);
         return jsonResponse({ ok: true, data: response.data || {} });
       }

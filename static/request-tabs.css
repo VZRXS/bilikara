@@ -78,6 +78,26 @@
   height: 18px;
 }
 :root:not([data-host-layout="portrait"]) .request-mode-back { display: none; }
+/* A title pair and a secondary tab row occupy the same header track. The
+   content owns the one gap below it; header/content padding must not stack.
+   All request subviews share Quick's responsive panel axis, so the first
+   control row keeps one position when switching tabs at any window width. */
+:root:not([data-host-layout="portrait"]) .request-subview-copy {
+  min-height: 48px;
+  align-content: center;
+}
+:root:not([data-host-layout="portrait"]) .request-mode-head {
+  padding: var(--host-peer-panel-padding, 16px);
+  padding-bottom: 0;
+}
+:root:not([data-host-layout="portrait"]) :is(.request-search-view, .request-discover-view, .request-sources-view) > .request-mode-panel {
+  padding: var(--host-peer-panel-padding, 16px);
+  padding-top: 18px;
+  padding-bottom: var(--host-peer-panel-inline-padding, 16px);
+}
+:root:not([data-host-layout="portrait"]) .request-discover-view .category-browser-home {
+  padding-top: 0;
+}
 html[data-host-layout="portrait"] .request-mode-head {
   margin: 8px 10px;
   padding: 0 4px;

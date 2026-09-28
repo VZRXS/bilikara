@@ -25,14 +25,24 @@ module.exports = async function checkPlaybackFollowup(page, output) {
       return {overflow:document.documentElement.scrollWidth > innerWidth,
         collapseBackground:getComputedStyle(elements.playbackSheetCollapse).backgroundColor,
         top:refresh.top - panel.top, right:panel.right - refresh.right,
-        controls:buttons.map(b=>rect(b).height), cache:rect(elements.currentCacheState).height,
+        controls:buttons.map(b=>({action:b.dataset.controlAction,width:rect(b).width,height:rect(b).height,center:rect(b).top+rect(b).height/2})),
+        cache:rect(elements.currentCacheState).height,
         title:document.querySelector('[data-playback-metadata-field="title"]').dataset,
         summary:rect(elements.playbackSheetSummary).height};
     });
     assert.equal(metrics.overflow, false);
     assert.equal(metrics.collapseBackground, 'rgba(0, 0, 0, 0)');
     assert(Math.abs(metrics.top-metrics.right) <= 1, JSON.stringify(metrics));
-    assert(metrics.controls.every(n=>n===44), JSON.stringify(metrics));
+    // v0.8.0-preview.1 geometry: 44px seek/next and a 48px play/pause circle,
+    // all on one center line.
+    const seek = metrics.controls.filter(b=>b.action==='seek-relative');
+    const primary = metrics.controls.filter(b=>['toggle-play','next-track'].includes(b.action));
+    assert.equal(seek.length, 2, JSON.stringify(metrics));
+    assert.equal(primary.length, 2, JSON.stringify(metrics));
+    assert(seek.every(b=>b.width===44 && b.height===44), JSON.stringify(metrics));
+    const size = {'toggle-play':48,'next-track':44};
+    assert(primary.every(b=>Math.abs(b.width-size[b.action])<=0.5 && Math.abs(b.height-size[b.action])<=0.5), JSON.stringify(metrics));
+    assert(metrics.controls.every(b=>Math.abs(b.center-metrics.controls[0].center)<=0.5), JSON.stringify(metrics));
     assert.equal(metrics.cache,20);
     assert(!await page.locator('.audio-variant-summary').count());
     assert(await page.locator('.audio-variant-bar > .audio-variant-list > button:visible').count());

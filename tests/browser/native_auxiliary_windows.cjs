@@ -47,7 +47,9 @@ const [binary, output, engine = "chromium"] = process.argv.slice(2);
     ]) {
       const context = await browser.newContext({ viewport: { width: 960, height: 600 }, locale: "zh-CN" });
       assert.deepEqual(await context.cookies(), []);
-      await context.addInitScript(() => {
+      await context.addInitScript(disableBroadcast => {
+        if (disableBroadcast) window.BroadcastChannel = undefined;
+        if (!/\/(controller|display-identifier)\.html$/.test(location.pathname)) return;
         window.bridgeCalls = [];
         const session = { mode: "localDualScreen", phase: "activating", generation: 42,
           playbackAuthority: "host", mediaRendererOwner: "host", controllerReady: false };
@@ -61,7 +63,26 @@ const [binary, output, engine = "chromium"] = process.argv.slice(2);
           } },
           event: { listen: async () => () => {} },
         };
-      });
+      }, process.env.BILIKARA_TEST_NO_BROADCAST === "1");
+      let hostPage;
+      if (pageName === "controller") {
+        hostPage = await context.newPage();
+        await hostPage.goto(ready.bootstrapUrl);
+        await hostPage.waitForFunction(() => typeof state !== "undefined" && state.data);
+        await hostPage.evaluate(() => {
+          state.presentationSession = {mode:"localDualScreen",phase:"active",generation:42,
+            playbackAuthority:"host",mediaRendererOwner:"host",controllerReady:true};
+          state.internetRemoteDisplay = {mode:"internet",active:true,password:"246810",
+            qr_image:state.data.remote_access.qr_image,connected_count:2};
+          // Deliberately publish before the audience window exists. No media
+          // ticks follow on this idle Host; readiness must trigger the replay.
+          publishPresentationOutputState();
+        });
+        // Still exercise a fresh audience WebView's bootstrap, not a cookie
+        // inherited from the Host. The already-open SSE remains authenticated.
+        await context.clearCookies();
+        assert.deepEqual(await context.cookies(), []);
+      }
       const page = await context.newPage(), errors = [], failedResponses = [];
       page.on("pageerror", error => errors.push(error.message));
       page.on("response", response => {
@@ -74,6 +95,11 @@ const [binary, output, engine = "chromium"] = process.argv.slice(2);
         assert.equal(await page.title(), "Bilikara Stage");
         assert.equal(await page.locator("#controller-exit").isEnabled(), true);
         assert.equal(await page.locator("#controller-unavailable").isVisible(), false);
+        await page.waitForFunction(() => document.querySelector("#controller-remote-qr-image").naturalWidth > 0);
+        await page.waitForFunction(() => document.querySelector("#controller-internet-remote-qr-image").naturalWidth > 0);
+        assert.equal(await page.locator("#controller-internet-remote-password").textContent(), "246810");
+        assert.match(await page.locator("#controller-remote-url-link").getAttribute("href"), /^http:\/\//);
+        await page.locator("#controller-exit").hover();
       } else {
         await page.waitForFunction(() => document.querySelector("#display-identifier-number").textContent === "2");
         assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
@@ -86,7 +112,18 @@ const [binary, output, engine = "chromium"] = process.argv.slice(2);
       assert.deepEqual(errors, []); assert.deepEqual(failedResponses, []);
       await page.screenshot({ path: path.join(evidence, `${engine}-${pageName}.png`) });
       await page.reload();
-      if (pageName === "controller") await page.waitForFunction(() => window.bridgeCalls.includes("mark_presentation_controller_ready"));
+      if (pageName === "controller") {
+        await page.waitForFunction(() => window.bridgeCalls.includes("mark_presentation_controller_ready"));
+        await page.waitForFunction(() => document.querySelector("#controller-remote-qr-image").naturalWidth > 0);
+        await hostPage.evaluate(() => {
+          setLanguage("ja"); applyTheme("dark");
+          state.internetRemoteDisplay = {mode:"internet",active:true,password:"135790",
+            qr_image:state.data.remote_access.qr_image,connected_count:2};
+          publishPresentationOutputState();
+        });
+        await page.waitForFunction(() => document.documentElement.lang === "ja" && document.documentElement.dataset.theme === "dark");
+        await page.waitForFunction(() => document.querySelector("#controller-internet-remote-password").textContent === "135790");
+      }
       else await page.waitForFunction(() => document.querySelector("#display-identifier-number").textContent === "2");
       assert.deepEqual(errors, []); assert.deepEqual(failedResponses, []);
       results.push({ page: pageName, freshCookieJar: true, strictHttpOnly: true, reload: true, errors });

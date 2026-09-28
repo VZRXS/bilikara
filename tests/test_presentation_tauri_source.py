@@ -48,6 +48,8 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "bilikara-presentation-host-composition",
             "bilikara-presentation-host-command",
             "bilikara-presentation-playback-state",
+            "bilikara-presentation-output-state",
+            "bilikara-presentation-output-request",
         ):
             self.assertIn(event, self.presentation)
         self.assertIn('tag = "type"', self.presentation)
@@ -72,9 +74,14 @@ class PresentationTauriSourceTest(unittest.TestCase):
                 "core:event:allow-unlisten",
                 "allow-get-presentation-session",
                 "allow-mark-presentation-controller-ready",
+                "allow-request-presentation-output-state",
                 "allow-deactivate-local-presentation",
             },
         )
+        # Only the Host publishes output; the audience may only ask for a replay.
+        self.assertIn("allow-publish-presentation-output-state", main_permissions)
+        self.assertNotIn("allow-request-presentation-output-state", main_permissions)
+        self.assertNotIn("allow-publish-presentation-output-state", controller_permissions)
         self.assertNotIn("core:default", controller_permissions)
         self.assertNotIn("core:event:allow-emit", controller_permissions)
         self.assertNotIn("core:event:allow-emit-to", controller_permissions)
@@ -103,6 +110,8 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "send_presentation_command",
             "acknowledge_presentation_command",
             "publish_presentation_playback_state",
+            "publish_presentation_output_state",
+            "request_presentation_output_state",
             "deactivate_local_presentation",
         )
         handler_match = re.search(r"tauri::generate_handler!\[(.*?)\]\)", self.main, re.DOTALL)
@@ -115,6 +124,73 @@ class PresentationTauriSourceTest(unittest.TestCase):
             self.assertTrue(permission.is_file(), command)
             text = permission.read_text(encoding="utf-8")
             self.assertIn(f'commands.allow = ["{command}"]', text)
+
+    def test_output_state_relay_is_bounded_generation_checked_and_role_scoped(self):
+        publish = self.presentation[
+            self.presentation.index("pub(crate) fn publish_presentation_output_state") :
+            self.presentation.index("pub(crate) fn request_presentation_output_state")
+        ]
+        self.assertIn('authorize_window(&window, &backend, &["main"])?', publish)
+        self.assertIn("validate_output_state(&envelope, generation)?", publish)
+        self.assertIn("state.ensure_output_generation(generation)?", publish)
+        self.assertIn('app.emit_to("controller", OUTPUT_STATE_EVENT, &envelope)', publish)
+        request = self.presentation[
+            self.presentation.index("pub(crate) fn request_presentation_output_state") :
+            self.presentation.index("pub(crate) fn deactivate_local_presentation")
+        ]
+        self.assertIn('authorize_window(&window, &backend, &["controller"])?', request)
+        self.assertIn("state.ensure_output_generation(generation)?", request)
+        self.assertIn('"main"', request)
+        self.assertIn("OUTPUT_REQUEST_EVENT", request)
+        validation = self.presentation[
+            self.presentation.index("fn validate_output_state") :
+            self.presentation.index("fn close_controller(")
+        ]
+        self.assertIn('Some("master-state")', validation)
+        self.assertIn('envelope["payload"]["scene"]["generation"].as_u64() != Some(generation)', validation)
+        self.assertIn("size > MAX_OUTPUT_STATE_BYTES", validation)
+        self.assertIn("const MAX_OUTPUT_STATE_BYTES: usize = 2 * 1024 * 1024;", self.presentation)
+
+    def test_windows_main_and_audience_windows_share_one_webview_store(self):
+        # Tauri ignores a configured window's dataDirectory; separate stores share
+        # no cookies, localStorage or BroadcastChannel with the audience window.
+        windows = json.loads(
+            (self.tauri / "tauri.windows.conf.json").read_text(encoding="utf-8")
+        )["app"]["windows"]
+        self.assertEqual([window["label"] for window in windows], ["main"])
+        self.assertFalse(windows[0]["create"])
+        storage = (self.tauri / "src" / "desktop_storage.rs").read_text(encoding="utf-8")
+        builder = storage[storage.index("pub(crate) fn create_windows_main_webview_window") :]
+        self.assertIn("webview_directory(app.config())", builder)
+        self.assertIn(".data_directory(directory)", builder)
+        setup = self.main[self.main.index(".setup(move |app|") :]
+        self.assertLess(
+            setup.index("crate::desktop_storage::create_windows_main_webview_window(app)?"),
+            setup.index('app.get_webview_window("main")'),
+        )
+        self.assertEqual(
+            self.presentation.count(
+                "builder.data_directory(crate::desktop_storage::webview_directory(app.config())?)"
+            ),
+            2,
+        )
+        # One WebView2 environment per data directory requires identical arguments.
+        self.assertIn(".additional_browser_args(WINDOWS_WEBVIEW_BROWSER_ARGS)", builder)
+        self.assertEqual(
+            self.presentation.count(
+                "builder.additional_browser_args(crate::desktop_storage::WINDOWS_WEBVIEW_BROWSER_ARGS)"
+            ),
+            2,
+        )
+        arguments = storage[storage.index("WINDOWS_WEBVIEW_BROWSER_ARGS: &str = ") :].split("\n", 1)[0]
+        for argument in (
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+            "--autoplay-policy=no-user-gesture-required",
+            "--disable-direct-composition-video-overlays",
+        ):
+            self.assertIn(argument, arguments)
+        windows_config = (self.tauri / "tauri.windows.conf.json").read_text(encoding="utf-8")
+        self.assertNotIn("additionalBrowserArgs", windows_config)
 
     def test_display_identifiers_are_ordered_native_overlays_with_bounded_lifetime(self):
         identifiers = self.presentation[

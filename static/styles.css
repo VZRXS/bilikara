@@ -8,6 +8,7 @@
   --ink: #1d1a18;
   --muted: #6d6258;
   --panel: rgba(255, 251, 245, 0.82);
+  --settings-group-bg: #ffffff;
   --line: rgba(87, 63, 43, 0.12);
   --update-available-dot: var(--accent);
   --on-accent: #ffffff;
@@ -34,8 +35,9 @@
   --queue-badge-size: 48px;
   --queue-badge-ring-inset: 4px;
   --queue-badge-ring-width: 1.8px;
-  --request-song-card-min-inline-size: 220px;
+  --request-song-card-min-inline-size: 200px;
   --host-peer-panel-padding: 16px;
+  --host-peer-panel-inline-padding: 16px;
   --host-peer-request-head-padding: 16px;
   --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
     sans-serif;
@@ -90,7 +92,7 @@
   --bottom-panel-border: 1px solid rgba(67, 53, 41, 0.08);
 
   --sync-btn-bg: rgba(255, 255, 255, 0.82);
-  --sync-btn-border: 1px solid rgba(87, 63, 43, 0.08);
+  --sync-btn-border: 1px solid var(--line);
 
   --sync-input-bg: rgba(255, 255, 255, 0.96);
   --sync-input-border: 1px solid rgba(208, 90, 63, 0.16);
@@ -351,7 +353,7 @@ p {
   left: 0;
   top: 0;
   width: max-content;
-  max-width: calc(100vw - 24px);
+  max-width: min(440px, calc(100vw - 24px));
   white-space: normal;
   overflow-wrap: anywhere;
   max-height: calc(100dvh - 24px);
@@ -376,7 +378,7 @@ p {
 }
 
 .confirm-popover.confirm-popover-wide {
-  width: min(560px, calc(100vw - 24px));
+  width: min(420px, calc(100vw - 32px));
 }
 
 .confirm-popover.hidden {
@@ -437,7 +439,7 @@ p {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
   padding-right: 4px;
 }
 
@@ -626,6 +628,11 @@ p {
   margin: 0;
 }
 
+.confirm-popover.has-title .confirm-text {
+  padding-right: 0;
+  margin-top: 12px;
+}
+
 .confirm-source,
 .confirm-page-size {
   width: 100%;
@@ -635,7 +642,7 @@ p {
 
 .confirm-export-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
@@ -674,12 +681,14 @@ p {
 }
 
 .confirm-popover-wide .confirm-actions {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .confirm-popover-wide .confirm-actions button {
-  flex: 1 1 120px;
+  flex: 1 1 0;
+  min-width: 0;
   min-height: 44px;
+  padding-inline: 10px;
   white-space: normal;
 }
 
@@ -1015,7 +1024,7 @@ h2 {
 .internet-remote-duration-input { min-width: 0; height: var(--host-control-height, 40px); box-sizing: border-box; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--host-control-radius, 14px); color: var(--ink); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); line-height: 1; }
 #remote-mini-popover .internet-remote-password-row input:focus,
 .internet-remote-duration-input:focus { border-color: var(--focus-border-color); outline: none; box-shadow: var(--focus-ring-shadow); }
-.internet-remote-password-row .icon-button { width: var(--host-control-height, 40px); height: var(--host-control-height, 40px); border: var(--btn-secondary-border); border-radius: var(--host-control-radius, 14px); background: var(--btn-secondary-bg); color: var(--ink); }
+.internet-remote-password-row .icon-button { width: var(--host-control-height, 40px); height: var(--host-control-height, 40px); border: var(--btn-secondary-border); border-radius: 50%; background: var(--btn-secondary-bg); color: var(--ink); }
 .internet-remote-password-row .icon-button svg { width: 18px; height: 18px; }
 .internet-remote-duration-control { position: relative; min-width: 0; }
 .internet-remote-duration-input { width: 100%; box-sizing: border-box; padding-right: 40px; text-align: right; font-variant-numeric: tabular-nums; appearance: textfield; }
@@ -1023,11 +1032,11 @@ h2 {
 .internet-remote-duration-input::-webkit-outer-spin-button { margin: 0; appearance: none; }
 .internet-remote-duration-unit { position: absolute; top: 50%; right: 13px; color: var(--muted); font-size: 12px; line-height: 1; pointer-events: none; transform: translateY(-50%); }
 .internet-remote-actions { display: flex; gap: 8px; margin-top: 10px; }
-.internet-remote-actions :is(.toolbar-button, .next-button) { min-width: 0; min-height: var(--host-control-height, 40px); padding: 0 14px; border-radius: var(--host-control-radius, 14px); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); font-weight: 700; }
+.internet-remote-actions :is(.toolbar-button, .next-button) { min-width: 0; min-height: var(--host-control-height, 40px); padding: 0 14px; border-radius: var(--host-control-radius, 14px); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); font-weight: 400; }
 .internet-remote-actions .toolbar-button { flex: 0 1 auto; }
 .internet-remote-actions .next-button { flex: 1 1 auto; }
 .internet-remote-room { margin-top: 12px; }
-.internet-remote-status-summary { display: flex; width: 100%; min-width: 0; min-height: 28px; align-items: center; gap: 7px; padding-right: 32px; box-sizing: border-box; color: var(--muted); font-size: 12px; }
+.internet-remote-status-summary { display: flex; width: 100%; min-width: 0; min-height: 28px; align-items: center; gap: 7px; padding-right: calc(18px + 7px); box-sizing: border-box; color: var(--muted); font-size: 12px; }
 .internet-remote-status-summary strong { flex: 0 0 auto; }
 .internet-remote-summary-info,
 .internet-remote-public-info { flex: 0 0 auto; }
@@ -1138,17 +1147,9 @@ h2 {
   position: relative;
 }
 
-.remote-mini-popover-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
-}
-
 /* Hover/focus is a compact, read-only preview. The complete room controls are
    exposed only after the phone entry is deliberately pinned. */
 .remote-mini-control:not(.is-qr-pinned) :is(
-  .remote-mini-popover-close,
   .internet-remote-summary-info,
   .internet-remote-public-info,
   .internet-remote-share-actions,
@@ -1787,7 +1788,8 @@ h2 {
 .cache-mode-toggle,
 .cache-retry-current-button,
 .cache-update-button,
-.cache-data-reset-button {
+.cache-data-reset-button,
+:root .toolbar-button.settings-tool-button {
   --cache-control-height: 30px;
   display: inline-flex;
   align-items: center;
@@ -2327,10 +2329,6 @@ h2 {
     visibility 0s linear 200ms;
   pointer-events: none;
   z-index: 12;
-}
-
-.fullscreen-remote-popover-card .internet-remote-local-link {
-  text-decoration: none;
 }
 
 .player-panel:fullscreen .player-fullscreen-label,
@@ -4332,7 +4330,7 @@ html[data-host-touch-users="true"] .session-user-badge {
   padding-top: 2px;
   padding-right: 4px;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .queue-empty {
@@ -4717,7 +4715,7 @@ html[data-host-touch-users="true"] .session-user-badge {
   margin-top: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .gatcha-stage-inner {
@@ -4894,7 +4892,8 @@ html[data-host-touch-users="true"] .session-user-badge {
     border-color 0.16s ease;
 }
 
-.follow-up-button:hover {
+.follow-up-button:hover,
+.tag-browser-tag:hover {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.94);
   border-color: rgba(202, 91, 60, 0.24);
@@ -6060,7 +6059,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   align-content: start;
   justify-items: stretch;
   grid-auto-rows: max-content;
-  padding: 4px 6px 4px 0;
+  padding: 4px 0 0;
   height: 100%;
   max-height: none;
   overflow-y: auto;
@@ -6087,7 +6086,8 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   place-items: center;
   aspect-ratio: 16 / 9;
   width: 100%;
-  min-height: 150px;
+  /* The 16:9 box, not a minimum height or the artwork, sets the cover size. */
+  min-height: 0;
   overflow: hidden;
   background: rgba(243, 232, 215, 0.72);
   color: var(--muted);
@@ -6099,6 +6099,9 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   height: 100%;
   display: block;
   object-fit: cover;
+  /* Portrait or square artwork must not expand the aspect-ratio box. */
+  position: absolute;
+  inset: 0;
 }
 
 #host-workspace-request .search-result-cover-fallback {
@@ -6204,7 +6207,9 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .bilikara-secret-card {
-  max-width: 420px;
+  max-width: 360px;
+  grid-template-rows: auto auto;
+  gap: 12px;
 }
 
 .bilikara-secret-form {
@@ -6229,6 +6234,11 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 .bilikara-secret-form .input-group input:focus {
   border-color: var(--focus-border-color);
   box-shadow: var(--focus-ring-shadow);
+}
+
+.bilikara-secret-form input::placeholder {
+  color: var(--muted);
+  opacity: 0.86;
 }
 
 .bilikara-secret-form .search-message:empty {
@@ -6404,12 +6414,14 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   align-content: center;
   gap: 6px;
   padding: 12px 14px;
-  border: 1px solid rgba(208, 90, 63, 0.12);
+  /* Name/artist entries share the UP and favorites source-card surface. */
+  border: 1px solid rgba(67, 53, 41, 0.08);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.78);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
 }
 
 .tag-browser-tag-name {
@@ -6417,12 +6429,14 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .tag-browser-tag-count {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.3;
 }
 
 .pending-review-browser {
@@ -6538,7 +6552,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 .category-browser-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr));
   gap: 16px;
   align-content: start;
 }
@@ -6547,6 +6561,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   position: relative;
   min-width: 0;
   aspect-ratio: 16 / 9;
+  container-type: inline-size;
   overflow: hidden;
   border: var(--category-card-border);
   border-radius: 8px;
@@ -6569,14 +6584,16 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 18px;
+  /* The title scales with the card as the grid adds columns. */
+  padding: clamp(8px, 7cqi, 18px);
   color: var(--ink);
-  font-size: 34px;
+  font-size: clamp(18px, 13cqi, 34px);
   font-weight: 800;
   text-shadow: 0 2px 16px rgba(0, 0, 0, 0.72);
 }
 
 .category-browser-detail {
+  --category-browser-tab-height: 74px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
@@ -6594,7 +6611,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 .category-browser-tab {
   position: relative;
   flex: 0 0 132px;
-  height: 74px;
+  height: var(--category-browser-tab-height);
   overflow: hidden;
   border: var(--category-card-border);
   border-radius: 8px;
@@ -6743,7 +6760,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   height: 100%;
   max-height: none;
   overflow-y: auto;
-  padding: 4px 6px 4px 0;
+  padding: 4px 0 0;
 }
 
 :is(.request-workspace, .search-card-surface) .search-result-item {
@@ -6767,7 +6784,8 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   place-items: center;
   aspect-ratio: 16 / 9;
   width: 100%;
-  min-height: 150px;
+  /* The 16:9 box, not a minimum height or the artwork, sets the cover size. */
+  min-height: 0;
   overflow: hidden;
   background: rgba(243, 232, 215, 0.72);
   color: var(--muted);
@@ -6779,6 +6797,9 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   height: 100%;
   display: block;
   object-fit: cover;
+  /* Portrait or square artwork must not expand the aspect-ratio box. */
+  position: absolute;
+  inset: 0;
 }
 
 :is(.request-workspace, .search-card-surface) .search-result-cover-fallback {
@@ -6879,7 +6900,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   }
 
   :is(.request-workspace, .search-card-surface) .search-results {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr));
   }
 
   .category-browser-home {
@@ -6888,12 +6909,13 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   }
 
   .category-browser-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr));
     gap: 12px;
   }
 
-  .category-browser-card-name {
-    font-size: 26px;
+
+  .category-browser-detail {
+    --category-browser-tab-height: 64px;
   }
 
   .category-browser-tabs {
@@ -6902,20 +6924,12 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
   .category-browser-tab {
     flex-basis: 112px;
-    height: 64px;
   }
 
   .category-browser-tab-name {
     font-size: 15px;
   }
 
-  #host-workspace-request .search-result-cover {
-    min-height: 118px;
-  }
-
-  :is(.request-workspace, .search-card-surface) .search-result-cover {
-    min-height: 118px;
-  }
 }
 
 .rating-modal {
@@ -7203,6 +7217,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f6f1eb;
   --muted: #b5a89e;
   --panel: rgba(30, 26, 23, 0.85);
+  --settings-group-bg: #302925;
   --line: rgba(246, 241, 235, 0.15);
   --green: #5fca9d;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
@@ -7272,7 +7287,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --bottom-panel-border: 1px solid rgba(246, 241, 235, 0.12);
 
   --sync-btn-bg: rgba(48, 41, 37, 0.82);
-  --sync-btn-border: 1px solid rgba(246, 241, 235, 0.12);
+  --sync-btn-border: 1px solid var(--line);
 
   --sync-input-bg: rgba(22, 19, 17, 0.96);
   --sync-input-border: 1px solid rgba(224, 108, 83, 0.2);
@@ -7437,7 +7452,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --bottom-panel-bg: rgba(8, 18, 32, 0.72);
   --bottom-panel-border: 1px solid rgba(148, 202, 233, 0.14);
   --sync-btn-bg: rgba(15, 30, 50, 0.84);
-  --sync-btn-border: 1px solid rgba(148, 202, 233, 0.14);
+  --sync-btn-border: 1px solid var(--line);
   --sync-input-bg: rgba(2, 6, 23, 0.96);
   --sync-input-border: 1px solid rgba(56, 189, 248, 0.22);
   --sync-input-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.08);
@@ -7577,6 +7592,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f0f4f8;
   --muted: #8b9bb4;
   --panel: rgba(17, 25, 40, 0.85);
+  --settings-group-bg: #1e293b;
   --line: rgba(255, 255, 255, 0.1);
   --green: #00ffa3;
   --red: #ff3366;
@@ -7625,7 +7641,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --bottom-panel-bg: rgba(17, 25, 40, 0.72);
   --bottom-panel-border: 1px solid rgba(255, 255, 255, 0.1);
   --sync-btn-bg: rgba(30, 41, 59, 0.84);
-  --sync-btn-border: 1px solid rgba(255, 255, 255, 0.12);
+  --sync-btn-border: 1px solid var(--line);
   --sync-input-bg: rgba(5, 8, 16, 0.96);
   --sync-input-border: 1px solid rgba(0, 210, 255, 0.22);
   --modal-card-bg: rgba(17, 25, 40, 0.96);
@@ -7700,7 +7716,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 :root:is([data-theme="dark"], [data-theme="blue"]) .history-item,
 :root:is([data-theme="dark"], [data-theme="blue"]) .queue-empty,
 :root:is([data-theme="dark"], [data-theme="blue"]) .developer-tag-reset-fields,
-:root:is([data-theme="dark"], [data-theme="blue"]) .tag-browser-tag,
 :root:is([data-theme="dark"], [data-theme="blue"]) .category-browser-card,
 :root:is([data-theme="dark"], [data-theme="blue"]) .category-browser-tab:not(.active),
 :root:is([data-theme="dark"], [data-theme="blue"]) .rating-card {
@@ -7723,8 +7738,8 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .secondary-button,
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .icon-button:not(.danger-button),
 :root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button:not(.active),
-:root:is([data-theme="dark"], [data-theme="blue"]) .tag-letter-button:not(.active),
 :root:is([data-theme="dark"], [data-theme="blue"]) .tag-browser-back,
+:root:is([data-theme="dark"], [data-theme="blue"]) .tag-browser-tag,
 :root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button {
   background: var(--dark-control-bg);
   border-color: var(--dark-surface-border-color);
@@ -7736,6 +7751,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .secondary-button:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .menu-content .icon-button:not(.danger-button):hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button:hover,
+:root:is([data-theme="dark"], [data-theme="blue"]) .tag-browser-tag:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .av-sync-step-button:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .av-sync-reset-button:hover,
 :root:is([data-theme="dark"], [data-theme="blue"]) .volume-mute-button:hover {
@@ -7867,7 +7883,7 @@ body {
   --host-shell-padding-inline: 12px;
   --host-shell-gap: 12px;
   --host-tool-card-width: minmax(380px, 1fr);
-  --host-rail-width: 104px;
+  --host-rail-width: 80px;
   width: 100%;
   height: 100vh;
   height: 100dvh;
@@ -8015,7 +8031,7 @@ body {
   max-height: calc(100dvh - 90px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .critical-banner-region {
@@ -8168,7 +8184,7 @@ body {
   align-content: start;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .left-column > .player-panel {
@@ -8196,7 +8212,7 @@ body {
 .host-workspace-region[data-active-workspace="users"] {
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .host-workspace-fragment {
@@ -8488,7 +8504,7 @@ body {
   overflow-y: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 :is(.request-workspace, .search-card-surface) .search-results {
@@ -8779,13 +8795,13 @@ body {
 
 @media (min-width: 1180px) and (max-width: 1439px) {
   .app-shell {
-    --host-rail-width: 100px;
+    --host-rail-width: 80px;
   }
 }
 
 @media (max-width: 1179px) {
   .app-shell {
-    --host-rail-width: 100px;
+    --host-rail-width: 80px;
     --host-tool-card-width: 100%;
     padding: 0 9px 9px;
   }
@@ -9550,7 +9566,7 @@ body[data-tauri-platform="linux"] .app-shell {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .host-workspace-region .playlist {
@@ -9702,7 +9718,7 @@ body[data-tauri-platform="linux"] .app-shell {
 
 .request-scroll-region {
   overscroll-behavior-y: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .request-discover-view > .request-mode-panel,
@@ -9731,7 +9747,7 @@ body[data-tauri-platform="linux"] .app-shell {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .request-discover-view .category-browser-detail {
@@ -9792,11 +9808,12 @@ body[data-tauri-platform="linux"] .app-shell {
 
 @media (max-width: 1179px) {
   .app-shell {
-    --host-rail-width: 100px;
+    --host-rail-width: 80px;
     --host-tool-card-width: 100%;
     /* Match peer tool headings/actions to the compact Stage's 12px axis while
        reclaiming sheet space without adding a second responsive policy. */
     --host-peer-panel-padding: 10px 12px;
+    --host-peer-panel-inline-padding: 12px;
     --host-peer-request-head-padding: 10px 12px;
   }
 
@@ -9984,10 +10001,10 @@ body.is-presentation-stage-only .left-column {
   --host-peer-eyebrow-size: 12px;
   --host-peer-title-size: 24px;
   --host-peer-action-height: 40px;
-  --host-peer-action-font-size: 14px;
+  --host-peer-action-font-size: 16px;
   --host-peer-head-padding-inline: 16px;
   --host-control-height: var(--host-peer-action-height);
-  --host-control-font-size: 14px;
+  --host-control-font-size: 16px;
   --host-control-radius: 14px;
   --source-action-control-height: var(--host-control-height);
   --source-card-min-inline-size: 104px;
@@ -10312,12 +10329,22 @@ body.is-presentation-stage-only .left-column {
   line-height: 1;
 }
 
+/* The circular search action uses the Host control track, so the query field
+   starts on the same row as Quick's selector and the Sources input. */
+.request-query-form.icon-search-form > button[type="submit"] {
+  width: var(--host-control-height);
+  min-width: var(--host-control-height);
+  height: var(--host-control-height);
+  min-height: var(--host-control-height);
+}
+
 .request-workspace .modal-favlist-pull-form {
   padding-right: 0;
 }
 
 .request-sources-view .follow-up-grid,
-#host-workspace-request .follow-up-grid {
+#host-workspace-request .follow-up-grid,
+#host-workspace-request .tag-browser-tags {
   width: 100%;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--source-card-min-inline-size)), 1fr));
   justify-content: stretch;
@@ -10326,7 +10353,8 @@ body.is-presentation-stage-only .left-column {
 }
 
 .request-sources-view .follow-up-button,
-#host-workspace-request .follow-up-button {
+#host-workspace-request .follow-up-button,
+#host-workspace-request .tag-browser-tag {
   width: 100%;
   max-width: none;
   min-height: 72px;
@@ -10336,18 +10364,20 @@ body.is-presentation-stage-only .left-column {
 }
 
 .request-sources-view .follow-up-name,
-#host-workspace-request .follow-up-name {
+#host-workspace-request .follow-up-name,
+#host-workspace-request .tag-browser-tag-name {
   font-size: 13px;
 }
 
 .request-sources-view .follow-up-count,
-#host-workspace-request .follow-up-count {
+#host-workspace-request .follow-up-count,
+#host-workspace-request .tag-browser-tag-count {
   font-size: 12px;
 }
 
 .source-browse-scroll {
   padding-right: 4px;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 /* Request keeps its query geometry aligned across Search, Discover, and
@@ -10404,7 +10434,7 @@ body.is-presentation-stage-only .left-column {
 
 #request-sources-followed-scroll.is-detail-view .follow-up-items-view {
   height: 100%;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -10413,7 +10443,7 @@ body.is-presentation-stage-only .left-column {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 /* Conventional workspace actions share the 40 px Fullscreen/Queue geometry.
@@ -10920,16 +10950,10 @@ body.is-tauri-fullscreen-active .left-column {
   min-width: 0;
 }
 
-.settings-section-heading .section-tag {
-  margin: 0 0 3px;
-  font-size: 10px;
-  line-height: 1.2;
-}
-
 .settings-section-heading h3 {
   margin: 0;
-  font-size: 17px;
-  line-height: 1.2;
+  font-size: 16px;
+  line-height: 24px;
 }
 
 .settings-section-card {
@@ -10939,14 +10963,8 @@ body.is-tauri-fullscreen-active .left-column {
   padding: 0 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--panel);
+  background: var(--settings-group-bg);
   overflow: visible;
-}
-
-@supports (color: color-mix(in srgb, black, white)) {
-  .settings-section-card {
-    background: color-mix(in srgb, var(--panel) 90%, var(--accent-soft));
-  }
 }
 
 .settings-section-card > .cache-panel-row {
@@ -10995,7 +11013,7 @@ body.is-tauri-fullscreen-active .left-column {
   margin-left: auto;
 }
 
-.settings-section-card > .cache-panel-row + .cache-panel-row {
+.settings-section-card > .cache-panel-row:not([hidden]):not(.hidden) ~ .cache-panel-row:not([hidden]):not(.hidden) {
   border-top: 1px solid var(--line);
 }
 
@@ -11014,6 +11032,7 @@ body.is-tauri-fullscreen-active .left-column {
 }
 
 .settings-control-row .mode-switch {
+  background: var(--remote-segmented-control-bg);
   margin: 0;
   padding: 3px;
   gap: 4px;
@@ -11912,11 +11931,11 @@ html .volume-adjust-popover::backdrop {
 
 /* The summary belongs to the card, outside its scrolling results. */
 .request-search-view > .request-mode-panel { position: relative; }
-.request-search-view > .request-mode-panel:has(> .host-search-summary:not([hidden])) { padding-bottom: 42px; }
+:root #host-workspace-request .request-search-view > .request-mode-panel:has(> .host-search-summary:not([hidden])) { padding-bottom: 50px; }
 .host-search-summary {
   position: absolute;
   right: 16px;
-  bottom: 12px;
+  bottom: 16px;
   font-size: 13px;
   line-height: 18px;
   color: var(--muted);
@@ -11936,3 +11955,38 @@ html .volume-adjust-popover::backdrop {
   background: transparent; box-shadow: none; color: inherit; font: inherit;
   transform: none; cursor: inherit;
 }
+
+:root .presentation-display-empty {
+  background: transparent;
+  color: var(--accent-deep);
+  font-weight: 700;
+}
+.remote-mini-popover[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+/* Reserve exactly the public disclosure glyph and its gap in the local row. */
+.internet-remote-disclosure-chevron { flex: 0 0 18px; }
+
+/* Result viewports use the same bottom/side inset; an empty status adds no row. */
+#request-sources-followed-scroll.is-detail-view .follow-browser { grid-template-rows: minmax(0, 1fr); }
+.cache-update-actions { gap: 8px; }
+
+.confirm-manual-update { margin: 12px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.confirm-manual-update a { color: var(--accent-deep); text-decoration: underline; }
+
+/* Reserve lift room for the first/last card and a gap only for a real scrollbar. */
+:root #host-workspace-request .tag-browser-tags {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  padding-right: 0;
+}
+:root :is(.host-workspace-region .history-list, .source-browse-scroll) { padding-right: 0; }
+:root #host-workspace-request .tag-browser-tags.has-scroll-inset,
+:root :is(.host-workspace-region .history-list, .source-browse-scroll).has-scroll-inset { padding-right: 4px; }

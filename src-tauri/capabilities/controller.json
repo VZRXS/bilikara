@@ -18,6 +18,7 @@
     "core:event:allow-unlisten",
     "allow-get-presentation-session",
     "allow-mark-presentation-controller-ready",
+    "allow-request-presentation-output-state",
     "allow-deactivate-local-presentation"
   ]
 }

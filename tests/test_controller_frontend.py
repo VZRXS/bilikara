@@ -94,6 +94,29 @@ class ControllerFrontendTest(unittest.TestCase):
         self.assertNotIn("/api/player/", self.source)
         self.assertNotIn('invoke("send_presentation_command"', self.source)
 
+    def test_output_state_arrives_through_the_shell_after_ready(self):
+        # Browser channels are only a fast path; desktop WebViews need not share storage.
+        start = self.source.index("async function start()")
+        body = self.source[start : self.source.index('elements.exit.addEventListener("pointerdown"', start)]
+        self.assertIn('listen("bilikara-presentation-output-state"', body)
+        self.assertIn("handleMasterMessage(event?.payload)", body)
+        self.assertLess(
+            body.index('listen("bilikara-presentation-output-state"'),
+            body.index('invoke("get_presentation_session")'),
+        )
+        self.assertLess(
+            body.index('postEnvelope("output-ready"'),
+            body.index("requestOutputStateUntilReceived();"),
+        )
+        request = self.source[
+            self.source.index("function requestOutputState()") :
+            self.source.index("function postEnvelope(")
+        ]
+        self.assertIn('invoke("request_presentation_output_state", { generation })', request)
+        self.assertIn('["activating", "active"].includes(state.session?.phase)', request)
+        self.assertIn("state.lastMasterEnvelope || state.failedClosed || attempts > 10", request)
+        self.assertIn("window.clearInterval(state.outputRequestTimer)", self.source)
+
     def test_output_only_marks_ready_and_can_exit_fullscreen_mode(self):
         self.assertIn('invoke("get_presentation_session")', self.source)
         self.assertIn('invoke("mark_presentation_controller_ready"', self.source)

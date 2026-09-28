@@ -88,6 +88,11 @@
 .volume-adjust-popover form { display: grid; gap: 10px; margin: 0; }
 .volume-adjust-heading { display: flex; align-items: center; gap: 6px; }
 .volume-adjust-heading h2 { margin: 0; min-width: 0; font-size: 18px; line-height: 1.25; }
+.volume-adjust-popover :is([data-volume-step], [data-volume-reset]) {
+  font-size: 16px;
+  line-height: normal;
+}
+
 .volume-adjust-fields button {
   min-width: 0;
   padding-inline: 8px;
@@ -98,7 +103,7 @@
   margin-left: auto;
 }
 .volume-adjust-fields { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; align-items: stretch; }
-.volume-adjust-fields label { grid-column: auto; min-width: 0; justify-content: center; gap: 3px; padding-inline: 8px; }
+.volume-adjust-fields label { font-size: 16px; line-height: normal; grid-column: auto; min-width: 0; justify-content: center; gap: 3px; padding-inline: 8px; }
 .volume-adjust-fields input[type="number"] {
   box-sizing: border-box;
   width: 3ch;

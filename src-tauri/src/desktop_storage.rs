@@ -56,6 +56,41 @@ pub(crate) fn webview_directory(config: &tauri::Config) -> Result<PathBuf, Strin
         .ok_or_else(|| "Portable WebView directory is unavailable".into())
 }
 
+// Every WebView2 window of one data directory must use identical browser
+// arguments. These are wry's defaults plus a Chromium switch that keeps video
+// out of DirectComposition hardware overlays: an overlay is scanned out above
+// the page and can hide the audience window's exit/QR control.
+#[cfg(any(windows, test))]
+pub(crate) const WINDOWS_WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-direct-composition-video-overlays";
+
+// A configured window's `dataDirectory` is resolved but never applied by Tauri,
+// which would leave `main` in the default LocalAppData store while the audience
+// and identifier windows use `runtime/webview`. Separate stores share no
+// cookies, localStorage or BroadcastChannel, so `main` is created explicitly.
+#[cfg(any(windows, test))]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn create_windows_main_webview_window(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::Manager;
+    if app.get_webview_window("main").is_some() {
+        return Err(tauri::Error::WebviewLabelAlreadyExists("main".into()));
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or(tauri::Error::WindowNotFound)?
+        .clone();
+    let directory = webview_directory(app.config())
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
+    tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+        .data_directory(directory)
+        .additional_browser_args(WINDOWS_WEBVIEW_BROWSER_ARGS)
+        .build()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

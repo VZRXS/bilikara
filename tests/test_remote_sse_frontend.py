@@ -1588,6 +1588,51 @@ function retryEventButton(currentItem) {{
         self.assertEqual(result["unlockSchedules"], 2)
         self.assertEqual(result["busyObservations"], 2)
 
+    def test_enhanced_queue_preserves_nodes_on_unrelated_updates(self):
+        helper = self.source[self.source.index("function queueRenderSignatureForItem"):
+                             self.source.index("function createQueueEmptyNode")]
+        start = self.queue_source.index("const pendingQueueActions")
+        end = self.queue_source.index("function clearDropIndicators", start)
+        enhanced = self.queue_source[start:end]
+        script = r"""
+const assert = require('node:assert/strict');
+const state = {data:{state_epoch:'one',current_item:{id:'now'}},language:'zh',queueRenderSignature:''};
+let renderQueue, replacements=0, cacheUpdates=0;
+class Node {
+  constructor(){this.dataset={};this.disabled=false;this.attributes={};this.children=new Map();this.classList={add(){},remove(){},toggle(){}};}
+  setAttribute(k,v){this.attributes[k]=v;}
+  querySelector(k){if(!this.children.has(k))this.children.set(k,new Node());return this.children.get(k);}
+  querySelectorAll(){const button=this.querySelector('action');button.dataset.action='retry-cache';return [button];}
+}
+const list = {nodes:[],replaceChildren(){replacements++;this.nodes=[];},appendChild(n){this.nodes.push(n);},
+ querySelectorAll(){return this.nodes.flatMap(n=>n.querySelectorAll());}};
+const elements={queueList:list,queueItemTemplate:{content:{firstElementChild:{cloneNode:()=>new Node()}}}};
+function applyStaticI18n(){} function t(k){return k;}
+function requesterBadgeText(name){return name;} function queueNoteText(item){return item.cache_message||'';}
+function queueStateLabel(item){return item.cache_status;} function syncQueueItemRetryButton(){}
+function renderQueueCacheStatus(){cacheUpdates++;} function createQueueEmptyNode(){return new Node();}
+function syncDropIndicators(){}
+""" + helper + enhanced + r"""
+const items=[{id:'a',item_incarnation_id:'i-a',display_title:'A',requester_name:'Alice',cache_status:'downloading'}];
+renderQueue(items);const node=list.nodes[0];
+for(let i=0;i<5;i++){
+ state.data.state_revision=i;renderQueue([{...items[0],cache_progress:i,cache_message:'progress '+i}]);
+ assert.equal(list.nodes[0],node);
+}
+assert.equal(replacements,1);assert.equal(cacheUpdates,5);
+const button=node.querySelectorAll()[0];
+pendingQueueActions.set(queueActionKey('retry-cache','a'),new Map());
+renderQueue(items);assert.equal(button.disabled,true);assert.equal(button.attributes['aria-busy'],'true');
+state.dragItemId='a';renderQueue([]);assert.equal(list.nodes[0],node);state.dragItemId='';
+renderQueue([{...items[0],display_title:'Renamed'}]);assert.notEqual(list.nodes[0],node);
+const renamed=list.nodes[0];renderQueue([{...items[0],display_title:'Renamed',item_incarnation_id:'i-new'}]);
+assert.notEqual(list.nodes[0],renamed);
+const previous=list.nodes[0];state.language='en';renderQueue(items);assert.notEqual(list.nodes[0],previous);
+renderQueue([]);const empty=list.nodes[0];renderQueue([]);assert.equal(list.nodes[0],empty);
+console.log(JSON.stringify({ok:true}));
+"""
+        self.assertEqual(self.run_node(script), {"ok": True})
+
     def test_remote_queue_retry_stale_releases_only_its_button(self):
         start = self.queue_source.index("async function handleQueueAction")
         end = self.queue_source.index("function beginDrag", start)

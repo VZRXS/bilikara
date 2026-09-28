@@ -725,7 +725,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             self.styles,
         )
         self.assertIn(
-            "--request-song-card-min-inline-size: 220px",
+            "--request-song-card-min-inline-size: 200px",
             self.styles,
         )
         self.assertGreaterEqual(
@@ -823,7 +823,12 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         ]
         self.assertNotIn("<button", fullscreen_popover)
         self.assertNotIn("<input", fullscreen_popover)
-        self.assertNotIn("<a ", fullscreen_popover)
+        links = re.findall(r"<a\b[^>]*>", fullscreen_popover)
+        self.assertEqual(len(links), 1)
+        self.assertIn('id="player-fullscreen-remote-url"', links[0])
+        self.assertIn('aria-disabled="true"', links[0])
+        self.assertIn('tabindex="-1"', links[0])
+        self.assertNotIn("href=", links[0])
         self.assertIn("M14 10l6-6M15 4h5v5M10 14l-6 6M4 15v5h5", self.markup)
         self.assertIn("M20 4l-6 6M14 5v5h5M4 20l6-6M5 14h5v5", self.markup)
         self.assertIn(".fullscreen-action-control.is-qr-pinned .fullscreen-remote-popover", self.styles)
@@ -840,6 +845,64 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertNotIn("html:lang(en) .fullscreen-action-control", self.styles)
         self.assertNotIn("html:lang(ja) .fullscreen-action-control", self.styles)
         self.assertNotIn("max-width: 180px;", self.styles)
+
+    def test_fullscreen_address_updates_disable_stale_links_and_use_external_open(self):
+        script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('static/app.js', 'utf8').replace(/\r\n/g, '\n');
+const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+const listeners = {}, opened = [];
+const link = {
+  href: '', attributes: {}, classList: {remove() {}},
+  setAttribute(name, value) { this.attributes[name] = value; },
+  removeAttribute(name) { delete this.attributes[name]; if (name === 'href') this.href = ''; },
+  addEventListener(type, listener) { listeners[type] = listener; },
+};
+const context = {
+  URL, elements: {playerFullscreenRemoteUrl: link},
+  setTextContent(node, text) { if (node) node.textContent = text; },
+  t: (key) => key, renderRemoteQr() {}, renderProvidedRemoteQr() {},
+  openExternalUrl: (url) => opened.push(url),
+};
+vm.createContext(context);
+vm.runInContext(
+  slice('function renderPlayerFullscreenRemoteAccess', 'function normalizedRemoteHttpUrl') +
+  slice('function openRemoteAccessLink', 'const developerTagResetFieldKeys') +
+  slice('[\n  elements.remoteUrlLink,', 'elements.presentationOutputButton?.addEventListener'),
+  context,
+);
+let prevented = 0;
+const click = () => listeners.click({currentTarget: link, preventDefault() { prevented++; }});
+const disabled = () => {
+  assert.equal(link.href, '');
+  assert.equal(link.tabIndex, -1);
+  assert.equal(link.attributes['aria-disabled'], 'true');
+  assert.equal(link.textContent, 'remote.noAddress');
+  const count = opened.length;
+  click();
+  assert.equal(opened.length, count);
+};
+context.renderPlayerFullscreenRemoteAccess({});
+disabled();
+for (const url of ['http://192.168.1.10:8080/remote', 'https://example.test/remote?fixture=one']) {
+  context.renderPlayerFullscreenRemoteAccess({localDisplayUrl: ` ${url} `});
+  assert.equal(link.href, url);
+  assert.equal(link.tabIndex, 0);
+  assert.equal(link.attributes['aria-disabled'], 'false');
+  assert.equal(link.textContent, new URL(url).origin + new URL(url).pathname);
+  click();
+  assert.equal(opened.at(-1), url);
+  context.renderPlayerFullscreenRemoteAccess({localDisplayUrl: ''});
+  disabled();
+}
+assert.equal(prevented, 2);
+"""
+        subprocess.run(
+            ["node", "-e", script], cwd=ROOT, check=True, timeout=20,
+            capture_output=True, text=True, encoding="utf-8",
+        )
 
     def test_stage_density_prefers_full_frame_and_checks_group_overflow(self):
         self.assertIn('data-stage-control-density="compact"', self.styles)
@@ -1259,7 +1322,8 @@ class HostBuildReviewRepairTest(unittest.TestCase):
             "--host-control-height: var(--host-peer-action-height)",
             self.styles,
         )
-        self.assertIn("--host-control-font-size: 14px", self.styles)
+        self.assertIn("--host-control-font-size: 16px", self.styles)
+        self.assertIn("--host-peer-action-font-size: 16px", self.styles)
         self.assertIn(".request-subview-tabs,\n.request-mode-tabs", self.styles)
         self.assertIn("container-type: inline-size", self.styles)
         self.assertIn("@container request-workspace (min-width: 500px)", self.styles)
@@ -1272,6 +1336,30 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn("scrollbar-gutter: auto", final_cache_panel)
         self.assertNotIn("padding-left", final_cache_panel)
 
+
+    def test_scroll_regions_reserve_scrollbar_space_only_while_scrolling(self):
+        # Short queues, histories and grids must not keep an empty gutter.
+        remote = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")
+        for name, source in (("styles.css", self.styles), ("remote.css", remote)):
+            for rule in re.finditer(r"([^{}]+)\{([^}]*scrollbar-gutter:\s*stable[^}]*)\}", source):
+                self.assertIn(".playlist.is-scrollable", rule.group(1), f"{name}: {rule.group(1).strip()}")
+
+    def test_request_grids_add_columns_before_cards_become_oversized(self):
+        self.assertIn("--request-song-card-min-inline-size: 200px;", self.styles)
+        self.assertIn("#host-workspace-request .tag-browser-tags {", self.styles)
+        self.assertIn("#host-workspace-request .tag-browser-tag {", self.styles)
+        # Song covers stay 16:9: no minimum height, and artwork cannot size the box.
+        for selector in (r"#host-workspace-request \.search-result-cover",
+                         r":is\(\.request-workspace, \.search-card-surface\) \.search-result-cover"):
+            box = re.search(selector + r"\s*\{([^}]*)\}", self.styles).group(1)
+            self.assertIn("aspect-ratio: 16 / 9", box)
+            self.assertIn("min-height: 0", box)
+            image = re.search(selector + r" img\s*\{([^}]*)\}", self.styles).group(1)
+            self.assertIn("position: absolute", image)
+            self.assertIn("inset: 0", image)
+        self.assertNotIn("min-height: 118px", self.styles)
+        cover = re.search(r"\.category-browser-card-name\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("font-size: clamp(18px, 13cqi, 34px)", cover)
     def test_design_records_corrected_contract_and_scroll_owner_table(self):
         for phrase in (
             "Queue and History are direct destinations",

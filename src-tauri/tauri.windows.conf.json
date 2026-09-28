@@ -12,6 +12,7 @@
         "width": 1024,
         "visible": false,
         "dragDropEnabled": false,
+        "create": false,
         "decorations": false,
         "transparent": true,
         "shadow": true

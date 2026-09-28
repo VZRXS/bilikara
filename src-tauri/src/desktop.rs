@@ -67,6 +67,8 @@ pub(crate) fn run() {
             presentation::send_presentation_command,
             presentation::acknowledge_presentation_command,
             presentation::publish_presentation_playback_state,
+            presentation::publish_presentation_output_state,
+            presentation::request_presentation_output_state,
             presentation::deactivate_local_presentation,
         ])
         .setup(move |app| {
@@ -93,6 +95,12 @@ pub(crate) fn run() {
                 }
                 app.set_menu(menu)?;
             }
+
+            // Tauri ignores a configured window's data directory, so build the
+            // Windows main window here with the same portable store as the
+            // audience and identifier windows.
+            #[cfg(target_os = "windows")]
+            crate::desktop_storage::create_windows_main_webview_window(app)?;
 
             let Some(window) = app.get_webview_window("main") else {
                 desktop_diagnostics::fail_desktop_startup(

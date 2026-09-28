@@ -717,6 +717,77 @@ function setAppMessage() {{}}
         self.assertEqual(result["error"], "The Host could not advance to the next track")
         self.assertEqual(result["acknowledgements"], [])
 
+    def test_output_state_relays_through_shell_with_one_request_in_flight(self):
+        functions = self.source_slice(
+            "function relayPresentationOutputState",
+            "function publishPresentationOutputState",
+        )
+        script = f"""
+const calls = [];
+const settle = [];
+const state = {{
+  presentationSession: {{ generation: 4 }},
+  presentationOutputRelayPending: null,
+  presentationOutputRelayInFlight: false,
+}};
+function tauriInvoke(capability) {{
+  if (capability !== "presentation") throw new Error(capability);
+  return (name, payload) => {{
+    calls.push([name, payload.generation, payload.envelope.sequence]);
+    return new Promise((resolve, reject) => settle.push({{ resolve, reject }}));
+  }};
+}}
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+{functions}
+(async () => {{
+  relayPresentationOutputState({{ sequence: 1 }});
+  relayPresentationOutputState({{ sequence: 2 }});
+  relayPresentationOutputState({{ sequence: 3 }});
+  const inFlight = calls.length;
+  // A rejected relay still releases the next, newest envelope.
+  settle.shift().reject(new Error("stale"));
+  await tick();
+  const afterFirst = calls.slice();
+  relayPresentationOutputState({{ sequence: 4 }});
+  state.presentationSession.generation = 5;
+  settle.shift().resolve();
+  await tick();
+  process.stdout.write(JSON.stringify({{
+    inFlight, afterFirst, calls,
+    pending: state.presentationOutputRelayPending,
+    busy: state.presentationOutputRelayInFlight,
+  }}));
+}})();
+"""
+        result = self.run_node(script)
+        self.assertEqual(result["inFlight"], 1)
+        self.assertEqual(
+            result["afterFirst"],
+            [
+                ["publish_presentation_output_state", 4, 1],
+                ["publish_presentation_output_state", 4, 3],
+            ],
+        )
+        # An envelope of the previous generation is dropped, not relayed late.
+        self.assertEqual(result["calls"], result["afterFirst"])
+        self.assertIsNone(result["pending"])
+        self.assertFalse(result["busy"])
+        publish = self.source_slice(
+            "function publishPresentationOutputState",
+            "const presentationModes",
+        )
+        self.assertLess(
+            publish.index("window.BilikaraAndroidPresentation.postMaster(envelope)"),
+            publish.index("relayPresentationOutputState(envelope)"),
+        )
+        listeners = self.source_slice(
+            "async function initializeLocalPresentation",
+            "function syncPlayerFullscreenExpandedWidth",
+        )
+        self.assertIn('listen("bilikara-presentation-output-request"', listeners)
+        self.assertIn("state.presentationSession.generation", listeners)
+        self.assertIn("unlistenOutputRequest", listeners)
+
     def test_playback_snapshot_is_bounded_deduplicated_and_contains_no_media_transport(self):
         functions = self.source_slice(
             "function hostPlaybackSessionObservedPlaying",

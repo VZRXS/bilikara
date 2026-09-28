@@ -255,7 +255,6 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .queue-actions .danger-button:hover,
   .queue-actions .danger-button:focus-visible {
     background: var(--danger-btn-hover-bg);
   }

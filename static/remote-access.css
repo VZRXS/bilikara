@@ -271,9 +271,56 @@
   gap: 4px 7px;
 }
 
+.remote-access-password[hidden] {
+  display: none;
+}
+
 .remote-access-password strong {
-  color: var(--ink);
+  color: var(--accent-deep);
   font-variant-numeric: tabular-nums;
+}
+
+.remote-access-entry--public .remote-access-copy-title {
+  display: block;
+}
+
+.remote-access-password { font-size: 14px; }
+.remote-access-password > span { font-weight: 400; }
+
+.remote-access-card:not(.is-management-layout) :is(.remote-access-copy-title, .remote-access-password, .remote-access-link, .remote-popover-url-link) {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.remote-access-card:not(.is-management-layout) .remote-access-copy-title {
+  color: var(--muted);
+}
+
+/* Dual-entry previews and Remote share cards keep only the address/password.
+   The full management menu and Host's local-only preview retain their help. */
+.remote-access-card:not(.is-management-layout):not(.is-local-only-preview)
+  :is(.remote-access-copy-title, .remote-access-meta, .remote-popover-url-hint, .remote-access-expand-hint) {
+  display: none;
+}
+
+.remote-access-card:not(.is-management-layout) .remote-access-password {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.remote-access-card:not(.is-management-layout) .remote-access-password > span {
+  flex: 0 0 auto;
+}
+
+.remote-access-card:not(.is-management-layout) .remote-access-password strong {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.remote-access-card:not(.is-management-layout) .remote-access-password strong::-webkit-scrollbar {
+  display: none;
 }
 
 .remote-access-link {
@@ -281,6 +328,7 @@
   max-width: 100%;
   color: var(--accent-deep);
   line-height: 1.35;
+  text-decoration-line: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }

@@ -995,6 +995,8 @@ function syncRemoteRequestPanelSizeTier() {
 }
 
 function syncRemoteSearchModeSelection() {
+  window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
   const activeMode = normalizeRemoteSearchMode(state.remoteSearchMode);
   state.remoteSearchMode = activeMode;
   elements.remoteSearchModeButtons?.forEach((button) => {
@@ -3274,12 +3276,16 @@ function renderCacheStatusOnly(previousSnapshot = null) {
     [item.item_incarnation_id, item.cache_status])]);
   const now = Date.now();
   const elapsed = now - (state.cacheProgressPaintAt || 0);
+  let playbackPainted = false;
   if (identity !== state.cacheProgressPaintIdentity || elapsed >= 1000) {
     window.clearTimeout(state.cacheProgressPaintTimer);
     state.cacheProgressPaintTimer = null;
     state.cacheProgressPaintIdentity = identity;
     state.cacheProgressPaintAt = now;
-    if (currentItem) renderCurrentPlaybackState(currentItem);
+    if (currentItem) {
+      renderCurrentPlaybackState(currentItem);
+      playbackPainted = true;
+    }
     renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
   } else if (!state.cacheProgressPaintTimer) {
     state.cacheProgressPaintTimer = window.setTimeout(() => {
@@ -3289,7 +3295,7 @@ function renderCacheStatusOnly(previousSnapshot = null) {
   }
   if (playerStatusSignature(previousSnapshot) !== playerStatusSignature(state.data)) {
     // Seek/pause/duration acknowledgements must not wait for the cache display.
-    if (currentItem?.cache_status === "ready") renderCurrentPlaybackState(currentItem);
+    if (currentItem?.cache_status === "ready" && !playbackPainted) renderCurrentPlaybackState(currentItem);
     renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
   }
 }
@@ -3722,11 +3728,15 @@ async function previewGatchaFavlist(uid) {
   return apiPost("/api/gatcha/favlist/preview", { uid: String(uid || "").trim() });
 }
 
-async function pullGatchaFavlist(uid, folderIds = []) {
+async function pullGatchaFavlist(uid, folderIds = [], folders = []) {
   return apiPost("/api/gatcha/favlist", {
     queue: Boolean(state.data?.capabilities?.source_queue),
     uid: String(uid || "").trim(),
     folder_ids: Array.isArray(folderIds) ? folderIds : [],
+    ...(state.data?.capabilities?.source_queue_titles ? {
+      folder_titles: Object.fromEntries(folders.filter(folder => folderIds.includes(String(folder.id || folder.folder_id)))
+        .map(folder => [String(folder.id || folder.folder_id).split(":").pop(), String(folder.title || "").trim().slice(0, 200)])),
+    } : {}),
   });
 }
 
@@ -4207,10 +4217,13 @@ function renderSourceCardPage(container, entries, emptyText, favorites = false) 
   }
   for (const entry of entries) {
     const id = String(favorites ? entry.id : entry.uid);
-    const title = favorites ? String(entry.title || id || t("favlist.folder")) : followOwnerDisplayName(entry);
+    const title = favorites
+      ? String(entry.title || (entry.placeholder ? `${t("favlist.folder")} ${entry.folder_id}` : id || t("favlist.folder")))
+      : followOwnerDisplayName(entry);
     const button = document.createElement("button");
     button.type = "button";
     button.className = favorites ? "follow-up-button favlist-browse-button" : "follow-up-button";
+    button.classList.toggle("source-card-placeholder", Boolean(entry.placeholder));
     button.dataset[favorites ? "folderId" : "uid"] = id;
     button.title = title;
     const name = document.createElement("span");
@@ -4218,7 +4231,8 @@ function renderSourceCardPage(container, entries, emptyText, favorites = false) 
     name.textContent = title;
     const count = document.createElement("span");
     count.className = "follow-up-count";
-    count.textContent = t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
+    // A queued source has no count yet; its status label fills this line.
+    count.textContent = entry.placeholder ? "" : t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
       count:Number((favorites ? entry.media_count : entry.count) || entry.count || 0),
     });
     button.append(name, count);
@@ -4516,12 +4530,12 @@ function ensureD1BrowseView(kind = state.remoteDiscoverMode) {
 }
 
 const emptyD1Tags = [];
-function renderD1TagPage(container, entries) {
+function renderD1TagPage(container, entries, emptyText = t("search.browseNoTags")) {
   container.replaceChildren();
   if (!entries.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
-    empty.textContent = t("search.browseNoTags");
+    empty.textContent = emptyText;
     container.append(empty);
   }
   for (const entry of entries) {
@@ -4601,32 +4615,40 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
     if (mode.tag) {
       parts.push(mode.tag);
     }
-    current.textContent = parts.join(" / ");
+    current.textContent = mode.letter ? parts.join(" / ") : "";
+    current.closest(".tag-browser-nav")?.classList.toggle("hidden", !mode.letter);
   }
   if (tagGrid) {
-    tagGrid.classList.toggle("hidden", Boolean(mode.tag) || !mode.letter);
+    tagGrid.classList.toggle("hidden", Boolean(mode.tag));
     if (mode.tag || !mode.letter) {
       tagGrid.replaceChildren();
       hideRemoteResultPager(tagGrid);
+      if (!mode.letter) {
+        const hint = document.createElement("div");
+        hint.className = "search-empty";
+        hint.textContent = d1BrowsePickLetterText(normalizedKind);
+        tagGrid.append(hint);
+      }
     } else {
       let pager = remoteResultPagers.get(tagGrid);
       if (!pager) {
         pager = window.BilikaraResultPager.create(tagGrid, {
           translate: t,
-          renderItems: (entries, _message, target = tagGrid) => renderD1TagPage(target, entries),
+          renderItems: (entries, message, target = tagGrid) => renderD1TagPage(target, entries, message),
           rows: 6,
           reportError: text => setAppMessage(text, true),
         });
         remoteResultPagers.set(tagGrid, pager);
       }
       pager.update({key: JSON.stringify([normalizedKind, mode.letter, mode.query, mode.seq]),
-        items: tags, total: tags.length, limited: true, hasMore: false, loading: mode.loading, language: state.language});
+        items: tags, total: tags.length, limited: true, hasMore: false, loading: mode.loading,
+        emptyText: t(mode.loading ? "search.browseLoading" : "search.browseNoTags"), language: state.language});
     }
   }
   if (results) {
     if (mode.tag) {
       const scrollTop = results.scrollTop;
-      renderSearchResultItems(results, items, t("search.larkNoResults"));
+      renderSearchResultItems(results, items, t(mode.loading ? "search.browseLoading" : "search.larkNoResults"));
       results.scrollTop = scrollTop;
     } else {
       results.innerHTML = "";
@@ -4886,12 +4908,15 @@ function renderFavlistBrowse() {
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const hasMore = Boolean(state.favlistBrowseData?.has_more);
+  const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
+    folders.map(folder => folder?.folder_id || folder?.id)) || [];
   const signature = JSON.stringify({
     loading: state.favlistBrowseLoading,
     error: state.favlistBrowseError,
     selected: state.favlistBrowseSelectedFolderId,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}),
     folders,
+    placeholders,
     items,
     hasMore,
     language: state.language,
@@ -4919,7 +4944,7 @@ function renderFavlistBrowse() {
       elements.favlistSearchButton.disabled = state.favlistBrowseLoading;
       elements.favlistSearchButton.toggleAttribute("aria-busy", state.favlistBrowseLoading);
     }
-    renderRemoteGridPages(elements.favlistGrid, folders, "favorites", (target, entries, message) =>
+    renderRemoteGridPages(elements.favlistGrid, [...placeholders, ...folders], "favorites", (target, entries, message) =>
       renderSourceCardPage(target, entries, message, true), {
         loading:state.favlistBrowseLoading,
         emptyText:t(state.favlistBrowseLoading ? "favlist.loadingFolders" : "favlist.noBrowseFolders"),
@@ -5265,6 +5290,8 @@ function renderSourcesFollowBrowse() {
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasMore = Boolean(state.followBrowseData?.has_more);
+  const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "uids",
+    owners.map(owner => owner?.uid)) || [];
   const taskBusy = gatchaTaskBusy();
   const sourceBusy = gatchaSourceBusy();
   const signature = JSON.stringify({
@@ -5273,10 +5300,12 @@ function renderSourcesFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {uid: state.followBrowseSelectedUid}),
     owners,
+    placeholders,
     items,
     hasMore,
     uidSaving: state.gatchaUidSaving,
     taskBusy,
+    sourceBusy,
     language: state.language,
   });
   if (signature === state.sourcesFollowBrowseRenderSignature) {
@@ -5310,7 +5339,7 @@ function renderSourcesFollowBrowse() {
   if (!hasSelectedUid) {
     hideRemoteResultPager(elements.sourcesFollowResults);
     window.BilikaraBrowseSearch?.reset(elements.sourcesFollowSearchForm);
-    renderRemoteGridPages(elements.sourcesFollowGrid, owners, "uids", renderSourceCardPage, {
+    renderRemoteGridPages(elements.sourcesFollowGrid, [...placeholders, ...owners], "uids", renderSourceCardPage, {
       loading:state.followBrowseLoading,
       emptyText:t(state.followBrowseLoading ? "follow.loadingOwners" : "follow.noOwners"),
     });
@@ -5453,6 +5482,7 @@ async function addGatchaUidFromInput(input, { messageTarget = "sources-follow" }
       return;
     }
     setSourceManagementLoadingMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
+    window.BilikaraSourceStatus?.rememberSource({ uid: normalizedUid, title: preview?.name });
     const result = await addGatchaUid(normalizedUid);
     setSourceManagementMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
     if (input) {
@@ -6406,11 +6436,13 @@ function renderCurrentItem(current, playbackMode) {
 function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
   if (!button) return;
-  button.classList.remove("hidden");
-  button.disabled = false;
-  button.textContent = t("rating.rate");
-  button.title = t("rating.rateTitle");
-  button.removeAttribute("aria-busy");
+  if (button.classList.contains("hidden")) button.classList.remove("hidden");
+  if (button.disabled) button.disabled = false;
+  const label = t("rating.rate");
+  const title = t("rating.rateTitle");
+  if (button.textContent !== label) button.textContent = label;
+  if (button.title !== title) button.title = title;
+  if (button.hasAttribute("aria-busy")) button.removeAttribute("aria-busy");
   refreshOpenRatingPrompt(current);
 }
 
@@ -7399,9 +7431,13 @@ async function confirmGatchaFavlistSheet() {
   state.gatchaFavlistSaving = true;
   renderSourceManagementControls();
   setSourceManagementLoadingMessage(messageTarget, t("favlist.pullingSelected"));
+  (Array.isArray(intent.folders) ? intent.folders : []).forEach(folder => {
+    const folderId = String(folder?.id || folder?.folder_id || "").trim();
+    if (folderIds.includes(folderId)) window.BilikaraSourceStatus?.rememberSource({ folderId, title: folder?.title });
+  });
   closeGatchaFavlistSheet();
   try {
-    const result = await pullGatchaFavlist(intent.uid, folderIds);
+    const result = await pullGatchaFavlist(intent.uid, folderIds, intent.folders || []);
     setSourceManagementMessage(messageTarget, result?.queued ? t(result.duplicate ? "gatcha.sourceAlreadyQueued" : "gatcha.sourceQueued") : t("favlist.pullResult", {
       folders: result?.matched_folder_count || 0,
       items: result?.item_count || 0,
@@ -7945,6 +7981,7 @@ function queueRenderSignatureForItem(item, index) {
   return {
     index,
     id: String(item?.id || ""),
+    incarnation: String(item?.item_incarnation_id || ""),
     title: String(item?.display_title || ""),
     requester: String(item?.requester_name || ""),
     cacheStatus: String(item?.cache_status || ""),
@@ -8310,7 +8347,9 @@ function paintPlaybackClockSurfaces() {
       }
       setRangeFillPercent(elements.playbackSheetSeek, ratio * 100);
       if (hasKnownDuration) {
-        elements.playbackSheetSeek.setAttribute("aria-valuetext", dockText);
+        if (elements.playbackSheetSeek.getAttribute("aria-valuetext") !== dockText) {
+          elements.playbackSheetSeek.setAttribute("aria-valuetext", dockText);
+        }
       } else {
         elements.playbackSheetSeek.removeAttribute("aria-valuetext");
       }
@@ -9341,10 +9380,6 @@ elements.remoteSettingsToggle?.addEventListener("click", () => {
   setRemoteSettingsSectionOpen(!state.remoteSettingsSectionOpen);
 });
 
-const remoteContextualInfoHoverDelayMs = 160;
-const remoteContextualInfoLeaveDelayMs = 90;
-let remoteContextualInfoHoverTimer = null;
-let remoteContextualInfoLeaveTimer = null;
 let remoteContextualInfoPositionFrame = null;
 
 function remoteContextualTooltipForWrap(wrap) {
@@ -9354,42 +9389,47 @@ function remoteContextualTooltipForWrap(wrap) {
 
 function mountRemoteContextualTooltip(wrap) {
   const tooltip = remoteContextualTooltipForWrap(wrap);
+  if (!tooltip) return null;
+  tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
+  tooltip.classList.remove("is-closing");
   const playbackPanel = wrap?.closest?.(".playback-sheet-panel");
-  if (tooltip && playbackPanel && tooltip.parentElement !== playbackPanel) {
+  if (playbackPanel && tooltip.parentElement !== playbackPanel) {
     playbackPanel.append(tooltip);
     tooltip.classList.add("is-portaled");
   }
-  tooltip?.classList.add("is-visible");
-  if (wrap?.closest?.(".history-export-dialog") && typeof tooltip?.showPopover === "function") {
+  if (typeof tooltip.showPopover === "function") {
     tooltip.setAttribute("popover", "manual");
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
   }
+  // Establish the hidden frame before toggling visibility, as on Host.
+  getComputedStyle(tooltip).opacity;
+  tooltip.classList.add("is-visible");
   return tooltip;
 }
 
 function hideRemoteContextualInfo(wrap) {
   const tooltip = remoteContextualTooltipForWrap(wrap);
-  if (typeof tooltip?.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
+  if (!tooltip) return;
+  tooltip.classList.add("is-closing");
   wrap?.classList.remove("is-visible", "is-pinned");
   wrap?.querySelector?.(".remote-info-button")?.setAttribute("aria-expanded", "false");
-  tooltip?.classList.remove("is-visible");
-  if (tooltip?.classList.contains("is-portaled") && wrap?.isConnected) {
-    tooltip.classList.remove("is-portaled");
-    wrap.append(tooltip);
-    for (const property of [
-      "width",
-      "max-width",
-      "left",
-      "right",
-      "top",
-      "bottom",
-      "--remote-tooltip-arrow-left",
-      "--remote-tooltip-transform-origin",
-    ]) {
+  tooltip.classList.remove("is-visible");
+  const closing = tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
+  const animations = tooltip.getAnimations?.() || [];
+  Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
+    if (tooltip.__bilikaraCloseSequence !== closing || wrap?.classList.contains("is-visible")) return;
+    if (typeof tooltip.hidePopover === "function" && tooltip.matches(":popover-open")) tooltip.hidePopover();
+    tooltip.classList.remove("is-closing");
+    if (tooltip.classList.contains("is-portaled") && wrap?.isConnected) {
+      tooltip.classList.remove("is-portaled");
+      wrap.append(tooltip);
+    }
+    for (const property of ["width", "max-width", "left", "right", "top", "bottom",
+      "--remote-tooltip-arrow-left", "--remote-tooltip-transform-origin"]) {
       tooltip.style.removeProperty(property);
     }
     delete tooltip.dataset.tooltipDirection;
-  }
+  });
 }
 
 function positionRemoteContextualTooltip(wrap) {
@@ -9481,23 +9521,15 @@ function setRemoteContextualInfoVisible(wrap, { pinned = false } = {}) {
     }
     hideRemoteContextualInfo(candidate);
   });
+  mountRemoteContextualTooltip(wrap);
   wrap.classList.add("is-visible");
   wrap.classList.toggle("is-pinned", pinned);
   wrap.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "true");
-  mountRemoteContextualTooltip(wrap);
   positionRemoteContextualTooltip(wrap);
   return true;
 }
 
 function closeRemoteContextualInfo({ includePinned = true } = {}) {
-  if (remoteContextualInfoHoverTimer) {
-    window.clearTimeout(remoteContextualInfoHoverTimer);
-    remoteContextualInfoHoverTimer = null;
-  }
-  if (remoteContextualInfoLeaveTimer) {
-    window.clearTimeout(remoteContextualInfoLeaveTimer);
-    remoteContextualInfoLeaveTimer = null;
-  }
   let closed = false;
   document.querySelectorAll(".info-trigger-wrap.is-visible").forEach((wrap) => {
     if (!includePinned && wrap.classList.contains("is-pinned")) {
@@ -9520,58 +9552,9 @@ function showRemoteContextualInfoTransient(wrap, source) {
   return setRemoteContextualInfoVisible(wrap);
 }
 
-function remoteContextualInfoSupportsHover(event) {
-  if (event.pointerType === "touch") {
-    return false;
-  }
-  return window.matchMedia?.("(any-hover: hover) and (any-pointer: fine)").matches !== false;
-}
-
+// Remote help opens by tap/click or keyboard focus, never by hover.
 document.querySelectorAll(".remote-contextual-info-region").forEach((region) => {
   const wrap = region.querySelector(".info-trigger-wrap");
-  const tooltip = remoteContextualTooltipForWrap(wrap);
-  const cancelLeave = () => {
-    if (remoteContextualInfoLeaveTimer) {
-      window.clearTimeout(remoteContextualInfoLeaveTimer);
-      remoteContextualInfoLeaveTimer = null;
-    }
-  };
-  const scheduleLeave = () => {
-    if (remoteContextualInfoHoverTimer) {
-      window.clearTimeout(remoteContextualInfoHoverTimer);
-      remoteContextualInfoHoverTimer = null;
-    }
-    cancelLeave();
-    remoteContextualInfoLeaveTimer = window.setTimeout(() => {
-      remoteContextualInfoLeaveTimer = null;
-      if (
-        !wrap?.classList.contains("is-pinned")
-        && !region.matches(":hover")
-        && !tooltip?.matches(":hover")
-        && !wrap?.contains(document.activeElement)
-      ) {
-        hideRemoteContextualInfo(wrap);
-      }
-    }, remoteContextualInfoLeaveDelayMs);
-  };
-  region.addEventListener("pointerenter", (event) => {
-    if (!wrap || !remoteContextualInfoSupportsHover(event) || wrap.classList.contains("is-visible")) {
-      return;
-    }
-    cancelLeave();
-    if (remoteContextualInfoHoverTimer) {
-      window.clearTimeout(remoteContextualInfoHoverTimer);
-    }
-    remoteContextualInfoHoverTimer = window.setTimeout(() => {
-      remoteContextualInfoHoverTimer = null;
-      if (region.matches(":hover")) {
-        showRemoteContextualInfoTransient(wrap, "pointer");
-      }
-    }, remoteContextualInfoHoverDelayMs);
-  });
-  region.addEventListener("pointerleave", scheduleLeave);
-  tooltip?.addEventListener("pointerenter", cancelLeave);
-  tooltip?.addEventListener("pointerleave", scheduleLeave);
   region.addEventListener("focusin", (event) => {
     if (!event.target.closest(".remote-info-button")) {
       return;
@@ -9583,7 +9566,6 @@ document.querySelectorAll(".remote-contextual-info-region").forEach((region) => 
       if (
         !wrap?.classList.contains("is-pinned")
         && !region.contains(document.activeElement)
-        && !region.matches(":hover")
       ) {
         hideRemoteContextualInfo(wrap);
       }

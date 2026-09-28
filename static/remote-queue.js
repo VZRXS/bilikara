@@ -8,6 +8,27 @@
     return;
   }
 
+  // Queue/history own bounded scroll regions; unlike request cards they do
+  // not use document scrolling. Reserve a gap only while they overflow.
+  if (typeof ResizeObserver === "function" && typeof MutationObserver === "function") {
+    for (const list of [elements.queueList, elements.historyList]) {
+      if (!list) continue;
+      let frame = 0;
+      const measure = () => {
+        frame = 0;
+        if (list.clientHeight > 0) list.classList.toggle("has-scroll-inset", list.scrollHeight > list.clientHeight + 1);
+      };
+      const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+      new ResizeObserver(schedule).observe(list);
+      new MutationObserver(records => {
+        if (records.some(record => record.target === list
+          || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1))) schedule();
+      }).observe(list, { childList: true, subtree: true });
+      document.fonts?.ready.then(schedule);
+      schedule();
+    }
+  }
+
   state.dragItemId = "";
   state.dragTargetId = "";
   state.dragTargetAfter = false;
@@ -43,6 +64,20 @@
       syncDropIndicators();
       return;
     }
+
+    const signature = JSON.stringify({
+      language: state.language,
+      hasCurrentItem: Boolean(state.data?.current_item),
+      playlist: playlist.map(queueRenderSignatureForItem),
+    });
+    if (signature === state.queueRenderSignature) {
+      renderQueueCacheStatus(playlist);
+      elements.queueList.querySelectorAll("button[data-action]").forEach((button) => {
+        syncQueueActionBusy(button);
+      });
+      return;
+    }
+    state.queueRenderSignature = signature;
 
     elements.queueList.replaceChildren();
     if (!playlist.length) {

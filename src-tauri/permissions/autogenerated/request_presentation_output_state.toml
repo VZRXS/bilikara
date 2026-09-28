@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-presentation-output-state"
+description = "Enables the request_presentation_output_state command without any pre-configured scope."
+commands.allow = ["request_presentation_output_state"]
+
+[[permission]]
+identifier = "deny-request-presentation-output-state"
+description = "Denies the request_presentation_output_state command without any pre-configured scope."
+commands.deny = ["request_presentation_output_state"]

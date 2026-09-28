@@ -39,6 +39,7 @@
     "allow-mark-presentation-host-ready",
     "allow-acknowledge-presentation-command",
     "allow-publish-presentation-playback-state",
+    "allow-publish-presentation-output-state",
     "allow-deactivate-local-presentation"
   ]
 }

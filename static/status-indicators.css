@@ -92,3 +92,12 @@
 
 .source-card-status { margin-inline-start: 5px; font-size: 11px; color: var(--muted); }
 .source-card-failed .source-card-status { color: var(--red); }
+/* A queued source appears before the library lists it. The outline marks the
+   pending entry without changing card geometry; its status fills the count line. */
+:root .follow-up-button.source-card-placeholder {
+  border-style: dashed;
+  border-color: rgba(var(--status-wait-rgb), 0.5);
+}
+.source-card-placeholder .follow-up-count > :is(.source-card-status, .source-card-spinner):first-child {
+  margin-inline-start: 0;
+}

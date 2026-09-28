@@ -68,10 +68,21 @@ assert.equal(desktop.window.BilikaraHostLayout,undefined);
 assert.equal(desktop.get("cache-settings").parentElement.id,"top-controls");
 assert.deepEqual(desktop.calls,[]);
 const nativeDesktop=setup(true,"landscape-primary",1280,null,"desktop");
-assert.equal(nativeDesktop.window.BilikaraHostLayout.isPortrait(),false);
+assert.equal(nativeDesktop.window.BilikaraHostLayout,undefined);
+assert.equal(nativeDesktop.root.dataset.hostLayout,"landscape");
 assert.equal(nativeDesktop.get("presentation-settings").parentElement.id,"top-controls");
 assert.equal(nativeDesktop.get("android-layout-settings").hidden,true);
 assert.equal(nativeDesktop.get("android-orientation-settings").hidden,true);
+for (const width of [320, 390, 600]) {
+  const narrow=setup(true,"portrait-primary",width,null,"desktop");
+  assert.equal(narrow.root.dataset.hostLayout,"landscape");
+  assert.equal(narrow.window.BilikaraHostLayout,undefined);
+  assert.equal(narrow.dock.hidden,true);
+  for (const id of ["cache-settings", "presentation-settings"])
+    assert.equal(narrow.get(id).parentElement.id,"top-controls");
+  assert.equal(narrow.get("shared-request-tabs").parentElement.id,"request-header");
+  assert.deepEqual(narrow.calls,[],"Resizing desktop must not navigate Android pages");
+}
 const mobile=setup();
 assert.equal(mobile.get("presentation-settings").parentElement.className,"settings-section android-display-settings");
 assert.equal(mobile.get("presentation-settings").parentElement.parentElement.id,"settings-body");

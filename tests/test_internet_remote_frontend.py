@@ -92,7 +92,8 @@ class InternetRemoteFrontendTest(unittest.TestCase):
     def test_compact_hover_keeps_active_public_qr_without_room_controls(self):
         self.assertIn('classList.toggle("has-active-internet-room", roomResultAvailable)', self.host_js)
         self.assertIn("const compactRoomPreviewVisible = !fullMenuOpen && roomResultAvailable", self.host_js)
-        self.assertIn("compactRoomPreviewVisible || passwordDraftChanged", self.host_js)
+        self.assertIn("const currentPasswordVisible = roomResultAvailable;", self.host_js)
+        self.assertIn("? state.password", self.host_js)
         styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         compact_rule = styles[
             styles.index('.remote-mini-control:not(.is-qr-pinned) :is(') :
@@ -345,6 +346,47 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('tr("internetRemote.durationInvalid"', self.host_js)
         self.assertNotIn("workerLifetime > (8 * 60 * 60 * 1000)", self.host_js)
 
+    def test_playback_status_changes_reach_internet_peers_without_a_new_revision(self):
+        # Play/pause and seek observations leave the core state revision unchanged.
+        start = self.host_js.index("  function playbackStatusBaseline(status)")
+        functions = self.host_js[start : self.host_js.index("  async function publishState(", start)]
+        script = f"""
+const assert = require('node:assert/strict');
+let now = 0;
+const performance = {{ now: () => now }};
+const state = {{ playbackStatus: null }};
+{functions}
+const push = status => {{
+  const changed = playbackStatusChanged(status);
+  if (changed) state.playbackStatus = playbackStatusBaseline(status);
+  return changed;
+}};
+const status = (playing, position) => ({{ playing, position_seconds: position, duration_seconds: 240 }});
+assert.equal(push(status(true, 10)), true, 'first observation');
+now = 3000;
+assert.equal(push(status(true, 13)), false, 'steady playback follows the prediction');
+assert.equal(push(status(false, 13)), true, 'pause');
+now = 9000;
+assert.equal(push(status(false, 13)), false, 'paused position stays put');
+assert.equal(push(status(false, 60)), true, 'seek while paused');
+assert.equal(push(status(true, 60)), true, 'resume');
+assert.equal(push(null), true, 'program ended');
+assert.equal(push(null), false);
+"""
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8",
+            capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        publish = self.host_js[self.host_js.index("  async function publishState(") :]
+        self.assertIn("nextRevision <= state.stateRevision && !playbackChanged", publish)
+        self.assertIn("state.playbackStatus = playbackStatusBaseline(remoteState.player_status)", publish)
+
+    def test_remote_public_card_shows_only_the_room_password(self):
+        remote = (ROOT / "static" / "remote.html").read_text(encoding="utf-8")
+        card = remote[remote.index('id="remote-share-public"') : remote.index("</section>", remote.index('id="remote-share-public"'))]
+        self.assertNotIn("internetRemote.publicScanTitle", card)
+        self.assertIn('data-i18n="internetRemote.currentPassword"', card)
+        self.assertIn('<strong id="remote-share-password">', card)
+
     def test_room_creation_failure_remains_visible_after_cleanup(self):
         start = self.host_js.index("async function startRoom")
         end = self.host_js.index("function expireRoom", start)
@@ -413,7 +455,7 @@ assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>
 context.candidates=['',undefined,'http://127.0.0.1:8080/remote'];
 assert.equal(vm.runInContext('candidates.map(normalizedRemoteHttpUrl).find(url=>url&&!remoteUrlUsesLoopback(url))',context),undefined);
 '''
-        result = subprocess.run([node, "-e", program], cwd=ROOT, capture_output=True, text=True, timeout=20)
+        result = subprocess.run([node, "-e", program], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_public_qr_failure_keeps_the_valid_room_result(self):
@@ -554,7 +596,7 @@ const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\
   assert.deepEqual(calls, ["player.set_volume"]);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''.replace("BODY", json.dumps(body))
-        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
@@ -571,7 +613,7 @@ const send = new AsyncFunction("body", "request", "expectedRevision", "let respo
     assert.deepEqual(observed,{kind:"cache.retry",body:{item_id:"song",expected_item_incarnation_id:"incarnation",force:force===true,expected_revision:12}});
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});'''.replace("BODY", json.dumps(self.remote_transport[start:end]))
-        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True, timeout=10)
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_internet_adapter_maps_shared_browse_and_gatcha_endpoints(self):
@@ -881,6 +923,18 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
   assert.equal(local.player_settings.av_delay.has_local_adjustment, false);
   assert.equal(local.player_settings.av_delay.lock_button_enabled, false);
   assert.equal(local.bbdown.logged_in, false);
+  assert.equal(local.capabilities.source_queue, false);
+  assert.equal(local.capabilities.source_queue_titles, false);
+  data.capabilities = {source_queue: true, source_queue_titles: true, event_heartbeat: true};
+  data.gatcha = {background_busy: true, source_queue: {pending: [{uid: "123"}]}};
+  local = localState(data);
+  assert.equal(local.capabilities.source_queue, true);
+  assert.equal(local.capabilities.source_queue_titles, true);
+  assert.equal(local.capabilities.event_heartbeat, undefined);
+  assert.equal(local.gatcha.source_queue.pending[0].uid, "123");
+  data.capabilities.source_queue = false;
+  assert.equal(localState(data).capabilities.source_queue, false);
+
   assert.equal(local.current_item.video_media_url, "");
   data.player_settings.av_delay_has_local_adjustment = true;
   data.player_settings.av_delay_lock_button_enabled = true;
@@ -935,7 +989,7 @@ const {state, localState, createStateSource, scheduleReconnect, disconnect, hand
   assert.equal(state.authorized, false);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
-        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True)
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_local_transport_remains_native_fetch_and_event_source(self):
@@ -1023,7 +1077,7 @@ assert.equal(invitation(), null);
         node = shutil.which("node")
         if not node:
             self.skipTest("node is unavailable")
-        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         qr_start = self.remote_js.index("function renderRemoteQr(")
         qr_end = self.remote_js.index("function setFormMessage", qr_start)

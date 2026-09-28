@@ -501,7 +501,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
   assert.equal(scrolls, previousScrolls, "Unlock must not change the document scroll position");
 }
 """
-        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
 
     def test_other_true_modals_retire_playback_ownership_first(self):
         modal_openers = (
@@ -639,7 +639,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
             row_rule,
         )
         self.assertIn("gap: clamp(4px, 1.2vw, 6px)", row_rule)
-        self.assertIn("max-width: 520px", row_rule)
+        self.assertIn("max-width: none", row_rule)
         progress_rule = re.search(r"\.player-progress-unit\s*\{([^}]*)\}", self.styles).group(1)
         self.assertIn("min-width: 88px", progress_rule)
         self.assertIn("height: 48px", progress_rule)
@@ -788,7 +788,8 @@ for (const owner of ['sheet', 'rating', 'export']) {
         self.assertNotIn("remoteVolumeMuteButton.textContent", icon_source)
 
         wide = self.styles[self.styles.index("@media (min-width: 700px)") :]
-        self.assertIn("scrollbar-gutter: stable both-edges", wide)
+        self.assertIn("scrollbar-gutter: auto", wide)
+        self.assertNotIn("scrollbar-gutter: stable", wide)
 
     def test_sheet_is_content_sized_and_transport_reuses_one_dom_in_two_modes(self):
         body_rule = re.search(r"\.playback-sheet-body\s*\{([^}]*)\}", self.styles).group(1)
@@ -801,7 +802,7 @@ for (const owner of ['sheet', 'rating', 'export']) {
         self.assertIn("flex-direction: column", primary_rule)
         wide = self.styles[self.styles.index("@media (min-width: 700px)") :]
         self.assertIn(".playback-sheet-primary .playback-sheet-playback-group", wide)
-        self.assertIn("margin-top: auto", wide)
+        self.assertRegex(wide, r"\.playback-sheet-primary \.playback-sheet-playback-group\s*\{\s*margin-top: 0;")
 
         self.assertEqual(self.markup.count('class="player-control-row"'), 1)
         self.assertEqual(self.markup.count('class="player-control-row" role="group"'), 1)
@@ -813,6 +814,13 @@ for (const owner of ['sheet', 'rating', 'export']) {
         self.assertIn('"progress progress progress progress progress"', spacious)
         self.assertIn('"back play forward . next"', spacious)
         self.assertIn("grid-template-rows: 48px 48px", spacious)
+        # The sheet keeps v0.8.0-preview.1's 44/48/44/44 transport geometry.
+        sheet_row = re.search(r"\.playback-sheet \.player-control-row\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("grid-template-columns: 44px 48px 44px minmax(88px, 1fr) 44px", sheet_row)
+        sheet_play = re.search(r"\.playback-sheet \.player-control-row \.player-play-toggle\s*\{([^}]*)\}", self.styles).group(1)
+        for declaration in ("width: 48px", "min-width: 48px", "max-width: 48px", "height: 48px", "min-height: 48px"):
+            self.assertIn(declaration, sheet_play)
+        self.assertNotIn("--playback-primary-control-size", self.styles)
         self.assertIn("row-gap: 8px", spacious)
 
         adaptive = self.script[

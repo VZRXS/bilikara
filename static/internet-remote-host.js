@@ -37,6 +37,7 @@
     expiryTimer: null,
     stopped: true,
     stateRevision: 0,
+    playbackStatus: null,
     authFailures: [],
     catalogRequests: [],
     gatchaNetworkRequests: [],
@@ -223,8 +224,7 @@
     else elements.url.removeAttribute("href");
     elements.url.setAttribute("aria-disabled", String(!roomResultAvailable));
     elements.url.textContent = "";
-    const currentPasswordVisible = roomResultAvailable
-      && (compactRoomPreviewVisible || passwordDraftChanged);
+    const currentPasswordVisible = roomResultAvailable;
     elements.currentPassword.classList.toggle("hidden", !currentPasswordVisible);
     elements.currentPasswordValue.textContent = currentPasswordVisible
       ? state.password
@@ -620,6 +620,26 @@
     if (result?.data?.revision || result?.data?.state?.revision) void publishState();
   }
 
+  function playbackStatusBaseline(status) {
+    return status && typeof status === "object" ? {
+      playing: Boolean(status.playing),
+      duration: Math.round(Number(status.duration_seconds) || 0),
+      position: Math.max(0, Number(status.position_seconds) || 0),
+      at: performance.now(),
+    } : null;
+  }
+
+  // A seek is a jump away from the position predicted from the last push.
+  function playbackStatusChanged(status) {
+    const next = playbackStatusBaseline(status);
+    const previous = state.playbackStatus;
+    if (!next || !previous) return Boolean(next) !== Boolean(previous);
+    const predicted = previous.position + (previous.playing ? (next.at - previous.at) / 1000 : 0);
+    return next.playing !== previous.playing
+      || next.duration !== previous.duration
+      || Math.abs(next.position - predicted) > 2;
+  }
+
   async function publishState(target = null) {
     const response = await fetch("/api/internet-remote/state", { cache: "no-store" });
     const payload = await response.json();
@@ -634,8 +654,12 @@
       state.stateRevision = -1;
     }
     const nextRevision = Number(remoteState.state_revision || 0);
-    if (!target && nextRevision <= state.stateRevision) return;
+    // Play/pause, duration and seek observations leave the core revision
+    // unchanged; the phone still needs them for its transport controls.
+    const playbackChanged = playbackStatusChanged(remoteState.player_status);
+    if (!target && nextRevision <= state.stateRevision && !playbackChanged) return;
     state.stateRevision = Math.max(state.stateRevision, nextRevision);
+    state.playbackStatus = playbackStatusBaseline(remoteState.player_status);
     const targets = target ? [target] : [...peers.values()];
     for (const peer of targets) {
       if (peer.authorized && peer.bulk?.readyState === "open") {
@@ -952,6 +976,13 @@
     });
     elements.password.addEventListener("input", render);
     elements.duration.addEventListener("input", render);
+    for (const field of [elements.password, elements.duration]) {
+      field.addEventListener("keydown", event => {
+        if (event.key !== "Enter" || event.isComposing || event.repeat) return;
+        event.preventDefault();
+        if (!elements.restart.disabled) elements.restart.click();
+      });
+    }
     const events = new EventSource("/api/events");
     events.addEventListener("state", () => {
       if (state.mode === "internet") void publishState();

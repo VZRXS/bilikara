@@ -54,8 +54,6 @@
           <div class="remote-mini-popover remote-access-popover" id="remote-mini-popover" role="dialog"
             data-i18n-aria-label="remote.openInBrowser" aria-label="手机浏览器打开">
             <div class="remote-card remote-mini-popover-card remote-access-card">
-              <button type="button" class="banner-close remote-mini-popover-close" id="remote-mini-popover-close"
-                data-i18n-aria-label="common.close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
               <section class="remote-access-entry remote-access-entry--local">
               <div class="internet-remote-status-summary cache-contextual-info-region remote-access-heading">
                 <strong class="internet-remote-entry-title remote-access-title" id="internet-remote-summary"
@@ -68,6 +66,16 @@
                   </button>
                   <span class="cache-advanced-tooltip" id="internet-remote-mode-description" role="tooltip">
                     <span data-i18n="internetRemote.localEntryDescription">访问设备与 Host 位于同一局域网时可直接使用本地入口。公网房间运行期间，本地 Remote 仍可同时使用。</span>
+                  </span>
+                </span>
+                <span class="remote-access-public-state">
+                  <span class="remote-access-status remote-access-public-status is-active" data-local-connection-label></span>
+                  <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                      <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                    </svg>
+                    <span data-local-connection-count>0</span>
                   </span>
                 </span>
               </div>
@@ -85,7 +93,7 @@
                   <p id="remote-popover-url-hint" class="internet-remote-share-meta remote-access-meta"
                     data-i18n="internetRemote.localSameNetwork">访问设备需与 Host 在同一网络</p>
                   <div class="internet-remote-share-actions">
-                    <button type="button" class="toolbar-button ghost" id="remote-popover-copy-link" disabled
+                    <button type="button" class="toolbar-button ghost settings-tool-button" id="remote-popover-copy-link" disabled
                       data-i18n="internetRemote.copyLink">复制链接</button>
                   </div>
                 </div>
@@ -185,11 +193,11 @@
                       扫码后输入房间密码
                     </p>
                     <p class="internet-remote-current-password remote-access-password hidden" id="internet-remote-current-password">
-                      <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                      <span data-i18n="internetRemote.currentPassword">房间密码</span>
                       <strong id="internet-remote-current-password-value"></strong>
                     </p>
                     <div class="internet-remote-share-actions">
-                      <button type="button" class="toolbar-button ghost" id="internet-remote-copy-link"
+                      <button type="button" class="toolbar-button ghost settings-tool-button" id="internet-remote-copy-link"
                         data-i18n="internetRemote.copyLink">复制链接</button>
                     </div>
                     <a id="internet-remote-url" class="internet-remote-link-target" href="#"
@@ -263,7 +271,7 @@
                   <p class="cache-panel-label" data-i18n="display.targetTitle">选择观众屏</p>
                 </div>
                 <div class="presentation-target-actions">
-                  <button type="button" class="toolbar-button ghost presentation-identify-button"
+                  <button type="button" class="toolbar-button ghost presentation-identify-button settings-tool-button"
                     id="presentation-identify-button" data-i18n-title="display.identifyDisplays"
                     data-i18n-aria-label="display.identifyDisplays" title="识别屏幕" aria-label="识别屏幕" disabled>
                     <span class="presentation-identify-glyph" aria-hidden="true"><span>1</span><span>2</span></span>
@@ -551,9 +559,19 @@
                   aria-label="手机浏览器打开" data-i18n-aria-label="remote.openInBrowser">
                   <div class="remote-card remote-mini-popover-card fullscreen-remote-popover-card remote-access-card">
                     <section class="fullscreen-remote-entry remote-access-entry remote-access-entry--local" id="player-fullscreen-local-entry">
-                      <div class="internet-remote-status-summary remote-access-heading">
+                      <div class="remote-access-heading">
                         <strong class="internet-remote-entry-title remote-access-title"
                           data-i18n="internetRemote.localEntry">本地入口</strong>
+                        <span class="remote-access-public-state">
+                          <span class="remote-access-status remote-access-public-status is-active" data-local-connection-label></span>
+                          <span class="remote-access-public-connection-indicator" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                              <circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle>
+                              <path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path>
+                            </svg>
+                            <span data-local-connection-count>0</span>
+                          </span>
+                        </span>
                       </div>
                       <div class="internet-remote-share-layout remote-access-entry-content">
                         <div class="remote-qr-wrap remote-mini-popover-qr-wrap remote-access-qr">
@@ -565,7 +583,8 @@
                         <div class="internet-remote-share-details remote-access-details">
                           <p class="internet-remote-share-title remote-access-copy-title"
                             data-i18n="internetRemote.localScanTitle">扫码连接</p>
-                          <p id="player-fullscreen-remote-url" class="internet-remote-local-link remote-access-link"></p>
+                          <a id="player-fullscreen-remote-url" class="internet-remote-local-link remote-access-link"
+                            aria-disabled="true" tabindex="-1" target="_blank" rel="noreferrer"></a>
                           <p id="player-fullscreen-remote-url-hint" class="internet-remote-share-meta remote-access-meta">
                             访问设备需与 Host 在同一网络
                           </p>
@@ -601,7 +620,7 @@
                           <p class="internet-remote-share-title remote-access-copy-title"
                             data-i18n="internetRemote.publicScanTitle">扫码后输入房间密码</p>
                           <p class="internet-remote-current-password remote-access-password">
-                            <span data-i18n="internetRemote.currentPassword">当前房间密码</span>
+                            <span data-i18n="internetRemote.currentPassword">房间密码</span>
                             <strong id="player-fullscreen-public-password"></strong>
                           </p>
                         </div>
@@ -825,7 +844,6 @@
           <div class="settings-workspace-body">
             <section class="settings-section" aria-labelledby="settings-appearance-title">
               <div class="settings-section-heading">
-                <p class="section-tag" data-i18n="settings.appearanceTag">Appearance</p>
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
               </div>
               <div class="settings-section-card">
@@ -869,7 +887,6 @@
 
             <section class="settings-section" aria-labelledby="settings-maintenance-title">
               <div class="settings-section-heading">
-                <p class="section-tag" data-i18n="settings.maintenanceTag">Advanced Settings</p>
                 <h3 id="settings-maintenance-title" data-i18n="service.advancedSettings">高级与系统维护</h3>
               </div>
               <div class="settings-section-card cache-advanced-inline-view" id="cache-advanced-inline-view">
@@ -878,7 +895,6 @@
                     <div class="cache-app-update-heading">
                       <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
                       <span class="app-update-version-badge hidden" id="update-version-badge"></span>
-                      <button type="button" class="toolbar-button hidden" id="announcements-button" data-i18n="announcements.title">更新公告</button>
                     </div>
                     <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
                       aria-live="polite"></p>
@@ -902,11 +918,14 @@
                         </span>
                       </label>
                     </div>
+                    <div class="cache-panel-actions cache-update-actions">
+                      <button type="button" class="toolbar-button hidden settings-tool-button cache-retry-current-button" id="announcements-button" data-i18n="announcements.title">更新公告</button>
                     <button type="button" class="toolbar-button cache-update-button" id="update-check-button"
                       title="检查 bilikara 新版本" data-i18n-title="service.checkUpdateTitle">
                       <span data-i18n="service.checkUpdate">检查更新</span>
                     </button>
                     <button type="button" id="update-cancel-button" class="toolbar-button" data-i18n="common.cancel" hidden>取消</button>
+                    </div>
                   </div>
                 </div>
                 <div class="cache-panel-row cache-panel-danger-row">
@@ -1295,7 +1314,7 @@
                 <p class="section-tag" data-i18n="remote.tag">Mobile Request Entry</p>
                 <h2 data-i18n="remote.entryTitle">手机点歌入口</h2>
               </div>
-              <button type="button" id="copy-remote-url-button" disabled class="toolbar-button" data-i18n="remote.copyLink">
+              <button type="button" id="copy-remote-url-button" disabled class="toolbar-button settings-tool-button" data-i18n="remote.copyLink">
                 复制链接
               </button>
             </div>
@@ -1643,9 +1662,10 @@
   </template>
 
   <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
-    <h2 id="confirm-title" class="hidden" data-i18n="history.exportTitle">导出歌单</h2>
+    <h2 id="confirm-title" class="hidden">导出歌单</h2>
     <button type="button" id="confirm-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     <p class="confirm-text" id="confirm-text" data-i18n="confirm.default">确定执行这个操作吗？</p>
+    <p id="confirm-manual-update" class="confirm-manual-update hidden"></p>
     <div id="confirm-source-field" class="export-field hidden">
     <div class="cache-advanced-label-row cache-contextual-info-region">
       <label for="confirm-source" data-i18n="history.exportRange">导出范围</label>
@@ -1821,10 +1841,10 @@
         <button type="button" id="bilikara-secret-close" class="banner-close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <form id="bilikara-secret-form" class="bilikara-secret-form">
-        <label class="input-group" for="bilikara-secret-input">
-          <span>BILIKARA_ADMIN_SECRET</span>
-          <input type="password" id="bilikara-secret-input" autocomplete="off" spellcheck="false">
-        </label>
+        <div class="input-group">
+          <input type="password" id="bilikara-secret-input" autocomplete="off" spellcheck="false"
+            aria-label="BILIKARA_ADMIN_SECRET" placeholder="BILIKARA_ADMIN_SECRET">
+        </div>
         <p class="search-message" id="bilikara-secret-message" role="status"></p>
         <div class="selection-modal-actions">
           <button type="button" id="bilikara-secret-cancel" class="toolbar-button">取消</button>

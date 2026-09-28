@@ -106,8 +106,8 @@ async function expandBrowseSearch(page, inputSelector) {
   const bar = input.locator("xpath=ancestor::div[contains(@class, 'browse-search-bar')]");
   assert(!await input.isVisible(), `${inputSelector}: secondary search must start collapsed`);
   const before = await bar.boundingBox();
-  const beforeForm = await bar.locator('form').boundingBox();
-  await bar.locator('button[type="submit"]').click();
+  const beforeToggle = await bar.locator('.browse-search-cancel').boundingBox();
+  await bar.locator('.browse-search-cancel').click();
   assert(await input.isVisible(), `${inputSelector}: search did not expand`);
   assert(await input.evaluate(el => el === document.activeElement), `${inputSelector}: expanded input did not receive focus`);
   await page.waitForFunction(selector => {
@@ -117,8 +117,11 @@ async function expandBrowseSearch(page, inputSelector) {
   const after = await bar.boundingBox();
   assert(Math.abs(before.height - after.height) < 1, `${inputSelector}: expanding search added a row`, { before, after });
   const afterForm = await bar.locator('form').boundingBox();
-  assert(afterForm.x < beforeForm.x && Math.abs(afterForm.x + afterForm.width - beforeForm.x - beforeForm.width) < 1,
-    `${inputSelector}: search did not expand left from its fixed right edge`, { beforeForm, afterForm });
+  const afterToggle = await bar.locator('.browse-search-cancel').boundingBox();
+  assert(Math.abs(afterToggle.x - beforeToggle.x) < 1 && Math.abs(afterToggle.y - beforeToggle.y) < 1,
+    `${inputSelector}: toggle moved when expanded`, { beforeToggle, afterToggle });
+  assert(Math.abs(afterForm.x + afterForm.width + 8 - afterToggle.x) < 1,
+    `${inputSelector}: input must end 8px before the stationary toggle`, { afterForm, afterToggle });
   const cancel = bar.locator('.browse-search-cancel');
   const beforeHover = await cancel.boundingBox();
   await cancel.hover();

@@ -231,27 +231,48 @@ html[data-host-layout="portrait"] .app-shell[data-stage-controls-layout="inline"
   z-index: auto;
 }
 
-/* Fit the complete delay row without hiding operations or changing their order. */
+/* Use the Remote's readable two-row delay layout in narrow Host windows. */
 html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(52px, 1.6fr) repeat(4, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 html[data-host-layout="portrait"] .app-shell #key-shift-panel .av-sync-controls {
-  grid-template-columns: minmax(0, 1fr) minmax(72px, 2fr) repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(50px, 1fr) minmax(40px, .6fr) minmax(64px, 1.5fr) minmax(40px, .6fr);
+  gap: 8px;
 }
 html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > :is(button, .av-sync-input-wrap) {
   grid-column: auto;
   min-width: 0;
   width: 100%;
-  min-height: 40px;
-  height: 40px;
-  padding: 0 2px;
-  font-size: 11px;
-  border-radius: 10px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 4px;
+  font-size: var(--host-control-font-size);
+  border-radius: 14px;
   white-space: nowrap;
 }
-html[data-host-layout="portrait"] .app-shell .av-sync-input-wrap { justify-content: center; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel [data-step="-200"] { grid-area: 1 / 1; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel [data-step="-50"] { grid-area: 1 / 2; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel [data-step="50"] { grid-area: 1 / 3; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel [data-step="200"] { grid-area: 1 / 4; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel #av-offset-reset-button { grid-area: 2 / 1; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel .av-sync-input-wrap { grid-area: 2 / 2 / 3 / 4; }
+html[data-host-layout="portrait"] .app-shell #av-sync-panel #av-delay-lock-button { grid-area: 2 / 4; }
+html[data-host-layout="portrait"] .app-shell #key-shift-reset-button { grid-area: 1 / 1; }
+html[data-host-layout="portrait"] .app-shell #key-shift-dec-button { grid-area: 1 / 2; }
+html[data-host-layout="portrait"] .app-shell #key-shift-panel .av-sync-input-wrap { grid-area: 1 / 3; }
+html[data-host-layout="portrait"] .app-shell #key-shift-inc-button { grid-area: 1 / 4; }
+html[data-host-layout="portrait"] .app-shell .stage-extended-controls .av-sync-controls > .av-sync-input-wrap {
+  justify-content: flex-end;
+  gap: 4px;
+  padding-inline: 8px;
+}
+html[data-host-layout="portrait"] .app-shell #volume-mute-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+}
 html[data-host-layout="portrait"] .app-shell .av-sync-input-wrap input {
   min-width: 0;
   width: calc(var(--android-value-chars, 1) * 1ch);
@@ -265,7 +286,7 @@ html[data-host-layout="portrait"] .av-sync-step-symbol { display: none; }
 html[data-host-layout="portrait"] .app-shell .audio-variant-button {
   min-height: 44px;
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--host-control-font-size);
 }
 /* Desktop's 38px collapsed row otherwise cuts through the touch targets. */
 html[data-host-layout="portrait"] .audio-variant-bar.is-collapsed .audio-variant-list {
@@ -622,7 +643,7 @@ html[data-host-layout="portrait"] .category-browser-card-name { font-size: 20px;
 html[data-host-layout="portrait"] .category-browser-tab-media { display: none; }
 html[data-host-layout="portrait"] .category-browser-tab {
   aspect-ratio: auto;
-  height: 40px;
+  height: var(--category-browser-tab-height);
   padding: 0 12px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -648,7 +669,7 @@ html[data-native-host="true"][data-host-layout="portrait"] .app-shell .category-
 html[data-host-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
 html[data-host-layout="portrait"] .request-mode-head { padding: 8px 10px; }
 html[data-host-layout="portrait"] :is(.request-discover-view, .request-search-view) > .request-mode-panel { padding: 8px 10px; }
-html[data-host-layout="portrait"] .category-browser-detail { gap: 8px; }
+html[data-host-layout="portrait"] .category-browser-detail { gap: 8px; --category-browser-tab-height: 40px; }
 html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 /* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
    Keep one renderer for category/search/source cards, including missing art. */

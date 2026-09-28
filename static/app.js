@@ -397,6 +397,7 @@ const state = {
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
   bbdownLoginRequesting: false,
+  bbdownExpiredRetryHandled: false,
   updateAutomaticEnabled: true,
   updateAutomaticAttemptedChannels: new Set(),
   startupUpdateCheckScheduled: false,
@@ -458,6 +459,8 @@ const state = {
   presentationOutputChannel: null,
   presentationOutputSenderId: `host-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
   presentationOutputSequence: 0,
+  presentationOutputRelayPending: null,
+  presentationOutputRelayInFlight: false,
   presentationHostControlBusy: false,
   presentationHostProgressScrubbing: false,
   presentationHostAnnouncementKey: "",
@@ -743,7 +746,6 @@ const elements = {
   remoteMiniControl: document.getElementById("remote-mini-control"),
   remoteMiniTrigger: document.getElementById("remote-mini-trigger"),
   remoteMiniPopover: document.getElementById("remote-mini-popover"),
-  remoteMiniPopoverClose: document.getElementById("remote-mini-popover-close"),
   requestWorkspace: document.getElementById("host-workspace-request"),
   requestWorkspaceExpand: document.getElementById("request-workspace-expand"),
   requestWorkspaceCollapse: document.getElementById("request-workspace-collapse"),
@@ -1194,6 +1196,8 @@ function applyTheme(theme) {
   publishHostAppearance();
   renderThemeSwitch();
   syncNativeWindowTheme();
+  // The audience output follows the theme even while the Host stays idle.
+  publishPresentationOutputState();
 }
 
 function publishHostAppearance() {
@@ -1720,13 +1724,59 @@ function presentationSyncApi() {
 
 function ensurePresentationOutputChannel() {
   const sync = presentationSyncApi();
-  if (!sync || typeof BroadcastChannel !== "function") {
+  if (!sync) {
     return null;
   }
-  if (!state.presentationOutputChannel) {
-    state.presentationOutputChannel = new BroadcastChannel(sync.channelName);
+  if (!state.presentationOutputReadyListener) {
+    let previous = null;
+    const ready = (candidate) => {
+      if (candidate?.type !== "output-ready"
+        || candidate.payload?.generation !== state.presentationSession.generation
+        || !sync.acceptsEnvelope(previous, candidate)) return;
+      previous = candidate;
+      // The initial scene can precede the new window's session initialization.
+      // Replay after readiness, including when no song/state changes follow.
+      publishPresentationOutputState();
+    };
+    state.presentationOutputReadyListener = ready;
+    window.addEventListener("storage", event => {
+      if (event.key !== sync.storageKey || !event.newValue) return;
+      try { ready(JSON.parse(event.newValue)); } catch { /* Ignore malformed messages. */ }
+    });
+    if (typeof BroadcastChannel === "function") {
+      state.presentationOutputChannel = new BroadcastChannel(sync.channelName);
+      state.presentationOutputChannel.addEventListener("message", event => ready(event.data));
+    }
   }
   return state.presentationOutputChannel;
+}
+
+// Desktop WebViews need not share browser storage, so the shell relays the
+// same envelope to the audience window. Keep one request in flight and send
+// only the newest envelope; the audience discards older sequences.
+function relayPresentationOutputState(envelope) {
+  const invoke = tauriInvoke("presentation");
+  if (typeof invoke !== "function") {
+    return;
+  }
+  state.presentationOutputRelayPending = { generation: state.presentationSession.generation, envelope };
+  if (state.presentationOutputRelayInFlight) {
+    return;
+  }
+  const next = state.presentationOutputRelayPending;
+  state.presentationOutputRelayPending = null;
+  state.presentationOutputRelayInFlight = true;
+  invoke("publish_presentation_output_state", next)
+    .catch(() => {})
+    .finally(() => {
+      state.presentationOutputRelayInFlight = false;
+      const pending = state.presentationOutputRelayPending;
+      if (pending?.generation === state.presentationSession.generation) {
+        relayPresentationOutputState(pending.envelope);
+      } else {
+        state.presentationOutputRelayPending = null;
+      }
+    });
 }
 
 function publishPresentationOutputState(session = state.hostPlaybackSession) {
@@ -1773,6 +1823,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     window.BilikaraAndroidPresentation.postMaster(envelope);
     return true;
   }
+  relayPresentationOutputState(envelope);
   ensurePresentationOutputChannel()?.postMessage(envelope);
   try {
     localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
@@ -3232,10 +3283,17 @@ async function initializeLocalPresentation() {
         }
       });
     });
+    // A newly loaded audience page asks for the current output through the shell.
+    const unlistenOutputRequest = await listen("bilikara-presentation-output-request", (event) => {
+      if (Number(event?.payload?.generation) === state.presentationSession.generation) {
+        publishPresentationOutputState();
+      }
+    });
     state.presentationUnlisteners.push(
       unlistenSession,
       unlistenComposition,
       unlistenCommand,
+      unlistenOutputRequest,
     );
     if (window.BilikaraAndroidPresentation) {
       state.presentationUnlisteners.push(await listen("displays-changed", event => {
@@ -3913,7 +3971,7 @@ function syncHostSearchCounts() {
     if (!summary) continue;
     const search = state.searchModeState[mode];
     const data = search.pageData;
-    summary.hidden = !data || Boolean(search.error);
+    summary.hidden = !state.developerMode || !data || Boolean(search.error);
     const known = Number.isSafeInteger(data?.matched_count) && data.matched_count >= 0;
     const total = known ? data.matched_count : search.items.length;
     const label = known ? "pagination.countTotal" : "pagination.countReturned";
@@ -5290,6 +5348,7 @@ function initializePersistentStageFitting() {
   }
   schedulePersistentStageMeasurement();
   scheduleQueueScrollOwnershipSync();
+  document.querySelectorAll(".history-list, .source-browse-scroll").forEach(observeHostScrollInsets);
 }
 
 function renderWindowMaximizeState(maximized) {
@@ -5753,11 +5812,13 @@ function renderCurrentRatingButton(current) {
   const pending = !enabled && candidates.some(item => state.ratingPendingKeys.has(ratingSubmissionKey(item)));
   const queued = candidates.some(isSongRatingQueued);
   const submitted = !enabled && !pending && !queued && candidates.some(hasSubmittedSongRating);
-  button.disabled = !enabled;
-  button.textContent = queued ? t("rating.queued") : submitted ? t("rating.rated") : t("rating.rate");
-  button.title = queued ? t("rating.queuedTitle") : submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
-  if (pending) button.setAttribute("aria-busy", "true");
-  else button.removeAttribute("aria-busy");
+  if (button.disabled !== !enabled) button.disabled = !enabled;
+  const label = queued ? t("rating.queued") : submitted ? t("rating.rated") : t("rating.rate");
+  const title = queued ? t("rating.queuedTitle") : submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
+  if (button.textContent !== label) button.textContent = label;
+  if (button.title !== title) button.title = title;
+  if (pending && button.getAttribute("aria-busy") !== "true") button.setAttribute("aria-busy", "true");
+  else if (!pending && button.hasAttribute("aria-busy")) button.removeAttribute("aria-busy");
   refreshOpenRatingPrompt(current);
 }
 
@@ -6506,11 +6567,15 @@ async function previewGatchaFavlist(uid) {
   return apiPost("/api/gatcha/favlist/preview", { uid: String(uid || "").trim() });
 }
 
-async function pullGatchaFavlist(uid, folderIds = []) {
+async function pullGatchaFavlist(uid, folderIds = [], folders = []) {
   return apiPost("/api/gatcha/favlist", {
     queue: Boolean(state.data?.capabilities?.source_queue),
     uid: String(uid || "").trim(),
     folder_ids: Array.isArray(folderIds) ? folderIds : [],
+    ...(state.data?.capabilities?.source_queue_titles ? {
+      folder_titles: Object.fromEntries(folders.filter(folder => folderIds.includes(String(folder.id || folder.folder_id)))
+        .map(folder => [String(folder.id || folder.folder_id).split(":").pop(), String(folder.title || "").trim().slice(0, 200)])),
+    } : {}),
   });
 }
 
@@ -6544,6 +6609,7 @@ async function confirmGatchaUidAdd(intent) {
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
   setGatchaUidFlowLoadingMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  window.BilikaraSourceStatus?.rememberSource({ uid: intent.uid, title: intent.name });
   try {
     const result = await addGatchaUid(intent.uid);
     setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, intent.uid));
@@ -6559,6 +6625,7 @@ async function confirmGatchaUidAdd(intent) {
 
 function setDeveloperMode(enabled) {
   state.developerMode = Boolean(enabled);
+  syncHostSearchCounts();
   if (!state.developerMode) {
     closeExpandedRequestWorkspace({ restoreFocus: false });
     closeDeveloperTagResetModal({ restoreFocus: false });
@@ -7832,6 +7899,7 @@ function renderD1BrowseView() {
   const current = view.querySelector("[data-d1-browse-current]");
   const navigation = current?.closest(".tag-browser-nav");
   const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  observeHostScrollInsets(tagGrid);
   const results = view.querySelector("[data-d1-browse-results]");
   const message = view.querySelector("[data-d1-browse-message]");
 
@@ -7913,20 +7981,13 @@ function renderD1BrowseView() {
   }
   if (results) {
     if (level === "items") {
-      renderSearchResultItems(results, items, t("search.larkNoResults"));
+      renderSearchResultItems(results, items, state.d1BrowseLoading ? t("search.browseLoading") : t("search.larkNoResults"));
     } else {
       results.innerHTML = "";
       results.classList.add("hidden");
     }
   }
-  if (message) {
-    let text = "";
-    if (level === "items" && !state.d1BrowseLoading && !items.length) {
-      text = t("search.larkNoResults");
-    }
-    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
-    message.classList.remove("is-error");
-  }
+  if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-d1-browse-search]"), navigation, {
     key: JSON.stringify([kind, mode.letter, mode.tag, mode.locale]),
     title: mode.tag || [d1BrowseTitle(kind), mode.letter].filter(Boolean).join(" / "),
@@ -8645,18 +8706,9 @@ function renderCategoryBrowseView() {
     });
   }
   if (results) {
-    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+    renderSearchResultItems(results, state.categoryBrowseItems, state.categoryBrowseLoading ? t("search.browseLoading") : t("search.larkNoResults"));
   }
-  if (message) {
-    let text = "";
-    if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
-      text = t("search.browseLoading");
-    } else if (!state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
-      text = t("search.larkNoResults");
-    }
-    message.textContent = text;
-    message.classList.remove("is-error");
-  }
+  if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
     key: selected.id, title: selected.name, query: state.categoryBrowseQuery,
     loading: state.categoryBrowseLoading, translate: t,
@@ -8780,12 +8832,15 @@ function renderFollowBrowse() {
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "uids",
+    owners.map((owner) => owner?.uid)) || [];
   elements.sourcesFollowedScroll?.classList.toggle("is-detail-view", hasSelectedUid);
   const signature = JSON.stringify({
     loading: state.followBrowseLoading,
     selected: state.followBrowseSelectedUid,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {uid: state.followBrowseSelectedUid}),
     owners,
+    placeholders,
     items,
     language: state.language,
     query: state.followBrowseQuery,
@@ -8802,17 +8857,17 @@ function renderFollowBrowse() {
     window.BilikaraBrowseSearch?.reset(elements.followSearchForm);
     elements.followUpGrid.innerHTML = "";
     elements.followSongResults.innerHTML = "";
-    if (!owners.length) {
+    if (!owners.length && !placeholders.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
       empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
       elements.followUpGrid.appendChild(empty);
     } else {
-      owners.forEach((owner) => {
+      [...placeholders, ...owners].forEach((owner) => {
         const displayName = followOwnerDisplayName(owner);
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "follow-up-button";
+        button.className = owner.placeholder ? "follow-up-button source-card-placeholder" : "follow-up-button";
         button.dataset.uid = String(owner.uid || "");
         button.title = displayName;
 
@@ -8822,7 +8877,8 @@ function renderFollowBrowse() {
 
         const count = document.createElement("span");
         count.className = "follow-up-count";
-        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
+        // A queued source has no count yet; its status label fills this line.
+        count.textContent = owner.placeholder ? "" : t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
         window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
@@ -8840,7 +8896,7 @@ function renderFollowBrowse() {
         elements.followUpGrid.appendChild(button);
       });
     }
-    setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    setFollowBrowseMessage("");
     return;
   }
 
@@ -8866,7 +8922,7 @@ function renderFollowBrowse() {
     items,
     state.followBrowseLoading ? t("follow.loadingItems") : window.BilikaraSourceStatus.emptyText(state.data?.gatcha, {uid: state.followBrowseSelectedUid}, t, t("follow.noItems")),
   );
-  setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+  setFollowBrowseMessage("");
   window.BilikaraBrowseSearch?.sync(elements.followSearchForm,
     elements.followUpItemsView.querySelector(".follow-browser-head"), {
       key:state.followBrowseSelectedUid, title:elements.followBrowseTitle.textContent,
@@ -8925,11 +8981,14 @@ function renderFavlistBrowse() {
   }
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
+    folders.map((folder) => folder?.folder_id || folder?.id)) || [];
   const signature = JSON.stringify({
     loading: state.favlistBrowseLoading,
     selected: state.favlistBrowseSelectedFolderId,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}),
     folders,
+    placeholders,
     items,
     language: state.language,
     query: state.favlistBrowseQuery,
@@ -8947,18 +9006,21 @@ function renderFavlistBrowse() {
     window.BilikaraBrowseSearch?.reset(elements.favlistSearchForm);
     elements.favlistGrid.innerHTML = "";
     elements.favlistSongResults.innerHTML = "";
-    if (!folders.length) {
+    if (!folders.length && !placeholders.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
       empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
       elements.favlistGrid.appendChild(empty);
     } else {
-      folders.forEach((folder) => {
+      [...placeholders, ...folders].forEach((folder) => {
         const folderId = String(folder.id || "").trim();
-        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const title = String(folder.title
+          || (folder.placeholder ? `${t("favlist.folder")} ${folder.folder_id}` : folderId || t("favlist.folder"))).trim();
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "follow-up-button favlist-browse-button";
+        button.className = folder.placeholder
+          ? "follow-up-button favlist-browse-button source-card-placeholder"
+          : "follow-up-button favlist-browse-button";
         button.dataset.folderId = folderId;
         button.title = title;
 
@@ -8968,7 +9030,9 @@ function renderFavlistBrowse() {
 
         const count = document.createElement("span");
         count.className = "follow-up-count favlist-browse-count";
-        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+        count.textContent = folder.placeholder
+          ? ""
+          : t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
 
         button.append(name, count);
         window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
@@ -8986,7 +9050,7 @@ function renderFavlistBrowse() {
         elements.favlistGrid.appendChild(button);
       });
     }
-    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    setFavlistBrowseMessage("");
     return;
   }
 
@@ -9012,7 +9076,7 @@ function renderFavlistBrowse() {
     items,
     state.favlistBrowseLoading ? t("favlist.loadingItems") : window.BilikaraSourceStatus.emptyText(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}, t, t("favlist.noItems")),
   );
-  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+  setFavlistBrowseMessage("");
   window.BilikaraBrowseSearch?.sync(elements.favlistSearchForm,
     elements.favlistItemsView.querySelector(".follow-browser-head"), {
       key: state.favlistBrowseSelectedFolderId, title: elements.favlistBrowseTitle.textContent,
@@ -9884,6 +9948,12 @@ function syncHostAccountPresentation() {
 
 function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
   const nextPinned = Boolean(pinned);
+  if (nextPinned) {
+    state.cacheSettingsOpen = false;
+    state.presentationSettingsOpen = false;
+    syncCachePanelVisibility();
+    syncPresentationPanelVisibility();
+  }
   const changed = state.remoteQrPinned !== nextPinned;
   state.remoteQrPinned = nextPinned;
   elements.remoteMiniControl?.classList.toggle("is-qr-pinned", state.remoteQrPinned);
@@ -9894,6 +9964,7 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     !state.remoteQrPinned && Boolean(dismissTransient),
   );
   elements.remoteMiniTrigger?.setAttribute("aria-expanded", String(state.remoteQrPinned));
+  syncRemoteQrPreviewLayer();
   if (changed) {
     document.dispatchEvent(new CustomEvent("bilikara:remote-access-menu", {
       detail: { expanded: state.remoteQrPinned },
@@ -9908,6 +9979,31 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
       activeElement.blur();
     }
   }
+}
+
+function syncRemoteQrPreviewLayer() {
+  const popup = elements.remoteMiniPopover;
+  const control = elements.remoteMiniControl;
+  if (!popup || !control || typeof popup.showPopover !== "function") return;
+  const preview = !state.remoteQrPinned && !control.classList.contains("is-qr-dismissed")
+    && control.matches(":hover, :focus-within");
+  const sequence = popup.__bilikaraPreviewSequence = (popup.__bilikaraPreviewSequence || 0) + 1;
+  if (preview) {
+    popup.setAttribute("popover", "manual");
+    if (!popup.matches(":popover-open")) popup.showPopover();
+  } else {
+    const finish = () => {
+      if (popup.__bilikaraPreviewSequence !== sequence) return;
+      if (popup.matches(":popover-open")) popup.hidePopover();
+      popup.removeAttribute("popover");
+      scheduleTopControlPopoverPositionSync();
+    };
+    // Pinning changes the same card into a management menu immediately; a
+    // hover dismissal keeps its top-layer position until the fade completes.
+    if (state.remoteQrPinned) finish();
+    else Promise.allSettled((popup.getAnimations?.() || []).map(animation => animation.finished)).then(finish);
+  }
+  scheduleTopControlPopoverPositionSync();
 }
 
 const cacheAdvancedInfoHoverDelayMs = 160;
@@ -9937,7 +10033,7 @@ function positionContextualTooltip(info) {
   );
   const buttonRect = button.getBoundingClientRect();
   tooltip.style.width = "max-content";
-  tooltip.style.maxWidth = `${Math.round(Math.max(0, boundaryRight - boundaryLeft))}px`;
+  tooltip.style.maxWidth = `${Math.round(Math.min(320, Math.max(0, boundaryRight - boundaryLeft)))}px`;
   const width = tooltip.getBoundingClientRect().width;
   tooltip.style.left = "0px";
   tooltip.style.top = "0px";
@@ -9950,7 +10046,8 @@ function positionContextualTooltip(info) {
     Math.min(preferredLeft, boundaryRight - width),
   );
   const spaceAbove = buttonRect.top - boundaryTop - tooltipGap;
-  const direction = spaceAbove >= height ? "up" : "down";
+  const spaceBelow = boundaryBottom - buttonRect.bottom - tooltipGap;
+  const direction = spaceAbove >= height || spaceAbove >= spaceBelow ? "up" : "down";
   const top = direction === "up"
     ? buttonRect.top - tooltipGap - height
     : Math.min(
@@ -9971,7 +10068,7 @@ function positionContextualTooltip(info) {
   if (Math.abs(topCorrection) > 0.5) {
     tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
   }
-  tooltip.style.setProperty("--contextual-tooltip-arrow-left", `${arrowCenter - 5}px`);
+  tooltip.style.setProperty("--contextual-tooltip-arrow-left", `${arrowCenter - 6}px`);
   return true;
 }
 
@@ -10001,7 +10098,6 @@ function compactTopControlPopoverEntries() {
 
 function syncTopControlPopoverPositions() {
   state.topControlPopoverPositionFrame = null;
-  const compact = Boolean(window.matchMedia?.("(max-width: 840px)")?.matches);
   const viewportInset = 12;
   const popupGap = 8;
   compactTopControlPopoverEntries().forEach(([trigger, popup]) => {
@@ -10017,19 +10113,12 @@ function syncTopControlPopoverPositions() {
       const scrollbarWidth = Math.max(0, popup.offsetWidth - popup.clientWidth - borders);
       popup.style.setProperty("--cache-panel-scrollbar-width", `${scrollbarWidth}px`);
     }
-    if (!compact) {
-      for (const property of ["left", "right", "top"]) {
-        popup.style[property] = "";
-      }
-      return;
-    }
+    // Border-box layout size stays stable throughout the entrance/exit scale.
+    // Hover previews and management menus use the same viewport anchor.
+    popup.style.position = "fixed";
     const triggerRect = trigger.getBoundingClientRect();
-    const popupRect = popup.getBoundingClientRect();
-    const computedWidth = Number.parseFloat(window.getComputedStyle(popup).width) || 0;
-    const popupWidth = Math.min(
-      window.innerWidth - (viewportInset * 2),
-      popupRect.width || computedWidth,
-    );
+    const popupWidth = popup.offsetWidth;
+    if (!popupWidth) return;
     const preferredLeft = triggerRect.right - popupWidth;
     const left = Math.max(
       viewportInset,
@@ -10189,6 +10278,11 @@ function renderPlayerFullscreenRemoteAccess({
     normalizedLocalDisplayUrl ? (new URL(normalizedLocalDisplayUrl).origin + new URL(normalizedLocalDisplayUrl).pathname) : "");
   elements.playerFullscreenRemoteUrl?.classList.remove("hidden");
   elements.playerFullscreenRemoteUrl?.setAttribute("aria-disabled", String(!normalizedLocalDisplayUrl));
+  if (elements.playerFullscreenRemoteUrl) {
+    if (normalizedLocalDisplayUrl) elements.playerFullscreenRemoteUrl.href = normalizedLocalDisplayUrl;
+    else elements.playerFullscreenRemoteUrl.removeAttribute("href");
+    elements.playerFullscreenRemoteUrl.tabIndex = normalizedLocalDisplayUrl ? 0 : -1;
+  }
   if (!normalizedLocalDisplayUrl) setTextContent(elements.playerFullscreenRemoteUrl, t("remote.noAddress"));
   setTextContent(elements.playerFullscreenRemoteUrlHint, String(localHint || "").trim());
   setTextContent(
@@ -10298,6 +10392,7 @@ function renderRemoteAccess(remoteAccess) {
   const popoverTargetUrl = view.url;
   const displayHint = view.hint;
   const internetDisplay = state.internetRemoteDisplay;
+  const localConnectedCount = Math.max(0, Math.trunc(Number(remoteAccess?.connected_count) || 0));
   const internetActive = Boolean(
     internetDisplay?.mode === "internet"
       && internetDisplay?.active
@@ -10317,6 +10412,7 @@ function renderRemoteAccess(remoteAccess) {
     internetQrImage,
     internetPassword,
     internetConnectedCount,
+    localConnectedCount,
     // Native QR is provided independently of the URL; missing -> ready must
     // redraw even when the LAN address has not changed.
     nativeQrImage: document.documentElement?.dataset?.nativeHost === "true"
@@ -10326,6 +10422,12 @@ function renderRemoteAccess(remoteAccess) {
     return;
   }
   state.remoteAccessRenderSignature = signature;
+  document.querySelectorAll("[data-local-connection-count]").forEach(node => {
+    setTextContent(node, String(localConnectedCount));
+  });
+  document.querySelectorAll("[data-local-connection-label]").forEach(node => {
+    setTextContent(node, t("remote.connectionCount", { count: localConnectedCount }));
+  });
 
   for (const link of [elements.remoteUrlLink, elements.remotePopoverUrlLink]) {
     if (!link) continue;
@@ -10690,10 +10792,7 @@ function maybeReportManualUpdateCheckOutcome(update) {
     setAppMessage(update?.error || update?.message || t("service.updateFailed"), true);
     return;
   }
-  if (update?.requires_recheck) {
-    setAppMessage(t("service.updateChannelNeedsRecheck"));
-    return;
-  }
+  if (update?.requires_recheck) return;
   if (!isEligibleCurrentChannelUpdate(update)) {
     setAppMessage(t("service.upToDate"));
   }
@@ -10754,10 +10853,10 @@ function renderUpdatePreviewControl() {
       statusText = "";
     } else if (!state.updateAutomaticEnabled && !state.manualUpdateCheck) {
       statusText = "";
-    } else if (!appUpdateMatchesSelectedChannel(update) && String(update?.state || "") !== "idle") {
-      statusText = t("service.updateChannelNeedsRecheck");
-    } else if (String(update?.state || "") === "checking") {
-      statusText = t("status.checking");
+    } else if (state.updateCheckRequestInFlight || update.state === "checking"
+      || update?.requires_recheck || !appUpdateMatchesSelectedChannel(update)) {
+      // The action already communicates checking; channel changes are not errors.
+      statusText = "";
     } else {
       statusText = String(update?.error || update?.message || "");
     }
@@ -10822,7 +10921,17 @@ function renderBBDownLogin(login) {
 }
 
 function maybeStartBBDownLogin(login, options = {}) {
+  const loginState = String(login?.state || "idle");
+  if (loginState !== "failed") state.bbdownExpiredRetryHandled = false;
   if (!state.cacheSettingsOpen || state.bbdownLoginRequesting || login?.logged_in) {
+    return;
+  }
+  // Refresh only the backend's explicit expiry result. Network/API failures
+  // remain manual, and a failed refresh cannot loop on the same snapshot.
+  if (loginState === "failed" && login?.message === "二维码已过期，请重新生成"
+    && !state.bbdownExpiredRetryHandled) {
+    state.bbdownExpiredRetryHandled = true;
+    void startBBDownLogin({ force: true });
     return;
   }
   const force = Boolean(options.force);
@@ -10830,7 +10939,6 @@ function maybeStartBBDownLogin(login, options = {}) {
   // width alone must not disable the desktop Settings login workflow.
   if (!force && document.documentElement.dataset.hostPlatform === "android"
     && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
-  const loginState = String(login?.state || "idle");
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
   }
@@ -14349,9 +14457,7 @@ function renderKeyShiftControls(playbackMode) {
   const pitch = audio?.bilikaraPitch;
   if (pitchStatus) {
     const failed = audio?.bilikaraPitchFailure || pitch?.failure;
-    const pending = keyShift !== 0 && (!pitch || pitch.phase !== "active" || pitch.applied !== keyShift);
-    pitchStatus.textContent = keyShift && failed ? t("player.pitchUnavailable")
-      : pending ? t("player.pitchPending") : "";
+    pitchStatus.textContent = keyShift && failed ? t("player.pitchUnavailable") : "";
     pitchStatus.hidden = !pitchStatus.textContent;
   }
   globalThis.BilikaraHostLayout?.syncPlayerFieldWidths?.();
@@ -16242,6 +16348,28 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   scheduleQueueScrollOwnershipSync();
 }
 
+// Measure on content/viewport changes, never on a playback timer. Native
+// overflow:auto consumes the actual scrollbar width; add only its 4px gap.
+function observeHostScrollInsets(element) {
+  if (!element || element.__bilikaraScrollInsets || typeof ResizeObserver !== "function") return;
+  element.__bilikaraScrollInsets = true;
+  let frame = 0;
+  const measure = () => {
+    frame = 0;
+    if (!element.isConnected || element.clientHeight <= 0) return;
+    element.classList.toggle("has-scroll-inset", element.scrollHeight > element.clientHeight + 1);
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+  const resize = new ResizeObserver(schedule);
+  resize.observe(element);
+  new MutationObserver(records => {
+    if (records.some(record => record.target === element
+      || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1))) schedule();
+  }).observe(element, { childList: true, subtree: true });
+  document.fonts?.ready.then(schedule);
+  schedule();
+}
+
 function syncQueueScrollOwnership() {
   state.queueScrollMeasureFrame = null;
   const playlist = elements.playlist;
@@ -16957,12 +17085,35 @@ function renderConfirmPopover() {
   const hasPageSizeSelect = Boolean(intent.pageSizeSelect);
   const hideMessage = Boolean(intent.hideMessage);
   const isExport = intent.type === "export-history";
-  elements.confirmTitle?.classList.toggle("hidden", !isExport);
+  const title = isExport ? t("history.exportTitle")
+    : intent.type === "install-app-update" ? t("service.appUpdate") : "";
+  if (elements.confirmTitle) {
+    elements.confirmTitle.textContent = title;
+    elements.confirmTitle.classList.toggle("hidden", !title);
+  }
+  elements.confirmPopover.classList.toggle("has-title", Boolean(title));
   elements.confirmCancel.classList.toggle("hidden", isExport);
   elements.confirmPopover.classList.toggle("is-export", isExport);
-  elements.confirmPopover.setAttribute("aria-labelledby", isExport ? "confirm-title" : "confirm-text");
+  elements.confirmPopover.setAttribute("aria-labelledby", title ? "confirm-title" : "confirm-text");
 
   elements.confirmText.textContent = intent.message || "";
+  const manualUpdate = document.getElementById("confirm-manual-update");
+  if (manualUpdate) {
+    manualUpdate.classList.toggle("hidden", intent.type !== "install-app-update");
+    if (intent.type === "install-app-update") {
+      const [before, after] = t("service.manualUpdateDownload").split("{releases}");
+      const link = document.createElement("a");
+      link.textContent = "GitHub Releases";
+      link.href = "https://github.com/VZRXS/bilikara/releases";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        openExternalUrl(link.href);
+      });
+      manualUpdate.replaceChildren(document.createTextNode(before), link, document.createTextNode(after || ""));
+    } else manualUpdate.textContent = "";
+  }
   elements.confirmText.classList.toggle("hidden", hideMessage);
   if (elements.confirmSource) {
     elements.confirmSource.classList.toggle("hidden", !hasSourceSelect);
@@ -17292,9 +17443,13 @@ async function confirmGatchaFavlistModal() {
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
   setGatchaUidFlowLoadingMessage(messageTarget, t("favlist.pullingSelected"));
+  (Array.isArray(intent.folders) ? intent.folders : []).forEach((folder) => {
+    const folderId = poolConfigFolderId(folder);
+    if (folderIds.includes(folderId)) window.BilikaraSourceStatus?.rememberSource({ folderId, title: folder?.title });
+  });
   closeGatchaFavlistModal();
   try {
-    const result = await pullGatchaFavlist(intent.uid, folderIds);
+    const result = await pullGatchaFavlist(intent.uid, folderIds, intent.folders || []);
     setGatchaUidFlowMessage(
       messageTarget,
       result?.queued ? t(result.duplicate ? "gatcha.sourceAlreadyQueued" : "gatcha.sourceQueued")
@@ -19942,6 +20097,7 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
   if (state.cacheSettingsOpen) {
+    setRemoteQrPinned(false, { dismissTransient: true });
     state.presentationSettingsOpen = false;
     syncPresentationPanelVisibility();
   }
@@ -20080,11 +20236,13 @@ for (const eventName of ["wheel", "touchmove"]) {
 
 elements.remoteMiniTrigger?.addEventListener("focus", () => {
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+  syncRemoteQrPreviewLayer();
   scheduleTopControlPopoverPositionSync();
 });
 
 elements.remoteMiniControl?.addEventListener("mouseenter", () => {
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+  syncRemoteQrPreviewLayer();
   scheduleTopControlPopoverPositionSync();
 });
 
@@ -20092,6 +20250,10 @@ elements.remoteMiniControl?.addEventListener("mouseleave", () => {
   if (!state.remoteQrPinned) {
     elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
   }
+  syncRemoteQrPreviewLayer();
+});
+elements.remoteMiniControl?.addEventListener("focusout", () => {
+  queueMicrotask(syncRemoteQrPreviewLayer);
 });
 
 elements.remoteMiniTrigger?.addEventListener("click", () => {
@@ -20099,13 +20261,10 @@ elements.remoteMiniTrigger?.addEventListener("click", () => {
   setRemoteQrPinned(!wasPinned, { dismissTransient: wasPinned });
 });
 
-elements.remoteMiniPopoverClose?.addEventListener("click", () => {
-  setRemoteQrPinned(false, { dismissTransient: true });
-});
-
 elements.presentationSettingsToggle?.addEventListener("click", async () => {
   state.presentationSettingsOpen = !state.presentationSettingsOpen;
   if (state.presentationSettingsOpen) {
+    setRemoteQrPinned(false, { dismissTransient: true });
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
@@ -20422,6 +20581,7 @@ elements.playerFullscreenButton?.addEventListener("click", async (event) => {
 [
   elements.remoteUrlLink,
   elements.remotePopoverUrlLink,
+  elements.playerFullscreenRemoteUrl,
 ].forEach((link) => link?.addEventListener("click", openRemoteAccessLink));
 
 elements.presentationOutputButton?.addEventListener("click", toggleLocalPresentation);
@@ -21240,7 +21400,6 @@ document.addEventListener("click", (event) => {
   if (
     state.cacheSettingsOpen
     && !event.target.closest("#cache-settings")
-    && !clickedInsideRemoteQr
   ) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();

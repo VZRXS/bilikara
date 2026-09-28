@@ -62,6 +62,40 @@
     if (busy && uid && progress?.pending_uids?.includes(uid)) return "queued";
     return "";
   }
+  const sourceTitles = new Map();
+  // Browse folders are "uid:folder"; queued jobs carry the plain folder id.
+  const plainFolderId = value => String(value ?? "").split(":").pop();
+  // A queued source has no library entry yet; keep the name the user confirmed.
+  function rememberSource({uid, folderId, title} = {}) {
+    const key = folderId ? `favorites:${plainFolderId(folderId)}` : `uids:${uid || ""}`;
+    const text = String(title || "").trim().slice(0, 200);
+    if (!text || key.endsWith(":")) return;
+    sourceTitles.delete(key);
+    sourceTitles.set(key, text);
+    while (sourceTitles.size > 200) sourceTitles.delete(sourceTitles.keys().next().value);
+  }
+  // Waiting and running jobs precede their library entries. They are shown as
+  // placeholder cards until a refreshed list contains the same source.
+  function queuedSources(task = {}, kind, present = []) {
+    const favorites = kind === "favorites";
+    const queue = task.source_queue || {};
+    const known = new Set(present.map(value => favorites ? plainFolderId(value) : String(value ?? "")));
+    const entries = [];
+    for (const job of [queue.active, ...(Array.isArray(queue.pending) ? queue.pending : [])]) {
+      const uid = String(job?.uid || "");
+      const ids = favorites
+        ? (Array.isArray(job?.folder_ids) ? job.folder_ids.map(String) : [])
+        : job && !job.folder_ids ? [uid] : [];
+      for (const id of ids) {
+        if (!uid || !id || known.has(id)) continue;
+        known.add(id);
+        entries.push(favorites
+          ? {placeholder: true, uid, id: `${uid}:${id}`, folder_id: id, title: String(job.folder_titles?.[id] || sourceTitles.get(`favorites:${id}`) || "")}
+          : {placeholder: true, uid, name: sourceTitles.get(`uids:${uid}`) || ""});
+      }
+    }
+    return entries;
+  }
   function emptyText(task, source, translate, fallback) {
     const status = sourceState(task, source);
     return status ? translate(status === "queued" ? "gatcha.sourceWaiting" : `gatcha.source${status[0].toUpperCase()}${status.slice(1)}`) : fallback;
@@ -98,5 +132,6 @@
       for (const card of container.querySelectorAll('.follow-up-button')) syncCard(card, task, translate);
     }
   }
-  root.BilikaraSourceStatus = {sync, syncCard, sourceState, emptyText, setBusy, queueReload, flush, takeCompletion, takeSourceChanges};
+  root.BilikaraSourceStatus = {sync, syncCard, sourceState, emptyText, setBusy, queueReload, flush, takeCompletion, takeSourceChanges,
+    queuedSources, rememberSource};
 })(window);
