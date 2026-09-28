@@ -18,7 +18,7 @@
 
 线上入口：`https://download.kevinx96.icu/bilikara/announcements/index.json`。
 
-在 `announcements/index.json` 编辑真实公告，格式参考 `announcements/example.json`。**示例不是实际服务异常，不要直接发布示例文件。** 当前 index 包含用户授权的公告板限时测试：2026-09-27 15:23:56 至当日 24:00（日本时间 UTC+9），不代表服务异常。过期后只在手动历史中显示。
+在 `announcements/index.json` 编辑真实公告，格式参考 `announcements/example.json`。**示例不是实际服务异常，不要直接发布示例文件。** 当前 index 包含 v0.8.0-preview.2 更新及重发修复说明，并保留用户授权的公告板限时测试：2026-09-27 15:23:56 至当日 24:00（日本时间 UTC+9），不代表服务异常。过期后只在手动历史中显示。
 
 字段为 `schema_version: 1`、`announcements` 数组、不可复用的 `id`、`kind`、`published_at`、`platforms`、`title`、`body_markdown`。后两项为 zh/en/ja 字典，至少一种语言。优先当前语言，缺失时按 en → zh → ja 回退。
 
