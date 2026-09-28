@@ -40,6 +40,7 @@ class LibavCompilerOutputTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0)
 
             with patch.object(builder.sys, "platform", "win32"), \
+                    patch.object(builder.platform, "machine", return_value="AMD64"), \
                     patch.object(builder.sys, "argv", [str(source), "--prefix", str(prefix), "--out", str(output), "--test"]), \
                     patch.object(builder.os, "add_dll_directory", return_value=Mock(), create=True), \
                     patch.object(builder.ctypes, "CDLL", return_value=libraries), \
