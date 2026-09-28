@@ -43,6 +43,7 @@
   --panel-title-line-height: 24px;
   --panel-header-control-size: 32px;
   --panel-header-control-offset: calc((var(--panel-title-line-height) - var(--panel-header-control-size)) / 2);
+  --panel-header-action-inset: calc(20px + var(--panel-header-control-offset));
   --rating-card-shadow: 0 18px 48px rgba(35, 26, 20, 0.24);
 }
 :root[data-theme="dark"] {
@@ -128,7 +129,17 @@
   padding: 20px;
 }
 #confirm-title { min-height: var(--panel-header-control-size); padding-right: 40px; }
-#confirm-close { position: absolute; top: 20px; right: 20px; }
+#confirm-close { position: absolute; top: 20px; right: var(--panel-header-action-inset); }
+/* The title alignment moves controls up by 4px; move the whole action group
+   right by the same amount so its top/right distances remain equal. */
+:root :is(.selection-modal-head > .banner-close,
+  .selection-modal-head > .pool-config-head-actions,
+  .binding-sheet-head > .binding-sheet-close,
+  .binding-sheet-head > .pool-config-head-actions,
+  .volume-adjust-heading > [data-volume-close],
+  .stage-control-tray-head > .banner-close) {
+  margin-inline-end: var(--panel-header-control-offset);
+}
 
 /* Explicit form geometry avoids Safari's compact native select rendering. */
 :root :is(.confirm-source, .confirm-page-size, .history-export-source, .history-export-page-size) {
@@ -189,7 +200,7 @@
 :root .rating-body > [data-rating-content] { display: grid; gap: 16px; }
 :root :is(.song-detail-card > .song-detail-close, .rating-card > .rating-close) {
   top: 20px;
-  right: 20px;
+  right: var(--panel-header-action-inset);
 }
 :root .app-shell[data-stage-controls-layout="popup"] .stage-control-tray { padding: 20px; }
 :root .playback-sheet-status-header {

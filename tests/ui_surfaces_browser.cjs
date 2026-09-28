@@ -102,8 +102,45 @@ async function run() {
       assert.equal(controls[1].height, 32, theme);
       assert.notEqual(controls[1].background, "rgba(0, 0, 0, 0)", theme);
     }
+    for (const client of ["host", "remote"]) {
+      for (const markup of [
+        `<section class="selection-modal-card" data-panel><header class="selection-modal-head">
+          <h2>测试标题</h2><div class="pool-config-head-actions">
+          <button class="toolbar-button ghost-button">重置</button>
+          <button class="banner-close binding-sheet-close" data-close>×</button>
+          </div></header></section>`,
+        `<section class="rating-card" data-panel><button class="rating-close" data-close>×</button>
+          <div class="rating-body"><h2 class="rating-title">测试标题</h2></div></section>`,
+        client === "remote" ? `<dialog class="history-export-dialog" open data-panel>
+          <header class="binding-sheet-head"><h2>导出歌单</h2>
+          <button class="binding-sheet-close" data-close>×</button></header></dialog>` :
+        `<section id="confirm-popover" class="confirm-popover" data-panel>
+          <h2 id="confirm-title">测试标题</h2><button id="confirm-close" class="banner-close" data-close>×</button></section>`,
+      ]) {
+        const fixture = client === "remote" && markup.includes("selection-modal-card")
+          ? `<div class="binding-sheet is-open">${markup
+            .replaceAll("selection-modal-card", "binding-sheet-panel")
+            .replaceAll("selection-modal-head", "binding-sheet-head")}</div>`
+          : markup;
+        await page.setContent(fixture);
+        await page.evaluate(client => { document.documentElement.dataset.uiClient = client; }, client);
+        await page.addStyleTag({ path: path.join(__dirname, client === "host" ? "../static/styles.css" : "../static/remote.css") });
+        await page.addStyleTag({ path: path.join(__dirname, "../static/ui-surfaces.css") });
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.locator("[data-close]").waitFor({ state: "visible" });
+        await page.locator("[data-panel]").evaluate(async panel => {
+          await Promise.all(panel.getAnimations({ subtree: true }).map(animation => animation.finished));
+        });
+        const insets = await page.locator("[data-panel]").evaluate(panel => {
+          const p = panel.getBoundingClientRect(), c = panel.querySelector("[data-close]").getBoundingClientRect();
+          return { top: c.top - p.top, right: p.right - c.right, height: c.height };
+        });
+        assert.ok(Math.abs(insets.top - insets.right) < 0.1, `${client}: ${JSON.stringify(insets)}`);
+        assert.equal(insets.height, 32, `${client}: ${markup}`);
+      }
+    }
     assert.deepEqual(errors, []);
-    console.log("PASS: no scroll separators; stable geometry; icon-only collapse and filled header actions in all themes");
+    console.log("PASS: no scroll separators; icon-only collapse in all themes; equal Host/Remote top-right action insets");
   } finally {
     await browser.close();
   }
