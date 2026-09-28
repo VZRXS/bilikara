@@ -40,6 +40,24 @@ class VideoServiceTest(unittest.TestCase):
         self.assertTrue(all(path.startswith("/x/web-interface/wbi/view?") for path, _ in fixture.requests))
 
     @video_fixture
+    def test_share_prose_resolves_short_link_and_preserves_selected_page(self, fixture):
+        fixture.redirects["/zrTURCn"] = "https://www.bilibili.com/video/av123?p=2"
+        fixture.return_value["data"]["pages"].append({"page": 2, "cid": 789, "duration": 300, "part": "伴奏"})
+        for share in (
+            "【【カラオケ】はじまりは恋 - カナデ (夏吉ゆうこ) -『KANADE』OP-哔哩哔哩】 https://b23.tv/zrTURCn",
+            "分享https://b23.tv/zrTURCn。更多内容",
+        ):
+            with self.subTest(share=share):
+                with self.assertRaises(bilibili.ManualBindingRequiredError) as error:
+                    bilibili.fetch_video_item(share)
+                self.assertEqual(error.exception.preferred_page, 2)
+                item = bilibili.fetch_video_item(share, selected_video_page=2, selected_audio_pages=[1, 2])
+                self.assertEqual(item.original_url, "https://b23.tv/zrTURCn")
+                self.assertEqual(item.video_page, 2)
+                self.assertEqual(item.selected_pages, [1, 2])
+        self.assertTrue(any(path == "/zrTURCn" for path, _ in fixture.requests))
+
+    @video_fixture
     def test_short_link_hops_and_disallowed_redirect(self, fixture):
         fixture.redirects["/short"] = "https://bili2233.cn/next"
         fixture.redirects["/next"] = "https://www.bilibili.com/video/av123?p=2&x=&x=%E4%B8%AD#keep"
