@@ -251,6 +251,10 @@
     requestButtonClass.split(/\s+/).filter(Boolean).forEach((className) => elements.request.classList.add(className));
     nextButtonClass.split(/\s+/).filter(Boolean).forEach((className) => elements.next.classList.add(className));
 
+    elements.close.dataset.i18nAriaLabel = "common.close";
+    elements.playsLabel.dataset.i18n = "search.playCountLabel";
+    elements.ratingLabel.dataset.i18n = "search.detailRating";
+    elements.bilibiliLink.dataset.i18n = "search.openOnBilibili";
     let activeItem = null;
     let activeUrl = "";
     let activeBilibiliUrl = "";
@@ -267,9 +271,12 @@
           button.removeAttribute("aria-busy");
         }
       });
+      elements.request.dataset.i18n = "request.submit";
+      elements.next.dataset.i18n = "request.moveNext";
       elements.request.textContent = translate("request.submit");
       elements.next.textContent = translate("request.moveNext");
       if (busy && activeButton) {
+        activeButton.dataset.i18n = "search.adding";
         activeButton.textContent = translate("search.adding");
       }
     }

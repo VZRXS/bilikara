@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PresentationStaticInvariantsTest(unittest.TestCase):
+    def test_display_identifier_preferences_follow_host_without_inline_scripts(self):
+        subprocess.run(
+            ["node", "tests/display_identifier_preferences.cjs"], cwd=ROOT,
+            check=True, capture_output=True, text=True, encoding="utf-8",
+        )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.static = ROOT / "static"

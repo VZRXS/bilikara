@@ -117,6 +117,38 @@ the pinned download manifest rather than making aria2c a required bundled file.
 Libav is discovered from the installed resources and configured through typed
 Rust services before workers start. Broken packages fail explicitly.
 
+## Build identity and update channels
+
+The displayed version and updater both use the bundled `APP_VERSION`, not the
+numeric version in Cargo, npm or the Tauri package. Clean release/preview tag
+builds retain labels such as `v0.8.0` or `v0.8.0-preview.1`. Local branch builds
+and CI branch checkouts use `<branch>-g<12-character commit>`, for example
+`work/v0.8.0-gabcdef123456` or `dev-gabcdef123456`. Modified tracked files,
+staged changes or untracked non-ignored files append `-dirty`. Even a dirty tag
+checkout gets the commit/dirty suffix. A local branch pointing at a release tag
+still remains a branch build. Detached untagged checkouts use `dev-g<commit>`;
+missing Git provenance uses `dev-gunknown` rather than inventing a release.
+
+`BILIKARA_VERSION` remains an explicit trusted build/launcher override and takes
+precedence; setting it to a release label deliberately changes the updater's
+classification. Ordinary builds should leave it unset. Build labels are bounded
+to 80 ASCII characters; unsupported branch-name characters are replaced by `-`
+and long branch names are truncated while preserving the commit/dirty suffix.
+
+The shared Rust release policy accepts only `v?MAJOR.MINOR.PATCH` and
+`v?MAJOR.MINOR.PATCH-preview.N` as release versions. Branch names, `dev`, Git
+suffixes and dirty suffixes are development versions: they offer switching to
+the latest stable release, or to a preview when the preview channel is enabled.
+This can select a numerically older published release than the branch's package
+version. A numeric `0.8.0` build would instead be treated as stable and suppress
+that switch when the latest published stable is `0.7.2`.
+
+OS metadata stays numeric and does not include a commit hash. The staging
+manifest's `development` flag still describes the debug/incomplete resource
+layout; it is independent of the updater's development-version classification.
+A complete release-profile build from `work/…` can therefore have
+`development: false` and still correctly report a development version.
+
 ## Data and import
 
 Default writable native roots are:

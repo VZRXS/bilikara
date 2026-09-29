@@ -2,6 +2,23 @@
   "schema_version": 1,
   "announcements": [
     {
+      "id": "release-v0.8.0-preview.3-20260928",
+      "kind": "release",
+      "version": "v0.8.0-preview.3",
+      "published_at": "2026-09-28T17:49:36+09:00",
+      "platforms": [],
+      "title": {
+        "zh": "v0.8.0-preview.3 更新与修复",
+        "en": "v0.8.0-preview.3 updates and fixes",
+        "ja": "v0.8.0-preview.3 の更新と修正"
+      },
+      "body_markdown": {
+        "zh": "# New\n\n- 桌面版默认使用独立 Rust Host，统一原生、BBDown 和 DownKyi 缓存流程，安装包不再包含 Python。\n- 优化 Host / Remote 弹窗、分 P 选择、分页及中英日文案。\n- 升降调处理由 Jungle 改为 Signalsmith Stretch，支持单曲音量最高 500%。\n- 增加更新公告与限时通知，支持快速点歌直接粘贴含短链接的分享文案。\n\n# Fix\n\n- 修复 Hi-Res 缓存校验、重新缓存、登录后来源刷新、评分提交及旧配置迁移等问题。\n- 修复双屏识别、局域网地址推荐与 Remote 设备识别，减少重复刷新和多余渲染。\n- 完善原生桌面更新与退出收尾，修复开发构建被误识别为正式版的问题。\n\n桌面版需开启“预览版”开关才能检索到本版本，关闭后可检索降级回稳定版 v0.7.2。\nAndroid ARM64 继续作为 Beta 版提供。\n\n# preview.2 修复与撤回说明\n\npreview.2 的双屏辅助窗口首次打开时可能因会话凭据未建立而显示 forbidden，导致双屏功能无法正常使用，因此该版本已撤下。\n\n- preview.3 修复上述双屏窗口鉴权问题。\n- 去掉 Remote 播放抽屉收起按钮底色，统一 Host / Remote 弹窗右上角按钮的顶部和右侧留白。\n- 更新 README 界面截图，并加入本版本的中英日更新公告。\n\n已安装 preview.2 的用户，开启「预览版」后检查更新即可升级。preview.3 保留上述 preview.2 的全部更新内容。\n\n[下载 v0.8.0-preview.3](https://github.com/VZRXS/bilikara/releases/tag/v0.8.0-preview.3)",
+        "en": "## New\n\n- Desktop now uses a standalone Rust Host with shared Native, BBDown and DownKyi caching services; packages no longer include Python.\n- Refined Host / Remote dialogs, part selection, pagination and Chinese / English / Japanese text.\n- Replaced Jungle with Signalsmith Stretch for pitch shifting, with per-song volume up to 500%.\n- Added release announcements and timed notices. Quick request accepts shared text containing a short video link.\n\n## Fix\n\n- Fixed Hi-Res cache validation, recaching, source refresh after login, rating submission and legacy configuration migration.\n- Fixed display identification, LAN address recommendations and Remote device recognition; reduced redundant refreshes and rendering.\n- Improved native desktop updates and shutdown, and fixed development builds being mistaken for stable releases.\n\n## Preview.2 withdrawal and fixes\n\nPreview.2 has been withdrawn: its new auxiliary window could open without an established session and display forbidden, preventing dual-display use.\n\n- Preview.3 fixes that window authentication issue.\n- Removed the Remote playback drawer collapse button fill and aligned the top and right insets of Host / Remote dialog header actions.\n- Updated README screenshots and added this announcement in Chinese, English and Japanese.\n\nPreview.3 retains all preview.2 updates listed above. Enable Preview builds in the desktop app and check for updates, or use the [release page](https://github.com/VZRXS/bilikara/releases/tag/v0.8.0-preview.3). Disabling Preview builds allows a downgrade to stable v0.7.2. Android ARM64 remains a Beta.",
+        "ja": "## 新機能\n\n- デスクトップ版を独立した Rust Host に移行し、Native・BBDown・DownKyi のキャッシュ処理を統一しました。配布パッケージに Python は含まれません。\n- Host / Remote のダイアログ、分 P 選択、ページ切り替えと中英日表記を改善しました。\n- キー変更を Jungle から Signalsmith Stretch に変更し、曲ごとの音量を最大 500% に設定できます。\n- 更新情報と期間限定のお知らせを追加しました。短縮リンクを含む共有テキストをクイックリクエストにそのまま貼り付けられます。\n\n## 修正\n\n- Hi-Res のキャッシュ検証、再キャッシュ、ログイン後のソース更新、評価の送信、旧設定の移行を修正しました。\n- ディスプレイ識別、LAN アドレスの推薦、Remote の端末識別を修正し、重複した更新や不要な再描画を減らしました。\n- デスクトップ版の更新・終了処理を改善し、開発ビルドを安定版と誤認する問題を修正しました。\n\n## preview.2 の公開取り下げと修正\n\npreview.2 では新しい補助ウィンドウを開く際にセッションが確立されず、forbidden が表示されてデュアルディスプレイ機能を使えないことがあったため、公開を取り下げました。\n\n- preview.3 で上記のウィンドウ認証問題を修正しました。\n- Remote の再生ドロワーを閉じるボタンの背景をなくし、Host / Remote のダイアログ右上にあるボタンの上余白と右余白を揃えました。\n- README の画面画像を更新し、中英日のお知らせを追加しました。\n\npreview.3 は上記の preview.2 の更新内容をすべて引き継ぎます。デスクトップ版で「プレビュー版」を有効にして更新を確認するか、[ダウンロードページ](https://github.com/VZRXS/bilikara/releases/tag/v0.8.0-preview.3)をご利用ください。「プレビュー版」を無効にすると安定版 v0.7.2 に戻せます。Android ARM64 は引き続き Beta 版です。"
+      }
+    },
+    {
       "id": "announcement-board-test-20260927",
       "kind": "notice",
       "published_at": "2026-09-27T15:23:56+09:00",

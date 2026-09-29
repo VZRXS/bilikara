@@ -242,7 +242,7 @@
                         aria-label="更多信息">
                         <span class="contextual-info-glyph" aria-hidden="true">i</span>
                       </button>
-                      <span class="cache-advanced-tooltip" id="presentation-output-description" role="tooltip"
+                      <span class="cache-advanced-tooltip" id="presentation-output-description" role="tooltip" popover="manual"
                         data-i18n="display.outputPanelDescription">
                         开启后，视频会在所选屏幕全屏播放；Host 窗口继续用于点歌和播放控制。
                       </span>
@@ -292,7 +292,7 @@
                         aria-label="更多信息">
                         <span class="contextual-info-glyph" aria-hidden="true">i</span>
                       </button>
-                      <span class="cache-advanced-tooltip" id="presentation-host-target-description" role="tooltip"
+                      <span class="cache-advanced-tooltip" id="presentation-host-target-description" role="tooltip" popover="manual"
                         data-i18n="display.hostTargetDescription">
                         当前 Host 所在屏幕将用于观众播放，因此需要选择另一块屏幕放置 Host 主控窗口。
                       </span>
@@ -869,7 +869,7 @@
 
             <section class="settings-section" aria-labelledby="settings-maintenance-title">
               <div class="settings-section-heading">
-                <p class="section-tag" data-i18n="settings.maintenanceTag">System</p>
+                <p class="section-tag" data-i18n="settings.maintenanceTag">Advanced Settings</p>
                 <h3 id="settings-maintenance-title" data-i18n="service.advancedSettings">高级与系统维护</h3>
               </div>
               <div class="settings-section-card cache-advanced-inline-view" id="cache-advanced-inline-view">
@@ -1032,8 +1032,8 @@
               data-request-panel="quick" aria-labelledby="workspace-request-heading">
               <p class="native-alpha-notice">bilikara beta：支持搜索、分类、关注／收藏夹浏览、随机点歌及历史导出。导入来源前请在“我的”中登录 Bilibili。默认 720P、3 首缓存，可调整。手机点歌可使用局域网或公网房间。请保持本机前台播放；外接屏可在“双屏显示”中选择，具体能力取决于设备和系统。</p>
               <div class="request-subview-copy">
-                <p class="section-tag" data-i18n="request.tag">Song Request</p>
-                <h3 data-i18n="request.quickTab">快速点歌</h3>
+                <p class="section-tag" data-i18n="request.quickTag">Quick Request</p>
+                <h3 data-i18n="request.quickTitle">快速点歌</h3>
               </div>
               <form id="add-form" class="add-form compact-form">
                 <select id="requester-select" name="requester_name"></select>
@@ -1257,7 +1257,7 @@
           role="tabpanel" aria-labelledby="work-rail-users" data-host-workspace-panel="users" hidden inert>
           <div class="request-head host-peer-head">
             <div class="host-peer-heading">
-              <p class="section-tag" data-i18n="session.tag">Singer Order</p>
+              <p class="section-tag" data-i18n="session.tag">Current Session Users</p>
               <h2 id="workspace-users-heading" data-host-workspace-heading tabindex="-1"
                 data-i18n="session.title">本场用户</h2>
             </div>
@@ -1285,7 +1285,7 @@
           <section class="remote-panel legacy-remote-panel hidden" aria-hidden="true" inert>
             <div class="request-head remote-head">
               <div>
-                <p class="section-tag" data-i18n="remote.tag">Mobile Remote</p>
+                <p class="section-tag" data-i18n="remote.tag">Mobile Request Entry</p>
                 <h2 data-i18n="remote.entryTitle">手机点歌入口</h2>
               </div>
               <button type="button" id="copy-remote-url-button" disabled class="toolbar-button" data-i18n="remote.copyLink">
@@ -1315,7 +1315,7 @@
             role="tabpanel" aria-labelledby="work-rail-random" data-host-workspace-panel="random" hidden inert>
             <div class="request-head gatcha-head host-peer-head">
               <div class="host-peer-heading">
-                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">GATCHA</p>
+                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha</p>
                 <h2 id="gatcha-title" data-host-workspace-heading tabindex="-1"
                   data-i18n="gatcha.title">试试运气</h2>
               </div>
@@ -1382,7 +1382,7 @@
         aria-labelledby="work-rail-queue" data-host-workspace-panel="queue" hidden inert>
         <div class="queue-card-head">
           <div class="queue-card-heading host-peer-heading">
-            <p class="section-tag" id="list-tag" data-i18n="list.tag">Requests</p>
+            <p class="section-tag" id="list-tag" data-i18n="list.tag">Request List</p>
             <h2 id="workspace-queue-heading" data-host-workspace-heading tabindex="-1"><span id="list-title"
                 data-i18n="list.title">点歌列表</span> <span class="queue-count" id="queue-count">(0首)</span></h2>
           </div>
@@ -1636,6 +1636,8 @@
   </template>
 
   <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
+    <h2 id="confirm-title" class="hidden" data-i18n="history.exportTitle">导出歌单</h2>
+    <button type="button" id="confirm-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     <p class="confirm-text" id="confirm-text" data-i18n="confirm.default">确定执行这个操作吗？</p>
     <div id="confirm-source-field" class="export-field hidden">
     <div class="cache-advanced-label-row cache-contextual-info-region">
@@ -1661,12 +1663,12 @@
     </div>
     <select id="confirm-page-size" class="confirm-page-size hidden" aria-label="图片每页歌曲数"
       data-i18n-aria-label="history.exportPageSizeLabel">
-      <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
-      <option value="150" data-i18n="history.exportPageSize150">图片每页 150 首</option>
-      <option value="100" data-i18n="history.exportPageSize100">图片每页 100 首</option>
-      <option value="80" data-i18n="history.exportPageSize80">图片每页 80 首</option>
-      <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
-      <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
+      <option value="200" selected data-i18n="history.exportPageSize200">每页 200 首</option>
+      <option value="150" data-i18n="history.exportPageSize150">每页 150 首</option>
+      <option value="100" data-i18n="history.exportPageSize100">每页 100 首</option>
+      <option value="80" data-i18n="history.exportPageSize80">每页 80 首</option>
+      <option value="60" data-i18n="history.exportPageSize60">每页 60 首</option>
+      <option value="50" data-i18n="history.exportPageSize50">每页 50 首</option>
     </select>
     </div>
     <div class="confirm-actions">
@@ -1683,13 +1685,13 @@
       <div class="selection-modal-head host-peer-head">
         <div class="host-peer-heading">
           <div class="binding-modal-title-row cache-contextual-info-region">
-            <h2 data-i18n="binding.title">选择分P绑定</h2>
+            <h2 data-i18n="binding.title">选择分 P</h2>
             <span class="cache-advanced-info">
               <button type="button" class="cache-advanced-info-button" aria-expanded="false"
                 aria-describedby="binding-modal-help" data-i18n-aria-label="common.moreInfo"
                 aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
               <span class="cache-advanced-tooltip" id="binding-modal-help" role="tooltip"
-                data-i18n="binding.help">选择一个要下载的视频画面，和要绑定的音频轨道</span>
+                data-i18n="binding.help">选择一个分 P 作为视频画面，再选择至少一个分 P 作为可切换的音频。</span>
             </span>
           </div>
         </div>
@@ -1698,11 +1700,11 @@
       </div>
       <div class="selection-modal-grid">
         <section class="selection-modal-column">
-          <h3 data-i18n="binding.video">视频画面</h3>
+          <h3 data-i18n="binding.video">视频画面（选一个）</h3>
           <div id="binding-video-options" class="selection-option-list"></div>
         </section>
         <section class="selection-modal-column">
-          <h3 data-i18n="binding.audio">音频轨道</h3>
+          <h3 data-i18n="binding.audio">音频轨道（至少选一个）</h3>
           <div id="binding-audio-options" class="selection-option-list"></div>
         </section>
       </div>
@@ -1849,11 +1851,12 @@
         <h2 id="announcements-title" data-i18n="announcements.title">更新公告</h2>
         <button type="button" id="announcements-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
-      <p id="announcements-status" role="status" aria-live="polite"></p>
       <div id="announcements-content" tabindex="0"></div>
+      <p id="announcements-status" role="status" aria-live="polite"></p>
     </div>
   </div>
 
+  <script src="/part-selector.js" defer></script>
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>

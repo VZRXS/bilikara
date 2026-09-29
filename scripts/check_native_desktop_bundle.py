@@ -31,11 +31,15 @@ def package_root(executable: Path) -> Path:
 def inspect_package(executable: Path) -> dict:
     root = resources(executable)
     package = package_root(executable)
-    facts = json.loads((root / "native-desktop.json").read_text())
+    facts = json.loads((root / "native-desktop.json").read_text(encoding="utf-8"))
     assert facts["backend"] == "rust" and facts["schema_version"] == 1
     assert facts["resource_layout"] == "internal-v1"
     assert facts["development"] is False, "Expected a release product layout"
-    assert (root / "APP_VERSION").read_text().strip() == facts["version"]
+    assert (root / "APP_VERSION").read_text(encoding="utf-8").strip() == facts["version"]
+    expected_version = os.environ.get("BILIKARA_EXPECT_RELEASE_VERSION", "")
+    assert not expected_version or facts["version"] == expected_version, (
+        f"Release version mismatch: expected {expected_version}, got {facts['version']}"
+    )
     assert (root / "static/fonts/SourceHanSans-VF.ttf").is_file()
     assert (root / "vendor/signalsmith-stretch/SignalsmithStretch.js").is_file()
     assert not (root / "static/vendor").exists(), "Third-party assets must share the internal vendor directory"
@@ -94,6 +98,7 @@ class RunningHost:
             ready = json.loads(line)
             assert ready["backend"] == "rust"
             self.base = ready["baseUrl"]
+            self.bootstrap_url = ready["bootstrapUrl"]
             self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                 urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
             self.client.open(ready["bootstrapUrl"], timeout=5).close()
@@ -126,6 +131,35 @@ class RunningHost:
             self.process.communicate(timeout=10)
 
 
+def check_auxiliary_window_entry(host: RunningHost) -> None:
+    """New WebViews must authenticate without borrowing the main window's jar."""
+    for page, query, document in (
+        ("controller", "presentationGeneration=42", "controller.html"),
+        ("display-identifier", "number=2&theme=dark&language=ja&role=audience", "display-identifier.html"),
+    ):
+        cookies = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+            urllib.request.HTTPCookieProcessor(cookies))
+        target = host.base + "/" + document + "?" + query
+        try:
+            client.open(target, timeout=5).close()
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        else:
+            raise AssertionError("Auxiliary document accepted an unauthenticated window")
+        with client.open(host.bootstrap_url + "?page=" + page + "&" + query, timeout=5) as response:
+            html = response.read().decode("utf-8")
+            assert '<body></body>' in html, "Auxiliary entry must not flash Host entry text"
+            assert "url=/" + document + "?" + query.replace("&", "&amp;") in html
+            cookie = response.headers["Set-Cookie"]
+            assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+            assert "Max-Age" not in cookie
+        with client.open(target, timeout=5) as response:
+            assert "text/html" in response.headers["Content-Type"]
+            assert document.replace(".html", ".js").encode() in response.read()
+        assert len(cookies) == 1
+
+
 def check(executable: Path) -> dict:
     facts = inspect_package(executable)
     with tempfile.TemporaryDirectory(prefix="native-package-home-") as directory:
@@ -155,6 +189,7 @@ def check(executable: Path) -> dict:
                     assert json.load(response)["backend"] == "rust"
                 state = host.api("/api/state")
                 assert state["app"]["version"] == facts["version"]
+                check_auxiliary_window_entry(host)
                 assert host.api("/api/app/update/status")["auto_update_supported"] is False
                 with host.request("/vendor/signalsmith-stretch/SignalsmithStretch.js") as response:
                     assert "javascript" in response.headers["Content-Type"]
@@ -179,14 +214,15 @@ def check(executable: Path) -> dict:
                 proc = Path(f"/proc/{host.process.pid}")
                 if proc.is_dir():
                     assert Path(os.readlink(proc / "exe")) == executable.resolve()
-                    assert not re.search(r"(?:libpython|site-packages|_MEI)", (proc / "maps").read_text())
-                    assert not (proc / "task" / str(host.process.pid) / "children").read_text().strip()
+                    assert not re.search(r"(?:libpython|site-packages|_MEI)", (proc / "maps").read_text(encoding="utf-8"))
+                    assert not (proc / "task" / str(host.process.pid) / "children").read_text(encoding="utf-8").strip()
             finally:
                 host.close()
         if facts["platform"] == "windows":
             assert (destination / "runtime/data/host-state.json").is_file()
             assert {p: p.read_bytes() for p in external.rglob("*") if p.is_file()} == external_files
     return {"nativeReleaseBackend": True, "pythonFreeLayout": True, "bootstrap": True,
+            "auxiliaryWindowBootstrap": True,
             "resources": True, "sse": True, "shutdownAndReopen": True, "version": facts["version"]}
 
 

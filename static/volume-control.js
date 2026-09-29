@@ -131,6 +131,11 @@
     const heading = dialog.querySelector("h2");
     const close = dialog.querySelector("[data-volume-close]");
     const reset = dialog.querySelector("[data-volume-reset]");
+    dialog.dataset.i18nAriaLabel = "player.volumeAdjust";
+    dialog.querySelector("h2").dataset.i18n = "player.volumeAdjust";
+    dialog.querySelector("input").dataset.i18nAriaLabel = "player.volumeTag";
+    close.dataset.i18nAriaLabel = "common.close";
+    reset.dataset.i18n = "common.resetShort";
     if (isRemote) close.autofocus = true;
     const errorMessage = dialog.querySelector(".volume-adjust-error");
     let busy = false;

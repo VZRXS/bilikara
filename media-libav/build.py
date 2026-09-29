@@ -60,7 +60,7 @@ def main():
     if len(config.encode()) > 2048:
         parser.error("configuration exceeds ABI bound")
     out.mkdir(parents=True, exist_ok=True)
-    (out / "build_config.h").write_text("#define BM_BUILD_CONFIG " + json.dumps(config) + "\n")
+    (out / "build_config.h").write_text("#define BM_BUILD_CONFIG " + json.dumps(config) + "\n", encoding="utf-8")
     # DT_RPATH is intentional: the libavcodec -> libswresample dependency has
     # no RUNPATH of its own. A transitive private prefix avoids system mixing.
     command = [os.environ.get("CC", "cc"), "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
@@ -85,17 +85,19 @@ def main():
                    "/LIBPATH:" + str(prefix / "bin"), "/LIBPATH:" + str(prefix / "lib"),
                    "avformat.lib", "avcodec.lib", "avutil.lib", "kernel32.lib",
                    "/OUT:" + str(out / "bilikara_media_libav.dll")]
-        subprocess.run(command, check=True)
+        # MSVC also emits implicit import libraries/exports (probe.lib/.exp).
+        # Keep those beside the explicit outputs instead of dirtying the checkout.
+        subprocess.run(command, cwd=out, check=True)
         if args.test:
             test_command = [v for v in command if v != "/LD"]
             test_command[test_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
             test_command[-1] = "/OUT:" + str(out / "test_shim.exe")
-            subprocess.run(test_command, check=True)
-            subprocess.run([str(out / "test_shim.exe")], check=True)
+            subprocess.run(test_command, cwd=out, check=True)
+            subprocess.run([str(out / "test_shim.exe")], cwd=out, check=True)
             private_command = list(command)
             private_command[private_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
             private_command[-1] = "/OUT:" + str(out / "bilikara_media_libav_test.dll")
-            subprocess.run(private_command, check=True)
+            subprocess.run(private_command, cwd=out, check=True)
         (out / "build-info.json").write_text(json.dumps(facts, indent=2) + "\n", encoding="utf-8")
         return
     if args.sanitize:
@@ -113,7 +115,7 @@ def main():
         private_command[private_command.index(str(source / "probe.c"))] = str(source / "test_shim.c")
         private_command[private_command.index(str(out / library))] = str(out / library.replace("libav.", "libav_test."))
         subprocess.run(private_command, check=True)
-    (out / "build-info.json").write_text(json.dumps(facts, indent=2) + "\n")
+    (out / "build-info.json").write_text(json.dumps(facts, indent=2) + "\n", encoding="utf-8")
     print(out / library)
 
 

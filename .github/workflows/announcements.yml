@@ -67,3 +67,12 @@ jobs:
             --content-type 'application/json; charset=utf-8' \
             --cache-control 'public, max-age=300, must-revalidate' \
             --only-show-errors
+      - name: Verify the published R2 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/announcements/index.json" "$RUNNER_TEMP/published-announcements.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --only-show-errors
+          cmp announcements/index.json "$RUNNER_TEMP/published-announcements.json"
+          sha256sum "$RUNNER_TEMP/published-announcements.json"

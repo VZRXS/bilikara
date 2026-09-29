@@ -18,7 +18,7 @@ def target_output(crate: str, profile: str, target: str | None) -> Path:
     result = subprocess.check_output([
         "cargo", "metadata", "--manifest-path", str(bundle.ROOT_DIR / crate / "Cargo.toml"),
         "--format-version", "1", "--no-deps", "--locked",
-    ], cwd=bundle.ROOT_DIR, text=True)
+    ], cwd=bundle.ROOT_DIR, encoding="utf-8")
     root = Path(json.loads(result)["target_directory"])
     return (root / target if target else root) / profile
 
@@ -65,7 +65,7 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
                 # Development staging may reuse an earlier destination.
                 (resource_vendor / "signalsmith-stretch" / document_name).unlink(missing_ok=True)
     version = bundle._bundle_version()
-    if not re.fullmatch(r"[A-Za-z0-9.+_-]{1,80}", version):
+    if not re.fullmatch(r"[A-Za-z0-9./+_-]{1,80}", version):
         raise RuntimeError("Invalid trusted build version")
     (resources / "APP_VERSION").write_text(version + "\n", encoding="utf-8")
     (resources / "native-desktop.json").write_text(json.dumps({
@@ -115,7 +115,7 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
 def build_backend(*, development: bool, prepare_shell: bool, target: str | None) -> Path:
     target = selected_target(target)
     prefix = libav_bundle.package_prefix()
-    if prefix and json.loads((prefix / "bin/ffmpeg-runtime.json").read_text()).get("kind") != "libav":
+    if prefix and json.loads((prefix / "bin/ffmpeg-runtime.json").read_text(encoding="utf-8")).get("kind") != "libav":
         raise RuntimeError("Native desktop requires a libav-only prefix; media CLI prefixes are retired")
     if not development and prefix is None:
         raise RuntimeError("BILIKARA_LIBAV_PREFIX is required for a complete native bundle")

@@ -238,27 +238,61 @@ VSVersionInfo(
 
 
 def _windows_version_tuple(version: str) -> tuple[int, int, int, int]:
+    # OS resources require numeric fields; a branch or commit ID is only the
+    # human/updater build label, never a source of resource-version digits.
+    if not re.fullmatch(r"v?\d+\.\d+\.\d+(?:-preview\.\d+)?", version, re.IGNORECASE):
+        try:
+            version = json.loads((ROOT_DIR / "package.json").read_text(encoding="utf-8"))["version"]
+        except (OSError, ValueError, KeyError, TypeError):
+            version = "0.0.0"
     parts = [min(int(part), 65535) for part in re.findall(r"\d+", version)[:4]]
     while len(parts) < 4:
         parts.append(0)
     return tuple(parts)
 
 
+def _build_git_output(*arguments: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *arguments], cwd=ROOT_DIR, capture_output=True,
+            encoding="utf-8", check=False, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def _bundle_version() -> str:
+    """Record build provenance; never turn a branch build into a release.
+
+    Runtime release comparisons remain owned by Rust. package.json's numeric
+    version is for package/OS metadata, not evidence of a release checkout.
+    """
     version = os.getenv("BILIKARA_VERSION", "").strip()
     if version:
         return version
+    commit = _build_git_output("rev-parse", "--verify", "HEAD")
+    branch = _build_git_output("symbolic-ref", "--quiet", "--short", "HEAD")
+    changes = _build_git_output("status", "--porcelain", "--untracked-files=normal")
+    tag = _build_git_output("describe", "--exact-match", "--tags", "HEAD")
+    ref_type = os.getenv("GITHUB_REF_TYPE", "").strip()
     ref_name = os.getenv("GITHUB_REF_NAME", "").strip()
-    if ref_name and os.getenv("GITHUB_REF_TYPE", "").strip() == "tag":
-        return ref_name
-    try:
-        package = json.loads((ROOT_DIR / "package.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        package = {}
-    version = package.get("version", "").strip() if isinstance(package, dict) else ""
-    if version:
-        return version
-    return "dev"
+    # CI normally checks out detached HEAD even for branch runs. Only a tag
+    # event (or a local detached tag checkout) may use the clean release label.
+    tag_checkout = ref_type == "tag" or (not ref_type and not branch)
+    if ref_type == "tag" and ref_name:
+        tag_commit = _build_git_output("rev-parse", "--verify", f"refs/tags/{ref_name}^{{commit}}")
+        tag = ref_name if commit and tag_commit == commit else None
+    if tag_checkout and changes == "" and tag and re.fullmatch(
+        r"v?\d+\.\d+\.\d+(?:-preview\.\d+)?", tag, re.IGNORECASE,
+    ):
+        return tag
+    label = (os.getenv("GITHUB_HEAD_REF", "").strip() or ref_name) if ref_type else branch or tag
+    label = re.sub(r"[^A-Za-z0-9./+_-]+", "-", label or "dev").strip("-./") or "dev"
+    commit = commit or os.getenv("GITHUB_SHA", "").strip()
+    short_commit = commit[:12] if commit and re.fullmatch(r"[0-9a-fA-F]{7,64}", commit) else "unknown"
+    suffix = f"-g{short_commit}" + ("-dirty" if changes else "")
+    return label[:80 - len(suffix)] + suffix
 
 
 def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate: bool = False) -> list[str]:

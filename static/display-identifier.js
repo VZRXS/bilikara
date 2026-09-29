@@ -2,7 +2,7 @@
   "use strict";
 
   const parameters = new URLSearchParams(window.location.search);
-  const language = ["zh", "en", "ja"].includes(parameters.get("language"))
+  let language = ["zh", "en", "ja"].includes(parameters.get("language"))
     ? parameters.get("language")
     : "zh";
   const rawNumber = Number(parameters.get("number"));
@@ -23,20 +23,49 @@
     ja: { host: "現在の Host", audience: "観客用画面", unavailable: "選択不可" },
   };
 
-  const number = document.getElementById("display-identifier-number");
-  const roleLabel = document.getElementById("display-identifier-role");
+  let catalog = null;
+  const applyTheme = (theme) => {
+    document.documentElement.dataset.theme = ["dark", "blue"].includes(theme) ? theme : "light";
+  };
+  const render = () => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : language;
+    const number = document.getElementById("display-identifier-number");
+    const roleLabel = document.getElementById("display-identifier-role");
+    if (number) number.textContent = String(displayNumber);
+    if (roleLabel) roleLabel.textContent = catalog?.languages?.[language]?.[roleKeys[role]] || fallbackLabels[language][role];
+  };
+  // External, blocking head script: the native Host's CSP rejects inline
+  // scripts. Set the theme before loading CSS, then localize once DOM is ready.
+  applyTheme(parameters.get("theme"));
   document.documentElement.dataset.displayRole = role;
-  number.textContent = String(displayNumber);
-  roleLabel.textContent = fallbackLabels[language][role];
+  render();
+  document.addEventListener("DOMContentLoaded", render, { once: true });
+  window.addEventListener("storage", (event) => {
+    if (event.key === "bilikara.ui.theme") applyTheme(event.newValue);
+    if (event.key === "bilikara.ui.language") {
+      language = ["en", "ja"].includes(event.newValue) ? event.newValue : "zh";
+      render();
+    }
+  });
+  if (typeof window.BroadcastChannel === "function") {
+    const channel = new window.BroadcastChannel("bilikara-host-appearance");
+    channel.addEventListener("message", ({ data }) => {
+      if (!data || typeof data !== "object") return;
+      applyTheme(data.theme);
+      language = ["en", "ja"].includes(data.language) ? data.language : "zh";
+      render();
+    });
+    window.addEventListener("pagehide", () => channel.close(), { once: true });
+  }
 
   fetch("/i18n.json", { cache: "no-store" })
     .then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     })
-    .then((catalog) => {
-      const translated = catalog?.languages?.[language]?.[roleKeys[role]];
-      if (translated) roleLabel.textContent = translated;
+    .then((translations) => {
+      catalog = translations;
+      render();
     })
     .catch(() => {});
 })();

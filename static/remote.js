@@ -234,6 +234,7 @@ const state = {
   remoteKeyShiftSaveSeq: 0,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
+  audioVariantBarRenderSignature: "",
   bindingSheetOpen: false,
   bindingIntent: null,
   gatchaFavlistSheetOpen: false,
@@ -761,6 +762,13 @@ function applyStaticI18n(root = document) {
   });
   root.querySelectorAll("[data-i18n-alt]").forEach((element) => {
     setElementAttribute(element, "alt", element.dataset.i18nAlt);
+  });
+  root.querySelectorAll("[data-duration-seconds]").forEach((node) => {
+    const seconds = Number(node.dataset.durationSeconds);
+    node.textContent = seconds > 0 ? t("player.durationSeconds", { seconds }) : t("player.durationUnknown");
+  });
+  root.querySelectorAll("[data-rating-score]").forEach((node) => {
+    node.setAttribute("aria-label", t("rating.scoreAria", { score: Number(node.dataset.ratingScore) }));
   });
   document.documentElement.lang = state.language === "zh" ? "zh-CN" : state.language;
   document.title = t("document.remoteTitle");
@@ -1599,9 +1607,9 @@ function renderRemoteQr(url, targets = []) {
           if (code.isDark(row, col)) path += `M${col},${row}h1v1h-1z`;
         }
       }
-      // Preserve all modules plus the four-module QR quiet zone at any URL length.
-      const size = count + 8;
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="white"/><path d="${path}" fill="black" transform="translate(4 4)" /></svg>`;
+      // Access cards share the Host's outer white frame. Do not add a second
+      // frame inside the SVG; preserve every encoded module at any URL length.
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${count} ${count}"><rect width="${count}" height="${count}" fill="white"/><path d="${path}" fill="black" /></svg>`;
       // Inline SVG works with the public Worker's strict img-src CSP (no
       // data: images). Only numeric modules from the local encoder enter SVG.
       const documentSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
@@ -2454,6 +2462,7 @@ function renderRatingPromptContent() {
   copy.className = "song-detail-facts";
   const title = document.createElement("h2");
   title.className = "song-detail-title rating-title";
+  title.dataset.i18n = "rating.title";
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
@@ -2462,6 +2471,7 @@ function renderRatingPromptContent() {
   if (url) {
     const link = document.createElement("a");
     link.className = "rating-link song-detail-bilibili-link";
+    link.dataset.i18n = "search.openOnBilibili";
     link.href = url;
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -2478,7 +2488,8 @@ function renderRatingPromptContent() {
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
     addUpButton.disabled = addUpButton.hasAttribute("aria-busy") || !ownerUid;
-    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+    addUpButton.dataset.i18n = ownerUid ? "rating.addUp" : "rating.missingUid";
+    addUpButton.textContent = t(addUpButton.dataset.i18n);
   }
   syncRatingPromptControls();
 }
@@ -2609,12 +2620,14 @@ function openRatingPrompt(item, { manual = false } = {}) {
   card.className = "rating-card";
   card.setAttribute("role", "dialog");
   card.setAttribute("aria-modal", "true");
+  card.dataset.i18nAriaLabel = "rating.dialogLabel";
   card.setAttribute("aria-label", t("rating.dialogLabel"));
 
   const closeButton = document.createElement("button");
   closeButton.type = "button";
   closeButton.className = "rating-close";
   closeButton.dataset.ratingClose = "";
+  closeButton.dataset.i18nAriaLabel = "rating.closeLabel";
   closeButton.setAttribute("aria-label", t("rating.closeLabel"));
   closeButton.innerHTML = '<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>';
 
@@ -2624,6 +2637,7 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const stars = document.createElement("div");
   stars.className = "rating-stars";
   stars.setAttribute("role", "radiogroup");
+  stars.dataset.i18nAriaLabel = "rating.scoreLabel";
   stars.setAttribute("aria-label", t("rating.scoreLabel"));
   [1, 2, 3, 4, 5].forEach((score) => {
     const button = document.createElement("button");
@@ -2645,24 +2659,28 @@ function openRatingPrompt(item, { manual = false } = {}) {
   doneButton.type = "button";
   doneButton.className = "primary-button";
   doneButton.dataset.ratingSubmit = "";
+  doneButton.dataset.i18n = "rating.done";
   doneButton.textContent = t("rating.done");
   actions.append(addUpButton, doneButton);
 
   const tabs = document.createElement("div");
   tabs.className = "rating-tabs";
   tabs.setAttribute("role", "tablist");
+  tabs.dataset.i18nAriaLabel = "rating.dialogLabel";
   tabs.setAttribute("aria-label", t("rating.dialogLabel"));
   const previousTab = document.createElement("button");
   previousTab.type = "button";
   previousTab.dataset.ratingTab = "previous";
   previousTab.setAttribute("role", "tab");
   previousTab.disabled = !previousRateable;
+  previousTab.dataset.i18n = "rating.previousTab";
   previousTab.textContent = t("rating.previousTab");
   const currentTab = document.createElement("button");
   currentTab.type = "button";
   currentTab.dataset.ratingTab = "current";
   currentTab.setAttribute("role", "tab");
   currentTab.disabled = !currentRateable;
+  currentTab.dataset.i18n = "rating.currentTab";
   currentTab.textContent = t("rating.currentTab");
   tabs.append(previousTab, currentTab);
 
@@ -3211,6 +3229,7 @@ function stableSnapshotForRenderSignature(snapshot) {
     ffmpeg: _ffmpeg,
     player_status: _playerStatus,
     state_revision: _stateRevision,
+    revision: _revision,
     updated_at: _updatedAt,
     ...renderedData
   } = snapshot;
@@ -6570,6 +6589,7 @@ function positionAudioVariantPopover() {
       ? anchor.top - panel.top - gap - visibleHeight
       : anchor.bottom - panel.top + gap,
   ) + "px";
+  window.BilikaraPartSelector?.syncLabels(popover);
 }
 
 function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
@@ -6587,7 +6607,12 @@ function setAudioVariantPopoverOpen(open, { restoreFocus = false } = {}) {
     popover.setAttribute("aria-hidden", String(!nextOpen));
   }
   if (!nextOpen) {
-    clearAudioVariantPopoverPosition();
+    if (popover) {
+      const sequence = popover.__closeSequence = (popover.__closeSequence || 0) + 1;
+      Promise.allSettled((popover.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+        if (!state.audioVariantBarExpanded && popover.__closeSequence === sequence) clearAudioVariantPopoverPosition();
+      });
+    }
     if (restoreFocus) {
       toggleButton?.focus?.({ preventScroll: true });
     }
@@ -6629,6 +6654,7 @@ document.fonts?.ready?.then(syncAudioVariantLayout);
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
+    state.audioVariantBarRenderSignature = "";
     setAudioVariantPopoverOpen(false);
     elements.audioVariantBar.replaceChildren();
     elements.audioVariantPopover?.replaceChildren();
@@ -6639,6 +6665,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
+    state.audioVariantBarRenderSignature = "";
     setAudioVariantPopoverOpen(false);
     elements.audioVariantBar.replaceChildren();
     elements.audioVariantPopover?.replaceChildren();
@@ -6654,6 +6681,13 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
+  const signature = JSON.stringify({ itemId: currentItem.id, language: state.language,
+    selected: selectedVariant?.id || "", buttonsDisabled,
+    variants: variants.map(({ id, label, page, bound }) => ({ id, label, page, bound })),
+  });
+  if (signature === state.audioVariantBarRenderSignature) return;
+  state.audioVariantBarRenderSignature = signature;
+  const scrollTop = elements.audioVariantPopover?.scrollTop || 0;
   elements.audioVariantBar.replaceChildren();
 
   const toggleButton = document.createElement("button");
@@ -6683,8 +6717,11 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     button.className = "audio-variant-button";
     const label = document.createElement("span");
     label.className = "audio-variant-button-label";
-    label.textContent = variant.label || variant.id;
-    button.title = label.textContent;
+    const text = document.createElement("span");
+    text.className = "audio-variant-button-text";
+    text.textContent = variant.label || variant.id;
+    label.append(text);
+    button.title = text.textContent;
     button.appendChild(label);
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
@@ -6701,6 +6738,8 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   elements.audioVariantBar.classList.remove("hidden");
   syncAudioVariantLayout();
   setAudioVariantPopoverOpen(state.audioVariantBarExpanded);
+  if (elements.audioVariantPopover) elements.audioVariantPopover.scrollTop = scrollTop;
+  window.BilikaraPartSelector?.syncLabels(elements.audioVariantBar);
 }
 
 function boundedRemoteVolumePercent(volumePercent) {
@@ -7409,6 +7448,7 @@ function renderBindingOption(inputType, name, entry, checked) {
   title.textContent = `P${entry.page} · ${entry.part}`;
   const meta = document.createElement("div");
   meta.className = "binding-option-meta";
+  meta.dataset.durationSeconds = String(entry.duration || 0);
   meta.textContent = entry.duration > 0 ? t("player.durationSeconds", { seconds: entry.duration }) : t("player.durationUnknown");
   copy.append(title, meta);
 

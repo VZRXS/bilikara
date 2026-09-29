@@ -229,13 +229,43 @@ fn parse_view(data: &Value) -> Result<View, NativeVideoError> {
     })
 }
 
+// Share sheets prepend a title and may append prose without a space. Extract
+// the supported link before resolving short URLs; never fetch the surrounding text.
+fn video_share_reference(input: &str) -> &str {
+    static LINK: OnceLock<regex::Regex> = OnceLock::new();
+    let input = input.trim();
+    let pattern = LINK.get_or_init(|| {
+        regex::Regex::new(r#"(?i)https?://[^\s【】《》「」『』<>"，。！？；（）]+"#).unwrap()
+    });
+    for link in pattern.find_iter(input) {
+        let candidate = link
+            .as_str()
+            .trim_end_matches([')', ']', ',', '.', ';', '!']);
+        if let Ok(url) = url::Url::parse(candidate)
+            && matches!(
+                url.host_str(),
+                Some(
+                    "bilibili.com"
+                        | "www.bilibili.com"
+                        | "m.bilibili.com"
+                        | "b23.tv"
+                        | "bili2233.cn"
+                )
+            )
+        {
+            return candidate;
+        }
+    }
+    input
+}
+
 fn desktop_reference(
     input: &str,
     client: &BilibiliHttpClient,
 ) -> Result<VideoReference, VideoServiceError> {
     static BARE: OnceLock<regex::Regex> = OnceLock::new();
     static PATH: OnceLock<regex::Regex> = OnceLock::new();
-    let input = input.trim();
+    let input = video_share_reference(input);
     if input.is_empty() {
         return Err(NativeVideoError::invalid("请输入 B 站视频链接").into());
     }
@@ -805,6 +835,12 @@ mod tests {
                 3,
             ),
             ("http://www.bilibili.com/video/av123?p=-2#part", "", 123, 1),
+            (
+                "【歌曲】https://www.bilibili.com/video/BV1xx411c7mD?p=2。更多",
+                "BV1xx411c7mD",
+                0,
+                2,
+            ),
         ] {
             let r = desktop_reference(input, &client).unwrap();
             assert_eq!((r.bvid.as_str(), r.aid, r.page), (bvid, aid, page));
@@ -813,6 +849,32 @@ mod tests {
         assert!(
             desktop_reference("https://www.bilibili.com/video/av123?p=invalid", &client).is_err()
         );
+    }
+
+    #[test]
+    fn share_links_keep_queries_and_ignore_unrelated_links() {
+        for (input, expected) in [
+            (
+                "【【カラオケ】はじまりは恋 - カナデ (夏吉ゆうこ) -『KANADE』OP-哔哩哔哩】 https://b23.tv/zrTURCn",
+                "https://b23.tv/zrTURCn",
+            ),
+            (
+                "分享（https://bili2233.cn/abc?p=2）来听",
+                "https://bili2233.cn/abc?p=2",
+            ),
+            (
+                "https://example.com/info https://www.bilibili.com/video/av123?p=2&x=1#part",
+                "https://www.bilibili.com/video/av123?p=2&x=1#part",
+            ),
+            ("【歌】https://b23.tv/abc。更多", "https://b23.tv/abc"),
+            (
+                " https://b23.tv.evil.invalid/abc ",
+                "https://b23.tv.evil.invalid/abc",
+            ),
+            (" BV1xx411c7mD ", "BV1xx411c7mD"),
+        ] {
+            assert_eq!(video_share_reference(input), expected);
+        }
     }
 
     #[test]

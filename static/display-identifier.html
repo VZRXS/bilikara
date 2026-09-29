@@ -4,15 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bilikara Display</title>
-  <script>
-    (() => {
-      const parameters = new URLSearchParams(window.location.search);
-      const theme = parameters.get("theme");
-      const language = parameters.get("language");
-      document.documentElement.dataset.theme = ["dark", "blue"].includes(theme) ? theme : "light";
-      document.documentElement.lang = language === "ja" ? "ja" : language === "en" ? "en" : "zh-CN";
-    })();
-  </script>
+  <script src="/display-identifier.js"></script>
   <link rel="stylesheet" href="/display-identifier.css">
 </head>
 <body>
@@ -20,6 +12,5 @@
     <span class="display-identifier-number" id="display-identifier-number">1</span>
     <p class="display-identifier-role" id="display-identifier-role">当前 Host</p>
   </main>
-  <script src="/display-identifier.js"></script>
 </body>
 </html>

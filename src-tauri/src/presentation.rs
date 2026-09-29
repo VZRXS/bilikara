@@ -1652,6 +1652,34 @@ fn display_identifier_margin_offset(
     requested.min(available) as i32
 }
 
+fn native_window_entry_url(
+    mut url: tauri::Url,
+    host_cookie: Option<&str>,
+) -> Result<tauri::Url, String> {
+    if let Some(cookie) = host_cookie {
+        let page = match url.path() {
+            "/display-identifier.html" => "display-identifier",
+            "/controller.html" => "controller",
+            _ => return Err("invalid native window entry page".to_string()),
+        };
+        let token = cookie
+            .strip_prefix("bilikara_native=")
+            .filter(|token| {
+                !token.is_empty()
+                    && token
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            })
+            .ok_or_else(|| "invalid native Host credential".to_string())?;
+        // A new WebView's initial navigation may not send the Strict Host
+        // cookie, even when it shares a data store. Commit the authenticated
+        // entry document first, then navigate to the fixed window document.
+        url.set_path(&format!("/bootstrap/{token}"));
+        url.query_pairs_mut().append_pair("page", page);
+    }
+    Ok(url)
+}
+
 fn close_display_identifier_labels(app: &tauri::AppHandle, labels: &[String]) {
     for label in labels {
         if let Some(window) = app.get_webview_window(label) {
@@ -1686,7 +1714,11 @@ fn create_display_identifier_window(
     } else {
         "unavailable"
     };
-    let url = display_identifier_url(host, number, theme, language, role)?;
+    let target = display_identifier_url(host, number, theme, language, role)?;
+    let host_cookie = app
+        .state::<crate::backend_process::BackendProcess>()
+        .host_cookie();
+    let url = native_window_entry_url(target, host_cookie.as_deref())?;
     let allowed_origin = url.clone();
     let work_area = record.monitor.work_area();
     let scale_factor = record.monitor.scale_factor().clamp(0.5, 8.0);
@@ -1725,7 +1757,9 @@ fn create_display_identifier_window(
             )
         })
         .on_page_load(move |window, payload| {
-            if payload.event() == PageLoadEvent::Finished {
+            if payload.event() == PageLoadEvent::Finished
+                && payload.url().path() == "/display-identifier.html"
+            {
                 let _ = window.set_size(size);
                 let _ = window.set_position(position);
                 let _ = window.set_ignore_cursor_events(true);
@@ -2082,7 +2116,11 @@ fn create_controller_window(
     if app.get_webview_window("controller").is_some() {
         return Err("the Controller window already exists".to_string());
     }
-    let url = controller_url(host, generation)?;
+    let target = controller_url(host, generation)?;
+    let host_cookie = app
+        .state::<crate::backend_process::BackendProcess>()
+        .host_cookie();
+    let url = native_window_entry_url(target, host_cookie.as_deref())?;
     let allowed_origin = url.clone();
     let builder = WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url));
     #[cfg(windows)]
@@ -3226,12 +3264,68 @@ mod tests {
         MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
         PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
         WindowRole, deliver_main_thread_operation_result, display_identifier_margin_offset,
-        display_source_is_mirrored, next_sequence, readable_display_name,
+        display_source_is_mirrored, native_window_entry_url, next_sequence, readable_display_name,
         run_activation_readiness_step, validate_controller_command,
         validate_display_identifier_order, validate_playback_state, visible_restore_placement,
     };
     use crate::desktop_diagnostics::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
     use std::cell::RefCell;
+
+    #[test]
+    fn identifier_navigation_bootstraps_native_cookie_before_loading_its_document() {
+        let target = tauri::Url::parse("http://127.0.0.1:4567/display-identifier.html?number=2&theme=dark&language=ja&role=audience").unwrap();
+        let entry =
+            native_window_entry_url(target.clone(), Some("bilikara_native=private-token")).unwrap();
+        assert_eq!(entry.origin(), target.origin());
+        assert_eq!(entry.path(), "/bootstrap/private-token");
+        let query = entry
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query["page"], "display-identifier");
+        assert_eq!(query["number"], "2");
+        assert_eq!(query["theme"], "dark");
+        assert_eq!(query["language"], "ja");
+        assert_eq!(query["role"], "audience");
+        assert_eq!(
+            native_window_entry_url(target.clone(), None).unwrap(),
+            target
+        );
+        for invalid in [
+            "",
+            "bilikara_native=",
+            "bilikara_native=token/other",
+            "other=token",
+        ] {
+            assert!(native_window_entry_url(target.clone(), Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn controller_navigation_bootstraps_its_own_session_and_preserves_generation() {
+        let target =
+            tauri::Url::parse("http://127.0.0.1:4567/controller.html?presentationGeneration=42")
+                .unwrap();
+        let entry =
+            native_window_entry_url(target.clone(), Some("bilikara_native=private-token")).unwrap();
+        assert_eq!(entry.origin(), target.origin());
+        assert_eq!(entry.path(), "/bootstrap/private-token");
+        let query = entry
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query["page"], "controller");
+        assert_eq!(query["presentationGeneration"], "42");
+        assert_eq!(
+            native_window_entry_url(target, None).unwrap().path(),
+            "/controller.html"
+        );
+        assert!(
+            native_window_entry_url(
+                tauri::Url::parse("http://127.0.0.1:4567/remote").unwrap(),
+                Some("bilikara_native=private-token"),
+            )
+            .is_err()
+        );
+    }
 
     fn host_placement() -> HostWindowPlacement {
         HostWindowPlacement {

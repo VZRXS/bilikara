@@ -48,7 +48,7 @@ assert.equal(document.documentElement.dataset.remoteInputModality, 'pointer');
 handlers.keydown({ key: 'Enter' });
 assert.equal(document.documentElement.dataset.remoteInputModality, 'keyboard');
 """
-        subprocess.run([self.node, "-e", program], check=True, capture_output=True, text=True)
+        subprocess.run([self.node, "-e", program], check=True, capture_output=True, text=True, encoding="utf-8")
         rule = self._first_base_rule(
             self.styles,
             ':root[data-remote-input-modality="pointer"] body :is(button, [role="button"]):is(:focus, :focus-visible)',
@@ -432,8 +432,6 @@ console.log(JSON.stringify({
                 "width",
                 "display",
                 "flex-direction",
-                "gap",
-                "padding",
                 "border-radius",
                 "background",
                 "border",
@@ -479,7 +477,6 @@ console.log(JSON.stringify({
                 "background",
                 "border",
                 "padding",
-                "margin",
                 "cursor",
                 "border-radius",
                 "transition",
@@ -487,8 +484,13 @@ console.log(JSON.stringify({
             ),
         )
         remote_toggle = self._first_base_rule(self.styles, ".remote-menu-section-toggle")
+        self.assertEqual(self._first_base_rule(self.styles, ".remote-menu-panel")["padding"], "8px 16px")
+        # Rows now occupy their full touch height, so the panel no longer needs
+        # the larger Host gap that compensated for negative button margins.
+        self.assertEqual(self._first_base_rule(self.styles, ".remote-menu-panel")["gap"], "4px")
         self.assertEqual(remote_toggle["color"], "var(--ink)")
         self.assertEqual(remote_toggle["min-height"], "44px")
+        self.assertEqual(remote_toggle["margin"], "0")
         self.assertNotRegex(
             self.styles,
             r"\.remote-menu-section-toggle:(?:active|hover)[^\{]*\{[^}]*background:",
@@ -537,7 +539,7 @@ console.log(JSON.stringify({
             r"\.remote-menu-section \+ \.remote-menu-section\s*\{",
         )
         status_rule = self._first_base_rule(self.styles, ".remote-menu-status-row")
-        self.assertNotIn("min-height", status_rule)
+        self.assertEqual(status_rule["min-height"], "44px")
         self.assertNotIn("border-bottom", status_rule)
         for obsolete_variable in (
             "--remote-menu-bg",

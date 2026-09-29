@@ -646,7 +646,7 @@ async fn handle_inner(
                 true,
             )
         })?;
-        return Ok(session_entry(EntryPage::Host, secret));
+        return Ok(session_entry(host_entry_page(&query)?, secret));
     }
     if method == Method::GET && matches!(path.as_str(), "/remote" | "/remote/" | "/remote.html") {
         validate_entry_navigation(request.headers())?;
@@ -800,21 +800,84 @@ async fn handle_inner(
 enum EntryPage {
     Host,
     Remote,
+    DisplayIdentifier(String),
+    Controller(u64),
+}
+
+fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
+    let parameters = url::form_urlencoded::parse(query.as_bytes()).collect::<Vec<_>>();
+    let pages = parameters
+        .iter()
+        .filter(|(key, _)| key == "page")
+        .collect::<Vec<_>>();
+    if pages.is_empty() {
+        return Ok(EntryPage::Host);
+    }
+    if pages.len() != 1 {
+        return Err(ApiError::invalid("Invalid Host entry page"));
+    }
+    if pages[0].1 == "controller" {
+        let generations = parameters
+            .iter()
+            .filter(|(key, _)| key == "presentationGeneration")
+            .collect::<Vec<_>>();
+        if generations.len() != 1 {
+            return Err(ApiError::invalid("Invalid presentation generation"));
+        }
+        let generation = generations[0]
+            .1
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| ApiError::invalid("Invalid presentation generation"))?;
+        return Ok(EntryPage::Controller(generation));
+    }
+    if pages[0].1 != "display-identifier" {
+        return Err(ApiError::invalid("Invalid Host entry page"));
+    }
+    // Only fixed local documents are entry targets. Their presentation-only
+    // parameters are encoded again; no caller-supplied path or HTML is used.
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(
+            parameters
+                .iter()
+                .filter(|(key, _)| matches!(key.as_ref(), "number" | "theme" | "language" | "role"))
+                .map(|(key, value)| (key.as_ref(), value.as_ref())),
+        )
+        .finish();
+    Ok(EntryPage::DisplayIdentifier(query))
 }
 
 fn session_entry(page: EntryPage, token: &str) -> Response {
+    let silent_entry = matches!(
+        &page,
+        EntryPage::DisplayIdentifier(_) | EntryPage::Controller(_)
+    );
     let (location, lifetime) = match page {
-        EntryPage::Host => ("/", ""),
+        EntryPage::Host => ("/".to_owned(), ""),
         // Preserve ordinary Remote recognition when the browser is closed.
         // This does not extend the lifetime of process-private Host authority.
-        EntryPage::Remote => ("/remote", "; Max-Age=31536000"),
+        EntryPage::Remote => ("/remote".to_owned(), "; Max-Age=31536000"),
+        EntryPage::DisplayIdentifier(query) => (format!("/display-identifier.html?{query}"), ""),
+        EntryPage::Controller(generation) => (
+            format!("/controller.html?presentationGeneration={generation}"),
+            "",
+        ),
+    };
+    let location = location.replace('&', "&amp;");
+    // Auxiliary windows must not flash entry text. Keep their intermediate document
+    // empty even if a WebView exposes it before the target page finishes loading.
+    let content = if silent_entry {
+        String::new()
+    } else {
+        format!(r#"正在进入 bilikara… <a href="{location}" rel="noreferrer">继续</a>"#)
     };
     // A 303 keeps the navigation cross-site and can withhold a Strict cookie
     // on the redirect target. Commit a local document first, then navigate
-    // within that origin. No token, request input or external resource appears
-    // in this document, and the zero-delay refresh replaces the entry URL.
+    // within that origin. No token or external resource appears in this
+    // document, and the zero-delay refresh replaces the entry URL.
     let mut response = Html(format!(
-        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url={location}"><title>bilikara</title><body>正在进入 bilikara… <a href="{location}" rel="noreferrer">继续</a></body></html>"#
+        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url={location}"><title>bilikara</title><body>{content}</body></html>"#
     )).into_response();
     response.headers_mut().insert(
         "content-security-policy",
@@ -896,6 +959,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_identifier_entry_is_fixed_local_and_keeps_strict_session_cookie() {
+        let query = "page=display-identifier&number=2&theme=dark&language=ja&role=audience&next=https%3A%2F%2Fevil.test";
+        let page = host_entry_page(query).unwrap();
+        let EntryPage::DisplayIdentifier(parameters) = &page else {
+            panic!("identifier target required")
+        };
+        assert_eq!(parameters, "number=2&theme=dark&language=ja&role=audience");
+        let response = session_entry(page, "private-host");
+        let cookie = response.headers()["set-cookie"].to_str().unwrap();
+        assert_eq!(
+            cookie,
+            "bilikara_native=private-host; Path=/; HttpOnly; SameSite=Strict"
+        );
+        let body = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(axum::body::to_bytes(response.into_body(), 4096))
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains(
+            "url=/display-identifier.html?number=2&amp;theme=dark&amp;language=ja&amp;role=audience"
+        ));
+        assert!(!html.contains("private-host"));
+        assert!(!html.contains("evil.test"));
+        assert!(html.contains("<body></body>"));
+        assert!(!html.contains("正在进入"));
+        assert!(!html.contains("<a "));
+        assert!(matches!(host_entry_page("").unwrap(), EntryPage::Host));
+        for invalid in [
+            "page=https://evil.test",
+            "page=/controller.html",
+            "page=display-identifier&page=display-identifier",
+        ] {
+            assert!(host_entry_page(invalid).is_err());
+        }
+        let EntryPage::DisplayIdentifier(encoded) =
+            host_entry_page("page=display-identifier&role=%22%3E%3Cscript%3E").unwrap()
+        else {
+            panic!("identifier target required")
+        };
+        assert_eq!(encoded, "role=%22%3E%3Cscript%3E");
+    }
+
+    #[test]
+    fn controller_entry_is_silent_fixed_local_and_requires_one_valid_generation() {
+        let page = host_entry_page(
+            "page=controller&presentationGeneration=42&next=https%3A%2F%2Fevil.test",
+        )
+        .unwrap();
+        let response = session_entry(page, "private-host");
+        assert_eq!(
+            response.headers()["set-cookie"],
+            "bilikara_native=private-host; Path=/; HttpOnly; SameSite=Strict"
+        );
+        let body = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(axum::body::to_bytes(response.into_body(), 4096))
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("url=/controller.html?presentationGeneration=42"));
+        assert!(html.contains("<body></body>"));
+        assert!(!html.contains("private-host"));
+        assert!(!html.contains("evil.test"));
+        for invalid in [
+            "page=controller",
+            "page=controller&presentationGeneration=0",
+            "page=controller&presentationGeneration=-1",
+            "page=controller&presentationGeneration=18446744073709551616",
+            "page=controller&presentationGeneration=1&presentationGeneration=2",
+            "page=controller&presentationGeneration=1&page=display-identifier",
+            "page=controller&presentationGeneration=%22%3E%3Cscript%3E",
+        ] {
+            assert!(host_entry_page(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn only_remote_entry_cookies_survive_browser_session_close() {
         let remote = session_entry(EntryPage::Remote, "remote-device");
         let cookie = remote.headers()["set-cookie"].to_str().unwrap();
@@ -907,6 +1048,17 @@ mod tests {
         let cookie = host.headers()["set-cookie"].to_str().unwrap();
         assert!(!cookie.contains("Max-Age"));
         assert!(!cookie.contains("Expires"));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for response in [host, remote] {
+            let body = runtime
+                .block_on(axum::body::to_bytes(response.into_body(), 4096))
+                .unwrap();
+            let html = std::str::from_utf8(&body).unwrap();
+            assert!(html.contains("正在进入 bilikara…"));
+            assert!(html.contains(">继续</a>"));
+        }
     }
     #[test]
     fn rejects_dns_rebinding_and_foreign_origins() {

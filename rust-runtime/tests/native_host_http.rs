@@ -42,7 +42,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     let host = NativeHost::start(
         &directory,
         Arc::new(|path| match path {
-            "index.html" | "remote.html" => Some(Asset {
+            "index.html" | "remote.html" | "display-identifier.html" => Some(Asset {
                 bytes: b"<!doctype html><html lang=\"en\">shared UI<script src=\"/internet-remote-host.js\" defer></script></html>".to_vec(),
                 mime: "text/html".into(),
             }),
@@ -118,7 +118,57 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     );
     let entry_html = bootstrap.text().unwrap();
     assert!(entry_html.contains("url=/\""));
+    assert!(entry_html.contains("正在进入 bilikara…"));
     assert!(!entry_html.contains(cookie.split('=').nth(1).unwrap()));
+    // A fresh identifier WebView has no cookie. Its protected bootstrap must
+    // commit the Strict session before the same-origin document navigation.
+    let identifier =
+        format!("{base}/display-identifier.html?number=2&theme=dark&language=ja&role=audience");
+    assert_eq!(client.get(&identifier).send().unwrap().status(), 403);
+    let entry = client
+        .get(format!(
+            "{}?page=display-identifier&number=2&theme=dark&language=ja&role=audience",
+            host.bootstrap_url()
+        ))
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .send()
+        .unwrap();
+    assert_eq!(entry.status(), 200);
+    assert!(
+        entry.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .starts_with(&cookie)
+    );
+    let html = entry.text().unwrap();
+    assert!(html.contains("<body></body>"));
+    assert!(!html.contains("正在进入"));
+    assert!(html.contains(
+        "url=/display-identifier.html?number=2&amp;theme=dark&amp;language=ja&amp;role=audience"
+    ));
+    assert!(!html.contains(cookie.split('=').nth(1).unwrap()));
+    assert_eq!(
+        client
+            .get(&identifier)
+            .header("cookie", &cookie)
+            .send()
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/bootstrap/{}?page=display-identifier",
+                "a".repeat(43)
+            ))
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
     // Real native startup seeds the desktop defaults before login/refresh.
     let defaults: Value = client
         .get(format!("{base}/api/gatcha/uids"))

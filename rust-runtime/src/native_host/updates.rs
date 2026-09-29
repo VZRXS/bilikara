@@ -1050,15 +1050,32 @@ mod tests {
         assert_eq!(current["include_preview"], true);
 
         // 5. A development build takes the shared development decisions.
-        set_facts("", "windows", "x64");
-        let (code, body) = post("/api/app/update/check", json!({"include_preview": false}));
-        assert_eq!(code, 200);
-        let development = agreed(&body["data"]);
-        assert_eq!(development["update_action"], "development_to_stable");
-        assert_eq!(development["update_reason"], "development_build");
-        assert_eq!(development["current_version"], "dev");
-        assert_eq!(development["state"], "available");
-        assert_eq!(development["switch_to_release_available"], true);
+        for label in [
+            "",
+            "dev",
+            "work/v0.8.0",
+            "work/v0.8.0-gabcdef123456",
+            "dev-gabcdef123456-dirty",
+            "v0.8.0-dirty",
+            "v0.8.0-preview.1-dirty",
+            "v0.8.0-12-gabcdef-dirty",
+        ] {
+            set_facts(label, "windows", "x64");
+            let (code, body) = post("/api/app/update/check", json!({"include_preview": false}));
+            assert_eq!(code, 200);
+            let development = agreed(&body["data"]);
+            assert_eq!(
+                development["update_action"], "development_to_stable",
+                "{label}"
+            );
+            assert_eq!(development["update_reason"], "development_build");
+            assert_eq!(
+                development["current_version"],
+                if label.is_empty() { "dev" } else { label }
+            );
+            assert_eq!(development["state"], "available");
+            assert_eq!(development["switch_to_release_available"], true);
+        }
         let (code, body) = post("/api/app/update/check", json!({"include_preview": true}));
         assert_eq!(code, 200);
         assert_eq!(body["data"]["update_action"], "development_to_preview");

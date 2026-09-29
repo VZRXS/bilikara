@@ -6,6 +6,11 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      repair_preview2_windows_identity:
+        description: 'Repair the two known preview.2 Windows version records (preserve tagged binaries)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -15,6 +20,7 @@ env:
 
 jobs:
   test:
+    if: ${{ !inputs.repair_preview2_windows_identity }}
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     env:
@@ -108,6 +114,9 @@ jobs:
           python -m compileall -q bilikara
           python -m py_compile start_bilikara.py build_bundle.py
 
+      - name: Test release mirror verification
+        run: node --test tests/release_mirror.test.mjs
+
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
@@ -153,8 +162,10 @@ jobs:
   bundle:
     name: Bundle (${{ matrix.label }})
     needs: test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !inputs.repair_preview2_windows_identity && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ matrix.os }}
+    env:
+      BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -495,6 +506,7 @@ jobs:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          draft: true
 
   android-bundle:
     name: Android ARM64 APK
@@ -605,6 +617,7 @@ jobs:
           files: ${{ steps.android.outputs.apk }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          draft: true
 
       - name: Remove temporary signing file
         if: always()
@@ -612,6 +625,56 @@ jobs:
           if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
             rm -f -- "$ANDROID_KEYSTORE_PATH"
           fi
+
+  repair-preview2-windows-identity:
+    name: Repair preview.2 identity (Windows ${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch' && inputs.repair_preview2_windows_identity
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, arch: x64}
+          - {os: windows-11-arm, arch: arm64}
+    env:
+      BILIKARA_EXPECT_RELEASE_VERSION: v0.8.0-preview.2
+      REPAIR_ARCH: ${{ matrix.arch }}
+      REPAIR_ASSET: bilikara-v0.8.0-preview.2-windows-${{ matrix.arch }}.zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Test identity guards and compiler output isolation
+        run: python -m unittest tests.test_release_identity_repair tests.test_libav_compiler_outputs -v
+      - name: Download the original tagged archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.8.0-preview.2 --pattern "$env:REPAIR_ASSET" --dir original
+      - name: Repair only the known version records and verify every other byte
+        run: |
+          python scripts/repair_preview2_windows_identity.py "original/$env:REPAIR_ASSET" "repaired/$env:REPAIR_ASSET" --arch "$env:REPAIR_ARCH" > repair-proof.json
+          if ($LASTEXITCODE -ne 0) { throw 'Archive identity repair failed' }
+          python -m zipfile -e "repaired/$env:REPAIR_ASSET" "$env:RUNNER_TEMP/Bilikara identity 空"
+      - name: Verify the actual repaired native application
+        run: |
+          $backend = Join-Path $env:RUNNER_TEMP 'Bilikara identity 空/bilikara/_internal/bilikara-desktop-host.exe'
+          python scripts/check_native_desktop_bundle.py "$backend" > native-proof.json
+          if ($LASTEXITCODE -ne 0) { throw 'Repaired native application failed validation' }
+          Get-Content repair-proof.json, native-proof.json
+      - name: Preserve verified repair evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: preview2-identity-repair-${{ matrix.arch }}
+          path: |
+            repaired/*.zip
+            repair-proof.json
+            native-proof.json
+          if-no-files-found: error
+      - name: Replace the verified release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.8.0-preview.2 "repaired/$env:REPAIR_ASSET" --clobber
 
   mirror-release-r2:
     name: Mirror Release To R2
@@ -639,9 +702,13 @@ jobs:
         run: |
           mkdir -p release-assets release-metadata
           gh release download "$GITHUB_REF_NAME" --dir release-assets --clobber
-          gh api -H "Accept: application/vnd.github+json" \
-            "/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
-            > release-metadata/current-github.json
+          # The by-tag REST endpoint excludes drafts. Find the authenticated
+          # draft in the release list, then publish after every package passed.
+          release_id="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | jq -r --arg tag "$GITHUB_REF_NAME" '.[] | select(.tag_name == $tag) | .id')"
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false > release-metadata/current-github.json
           gh api -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
             > release-metadata/releases-github.json
@@ -654,8 +721,10 @@ jobs:
           const tag = process.env.GITHUB_REF_NAME;
           const baseUrl = String(process.env.RELEASE_DOWNLOAD_BASE_URL || "").replace(/\/+$/, "");
 
-          function assetUrl(assetName, tagName = tag) {
-            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(assetName)}`;
+          function assetUrl(asset, tagName = tag) {
+            const digest = /^sha256:[a-f0-9]{64}$/.test(asset.digest || "")
+              ? `?sha256=${asset.digest.slice(7)}` : "";
+            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(asset.name)}${digest}`;
           }
 
           function mirrorRelease(release) {
@@ -664,7 +733,7 @@ jobs:
               assets: Array.isArray(release.assets)
                 ? release.assets.map((asset) => ({
                     ...asset,
-                    browser_download_url: assetUrl(asset.name, release.tag_name || tag),
+                    browser_download_url: assetUrl(asset, release.tag_name || tag),
                   }))
                 : [],
             };
@@ -672,7 +741,7 @@ jobs:
 
           const current = mirrorRelease(JSON.parse(fs.readFileSync("release-metadata/current-github.json", "utf8")));
           const releases = JSON.parse(fs.readFileSync("release-metadata/releases-github.json", "utf8"))
-            .filter((release) => release && typeof release === "object")
+            .filter((release) => release && typeof release === "object" && !release.draft)
             .map(mirrorRelease);
 
           fs.writeFileSync("release-metadata/tag.json", JSON.stringify(current, null, 2));
@@ -689,7 +758,7 @@ jobs:
           aws s3 cp release-assets "s3://${R2_BUCKET}/bilikara/releases/download/${tag}/" \
             --recursive \
             --endpoint-url "$endpoint" \
-            --cache-control "public, max-age=31536000, immutable" \
+            --cache-control "public, max-age=0, must-revalidate" \
             --only-show-errors
           aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
             --endpoint-url "$endpoint" \
@@ -708,3 +777,46 @@ jobs:
               --cache-control "public, max-age=300" \
               --only-show-errors
           fi
+
+      - name: Verify uploaded R2 bytes and release metadata
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p r2-verification/assets r2-verification/metadata
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/download/${GITHUB_REF_NAME}/" r2-verification/assets \
+            --recursive --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/tags/${GITHUB_REF_NAME}.json" r2-verification/metadata/tag.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/releases.json" r2-verification/metadata/releases.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          node scripts/verify_release_mirror.mjs release-metadata release-assets r2-verification
+
+      - name: Preserve R2 verification receipts
+        uses: actions/upload-artifact@v7
+        with:
+          name: r2-release-verification
+          path: r2-verification/verification.json
+          if-no-files-found: error
+
+      # User-authorized withdrawal: retain the original GitHub tag/draft as a
+      # historical record, remove only the six known preview.2 R2 objects.
+      - name: Withdraw broken preview.2 mirror after preview.3 verification
+        if: github.ref_name == 'v0.8.0-preview.3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api /repos/${GITHUB_REPOSITORY}/releases/397933434 --jq '.draft')" = true
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for asset in \
+            bilikara-v0.8.0-preview.2-windows-x64.zip \
+            bilikara-v0.8.0-preview.2-windows-arm64.zip \
+            bilikara-v0.8.0-preview.2-macos-x64.zip \
+            bilikara-v0.8.0-preview.2-macos-arm64.zip \
+            bilikara-v0.8.0-preview.2-android-arm64.apk; do
+            key="bilikara/releases/download/v0.8.0-preview.2/${asset}"
+            aws s3 rm "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint" --only-show-errors
+            aws s3api wait object-not-exists --bucket "$R2_BUCKET" --key "$key" --endpoint-url "$endpoint"
+          done
+          key="bilikara/releases/tags/v0.8.0-preview.2.json"
+          aws s3 rm "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint" --only-show-errors
+          aws s3api wait object-not-exists --bucket "$R2_BUCKET" --key "$key" --endpoint-url "$endpoint"
