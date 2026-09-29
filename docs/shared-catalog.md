@@ -104,3 +104,37 @@ Rust also owns module-level review/admin/rating/maintenance validation and
 response interpretation. The separate monthly maintenance runner, local rating
 identity ledger, login/cache lifecycle, UI flow and public permissions retain
 their existing ownership. There is no parallel Android/desktop catalog backend.
+
+## Developer review transport (2026-09-29)
+
+Review no longer calls `/export` or uses append/delete/reinsert to approve an
+existing video. It requires the matching Worker review API; an older Worker
+fails explicitly without an expensive or destructive compatibility fallback.
+Public search/browse and the explicit export endpoint retain their contracts.
+
+- `POST /admin/review/snapshot`: authenticated, no-store; one linear query of
+  `bvid,title,url,preserved_3` in row order. Rust retains canonical Unicode
+  keyword filtering, validity checks, BV normalization and deduplication, and
+  computes the exact pending count from this lightweight snapshot.
+- `POST /admin/review/records`: authenticated, no-store; hydrate at most 20
+  selected primary keys. Rust restores snapshot order and rechecks eligibility
+  so a concurrently approved or deleted record cannot reappear on the page.
+- `POST /admin/review/approve`: authenticated; at most 20 BVs, one atomic D1 batch
+  of primary-key lookup and in-place `preserved_3` update. Unchanged approvals
+  are not rewritten. Metadata, blacklist, FTS and browse projections stay intact.
+- A committed approval followed by a failed page refresh returns
+  `approved_bvids` and `refresh_error`; the UI removes the acknowledged entries
+  and offers a reload, without retrying the write. Python validates and forwards
+  this Rust result, not a separate review policy.
+
+The count and hydrated page need not represent one cross-request snapshot. A
+refresh still costs one narrow scan of the catalog (not a free/cached count).
+There is no index migration, new persistent state, public export permission,
+automatic refresh loop, or new package dependency in this change.
+
+Worker deletions/reset capture affected term IDs before removing links, then
+atomically clean only those orphan terms/aliases with the primary mutation.
+Actual links, not potentially stale `video_count`, decide whether a shared
+term survives. Unrelated historical orphan terms are not swept by user actions.
+The Worker diff, offline measurements and deployment caveats are recorded in
+[`review-quota-20260929.md`](review-quota-20260929.md).

@@ -1,4 +1,70 @@
 /* Shared panel surfaces; Remote modal backgrounds provide extra separation. */
+.request-workspace-actions { flex: 0 0 auto; }
+html[data-host-layout="portrait"] .developer-mode .request-workspace-head { display: flex; }
+.request-workspace-actions > [hidden] { display: none !important; }
+.request-workspace-modal { z-index: calc(var(--host-layer-modal) - 1); }
+:root .request-workspace-modal > .selection-modal-card {
+  width: min(1280px, calc(100vw - 48px));
+  height: min(1000px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
+  grid-template-rows: minmax(0, 1fr);
+  padding: 0;
+}
+:root .request-workspace-modal .request-workspace {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+:root .request-workspace-modal .request-workspace-head.host-peer-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 20px;
+  align-items: start;
+}
+:root .request-workspace-modal .request-workspace-head > .host-peer-heading {
+  display: block;
+  grid-area: 1 / 1;
+}
+:root .request-workspace-modal .request-workspace-head::after { content: none; }
+:root .request-workspace-modal .host-peer-heading .section-tag { display: none; }
+:root .request-workspace-modal .host-peer-heading h2 {
+  font-size: var(--panel-title-font-size);
+  line-height: var(--panel-title-line-height);
+  min-height: var(--panel-header-control-size);
+}
+:root .request-workspace-modal .request-workspace-head > .request-subview-tabs {
+  grid-area: 2 / 1 / 3 / -1;
+  margin-inline-start: 0;
+  max-width: 100%;
+  justify-self: start;
+}
+:root .request-workspace-modal .request-workspace-actions {
+  display: flex;
+  align-self: start;
+  grid-area: 1 / 2;
+  margin-inline-end: var(--panel-header-control-offset);
+}
+:root #request-workspace-collapse {
+  width: var(--panel-header-control-size);
+  min-height: var(--panel-header-control-size);
+  height: var(--panel-header-control-size);
+  margin-top: var(--panel-header-control-offset);
+  border-radius: 50%;
+  padding: 0;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  transform: none;
+}
+:root .request-workspace-modal .pending-review-actions { gap: 8px; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .request-workspace-modal { padding: 12px; }
+  :root .request-workspace-modal > .selection-modal-card {
+    width: calc(100vw - 24px);
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+}
 .audio-variant-popover .audio-variant-list {
   display: flex;
   flex-wrap: wrap;

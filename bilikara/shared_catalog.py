@@ -103,7 +103,16 @@ def pending_cloudflare_review_items(secret: str, *, limit: int = 20, export_limi
 
 def approve_cloudflare_review_items(bvids: list[str], secret: str, *, limit: int = 20, export_limit: int = 5000) -> dict:
     result = _request("approve_review", bvids=bvids, secret=secret, limit=limit, export_limit=export_limit, timeout=120)
-    _items(result)
+    if "refresh_error" in result:
+        # Rust has confirmed the write but could not refresh the next page.
+        # Validate and forward that distinct result; never retry its mutation.
+        if (not isinstance(result["refresh_error"], str) or not result["refresh_error"]
+                or not isinstance(result.get("approved_bvids"), list)
+                or any(not isinstance(bvid, str) for bvid in result["approved_bvids"])
+                or not isinstance(result.get("approved"), int)):
+            raise CatalogError("Invalid Rust review result", code="invalid_response")
+    else:
+        _items(result)
     return result
 
 

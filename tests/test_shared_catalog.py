@@ -297,35 +297,68 @@ class CatalogFixtureTest(unittest.TestCase):
 
     def test_pending_review_filters_keywords_deduplicates_and_limits(self):
         records=[self.item,self.item,{**self.item,"bvid":"BV1yy411c7mD","title":"カラオケ accepted"},{**self.item,"bvid":"BV1zz411c7mD","preserved_3":"1"}]
-        self.reply=lambda *_:(200,{"data":{"items":records}})
+        self.reply=lambda *_:(200,{"success":True,"data":{"items":records}})
         with patch.object(catalog.cfg,"GATCHA_KEYWORDS",("カラオケ",)):
             result=catalog.pending_cloudflare_review_items(" fixture-secret ",limit=1)
         self.assertEqual(result["total_pending"],1)
         self.assertEqual(result["export_count"],4)
         self.assertEqual(len(result["items"]),1)
-        self.assertEqual(self.calls[0][3]["Authorization"],"Bearer fixture-secret")
-        self.assertIn("all=1",self.calls[0][1])
+        self.assertEqual([c[1] for c in self.calls],["/admin/review/snapshot","/admin/review/records"])
+        self.assertEqual(self.calls[0][2]["BILIKARA_ADMIN_SECRET"],"fixture-secret")
+        self.assertEqual(self.calls[1][2]["keys"],[self.item["bvid"]])
 
-    def test_approval_preserves_existing_privileged_update_sequence(self):
+    def test_approval_updates_in_place_without_export_append_or_blacklist(self):
         pending={**self.item,"preserved_3":"0"}
-        exports=iter([[pending],[pending],[{**pending,"preserved_3":"1"}]])
         def reply(method,path,body,headers):
-            if path.startswith("/export?"):
-                return 200,next(exports)
-            if path=="/batch-add":
-                return 200,{"added":0,"skipped_existing":1} if len([c for c in self.calls if c[1]==path])==1 else {"added":1}
-            if path=="/admin/delete-video":
-                self.assertEqual(body["BILIKARA_ADMIN_SECRET"],"fixture-secret")
-                return 200,{"success":True,"deleted":True}
+            self.assertEqual(body["BILIKARA_ADMIN_SECRET"],"fixture-secret")
+            if path=="/admin/review/approve":
+                self.assertEqual(body["bvids"],[self.item["bvid"]])
+                return 200,{"success":True,"approved_bvids":[self.item["bvid"]]}
+            if path=="/admin/review/snapshot":
+                return 200,{"success":True,"data":[{**pending,"preserved_3":"1"}]}
             self.fail(f"unexpected local fixture request {path}")
         self.reply=reply
         result=catalog.approve_cloudflare_review_items([self.item["bvid"],self.item["bvid"],"bad"],"fixture-secret")
         self.assertEqual(result["approved"],1)
         self.assertEqual(result["items"],[])
-        self.assertEqual(result["upload"]["fallback_attempted"],1)
-        posts=[c for c in self.calls if c[0]=="POST"]
-        self.assertEqual([c[1] for c in posts],["/batch-add","/admin/delete-video","/batch-add"])
-        self.assertEqual(posts[-1][2]["records"][0]["preserved_3"],"1")
+        self.assertEqual(result["skipped_missing"],0)
+        self.assertEqual([c[1] for c in self.calls],["/admin/review/approve","/admin/review/snapshot"])
+
+    def test_review_keeps_exact_unicode_policy_order_and_bounds_detail_reads(self):
+        first={**self.item,"bvid":f" {self.item['bvid']} ","title":"Candidate","preserved_3":"\u2003 0.0\t"}
+        records=[first]+[{"bvid":f"BV{index:010d}","title":f"Candidate {index}"} for index in range(30)]
+        records += [{**first,"title":"ÄBC karaoke"},{**first,"title":"已失效视频"},{**first,"preserved_3":"1"}]
+        def reply(method,path,body,headers):
+            if path=="/admin/review/snapshot":
+                return 200,{"success":True,"data":records}
+            self.assertEqual(path,"/admin/review/records")
+            self.assertEqual(len(body["keys"]),20)
+            self.assertEqual(body["keys"][0],first["bvid"])
+            # D1 IN is not ordered; the service must restore snapshot ordering.
+            rows={r["bvid"]:r for r in records[:31]}
+            return 200,{"success":True,"data":[rows[key] for key in reversed(body["keys"])]}
+        self.reply=reply
+        with patch.object(catalog.cfg,"GATCHA_KEYWORDS",("äbc",)):
+            result=catalog.pending_cloudflare_review_items("fixture-secret",limit=999)
+        self.assertEqual(result["total_pending"],31)
+        self.assertEqual(result["export_count"],34)
+        self.assertEqual([r["bvid"] for r in result["items"]],[self.item["bvid"]]+[f"BV{index:010d}" for index in range(19)])
+
+    def test_review_refresh_failure_preserves_committed_approval(self):
+        self.reply=lambda method,path,body,headers: (200,{"success":True,"approved_bvids":[self.item["bvid"]]}) if path=="/admin/review/approve" else (503,{"error":"unavailable"})
+        result=catalog.approve_cloudflare_review_items([self.item["bvid"]],"fixture-secret")
+        self.assertEqual(result["approved"],1)
+        self.assertIn("refresh_error",result)
+        self.assertNotIn("items",result)
+        self.assertEqual([c[1] for c in self.calls],["/admin/review/approve","/admin/review/snapshot"])
+
+    def test_old_worker_review_does_not_fall_back_to_expensive_or_destructive_operations(self):
+        self.reply=lambda *_:(404,{"error":"not found"})
+        with self.assertRaises(catalog.CatalogError):
+            catalog.pending_cloudflare_review_items("fixture-secret")
+        with self.assertRaises(catalog.CatalogError):
+            catalog.approve_cloudflare_review_items([self.item["bvid"]],"fixture-secret")
+        self.assertEqual([c[1] for c in self.calls],["/admin/review/snapshot","/admin/review/approve"])
 
     def test_review_reject_blacklist_restore_and_delete_preserve_protocol(self):
         self.reply=lambda *_:(200,{"success":True,"deleted":True,"feishu_queued":True,"items":[]})

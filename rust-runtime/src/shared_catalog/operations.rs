@@ -99,15 +99,97 @@ fn pending(record: &Value, keywords: &[String]) -> Option<Value> {
     }
     matches!(text(&record["preserved_3"]).as_str(), "" | "0" | "0.0").then_some(item)
 }
-fn pending_payload(records: &[Value], keywords: &[String], limit: &Value) -> Value {
+fn review_request(
+    request: &CatalogRequest,
+    secret: &str,
+    path: &str,
+    mut body: Value,
+    fetch: &impl Fn(&CloudflareServiceRequest) -> Result<Value, CloudflareServiceError>,
+) -> Result<Value, CatalogError> {
+    if secret.trim().is_empty() {
+        return Err(CatalogError::invalid("missing secret"));
+    }
+    body["BILIKARA_ADMIN_SECRET"] = json!(secret.trim());
+    let payload = send(
+        request,
+        fetch,
+        "POST",
+        path.into(),
+        Some(body),
+        String::new(),
+        request.timeout_ms,
+    )
+    .map_err(|error| {
+        if error.status_code == 404 {
+            CatalogError::new(
+                503,
+                "catalog_review_unavailable",
+                "Worker review API is unavailable; deploy the matching Worker before using review",
+            )
+        } else {
+            error
+        }
+    })?;
+    if payload["success"] != true {
+        return Err(CatalogError::new(
+            503,
+            "catalog_rejected",
+            "Catalog review request rejected",
+        ));
+    }
+    Ok(payload)
+}
+
+fn load_pending(
+    request: &CatalogRequest,
+    secret: &str,
+    limit: &Value,
+    fetch: &impl Fn(&CloudflareServiceRequest) -> Result<Value, CloudflareServiceError>,
+) -> Result<Value, CatalogError> {
+    let snapshot = records(review_request(
+        request,
+        secret,
+        "/admin/review/snapshot",
+        json!({}),
+        fetch,
+    )?)?;
     let mut seen = HashSet::new();
-    let items: Vec<_> = records
+    let candidates: Vec<_> = snapshot
         .iter()
-        .filter_map(|r| pending(r, keywords))
-        .filter(|r| seen.insert(text(&r["bvid"])))
+        .filter_map(|r| {
+            pending(r, &request.review_keywords)
+                .map(|item| (r["bvid"].as_str().unwrap_or_default().to_owned(), item))
+        })
+        .filter(|(_, item)| seen.insert(text(&item["bvid"])))
         .collect();
-    json!({"items":items.iter().take(number(limit,20,1,20) as usize).collect::<Vec<_>>(),
-        "total_pending":items.len(),"export_count":records.len()})
+    let keys: Vec<_> = candidates
+        .iter()
+        .take(number(limit, 20, 1, 20) as usize)
+        .map(|(key, _)| key.clone())
+        .collect();
+    let mut items = Vec::new();
+    if !keys.is_empty() {
+        let detail = records(review_request(
+            request,
+            secret,
+            "/admin/review/records",
+            json!({"keys": keys}),
+            fetch,
+        )?)?;
+        let mut by_key: HashMap<_, _> = detail
+            .into_iter()
+            .map(|row| (row["bvid"].as_str().unwrap_or_default().to_owned(), row))
+            .collect();
+        for key in keys {
+            // Concurrent approvals/deletions must not reappear in the page.
+            if let Some(row) = by_key.remove(&key)
+                && let Some(item) = pending(&row, &request.review_keywords)
+            {
+                items.push(item);
+            }
+        }
+    }
+    Ok(json!({"items": items, "total_pending": candidates.len(), "export_count": snapshot.len()}))
 }
 fn append(
     request: &CatalogRequest,
@@ -162,15 +244,9 @@ pub(super) fn execute(
         CatalogOperation::Export { secret, limit } => {
             Ok(json!({"records":export(request,secret,limit,fetch)?}))
         }
-        CatalogOperation::PendingReview {
-            secret,
-            limit,
-            export_limit,
-        } => Ok(pending_payload(
-            &export(request, secret, export_limit, fetch)?,
-            &request.review_keywords,
-            limit,
-        )),
+        CatalogOperation::PendingReview { secret, limit, .. } => {
+            load_pending(request, secret, limit, fetch)
+        }
         CatalogOperation::Append { entries } => {
             invalidate()?;
             let result = append(request, entries.clone(), fetch);
@@ -194,7 +270,7 @@ pub(super) fn execute(
             secret,
             bvids,
             limit,
-            export_limit,
+            ..
         } => {
             let mut seen = HashSet::new();
             let requested: Vec<_> = bvids
@@ -202,75 +278,39 @@ pub(super) fn execute(
                 .map(text)
                 .filter(|s| bvid(s) && seen.insert(s.clone()))
                 .collect();
-            let current: HashMap<_, _> = export(request, secret, export_limit, fetch)?
-                .iter()
-                .filter_map(read::normalize_item)
-                .map(|r| (text(&r["bvid"]), r))
-                .collect();
-            let updates: Vec<_> = requested
-                .iter()
-                .filter_map(|b| current.get(b))
-                .map(|r| {
-                    let mut r = r.clone();
-                    r["preserved_3"] = json!("1");
-                    r
-                })
-                .collect();
+            if requested.is_empty() || requested.len() > 20 {
+                return Err(CatalogError::invalid("1 to 20 valid bvids are required"));
+            }
             invalidate()?;
             let result = (|| {
-                let mut upload = append(request, updates.clone(), fetch)?;
-                let mut refreshed = export(request, secret, export_limit, fetch)?;
-                let still_pending: HashSet<_> = refreshed
-                    .iter()
-                    .filter_map(|r| pending(r, &request.review_keywords))
-                    .map(|r| text(&r["bvid"]))
-                    .collect();
-                let retry: Vec<_> = updates
-                    .iter()
-                    .filter(|u| still_pending.contains(&text(&u["bvid"])))
-                    .cloned()
-                    .collect();
-                // Preserve the existing privileged update compatibility sequence.
-                // This is a D1 mutation, never a Sheets fallback or public action.
-                if !retry.is_empty() {
-                    for update in &retry {
-                        let deleted = mutate(
-                            request,
-                            &CatalogAction::DeleteVideo,
-                            &json!({"bvid":update["bvid"],"secret":secret}),
-                            fetch,
-                        )?;
-                        if deleted["success"] != true {
-                            return Err(CatalogError::new(
-                                503,
-                                "catalog_rejected",
-                                "Approval delete failed",
-                            ));
-                        }
-                    }
-                    let retried = append(request, retry.clone(), fetch)?;
-                    upload["fallback_attempted"] = json!(retry.len());
-                    upload["fallback_deleted"] = json!(retry.len());
-                    upload["fallback_added"] = retried["added"].clone();
-                    upload["fallback_updated_existing"] =
-                        retried.get("updated_existing").cloned().unwrap_or(json!(0));
-                    refreshed = export(request, secret, export_limit, fetch)?;
+                let response = review_request(
+                    request,
+                    secret,
+                    "/admin/review/approve",
+                    json!({"bvids": requested}),
+                    fetch,
+                )?;
+                let approved = response["approved_bvids"]
+                    .as_array()
+                    .ok_or_else(CatalogError::response)?;
+                let mut unique = HashSet::new();
+                if approved.iter().any(|value| {
+                    !value
+                        .as_str()
+                        .is_some_and(|bv| requested.iter().any(|b| b == bv) && unique.insert(bv))
+                }) {
+                    return Err(CatalogError::response());
                 }
-                let remaining: HashSet<_> = refreshed
-                    .iter()
-                    .filter_map(|r| pending(r, &request.review_keywords))
-                    .map(|r| text(&r["bvid"]))
-                    .collect();
-                let mut result = pending_payload(&refreshed, &request.review_keywords, limit);
+                // A refresh failure must not misreport a committed approval as
+                // failed, or encourage a destructive/repeated fallback write.
+                let mut result = match load_pending(request, secret, limit, fetch) {
+                    Ok(payload) => payload,
+                    Err(error) => json!({"refresh_error": error.message}),
+                };
                 result["requested"] = json!(requested.len());
-                result["approved"] = json!(
-                    requested
-                        .iter()
-                        .filter(|b| current.contains_key(*b) && !remaining.contains(*b))
-                        .count()
-                );
-                result["skipped_missing"] = json!(requested.len() - updates.len());
-                result["upload"] = upload;
+                result["approved"] = json!(approved.len());
+                result["approved_bvids"] = json!(approved);
+                result["skipped_missing"] = json!(requested.len() - approved.len());
                 Ok(result)
             })();
             invalidate()?;
