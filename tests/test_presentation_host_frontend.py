@@ -1304,6 +1304,66 @@ async function handlePresentationSession(session) {{
         self.assertIn('invoke("show_presentation_display_identifiers"', presentation)
         self.assertIn('invoke("dismiss_presentation_display_identifiers")', presentation)
 
+    def test_identification_is_explicit_and_busy_until_windows_finish(self):
+        identifiers = self.source_slice(
+            "async function showPresentationDisplayIdentifiers",
+            "function dismissPresentationDisplayIdentifiers",
+        )
+        toggle = self.source_slice(
+            'elements.presentationSettingsToggle?.addEventListener("click", async () => {',
+            'elements.presentationDisplayList?.addEventListener("click",',
+        )
+        result = self.run_node(f"""
+const assert = require("node:assert/strict");
+const state = {{
+  presentationSettingsOpen: false, cacheSettingsOpen: true,
+  presentationIdentifiersBusy: false, presentationDisplayBusy: false,
+  presentationControlBusy: false, presentationSession: {{phase: "inactive"}},
+  presentationDisplayInfo: {{displays: [{{id: "one"}}, {{id: "two"}}]}},
+  theme: "light", language: "zh",
+}};
+let handler, invokeCount = 0, refreshCount = 0, settle;
+let invokeResult = new Promise(resolve => {{ settle = resolve; }});
+const elements = {{presentationSettingsToggle: {{addEventListener: (_, next) => {{handler = next;}}}}}};
+const busyStates = [], messages = [];
+function tauriInvoke() {{return () => {{invokeCount++; return invokeResult;}};}}
+function renderPresentationOutputControl() {{busyStates.push(state.presentationIdentifiersBusy);}}
+function normalizeTheme(value) {{return value;}}
+function normalizeLanguage(value) {{return value;}}
+function setAppMessage(message) {{messages.push(message);}}
+function t(key) {{return key;}}
+function setRemoteQrPinned() {{}}
+function syncCachePanelVisibility() {{}}
+function syncPresentationPanelVisibility() {{}}
+async function refreshPresentationDisplays() {{refreshCount++; return state.presentationDisplayInfo;}}
+{identifiers}
+{toggle}
+(async () => {{
+  await handler();
+  assert.equal(state.presentationSettingsOpen, true);
+  assert.equal(refreshCount, 1);
+  assert.equal(invokeCount, 0, "menu opening must not show identifier windows");
+  const pending = showPresentationDisplayIdentifiers();
+  assert.equal(state.presentationIdentifiersBusy, true);
+  assert.equal(await showPresentationDisplayIdentifiers(), false);
+  assert.equal(invokeCount, 1, "pending identification blocks duplicate activation");
+  await Promise.resolve();
+  assert.equal(state.presentationIdentifiersBusy, true);
+  settle();
+  assert.equal(await pending, true);
+  assert.equal(state.presentationIdentifiersBusy, false);
+  invokeResult = Promise.reject(new Error("identifier failure"));
+  assert.equal(await showPresentationDisplayIdentifiers({{announceError: true}}), false);
+  assert.equal(state.presentationIdentifiersBusy, false);
+  assert.equal(messages.length, 1);
+  console.log(JSON.stringify({{invokeCount, refreshCount, busyStates, messages}}));
+}})().catch(error => {{console.error(error); process.exitCode = 1;}});
+""")
+        self.assertEqual(result["invokeCount"], 2)
+        self.assertEqual(result["refreshCount"], 1)
+        self.assertEqual(result["busyStates"], [True, False, True, False])
+        self.assertEqual(result["messages"], ["display.identificationFailed"])
+
     def test_display_numbers_keep_menu_order_when_host_moves(self):
         functions = self.source_slice(
             "function normalizePresentationDisplayInfo",

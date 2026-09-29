@@ -80,8 +80,8 @@ replacement, generation rejection, transport timeout and background suspension.
 `HostDisplaySelectionTest.kt` additionally covers controller IDs 0 and 7,
 recommendation order, a stale selection after moving the Host, and an unknown
 controller. These deterministic JVM tests do not establish actual window moves
-or HDMI output on a device. The PR #110 integration evidence and its build /
-browser limitations are recorded in [the roadmap](version-roadmap.md#android-pr-110-local-integration-and-correction).
+or HDMI output on a device. APK builds and real-device validation remain
+separate checks.
 
 `tests/live_android_presentation.cjs` is an opt-in acceptance harness for a
 dedicated, disposable `emulator-5562` with a developer secondary-display overlay

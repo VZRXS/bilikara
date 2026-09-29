@@ -5,10 +5,10 @@ bilikara for macOS
 
 普通用户请优先双击运行：
 
-Bilikara-Desktop.app
+bilikara-desktop.app
 
-压缩包只提供这一个应用入口，原生后端已收在 Bilikara-Desktop.app 内。
-请完整解压后使用；安装桌面版时只需移动 Bilikara-Desktop.app。
+压缩包只提供这一个应用入口，原生后端已收在 bilikara-desktop.app 内。
+请完整解压后使用；安装桌面版时只需移动 bilikara-desktop.app。
 后端命令位于 Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host。
 许可证、第三方源码和说明集中在内嵌后端的 Contents/Resources/license/ 中；
 压缩包外层的 license/ 是指向该目录的相对链接，方便直接阅读。
@@ -20,7 +20,7 @@ https://github.com/VZRXS/bilikara/blob/work/v0.8.0/docs/native-desktop.md
 
 【首次启动被 macOS 阻止时】
 
-如果首次打开 Bilikara-Desktop.app 时，macOS 提示无法验证开发者，
+如果首次打开 bilikara-desktop.app 时，macOS 提示无法验证开发者，
 或提示 Apple 无法检查 App 是否包含恶意软件，请先关闭该提示，然后：
 
 1. 打开「系统设置」→「隐私与安全性」。
@@ -37,7 +37,7 @@ https://github.com/VZRXS/bilikara/blob/work/v0.8.0/docs/native-desktop.md
 完成一次授权后，之后可以正常双击启动。
 
 如果没有看到有关 Bilikara 的选项，请再次尝试打开
-Bilikara-Desktop.app，然后重新进入「隐私与安全性」页面。
+bilikara-desktop.app，然后重新进入「隐私与安全性」页面。
 
 请仅对从 VZRXS/bilikara 官方 GitHub Releases 下载、
 且确认来源可信的发布包执行上述操作。

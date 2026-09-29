@@ -101,6 +101,7 @@ async function apiPost(_url, payload) {{
   await Promise.resolve();
   return {{ current_item: nextItem, playlist: [], player_settings: {{ song_advance_delay_seconds: 3 }} }};
 }}
+function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
 function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function render() {{ renders += 1; }}
@@ -163,6 +164,7 @@ async function apiPost(_url, payload) {{
   nextPayload = payload;
   return {{ playback_generation: 13, current_item: nextItem, playlist: [] }};
 }}
+function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{ throw new Error("zero delay must not register overlay"); }}
 function render() {{}}
 function syncMountedLocalPlayer() {{}}
@@ -693,6 +695,7 @@ async function fetch(url, options) {{
   }};
 }}
 {api_functions}
+function maybeShowIncomingRequestToast() {{}}
 {snapshot_functions}
 {hold_functions}
 {maybe_transition}
@@ -835,6 +838,7 @@ function renderPlayer() {{ playerReconciled.push(state.data.current_item.id); }}
 function frontendPlaybackMode(mode) {{ return mode || "local"; }}
 function clearLocalAdvanceDelay() {{}}
 function registerManualTransitionHold() {{ return 0; }}
+function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
 function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function syncMountedLocalPlayer() {{}}

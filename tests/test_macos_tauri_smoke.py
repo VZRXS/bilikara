@@ -215,7 +215,7 @@ class MacOSTauriSmokeTest(unittest.TestCase):
             if override_exe
             else ROOT_DIR
             / "dist_release"
-            / "Bilikara-Desktop.app"
+            / "bilikara-desktop.app"
             / "Contents"
             / "MacOS"
             / "bilikara"
@@ -247,7 +247,7 @@ class MacOSTauriSmokeTest(unittest.TestCase):
                 with self.subTest(profile=profile_name):
                     profile_root = smoke_root_path / profile_name
                     isolated_dir = profile_root / "isolated-app"
-                    isolated_app = isolated_dir / "Bilikara-Desktop.app"
+                    isolated_app = isolated_dir / "bilikara-desktop.app"
                     isolated_dir.mkdir(parents=True)
                     copied = subprocess.run(
                         ["/usr/bin/ditto", str(source_app), str(isolated_app)],

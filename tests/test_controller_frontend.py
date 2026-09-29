@@ -44,6 +44,8 @@ class ControllerFrontendTest(unittest.TestCase):
                 "/presentation-renderer.js",
                 "/presentation-sync.js",
                 "/android-presentation.js",
+                "/incoming-request.js",
+                "/fullscreen-controls.js",
                 "/controller.js",
             ],
         )

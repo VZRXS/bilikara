@@ -58,6 +58,10 @@
     unavailable: document.getElementById("controller-unavailable"),
   };
 
+  const requestNotice = window.BilikaraIncomingRequest.create(
+    document.getElementById("controller-request-toast"), t,
+  );
+
   function t(key) {
     return String(state.translations[key] || key);
   }
@@ -291,6 +295,7 @@
   }
 
   function failClosed(message = "", key = "") {
+    requestNotice.hide();
     state.video?.pause();
     state.failedClosed = true;
     state.session = null;
@@ -566,6 +571,7 @@
       || nextScene.videoUrl !== state.scene.videoUrl;
     state.scene = nextScene;
     state.clock = nextClock;
+    requestNotice.show(candidate.payload?.incomingRequest);
     setError("");
     if (shouldMount) {
       mountScene(nextScene);
@@ -640,6 +646,10 @@
       renderOverlay();
     }, 100);
   }
+
+  window.BilikaraFullscreenControls.bind(elements.outputControl, {
+    onEnter: syncExitExpandedWidth,
+  });
 
   elements.exit.addEventListener("pointerdown", (event) => {
     state.lastPointerType = String(event.pointerType || "");

@@ -4700,6 +4700,7 @@ console.log(JSON.stringify({ pending, starting, established }));
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function fullscreenElement() { return null; }
 function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 window.setTimeout = () => ({ timer: "controls" });
@@ -4759,6 +4760,7 @@ console.log(JSON.stringify({ entered, left, moved, touched, focused, pending, st
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function fullscreenElement() { return null; }
 function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 window.setTimeout = () => ({ timer: "controls" });
@@ -4831,6 +4833,7 @@ console.log(JSON.stringify({ afterStale, afterCurrent }));
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function fullscreenElement() { return null; }
 function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 """,

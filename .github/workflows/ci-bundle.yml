@@ -374,38 +374,38 @@ jobs:
 
       - name: Inject Tauri into macOS Bundle
         if: runner.os == 'macOS'
-        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/bilikara-desktop.app
 
       - name: Embed signed backend in macOS Desktop bundle
         if: runner.os == 'macOS'
-        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/Bilikara-Desktop.app
+        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/bilikara-desktop.app
 
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'
         run: |
           mkdir -p dist_release
-          ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
-          ln -s Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license dist_release/license
+          ditto dist/bilikara-desktop.app dist_release/bilikara-desktop.app
+          ln -s bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license dist_release/license
           test ! -e dist_release/bilikara.app
           test -s dist_release/license/LICENSE
           cp README-macOS.txt dist_release/README-macOS.txt
           test -s dist_release/README-macOS.txt
-          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara-backend.app", "license/", "隐私与安全性", "仍要打开"))'
+          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("bilikara-desktop.app", "bilikara-backend.app", "license/", "隐私与安全性", "仍要打开"))'
 
-          echo "=== Verifying staged Bilikara-Desktop.app ==="
-          test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
-          embedded_backend="dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
+          echo "=== Verifying staged bilikara-desktop.app ==="
+          test -x dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
+          embedded_backend="dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
-          plutil -lint dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          plutil -lint dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$embedded_backend"
-          codesign --verify --deep --strict --verbose=4 dist_release/Bilikara-Desktop.app
-          codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
+          codesign --verify --deep --strict --verbose=4 dist_release/bilikara-desktop.app
+          codesign -dv --verbose=4 dist_release/bilikara-desktop.app
 
           echo "=== Architecture checks ==="
-          file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          file dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
           file "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
-          test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara-desktop-host")"
+          test "$(lipo -archs dist_release/bilikara-desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara-desktop-host")"
 
           echo "=== Locked aria2c metadata-only checks ==="
           aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
@@ -457,22 +457,22 @@ jobs:
           test -s test_extract/dist_release/README-macOS.txt
           test ! -e test_extract/dist_release/bilikara.app
           test -L test_extract/dist_release/license
-          test "$(readlink test_extract/dist_release/license)" = Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license
+          test "$(readlink test_extract/dist_release/license)" = bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license
           test -s test_extract/dist_release/license/LICENSE
           cmp README-macOS.txt test_extract/dist_release/README-macOS.txt
-          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/libav-diagnostics
-          test ! -e test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/libbilikara_media_libav_test.dylib
+          test ! -e test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/libav-diagnostics
+          test ! -e test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Frameworks/libbilikara_media_libav_test.dylib
 
-          echo "=== Verifying extracted Bilikara-Desktop.app ==="
-          test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
-          extracted_embedded_backend="test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
+          echo "=== Verifying extracted bilikara-desktop.app ==="
+          test -x test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
+          extracted_embedded_backend="test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host"
-          plutil -lint test_extract/dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          plutil -lint test_extract/dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$extracted_embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$extracted_embedded_backend"
-          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
-          codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
-          test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host")"
+          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/bilikara-desktop.app
+          codesign -dv --verbose=4 test_extract/dist_release/bilikara-desktop.app
+          test "$(lipo -archs test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host")"
 
           extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
           test -f "$extracted_aria2_metadata"
@@ -495,7 +495,7 @@ jobs:
       - name: Verify extracted native desktop and no-media-CLI layout on macOS
         if: runner.os == 'macOS'
         run: |
-          python scripts/check_native_desktop_bundle.py test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
+          python scripts/check_native_desktop_bundle.py test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
 
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
@@ -663,7 +663,7 @@ jobs:
             | jq -r --arg tag "$GITHUB_REF_NAME" '.[] | select(.tag_name == $tag) | .id')"
           [[ "$release_id" =~ ^[0-9]+$ ]]
           gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F draft=false > release-metadata/current-github.json
+            -f tag_name="$GITHUB_REF_NAME" -F draft=false > release-metadata/current-github.json
           gh api -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
             > release-metadata/releases-github.json

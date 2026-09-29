@@ -113,6 +113,7 @@ function snapshot(revision, currentItem) {{
     playlist: [],
   }};
 }}
+function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
 function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function frontendPlaybackMode() {{ return "local"; }}

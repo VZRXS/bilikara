@@ -120,7 +120,7 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
 - Tauri remains the shell and WebView integration layer. Swift and Kotlin stay
   narrow platform adapters rather than alternate backends.
 
-The detailed release sequencing, downloader scope, and casting foundation are
+The current downloader direction, UI priorities and casting foundation are
 maintained in [the version roadmap](version-roadmap.md).
 
 The catalog follow-up moves the complete active Python catalog module's policy

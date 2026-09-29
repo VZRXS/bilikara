@@ -467,8 +467,8 @@ class RemoteRequestWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(tabs_rule)
         for declaration in (
             "--remote-segmented-control-font-size: 16px",
-            "--remote-form-control-height: 48px",
-            "--remote-form-control-radius: 16px",
+            "--remote-form-control-height: var(--remote-peer-action-height)",
+            "--remote-form-control-radius: var(--remote-peer-action-radius)",
             "--remote-peer-action-height: 44px",
             "--remote-peer-action-font-size: 16px",
             "--remote-peer-action-radius: 14px",

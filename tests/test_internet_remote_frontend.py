@@ -288,7 +288,7 @@ class InternetRemoteFrontendTest(unittest.TestCase):
         self.assertIn('id="internet-remote-stop"', self.host_html)
         self.assertNotIn('class="internet-remote-mode-row"', self.host_html)
         styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn("min-height: var(--host-control-height, 40px)", styles)
+        self.assertIn("min-height: var(--host-control-height, 44px)", styles)
         self.assertIn("border-radius: var(--host-control-radius, 14px)", styles)
         self.assertIn("font-size: 12px", self.remote_access_css)
         self.assertIn(".internet-remote-disclosure-meta.is-active { color: var(--green)", styles)

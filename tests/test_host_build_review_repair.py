@@ -696,7 +696,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
     def test_peer_workspace_and_dialog_headers_share_one_geometry_contract(self):
         self.assertIn("--host-peer-eyebrow-size: 12px", self.styles)
         self.assertIn("--host-peer-title-size: 24px", self.styles)
-        self.assertIn("--host-peer-action-height: 40px", self.styles)
+        self.assertIn("--host-peer-action-height: 44px", self.styles)
         self.assertIn("--host-peer-head-padding-inline: 16px", self.styles)
         for selector in (
             ".panel-head",

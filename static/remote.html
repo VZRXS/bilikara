@@ -501,8 +501,8 @@
           </select>
           </div>
           <div class="history-export-actions">
-          <button type="button" id="history-export-image-button" class="primary-button" data-i18n="history.exportImage">导出图片</button>
           <button type="button" id="history-export-csv-button" class="ghost-button" data-i18n="history.exportCsv">导出 CSV</button>
+          <button type="button" id="history-export-image-button" class="primary-button" data-i18n="history.exportImage">导出图片</button>
           </div>
         </div>
         </dialog>
@@ -724,12 +724,12 @@
     <template id="queue-item-template">
       <article class="queue-item">
         <div class="queue-item-head">
-          <button type="button" class="queue-drag-handle" data-drag-handle aria-label="拖动排序" data-i18n-aria-label="remote.dragSort">
-            <span aria-hidden="true">⋮⋮</span>
-          </button>
-          <div class="queue-badge-column">
-            <span class="queue-order" aria-hidden="true"></span>
+          <div class="queue-badge-column info-trigger-wrap">
+            <button type="button" class="queue-drag-handle remote-info-button" data-drag-handle aria-expanded="false" aria-label="拖动排序" data-i18n-aria-label="remote.dragSort">
+              <span class="queue-order" aria-hidden="true"></span>
+            </button>
             <span class="queue-state"></span>
+            <span class="remote-tooltip-bubble" role="tooltip" data-i18n="remote.dragSortHint">按住序号上下拖动可调整顺序</span>
           </div>
           <div class="queue-main">
             <h3 class="queue-title"></h3>

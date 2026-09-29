@@ -9381,9 +9381,19 @@ elements.remoteSettingsToggle?.addEventListener("click", () => {
 });
 
 let remoteContextualInfoPositionFrame = null;
+let remoteContextualInfoNextId = 0;
 
 function remoteContextualTooltipForWrap(wrap) {
-  const tooltipId = wrap?.querySelector?.(".remote-info-button")?.getAttribute("aria-describedby");
+  const button = wrap?.querySelector?.(".remote-info-button");
+  let tooltipId = button?.getAttribute("aria-describedby");
+  if (button && !tooltipId) {
+    const tooltip = wrap.querySelector(".remote-tooltip-bubble");
+    if (tooltip) {
+      tooltip.id ||= `remote-contextual-info-${++remoteContextualInfoNextId}`;
+      tooltipId = tooltip.id;
+      button.setAttribute("aria-describedby", tooltipId);
+    }
+  }
   return tooltipId ? document.getElementById(tooltipId) : null;
 }
 

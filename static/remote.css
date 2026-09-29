@@ -90,11 +90,11 @@
   --theme-switch-size: 32px;
   --theme-preview-size: 24px;
   --theme-switch-active-ring: var(--accent);
-  --theme-preview-light-bg: linear-gradient(135deg, #f4efe6 50%, #ca5b3c 50%);
+  --theme-preview-light-bg: linear-gradient(135deg, #f4efe6 calc(50% - 0.5px), #ca5b3c calc(50% + 0.5px));
   --theme-preview-light-border: 1px solid #cfc7bd;
-  --theme-preview-dark-bg: linear-gradient(135deg, #1c1815 50%, #e06c53 50%);
+  --theme-preview-dark-bg: linear-gradient(135deg, #1c1815 calc(50% - 0.5px), #e06c53 calc(50% + 0.5px));
   --theme-preview-dark-border: 1px solid #494540;
-  --theme-preview-blue-bg: linear-gradient(135deg, #0b1120 50%, #00d2ff 50%);
+  --theme-preview-blue-bg: linear-gradient(135deg, #0b1120 calc(50% - 0.5px), #00d2ff calc(50% + 0.5px));
   --theme-preview-blue-border: 1px solid #28445f;
   --theme-preview-active-border: var(--on-accent);
 
@@ -117,8 +117,6 @@
   --remote-menu-trigger-bg: var(--chip-bg);
   --remote-menu-trigger-border: var(--top-control-border);
   --remote-menu-trigger-color: var(--ink);
-  --remote-menu-trigger-hover-bg: var(--btn-secondary-bg);
-  --remote-menu-trigger-hover-border: var(--remote-focus-border-color);
   --remote-slider-rest-bg: rgba(109, 98, 88, 0.22);
   --remote-slider-thumb-border: 2px solid rgba(255, 255, 255, 0.96);
   --remote-playback-thumb-border: 1px solid rgba(255, 255, 255, 0.96);
@@ -161,8 +159,8 @@
   --av-lock-focus-outline: 2px solid var(--remote-focus-border-color);
   --av-lock-focus-shadow: var(--remote-focus-ring-shadow);
   --av-lock-active-transform: translateY(1px);
-  --remote-form-control-height: 48px;
-  --remote-form-control-radius: 16px;
+  --remote-form-control-height: var(--remote-peer-action-height);
+  --remote-form-control-radius: var(--remote-peer-action-radius);
   --remote-peer-action-height: 44px;
   --remote-peer-action-font-size: 16px;
   --remote-peer-action-radius: 14px;
@@ -363,16 +361,16 @@ h1 {
   box-shadow: none;
   cursor: pointer;
   transition:
-    border-color 180ms ease,
-    background 180ms ease,
-    color 180ms ease,
-    transform var(--remote-control-motion);
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
 }
 
 
-/* Host keeps the top-bar control at its neutral surface while its panel is open. */
+/* Match Host's neutral menu surface; Remote retains no hover-only feedback. */
 .remote-menu-toggle[aria-expanded="true"] {
   border: var(--remote-menu-trigger-border);
+  border-color: var(--remote-focus-border-color);
   background: var(--remote-menu-trigger-bg);
 }
 
@@ -383,7 +381,8 @@ h1 {
 }
 
 .remote-menu-toggle:active:not(:disabled) {
-  transform: translateY(1px);
+  border-color: var(--remote-focus-border-color);
+  background: var(--host-control-pressed-bg);
 }
 
 .remote-menu-icon {
@@ -477,6 +476,7 @@ h1 {
   .remote-search-mode-tab[aria-selected="true"],
   .remote-discover-mode-tab[aria-selected="true"],
   .remote-sources-mode-tab[aria-selected="true"],
+  .remote-menu-toggle,
   .toggle-button {
     animation: none;
     transition: none;
@@ -2348,7 +2348,7 @@ select:disabled {
 .toggle-button {
   min-height: var(--remote-peer-action-height);
   border: none;
-  border-radius: 16px;
+  border-radius: var(--remote-peer-action-radius);
   padding: 12px 14px;
   font-size: var(--remote-peer-action-font-size);
   line-height: 1;
@@ -2574,8 +2574,8 @@ select:disabled {
 }
 .history-export-dialog [role="status"]:not(.app-toast) { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 14px 0; }
 .history-export-dialog [role="status"]:not(.app-toast):empty { display: none; }
-.history-export-dialog .history-export-actions { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
-.history-export-dialog .history-export-actions > button { flex: 1 1 120px; min-height: 44px; padding: 10px 12px; }
+.history-export-dialog .history-export-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; grid-column: 1 / -1; }
+.history-export-dialog .history-export-actions > button { min-width: 0; min-height: 44px; padding: 10px 6px; white-space: nowrap; }
 
 
 .history-export-source,
@@ -4173,12 +4173,6 @@ body.remote-identity-modal-open {
     min-width: 44px;
     margin: -13px;
     opacity: 1;
-  }
-}
-
-@media (max-width: 680px) {
-  .remote-shell > .song-detail-view .song-detail-card {
-    padding-bottom: 14px;
   }
 }
 

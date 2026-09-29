@@ -114,7 +114,7 @@ class ApplicationRestartSourceTest(unittest.TestCase):
         self.assertNotIn("save_main_window_geometry(&window.as_ref().window())?", preparation)
 
         command_end = self.lifecycle_rs.index(
-            "pub(crate) fn set_window_fullscreen", command_start
+            "pub(crate) async fn set_window_fullscreen", command_start
         )
         command = self.lifecycle_rs[command_start:command_end]
         preparation_call = command.index(

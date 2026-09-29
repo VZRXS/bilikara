@@ -76,7 +76,7 @@ matching runner target; foreign tool/libav architectures fail closed.
 The Windows archive keeps the `bilikara/` directory. Its only top-level executable
 is `bilikara-desktop.exe`; `_internal/` contains `bilikara-desktop-host.exe`, `static/`,
 `vendor/`, `APP_VERSION` and `native-desktop.json`. Licenses, notices, rebuild
-sources and guides are together in `license/`. macOS installs `Bilikara-Desktop.app`;
+sources and guides are together in `license/`. macOS installs `bilikara-desktop.app`;
 its `Contents/Frameworks/bilikara-backend.app` contains the backend under
 `Contents/MacOS/`, static/version resources under `Contents/Resources/`, and
 native libraries/tools under `Contents/Frameworks/` with relative resource

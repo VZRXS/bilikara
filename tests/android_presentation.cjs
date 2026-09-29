@@ -85,11 +85,16 @@ async function stageTests() {
     setInterval:fn=>intervals.push(fn),setTimeout:()=>1,clearTimeout(){}};
   const document = {getElementById:get,querySelector:get,querySelectorAll:()=>[],
     createElement:()=>new Element(),documentElement:{dataset:{}},body:new Element(),addEventListener(){}};
-  vm.runInNewContext(fs.readFileSync("static/controller.js", "utf8"), {
+  const context = vm.createContext({
     window,document,URLSearchParams,navigator:{languages:["en"]},Date:{now:()=>now},
+    setTimeout:window.setTimeout,clearTimeout:window.clearTimeout,requestAnimationFrame:fn=>fn(),
     fetch:async()=>({ok:true,json:async()=>({languages:{en:{}}})}),
     localStorage:{setItem(){},removeItem(){},getItem(){return null;}},getComputedStyle:()=>({getPropertyValue:()=>"0"}),
   });
+  vm.runInContext(fs.readFileSync("static/incoming-request.js", "utf8"), context);
+  window.BilikaraIncomingRequest = context.BilikaraIncomingRequest;
+  vm.runInContext(fs.readFileSync("static/fullscreen-controls.js", "utf8"), context);
+  vm.runInContext(fs.readFileSync("static/controller.js", "utf8"), context);
   await settle();
   assert.ok(listeners["master-state"], "Stage must subscribe to the Android transport");
   let sequence = 0;

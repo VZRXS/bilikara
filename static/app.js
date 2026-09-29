@@ -28,7 +28,6 @@ const maxSongAdvanceDelaySeconds = 30;
 const appUpdateCheckTimeoutMs = 30000;
 const avDelayRequestTimeoutMs = 8000;
 const fullscreenRequestToastMs = 4200;
-const fullscreenRequestToastFadeMs = 500;
 const localAdvanceOverlayFadeMs = 500;
 const localAdvanceOverlayMaxRows = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
@@ -419,8 +418,6 @@ const state = {
   ratingQueuedKeys: new Set(),
   ratingOptOut: false,
   appToastTimer: null,
-  fullscreenRequestToastTimer: null,
-  fullscreenRequestToastHideTimer: null,
   presentationSession: {
     mode: "singleScreen",
     phase: "inactive",
@@ -951,81 +948,34 @@ function setAppMessage(message, isError = false) {
   }
 }
 
+function fullscreenRequestNotice() {
+  return state.fullscreenRequestNotice ||= window.BilikaraIncomingRequest.create(
+    elements.fullscreenRequestToast, t,
+  );
+}
+
 function hideFullscreenRequestToast() {
-  if (state.fullscreenRequestToastTimer) {
-    window.clearTimeout(state.fullscreenRequestToastTimer);
-    state.fullscreenRequestToastTimer = null;
-  }
-  const toast = elements.fullscreenRequestToast;
-  if (!toast || toast.classList.contains("hidden")) {
-    return;
-  }
-  toast.classList.remove("is-visible");
-  if (state.fullscreenRequestToastHideTimer) {
-    window.clearTimeout(state.fullscreenRequestToastHideTimer);
-  }
-  state.fullscreenRequestToastHideTimer = window.setTimeout(() => {
-    toast.classList.add("hidden");
-    state.fullscreenRequestToastHideTimer = null;
-  }, fullscreenRequestToastFadeMs);
+  fullscreenRequestNotice().hide();
 }
 
 function showFullscreenRequestToast(title) {
-  const toast = elements.fullscreenRequestToast;
-  const normalizedTitle = String(title || "").trim();
-  if (!toast || !normalizedTitle || !isAudiencePlayerSurface()) {
-    return;
-  }
-  if (state.fullscreenRequestToastTimer) {
-    window.clearTimeout(state.fullscreenRequestToastTimer);
-    state.fullscreenRequestToastTimer = null;
-  }
-  if (state.fullscreenRequestToastHideTimer) {
-    window.clearTimeout(state.fullscreenRequestToastHideTimer);
-    state.fullscreenRequestToastHideTimer = null;
-  }
-  toast.replaceChildren();
-  const label = document.createElement("span");
-  label.className = "fullscreen-request-toast-label";
-  label.textContent = t("toast.incomingRequest");
-  const titleNode = document.createElement("span");
-  titleNode.className = "fullscreen-request-toast-title";
-  titleNode.textContent = normalizedTitle;
-  toast.append(label, titleNode);
-  toast.classList.remove("hidden");
-  window.requestAnimationFrame(() => {
-    toast.classList.add("is-visible");
+  if (!isAudiencePlayerSurface()) return;
+  fullscreenRequestNotice().show({
+    key: `${Date.now()}:${title}`, title, expiresAt: Date.now() + fullscreenRequestToastMs,
   });
-  state.fullscreenRequestToastTimer = window.setTimeout(() => {
-    hideFullscreenRequestToast();
-  }, fullscreenRequestToastMs);
 }
 
 function maybeShowIncomingRequestToast(previousData, nextData) {
-  if (!previousData || !nextData || !isAudiencePlayerSurface()) {
-    return;
-  }
-  const previousId = currentItemIdFromData(previousData);
-  const nextId = currentItemIdFromData(nextData);
-  if (previousId !== nextId && nextId) {
-    return;
-  }
-  const previousItems = [
-    previousData.current_item,
-    ...(Array.isArray(previousData.playlist) ? previousData.playlist : []),
-  ];
-  const previousIds = new Set(previousItems.map((item) => String(item?.id || "")).filter(Boolean));
-  const nextItems = [
-    ...(Array.isArray(nextData.playlist) ? nextData.playlist : []),
-    nextData.current_item,
-  ];
-  const newItems = nextItems
-    .filter((item) => item?.id && !previousIds.has(String(item.id)));
-  if (!newItems.length) {
-    return;
-  }
-  const item = newItems[newItems.length - 1];
-  showFullscreenRequestToast(item.display_title || item.title || t("toast.incomingRequest"));
+  const item = window.BilikaraIncomingRequest?.newestAddition(previousData, nextData);
+  if (!item) return;
+  const title = item.display_title || item.title || t("toast.incomingRequest");
+  state.presentationIncomingRequest = {
+    key: `${nextData.state_revision}:${item.id}`,
+    title,
+    expiresAt: Date.now() + fullscreenRequestToastMs,
+  };
+  if (isAudiencePlayerSurface()) fullscreenRequestNotice().show(state.presentationIncomingRequest);
+  publishPresentationOutputState();
 }
 
 function requesterBadgeText(requesterName) {
@@ -1803,6 +1753,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     scene,
     clock,
     language: state.language,
+    incomingRequest: state.presentationIncomingRequest || null,
     remoteAccess: remoteAccessForPresentation(),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
@@ -3429,6 +3380,9 @@ async function togglePlayerFullscreen() {
     return;
   }
   const entering = !isPlayerPanelFullscreen();
+  fullscreenControlHover.reset();
+  setPlayerFullscreenRemotePinned(false);
+  hideMountedPlayerControls();
   state.playerFullscreenTransitioning = true;
   state.playerFullscreenRevision += 1;
   renderPlayerFullscreenButton();
@@ -3437,10 +3391,16 @@ async function togglePlayerFullscreen() {
     if (typeof tauriInvoke() === "function") {
       // Desktop has one native fullscreen owner, just like dual-screen output.
       // DOM fullscreen also drives the WebView2 window and must not race it.
+      // Hide windowed chrome before the OS expands the window. Keep fullscreen
+      // chrome during exit until native restoration finishes, and roll back failures.
+      if (entering) {
+        document.body?.classList.add("is-tauri-fullscreen-active");
+      }
       changed = await setTauriWindowFullscreen(entering);
-      if (changed) {
-        elements.playerPanel?.classList.toggle("is-tauri-fullscreen", entering);
-        document.body?.classList.toggle("is-tauri-fullscreen-active", entering);
+      if (changed || entering) {
+        const active = changed ? entering : !entering;
+        elements.playerPanel?.classList.toggle("is-tauri-fullscreen", active);
+        document.body?.classList.toggle("is-tauri-fullscreen-active", active);
       }
     } else if (!entering) {
       changed = await exitDocumentFullscreen();
@@ -3452,7 +3412,7 @@ async function togglePlayerFullscreen() {
       changed = await requestElementFullscreen(elements.playerPanel);
     }
     if (!changed) setAppMessage(t("player.fullscreenFailed"), true);
-    if (changed && !entering) handleFullscreenChange();
+    if (changed) handleFullscreenChange();
   } catch {
     setAppMessage(t("player.fullscreenFailed"), true);
   } finally {
@@ -3547,7 +3507,7 @@ function scheduleMountedPlayerControlsHide() {
 }
 
 function revealMountedPlayerControlsForUserInteraction() {
-  if (presentationCompositionActive()) {
+  if (presentationCompositionActive() || isPlayerPanelFullscreen() || state.playerFullscreenTransitioning) {
     hideMountedPlayerControls();
     return;
   }
@@ -6295,7 +6255,6 @@ async function fetchState() {
   state.hasValidStateResponse = true;
   window.BilikaraAnnouncements?.sync();
   scheduleStartupAppUpdateCheck();
-  maybeShowIncomingRequestToast(previousData, state.data);
 
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localPreferencesHydrated) {
@@ -9948,6 +9907,18 @@ function syncHostAccountPresentation() {
 
 function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
   const nextPinned = Boolean(pinned);
+  const wasPinned = state.remoteQrPinned;
+  const popup = elements.remoteMiniPopover;
+  const control = elements.remoteMiniControl;
+  if (wasPinned !== nextPinned) {
+    control?.classList.add("is-menu-switching");
+    if (popup) {
+      popup.__bilikaraPreviewSequence = (popup.__bilikaraPreviewSequence || 0) + 1;
+      if (typeof popup.hidePopover === "function" && popup.matches(":popover-open")) popup.hidePopover();
+      popup.removeAttribute("popover");
+      popup.getAnimations?.().forEach(animation => animation.cancel());
+    }
+  }
   if (nextPinned) {
     state.cacheSettingsOpen = false;
     state.presentationSettingsOpen = false;
@@ -9961,7 +9932,7 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     ?.classList.toggle("is-management-layout", state.remoteQrPinned);
   elements.remoteMiniControl?.classList.toggle(
     "is-qr-dismissed",
-    !state.remoteQrPinned && Boolean(dismissTransient),
+    !state.remoteQrPinned && Boolean(dismissTransient || wasPinned),
   );
   elements.remoteMiniTrigger?.setAttribute("aria-expanded", String(state.remoteQrPinned));
   syncRemoteQrPreviewLayer();
@@ -9969,6 +9940,10 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     document.dispatchEvent(new CustomEvent("bilikara:remote-access-menu", {
       detail: { expanded: state.remoteQrPinned },
     }));
+    // Flush the replacement layout while transitions are disabled. Future
+    // hover entries can animate, but this menu close must stay instantaneous.
+    if (popup) void popup.offsetWidth;
+    control?.classList.remove("is-menu-switching");
   }
   if (typeof scheduleTopControlPopoverPositionSync === "function") {
     scheduleTopControlPopoverPositionSync();
@@ -11432,6 +11407,7 @@ function acceptHostStateSnapshot(snapshot) {
   if (readinessOnly) {
     return true;
   }
+  maybeShowIncomingRequestToast(previousSnapshot, snapshot);
   if (
     !current
     || next.playbackGeneration !== current.playbackGeneration
@@ -20247,9 +20223,6 @@ elements.remoteMiniControl?.addEventListener("mouseenter", () => {
 });
 
 elements.remoteMiniControl?.addEventListener("mouseleave", () => {
-  if (!state.remoteQrPinned) {
-    elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
-  }
   syncRemoteQrPreviewLayer();
 });
 elements.remoteMiniControl?.addEventListener("focusout", () => {
@@ -20270,10 +20243,7 @@ elements.presentationSettingsToggle?.addEventListener("click", async () => {
   }
   syncPresentationPanelVisibility();
   if (state.presentationSettingsOpen) {
-    const displayInfo = await refreshPresentationDisplays();
-    if (displayInfo && state.presentationSettingsOpen) {
-      showPresentationDisplayIdentifiers().catch(() => {});
-    }
+    await refreshPresentationDisplays();
   }
 });
 
@@ -20557,6 +20527,11 @@ elements.historyExportButton?.addEventListener("click", (event) => {
     x: point.x,
     y: point.y,
   });
+});
+
+const fullscreenControlHover = window.BilikaraFullscreenControls.bind(elements.playerFullscreenControl, {
+  enabled: () => isPlayerPanelFullscreen() && !state.playerFullscreenTransitioning,
+  onEnter: syncPlayerFullscreenExpandedWidth,
 });
 
 elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
@@ -21477,7 +21452,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (closeHostWorkspaceOverlay()) {
+  if (!isPlayerPanelFullscreen() && closeHostWorkspaceOverlay()) {
     event.preventDefault();
     return;
   }
@@ -21507,6 +21482,8 @@ document.addEventListener("visibilitychange", () => {
 
 function handleFullscreenChange() {
   const isFullscreen = isPlayerPanelFullscreen();
+  fullscreenControlHover.reset();
+  hideMountedPlayerControls();
   if (!isFullscreen) {
     setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();

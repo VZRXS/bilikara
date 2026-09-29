@@ -119,7 +119,9 @@ public-interface retention decisions remain unchanged.
 - Use the shipped **v0.8.0-preview.1 Python desktop Host**, plus subsequently approved changes, as the desktop behavior baseline. Rust/Android previews do not replace that baseline.
 - Reuse shared components, actions, tokens and layout definitions across Host, local Remote and public Remote. Keep platform adaptations narrow; do not copy whole screens.
 - Treat viewport size, input method and platform capabilities separately. Narrow desktop windows retain desktop navigation, tool rail, playback controls and mouse/keyboard operations. Width alone must not select Android workflows or hide supported desktop features.
-- Only Android's phone layout adopts Remote's 44px controls and two-row delay layout (four adjustment buttons, then reset/value/lock). Touch targets must not overflow native window chrome.
+- Native player fullscreen must hide the Host toolbar, tool rail and workspace at every desktop width, release narrow-layout stacking isolation, and restore them on exit without recreating media nodes. Test the native fullscreen path separately from browser DOM fullscreen, including high-DPI-sized logical viewports.
+- Windows native fullscreen must cover the monitor rather than its taskbar-excluding work area. Keep the fullscreen client area equal to the monitor bounds even when maximized, without an intermediate restore/maximize step. Preserve the original window placement for exit; serialize transitions on the native window thread, suppress system transition animations during the operation and exclude intermediate geometry from saved preferences. Validate both normal-window and maximized entry on Windows; browser layout tests do not verify the system taskbar.
+- Ordinary Host/Remote controls share a 44px height. Only Android's phone layout adopts Remote's two-row delay layout (four adjustment buttons, then reset/value/lock). Touch targets must not overflow native window chrome.
 - Validate desktop first, including the native 700px minimum width and mixed mouse/touch input, then Android. Adopt an Android improvement only when it preserves desktop workflows and demonstrates a benefit; record intentional behavior changes.
 - Presentation changes must preserve media nodes, playback state, pitch graphs, selections, rating drafts and in-flight guards. Do not recreate/reparent media or attach duplicate handlers.
 
@@ -147,12 +149,13 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 | Role | Height / typography | Shape / surface |
 | :--- | :--- | :--- |
-| Ordinary desktop Host controls | 40px; 16px | 14px rounded rectangle |
-| Ordinary Remote controls | 44px; 16px | Existing shared rounded control shape |
+| Ordinary Host/Remote controls and single-line form fields | 44px; 16px | 14px rounded rectangle |
 | Dialog header text actions | 32px; 14px | Pill |
 | Dialog icon close | 32px; shared SVG mark | Circle; ordinary secondary fill |
 | Compact settings tools | 30px; 12px, weight 700; 12px inline padding | Pill |
 | Stacked export selects, both clients | 44px; 16px | 14px corners; visible theme-aware outline |
+| Request segmented navigation, both clients | 48px track, including 4px vertical space at each edge; 16px | Shared segmented surface and active fill |
+| Pagination editor, both clients | 44px track; 32px input centered inside it | Input 8px corners; retain compact pagination geometry |
 | Initial-letter buttons, both clients | 40px; 16px, weight 700; 6px gaps | 12px corners; lightly accented selection |
 | Remote seek / next and play / pause | 44px and 48px respectively | Fixed circles on one center line |
 | Floating panels | 18px/24px title; 20px content inset | 18px corners |
@@ -160,10 +163,11 @@ Choose a component by role, then reuse its shared definition. This table describ
 | Settings group cards | Single-language 16px subheading | 14px corners and outline |
 | Info bubbles | 13px, weight 400; line height 1.45; maximum width 320px | 12px corners |
 
+- Action order follows the component role. Dialog footer groups place secondary/cancel actions before the primary completion action (left-to-right; preserve DOM and keyboard order). Export uses CSV on the left and image export on the right in both clients. Inline task forms retain their established workflow order (for example, request then queue-next); do not reverse every primary/secondary pair. Matching components share order across Host/local/public Remote. Secondary and cancel actions retain the shared neutral fill.
 - Pills use a fully rounded radius (currently 999px). Circles constrain width, height and min/max-width equally so inherited button minima cannot stretch them.
-- Compact settings tools include Check for updates, Copy link, Identify display and Announcements. Reuse the complete pill definition, not just its radius.
-- Domain actions such as room create/rebuild/close are ordinary controls, not compact tools or dismiss icons: 40px height, 16px text, weight 400, 14px corners and inline padding. Use the primary palette for create/rebuild and secondary for close, with an 8px gap and aligned text centers. Create/rebuild may fill the remaining row; close keeps its content width.
-- Volume and delay step/reset controls share the ordinary 16px font, theme-aware 1px outline and interaction states. Their numeric wrappers share focus-within treatment.
+- Compact tools include Check for updates, Copy link, Identify display, Announcements and the Host current-song rating/next actions. Reuse the complete pill definition, not just its radius.
+- Domain actions such as room create/rebuild/close are ordinary controls, not compact tools or dismiss icons: 44px height, 16px text, weight 400, 14px corners and inline padding. Use the primary palette for create/rebuild and secondary for close, with an 8px gap and aligned text centers. Create/rebuild may fill the remaining row; close keeps its content width.
+- Volume and delay step/reset controls share the ordinary 16px font, theme-aware 1px outline and interaction states. Inline and floating playback controls retain the same typography and feedback; floating-panel prose does not change their inherited font. Their numeric wrappers share focus-within treatment.
 - Browse back actions share secondary fill, 16px normal text, 14px corners and inline padding, a theme-aware outline and no shadow. Use the client's ordinary height for category, name, artist, UP, favorites and advanced-catalog back actions; contextual navigation remains a separate role.
 - Select/input shape follows its control group: runtime selects beside pills/switches retain pills; stacked forms use rounded rectangles. Do not impose a single shape on every field.
 - Radio/checkbox controls use explicit native appearance, consistent sizing and visible focus. Never inherit text-field height or padding.
@@ -172,11 +176,12 @@ Choose a component by role, then reuse its shared definition. This table describ
 ### 5.4 Interaction, focus and motion
 
 - **Remote:** no hover-only styling or pointer-hover help, even with a mouse. Retain click/tap help, keyboard focus and pressed/busy/disabled feedback. Scope shared Host hover rules away from Remote.
-- **Host ordinary controls:** preserve the component's border/lift feedback on hover-capable fine pointers. Volume, delay, initial-letter and browse-back buttons use a 1px lift and accent outline. Numeric wrappers retain shared focus-within treatment.
+- **Host ordinary controls:** preserve the component's border/lift feedback on hover-capable fine pointers. Volume, delay, initial-letter and browse-back buttons share 120ms feedback, a 1px hover lift, the shared hover surface and accent outline; pressing restores their position and uses the shared darker surface and focus-border color. Numeric wrappers retain shared focus-within treatment.
+- **Top management/menu triggers, Host and Remote:** keep the normal surface and text colors when expanded, strengthen the theme-aware accent outline, and use the shared darker surface when pressed. Retain 120ms color transitions, visible keyboard focus and reduced-motion handling. Keep size, position and shadow fixed so anchored menus do not move. Host alone strengthens the outline on hover; Remote has no hover-only feedback. Full menus open by click/Enter/Space, with the Host phone QR hover preview remaining a separate annotation.
 - **Host dismiss icons:** blend 12% ink into the secondary background and use the existing danger icon color. Transition colors over 120ms; never translate or scale on hover or activation. This rule does not apply to labeled domain actions such as Close room.
 - **Inline search icons:** white magnifiers and search-collapse X controls have no shadow, including focus/hover. Host may lift them 2px, including the submit inside an expanded input; Remote has no hover effect. A real outline may mark focus/input state. Search-collapse controls are distinct from dialog dismiss icons.
 - Retain visible keyboard focus. Keep panel entry/exit motion separate from button feedback; motion is consistent within each component role and respects reduced motion.
-- Retain popup nodes, anchors and geometry until exit motion finishes, and guard rapid reopening.
+- Retain popup nodes, anchors and geometry until exit motion finishes, and guard rapid reopening. Opening the full phone-access menu replaces its compact hover preview immediately; closing the full menu is instantaneous and must not flash the preview. A later genuine hover may show the preview again.
 
 ### 5.5 Surfaces, themes and layering
 
@@ -198,10 +203,11 @@ Choose a component by role, then reuse its shared definition. This table describ
 - Host confirmations cap their border-box width at 440px and the viewport. Host export keeps its 420px exception, stacked fields and two actions on one row with compact inline padding. Verify Chinese, English and Japanese at 320px. Avoid fixed aspect ratios for translated prose.
 - Host top management menus and hover QR annotations right-align to their trigger, then clamp to a 12px viewport inset. Measure border-box layout size independently of animated transforms and retain coordinates during exit motion.
 - Host phone access, dual-screen and runtime-settings menus are mutually exclusive and dismiss on outside click/Escape. Phone access has no close button or reserved close-button clearance.
+- Opening the dual-screen menu may refresh display discovery, but numbered identifier windows appear only after an explicit Identify display action. Keep its button disabled and busy until the native invocation finishes closing those windows; do not restore it with a separate frontend timer.
 - Info bubbles choose above/below from measured space and stay inside the viewport. Their transition is 120ms opacity plus 3px slide in both directions; retain the anchor/node through exit. Break long translated clauses deliberately, never split URLs or numbers mechanically. Hidden help must not enlarge panels or cause horizontal scrolling on focus.
 - Remote top-menu connection and collapsed-section rows have equal occupied height. Balance visible edge insets around text, icons and corners; do not use negative margins or overlap targets. Expanded sections retain ordinary bottom padding.
 - Remote playback sheet slides up. Landscape is a complete 18px rounded card inset beyond safe areas on every side. Narrow portrait extends the background into the bottom safe area, with controls above it; retain rounded bottom corners there, or square corners when meeting a screen edge with no bottom inset.
-- Desktop tool rail is 80px wide with 12px labels, fitting four Chinese characters per line; translated labels may wrap.
+- Desktop tool rail is 80px wide with 64px square targets and 14px corners. Labels use 12px/14px typography and their actual one/two-line height, fitting four Chinese characters per line. Center the 24px icon and label as a group with a 4px gap and a 1px upward optical bias; selected icons use accent-colored filled silhouettes with transparent cutouts, and the square target uses the shared theme-aware accent-soft fill without an additional outline. Selected fills retain the original outer stroke footprint. The selected queue retains its accent-colored outline and normal stroke weight with a slightly longer first line and shorter second line for staggered ends. History keeps the same 4:00 hands in both states; selection rotates only its outer arrow 30 degrees counterclockwise around the center. Session-user icons align each body apex with its head center in both outline and filled states. Filled silhouettes keep both heads as complete circles; only overlapping bodies use a transparent gap matching the outline width. Keep glyph visual weight balanced, theme contrast and visible keyboard focus.
 
 ### 5.7 Dividers, headings and messages
 
@@ -222,6 +228,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 - Contextual search keeps its right-hand toggle stationary: magnifier collapsed, X expanded. Keep a separate submit magnifier inside the input's right edge and support Enter. The input clear action edits the draft; close exits contextual search and restores unfiltered results when necessary. Preserve focus-on-open, guards and accessible labels across Host/local/public Remote.
 - A search action beside a horizontal card strip centers on the card track, excluding padding and scrollbar from the center calculation.
 - Host song-result grids (search/category/name/artist) and large category covers share `--request-song-card-min-inline-size: 200px`, including narrow overrides. Add columns before cards become oversized; scale category-cover titles to the card. Name/artist entry cards instead reuse compact UP/favorites widths, surface, typography and feedback.
+- Remote queue order badges own a 44px square drag/tap target without a separate grip column. A tap opens the shared localized help bubble; movement of at least 6px begins dragging, with no long-press delay. Keep small pointer jitter as a tap, suppress post-drag help clicks, and cancel interrupted gestures without committing a reorder.
 - Scroll regions reserve scrollbar space only when actually scrolling. Native scrollbar width participates in layout; never apply unconditional `scrollbar-gutter: stable`. Use the queue's conditional overflow handling as the pattern.
 - Bounded name/artist, history and source lists add a 4px content gap only while scrolling. Name/artist grids retain 2px vertical paint room so first-row Host hover lift is not clipped. Remote request lists use document scrolling; bounded Remote queue/history lists use the same conditional gap. Observe content/size changes, not playback ticks.
 - Ordinary song/source lists keep bottom and side insets equal. Host result totals appear only in administrator mode, with a reserved footer track and at least 16px bottom clearance.
@@ -229,7 +236,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 ### 5.9 Request-card geometry and text overflow
 
-- Request source/name/artist, category and song cards share 16px inner corners; Remote request input/action controls are the visual reference. Preserve outer panel radii and spacing. Align nested/peer corner centers along a horizontal or vertical axis when practical; exact shared centers must not make approved shapes nearly square or reduce text clearance. Edge-flush covers use card clipping; circles, pills and detached controls retain their own shapes.
+- Request source/name/artist, category and song cards share 16px inner corners across clients; ordinary form controls use their separate 14px rule. Preserve outer panel radii and spacing. Align nested/peer corner centers along a horizontal or vertical axis when practical; exact shared centers must not make approved shapes nearly square or reduce text clearance. Edge-flush covers use card clipping; circles, pills and detached controls retain their own shapes.
 - Text entries share a 72px height, 10px padding, 32px two-line title area (14px/16px, weight 700), 2px title-to-metadata gap and 16px metadata line (12px/16px).
 - Avatars are 24px, inset 10px from inner bottom/right edges. The first title line uses full width; the second line and metadata reserve 32px with an avatar, keeping at least 8px clear. Do not shrink the first line to enforce concentric corners.
 - Metadata stays on one line and ellipsizes when needed, preserving complete DOM text for accessibility.
@@ -241,6 +248,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 ### 5.10 Playback and selection
 
+- Single-screen fullscreen and audience playback never reveal native video controls, including on entry or pointer/focus events. Fullscreen QR/exit hover expansion requires actual pointer movement over the control and resets on exit, pointer leave, window blur and resize; touch retains explicit tap pinning.
 - Remote transport fills its available column and stays next to the song summary without stretch space. Resizing between one/two columns preserves control nodes and keeps progress inside its column.
 - Remote retains preview.1's 44px seek/next and 48px play/pause circles on one center line. Part/setting controls are 44px; header actions are 32px.
 - Playback-sheet collapse is an unfilled icon, centered when space permits and moving left only to avoid adjacent actions.
@@ -254,14 +262,15 @@ Choose a component by role, then reuse its shared definition. This table describ
 - The Host sends every audience `master-state` envelope through `publish_presentation_output_state` (main window only); a loaded audience requests replay through `request_presentation_output_state` (controller only). Publish displayed changes even while idle. BroadcastChannel/localStorage are optional fast paths, never requirements for QR, room, theme or language delivery between WebViews.
 - All desktop windows share one data store. Tauri ignores a configured window's `dataDirectory`: create Windows `main` in code (`"create": false`) with the same `runtime/webview` directory set on audience/identifier windows. Share `WINDOWS_WEBVIEW_BROWSER_ARGS` (wry defaults plus `--disable-direct-composition-video-overlays`) so hardware video overlays cannot cover audience exit/QR controls.
 - Identifier windows initialize theme/language via a native-CSP-compatible external script and follow Host preferences while open.
+- New-request notices derive from accepted queue additions and appear on both single-screen fullscreen and audience windows. Audience notices use the native master-state relay, retain an expiry time and deduplicate replay; progress-only updates, initial loads and song transitions must not announce a new request.
 - All access QR cards share one 3px white frame; do not add a second SVG frame.
 - Show the applied public-room password even while an unsaved replacement is edited. Full management menus alone use bold Local/Public scan instructions; their password label stays normal and muted.
 - Compact dual-entry Host/fullscreen/audience cards and all Remote share cards omit scan/network/expansion help below QR codes. Local shows the complete clickable URL including protocol with the shared underline on every surface. Public shows muted normal “Room password” and bold accent password on one 12px line. Long passwords scroll horizontally without growing/clipping the panel. Preserve help in the full menu and Host local-only preview.
-- Connection counts represent connected Remote devices, merge multiple tabs and exclude Host/audience windows. Full menus use translated labels, compact cards a people icon/count. Local/public full-menu labels share a right axis; compact counts align with each column's right content edge. Fullscreen headers must not inherit management-menu close-button clearance.
+- Connection counts represent connected Remote devices, merge multiple tabs and exclude Host/audience windows. Full menus use translated labels, compact cards a people icon/count. The full menu's Local count aligns with the Public disclosure chevron's right edge, without reserving a nonexistent Local chevron. Compact counts align with each column's right content edge. Fullscreen headers must not inherit management-menu close-button clearance.
 
 ### 5.12 Export, announcements and updates
 
-- Stacked export selects have a visible shared theme-aware outline on both clients. Use one column at narrow widths; two only when translated labels/values fit. If the field already identifies image pagination, use compact options such as `200 per page` / `1ページ 200 曲`.
+- Stacked export selects have a visible shared theme-aware outline on both clients. Use one column at narrow widths; two only when translated labels/values fit. Export footer actions stay on one row at 320px; Remote uses equal columns, an 8px gap and 6px inline button padding. If the field already identifies image pagination, use compact options such as `200 per page` / `1ページ 200 曲`.
 - Announcements sit immediately before the update action in its action group, using the 30px light/accent-text tool pill (recache palette), including narrow wrapping.
 - Update confirmation uses the shared 18px title, 13px body and 12px gap. Include a translated manual-download fallback with an actual GitHub Releases link opened through the Host external-browser boundary.
 - Announcement windows separate the 18px window title from the article with an inset rule and 12px on either side. Article title is 16px; secondary type/date/version/deadline metadata is 12px, with 6px title-to-metadata and 12px before body. Do not stack body margins onto these gaps.

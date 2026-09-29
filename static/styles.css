@@ -173,11 +173,11 @@
   --theme-switch-size: 32px;
   --theme-preview-size: 24px;
   --theme-switch-active-ring: var(--accent);
-  --theme-preview-light-bg: linear-gradient(135deg, #f3e8d7 50%, #d05a3f 50%);
+  --theme-preview-light-bg: linear-gradient(135deg, #f3e8d7 calc(50% - 0.5px), #d05a3f calc(50% + 0.5px));
   --theme-preview-light-border: 1px solid #c9b9a8;
-  --theme-preview-dark-bg: linear-gradient(135deg, #1c1815 50%, #e06c53 50%);
+  --theme-preview-dark-bg: linear-gradient(135deg, #1c1815 calc(50% - 0.5px), #e06c53 calc(50% + 0.5px));
   --theme-preview-dark-border: 1px solid #4c4843;
-  --theme-preview-blue-bg: linear-gradient(135deg, #0b1120 50%, #00d2ff 50%);
+  --theme-preview-blue-bg: linear-gradient(135deg, #0b1120 calc(50% - 0.5px), #00d2ff calc(50% + 0.5px));
   --theme-preview-blue-border: 1px solid #28445f;
   --theme-preview-active-border: var(--on-accent);
 
@@ -807,6 +807,7 @@ p {
 .session-user-form button,
 .history-actions button,
 .compact-form button {
+  min-height: var(--host-control-height);
   padding: 10px 14px;
   border-radius: 14px;
   white-space: nowrap;
@@ -1019,12 +1020,12 @@ h2 {
 .internet-remote-field-heading { display: flex; align-items: center; width: fit-content; gap: 6px; }
 .internet-remote-config-row { display: grid; grid-template-columns: minmax(0, 1fr) 116px; align-items: end; gap: 10px; }
 .internet-remote-duration-field .internet-remote-field-heading { width: 100%; justify-content: flex-end; }
-.internet-remote-password-row { display: grid; grid-template-columns: minmax(0, 1fr) var(--host-control-height, 40px); gap: 8px; }
+.internet-remote-password-row { display: grid; grid-template-columns: minmax(0, 1fr) var(--host-control-height, 44px); gap: 8px; }
 #remote-mini-popover .internet-remote-password-row input,
-.internet-remote-duration-input { min-width: 0; height: var(--host-control-height, 40px); box-sizing: border-box; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--host-control-radius, 14px); color: var(--ink); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); line-height: 1; }
+.internet-remote-duration-input { min-width: 0; height: var(--host-control-height, 44px); box-sizing: border-box; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--host-control-radius, 14px); color: var(--ink); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); line-height: 1; }
 #remote-mini-popover .internet-remote-password-row input:focus,
 .internet-remote-duration-input:focus { border-color: var(--focus-border-color); outline: none; box-shadow: var(--focus-ring-shadow); }
-.internet-remote-password-row .icon-button { width: var(--host-control-height, 40px); height: var(--host-control-height, 40px); border: var(--btn-secondary-border); border-radius: 50%; background: var(--btn-secondary-bg); color: var(--ink); }
+.internet-remote-password-row .icon-button { width: var(--host-control-height, 44px); height: var(--host-control-height, 44px); border: var(--btn-secondary-border); border-radius: 50%; background: var(--btn-secondary-bg); color: var(--ink); }
 .internet-remote-password-row .icon-button svg { width: 18px; height: 18px; }
 .internet-remote-duration-control { position: relative; min-width: 0; }
 .internet-remote-duration-input { width: 100%; box-sizing: border-box; padding-right: 40px; text-align: right; font-variant-numeric: tabular-nums; appearance: textfield; }
@@ -1032,7 +1033,7 @@ h2 {
 .internet-remote-duration-input::-webkit-outer-spin-button { margin: 0; appearance: none; }
 .internet-remote-duration-unit { position: absolute; top: 50%; right: 13px; color: var(--muted); font-size: 12px; line-height: 1; pointer-events: none; transform: translateY(-50%); }
 .internet-remote-actions { display: flex; gap: 8px; margin-top: 10px; }
-.internet-remote-actions :is(.toolbar-button, .next-button) { min-width: 0; min-height: var(--host-control-height, 40px); padding: 0 14px; border-radius: var(--host-control-radius, 14px); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); font-weight: 400; }
+.internet-remote-actions :is(.toolbar-button, .next-button) { min-width: 0; min-height: var(--host-control-height, 44px); padding: 0 14px; border-radius: var(--host-control-radius, 14px); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); font-weight: 400; }
 .internet-remote-actions .toolbar-button { flex: 0 1 auto; }
 .internet-remote-actions .next-button { flex: 1 1 auto; }
 .internet-remote-room { margin-top: 12px; }
@@ -1143,6 +1144,17 @@ h2 {
   pointer-events: auto;
 }
 
+/* Management menus close immediately; only genuine hover previews animate. */
+.remote-mini-control.is-menu-switching .remote-mini-popover {
+  transition: none;
+}
+.remote-mini-control.is-qr-dismissed:not(.is-qr-pinned) .remote-mini-popover {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
 .remote-mini-popover-card {
   position: relative;
 }
@@ -1205,6 +1217,10 @@ h2 {
 
 #remote-mini-control.is-qr-pinned .remote-access-copy-title {
   display: block;
+}
+
+#remote-mini-control.is-qr-pinned .internet-remote-status-summary {
+  padding-right: 0;
 }
 
 #remote-mini-control.is-qr-pinned .remote-access-public-status {
@@ -1789,13 +1805,14 @@ h2 {
 .cache-retry-current-button,
 .cache-update-button,
 .cache-data-reset-button,
-:root .toolbar-button.settings-tool-button {
+:root :is(.toolbar-button, .next-button).settings-tool-button {
   --cache-control-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
   min-height: var(--cache-control-height);
+  height: var(--cache-control-height);
   padding: 0 12px;
   font-size: 12px;
   font-weight: 700;
@@ -2353,7 +2370,7 @@ h2 {
   width: var(--fullscreen-action-collapsed-width);
   min-width: var(--fullscreen-action-collapsed-width);
   max-width: none;
-  min-height: 42px;
+  min-height: var(--host-control-height);
   padding: 0 12px;
   overflow: hidden;
   border: var(--settings-panel-border);
@@ -2380,9 +2397,9 @@ h2 {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .player-panel:fullscreen .fullscreen-action-control:hover .fullscreen-remote-popover,
-  .player-panel:-webkit-full-screen .fullscreen-action-control:hover .fullscreen-remote-popover,
-  .player-panel.is-tauri-fullscreen .fullscreen-action-control:hover .fullscreen-remote-popover {
+  .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-remote-popover,
+  .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover .fullscreen-remote-popover,
+  .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-remote-popover {
     visibility: visible;
     opacity: 1;
     transform: translateY(0);
@@ -2390,9 +2407,9 @@ h2 {
     pointer-events: auto;
   }
 
-  .player-panel:fullscreen #player-fullscreen-button:hover:not(:disabled),
-  .player-panel:-webkit-full-screen #player-fullscreen-button:hover:not(:disabled),
-  .player-panel.is-tauri-fullscreen #player-fullscreen-button:hover:not(:disabled) {
+  .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled),
+  .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled),
+  .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled) {
     width: var(--fullscreen-action-expanded-width);
     color: var(--ink);
     background: var(--settings-panel-bg);
@@ -2401,34 +2418,34 @@ h2 {
   }
 
   @supports (color: color-mix(in srgb, black, white)) {
-    .player-panel:fullscreen #player-fullscreen-button:hover:not(:disabled),
-    .player-panel:-webkit-full-screen #player-fullscreen-button:hover:not(:disabled),
-    .player-panel.is-tauri-fullscreen #player-fullscreen-button:hover:not(:disabled) {
+    .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled),
+    .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled),
+    .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover #player-fullscreen-button:not(:disabled) {
       background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
       border-color: color-mix(in srgb, var(--accent) 42%, transparent);
     }
   }
 
-  .player-panel:fullscreen .fullscreen-action-control:hover .fullscreen-phone-icon,
-  .player-panel:-webkit-full-screen .fullscreen-action-control:hover .fullscreen-phone-icon,
-  .player-panel.is-tauri-fullscreen .fullscreen-action-control:hover .fullscreen-phone-icon {
+  .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-phone-icon,
+  .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover .fullscreen-phone-icon,
+  .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-phone-icon {
     width: 0;
     flex-basis: 0;
     opacity: 0;
     transform: scale(0.72);
   }
 
-  .player-panel:fullscreen .fullscreen-action-control:hover .fullscreen-action-divider,
-  .player-panel:-webkit-full-screen .fullscreen-action-control:hover .fullscreen-action-divider,
-  .player-panel.is-tauri-fullscreen .fullscreen-action-control:hover .fullscreen-action-divider {
+  .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-action-divider,
+  .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover .fullscreen-action-divider,
+  .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-action-divider {
     width: 0;
     margin: 0;
     opacity: 0;
   }
 
-  .player-panel:fullscreen .fullscreen-action-control:hover .fullscreen-exit-hover-label,
-  .player-panel:-webkit-full-screen .fullscreen-action-control:hover .fullscreen-exit-hover-label,
-  .player-panel.is-tauri-fullscreen .fullscreen-action-control:hover .fullscreen-exit-hover-label {
+  .player-panel:fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-exit-hover-label,
+  .player-panel:-webkit-full-screen .fullscreen-action-control.is-pointer-hover .fullscreen-exit-hover-label,
+  .player-panel.is-tauri-fullscreen .fullscreen-action-control.is-pointer-hover .fullscreen-exit-hover-label {
     max-width: var(--fullscreen-action-label-width);
     margin-left: var(--fullscreen-action-label-gap);
     opacity: 1;
@@ -2562,67 +2579,6 @@ body.is-tauri-fullscreen-active {
   z-index: 7;
   pointer-events: auto;
   max-width: calc(100vw - 32px);
-}
-
-.fullscreen-request-toast {
-  display: none;
-  position: absolute;
-  top: 18px;
-  left: 18px;
-  z-index: 5;
-  max-width: 50vw;
-  width: max-content;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 8px 13px 8px 9px;
-  border-radius: 14px;
-  background: var(--fullscreen-toast-bg);
-  border: var(--fullscreen-toast-border);
-  box-shadow:
-    0 14px 30px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.56);
-  backdrop-filter: blur(18px) saturate(1.12);
-  color: var(--ink);
-  font-size: clamp(15px, 1.5vw, 22px);
-  font-weight: 800;
-  line-height: 1.55;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0;
-  transform: translateY(-6px);
-  transition:
-    opacity 500ms ease,
-    transform 500ms ease;
-  pointer-events: none;
-}
-
-.player-panel:fullscreen .fullscreen-request-toast:not(.hidden),
-.player-panel:-webkit-full-screen .fullscreen-request-toast:not(.hidden),
-.player-panel.is-tauri-fullscreen .fullscreen-request-toast:not(.hidden) {
-  display: grid;
-}
-
-.fullscreen-request-toast.is-visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.fullscreen-request-toast-label {
-  padding: 4px 8px;
-  border-radius: 9px;
-  background: var(--fullscreen-toast-label-bg);
-  color: var(--fullscreen-toast-label-color);
-  font-size: 0.76em;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-.fullscreen-request-toast-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .player-frame iframe,
@@ -3234,7 +3190,7 @@ body.is-tauri-fullscreen-active {
   align-items: center;
   justify-content: flex-end;
   gap: 0px;
-  min-height: 42px;
+  min-height: var(--host-control-height);
   padding: 0 10px;
   border-radius: 999px;
   background: var(--sync-input-bg);
@@ -3278,7 +3234,7 @@ body.is-tauri-fullscreen-active {
   flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
-  min-height: 42px;
+  min-height: var(--host-control-height);
   padding: 0 10px;
   border-radius: 14px;
   background: var(--sync-btn-bg);
@@ -3323,9 +3279,9 @@ body.is-tauri-fullscreen-active {
 }
 
 .volume-mute-button {
-  width: 42px;
-  min-width: 42px;
-  min-height: 42px;
+  width: var(--host-control-height);
+  min-width: var(--host-control-height);
+  min-height: var(--host-control-height);
   padding: 0;
   display: inline-grid;
   place-items: center;
@@ -4309,13 +4265,7 @@ html[data-host-touch-users="true"] .session-user-badge {
 .queue-current-next {
   flex-shrink: 0;
   width: fit-content;
-  height: 32px;
   min-width: 0;
-  padding: 0 16px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .playlist,
@@ -4936,7 +4886,7 @@ html[data-host-touch-users="true"] .session-user-badge {
 }
 
 .follow-browser-head .toolbar-button {
-  min-height: 40px;
+  min-height: var(--host-control-height);
   padding: 0 12px;
 }
 
@@ -7975,7 +7925,7 @@ body {
 
 .topbar .remote-mini-trigger,
 .topbar .status-chip-toggle {
-  min-height: 40px;
+  min-height: var(--host-control-height);
 }
 
 .topbar .remote-mini-qr-wrap {
@@ -8140,7 +8090,7 @@ body {
 
 .work-rail-button[aria-selected="true"] {
   color: var(--accent-deep);
-  border-color: rgba(208, 90, 63, 0.24);
+  border-color: transparent;
   background: var(--accent-soft);
 }
 
@@ -9042,7 +8992,7 @@ body[data-tauri-platform="macos"] .window-drag-region {
 
 .top-controls {
   width: auto;
-  height: 42px;
+  height: var(--host-control-height);
   margin-left: auto;
   gap: 6px;
   overflow: visible;
@@ -9052,8 +9002,8 @@ body[data-tauri-platform="macos"] .window-drag-region {
 .topbar .status-chip {
   width: auto !important;
   min-width: 0 !important;
-  height: 40px;
-  min-height: 40px;
+  height: var(--host-control-height);
+  min-height: var(--host-control-height);
   flex: 0 0 auto !important;
   padding: 0;
   border: var(--top-control-border);
@@ -9063,11 +9013,41 @@ body[data-tauri-platform="macos"] .window-drag-region {
   backdrop-filter: none;
 }
 
+
+/* Anchored menu feedback changes color only, preserving trigger/popup geometry. */
+.topbar :is(.mode-control, .status-chip) {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.topbar :is(.remote-mini-trigger, .status-chip-toggle) {
+  border-radius: inherit;
+  transform: none;
+  box-shadow: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .topbar :is(.mode-control, .status-chip):has(> button:not(:disabled):hover) {
+    border-color: var(--sync-button-hover-border);
+  }
+}
+.topbar :is(.mode-control, .status-chip):has(> button:not(:disabled)[aria-expanded="true"]) {
+  border-color: var(--sync-focus-border);
+}
+.topbar :is(.mode-control, .status-chip):has(> button:not(:disabled):active) {
+  background: var(--host-control-pressed-bg);
+  border-color: var(--sync-focus-border);
+}
+.topbar :is(.remote-mini-trigger, .status-chip-toggle):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topbar :is(.mode-control, .status-chip) { transition: none; }
+}
+
 .topbar .remote-mini-trigger,
 .topbar .status-chip-toggle {
   width: auto;
-  min-width: 40px;
-  min-height: 40px;
+  min-width: var(--host-control-height);
+  min-height: var(--host-control-height);
   padding: 0 12px;
   display: inline-flex;
   flex-direction: row;
@@ -9259,7 +9239,7 @@ body[data-tauri-platform="linux"] .app-shell {
   z-index: 6;
   width: max-content;
   min-width: 0;
-  min-height: 40px;
+  min-height: var(--host-control-height);
   padding: 8px 13px;
   display: inline-flex;
   align-items: center;
@@ -9359,6 +9339,9 @@ body[data-tauri-platform="linux"] .app-shell {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--bottom-panel-bg);
+  /* Floating-panel prose must not resize the same playback controls. */
+  font-size: var(--host-control-font-size);
+  line-height: normal;
 }
 
 .stage-extended-controls > .av-sync-panel,
@@ -9620,20 +9603,53 @@ body[data-tauri-platform="linux"] .app-shell {
 }
 
 .work-rail-button {
-  min-height: 52px;
-  padding: 7px 5px;
+  height: 64px;
+  min-height: 64px;
+  flex: 0 0 64px;
+  padding: 2px 0 4px;
+  border-radius: 14px;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 4px;
   font-size: 12px;
-  line-height: 1.15;
+  line-height: 14px;
   overflow-wrap: normal;
 }
 
 .work-rail-icon {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+/* Balance the visible glyph ink with the label, not just the SVG viewport. */
+#work-rail-settings .work-rail-icon { transform: translateY(1.5px); }
+#work-rail-users .work-rail-icon { transform: translateY(-2px); }
+
+.work-rail-icon-fill { display: none; }
+.work-rail-button[aria-selected="true"] .work-rail-icon-outline { display: none; }
+.work-rail-button[aria-selected="true"] .work-rail-icon-fill { display: inline; }
+/* Keep the original outer stroke: fill must not shrink the selected silhouette.
+   Hide internal marks so the filled icon's transparent cutouts stay open. */
+.work-rail-button:is(#work-rail-request, #work-rail-random, #work-rail-settings)[aria-selected="true"] .work-rail-icon-outline { display: inline; }
+.work-rail-button:is(#work-rail-request, #work-rail-random, #work-rail-settings)[aria-selected="true"] .work-rail-icon-outline > :not(:first-child) { display: none; }
+
+
+:root:is([data-theme="dark"], [data-theme="blue"]) .work-rail-button[aria-selected="true"] {
+  color: var(--accent);
+}
+
+.work-rail-label {
+  display: grid;
+  place-content: center;
+  width: 100%;
+  min-height: 14px;
+  max-height: 28px;
+  flex: 0 0 auto;
 }
 
 .message-surface,
@@ -10000,7 +10016,7 @@ body.is-presentation-stage-only .left-column {
 .app-shell {
   --host-peer-eyebrow-size: 12px;
   --host-peer-title-size: 24px;
-  --host-peer-action-height: 40px;
+  --host-peer-action-height: 44px;
   --host-peer-action-font-size: 16px;
   --host-peer-head-padding-inline: 16px;
   --host-control-height: var(--host-peer-action-height);
@@ -10446,7 +10462,7 @@ body.is-presentation-stage-only .left-column {
   scrollbar-gutter: auto;
 }
 
-/* Conventional workspace actions share the 40 px Fullscreen/Queue geometry.
+/* Conventional workspace actions share the 44 px Host/Remote geometry.
    Segmented tabs and image/content cards retain their distinct affordances. */
 .request-workspace :is(
   .request-query-form button,
@@ -10572,13 +10588,6 @@ body.is-presentation-stage-only .left-column {
   .source-action-row .modal-uid-form,
   .session-user-form {
     grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (pointer: coarse) {
-  :root,
-  .app-shell {
-    --host-peer-action-height: 44px;
   }
 }
 
@@ -10781,6 +10790,22 @@ body.is-tauri-fullscreen-active .layout,
 body.is-tauri-fullscreen-active .host-content-region,
 body.is-tauri-fullscreen-active .left-column {
   overflow: visible;
+}
+
+/* Narrow desktop layouts isolate the Stage below the workspace and rail.
+   Native fullscreen has no browser top layer: release those stacking contexts
+   and remove application chrome until the native fullscreen state is cleared. */
+body.is-tauri-fullscreen-active #app-shell > .topbar,
+body.is-tauri-fullscreen-active .layout > .work-rail,
+body.is-tauri-fullscreen-active .host-workspace-region,
+body.is-tauri-fullscreen-active .host-workspace-backdrop {
+  display: none;
+}
+
+body.is-tauri-fullscreen-active .host-content-region,
+body.is-tauri-fullscreen-active .left-column {
+  isolation: auto;
+  z-index: auto;
 }
 
 .left-column > .player-panel:fullscreen,
@@ -11255,7 +11280,7 @@ body.is-presentation-stage-only .player-panel > .panel-head .stage-actions {
 body.is-presentation-stage-only #player-fullscreen-button {
   display: inline-flex !important;
   min-width: 84px;
-  min-height: 40px;
+  min-height: var(--host-control-height);
   align-items: center;
   justify-content: center;
   border-radius: 11px;
@@ -11944,8 +11969,8 @@ html .volume-adjust-popover::backdrop {
 .host-search-summary[hidden] { display: none; }
 
 .queue-current-actions .queue-current-rating {
-  background: #fff;
-  color: #211d19;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
   border-color: transparent;
 }
 

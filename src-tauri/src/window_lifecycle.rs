@@ -129,6 +129,8 @@ struct MainWindowGeometryState {
     native_directory: Option<PathBuf>,
     cached: Mutex<Option<StoredMainWindowGeometry>>,
     restoring: AtomicBool,
+    #[cfg(target_os = "windows")]
+    fullscreen: Mutex<crate::windows_fullscreen::FullscreenState>,
 }
 
 #[derive(Debug, Default)]
@@ -189,6 +191,8 @@ impl MainWindowGeometryState {
             native_directory: None,
             cached: Mutex::new(cached),
             restoring: AtomicBool::new(false),
+            #[cfg(target_os = "windows")]
+            fullscreen: Mutex::new(crate::windows_fullscreen::FullscreenState::default()),
         }
     }
 
@@ -1049,7 +1053,7 @@ pub(crate) async fn apply_desktop_update(
 }
 
 #[tauri::command]
-pub(crate) fn set_window_fullscreen(
+pub(crate) async fn set_window_fullscreen(
     window: tauri::WebviewWindow,
     backend: tauri::State<'_, BackendProcess>,
     presentation: tauri::State<'_, presentation::PresentationState>,
@@ -1059,12 +1063,56 @@ pub(crate) fn set_window_fullscreen(
     if !presentation.allows_manual_fullscreen() {
         return Err("presentation mode owns native fullscreen state".to_string());
     }
+    #[cfg(target_os = "windows")]
+    {
+        let (sender, mut receiver) = tauri::async_runtime::channel(1);
+        let app = window.app_handle().clone();
+        app.run_on_main_thread(move || {
+            let result = (|| {
+                // Recheck ownership after dispatch to the native window thread.
+                if !window
+                    .state::<presentation::PresentationState>()
+                    .allows_manual_fullscreen()
+                {
+                    return Err("presentation mode owns native fullscreen state".to_string());
+                }
+                let state = window.state::<MainWindowGeometryState>();
+                let mut transition = state
+                    .fullscreen
+                    .lock()
+                    .map_err(|_| "fullscreen state unavailable".to_string())?;
+                let _animation = crate::windows_fullscreen::native::AnimationGuard::new(
+                    window.hwnd().map_err(|error| error.to_string())?.0,
+                )?;
+                // Do not persist intermediate frame geometry or let resize
+                // callbacks change window styles in the middle of this transition.
+                let restoring = state.restoring.swap(true, Ordering::AcqRel);
+                let result = transition.set(&window, fullscreen);
+                let _ = crate::platform::sync_windows_main_window_frame(&window.as_ref().window());
+                state.restoring.store(restoring, Ordering::Release);
+                append_desktop_diagnostic(
+                    "window_fullscreen",
+                    format!(
+                        "requested={fullscreen} status={} fullscreen={:?} maximized={:?}",
+                        if result.is_ok() { "ok" } else { "error" },
+                        window.is_fullscreen(),
+                        window.is_maximized(),
+                    ),
+                );
+                result
+            })();
+            let _ = sender.try_send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        receiver
+            .recv()
+            .await
+            .ok_or("fullscreen transition did not complete")?
+    }
+    #[cfg(not(target_os = "windows"))]
     window
         .set_fullscreen(fullscreen)
-        .map_err(|error| error.to_string())?;
-    #[cfg(target_os = "windows")]
-    let _ = crate::platform::sync_windows_main_window_frame(&window.as_ref().window());
-    Ok(())
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
@@ -1134,7 +1182,11 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             | tauri::WindowEvent::Resized(_)
             | tauri::WindowEvent::ScaleFactorChanged { .. } => {
                 #[cfg(target_os = "windows")]
-                if matches!(event, tauri::WindowEvent::Resized(_)) {
+                if matches!(event, tauri::WindowEvent::Resized(_))
+                    && !window
+                        .try_state::<MainWindowGeometryState>()
+                        .is_some_and(|state| state.restoring.load(Ordering::Acquire))
+                {
                     let _ = crate::platform::sync_windows_main_window_frame(window);
                 }
                 refresh_cached_main_window_geometry(window);

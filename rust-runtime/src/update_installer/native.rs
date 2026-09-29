@@ -643,7 +643,7 @@ pub fn prepare(
     let payload = if installation.platform == "windows" {
         find_windows_payload_root(&extract_dir, "bilikara-desktop.exe")?
     } else {
-        find_macos_payload_app(&extract_dir, "Bilikara-Desktop.app")?
+        find_macos_payload_app(&extract_dir, "bilikara-desktop.app")?
     };
     validate_package(
         &payload,

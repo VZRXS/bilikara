@@ -1004,7 +1004,7 @@ const notes=path.resolve(output);
     if(await back.count()) {
      await back.waitFor({state:'visible'});await settled(host);
      const geometry=await back.evaluate(n=>{const c=getComputedStyle(n);return{height:c.height,font:c.fontSize,weight:c.fontWeight,radius:c.borderRadius,shadow:c.boxShadow}});
-     assert.deepEqual(geometry,{height:'40px',font:'16px',weight:'400',radius:'14px',shadow:'none'});
+     assert.deepEqual(geometry,{height:'44px',font:'16px',weight:'400',radius:'14px',shadow:'none'});
     }
     await host.waitForFunction(e=>!e.disabled,await submit.elementHandle());
     const toggle=form.locator('..').locator('.browse-search-cancel');

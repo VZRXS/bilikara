@@ -16,6 +16,7 @@ class AsyncActionGuardsTest(unittest.TestCase):
         cls.remote_js = cls.repo_root / "static" / "remote.js"
         cls.remote_css = cls.repo_root / "static" / "remote.css"
         cls.export_guard_js = cls.repo_root / "static" / "export-guard.js"
+        cls.fullscreen_controls_js = cls.repo_root / "static" / "fullscreen-controls.js"
         cls.i18n_json = cls.repo_root / "static" / "i18n.json"
 
     def run_node_app_test(self, test_script: str) -> dict:
@@ -101,6 +102,7 @@ class AsyncActionGuardsTest(unittest.TestCase):
         global.location = { search: "", href: "" };
         global.fetch = function() { return new Promise(() => {}); };
         global.BilikaraExportGuard = require(""" + json.dumps(str(self.export_guard_js)) + """);
+        require(""" + json.dumps(str(self.fullscreen_controls_js)) + """);
 
         // Load app.js and bind top-level declarations to global object
         const appSource = fs.readFileSync(""" + json.dumps(str(self.app_js)) + """, 'utf-8');

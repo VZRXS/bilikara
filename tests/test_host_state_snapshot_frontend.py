@@ -41,6 +41,7 @@ async function apiPost(...args) {{ return apiPostImpl(...args); }}
 let renderPlayerImpl = () => {{}};
 function renderPlayer(...args) {{ return renderPlayerImpl(...args); }}
 let transitionImpl = () => {{}};
+function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay(...args) {{ return transitionImpl(...args); }}
 function syncLocalPlayerSettingsFromSnapshot(settings) {{ state.syncedPlayerSettings = settings; }}
 function frontendPlaybackMode(mode) {{ return mode || "local"; }}
@@ -252,6 +253,7 @@ function currentSongAdvanceDelaySeconds(settings = state.data?.player_settings) 
   return Number(settings?.song_advance_delay_seconds ?? 3);
 }
 function frontendPlaybackMode(mode) { return mode || "local"; }
+function maybeShowIncomingRequestToast() {}
 function maybeShowSongTransitionOverlay() {}
 function renderPlayer() {}
 function isCurrentHostPlaybackSession() { return false; }

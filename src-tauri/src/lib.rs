@@ -18,6 +18,8 @@ mod presentation;
 mod window_chrome;
 #[cfg(desktop)]
 mod window_lifecycle;
+#[cfg(all(desktop, any(target_os = "windows", test)))]
+mod windows_fullscreen;
 
 #[cfg(target_os = "android")]
 mod android;

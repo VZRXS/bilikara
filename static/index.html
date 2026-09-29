@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
+  <link rel="stylesheet" href="/incoming-request.css" />
   <link rel="stylesheet" href="/announcements.css" />
 </head>
 
@@ -1458,9 +1459,9 @@
                 <div class="queue-current-meta">
                   <p class="queue-current-requester hidden" id="queue-current-requester"></p>
                   <div class="queue-current-actions">
-                    <button type="button" class="toolbar-button queue-current-rating" id="open-rating-button" disabled
+                    <button type="button" class="toolbar-button settings-tool-button queue-current-rating" id="open-rating-button" disabled
                       data-i18n="rating.rate">评分</button>
-                    <button type="button" class="next-button queue-current-next" id="next-button"
+                    <button type="button" class="next-button settings-tool-button queue-current-next" id="next-button"
                       data-i18n="player.nextSong">切歌</button>
                   </div>
                 </div>
@@ -1504,40 +1505,54 @@
         <button type="button" class="work-rail-button" id="work-rail-queue" role="tab"
           data-host-workspace="queue" data-compact-page="queue" aria-controls="host-workspace-queue" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5h12M6 12h12M6 19h12"></path><circle cx="3" cy="5" r=".7" fill="currentColor"></circle><circle cx="3" cy="12" r=".7" fill="currentColor"></circle><circle cx="3" cy="19" r=".7" fill="currentColor"></circle></svg>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="work-rail-icon-outline" transform="translate(1.5 0)"><path d="M6 5h12M6 12h12M6 19h12"></path><circle cx="3" cy="5" r=".7" fill="currentColor"></circle><circle cx="3" cy="12" r=".7" fill="currentColor"></circle><circle cx="3" cy="19" r=".7" fill="currentColor"></circle></g><g class="work-rail-icon-fill" transform="translate(1.5 0)"><path d="M6 5h13.5"></path><path d="M6 12h9M6 19h12"></path><circle cx="3" cy="5" r=".7" fill="currentColor"></circle><circle cx="3" cy="12" r=".7" fill="currentColor"></circle><circle cx="3" cy="19" r=".7" fill="currentColor"></circle></g></svg>
           <span class="work-rail-label" data-i18n="shell.queue">Queue</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-history" role="tab"
           data-host-workspace="history" data-compact-page="queue" aria-controls="host-workspace-history" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5v5h5"></path><path d="M5.5 16.5A8 8 0 1 0 5 8"></path><path d="M12 7.5V12l3 2"></path></svg>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="work-rail-icon-outline"><path d="M4 5v5h5"></path><path d="M5.5 16.5A8 8 0 1 0 5 8"></path><path d="M12 7.5V12l3.9 2.25"></path></g><g class="work-rail-icon-fill"><g transform="rotate(-30 12 12)"><path d="M4 5v5h5"></path><path d="M5.5 16.5A8 8 0 1 0 5 8"></path></g><path d="M12 7.5V12l3.9 2.25"></path></g></svg>
           <span class="work-rail-label" data-i18n="shell.history">History</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-request" role="tab"
           data-host-workspace="request" data-compact-page="request" aria-controls="host-workspace-request" aria-selected="true" tabindex="0">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="5.5"></circle><path d="m14 14 5 5M10 7.5v5M7.5 10h5"></path></svg>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="work-rail-icon-outline"><circle cx="10.5" cy="10.5" r="7"></circle><path d="m15.5 15.5 5.5 5.5M10.5 7.5v6M7.5 10.5h6"></path></g><g class="work-rail-icon-fill" fill="currentColor" stroke="none"><path fill-rule="evenodd" d="M18.3 10.5a7.8 7.8 0 1 0 -15.6 0a7.8 7.8 0 1 0 15.6 0z M9.5 6.8h2v2.7h2.7v2h-2.7v2.7h-2v-2.7H6.8v-2h2.7z"></path><path d="m16.1 16.1 4.9 4.9" fill="none" stroke="currentColor" stroke-width="3"></path></g></svg>
           <span class="work-rail-label" data-i18n="shell.request">Request</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-random" role="tab"
           data-host-workspace="random" data-compact-page="request" aria-controls="gatcha-panel" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle></svg>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="work-rail-icon-outline"><rect x="3.5" y="3.5" width="17" height="17" rx="4"></rect><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"></circle><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"></circle></g><g class="work-rail-icon-fill" fill="currentColor" stroke="none"><path fill-rule="evenodd" d="M7.5 3.5h9a4 4 0 0 1 4 4v9a4 4 0 0 1-4 4h-9a4 4 0 0 1-4-4v-9a4 4 0 0 1 4-4z M9.15 8a1.15 1.15 0 1 0 -2.3 0a1.15 1.15 0 1 0 2.3 0z M17.15 8a1.15 1.15 0 1 0 -2.3 0a1.15 1.15 0 1 0 2.3 0z M13.15 12a1.15 1.15 0 1 0 -2.3 0a1.15 1.15 0 1 0 2.3 0z M9.15 16a1.15 1.15 0 1 0 -2.3 0a1.15 1.15 0 1 0 2.3 0z M17.15 16a1.15 1.15 0 1 0 -2.3 0a1.15 1.15 0 1 0 2.3 0z"></path></g></svg>
           <span class="work-rail-label" data-i18n="shell.random">试试运气</span>
         </button>
         <button type="button" class="work-rail-button" id="work-rail-users" role="tab"
           data-host-workspace="users" data-compact-page="users" aria-controls="session-users-panel" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path></svg>
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <defs>
+              <mask id="work-rail-users-separation" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+                <rect width="24" height="24" fill="white" stroke="none"></rect>
+                <!-- Keep the heads complete; only overlapping bodies need the 1.8px gap. -->
+                <path d="M3.5 20v-1c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2v1z" fill="black" stroke="black" stroke-width="5.4"></path>
+              </mask>
+            </defs>
+            <g class="work-rail-icon-outline"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 15.25c.8-.5 1.8-.75 3-.75 2.5 0 4.1 1.5 4.5 4.5"></path></g>
+            <g class="work-rail-icon-fill" fill="currentColor">
+              <circle cx="17" cy="9" r="2.5"></circle>
+              <g mask="url(#work-rail-users-separation)"><path d="M12.5 20v-1c.4-3 2-4.5 4.5-4.5s4.1 1.5 4.5 4.5v1z"></path></g>
+              <circle cx="9" cy="8" r="3"></circle><path d="M3.5 20v-1c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2v1z"></path>
+            </g>
+          </svg>
           <span class="work-rail-label" data-i18n="shell.users">Session Users</span>
         </button>
         <button type="button" class="work-rail-button work-rail-settings" id="work-rail-settings" role="tab"
           data-host-workspace="settings" data-compact-page="my" aria-controls="host-workspace-settings" aria-selected="false" tabindex="-1">
           <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="work-rail-icon-outline">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
             <circle cx="12" cy="12" r="3"></circle>
-          </svg>
+          </g><g class="work-rail-icon-fill" fill="currentColor" stroke="none"><path fill-rule="evenodd" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M15.4 12a3.4 3.4 0 1 0 -6.8 0a3.4 3.4 0 1 0 6.8 0z"></path></g></svg>
           <span class="work-rail-label" data-i18n="shell.settings">设置</span>
           <span class="work-rail-update-dot hidden" id="settings-update-indicator" role="status"></span>
         </button>
@@ -1906,6 +1921,8 @@
   <script src="/internet-remote-host.js" defer></script>
   <script src="/host-language.js" defer></script>
   <script src="/volume-control.js" defer></script>
+  <script src="/incoming-request.js"></script>
+  <script src="/fullscreen-controls.js"></script>
   <script src="/app.js" defer></script>
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>

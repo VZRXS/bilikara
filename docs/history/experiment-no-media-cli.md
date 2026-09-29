@@ -14,10 +14,9 @@ media CLI effects. Existing experiment data directories are untouched. The
 historical isolation statements below describe experiment builds; they are not
 the integrated work branch's new default.
 
-The scoped Linux integrated gate, real desktop/Remote screenshots, empty-PATH
-native/downloader traces, fresh frozen libav-only bundle checks, concrete
-compatibility losses and deferred platform/independent review are recorded in
-[the current desktop handoff](../version-roadmap.md#2026-09-16-desktop-step-1--libav-only-local-reconciliation).
+This handoff describes the historical experiment. Current product direction
+is maintained in [the version roadmap](../version-roadmap.md); current launch
+and packaging behavior is described in [native desktop launch and bundles](../native-desktop.md).
 Native serving bypasses Python; the default desktop product still packages and
 uses Python. Step 2 has not started. No push or deployment occurred.
 

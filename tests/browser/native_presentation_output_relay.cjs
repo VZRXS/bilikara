@@ -16,7 +16,7 @@ const playwright = require("playwright");
 const [binary, output, engine = "chromium"] = process.argv.slice(2);
 const MAX_OUTPUT_STATE_BYTES = 2 * 1024 * 1024;
 const commandsByRole = {
-  main: new Set(["get_presentation_session", "get_presentation_displays", "activate_local_presentation",
+  main: new Set(["get_presentation_session", "get_presentation_displays", "set_window_fullscreen", "activate_local_presentation",
     "mark_presentation_host_ready", "publish_presentation_playback_state", "publish_presentation_output_state",
     "deactivate_local_presentation"]),
   controller: new Set(["get_presentation_session", "mark_presentation_controller_ready",
@@ -80,6 +80,10 @@ const commandsByRole = {
         const role = page === shell.pages.main ? "main" : page === shell.pages.controller ? "controller" : "";
         if (!commandsByRole[role]?.has(name)) throw Error(`${role || "unknown"} is not permitted to invoke ${name}`);
         switch (name) {
+          case "set_window_fullscreen":
+            assert.equal(typeof args.fullscreen, "boolean");
+            shell.fullscreen = args.fullscreen;
+            return;
           case "get_presentation_session": return snapshot();
           case "get_presentation_displays":
             return { monitorCount: 2, controllerDisplayId: "d1", recommendedDisplayId: "d2", displays: [
@@ -169,6 +173,106 @@ const commandsByRole = {
     await host.goto(ready.bootstrapUrl);
     await host.waitForFunction(() => typeof state !== "undefined" && state.data?.remote_access);
     await host.waitForFunction(() => state.presentationDisplayInfo?.displays?.length === 2);
+    // A full menu replaces the top-layer preview without a compact-layout exit flash.
+    const phoneTrigger = host.locator("#remote-mini-trigger");
+    const phonePopup = host.locator("#remote-mini-popover");
+    await phoneTrigger.hover();
+    await host.waitForFunction(() => document.querySelector("#remote-mini-popover").matches(":popover-open"));
+    await phoneTrigger.click();
+    assert.equal(await phonePopup.evaluate(node => node.matches(":popover-open")), false);
+    await phoneTrigger.click();
+    assert.deepEqual(await phonePopup.evaluate(node => ({
+      visibility: getComputedStyle(node).visibility,
+      transition: getComputedStyle(node).transitionDuration,
+    })), { visibility: "hidden", transition: "0s" });
+    await host.mouse.move(20, 300);
+    await phoneTrigger.hover();
+    await host.waitForFunction(() => getComputedStyle(document.querySelector("#remote-mini-popover")).opacity === "1");
+    await phoneTrigger.click();
+    await host.mouse.click(20, 300);
+    assert.equal(await phonePopup.evaluate(node => getComputedStyle(node).visibility), "hidden");
+    // Older WebViews lack both the Popover API and its :popover-open selector.
+    await host.evaluate(() => {
+      const popup = document.querySelector("#remote-mini-popover");
+      const matches = popup.matches;
+      popup.showPopover = undefined;
+      popup.hidePopover = undefined;
+      popup.matches = function(selector) {
+        if (selector === ":popover-open") throw new DOMException("Unsupported selector", "SyntaxError");
+        return matches.call(this, selector);
+      };
+      try {
+        setRemoteQrPinned(true);
+        if (!state.remoteQrPinned) throw Error("Fallback management menu did not open");
+        setRemoteQrPinned(false);
+        if (getComputedStyle(popup).visibility !== "hidden") throw Error("Fallback management menu did not close");
+      } finally {
+        delete popup.showPopover;
+        delete popup.hidePopover;
+        delete popup.matches;
+      }
+    });
+    // Native fullscreen does not enter the browser top layer. Narrow desktop
+    // stacking contexts used to leave the toolbar, rail and workspace on top.
+    await host.evaluate(() => {
+      document.body.dataset.tauriPlatform = "windows";
+      window.fullscreenSavedItem = state.data.current_item;
+      state.data.current_item = { id: "fullscreen-layout", title: "Fullscreen layout fixture" };
+      window.fullscreenMedia = document.createElement("video");
+      window.fullscreenSavedMountedVideo = mountedLocalVideoElement;
+      mountedLocalVideoElement = () => window.fullscreenMedia;
+      document.querySelector("#player-frame").appendChild(window.fullscreenMedia);
+      renderPlayerFullscreenButton();
+    });
+    for (const width of [700, 1100, 1230, 1231, 1600]) {
+      await host.setViewportSize({ width, height: 800 });
+      await host.evaluate(() => activateHostWorkspace("queue", { inputOrigin: "programmatic" }));
+      await host.evaluate(() => { window.fullscreenMedia.controls = true; });
+      await host.locator("#player-fullscreen-button").click();
+      assert.equal(shell.fullscreen, true);
+      assert.equal(await host.evaluate(() => window.fullscreenMedia.controls), false);
+      await host.evaluate(() => revealMountedPlayerControlsForUserInteraction());
+      assert.equal(await host.evaluate(() => window.fullscreenMedia.controls), false);
+      const qr = host.locator(".fullscreen-remote-popover");
+      assert.equal(await qr.evaluate(node => getComputedStyle(node).visibility), "hidden");
+      await host.mouse.move(20, 300);
+      await host.locator("#player-fullscreen-button").hover();
+      await host.waitForFunction(() => getComputedStyle(document.querySelector(".fullscreen-remote-popover")).opacity === "1");
+      await host.mouse.move(20, 300);
+      await host.waitForFunction(() => getComputedStyle(document.querySelector(".fullscreen-remote-popover")).visibility === "hidden");
+      assert.equal(await host.evaluate(() => document.fullscreenElement), null);
+      for (const selector of [".topbar", ".work-rail", ".host-workspace-region", ".host-workspace-backdrop"]) {
+        assert.equal(await host.locator(selector).isVisible(), false, `${selector} hidden at ${width}px`);
+      }
+      const stage = await host.locator(".player-panel").boundingBox();
+      assert.deepEqual(stage, { x: 0, y: 0, width, height: 800 });
+      assert.equal(await host.evaluate(() => window.fullscreenMedia.isConnected), true);
+      if (width === 1100) await host.screenshot({ path: path.join(evidence, `${engine}-native-fullscreen.png`) });
+      await host.keyboard.press("Escape");
+      await host.waitForFunction(() => !document.body.classList.contains("is-tauri-fullscreen-active"));
+      assert.equal(shell.fullscreen, false);
+      for (const selector of [".topbar", ".work-rail", ".host-workspace-region"]) {
+        assert.equal(await host.locator(selector).isVisible(), true, `${selector} restored at ${width}px`);
+      }
+      assert.equal(await host.evaluate(() => window.fullscreenMedia.isConnected), true);
+    }
+    await host.evaluate(async () => {
+      window.fullscreenMedia.remove();
+      mountedLocalVideoElement = window.fullscreenSavedMountedVideo;
+      state.data.current_item = window.fullscreenSavedItem;
+      renderPlayerFullscreenButton();
+      const displays = structuredClone(state.presentationDisplayInfo);
+      applyPresentationDisplayInfo({ ...displays, monitorCount: 1, displays: displays.displays.slice(0, 1) });
+      if (document.querySelectorAll(".presentation-display-option").length !== 1
+          || !document.querySelector(".presentation-display-empty")) throw Error("single-display guidance missing");
+      applyPresentationDisplayInfo({ ...displays, displays: displays.displays.map(display => ({
+        ...display, selectable: false, mirrored: true,
+      })) });
+      if (!document.querySelector(".presentation-display-empty")) throw Error("mirrored displays must stay unavailable");
+      applyPresentationDisplayInfo(displays);
+      if (document.querySelector(".presentation-display-empty")) throw Error("extended display must be selectable");
+    });
+    await host.setViewportSize({ width: 1280, height: 800 });
     const expectedUrl = await host.evaluate(() => localRemoteAccessView(state.data.remote_access).url);
     assert.match(expectedUrl, /^http:\/\/.+\/remote$/);
     const expectedQr = await host.evaluate(() => state.data.remote_access.qr_image);
@@ -206,9 +310,29 @@ const commandsByRole = {
     assert.equal(relayed.href, expectedUrl);
     assert.equal(relayed.qrSource, expectedQr);
     assert.ok(shell.relayed > 0);
+    assert.equal(await controller.locator(".presentation-output-remote-popover").evaluate(node => getComputedStyle(node).visibility), "hidden");
+    await controller.locator("#controller-exit").hover();
+    await controller.waitForFunction(() => getComputedStyle(document.querySelector(".presentation-output-remote-popover")).opacity === "1");
+    await controller.mouse.move(20, 300);
+    await controller.waitForFunction(() => getComputedStyle(document.querySelector(".presentation-output-remote-popover")).visibility === "hidden");
     await controller.locator("#controller-exit").hover();
     await controller.waitForTimeout(300);
     await controller.screenshot({ path: path.join(evidence, `${engine}-relayed-local-entry.png`) });
+
+    // Queue additions reach an isolated audience through the same native relay.
+    await host.evaluate(() => {
+      const next = structuredClone(state.data);
+      next.state_revision += 1;
+      next.revision += 1;
+      next.playlist.push({ id: "notice-demo", display_title: "新点歌曲目", cache_status: "pending" });
+      if (!acceptHostStateSnapshot(next)) throw Error("fixture snapshot rejected");
+    });
+    await controller.waitForFunction(() => document.querySelector("#controller-request-toast.is-visible")?.textContent.includes("新点歌曲目"));
+    await controller.screenshot({ path: path.join(evidence, `${engine}-incoming-request.png`) });
+    await controller.waitForTimeout(4800);
+    await host.evaluate(() => publishPresentationOutputState());
+    await controller.waitForTimeout(200);
+    assert.equal(await controller.locator("#controller-request-toast").isVisible(), false);
 
     // Theme, language and the public room each follow the idle Host through the relay.
     await host.evaluate(() => applyTheme("dark"));

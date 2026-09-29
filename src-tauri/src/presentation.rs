@@ -1790,8 +1790,8 @@ fn create_display_identifier_window(
             {
                 let _ = window.set_size(size);
                 let _ = window.set_position(position);
-                let _ = window.set_ignore_cursor_events(true);
                 let _ = window.show();
+                let _ = window.set_ignore_cursor_events(true);
             }
         })
         .title(format!("Bilikara Display {number}"))
@@ -1813,12 +1813,15 @@ fn create_display_identifier_window(
         .map_err(|error| error.to_string())?;
     let _ = window.set_size(size);
     let _ = window.set_position(position);
+    // GTK needs a realized GdkWindow before applying the input region. Hidden
+    // Linux windows get their pass-through region after show() in page load.
+    #[cfg(not(target_os = "linux"))]
     let _ = window.set_ignore_cursor_events(true);
     Ok(label)
 }
 
-#[tauri::command(async)]
-pub(crate) fn show_presentation_display_identifiers(
+#[tauri::command]
+pub(crate) async fn show_presentation_display_identifiers(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     backend: tauri::State<'_, crate::backend_process::BackendProcess>,
@@ -1831,7 +1834,16 @@ pub(crate) fn show_presentation_display_identifiers(
     if state.snapshot()?.phase != PresentationPhase::Inactive {
         return Err("display identifiers are unavailable during presentation".to_string());
     }
-    let records = discover_display_records(&window)?;
+    let generation = DISPLAY_IDENTIFIER_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    let identifier_host = window.clone();
+    // Converting GTK monitor handles reads GDK geometry. Perform that work on
+    // the UI thread rather than the asynchronous command worker.
+    let records =
+        run_on_main_thread_with_result(&app, generation, "identify-displays", move || {
+            discover_display_records(&identifier_host)
+        })?;
     let available_ids = records
         .iter()
         .map(|record| record.display.id.clone())
@@ -1840,9 +1852,6 @@ pub(crate) fn show_presentation_display_identifiers(
     let theme = normalized_display_identifier_theme(&theme);
     let language = normalized_display_identifier_language(&language);
     close_display_identifier_windows(&app);
-    let generation = DISPLAY_IDENTIFIER_GENERATION
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
     let mut labels = Vec::with_capacity(order.len());
     let mut seen_origins = HashSet::new();
     for (order_index, record_index) in order.into_iter().enumerate() {
@@ -1869,16 +1878,17 @@ pub(crate) fn show_presentation_display_identifiers(
     }
     let expiry_app = app.clone();
     let expiry_labels = labels.clone();
-    std::thread::Builder::new()
-        .name("bilikara-display-identifiers".to_string())
-        .spawn(move || {
-            std::thread::sleep(DISPLAY_IDENTIFIER_LIFETIME);
-            close_display_identifier_labels(&expiry_app, &expiry_labels);
-        })
-        .map_err(|error| {
-            close_display_identifier_labels(&app, &labels);
-            format!("failed to schedule display identifier cleanup: {error}")
-        })?;
+    // Keep the invocation pending until the numbered windows close, so the
+    // Host's existing asynchronous guard covers their complete display time.
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(DISPLAY_IDENTIFIER_LIFETIME);
+        close_display_identifier_labels(&expiry_app, &expiry_labels);
+    })
+    .await
+    .map_err(|error| {
+        close_display_identifier_labels(&app, &labels);
+        format!("failed to finish display identifier cleanup: {error}")
+    })?;
     Ok(())
 }
 

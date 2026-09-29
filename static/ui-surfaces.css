@@ -110,15 +110,19 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   --panel-header-control-size: 32px;
   --panel-header-control-offset: calc((var(--panel-title-line-height) - var(--panel-header-control-size)) / 2);
   --panel-header-action-inset: calc(20px + var(--panel-header-control-offset));
+  --host-control-hover-bg: rgba(255, 255, 255, 0.95);
+  --host-control-pressed-bg: color-mix(in srgb, var(--sync-btn-bg, var(--btn-secondary-bg)), var(--ink) 6%);
   --rating-card-shadow: 0 18px 48px rgba(35, 26, 20, 0.24);
 }
 :root[data-theme="dark"] {
+  --host-control-hover-bg: var(--dark-control-hover-bg);
   --modal-surface-rgb: 30, 26, 23;
   --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
   --modal-card-border: 1px solid var(--line);
   --rating-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
 }
 :root[data-theme="blue"] {
+  --host-control-hover-bg: var(--dark-control-hover-bg);
   --modal-surface-rgb: 17, 25, 40;
   --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
   --modal-card-border: 1px solid var(--line);
@@ -275,8 +279,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 :root :is(.selection-option, .binding-option) > input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 :root :is(.selection-option, .binding-option) > input:disabled { opacity: 0.5; cursor: default; }
 :root .song-detail-card {
-  padding-top: 20px;
-  padding-inline: 20px;
+  padding: 20px;
 }
 :root .song-detail-card > .song-detail-title,
 :root .rating-title { padding-right: 40px; }
@@ -705,17 +708,34 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   box-shadow: none;
 }
 :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
-  #follow-browse-back, #favlist-browse-back, #catalog-advanced-back) {
-  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
+  #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
+  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]) {
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 @media (hover: hover) and (pointer: fine) {
   :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
-    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back):hover:not(:disabled) {
+    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
+    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]):hover:not(:disabled) {
     transform: translateY(-1px);
+    background: var(--host-control-hover-bg);
     border-color: var(--sync-button-hover-border);
   }
   :root:not([data-ui-client="remote"]) .browse-search-bar.is-open .browse-search-form > button:hover:not(:disabled) {
     transform: translateY(-2px);
+  }
+}
+:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+  #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
+  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]):active:not(:disabled) {
+  transform: none;
+  background: var(--host-control-pressed-bg);
+  border-color: var(--sync-focus-border);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
+    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]) {
+    transition: none;
   }
 }
 :root :is(.tag-letter-button, .tag-browser-back, #follow-browse-back,
@@ -724,10 +744,5 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-@media (prefers-reduced-motion: reduce) {
-  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
-    #follow-browse-back, #favlist-browse-back, #catalog-advanced-back) { transition: none; }
-}
-
 :root:not([data-ui-client="remote"]) .browse-search-bar:has(> .category-browser-tabs) { --browse-track-inset: 2px; }
 :root:not([data-ui-client="remote"]) .category-browser-tabs { padding-top: 2px; }

@@ -18,14 +18,14 @@ Download the verified ZIP artifact (`bilikara-*-macos-*.zip`) from GitHub Action
 
 The archive contains:
 - `bilikara.app`: Standalone Python application
-- `Bilikara-Desktop.app`: Tauri desktop shell application
+- `bilikara-desktop.app`: Tauri desktop shell application
 
 ---
 
 ## 2. Opening the Application
 
 ### Method A: Right-Click Open
-1. Locate `Bilikara-Desktop.app` (or `bilikara.app`) in Finder.
+1. Locate `bilikara-desktop.app` (or `bilikara.app`) in Finder.
 2. Control-click (or right-click) the application icon.
 3. Select **Open** from the shortcut menu.
 4. Click **Open** in the dialog box to confirm.
@@ -38,26 +38,26 @@ If macOS blocks execution because the file was downloaded from the Internet (`co
 1. **Verify code signature integrity first**:
    ```bash
    codesign --verify --deep --strict --verbose=4 "/Applications/bilikara.app"
-   codesign --verify --deep --strict --verbose=4 "/Applications/Bilikara-Desktop.app"
+   codesign --verify --deep --strict --verbose=4 "/Applications/bilikara-desktop.app"
    ```
 
 2. **Remove quarantine attribute**:
    ```bash
    xattr -dr com.apple.quarantine "/Applications/bilikara.app"
-   xattr -dr com.apple.quarantine "/Applications/Bilikara-Desktop.app"
+   xattr -dr com.apple.quarantine "/Applications/bilikara-desktop.app"
    ```
 
 3. **Launch the application**:
    ```bash
    open "/Applications/bilikara.app"
-   open "/Applications/Bilikara-Desktop.app"
+   open "/Applications/bilikara-desktop.app"
    ```
 
 ---
 
 ## 3. Desktop Startup Diagnostics
 
-Packaged `Bilikara-Desktop.app` launches write a bounded diagnostic log to:
+Packaged `bilikara-desktop.app` launches write a bounded diagnostic log to:
 
 ```text
 ~/Library/Application Support/bilikara/data/logs/desktop-startup.log

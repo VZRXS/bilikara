@@ -152,7 +152,7 @@ body.is-cursor-hidden * {
   transform: translateX(-4px);
 }
 
-.presentation-output-exit:hover:not(:disabled) {
+.presentation-output-control.is-pointer-hover .presentation-output-exit:not(:disabled) {
   width: var(--presentation-action-expanded-width);
   color: var(--ink);
   background: var(--settings-panel-bg);
@@ -160,7 +160,7 @@ body.is-cursor-hidden * {
 }
 
 @supports (color: color-mix(in srgb, black, white)) {
-  .presentation-output-exit:hover:not(:disabled) {
+  .presentation-output-control.is-pointer-hover .presentation-output-exit:not(:disabled) {
     background: color-mix(in srgb, var(--settings-panel-bg) 88%, var(--accent) 12%);
     border-color: color-mix(in srgb, var(--accent) 42%, transparent);
   }
@@ -200,7 +200,7 @@ body.is-cursor-hidden * {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .presentation-output-control:hover .presentation-output-remote-popover {
+  .presentation-output-control.is-pointer-hover .presentation-output-remote-popover {
     visibility: visible;
     opacity: 1;
     transform: translateY(0);
@@ -208,20 +208,20 @@ body.is-cursor-hidden * {
     pointer-events: auto;
   }
 
-  .presentation-output-control:hover .presentation-output-phone-icon {
+  .presentation-output-control.is-pointer-hover .presentation-output-phone-icon {
     width: 0;
     flex-basis: 0;
     opacity: 0;
     transform: scale(0.72);
   }
 
-  .presentation-output-control:hover .presentation-output-action-divider {
+  .presentation-output-control.is-pointer-hover .presentation-output-action-divider {
     width: 0;
     margin: 0;
     opacity: 0;
   }
 
-  .presentation-output-control:hover .presentation-output-exit-label {
+  .presentation-output-control.is-pointer-hover .presentation-output-exit-label {
     max-width: var(--presentation-action-label-width);
     margin-left: var(--presentation-action-label-gap);
     opacity: 1;

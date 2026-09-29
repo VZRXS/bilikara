@@ -58,6 +58,10 @@
 
   const dragScrollThresholdPx = 56;
   const dragScrollStepPx = 18;
+  const dragActivationDistancePx = 6;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let suppressDragClick = false;
 
   renderQueue = function renderQueueWithActions(playlist) {
     if (state.dragItemId) {
@@ -166,7 +170,7 @@
 
   function syncDropIndicators() {
     clearDropIndicators();
-    if (!state.dragItemId) {
+    if (!state.dragItemId || !state.dragMoved) {
       return;
     }
 
@@ -343,9 +347,10 @@
     state.dragTargetAfter = false;
     state.dragPointerId = event.pointerId;
     state.dragMoved = false;
-    elements.queueList.classList.add("drag-active");
+    dragStartX = event.clientX;
+    dragStartY = event.clientY;
+    suppressDragClick = false;
     handle.setPointerCapture?.(event.pointerId);
-    syncDropIndicators();
   }
 
   async function finishDrag(pointerId) {
@@ -357,6 +362,7 @@
     const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
     const sourceIndex = playlist.findIndex((item) => item.id === draggedId);
     const targetIndex = reorderTargetIndex(playlist, draggedId);
+    suppressDragClick = state.dragMoved;
     clearDragState();
 
     if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
@@ -435,13 +441,30 @@
     beginDrag(handle, event);
   });
 
+  // A tap reaches the shared click-to-open help handler. A completed drag must
+  // not also open help from the synthetic click following pointerup.
+  elements.queueList.addEventListener("click", (event) => {
+    if (event.detail !== 0 && suppressDragClick && event.target.closest("[data-drag-handle]")) {
+      suppressDragClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+
   document.addEventListener("pointermove", (event) => {
     if (!state.dragItemId || state.dragPointerId !== event.pointerId) {
       return;
     }
 
     event.preventDefault();
-    state.dragMoved = true;
+    if (!state.dragMoved) {
+      if (Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY) < dragActivationDistancePx) {
+        return;
+      }
+      state.dragMoved = true;
+      closeRemoteContextualInfo();
+      elements.queueList.classList.add("drag-active");
+    }
     maybeAutoScrollQueue(event.clientY);
     updateDragTarget(event.clientX, event.clientY);
   }, { passive: false });
@@ -450,7 +473,10 @@
     await finishDrag(event.pointerId);
   });
 
-  document.addEventListener("pointercancel", async (event) => {
-    await finishDrag(event.pointerId);
+  document.addEventListener("pointercancel", (event) => {
+    if (state.dragPointerId !== event.pointerId) return;
+    suppressDragClick = true;
+    clearDragState();
+    render();
   });
 })();

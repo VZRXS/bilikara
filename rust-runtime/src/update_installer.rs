@@ -378,6 +378,26 @@ fn error(kind: &'static str, message: impl Into<String>) -> UpdateInstallerError
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lowercase_desktop_payload_keeps_legacy_name_compatible() {
+        let root =
+            std::env::temp_dir().join(format!("bilikara-payload-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let legacy = root.join("Bilikara-Desktop.app");
+        std::fs::create_dir_all(legacy.join("Contents/Frameworks/bilikara-backend.app")).unwrap();
+        assert_eq!(
+            super::find_macos_payload_app(&root, "bilikara-desktop.app").unwrap(),
+            legacy
+        );
+        std::fs::remove_dir_all(&legacy).unwrap();
+        let current = root.join("bilikara-desktop.app");
+        std::fs::create_dir_all(&current).unwrap();
+        assert_eq!(
+            super::find_macos_payload_app(&root, "bilikara-desktop.app").unwrap(),
+            current
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
     use zip::ZipWriter;

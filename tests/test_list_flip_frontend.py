@@ -204,7 +204,9 @@ console.log(JSON.stringify({ sequence }));
         self.assertEqual(self.markup.count('id="next-button"'), 1)
         self.assertNotIn('id="next-button"', player_panel)
         self.assertIn('id="next-button"', queue_workspace)
-        self.assertIn('class="next-button queue-current-next"', queue_workspace)
+        self.assertIn(
+            'class="next-button settings-tool-button queue-current-next"', queue_workspace
+        )
         self.assertEqual(self.markup.count('id="resort-playlist-button"'), 1)
         self.assertIn('id="resort-playlist-button"', queue_workspace)
         self.assertNotIn('id="resort-playlist-button"', request_workspace)

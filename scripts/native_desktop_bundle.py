@@ -153,7 +153,7 @@ def build_desktop(backend: Path, *, target: str | None) -> None:
     shell = target_output("src-tauri", "release", target)
     if platform.system() == "Darwin":
         from scripts.embed_macos_backend import embed_backend
-        desktop = backend.parent / "Bilikara-Desktop.app"
+        desktop = backend.parent / "bilikara-desktop.app"
         if desktop.exists():
             shutil.rmtree(desktop)
         # ditto preserves the bundle's native links and signature metadata.

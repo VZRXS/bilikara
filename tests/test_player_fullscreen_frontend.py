@@ -37,6 +37,9 @@ const state = {data: {current_item: {id: 'same-song'}}, presentationSession: {ph
   playerFullscreenTransitioning: false, playerFullscreenRevision: 0};
 let native = true, nativeFailure = false, resolveNative, delayNative = false;
 let calls = [], domCalls = [], messages = [], renders = 0;
+let hoverResets = 0, controlsHides = 0;
+const fullscreenControlHover = {reset() {hoverResets++;}};
+function hideMountedPlayerControls() {controlsHides++;}
 function tauriInvoke() {
   return native ? async (command, args) => {
     calls.push([command, args.fullscreen]);
@@ -62,7 +65,11 @@ function setAppMessage(text) {messages.push(text);}
   assert.equal(supportsPlayerFullscreen(), true);
   delayNative = true;
   const entering = togglePlayerFullscreen();
+  assert.equal(document.body.classList.contains('is-tauri-fullscreen-active'), true,
+    'hide windowed toolbar/rail before awaiting native monitor expansion');
   assert.equal(state.playerFullscreenTransitioning, true);
+  assert.equal(hoverResets, 1);
+  assert.equal(controlsHides, 1);
   assert.equal(isPlayerPanelFullscreen(), false);
   await togglePlayerFullscreen(); // duplicate activation is ignored
   assert.deepEqual(calls, [['set_window_fullscreen', true]]);
@@ -117,7 +124,7 @@ function setAppMessage(text) {messages.push(text);}
   console.log(JSON.stringify({passed:true, nativeCalls:calls.length, domCalls, messages}));
 })().catch(error => {console.error(error);process.exitCode=1;});
 '''
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)["passed"])
 

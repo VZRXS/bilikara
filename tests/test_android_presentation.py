@@ -12,7 +12,7 @@ class AndroidPresentationTest(unittest.TestCase):
         node = shutil.which("node")
         self.assertIsNotNone(node)
         result = subprocess.run([node, "tests/android_presentation.cjs"], cwd=ROOT,
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_native_bridge_is_origin_role_and_generation_scoped(self):
