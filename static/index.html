@@ -1022,6 +1022,13 @@
                 data-android-workspace="random" aria-controls="gatcha-panel" aria-selected="false"
                 tabindex="-1" data-shared-workspace="random"></button>
             </nav>
+            <div class="request-workspace-actions developer-only">
+              <button type="button" id="request-workspace-expand" class="toolbar-button"
+                aria-haspopup="dialog" aria-controls="request-workspace-modal"
+                data-i18n="request.expand">放大</button>
+              <button type="button" id="request-workspace-collapse" class="banner-close" hidden
+                aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+            </div>
           </header>
 
           <p class="request-session-user-notice" id="request-session-user-notice" role="status"
@@ -1679,6 +1686,12 @@
     </div>
   </div>
 
+  <div class="selection-modal request-workspace-modal hidden" id="request-workspace-modal"
+    role="dialog" aria-modal="true" aria-labelledby="workspace-request-heading">
+    <div class="selection-modal-backdrop" id="request-workspace-modal-backdrop"></div>
+    <div class="selection-modal-card" id="request-workspace-modal-card"></div>
+  </div>
+
   <div class="selection-modal hidden" id="binding-modal" role="dialog" aria-modal="true">
     <div class="selection-modal-backdrop" id="binding-modal-backdrop"></div>
     <div class="selection-modal-card">
@@ -1835,6 +1848,7 @@
       <div class="developer-tag-reset-note" id="developer-tag-reset-note">
         确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。
       </div>
+      <p id="developer-tag-reset-error" class="search-message is-error" role="alert" hidden></p>
       <div class="selection-modal-actions">
         <button type="button" id="developer-tag-reset-cancel" class="toolbar-button">取消</button>
         <button type="button" id="developer-tag-reset-delete-mid" class="toolbar-button danger-button hidden">按 MID

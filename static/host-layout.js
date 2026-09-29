@@ -226,6 +226,7 @@
     const next = window.BilikaraLayoutPolicy.resolveLayout(preferences.layout, width) === "phone";
     root.dataset.hostLayoutMode = preferences.layout;
     if (root.dataset.hostLayout && next === portrait) return;
+    if (state.requestWorkspaceExpansion) closeExpandedRequestWorkspace({ restoreFocus: false });
     const focused = document.activeElement;
     const selection = focused && typeof focused.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;

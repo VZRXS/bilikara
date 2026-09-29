@@ -278,6 +278,7 @@ const state = {
   developerTagResetItem: null,
   developerTagResetAction: "",
   developerTagResetSaving: false,
+  requestWorkspaceExpansion: null,
   retryActivityById: {},
   gatchaCandidate: null,
   gatchaView: "idle",
@@ -744,6 +745,11 @@ const elements = {
   remoteMiniPopover: document.getElementById("remote-mini-popover"),
   remoteMiniPopoverClose: document.getElementById("remote-mini-popover-close"),
   requestWorkspace: document.getElementById("host-workspace-request"),
+  requestWorkspaceExpand: document.getElementById("request-workspace-expand"),
+  requestWorkspaceCollapse: document.getElementById("request-workspace-collapse"),
+  requestWorkspaceModal: document.getElementById("request-workspace-modal"),
+  requestWorkspaceModalCard: document.getElementById("request-workspace-modal-card"),
+  requestWorkspaceModalBackdrop: document.getElementById("request-workspace-modal-backdrop"),
   requestSubviewButtons: document.querySelectorAll("[data-request-view]"),
   requestSubviewPanels: document.querySelectorAll("[data-request-panel]"),
   searchModeButtons: document.querySelectorAll("[data-search-mode]"),
@@ -781,6 +787,7 @@ const elements = {
   developerTagResetText: document.getElementById("developer-tag-reset-text"),
   developerTagResetFields: document.getElementById("developer-tag-reset-fields"),
   developerTagResetNote: document.getElementById("developer-tag-reset-note"),
+  developerTagResetError: document.getElementById("developer-tag-reset-error"),
   gatchaPanel: document.getElementById("gatcha-panel"),
   gatchaTag: document.getElementById("gatcha-tag"),
   gatchaTitle: document.getElementById("gatcha-title"),
@@ -4233,8 +4240,8 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
         ? "out"
         : (workspaceTransition && workspace === workspaceTransition.to ? "in" : ""));
     const visible = workspace === activeWorkspace
-      && !requestOverlayClosed
-      && !narrowToolSheetClosed;
+      && ((workspace === "request" && Boolean(state.requestWorkspaceExpansion))
+        || (!requestOverlayClosed && !narrowToolSheetClosed));
     panel.hidden = !visible;
     panel.inert = !visible || transitionRole === "out";
     panel.setAttribute("aria-hidden", String(!visible));
@@ -4400,6 +4407,67 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
 
 function hostRequestWorkspaceUsesOverlay() {
   return false;
+}
+
+function openExpandedRequestWorkspace() {
+  if (!state.developerMode || state.requestWorkspaceExpansion || !elements.requestWorkspaceModalCard) return;
+  const panel = elements.requestWorkspace;
+  const anchor = document.createComment("request workspace position");
+  const scroll = [...panel.querySelectorAll("*")].filter(node => node.scrollTop || node.scrollLeft)
+    .map(node => [node, node.scrollTop, node.scrollLeft]);
+  panel.before(anchor);
+  state.requestWorkspaceExpansion = { anchor, opener: document.activeElement, shellInert: elements.appShell.inert };
+  const tabs = document.querySelector(".request-subview-tabs");
+  if (tabs && !panel.contains(tabs)) {
+    const tabsAnchor = document.createComment("compact request tabs position");
+    tabs.before(tabsAnchor);
+    state.requestWorkspaceExpansion.tabs = { node: tabs, anchor: tabsAnchor };
+    panel.querySelector(".request-workspace-head").insertBefore(tabs, elements.requestWorkspaceExpand.parentElement);
+  }
+  // Move the existing forms, never clone them or touch the media tree.
+  elements.requestWorkspaceModalCard.append(panel);
+  elements.requestWorkspaceModal.classList.remove("hidden");
+  elements.requestWorkspaceExpand.hidden = true;
+  elements.requestWorkspaceCollapse.hidden = false;
+  elements.appShell.inert = true;
+  panel.setAttribute("role", "region");
+  panel.setAttribute("aria-labelledby", "workspace-request-heading");
+  scroll.forEach(([node, top, left]) => { node.scrollTop = top; node.scrollLeft = left; });
+  elements.requestWorkspaceCollapse.focus({ preventScroll: true });
+}
+
+function closeExpandedRequestWorkspace({ restoreFocus = true } = {}) {
+  const expansion = state.requestWorkspaceExpansion;
+  if (!expansion) return false;
+  const panel = elements.requestWorkspace;
+  const scroll = [...panel.querySelectorAll("*")].filter(node => node.scrollTop || node.scrollLeft)
+    .map(node => [node, node.scrollTop, node.scrollLeft]);
+  expansion.anchor.replaceWith(panel);
+  expansion.tabs?.anchor.replaceWith(expansion.tabs.node);
+  elements.requestWorkspaceModal.classList.add("hidden");
+  elements.requestWorkspaceExpand.hidden = false;
+  elements.requestWorkspaceCollapse.hidden = true;
+  elements.appShell.inert = expansion.shellInert;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", "work-rail-request");
+  state.requestWorkspaceExpansion = null;
+  renderHostWorkspaceSelection();
+  scroll.forEach(([node, top, left]) => { node.scrollTop = top; node.scrollLeft = left; });
+  if (restoreFocus && expansion.opener?.isConnected) expansion.opener.focus({ preventScroll: true });
+  return true;
+}
+
+function trapDeveloperDialogFocus(event, dialog) {
+  if (event.key !== "Tab") return;
+  const controls = [...dialog.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')]
+    .filter(node => !node.disabled && node.tabIndex >= 0 && !node.closest("[inert]") && node.getClientRects().length);
+  const first = controls[0], last = controls[controls.length - 1];
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault(); last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+    event.preventDefault(); first.focus({ preventScroll: true });
+  }
 }
 
 function narrowHostViewport() {
@@ -4568,6 +4636,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
   if (!nextWorkspace) {
     return false;
   }
+  if (nextWorkspace !== "request") closeExpandedRequestWorkspace({ restoreFocus: false });
   rememberHostWorkspaceScrollPosition();
   if (state.activeHostWorkspace === "request" && typeof rememberRequestScrollPosition === "function") {
     rememberRequestScrollPosition();
@@ -4721,6 +4790,14 @@ function closeHighestRequestTaskLayerForEscape() {
   if (elements.developerTagResetModal && !elements.developerTagResetModal.classList.contains("hidden")) {
     closeDeveloperTagResetModal();
     return true;
+  }
+  if (state.requestWorkspaceExpansion) {
+    if (searchDetailController?.isOpen?.()) return false;
+    if (state.ratingPromptElement) {
+      closeRatingPrompt({ submit: false });
+      return true;
+    }
+    return closeExpandedRequestWorkspace();
   }
   if (state.catalogAdvancedTool) {
     state.catalogAdvancedTool = "";
@@ -6478,6 +6555,8 @@ async function confirmGatchaUidAdd(intent) {
 function setDeveloperMode(enabled) {
   state.developerMode = Boolean(enabled);
   if (!state.developerMode) {
+    closeExpandedRequestWorkspace({ restoreFocus: false });
+    closeDeveloperTagResetModal({ restoreFocus: false });
     state.bilikaraSecret = "";
     state.pendingReviewItems = [];
     state.pendingReviewTotal = 0;
@@ -6631,18 +6710,29 @@ function renderDeveloperActionFields(fields) {
 }
 
 function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
-  if (!state.developerMode || !snapshot?.bvid) {
+  if (!state.developerMode || state.developerTagResetSaving || (!snapshot?.bvid && !snapshot?.items?.length)) {
     return;
   }
   state.developerTagResetOpener = document.activeElement;
   state.developerTagResetItem = snapshot;
   state.developerTagResetAction = action;
+  elements.developerTagResetError.hidden = true;
+  renderDeveloperTagResetModal();
+  elements.developerTagResetModal?.classList.remove("hidden");
+  elements.developerTagResetConfirm?.focus({ preventScroll: true });
+}
+
+function renderDeveloperTagResetModal() {
+  const snapshot = state.developerTagResetItem;
+  if (!snapshot) return;
+  const action = state.developerTagResetAction;
   const isDelete = action === "delete-entry";
   const isReject = action === "reject-entry";
+  const isRejectPage = action === "reject-page";
   const isBlacklistRelease = action === "blacklist-release";
   const isBlacklistRestore = action === "blacklist-release-restore";
   if (elements.developerTagResetTitle) {
-    elements.developerTagResetTitle.textContent = isReject
+    elements.developerTagResetTitle.textContent = isRejectPage ? t("search.reviewRejectPage") : isReject
       ? "拒绝并加入黑名单"
       : isBlacklistRestore
         ? t("search.blacklistReleaseRestore")
@@ -6654,7 +6744,8 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
   }
   if (elements.developerTagResetText) {
     const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
-    elements.developerTagResetText.textContent = isReject
+    elements.developerTagResetText.textContent = isRejectPage
+      ? t("search.reviewRejectPageConfirm", { count: snapshot.items.length }) : isReject
       ? `确认拒绝 ${title} (${snapshot.bvid})，并阻止收藏夹再次写入 D1？`
       : isBlacklistRestore
         ? `确认解除 ${title} (${snapshot.bvid}) 的黑名单并恢复删除前记录？`
@@ -6664,9 +6755,10 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
             ? `确认将 ${title} (${snapshot.bvid}) 加入黑名单并从 D1 删除？`
             : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
   }
-  renderDeveloperActionFields(snapshot.fields);
+  renderDeveloperActionFields(isRejectPage
+    ? Object.fromEntries(snapshot.items.map(item => [item.bvid, item.title])) : snapshot.fields);
   if (elements.developerTagResetNote) {
-    elements.developerTagResetNote.textContent = isReject
+    elements.developerTagResetNote.textContent = isRejectPage ? t("search.reviewRejectPageNote") : isReject
       ? "视频快照会保存在黑名单中；点歌和本地播放不受影响。"
       : isBlacklistRestore
         ? "将从黑名单快照恢复 D1 记录，并重新建立名称/歌手浏览索引。"
@@ -6678,7 +6770,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
   }
   if (elements.developerTagResetConfirm) {
     elements.developerTagResetConfirm.disabled = false;
-    elements.developerTagResetConfirm.textContent = isReject
+    elements.developerTagResetConfirm.textContent = isRejectPage ? t("search.reviewRejectConfirm") : isReject
       ? "确认拒绝"
       : isBlacklistRestore
         ? t("search.blacklistReleaseRestore")
@@ -6687,7 +6779,7 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
           : isDelete
             ? "确认拉黑并删除"
             : "确认重置";
-    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete || isReject);
+    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete || isReject || isRejectPage);
   }
   if (elements.developerTagResetDeleteMid) {
     const mid = String(snapshot.fields?.mid || "").trim();
@@ -6697,7 +6789,6 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
       ? `拉黑 MID ${mid} 的现有稿件`
       : "按 MID 拉黑现有稿件";
   }
-  elements.developerTagResetModal?.classList.remove("hidden");
 }
 
 function parseDeveloperActionButton(button) {
@@ -6745,7 +6836,7 @@ async function deleteDeveloperD1Entry(snapshot) {
   setAppMessage(`已将 ${snapshot.bvid} 加入黑名单并从 D1 删除。`);
 }
 
-async function rejectPendingReviewEntry(snapshot) {
+async function rejectPendingReviewEntry(snapshot, { refresh = true } = {}) {
   await apiPost("/api/admin-review/reject", {
     bvid: snapshot.bvid,
     record: snapshot.fields,
@@ -6753,10 +6844,32 @@ async function rejectPendingReviewEntry(snapshot) {
     BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
   });
   const reviewCacheExhausted = removePendingReviewItem(snapshot.bvid);
-  if (reviewCacheExhausted) {
+  if (reviewCacheExhausted && refresh) {
     await loadPendingReviewItems({ force: true });
   }
-  setAppMessage(`已拒绝 ${snapshot.bvid} 并加入黑名单。`);
+  if (refresh) setAppMessage(`已拒绝 ${snapshot.bvid} 并加入黑名单。`);
+}
+
+function openPendingReviewRejectModal() {
+  if (!state.developerMode || !state.bilikaraSecret || state.pendingReviewLoading
+    || state.pendingReviewApproving || state.developerTagResetSaving) return;
+  const items = [...new Map(state.pendingReviewItems.map(item => {
+    const snapshot = developerDeleteSnapshot(item);
+    return [snapshot.bvid, snapshot];
+  }).filter(([bvid]) => bvid)).values()];
+  if (items.length) openDeveloperTagResetModal({ items }, "reject-page");
+}
+
+async function rejectPendingReviewPage(snapshot) {
+  const count = snapshot.items.length;
+  // The confirmed snapshot is the whole scope. Never append the next page.
+  while (snapshot.items.length) {
+    if (!state.developerMode || !state.bilikaraSecret) throw new Error(t("search.reviewNeedDeveloper"));
+    await rejectPendingReviewEntry(snapshot.items[0], { refresh: false });
+    snapshot.items.shift();
+  }
+  await loadPendingReviewItems({ force: true });
+  setAppMessage(t("search.reviewRejected", { count }));
 }
 
 async function restoreDeveloperBlacklistEntry(snapshot, restoreVideo) {
@@ -6811,19 +6924,27 @@ async function confirmDeveloperAction() {
   }
   const snapshot = state.developerTagResetItem;
   const action = state.developerTagResetAction || "reset-tags";
-  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.bvid) {
+  if (!state.developerMode || !state.bilikaraSecret || !(action === "reject-page" ? snapshot?.items?.length : snapshot?.bvid)) {
     closeDeveloperTagResetModal();
     return;
   }
   state.developerTagResetSaving = true;
+  elements.developerTagResetError.hidden = true;
+  const confirmLabel = elements.developerTagResetConfirm?.textContent;
+  const previousDisabled = elements.developerTagResetConfirm?.disabled;
   if (elements.developerTagResetConfirm) {
     elements.developerTagResetConfirm.disabled = true;
+    elements.developerTagResetConfirm.setAttribute("aria-busy", "true");
+    elements.developerTagResetConfirm.textContent = t("search.reviewApproving");
   }
   if (elements.developerTagResetDeleteMid) {
     elements.developerTagResetDeleteMid.disabled = true;
   }
+  renderPendingReviewView();
   try {
-    if (action === "delete-entry") {
+    if (action === "reject-page") {
+      await rejectPendingReviewPage(snapshot);
+    } else if (action === "delete-entry") {
       await deleteDeveloperD1Entry(snapshot);
     } else if (action === "reject-entry") {
       await rejectPendingReviewEntry(snapshot);
@@ -6837,20 +6958,26 @@ async function confirmDeveloperAction() {
   } catch (error) {
     const fallbackMessage = action === "delete-entry"
       ? "删除失败。"
-      : action === "reject-entry"
+      : action === "reject-entry" || action === "reject-page"
         ? "加入黑名单失败。"
         : action === "blacklist-release" || action === "blacklist-release-restore"
           ? "解除黑名单失败。"
           : "重置失败。";
     setAppMessage(error?.message || fallbackMessage, true);
+    elements.developerTagResetError.textContent = error?.message || fallbackMessage;
+    elements.developerTagResetError.hidden = false;
   } finally {
     state.developerTagResetSaving = false;
     if (elements.developerTagResetConfirm) {
-      elements.developerTagResetConfirm.disabled = false;
+      elements.developerTagResetConfirm.disabled = previousDisabled;
+      elements.developerTagResetConfirm.removeAttribute("aria-busy");
+      elements.developerTagResetConfirm.textContent = confirmLabel;
     }
     if (elements.developerTagResetDeleteMid) {
       elements.developerTagResetDeleteMid.disabled = false;
     }
+    if (state.developerTagResetItem) renderDeveloperTagResetModal();
+    renderPendingReviewView();
   }
 }
 
@@ -7916,6 +8043,7 @@ function ensurePendingReviewView() {
     <div class="search-results pending-review-results hidden" data-pending-review-results></div>
     <p class="gatcha-message pending-review-message" data-pending-review-message role="status"></p>
     <div class="pending-review-actions">
+      <button type="button" class="toolbar-button danger-button" data-pending-review-reject></button>
       <button type="button" class="next-button" data-pending-review-approve></button>
     </div>
   `;
@@ -7934,7 +8062,9 @@ function renderPendingReviewView() {
   const results = view.querySelector("[data-pending-review-results]");
   const message = view.querySelector("[data-pending-review-message]");
   const approveButton = view.querySelector("[data-pending-review-approve]");
+  const rejectButton = view.querySelector("[data-pending-review-reject]");
   const items = Array.isArray(state.pendingReviewItems) ? state.pendingReviewItems : [];
+  const busy = state.pendingReviewLoading || state.pendingReviewApproving || state.developerTagResetSaving;
 
   if (eyebrow) {
     eyebrow.textContent = t("search.reviewTag");
@@ -7944,7 +8074,9 @@ function renderPendingReviewView() {
   }
   if (refreshButton) {
     refreshButton.textContent = t("search.reviewRefresh");
-    refreshButton.disabled = state.pendingReviewLoading || state.pendingReviewApproving;
+    refreshButton.disabled = busy;
+    if (state.pendingReviewLoading) refreshButton.setAttribute("aria-busy", "true");
+    else refreshButton.removeAttribute("aria-busy");
   }
   if (results) {
     renderSearchResultItems(
@@ -7971,7 +8103,13 @@ function renderPendingReviewView() {
   }
   if (approveButton) {
     approveButton.textContent = state.pendingReviewApproving ? t("search.reviewApproving") : t("search.reviewApprove");
-    approveButton.disabled = state.pendingReviewLoading || state.pendingReviewApproving || !items.length;
+    approveButton.disabled = busy || !items.length;
+    if (state.pendingReviewApproving) approveButton.setAttribute("aria-busy", "true");
+    else approveButton.removeAttribute("aria-busy");
+  }
+  if (rejectButton) {
+    rejectButton.textContent = t("search.reviewRejectPage");
+    rejectButton.disabled = busy || !items.length || !state.developerMode;
   }
 }
 
@@ -7984,7 +8122,7 @@ async function loadPendingReviewItems({ force = false } = {}) {
     renderPendingReviewView();
     return;
   }
-  if (!force && (state.pendingReviewLoaded || state.pendingReviewLoading)) {
+  if (state.pendingReviewLoading || !force && state.pendingReviewLoaded) {
     renderPendingReviewView();
     return;
   }
@@ -8039,7 +8177,8 @@ function removePendingReviewItem(bvid) {
 }
 
 async function approvePendingReviewVisibleItems() {
-  if (state.pendingReviewLoading || state.pendingReviewApproving) {
+  if (!state.developerMode || !state.bilikaraSecret || state.pendingReviewLoading
+    || state.pendingReviewApproving || state.developerTagResetSaving) {
     return;
   }
   const bvids = (Array.isArray(state.pendingReviewItems) ? state.pendingReviewItems : [])
@@ -8054,14 +8193,23 @@ async function approvePendingReviewVisibleItems() {
   renderPendingReviewView();
   try {
     const payload = await approvePendingReviewItems(bvids);
-    state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
-    state.pendingReviewTotal = Number(payload?.total_pending || 0);
-    state.pendingReviewExportCount = Number(payload?.export_count || 0);
-    state.pendingReviewLoaded = true;
     state.pendingReviewMessage = t("search.reviewApproved", {
       count: Number(payload?.approved || 0),
       skipped: Number(payload?.skipped_missing || 0),
     });
+    if (payload?.refresh_error) {
+      const approved = new Set(payload.approved_bvids || []);
+      const before = state.pendingReviewItems.length;
+      state.pendingReviewItems = state.pendingReviewItems.filter(item => !approved.has(searchResultBvid(item)));
+      state.pendingReviewTotal = Math.max(0, state.pendingReviewTotal - before + state.pendingReviewItems.length);
+      state.pendingReviewLoaded = false;
+      state.pendingReviewError = `${state.pendingReviewMessage} ${t("search.reviewRefreshFailed")}`;
+    } else {
+      state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
+      state.pendingReviewTotal = Number(payload?.total_pending || 0);
+      state.pendingReviewExportCount = Number(payload?.export_count || 0);
+      state.pendingReviewLoaded = true;
+    }
   } catch (error) {
     state.pendingReviewError = error?.message || t("error.requestFailed");
   } finally {
@@ -20867,6 +21015,28 @@ elements.bilikaraSecretBackdrop?.addEventListener("click", () => {
 
 document.addEventListener("click", handleDeveloperTagResetButtonClick);
 
+elements.requestWorkspaceExpand?.addEventListener("click", openExpandedRequestWorkspace);
+elements.requestWorkspaceCollapse?.addEventListener("click", () => closeExpandedRequestWorkspace());
+elements.requestWorkspaceModalBackdrop?.addEventListener("click", () => closeExpandedRequestWorkspace());
+elements.requestWorkspaceModal?.addEventListener("keydown", event => {
+  trapDeveloperDialogFocus(event, elements.requestWorkspaceModal);
+});
+elements.developerTagResetModal?.addEventListener("keydown", event => {
+  if (elements.developerTagResetModal.classList.contains("hidden")) return;
+  trapDeveloperDialogFocus(event, elements.developerTagResetModal);
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 || event.repeat
+    || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    || !["reject-entry", "reject-page"].includes(state.developerTagResetAction)) return;
+  const button = event.target.closest?.("button");
+  if (button && button !== elements.developerTagResetConfirm) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!elements.developerTagResetConfirm.disabled) void confirmDeveloperAction();
+});
+document.addEventListener("bilikara:i18n", () => {
+  if (state.developerTagResetItem && !state.developerTagResetSaving) renderDeveloperTagResetModal();
+});
+
 elements.developerTagResetClose?.addEventListener("click", () => {
   closeDeveloperTagResetModal();
 });
@@ -21542,12 +21712,18 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   }
   const reviewRefreshButton = event.target.closest("[data-pending-review-refresh]");
   if (reviewRefreshButton && elements.requestWorkspace.contains(reviewRefreshButton)) {
+    if (state.developerTagResetSaving || state.pendingReviewApproving) return;
     loadPendingReviewItems({ force: true });
     return;
   }
   const reviewApproveButton = event.target.closest("[data-pending-review-approve]");
   if (reviewApproveButton && elements.requestWorkspace.contains(reviewApproveButton)) {
     approvePendingReviewVisibleItems();
+    return;
+  }
+  const reviewRejectButton = event.target.closest("[data-pending-review-reject]");
+  if (reviewRejectButton && elements.requestWorkspace.contains(reviewRejectButton)) {
+    openPendingReviewRejectModal();
     return;
   }
   const categoryBackButton = event.target.closest("[data-category-browse-back]");
