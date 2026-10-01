@@ -280,6 +280,20 @@ pub(crate) struct MediaSelection {
 }
 
 impl MediaSelection {
+    pub(crate) fn for_youtube(policy: &CachePolicy, player: &PlayerMedia, desktop: bool) -> Self {
+        // A Bilibili tool's HEVC/Hi-Res capability must not change YouTube's
+        // AVC/AAC contract or invalidate its cache when that tool is switched.
+        Self::new(
+            &CachePolicy {
+                download_source: "native".into(),
+                audio_hires: false,
+                ..policy.clone()
+            },
+            player,
+            desktop,
+        )
+    }
+
     pub(crate) fn new(policy: &CachePolicy, player: &PlayerMedia, desktop: bool) -> Self {
         let force_avc =
             policy.download_source != "downkyi" || player.details["hevc_supported"] == false;
@@ -491,6 +505,25 @@ pub(super) fn language(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn youtube_selection_is_avc_capped_and_independent_of_bilibili_tools() {
+        let mut policy = CachePolicy::default();
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":2}),
+        )
+        .unwrap();
+        let native = MediaSelection::for_youtube(&policy, &player, true);
+        assert!(native.force_avc);
+        assert!(!native.audio_hires);
+        assert_eq!(native.quality, "720P 高清");
+        for source in ["bbdown", "downkyi", "unavailable"] {
+            policy.download_source = source.into();
+            let changed = MediaSelection::for_youtube(&policy, &player, true);
+            assert_eq!(changed, native);
+            assert!(!changed.changes_artifact(&native));
+        }
+    }
+
     #[test]
     fn downkyi_requires_aria2_and_applies_avc_cap_only_when_needed() {
         let policy = CachePolicy::default()

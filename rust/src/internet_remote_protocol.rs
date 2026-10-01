@@ -880,7 +880,12 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
             expected_revision,
             ..
         } => {
-            valid_catalog(catalog_item_id)
+            (valid_catalog(catalog_item_id)
+                || (catalog_item_id
+                    .strip_prefix("youtube:")
+                    .is_some_and(crate::media_source::valid_youtube_id)
+                    && selected_video_page.is_none()
+                    && selected_audio_pages.is_empty()))
                 && valid_manual_binding_selection(*selected_video_page, selected_audio_pages)
                 && valid_expected(*expected_revision)
         }
@@ -1369,6 +1374,11 @@ pub struct RemoteCacheDownloadTrackV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemotePlaylistItemV1 {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::media_source::MediaSource::is_bilibili"
+    )]
+    pub media_source: crate::media_source::MediaSource,
     pub id: String,
     pub item_incarnation_id: String,
     pub bvid: String,
@@ -1401,6 +1411,11 @@ pub struct RemotePlaylistItemV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteHistoryEntryV1 {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::media_source::MediaSource::is_bilibili"
+    )]
+    pub media_source: crate::media_source::MediaSource,
     pub bvid: String,
     pub page: u32,
     pub display_title: String,
@@ -2142,6 +2157,46 @@ mod tests {
     }
 
     #[test]
+    fn youtube_identity_is_only_admitted_for_single_video_quick_requests() {
+        let body = json!({"catalog_item_id":"youtube:YE7VzlLtp-4","position":"tail","expected_revision":4});
+        assert!(
+            decode_remote_request_v1(
+                &request("playlist.add", body.clone()),
+                context(RemoteProfile::Controller)
+            )
+            .is_ok()
+        );
+        for invalid in [
+            json!({"selected_video_page":1,"selected_audio_pages":[1]}),
+            json!({"catalog_item_id":"youtube:bad"}),
+            json!({"catalog_item_id":"youtube:YE7VzlLtp-4&list=playlist"}),
+        ] {
+            let mut changed = body.clone();
+            changed
+                .as_object_mut()
+                .unwrap()
+                .extend(invalid.as_object().unwrap().clone());
+            assert!(
+                decode_remote_request_v1(
+                    &request("playlist.add", changed),
+                    context(RemoteProfile::Controller)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            decode_remote_request_v1(
+                &request(
+                    "catalog.song_detail",
+                    json!({"catalog_item_id":"youtube:YE7VzlLtp-4"})
+                ),
+                context(RemoteProfile::Viewer)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn catalog_ids_are_bvids_with_an_optional_positive_page() {
         for catalog_item_id in ["BV1ab411c7mD", "BV1ab411c7mD_p1", "BV1ab411c7mD_p123"] {
             let decoded = decode_remote_request_v1(
@@ -2205,6 +2260,7 @@ mod tests {
             playback_generation: 3,
             playback_mode: RemotePlaybackModeV1::Local,
             current_item: Some(RemotePlaylistItemV1 {
+                media_source: Default::default(),
                 id: "item-1".into(),
                 item_incarnation_id: "i-0123456789abcdef0123456789abcdef-0000000000000001".into(),
                 bvid: "BV1example".into(),

@@ -407,6 +407,19 @@ mod tests {
     }
 
     #[test]
+    fn youtube_history_exports_canonical_link_without_bilibili_identity() {
+        let url = "https://www.youtube.com/watch?v=YE7VzlLtp-4";
+        let history:HistoryEntry=serde_json::from_value(json!({"key":"youtube:YE7VzlLtp-4","display_title":"Song","original_url":url,"resolved_url":url,"requested_at":1,"owner_name":"Channel"})).unwrap();
+        let rows = project(&[history], &[], "history").unwrap();
+        assert_eq!(rows[0].url, url);
+        assert_eq!(rows[0].original_url, url);
+        assert_eq!(rows[0].owner, "Channel");
+        assert!(rows[0].bvid.is_empty());
+        assert_eq!(rows[0].owner_mid, 0);
+        assert!(rows[0].part.is_empty());
+    }
+
+    #[test]
     fn exports_keep_sources_counts_stable_order_and_only_public_record_fields() {
         let entry = |key: &str, at| {
             serde_json::from_value::<HistoryEntry>(json!({

@@ -689,7 +689,7 @@ class HostBuildReviewRepairTest(unittest.TestCase):
         self.assertIn('t("player.empty")', empty_renderer)
         self.assertNotIn("player.emptyShort", empty_renderer)
         self.assertNotIn('"player.emptyShort"', json.dumps(self.translations))
-        expected = "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。"
+        expected = "把 Bilibili 或 YouTube 视频链接加入点歌列表后，这里会开始播放。"
         self.assertEqual(self.translations["languages"]["zh"]["player.empty"], expected)
         self.assertIn(f'data-i18n="player.empty">{expected}</p>', self.markup)
 

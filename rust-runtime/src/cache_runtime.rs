@@ -97,6 +97,11 @@ pub struct ExistingAudioVariant {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheJobSpec {
+    #[serde(default)]
+    pub media_source: bilikara_rust::media_source::MediaSource,
+    #[serde(skip)]
+    youtube_streams:
+        Arc<std::sync::OnceLock<Result<crate::youtube::Streams, crate::youtube::Error>>>,
     #[serde(skip)]
     pub(crate) executor: Executor,
     #[serde(default = "schema_version")]
@@ -1574,7 +1579,7 @@ fn run_track(
             return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
         }
         emit_track_progress(shared, job, track, "resolving", attempt, (0, 0));
-        let stream = match resolve_track_stream(&job.spec, track) {
+        let stream = match resolve_track_stream_controlled(&job.spec, track, cancel) {
             Ok(stream) => stream,
             Err(error) => {
                 last_error = error;
@@ -1638,7 +1643,15 @@ fn run_track(
                 !cancel.load(Ordering::Acquire)
             })
             .map(|_| ())
-            .map_err(|error| cache_download_error(track, error))
+            .map_err(|error| {
+                let mut error = cache_download_error(track, error);
+                if !job.spec.media_source.is_bilibili() {
+                    // Do not suggest Bilibili login or copy signed media URLs
+                    // into the queue/diagnostic message for a YouTube transfer.
+                    error.message = format!("{}: YouTube media transfer failed ({}, HTTP {}); check network access or retry", track.label, error.kind, error.status_code.map_or_else(|| "n/a".into(), |code| code.to_string()));
+                }
+                error
+            })
         };
         if let Err(error) = download {
             let _ = fs::remove_dir_all(&attempt_dir);
@@ -1822,6 +1835,9 @@ fn media_error_kind(kind: crate::MediaErrorKind) -> &'static str {
 }
 
 fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
+    if error.kind.starts_with("youtube_") {
+        return true;
+    }
     if matches!(
         error.kind.as_str(),
         "authentication"
@@ -1864,6 +1880,51 @@ fn resolve_track_stream(
     job: &CacheJobSpec,
     track: &TrackSpec,
 ) -> Result<BilibiliStream, CacheRuntimeError> {
+    resolve_track_stream_controlled(job, track, &Arc::new(AtomicBool::new(false)))
+}
+
+fn resolve_track_stream_controlled(
+    job: &CacheJobSpec,
+    track: &TrackSpec,
+    cancel: &Arc<AtomicBool>,
+) -> Result<BilibiliStream, CacheRuntimeError> {
+    if let bilikara_rust::media_source::MediaSource::YouTube { video_id } = &job.media_source {
+        // Both track workers share exactly one resolution; no duplicate player
+        // fetch/JS execution, and no signed URLs written to persistent state.
+        let streams = job
+            .youtube_streams
+            .get_or_init(|| {
+                crate::youtube::resolve(
+                    video_id,
+                    &job.video_quality,
+                    &job.avc_quality_cap,
+                    cancel.clone(),
+                )
+            })
+            .as_ref()
+            .map_err(|e| CacheRuntimeError::new(e.code, e.message))?;
+        let video = track.kind == ExpectedMediaKind::Video;
+        return Ok(BilibiliStream {
+            // Existing transport descriptor only; source routing above never
+            // invokes the Bilibili API or derives a BV/CID for this stream.
+            url: if video {
+                &streams.video_url
+            } else {
+                &streams.audio_url
+            }
+            .clone(),
+            backup_urls: Vec::new(),
+            codec_name: Some(if video { "avc" } else { "aac" }.into()),
+            mime_type: None,
+            codecs: None,
+            codec_id: None,
+            width: None,
+            height: None,
+            quality_id: None,
+            bandwidth: None,
+            order: None,
+        });
+    }
     #[cfg(test)]
     if let Some(stream) = tests::ACQUIRED_STREAM.with(|s| s.borrow().clone()) {
         return Ok(stream);
@@ -2011,7 +2072,12 @@ fn download_request(
     let mut headers = vec![
         HttpHeader {
             name: "Origin".to_owned(),
-            value: "https://www.bilibili.com".to_owned(),
+            value: if job.media_source.is_bilibili() {
+                "https://www.bilibili.com"
+            } else {
+                "https://www.youtube.com"
+            }
+            .to_owned(),
         },
         HttpHeader {
             name: "Referer".to_owned(),
@@ -2022,7 +2088,7 @@ fn download_request(
             value: job.user_agent.clone(),
         },
     ];
-    if !job.cookie.trim().is_empty() {
+    if job.media_source.is_bilibili() && !job.cookie.trim().is_empty() {
         headers.push(HttpHeader {
             name: "Cookie".to_owned(),
             value: job.cookie.clone(),
@@ -2214,7 +2280,10 @@ fn validate_job_fields(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
             "cache item incarnation ID is missing",
         ));
     }
-    if !job.bvid.starts_with("BV") || job.bvid.len() < 10 || job.bvid.len() > 32 {
+    if !job.media_source.is_valid()
+        || (job.media_source.is_bilibili()
+            && (!job.bvid.starts_with("BV") || job.bvid.len() < 10 || job.bvid.len() > 32))
+    {
         return Err(CacheRuntimeError::new(
             "invalid_request",
             "cache job BVID is invalid",
@@ -2234,7 +2303,10 @@ fn validate_job_fields(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
     }
     let mut pages = HashSet::new();
     for page in job.pages.iter().chain(job.video_only_page.iter()) {
-        if page.page == 0 || page.cid == 0 || !pages.insert(page.page) {
+        if page.page == 0
+            || (job.media_source.is_bilibili() && page.cid == 0)
+            || !pages.insert(page.page)
+        {
             return Err(CacheRuntimeError::new(
                 "invalid_request",
                 "cache job pages must be unique and have valid CIDs",
@@ -2254,6 +2326,22 @@ fn validate_job_fields(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
         return Err(CacheRuntimeError::new(
             "invalid_request",
             "cache video page is not selected",
+        ));
+    }
+    if !job.media_source.is_bilibili()
+        && (!matches!(job.executor, Executor::Native)
+            || !job.bvid.is_empty()
+            || job.aid != 0
+            || job.pages.len() != 1
+            || job.pages[0].page != 1
+            || job.pages[0].cid != 0
+            || job.video_page != 1
+            || job.video_only_page.is_some()
+            || !job.cookie.is_empty())
+    {
+        return Err(CacheRuntimeError::new(
+            "invalid_request",
+            "Invalid YouTube cache identity/executor/credentials",
         ));
     }
     if job.timeout_ms < 100 {
@@ -2971,8 +3059,10 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
         }
     }
 
-    fn job(root: &Path) -> CacheJobSpec {
+    pub(super) fn job(root: &Path) -> CacheJobSpec {
         CacheJobSpec {
+            media_source: Default::default(),
+            youtube_streams: Default::default(),
             executor: Executor::Native,
             display_title: "Fixture song".to_owned(),
             schema_version: 1,
@@ -3004,7 +3094,7 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
         }
     }
 
-    fn publication_root(label: &str) -> PathBuf {
+    pub(super) fn publication_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "bilikara-cache-runtime-{label}-{}-{}",
             std::process::id(),
@@ -4401,5 +4491,100 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
             }))
             .is_err()
         );
+    }
+}
+#[cfg(test)]
+mod youtube_tests {
+    use super::tests::{job, publication_root};
+    use super::*;
+    #[test]
+    fn youtube_cache_headers_never_forward_bilibili_credentials() {
+        let root = publication_root("youtube-headers");
+        let mut spec = job(&root);
+        spec.media_source = bilikara_rust::media_source::MediaSource::YouTube {
+            video_id: "YE7VzlLtp-4".into(),
+        };
+        spec.bvid.clear();
+        spec.aid = 0;
+        spec.pages[0].cid = 0;
+        let _ = spec.youtube_streams.set(Ok(crate::youtube::Streams {
+            video_url: "https://rr1.googlevideo.com/videoplayback?test=video".into(),
+            audio_url: "https://rr1.googlevideo.com/videoplayback?test=audio".into(),
+        }));
+        assert!(validate_job_fields(&spec).is_ok());
+        spec.cookie = "SESSDATA=must-not-leak".into();
+        assert!(validate_job_fields(&spec).is_err());
+        let stream = BilibiliStream {
+            url: "https://rr1.googlevideo.com/videoplayback".into(),
+            backup_urls: vec![],
+            codec_id: None,
+            codec_name: None,
+            codecs: None,
+            mime_type: None,
+            width: None,
+            height: None,
+            quality_id: None,
+            bandwidth: None,
+            order: None,
+        };
+        let request = download_request(&spec, &stream, root.join("video.mp4")).unwrap();
+        assert!(
+            request.candidates[0]
+                .headers
+                .iter()
+                .all(|h| h.name != "Cookie")
+        );
+        assert_eq!(
+            request.candidates[0]
+                .headers
+                .iter()
+                .find(|h| h.name == "Origin")
+                .unwrap()
+                .value,
+            "https://www.youtube.com"
+        );
+        assert!(is_terminal_track_error(&CacheRuntimeError::new(
+            "youtube_unavailable",
+            "login required"
+        )));
+        assert!(is_terminal_track_error(&CacheRuntimeError::new(
+            "youtube_signature",
+            "unsupported player"
+        )));
+    }
+
+    #[test]
+    #[ignore = "Downloads public CC Big Buck Bunny tracks and validates the native playback artifacts"]
+    fn youtube_live_native_download_and_normalize() {
+        let root = publication_root("youtube-live");
+        fs::create_dir_all(&root).unwrap();
+        let mut spec = job(&root);
+        spec.media_source = bilikara_rust::media_source::MediaSource::YouTube {
+            video_id: "YE7VzlLtp-4".into(),
+        };
+        spec.bvid.clear();
+        spec.aid = 0;
+        spec.pages[0].cid = 0;
+        spec.pages[0].duration_seconds = Some(597.0);
+        spec.video_quality = "360P 流畅".into();
+        spec.user_agent = crate::youtube::USER_AGENT.into();
+        spec.referer = "https://www.youtube.com/".into();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tracks = track_specs(&spec).unwrap();
+        for track in tracks {
+            let stream = resolve_track_stream_controlled(&spec, &track, &cancel).unwrap();
+            let raw = root.join(format!("{:?}.raw", track.kind));
+            let output = root.join(format!("{:?}.mp4", track.kind));
+            let request = download_request(&spec, &stream, raw.clone()).unwrap();
+            let result = download_to_path(&request, |_| true).unwrap();
+            let probe = normalize_track(&spec, &track, &raw, &output, &cancel).unwrap();
+            assert!(probe.duration_seconds > 590.0);
+            assert!(result.bytes_written > 1000);
+            eprintln!(
+                "{:?}: {} bytes, {:?} seconds",
+                track.kind, result.bytes_written, probe.duration_seconds
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 }

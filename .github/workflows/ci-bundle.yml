@@ -116,6 +116,9 @@ jobs:
       - name: Test release mirror verification
         run: node --test tests/release_mirror.test.mjs
 
+      - name: Test native YouTube quick-request contract
+        run: node --test tests/youtube_quick_request.test.mjs
+
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
@@ -541,10 +544,17 @@ jobs:
           # The action's default also requests the unavailable legacy "tools" package.
           packages: platform-tools
 
+      - name: Prepare native YouTube binding generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
       - name: Install pinned Android tools
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          yt_ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$yt_ndk/sysroot -resource-dir=$yt_ndk/lib/clang/18" >> "$GITHUB_ENV"
 
       - name: Setup repository Rust toolchain
         run: |

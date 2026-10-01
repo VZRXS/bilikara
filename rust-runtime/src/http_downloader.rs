@@ -23,6 +23,17 @@ const PROGRESS_NOTIFY_INTERVAL: Duration = Duration::from_millis(250);
 const BILIBILI_UPOS_MIRROR_HOST: &str = "upos-sz-mirrorcoso1.bilivideo.com";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+fn multipart_shape(url: &reqwest::Url) -> (u64, usize) {
+    if crate::youtube::media_url_allowed(url) {
+        // Short audio tracks can be paced by the CDN on a full-body request.
+        // Keep ranges small with bounded concurrency, not an unbounded retry
+        // or client-rotation loop. Bilibili/general transfers stay unchanged.
+        (1024 * 1024, 4)
+    } else {
+        (MULTIPART_SEGMENT_BYTES, MAX_MULTIPART_WORKERS)
+    }
+}
+
 fn default_connect_timeout_ms() -> u64 {
     15_000
 }
@@ -144,7 +155,20 @@ where
     download_with_redirects(
         request,
         None,
-        reqwest::redirect::Policy::limited(10),
+        reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("Too many media redirects");
+            }
+            if attempt
+                .previous()
+                .first()
+                .is_some_and(crate::youtube::media_url_allowed)
+                && !crate::youtube::media_url_allowed(attempt.url())
+            {
+                return attempt.error("YouTube media redirect left the permitted CDN");
+            }
+            attempt.follow()
+        }),
         continue_download,
     )
 }
@@ -396,7 +420,8 @@ where
         .for_candidate(candidate_index));
     }
     let temp_path = temporary_path(destination);
-    let result = if content_length.is_some_and(|length| length > MULTIPART_SEGMENT_BYTES) {
+    let shape = multipart_shape(&parsed_url);
+    let result = if content_length.is_some_and(|length| length > shape.0) {
         drop(response);
         match stream_multipart(
             client,
@@ -408,6 +433,7 @@ where
             candidate_index,
             attempt,
             host_rewritten,
+            shape,
             continue_download,
         ) {
             Err(MultipartError::RangeUnsupported) => {
@@ -597,6 +623,7 @@ fn stream_multipart<F>(
     candidate_index: usize,
     attempt: u32,
     host_rewritten: bool,
+    (segment_bytes, max_workers): (u64, usize),
     continue_download: &mut F,
 ) -> Result<DownloadResult, MultipartError>
 where
@@ -614,15 +641,15 @@ where
     })?;
 
     let segments: Vec<(u64, u64)> = (0..content_length)
-        .step_by(MULTIPART_SEGMENT_BYTES as usize)
+        .step_by(segment_bytes as usize)
         .map(|start| {
             let end = start
-                .saturating_add(MULTIPART_SEGMENT_BYTES - 1)
+                .saturating_add(segment_bytes - 1)
                 .min(content_length - 1);
             (start, end)
         })
         .collect();
-    let worker_count = segments.len().clamp(1, MAX_MULTIPART_WORKERS);
+    let worker_count = segments.len().clamp(1, max_workers);
     let segments = Arc::new(segments);
     let next_segment = Arc::new(AtomicUsize::new(0));
     let stopped = Arc::new(AtomicBool::new(false));
@@ -1042,6 +1069,17 @@ mod tests {
         assert_eq!(parsed.query(), Some("deadline=1&upsig=secret"));
         assert!(bilibili_mirror_url(&mirrored).is_none());
         assert!(bilibili_mirror_url("https://example.test/file").is_none());
+    }
+
+    #[test]
+    fn youtube_small_audio_uses_bounded_ranges_without_changing_other_downloads() {
+        let youtube =
+            reqwest::Url::parse("https://rr1.googlevideo.com/videoplayback?sig=test").unwrap();
+        let bilibili = reqwest::Url::parse("https://example.bilivideo.com/track.m4s").unwrap();
+        let unrelated = reqwest::Url::parse("https://example.test/file").unwrap();
+        assert_eq!(multipart_shape(&youtube), (1024 * 1024, 4));
+        assert_eq!(multipart_shape(&bilibili), (5 * 1024 * 1024, 16));
+        assert_eq!(multipart_shape(&unrelated), (5 * 1024 * 1024, 16));
     }
 
     #[allow(clippy::type_complexity)]

@@ -31,6 +31,7 @@ mod qr_image;
 pub mod shared_catalog;
 mod status_service;
 pub mod update_installer;
+mod youtube;
 
 pub use app_state::{
     AppSnapshot, AppState, AppStateRequest, AppStateResponse, AppStateSeed, BackupSeed, CacheEvent,

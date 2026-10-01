@@ -386,14 +386,23 @@ fn add(
     request_id: &str,
     effect: &Value,
 ) -> Result<Value, ApiError> {
-    let (bvid, page) = catalog_parts(effect["catalog_item_id"].as_str().unwrap_or_default())?;
+    let id = effect["catalog_item_id"].as_str().unwrap_or_default();
+    let url = if let Some(id) = id.strip_prefix("youtube:") {
+        if !bilikara_rust::media_source::valid_youtube_id(id) {
+            return Err(ApiError::invalid("Invalid YouTube video ID"));
+        }
+        format!("https://www.youtube.com/watch?v={id}")
+    } else {
+        let (bvid, page) = catalog_parts(id)?;
+        format!("https://www.bilibili.com/video/{bvid}?p={page}")
+    };
     let cookie = with_app(|app| {
         if !context.desktop {
             api::queue_space(app.native_core_snapshot()?.playlist.len())?;
         }
         Ok(app.native().cookie.clone())
     })?;
-    let request: NativeVideoRequest = serde_json::from_value(json!({"url":format!("https://www.bilibili.com/video/{bvid}?p={page}"),"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
+    let request: NativeVideoRequest = serde_json::from_value(json!({"url":url,"selected_video_page":effect.get("selected_video_page"),"selected_audio_pages":effect.get("selected_audio_pages")})).map_err(|_| ApiError::invalid("分 P 参数无效"))?;
     let item = fetch_native_video(&request, &cookie).map_err(|error| {
         if let Some(bvid) = &error.missing_bvid {
             catalog::delete_invalid(bvid);

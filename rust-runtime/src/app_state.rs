@@ -95,6 +95,11 @@ pub struct CacheDownloadProgress {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlaylistItem {
+    #[serde(
+        default,
+        skip_serializing_if = "bilikara_rust::media_source::MediaSource::is_bilibili"
+    )]
+    pub media_source: bilikara_rust::media_source::MediaSource,
     pub id: String,
     pub original_url: String,
     pub resolved_url: String,
@@ -1537,6 +1542,28 @@ fn validate_ready_audio_variants(
 }
 
 fn validate_item(item: &PlaylistItem) -> Result<(), ExecuteError> {
+    if !item.media_source.is_valid() {
+        return Err(rejected("invalid_item", "invalid media source"));
+    }
+    if let Some(url) = item.media_source.canonical_url()
+        && (!item.bvid.is_empty()
+            || item.aid != 0
+            || item.cid != 0
+            || item.original_url != url
+            || item.resolved_url != url
+            || item.page != 1
+            || item.video_page != 1
+            || item.owner_mid != 0
+            || item.selected_pages != [1]
+            || item.available_pages != [1]
+            || item.selected_cids != [0]
+            || item.available_cids != [0])
+    {
+        return Err(rejected(
+            "invalid_item",
+            "YouTube item contains inconsistent Bilibili identity or parts",
+        ));
+    }
     if !valid_string(&item.id, MAX_ITEM_ID_BYTES, false) {
         return Err(rejected("invalid_item", "playlist item id is invalid"));
     }
@@ -2023,6 +2050,7 @@ fn playlist_identity(item: &PlaylistItem) -> Result<PlaylistIdentity, ExecuteErr
     let video_page = usize::try_from(item.page)
         .map_err(|_| rejected("invalid_item", "playlist item page is invalid"))?;
     Ok(PlaylistIdentity {
+        media_source: item.media_source.clone(),
         bvid: item.bvid.clone(),
         aid,
         video_page,
@@ -4421,7 +4449,7 @@ impl AppState {
                             .find(|item| item.item_id == play_id)
                             .map(|item| item.bvid.as_str())
                     });
-                let Some(bvid) = bvid else {
+                let Some(bvid) = bvid.filter(|bvid| !bvid.is_empty()) else {
                     return execute_error_response(rejected(
                         "rating_stale",
                         "Song is not in this session's played records",
@@ -4521,7 +4549,13 @@ impl AppState {
         let manual_selection_mismatch = item.manual_selection
             != pending.selected_video_page.is_some()
             || (!expected_audio_pages.is_empty() && item.selected_pages != expected_audio_pages);
-        if item.bvid != expected_bvid || selected_page_mismatch || manual_selection_mismatch {
+        let identity_matches = match &item.media_source {
+            bilikara_rust::media_source::MediaSource::Bilibili => item.bvid == expected_bvid,
+            bilikara_rust::media_source::MediaSource::YouTube { video_id } => {
+                pending.catalog_item_id == format!("youtube:{video_id}")
+            }
+        };
+        if !identity_matches || selected_page_mismatch || manual_selection_mismatch {
             return execute_error_response(rejected(
                 "internet_remote_catalog_item_mismatch",
                 "Fetched playlist item does not match the admitted catalog item",
@@ -5570,6 +5604,7 @@ mod tests {
 
     fn item(id: &str, bvid: &str, requester_name: &str) -> PlaylistItem {
         PlaylistItem {
+            media_source: Default::default(),
             id: id.to_owned(),
             original_url: format!("https://example.test/{id}"),
             resolved_url: format!("https://example.test/{id}?p=1"),
@@ -5919,6 +5954,137 @@ mod tests {
         assert_eq!(
             absolute.result["data"]["player_settings"]["effective_av_delay_ms"],
             -200
+        );
+    }
+
+    #[test]
+    fn youtube_remote_add_mixed_queue_history_and_controls_use_shared_state() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        let peer_id = "peer-youtube";
+        let epoch = "abcdefghijklmnopqrstuv";
+        success(state.execute(AppStateRequest::OpenInternetRemotePeer {
+            schema_version: 1,
+            peer_id: peer_id.into(),
+            epoch: epoch.into(),
+            profile: RemoteProfile::Controller,
+        }));
+        remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            1,
+            "session.set_identity",
+            json!({"name":"Alice"}),
+            10.0,
+        );
+        let revision = state.data.as_ref().unwrap().revision;
+        let pending = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            2,
+            "playlist.add",
+            json!({
+                "catalog_item_id":"youtube:YE7VzlLtp-4","position":"tail","expected_revision":revision
+            }),
+            11.0,
+        );
+        let source = bilikara_rust::media_source::MediaSource::YouTube {
+            video_id: "YE7VzlLtp-4".into(),
+        };
+        let mut youtube = item("youtube", "", "");
+        youtube.media_source = source.clone();
+        youtube.original_url = source.canonical_url().unwrap();
+        youtube.resolved_url = youtube.original_url.clone();
+        youtube.aid = 0;
+        youtube.cid = 0;
+        youtube.selected_cids = vec![0];
+        youtube.available_cids = vec![0];
+        let completion = success(state.execute(
+            AppStateRequest::CompleteInternetRemotePlaylistAdd {
+                schema_version: 1,
+                peer_id: peer_id.into(),
+                request_id: pending.result["request_id"].as_str().unwrap().into(),
+                item: youtube.clone(),
+                reset_av_delay: false,
+                now: 12.0,
+            },
+        ));
+        assert!(completion.committed);
+        assert_eq!(
+            completion.result["data"]["current_item"]["media_source"]["provider"],
+            "youtube"
+        );
+        youtube.id = "duplicate-youtube".into();
+        let duplicate = failure(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: youtube,
+            position: "tail".into(),
+            requester_name: "Alice".into(),
+            reset_av_delay: false,
+            allow_repeat: false,
+            now: 13.0,
+        }));
+        assert_eq!(duplicate.error.kind, "duplicate_session_request");
+        success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("bilibili", "BV1ab411c7mD", ""),
+            position: "tail".into(),
+            requester_name: "Bob".into(),
+            reset_av_delay: false,
+            allow_repeat: false,
+            now: 14.0,
+        }));
+        success(state.execute(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::Adjust { delta_ms: 150 },
+            now: 15.0,
+        }));
+        success(state.execute(AppStateRequest::SetKeyShift {
+            schema_version: 1,
+            key_shift: 2,
+            now: 16.0,
+        }));
+        let tuned = success(state.execute(AppStateRequest::MarkCurrentItemStarted {
+            schema_version: 1,
+            item_id: "youtube".into(),
+            now: 17.0,
+        }))
+        .snapshot
+        .unwrap();
+        assert_eq!(tuned.player_settings.key_shift, 2);
+        assert_eq!(tuned.player_settings.av_offset_ms, 150);
+        // Public ratings must stop before generating any host/cloud effect.
+        let rejected = state.execute(AppStateRequest::DispatchInternetRemoteMessage {
+            schema_version:1, peer_id:peer_id.into(), lane:RemoteLane::Control,reset_av_delay:false,
+            message:json!({"v":1,"lane":"control","epoch":epoch,"seq":3,"id":"123e4567-e89b-42d3-a456-000000000003","kind":"rating.submit","body":{"play_id":"youtube","score":5}}).to_string(),now:18.0,
+        });
+        assert!(rejected.error().is_some());
+        let after = success(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: tuned.playback_generation,
+            reset_av_delay: false,
+            now: 19.0,
+        }))
+        .snapshot
+        .unwrap();
+        assert_eq!(after.current_item.as_ref().unwrap().id, "bilibili");
+        assert_eq!(after.history[0].key, "youtube:YE7VzlLtp-4");
+        let projected = project_remote_state(&after);
+        assert_eq!(projected.history[0].media_source, source);
+        assert!(projected.history[0].bvid.is_empty());
+        assert_eq!(after.session_played[0].key, "youtube:YE7VzlLtp-4");
+        assert_eq!(
+            after.session_played[0].resolved_url,
+            source.canonical_url().unwrap()
+        );
+        assert!(after.session_played[0].bvid.is_empty());
+        let persistence = state.data.as_ref().unwrap().persistence_snapshot();
+        assert!(
+            !serde_json::to_string(&persistence)
+                .unwrap()
+                .contains("googlevideo.com")
         );
     }
 
