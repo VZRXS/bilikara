@@ -112,4 +112,6 @@ pub use video_stream_ranking::{
 };
 
 pub use title_cleanup::clean_display_title_impl as clean_display_title;
+pub mod media_source;
 pub mod playlist_export;
+pub mod youtube_selection;

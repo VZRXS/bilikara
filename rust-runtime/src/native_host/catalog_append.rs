@@ -37,8 +37,11 @@ pub(super) fn source_result(value: &mut Value) {
     });
 }
 
-fn request(item: &PlaylistItem) -> CloudflareServiceRequest {
-    CloudflareServiceRequest {
+fn request(item: &PlaylistItem) -> Option<CloudflareServiceRequest> {
+    if !item.media_source.is_bilibili() {
+        return None;
+    }
+    Some(CloudflareServiceRequest {
         schema_version: 1,
         base_url: crate::shared_catalog::CatalogRequest::for_host().base_url,
         user_agent: crate::native_video::USER_AGENT.into(),
@@ -51,7 +54,7 @@ fn request(item: &PlaylistItem) -> CloudflareServiceRequest {
                 "owner_url":item.owner_url, "cover_url":item.cover_url,
             })],
         },
-    }
+    })
 }
 
 /// Called under AppState's lock only after an explicit add has committed.
@@ -70,9 +73,12 @@ pub(super) fn accepted_item(
 }
 
 pub(super) fn enqueue(item: &PlaylistItem) {
+    let Some(request) = request(item) else {
+        return;
+    };
     // No SQL, credentials, media URLs or source-library bulk upload here.
     // The service normalizes entries and writes through the same /batch-add API.
-    if !matches!(execute_cloudflare(&request(item)), Ok(result) if result["accepted"] == true) {
+    if !matches!(execute_cloudflare(&request), Ok(result) if result["accepted"] == true) {
         eprintln!("native catalog append could not be scheduled");
     }
 }
@@ -90,7 +96,15 @@ mod tests {
             "video_relative_path":"private/media.mp4", "video_media_url":"private/audio.m4a"
         }))
         .unwrap();
-        let request = request(&item);
+        let mut youtube = item.clone();
+        youtube.media_source = bilikara_rust::media_source::MediaSource::YouTube {
+            video_id: "YE7VzlLtp-4".into(),
+        };
+        assert!(
+            request(&youtube).is_none(),
+            "YouTube must not even construct a D1 append request"
+        );
+        let request = request(&item).unwrap();
         assert_eq!(request.base_url, "https://api.kevinx96.icu");
         let CloudflareOperation::EnqueueAppend { entries } = request.operation else {
             panic!()

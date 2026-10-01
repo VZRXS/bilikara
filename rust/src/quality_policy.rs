@@ -68,7 +68,7 @@ impl VideoQuality {
         ACTIVE_QUALITIES.iter().position(|quality| *quality == self)
     }
 
-    fn max_height(self) -> u32 {
+    pub(crate) fn max_height(self) -> u32 {
         match self {
             Self::Q360 => 360,
             Self::Q480 => 480,

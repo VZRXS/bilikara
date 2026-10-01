@@ -128,12 +128,28 @@ fn tick(
         ))
     })?;
     let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let youtube_effective = MediaSelection::for_youtube(&policy, &player, context.desktop);
+    let effective_for = |item: &PlaylistItem| {
+        if item.media_source.is_bilibili() {
+            &effective
+        } else {
+            &youtube_effective
+        }
+    };
     let usable = policy.available_with(
         context.desktop && context.bbdown.is_some(),
         context.desktop && context.aria2().is_some(),
     ) && (!context.desktop
         || (player.usable()
             || policy.download_source == "downkyi" && player.details["hevc_supported"] == true));
+    let youtube_usable = !context.desktop || player.usable();
+    let usable_for = |item: &PlaylistItem| {
+        if item.media_source.is_bilibili() {
+            usable
+        } else {
+            youtube_usable
+        }
+    };
     let items: Vec<_> = snapshot
         .current_item
         .iter()
@@ -142,7 +158,7 @@ fn tick(
     // Do not resubmit on every progress/status observation. Failure stays failed
     // until explicit retry, avoiding an unbounded Bilibili request loop.
     let fingerprint = format!(
-        "{}:{effective:?}:{usable}:{}",
+        "{}:{effective:?}:{youtube_effective:?}:{usable}:{youtube_usable}:{}",
         policy.snapshot(),
         items
             .iter()
@@ -158,11 +174,12 @@ fn tick(
     if fingerprint == *last_fingerprint {
         return Ok(());
     }
-    if usable {
+    if usable || youtube_usable {
         let mut invalidated = false;
-        for item in &items {
+        for item in items.iter().filter(|item| usable_for(item)) {
+            let effective = effective_for(item);
             let ready = if item.cache_status == "ready" {
-                match job(context, item, &cookie, &policy, &effective) {
+                match job(context, item, &cookie, &policy, effective) {
                     Ok(job) => crate::cache_runtime::existing_artifacts_ready(&job),
                     Err(error) => {
                         project_problem(item, &error.message, true)?;
@@ -247,17 +264,18 @@ fn tick(
     // reserves a new AppState token, and keeps readable artifacts until publish.
     // This map tracks only which effective inputs this pump has submitted.
     let mut replaced = Vec::new();
-    if context.desktop && usable {
+    if context.desktop {
         for item in items
             .iter()
-            .filter(|item| plan.desired_ids.contains(&item.id))
+            .filter(|item| usable_for(item) && plan.desired_ids.contains(&item.id))
         {
+            let effective = effective_for(item);
             if selections
                 .get(&item.id)
                 .is_some_and(|(_, old, retained)| !retained || effective.changes_artifact(old))
             {
                 execute_cache_runtime(CacheRuntimeCommand::Retry {
-                    job: job(context, item, &cookie, &policy, &effective)?,
+                    job: job(context, item, &cookie, &policy, effective)?,
                     urgent: false,
                 })
                 .map_err(cache_error)?;
@@ -272,11 +290,11 @@ fn tick(
     let jobs = items
         .iter()
         .filter(|item| {
-            usable
+            usable_for(item)
                 && plan.desired_ids.contains(&item.id)
                 && (item.cache_status != "failed" || replaced.contains(&item.id))
         })
-        .map(|item| job(context, item, &cookie, &policy, &effective))
+        .map(|item| job(context, item, &cookie, &policy, effective_for(item)))
         .collect::<Result<Vec<_>, _>>()?;
     execute_cache_runtime(CacheRuntimeCommand::Sync {
         cache_root: context.cache_root.clone(),
@@ -291,7 +309,7 @@ fn tick(
         preempt_item_id: plan.preempt_ids.first().cloned().unwrap_or_default(),
     })
     .map_err(cache_error)?;
-    if !usable {
+    if !usable || !youtube_usable {
         let message = format!(
             "缓存不可用: {}",
             if !policy.available_with(context.bbdown.is_some(), context.aria2().is_some()) {
@@ -306,7 +324,7 @@ fn tick(
         for item in items
             .iter()
             .take(policy.max_cache_items)
-            .filter(|item| item.cache_status != "ready")
+            .filter(|item| !usable_for(item) && item.cache_status != "ready")
         {
             if item.cache_status != "failed" || item.cache_message != message {
                 project_problem(item, &message, true)?;
@@ -452,7 +470,12 @@ fn job(
     policy: &CachePolicy,
     effective: &MediaSelection,
 ) -> Result<CacheJobSpec, ApiError> {
-    let executor = match policy.download_source.as_str() {
+    let source = if item.media_source.is_bilibili() {
+        policy.download_source.as_str()
+    } else {
+        "native"
+    };
+    let executor = match source {
         "native" => crate::cache_runtime::Executor::Native,
         "downkyi" if context.desktop => crate::cache_runtime::Executor::Downkyi {
             executable: context.aria2().ok_or_else(|| {
@@ -482,16 +505,16 @@ fn job(
         item,
         crate::cache_runtime::orchestration::JobInputs {
             cache_root: context.cache_root.clone(),
-            log_file: item_log_path(&context.directory, &policy.download_source, &item.id)?,
+            log_file: item_log_path(&context.directory, source, &item.id)?,
             cookie: cookie.into(),
             user_agent: crate::native_video::USER_AGENT.into(),
             referer: "https://www.bilibili.com/".into(),
             video_quality: effective.quality.clone(),
             avc_quality_cap: effective.avc_cap.clone(),
-            audio_hires: policy.audio_hires,
+            audio_hires: effective.audio_hires,
             executor,
         },
-        if policy.download_source == "downkyi" {
+        if source == "downkyi" {
             crate::cache_runtime::orchestration::JobContract::Downkyi
         } else {
             crate::cache_runtime::orchestration::JobContract::Native
@@ -531,8 +554,9 @@ pub(super) fn retry(
             app.native().player_media.clone(),
         ))
     })?;
-    if let Some(message) =
-        crate::desktop_login::download_login_error(&policy.download_source, cookie)
+    if item.media_source.is_bilibili()
+        && let Some(message) =
+            crate::desktop_login::download_login_error(&policy.download_source, cookie)
     {
         crate::cache_runtime::append_log(
             &item_log_path(&context.directory, &policy.download_source, &item.id)?,
@@ -540,10 +564,12 @@ pub(super) fn retry(
         );
         return Err(ApiError::new(403, "download_login_required", message));
     }
-    if !policy.available_with(
-        context.desktop && context.bbdown.is_some(),
-        context.desktop && context.aria2().is_some(),
-    ) {
+    if item.media_source.is_bilibili()
+        && !policy.available_with(
+            context.desktop && context.bbdown.is_some(),
+            context.desktop && context.aria2().is_some(),
+        )
+    {
         return Err(ApiError::new(
             501,
             "imported_cache_policy_unavailable",
@@ -552,7 +578,9 @@ pub(super) fn retry(
     }
     if context.desktop
         && !(player.usable()
-            || policy.download_source == "downkyi" && player.details["hevc_supported"] == true)
+            || item.media_source.is_bilibili()
+                && policy.download_source == "downkyi"
+                && player.details["hevc_supported"] == true)
     {
         return Err(ApiError::new(
             501,
@@ -560,7 +588,11 @@ pub(super) fn retry(
             "Host player reports no AVC decode support; this media backend requires AVC",
         ));
     }
-    let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let effective = if item.media_source.is_bilibili() {
+        MediaSelection::new(&policy, &player, context.desktop)
+    } else {
+        MediaSelection::for_youtube(&policy, &player, context.desktop)
+    };
     crate::cache_runtime::orchestration::retry_native_host(
         job(context, item, cookie, &policy, &effective)?,
         force,

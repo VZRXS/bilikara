@@ -473,6 +473,8 @@
   }
 
   function itemUrl(item) {
+    const youtubeId = item?.media_source?.provider === "youtube" ? item.media_source.video_id : "";
+    if (/^[A-Za-z0-9_-]{11}$/u.test(youtubeId)) return `https://www.youtube.com/watch?v=${youtubeId}`;
     const page = Number(item?.page || 1);
     return item?.bvid ? `https://www.bilibili.com/video/${item.bvid}${page > 1 ? `?p=${page}` : ""}` : "";
   }
@@ -615,8 +617,19 @@
 
   function catalogId(value, selectedPage) {
     const text = String(value || "").trim();
+    let url;
+    try { url = new URL(text); } catch { /* Existing BV/AV inputs are not URLs. */ }
+    if (url && ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(url.hostname)) {
+      const ids = url.searchParams.getAll("v");
+      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.port
+          || url.hostname === "youtu.be" || url.pathname !== "/watch" || ids.length !== 1
+          || !/^[A-Za-z0-9_-]{11}$/u.test(ids[0]) || (selectedPage && Number(selectedPage) !== 1)) {
+        throw new Error("YouTube: only watch?v= links are supported");
+      }
+      return `youtube:${ids[0]}`;
+    }
     const match = text.match(/(BV[0-9A-Za-z]{10})/u);
-    if (!match) throw new Error("公网 Remote 仅接受 BV 号或 Bilibili 视频链接");
+    if (!match) throw new Error("请输入 BV 号、Bilibili 视频链接或 YouTube watch 链接");
     let page = Number(selectedPage || 0);
     if (!page) {
       try { page = Number(new URL(text).searchParams.get("p") || 1); } catch { page = 1; }

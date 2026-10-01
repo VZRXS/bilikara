@@ -417,7 +417,53 @@ pub fn fetch_native_video(
     request: &NativeVideoRequest,
     cookie: &str,
 ) -> Result<PlaylistItem, NativeVideoError> {
+    match bilikara_rust::media_source::MediaSource::youtube_watch(&request.url) {
+        Ok(Some(bilikara_rust::media_source::MediaSource::YouTube { video_id })) => {
+            if request.selected_video_page.is_some_and(|p| p != 1)
+                || request
+                    .selected_audio_pages
+                    .as_ref()
+                    .is_some_and(|pages| !pages.is_empty() && pages.as_slice() != [1])
+            {
+                return Err(NativeVideoError::invalid(
+                    "YouTube watch videos have one video/audio selection",
+                ));
+            }
+            return youtube_item(crate::youtube::metadata(&video_id).map_err(|e| {
+                NativeVideoError {
+                    code: e.code.into(),
+                    message: e.message.into(),
+                    binding: None,
+                    missing_bvid: None,
+                }
+            })?);
+        }
+        Err(message) => return Err(NativeVideoError::invalid(message)),
+        _ => {}
+    }
     fetch_native_video_with(request, cookie, |client, url| client.get_video_json(url))
+}
+
+fn youtube_item(metadata: crate::youtube::Metadata) -> Result<PlaylistItem, NativeVideoError> {
+    let mut bytes = [0_u8; 6];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| NativeVideoError::invalid("Cannot generate request identity"))?;
+    let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let url = metadata
+        .source
+        .canonical_url()
+        .ok_or_else(|| NativeVideoError::invalid("Invalid YouTube identity"))?;
+    // Empty BV/zero AID/CID mean not applicable, never fabricated Bilibili IDs.
+    // Page 1 is only the shared player's single-track slot, not a YouTube part.
+    serde_json::from_value(json!({
+        "media_source":metadata.source,"id":id,"original_url":url,"resolved_url":url,
+        "bvid":"","aid":0,"cid":0,"page":1,"video_page":1,
+        "title":metadata.title,"display_title":metadata.title,"part_title":"",
+        "cover_url":metadata.cover_url,"embed_url":"","owner_name":metadata.author,
+        "selected_pages":[1],"selected_cids":[0],"selected_durations":[metadata.duration],"selected_parts":["Audio"],
+        "available_pages":[1],"available_cids":[0],"available_durations":[metadata.duration],"available_parts":["Audio"],
+        "selected_audio_variant_id":crate::cache_runtime::variant_id(1,"Audio",0)
+    })).map_err(|_| NativeVideoError::invalid("Cannot adapt YouTube metadata"))
 }
 
 fn fetch_native_video_with(
@@ -682,6 +728,7 @@ fn assemble(
             .finish()
     );
     Ok(PlaylistItem {
+        media_source: Default::default(),
         id,
         original_url: reference.original_url.clone(),
         resolved_url: resolved,
@@ -732,6 +779,50 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn youtube_metadata_uses_real_source_identity_and_existing_single_track_contract() {
+        let item = youtube_item(crate::youtube::Metadata {
+            source: bilikara_rust::media_source::MediaSource::YouTube {
+                video_id: "YE7VzlLtp-4".into(),
+            },
+            title: "A song".into(),
+            author: "A channel".into(),
+            duration: 123,
+            cover_url: "https://i.ytimg.com/vi/YE7VzlLtp-4/hqdefault.jpg".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            item.original_url,
+            "https://www.youtube.com/watch?v=YE7VzlLtp-4"
+        );
+        assert_eq!(item.resolved_url, item.original_url);
+        assert!(item.bvid.is_empty());
+        assert_eq!((item.aid, item.cid, item.owner_mid), (0, 0, 0));
+        assert!(item.embed_url.is_empty());
+        assert!(item.owner_url.is_empty());
+        assert_eq!(item.selected_pages, [1]);
+        assert_eq!(item.available_durations, [123]);
+        let mut app = crate::AppState::default();
+        let initialized = app.execute(crate::AppStateRequest::Initialize {
+            schema_version:1, state: serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1.0,"session_played_file":"test.json","updated_at":1.0})).unwrap(),
+        });
+        assert!(initialized.error().is_none());
+        let result = app.execute(crate::AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item.clone(),
+            position: "tail".into(),
+            requester_name: "Alice".into(),
+            reset_av_delay: true,
+            allow_repeat: false,
+            now: 2.0,
+        });
+        assert!(result.error().is_none(), "{:?}", result.error());
+        let snapshot = result.snapshot().unwrap();
+        assert_eq!(
+            snapshot.current_item.as_ref().unwrap().media_source,
+            item.media_source
+        );
+    }
     #[test]
     fn native_caller_uses_shared_network_parse_and_desktop_binding_contract() {
         use std::io::{Read, Write};

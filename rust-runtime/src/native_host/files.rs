@@ -82,7 +82,7 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
     // The packaged Signalsmith worklet compiles WASM. This narrowly permits
     // that compilation while JavaScript eval, inline/remote scripts, embedding
     // and generic network access remain prohibited.
-    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hdslb.com https://*.bilibili.com; media-src 'self' blob:; connect-src 'self' https://rtc.kevinx96.icu wss://rtc.kevinx96.icu; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
+    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hdslb.com https://*.bilibili.com https://i.ytimg.com; media-src 'self' blob:; connect-src 'self' https://rtc.kevinx96.icu wss://rtc.kevinx96.icu; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
     Ok(response)
 }
 

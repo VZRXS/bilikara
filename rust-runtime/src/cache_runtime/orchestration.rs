@@ -224,6 +224,8 @@ pub(crate) fn build_job(
         _ => item.video_page,
     };
     let job = CacheJobSpec {
+        media_source: item.media_source.clone(),
+        youtube_streams: Default::default(),
         schema_version: 1,
         item_id: item.id.clone(),
         display_title: item.display_title.clone(),
@@ -235,14 +237,30 @@ pub(crate) fn build_job(
         pages,
         cache_root: inputs.cache_root,
         log_file: inputs.log_file,
-        cookie: inputs.cookie,
-        user_agent: inputs.user_agent,
-        referer: inputs.referer,
+        cookie: if item.media_source.is_bilibili() {
+            inputs.cookie
+        } else {
+            String::new()
+        },
+        user_agent: if item.media_source.is_bilibili() {
+            inputs.user_agent
+        } else {
+            crate::youtube::USER_AGENT.into()
+        },
+        referer: if item.media_source.is_bilibili() {
+            inputs.referer
+        } else {
+            "https://www.youtube.com/".into()
+        },
         timeout_ms: 15_000,
         video_quality: inputs.video_quality,
         avc_quality_cap: inputs.avc_quality_cap,
         audio_hires: inputs.audio_hires,
-        executor: inputs.executor,
+        executor: if item.media_source.is_bilibili() {
+            inputs.executor
+        } else {
+            Executor::Native
+        },
         selected_audio_variant_id: item.selected_audio_variant_id.clone(),
         reported_ready: item.cache_status == "ready",
         existing_video_relative_path: item.video_relative_path.clone(),
@@ -848,7 +866,7 @@ impl Orchestration {
             .iter()
             .map(|item| {
                 let job = default_job(item, facts).and_then(|mut job| {
-                    if facts.download_source == "downkyi" {
+                    if item.media_source.is_bilibili() && facts.download_source == "downkyi" {
                         if let Some(message) = crate::desktop_login::download_login_error("downkyi", &facts.cookie) {
                             return Err(CacheRuntimeError::new("authentication", message));
                         }
@@ -857,7 +875,7 @@ impl Orchestration {
                             force_avc: facts.hevc_supported == Some(false),
                         };
                     }
-                    if facts.download_source == "bbdown" {
+                    if item.media_source.is_bilibili() && facts.download_source == "bbdown" {
                         if let Some(message) = crate::desktop_login::download_login_error("bbdown", &facts.cookie) {
                             return Err(CacheRuntimeError::new("authentication", message));
                         }
@@ -910,7 +928,8 @@ impl Orchestration {
                 *force,
                 native && plan.desired_ids.contains(item_id),
             )?;
-            if matches!(facts.download_source.as_str(), "bbdown" | "downkyi")
+            if item.media_source.is_bilibili()
+                && matches!(facts.download_source.as_str(), "bbdown" | "downkyi")
                 && let Some(message) = crate::desktop_login::download_login_error(
                     &facts.download_source,
                     &facts.cookie,

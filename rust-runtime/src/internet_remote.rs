@@ -429,6 +429,14 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
 fn project_history(entry: &HistoryEntry) -> RemoteHistoryEntryV1 {
     let (bvid, page) = public_history_identity(&entry.key);
     RemoteHistoryEntryV1 {
+        media_source: entry
+            .key
+            .strip_prefix("youtube:")
+            .filter(|id| bilikara_rust::media_source::valid_youtube_id(id))
+            .map(|id| bilikara_rust::media_source::MediaSource::YouTube {
+                video_id: id.into(),
+            })
+            .unwrap_or_default(),
         bvid,
         page,
         display_title: bilikara_rust::clean_display_title(
@@ -476,6 +484,7 @@ fn project_item(item: &PlaylistItem) -> bilikara_rust::RemotePlaylistItemV1 {
         &item.available_parts,
     );
     bilikara_rust::RemotePlaylistItemV1 {
+        media_source: item.media_source.clone(),
         id: item.id.clone(),
         item_incarnation_id: item.item_incarnation_id.clone(),
         bvid: item.bvid.clone(),
@@ -615,7 +624,7 @@ fn safe_cover_url(value: &str) -> String {
         return String::new();
     }
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    if host != "hdslb.com" && !host.ends_with(".hdslb.com") {
+    if host != "hdslb.com" && !host.ends_with(".hdslb.com") && host != "i.ytimg.com" {
         return String::new();
     }
     if parsed.set_scheme("https").is_err() {
@@ -847,6 +856,7 @@ mod tests {
     #[test]
     fn projection_preserves_public_part_and_audio_variant_metadata() {
         let item = PlaylistItem {
+            media_source: Default::default(),
             id: "song-a".to_owned(),
             original_url: "https://www.bilibili.com/video/BV1ab411c7mD".to_owned(),
             resolved_url: "https://www.bilibili.com/video/BV1ab411c7mD?p=1".to_owned(),
