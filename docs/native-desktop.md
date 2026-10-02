@@ -557,6 +557,24 @@ queue, recent-session listing, and exporting current or archived sessions. Raw
 export-data projections and queue-wide clearing remain Host-only; Internet
 Remote still does not expose file export.
 
+### YouTube quick-request input
+
+Host, local Remote and public Remote accept YouTube `watch?v=…`, `youtu.be/…`,
+`shorts/…`, `live/…`, `embed/…` and legacy `v/…` video URLs, including mobile,
+music and privacy-enhanced embed hosts. Scheme-less YouTube links and pasted
+share text are accepted. Timestamps, tracking and playlist parameters are
+removed when creating the canonical single-video URL.
+
+Share text may contain one distinct YouTube video; repeated links to the same
+video are harmless. Multiple different video links prompt the user to keep one.
+Playlist/channel-only links and invalid video IDs are rejected. The `live/`
+URL form accepts completed recordings; active live streams retain the existing
+unsupported status. URL recognition does not bypass video availability or
+playback compatibility checks.
+
+Rust owns input normalization; the public Remote transport extracts the same
+catalog identity. Both parsers run `tests/fixtures/youtube_inputs.json`.
+
 ### Queue ordering rules
 
 The current program is separate from the waiting queue. Queue ordering is owned

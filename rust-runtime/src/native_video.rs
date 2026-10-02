@@ -417,7 +417,7 @@ pub fn fetch_native_video(
     request: &NativeVideoRequest,
     cookie: &str,
 ) -> Result<PlaylistItem, NativeVideoError> {
-    match bilikara_rust::media_source::MediaSource::youtube_watch(&request.url) {
+    match bilikara_rust::media_source::MediaSource::youtube_input(&request.url) {
         Ok(Some(bilikara_rust::media_source::MediaSource::YouTube { video_id })) => {
             if request.selected_video_page.is_some_and(|p| p != 1)
                 || request
@@ -426,7 +426,7 @@ pub fn fetch_native_video(
                     .is_some_and(|pages| !pages.is_empty() && pages.as_slice() != [1])
             {
                 return Err(NativeVideoError::invalid(
-                    "YouTube watch videos have one video/audio selection",
+                    "YouTube videos have one video/audio selection",
                 ));
             }
             return youtube_item(crate::youtube::metadata(&video_id).map_err(|e| {

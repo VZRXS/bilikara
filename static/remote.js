@@ -631,6 +631,8 @@ function localizedApiMessage(message) {
   }
   if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
   if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
+  if (raw === "Invalid YouTube video link") return t("request.youtubeInvalid");
+  if (raw === "Multiple YouTube videos found; paste one video link") return t("request.youtubeMultiple");
   const bbdownMessage = localizedBBDownLoginMessage(raw);
   if (bbdownMessage && bbdownMessage !== raw) {
     return bbdownMessage;

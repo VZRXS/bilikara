@@ -616,21 +616,55 @@
     for (const listener of listeners) listener({ type: "state", data });
   }
 
+  // Public transport sends a validated catalog identity; Rust remains the
+  // authority for source admission. Shared fixtures cover both input parsers.
+  function youtubeVideoId(text) {
+    const links = /(?:[a-z][a-z0-9+.-]*:\/\/|(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be|youtube-nocookie\.com)\/)[A-Za-z0-9:/?&=#.%_+~@!$*\\-]+/giu;
+    let selected = null;
+    let invalidYoutube = false;
+    for (const candidate of text.matchAll(links)) {
+      if (candidate.index && /[a-z0-9_\-.@/=?&#%]/iu.test(text[candidate.index - 1])) continue;
+      const link = candidate[0].replace(/[.,!;)\]}>"']+$/u, "").split(/[<>"']/u)[0];
+      const schemeEnd = link.indexOf("://");
+      const scheme = schemeEnd < 0 ? "https" : link.slice(0, schemeEnd).toLowerCase();
+      const rest = schemeEnd < 0 ? link : link.slice(schemeEnd + 3);
+      const slash = rest.indexOf("/");
+      const authority = slash < 0 ? rest : rest.slice(0, slash);
+      const tail = slash < 0 ? "" : rest.slice(slash + 1).split("#")[0];
+      const host = authority.split("@").at(-1).split(":")[0].toLowerCase();
+      if (!["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com"].includes(host)) continue;
+      const queryStart = tail.indexOf("?");
+      const path = queryStart < 0 ? tail : tail.slice(0, queryStart);
+      const query = queryStart < 0 ? "" : tail.slice(queryStart + 1);
+      let id = null;
+      if (["http", "https"].includes(scheme) && authority.toLowerCase() === host && !link.includes("\\")) {
+        if (["youtu.be", "www.youtu.be"].includes(host)) id = path;
+        else if (path === "watch" && !host.endsWith("youtube-nocookie.com")) {
+          const ids = query.split("&").filter(pair => pair.startsWith("v=")).map(pair => pair.slice(2));
+          if (ids.length === 1) [id] = ids;
+        } else {
+          const parts = path.split("/");
+          if (parts.length === 2 && ["shorts", "live", "embed", "v"].includes(parts[0])
+              && (!host.endsWith("youtube-nocookie.com") || parts[0] === "embed")) id = parts[1];
+        }
+      }
+      if (!id || !/^[A-Za-z0-9_-]{11}$/u.test(id)) { invalidYoutube = true; continue; }
+      if (selected && selected !== id) throw new Error("Multiple YouTube videos found; paste one video link");
+      selected = id;
+    }
+    if (!selected && invalidYoutube) throw new Error("Invalid YouTube video link");
+    return selected;
+  }
+
   function catalogId(value, selectedPage) {
     const text = String(value || "").trim();
-    let url;
-    try { url = new URL(text); } catch { /* Existing BV/AV inputs are not URLs. */ }
-    if (url && ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(url.hostname)) {
-      const ids = url.searchParams.getAll("v");
-      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.port
-          || url.hostname === "youtu.be" || url.pathname !== "/watch" || ids.length !== 1
-          || !/^[A-Za-z0-9_-]{11}$/u.test(ids[0]) || (selectedPage && Number(selectedPage) !== 1)) {
-        throw new Error("YouTube: only watch?v= links are supported");
-      }
-      return `youtube:${ids[0]}`;
+    const youtubeId = youtubeVideoId(text);
+    if (youtubeId) {
+      if (selectedPage && Number(selectedPage) !== 1) throw new Error("Invalid YouTube video link");
+      return `youtube:${youtubeId}`;
     }
     const match = text.match(/(BV[0-9A-Za-z]{10})/u);
-    if (!match) throw new Error("请输入 BV 号、Bilibili 视频链接或 YouTube watch 链接");
+    if (!match) throw new Error("请输入 BV 号、Bilibili 视频链接或 YouTube 链接");
     let page = Number(selectedPage || 0);
     if (!page) {
       try { page = Number(new URL(text).searchParams.get("p") || 1); } catch { page = 1; }

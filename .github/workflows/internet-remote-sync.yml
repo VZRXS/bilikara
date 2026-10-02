@@ -15,6 +15,7 @@ on:
       - static/i18n.json
       - static/internet-remote-transport.js
       - static/part-selector.js
+      - static/request-input.js
       - static/qrcode-generator.js
       - static/qrcode-generator.LICENSE
       - static/remote-access.css
@@ -87,6 +88,7 @@ jobs:
           node --check static/internet-remote-transport.js
           node --check static/remote-transport-client.js
           node --check static/part-selector.js
+          node --check static/request-input.js
           node --check static/qrcode-generator.js
           node --check static/remote.js
           node --check static/remote-queue.js

@@ -600,6 +600,52 @@ const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_multiline_request_paste_preserves_url_boundaries_and_selection(self):
+        for page in [self.host_html, self.remote_html]:
+            self.assertIn('src="/request-input.js"', page)
+        self.assertIn('"request-input.js"', self.asset_sync)
+        script = r'''const assert = require("node:assert/strict");
+let paste, inputs=0;
+const input={value:"prefix OLD suffix",selectionStart:7,selectionEnd:10,
+  addEventListener:(type,fn)=>{assert.equal(type,"paste");paste=fn;},
+  dispatchEvent:event=>{assert.equal(event.type,"input");inputs++;},
+  setRangeText(text,start,end,mode){assert.equal(mode,"end");this.value=this.value.slice(0,start)+text+this.value.slice(end);}};
+globalThis.document={getElementById:id=>{assert.equal(id,"url-input");return input;}};
+require("./static/request-input.js");
+let prevented=0;
+const event=text=>({clipboardData:{getData:()=>text},preventDefault:()=>{prevented++;}});
+paste(event("Song title\nhttps://youtu.be/YE7VzlLtp-4\r\n#karaoke"));
+assert.equal(input.value,"prefix Song title https://youtu.be/YE7VzlLtp-4 #karaoke suffix");
+assert.equal(prevented,1);assert.equal(inputs,1);
+paste(event("https://youtu.be/YE7VzlLtp-4"));assert.equal(prevented,1);
+input.disabled=true;paste(event("title\nhttps://youtu.be/YE7VzlLtp-4"));assert.equal(prevented,1);
+'''
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_youtube_urls_and_share_text_match_rust_input_fixtures(self):
+        start = self.remote_transport.index('  function youtubeVideoId(')
+        end = self.remote_transport.index('\n  async function ', start)
+        script = r'''const assert = require("node:assert/strict");
+const fs = require("node:fs");
+SOURCE
+const cases = JSON.parse(fs.readFileSync("tests/fixtures/youtube_inputs.json", "utf8"));
+for (const row of cases) {
+  if (row.error) assert.throws(()=>youtubeVideoId(row.input), /YouTube/, row.input);
+  else assert.equal(youtubeVideoId(row.input), row.video_id, row.input);
+  if (row.video_id) {
+    assert.equal(catalogId(row.input), `youtube:${row.video_id}`, row.input);
+    assert.throws(()=>catalogId(row.input, 2), /YouTube/);
+  }
+}
+assert.equal(catalogId("BV1xx411c7mD"), "BV1xx411c7mD");
+assert.equal(catalogId("https://www.bilibili.com/video/BV1xx411c7mD?p=2"), "BV1xx411c7mD_p2");
+'''.replace("SOURCE", self.remote_transport[start:end])
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
     def test_public_drag_keeps_the_captured_queue_version_when_sending_later(self):
         start = self.remote_transport.index('response = await request("playlist.move",')
         end = self.remote_transport.index('\n      } else if', start)
