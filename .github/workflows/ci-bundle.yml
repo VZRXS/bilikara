@@ -319,7 +319,7 @@ jobs:
         shell: pwsh
         run: |
           $files = Get-ChildItem -Path dist/bilikara -Recurse -File
-          foreach ($library in @('bilikara-desktop-host.exe', 'native-desktop.json')) {
+          foreach ($library in @('bilikara-desktop-host.exe', 'bilikara-updater.exe', 'native-desktop.json')) {
             if (-not ($files | Where-Object Name -eq $library)) {
               throw "Packaged Rust library was not found: $library"
             }
@@ -343,6 +343,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           test -x dist/bilikara.app/Contents/MacOS/bilikara-desktop-host
+          test -x dist/bilikara.app/Contents/MacOS/bilikara-updater
           test -f dist/bilikara.app/Contents/Resources/native-desktop.json
           # Native code lives in Frameworks; the runtime resource path is a relative symlink.
           bbdown_vendor="dist/bilikara.app/Contents/Resources/vendor/BBDown"
@@ -399,6 +400,7 @@ jobs:
           test -x dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
           embedded_backend="dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
+          test -x "$embedded_backend/Contents/MacOS/bilikara-updater"
           plutil -lint dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$embedded_backend"
@@ -435,7 +437,7 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          foreach ($required in @('_internal/bilikara-desktop-host.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll', '_internal/native-desktop.json', 'license/LICENSE')) {
+          foreach ($required in @('_internal/bilikara-desktop-host.exe', '_internal/bilikara-updater.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll', '_internal/native-desktop.json', 'license/LICENSE')) {
             if (-not (Test-Path (Join-Path $package $required))) {
               throw "Extracted bundle is missing $required"
             }
@@ -470,6 +472,7 @@ jobs:
           test -x test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
           extracted_embedded_backend="test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host"
+          test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-updater"
           plutil -lint test_extract/dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$extracted_embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$extracted_embedded_backend"

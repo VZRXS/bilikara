@@ -47,6 +47,11 @@ def stage_resources(destination: Path, executable: Path, *, development: bool,
     name = "bilikara-desktop-host.exe" if platform.system() == "Windows" else "bilikara-desktop-host"
     if executable.resolve() != (code / name).resolve():
         shutil.copy2(executable, code / name)
+    # The external updater ships beside the backend; it replaces this
+    # installation after both owners exit (rust-runtime update_installer::apply).
+    updater = "bilikara-updater.exe" if platform.system() == "Windows" else "bilikara-updater"
+    if (executable.parent / updater).resolve() != (code / updater).resolve():
+        shutil.copy2(executable.parent / updater, code / updater)
     static = resources / "static"
     if static.exists():
         shutil.rmtree(static)
@@ -121,7 +126,8 @@ def build_backend(*, development: bool, prepare_shell: bool, target: str | None)
         raise RuntimeError("BILIKARA_LIBAV_PREFIX is required for a complete native bundle")
     profile = "debug" if development else "release"
     command = ["cargo", "build", "--manifest-path", str(bundle.ROOT_DIR / "rust-runtime/Cargo.toml"),
-               "--locked", "--features", "native-host", "--bin", "bilikara-desktop-host"]
+               "--locked", "--features", "native-host", "--bin", "bilikara-desktop-host",
+               "--bin", "bilikara-updater"]
     if not development:
         command.append("--release")
     if target:

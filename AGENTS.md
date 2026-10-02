@@ -165,7 +165,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 - Action order follows the component role. Dialog footer groups place secondary/cancel actions before the primary completion action (left-to-right; preserve DOM and keyboard order). Export uses CSV on the left and image export on the right in both clients. Inline task forms retain their established workflow order (for example, request then queue-next); do not reverse every primary/secondary pair. Matching components share order across Host/local/public Remote. Secondary and cancel actions retain the shared neutral fill.
 - Pills use a fully rounded radius (currently 999px). Circles constrain width, height and min/max-width equally so inherited button minima cannot stretch them.
-- Compact tools include Check for updates, Copy link, Identify display, Announcements and the Host current-song rating/next actions. Reuse the complete pill definition, not just its radius.
+- Compact tools include Check for updates and its Cancel action, Copy link, Identify display, Announcements and the Host current-song rating/next actions. Reuse the complete pill definition, not just its radius; a tool hidden by attribute stays hidden.
 - Domain actions such as room create/rebuild/close are ordinary controls, not compact tools or dismiss icons: 44px height, 16px text, weight 400, 14px corners and inline padding. Use the primary palette for create/rebuild and secondary for close, with an 8px gap and aligned text centers. Create/rebuild may fill the remaining row; close keeps its content width.
 - Volume and delay step/reset controls share the ordinary 16px font, theme-aware 1px outline and interaction states. Inline and floating playback controls retain the same typography and feedback; floating-panel prose does not change their inherited font. Their numeric wrappers share focus-within treatment.
 - Browse back actions share secondary fill, 16px normal text, 14px corners and inline padding, a theme-aware outline and no shadow. Use the client's ordinary height for category, name, artist, UP, favorites and advanced-catalog back actions; contextual navigation remains a separate role.
@@ -393,7 +393,7 @@ When completing a task, agents must report:
 | `src/gatcha_repository.rs` | Gacha configuration, persistence, browsing, candidate selection, and Bilibili refresh operations. |
 | `src/cloudflare_service.rs` | Cloudflare API execution, pool-entry normalization, and bounded background append scheduling. |
 | `src/status_service.rs` | Bilibili login state and Gacha refresh lease/status ownership. |
-| `src/update_installer.rs` | Update extraction, helper generation, and helper launch validation. |
+| `src/update_installer.rs` and `src/update_installer/` | Update extraction, native package validation and preparation, retained published-era helper launch, and the external `bilikara-updater` (`apply.rs`, `src/bin/bilikara-updater.rs`) that replaces and reopens a desktop installation. |
 | `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
 | `src/playlist_export.rs` and `src/playlist_export/` | Complete CSV/image export service, local-time formatting, reusable fonts, text layout/rasterization, PNG/ZIP and coarse wire adaptation; no AppState lock during rendering. |
 | `src/networking.rs` and `src/networking/` | Native LAN interface and routing facts per platform, plus the pure address classification and ranking policy. |

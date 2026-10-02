@@ -77,6 +77,8 @@ class NativeBundleBuildTests(unittest.TestCase):
             (root / "start_bilikara.py").write_text("obsolete runtime")
             executable = root / "native"
             executable.write_bytes(b"native code")
+            for updater in ("bilikara-updater", "bilikara-updater.exe"):
+                (root / updater).write_bytes(b"updater code")
             for system, name in [("Linux", "bilikara-desktop-host"), ("Windows", "bilikara-desktop-host.exe"), ("Darwin", "bilikara-desktop-host")]:
                 tool = root / ("BBDown.EXE" if system == "Windows" else "BBDown")
                 tool.write_bytes(b"pinned tool")
@@ -90,6 +92,9 @@ class NativeBundleBuildTests(unittest.TestCase):
                     code = output / "Contents/MacOS" if system == "Darwin" else output / "_internal"
                     assets = resources(code / name)
                     self.assertEqual((code / name).read_bytes(), b"native code")
+                    # The external updater ships beside the backend executable.
+                    updater = "bilikara-updater.exe" if system == "Windows" else "bilikara-updater"
+                    self.assertEqual((code / updater).read_bytes(), b"updater code")
                     self.assertTrue((assets / "static/fonts/font.ttf").is_file())
                     for asset in frontend:
                         self.assertEqual((assets / "static" / asset).read_bytes(), asset.encode())

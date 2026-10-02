@@ -1042,7 +1042,7 @@ pub(crate) async fn apply_desktop_update(
     }
     let owned = backend.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // The generated helper waits for both owned PIDs. It never kills them.
+        // The external updater waits for both owned PIDs. It never kills them.
         // Do not ask Tauri to restart the old executable before replacement.
         backend_process::shutdown(&owned);
         app.exit(0);

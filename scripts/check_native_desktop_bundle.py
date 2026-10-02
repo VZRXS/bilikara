@@ -67,6 +67,10 @@ def inspect_package(executable: Path) -> dict:
         assert not re.match(r"(?:lib)?python\d.*\.(?:so|dll|dylib)", name), path
         assert "site-packages" not in path.parts, path
     assert executable.read_bytes()[:4] in {b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"} or executable.read_bytes()[:2] == b"MZ"
+    if facts["platform"] in {"windows", "macos"}:
+        # Packaged desktop installations replace themselves with this updater.
+        updater = executable.with_name("bilikara-updater.exe" if facts["platform"] == "windows" else "bilikara-updater")
+        assert updater.is_file() and updater.read_bytes()[:2] in {b"MZ", b"\xcf\xfa"}, updater
     assert (root / "vendor/ffmpeg-runtime.json").is_file()
     return facts
 

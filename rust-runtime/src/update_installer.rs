@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zip::ZipArchive;
 
+pub mod apply;
 pub mod native;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -59,27 +60,108 @@ pub fn prepare_update(
 pub fn launch_update_helper(
     request: &LaunchUpdateHelperRequest,
 ) -> Result<(), UpdateInstallerError> {
-    validate_helper_command(&request.command)?;
+    if let Some((updater, plan)) = native_updater(&request.command) {
+        return launch_native_updater(updater, plan)
+            .map_err(|cause| error("launch_failed", cause.to_string()));
+    }
+    helper_command(&request.command)?
+        .spawn()
+        .map(|_| ())
+        .map_err(|cause| error("launch_failed", cause.to_string()))
+}
+
+/// `[<workspace>/bilikara-updater, --plan, <workspace>/plan.json]` only.
+fn native_updater(command: &[String]) -> Option<(&Path, &Path)> {
+    let [program, flag, plan] = command else {
+        return None;
+    };
+    let (program, plan) = (Path::new(program), Path::new(plan));
+    let name = program.file_name()?.to_str()?;
+    (flag == "--plan"
+        && program.is_absolute()
+        && ["bilikara-updater", "bilikara-updater.exe"].contains(&name)
+        && plan.file_name()? == apply::PLAN_FILE
+        && plan.parent() == program.parent())
+    .then_some((program, plan))
+}
+
+/// The updater outlives the Host it replaces. On Windows it inherits no
+/// handles and leaves the Host's kill-on-close job; on Unix it starts a new
+/// session with null standard streams.
+fn launch_native_updater(updater: &Path, plan: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        apply::windows::spawn_detached(
+            updater,
+            &[std::ffi::OsStr::new("--plan"), plan.as_os_str()],
+            updater.parent().unwrap_or(updater),
+            None,
+        )
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new(updater);
+        command
+            .arg("--plan")
+            .arg(plan)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: setsid has no memory-safety preconditions and runs immediately before exec.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().map(|_| ())
+    }
+}
+
+/// The helper process exactly as `launch_update_helper` starts it.
+fn helper_command(arguments: &[String]) -> Result<Command, UpdateInstallerError> {
+    validate_helper_command(arguments)?;
     #[cfg(windows)]
     let program = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32/cmd.exe");
+        .join("System32")
+        .join("cmd.exe");
     #[cfg(not(windows))]
-    let program = PathBuf::from(&request.command[0]);
+    let program = PathBuf::from(&arguments[0]);
     let mut command = Command::new(program);
     #[cfg(windows)]
-    command.arg("/d"); // Ignore user CMD AutoRun hooks.
+    {
+        use std::os::windows::process::CommandExt;
+        let [_, _, script] = arguments else {
+            return Err(error("invalid_helper", "Windows requires a CMD helper"));
+        };
+        let script = native::cmd_path(Path::new(script))?;
+        // CMD parses its own command line, including argv[0]. Use only native
+        // separators there and its explicit /S quote contract for the script;
+        // CRT argument escaping and verbatim paths are not CMD syntax.
+        // cmd_path refuses expansion/quote characters before this raw argument.
+        command
+            .args(["/d", "/s", "/c"])
+            .raw_arg(format!("\"\"{script}\"\""));
+    }
+    #[cfg(not(windows))]
+    command.args(&arguments[1..]);
 
     command
-        .args(&request.command[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let flags = 0x0000_0200 | 0x0000_0008;
+        // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW. A hidden console, not
+        // DETACHED_PROCESS: `chcp` needs one, and PowerShell/ping/robocopy
+        // inherit it instead of each opening a visible console window.
+        let flags = 0x0000_0200 | 0x0800_0000;
         #[cfg(feature = "native-host")]
         let flags = if crate::native_host::desktop_process::JOB_OWNED
             .load(std::sync::atomic::Ordering::Acquire)
@@ -105,10 +187,7 @@ pub fn launch_update_helper(
             });
         }
     }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|cause| error("launch_failed", cause.to_string()))
+    Ok(command)
 }
 
 fn prepare_windows_update(
@@ -414,6 +493,33 @@ mod tests {
         assert!(script.contains("/XD runtime data updates __pycache__"));
         assert!(script.contains("PIDS=111 222"));
         assert!(script.contains("bilikara-desktop.exe"));
+    }
+
+    #[test]
+    fn only_the_workspace_updater_with_its_own_plan_is_accepted() {
+        let workspace = std::env::temp_dir().join("update-x");
+        let updater = workspace
+            .join("bilikara-updater")
+            .to_string_lossy()
+            .into_owned();
+        let plan = workspace.join("plan.json").to_string_lossy().into_owned();
+        let command = |parts: [&str; 3]| parts.map(str::to_owned).to_vec();
+        assert!(native_updater(&command([&updater, "--plan", &plan])).is_some());
+        let elsewhere = std::env::temp_dir().join("plan.json");
+        for rejected in [
+            command([&updater, "--plan", &elsewhere.to_string_lossy()]),
+            command([&updater, "--plans", &plan]),
+            command(["bilikara-updater", "--plan", "plan.json"]),
+            command([&workspace.join("other").to_string_lossy(), "--plan", &plan]),
+            command([
+                &updater,
+                "--plan",
+                &workspace.join("x.json").to_string_lossy(),
+            ]),
+        ] {
+            assert!(native_updater(&rejected).is_none(), "{rejected:?}");
+        }
+        assert!(native_updater(&[updater, "--plan".into()]).is_none());
     }
 
     #[test]

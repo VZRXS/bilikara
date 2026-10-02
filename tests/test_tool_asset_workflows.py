@@ -40,6 +40,9 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             backend = contents / "MacOS/bilikara-desktop-host"
             backend.write_text("#!/bin/sh\nexit 0\n")
             backend.chmod(0o755)
+            updater = contents / "MacOS/bilikara-updater"
+            updater.write_text("#!/bin/sh\nexit 0\n")
+            updater.chmod(0o755)
             (contents / "Resources/native-desktop.json").write_text("{}")
             tool = contents / "Frameworks/BBDown"
             tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n')
@@ -56,6 +59,12 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             tool.chmod(0o644)
             self.assertNotEqual(run_gate().returncode, 0)
             tool.unlink()
+            self.assertNotEqual(run_gate().returncode, 0)
+            # A bundle without the external updater is not a complete package.
+            tool.write_text("#!/bin/sh\nexit 0\n")
+            tool.chmod(0o755)
+            self.assertEqual(run_gate().returncode, 0)
+            updater.unlink()
             self.assertNotEqual(run_gate().returncode, 0)
 
     def test_test_and_bundle_do_not_compete_for_an_immutable_rust_cache(self):

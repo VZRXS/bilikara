@@ -266,11 +266,31 @@ launches offer checks and a release-page link for manual updates.
 
 Download and preparation can be cancelled. Once the main desktop window commits
 replacement through its private shell capability, cancellation is unavailable.
-The helper waits for the owned backend and shell to exit, stages a sibling
-installation, preserves the previous application as `.previous-update-*`, and
-launches the new Tauri entry. A copy/replacement failure retains or restores the
-old installation; this is not a general crash-rollback guarantee. After checking
-the new installation, the user may remove that previous application directory.
+Replacement is performed by the external updater, `bilikara-updater`, which
+every Windows/macOS package ships beside its backend
+(`_internal/bilikara-updater.exe`, or `Contents/MacOS/bilikara-updater` inside
+the embedded backend app). After validating the downloaded package, the Host
+copies the installed updater into the update workspace, writes `plan.json`
+there and starts it detached: on Windows it inherits no handles and leaves the
+Host's kill-on-close job; on macOS it starts a new session. An installation
+without an updater offers manual updates only. Installed releases predating the
+updater keep their own generated CMD/shell helper for the update to this one.
+
+The updater pins and waits for the owned backend and shell to exit (without
+ever terminating one), stages a sibling installation, moves the old one aside
+as `.previous-update-*`, moves the new one into place and opens it. A file or
+folder still held open is retried for about 30 seconds. Every check runs after
+both owners exit, so any failure before commit restores or retains the old
+installation and reopens it; an owner that never exits leaves everything
+unchanged and nothing is reopened. Before reopening, the updater keeps its
+timestamped log as `update-logs/<operation>.log` under the data root and writes
+`update-logs/last-result.txt` (`installed`, `failed` or `owners_running`). The
+next Host start consumes that result once, shows it with the log path and
+removes the finished workspace (a running Windows updater cannot delete
+itself); the log stays. The relaunched application does not inherit the old
+shell's private Host variables. This is not a general crash-rollback guarantee.
+After checking the new installation, the user may remove that previous
+application directory.
 Data remains separate from immutable program resources. On Windows the helper
 preserves the existing `runtime/` only after both processes exit; its own
 workspace stays outside the installation being replaced. An archive containing

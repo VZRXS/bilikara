@@ -1820,6 +1820,11 @@ h2 {
   border-radius: 999px;
 }
 
+/* The shared display above must not reveal a compact tool hidden by attribute. */
+:root :is(.toolbar-button, .next-button).settings-tool-button[hidden] {
+  display: none;
+}
+
 .cache-panel-actions {
   display: inline-flex;
   align-items: center;

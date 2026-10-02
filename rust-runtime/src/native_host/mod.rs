@@ -363,6 +363,14 @@ fn start(
     let recovered_library = library::initialize(&directory)?;
     library::migrate_pool(&directory)?;
     library::publish_favorites_timestamp(&directory);
+    // File I/O stays outside AppState: a previous helper's kept outcome.
+    let last_install = desktop
+        .then(|| {
+            let workspaces = desktop::installation()
+                .map(|installation| installation.update_workspace_parent(&directory).to_owned());
+            updates::take_last_result(&directory, workspaces.as_deref())
+        })
+        .flatten();
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -378,7 +386,7 @@ fn start(
         if desktop {
             // One authority for the check-only update loop: the same state the
             // status route and the SSE projection read.
-            session.updates = updates::UpdateState::desktop(desktop::update_facts());
+            session.updates = updates::UpdateState::desktop(desktop::update_facts(), last_install);
         }
         session.bbdown_available = bbdown.is_some();
         session.aria2_available = aria2.is_some();

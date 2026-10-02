@@ -38,15 +38,37 @@ const [packageDir,evidenceDir]=process.argv.slice(2);
   // Rust tests separately assert authoritative route/status/SSE agreement.
   await page.evaluate(()=>{fetchState=async()=>{};});
   await page.locator("#work-rail-settings").click();
+  // A kept helper outcome is shown once, with its log, however often status renders.
+  const toastText=()=>page.evaluate(()=>{const n=document.getElementById("app-toast");return n.classList.contains("hidden")?"":n.textContent;});
+  await page.evaluate(()=>{state.data.app_update={...state.data.app_update,last_install:{operation:"update-fixture",result:"failed",log:"C:\\bilikara\\runtime\\data\\update-logs\\update-fixture.log"}};renderUpdatePreviewControl();});
+  assert.match(await toastText(),/update-fixture\.log/);
+  assert.equal(await page.locator("#app-toast").evaluate(n=>n.classList.contains("is-error")),true);
+  await page.evaluate(()=>{setAppMessage("");renderUpdatePreviewControl();renderUpdatePreviewControl();});
+  assert.equal(await toastText(),"");
   await page.evaluate(()=>{
    state.updateAutomaticEnabled=true;state.updatePreviewEnabled=false;
    state.data.app_update={state:"available",operation:6,include_preview:false,updated_at:10,update_action:"normal_upgrade",eligible_update:true,auto_update_supported:true,latest_version:"v0.8.1",message:"Fixture native package available"};renderUpdatePreviewControl();
   });
   await page.locator("#update-check-button").scrollIntoViewIfNeeded();
-  await page.locator("#update-check-button").click();await page.locator("#confirm-ok").click();
+  assert.equal(await page.locator("#update-cancel-button").isVisible(),false);
+  // The confirmation uses the UI language, never the Host's untranslated status message.
+  await page.evaluate(()=>setLanguage("en"));
+  await page.locator("#update-check-button").click();
+  const prompt=await page.locator("#confirm-text").textContent();
+  assert.equal(prompt,"A desktop update is available. The download is verified as a complete native package before installation; older Python packages cannot be installed. Download the update and restart the service automatically?");
+  assert.doesNotMatch(prompt,/[\u3040-\u30ff\u4e00-\u9fff]|Fixture native package/);
+  await page.locator("#confirm-ok").click();
+  await page.evaluate(()=>setLanguage("zh"));
   await page.waitForFunction(()=>updateBridgeCalls.some(c=>c.name==="start_desktop_update"));
   assert.equal(await page.locator("#update-check-button").isDisabled(),true);
+  // Cancel is a compact settings tool beside the update action, not an ordinary 44px control.
+  // Measure at rest: the clicked update action is still leaving its hover lift.
+  await page.mouse.move(0,0);await page.waitForFunction(()=>document.getAnimations().every(a=>a.playState!=="running"));
+  const tools=await page.evaluate(()=>["update-check-button","update-cancel-button"].map(id=>{const n=document.getElementById(id),s=getComputedStyle(n),r=n.getBoundingClientRect();
+   return {height:r.height,radius:s.borderTopLeftRadius,font:`${s.fontSize}/${s.fontWeight}`,padding:`${s.paddingLeft} ${s.paddingRight}`,center:Math.round(r.top+r.height/2)};}));
+  assert.deepEqual(tools[1],tools[0]);assert.deepEqual([tools[0].height,tools[0].radius,tools[0].font],[30,"999px","12px/700"]);
   await page.locator("#update-cancel-button").click();await page.waitForFunction(()=>updateBridgeCalls.some(c=>c.name==="cancel_desktop_update"));
+  await page.waitForFunction(()=>getComputedStyle(document.getElementById("update-cancel-button")).display==="none");
   await page.evaluate(()=>{
    state.data.app_update={state:"available",include_preview:false,updated_at:11,update_action:"normal_upgrade",eligible_update:true,auto_update_supported:false,latest_version:"v0.8.1",release_url:"https://github.com/VZRXS/bilikara/releases/tag/v0.8.1"};renderUpdatePreviewControl();
   });

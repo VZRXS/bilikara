@@ -19,6 +19,9 @@ required-features = ["native-host"]
 name = "bilikara-desktop-host"
 required-features = ["native-host"]
 
+[[bin]]
+name = "bilikara-updater"
+
 [features]
 native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "qrcode/svg", "dep:time"]
 

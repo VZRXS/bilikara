@@ -9,6 +9,7 @@ use bilikara_rust::{
     UpdateAssetCandidate, UpdateAssetSelection, UpdateAssetTarget, decide_release_update,
     select_update_asset,
 };
+pub(crate) use desktop_install::take_last_result;
 use std::io::Read;
 
 const GITHUB: &str = "https://api.github.com/repos/VZRXS/bilikara/releases?per_page=30";
@@ -100,9 +101,14 @@ impl UpdateState {
     }
     /// The desktop Host starts in an idle state carrying its trusted
     /// facts, so the first UI render is already coherent.
-    pub(crate) fn desktop(facts: DesktopUpdateFacts) -> Self {
+    /// A kept helper outcome is reported once, in the first idle status.
+    pub(crate) fn desktop(facts: DesktopUpdateFacts, last_install: Option<Value>) -> Self {
+        let mut status = desktop_idle(&facts);
+        if let Some(last_install) = last_install {
+            status["last_install"] = last_install;
+        }
         Self {
-            status: desktop_idle(&facts),
+            status,
             package: None,
             operation: 0,
             desktop: Some(facts),
@@ -1287,6 +1293,13 @@ mod tests {
         let installed = directory.join("installed");
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("old-record"), b"preserved").unwrap();
+        // The installed updater is copied into the workspace and started.
+        std::fs::create_dir_all(installed.join("_internal")).unwrap();
+        std::fs::write(
+            installed.join("_internal/bilikara-updater.exe"),
+            b"installed updater",
+        )
+        .unwrap();
         *desktop::INSTALLATION_OVERRIDE.lock().unwrap() =
             Some(crate::update_installer::native::Installation {
                 root: installed.clone(),
@@ -1367,6 +1380,12 @@ mod tests {
                     if value["app_update"]["state"] == wanted {
                         return value["app_update"].clone();
                     }
+                    // Never wait forever for a state an operation has left.
+                    assert!(
+                        wanted == "failed" || value["app_update"]["state"] != "failed",
+                        "update failed while waiting for {wanted}: {}",
+                        value["app_update"]
+                    );
                 }
             }
             panic!("SSE stopped before {wanted}")
@@ -1556,11 +1575,24 @@ mod tests {
             .take()
             .unwrap();
         assert_eq!(intents.len(), 1);
-        assert!(
-            std::fs::read_to_string(&intents[0][2])
-                .unwrap()
-                .contains("bilikara-desktop.exe")
+        let workspace = Path::new(&intents[0][2]).parent().unwrap();
+        assert_eq!(
+            intents[0],
+            [
+                workspace.join("bilikara-updater.exe").to_string_lossy(),
+                "--plan".into(),
+                workspace.join("plan.json").to_string_lossy(),
+            ]
         );
+        assert_eq!(
+            std::fs::read(workspace.join("bilikara-updater.exe")).unwrap(),
+            b"installed updater"
+        );
+        let plan: crate::update_installer::apply::Plan =
+            serde_json::from_slice(&std::fs::read(&intents[0][2]).unwrap()).unwrap();
+        assert_eq!(plan.destination, installed);
+        assert_eq!(plan.wait_pids, [111, 222]);
+        assert!(plan.source.join("bilikara-desktop.exe").is_file());
         assert_eq!(state()["state"], "restarting");
         assert_eq!(state()["cancellable"], false);
         assert_eq!(post("/api/app/update/cancel", json!({})).0, 409);
@@ -1570,11 +1602,14 @@ mod tests {
         // The simulated helper now owns this directory; remove it explicitly.
         std::fs::remove_dir_all(Path::new(&intents[0][2]).parent().unwrap()).unwrap();
         with_app(|app| {
-            app.native().updates = UpdateState::desktop(DesktopUpdateFacts {
-                version: "0.8.0-preview.2".into(),
-                platform: "windows".into(),
-                arch: "x64".into(),
-            });
+            app.native().updates = UpdateState::desktop(
+                DesktopUpdateFacts {
+                    version: "0.8.0-preview.2".into(),
+                    platform: "windows".into(),
+                    arch: "x64".into(),
+                },
+                None,
+            );
             Ok(())
         })
         .unwrap();
@@ -1627,6 +1662,82 @@ mod tests {
     fn release(tag: &str) -> Value {
         json!({"tag_name":tag,"draft":false,"prerelease":tag.contains("preview"),"html_url":format!("https://github.com/VZRXS/bilikara/releases/tag/{tag}"),"assets":[{"name":format!("bilikara-{tag}-android-arm64.apk"),"digest":format!("sha256:{}","a".repeat(64)),"size":1234,"browser_download_url":"https://evil.test/x.apk"}]})
     }
+    #[test]
+    fn kept_helper_result_is_reported_once_in_the_first_desktop_status() {
+        let data = std::env::temp_dir().join(format!("update-result-{}", token().unwrap()));
+        let reports = crate::update_installer::native::reports(&data);
+        std::fs::create_dir_all(&reports).unwrap();
+        let facts = DesktopUpdateFacts {
+            version: "0.8.0-preview.0".into(),
+            platform: "windows".into(),
+            arch: "x64".into(),
+        };
+        // CMD writes CRLF; the macOS shell helper writes LF.
+        for (text, result) in [
+            ("operation=update-a1\r\nresult=failed\r\n", "failed"),
+            ("operation=update-a1\nresult=installed\n", "installed"),
+        ] {
+            std::fs::write(reports.join("last-result.txt"), text).unwrap();
+            std::fs::write(reports.join("update-a1.log"), "[t] failed").unwrap();
+            let last = take_last_result(&data, None).unwrap();
+            assert_eq!(last["operation"], "update-a1");
+            assert_eq!(last["result"], result);
+            assert_eq!(
+                last["log"],
+                reports.join("update-a1.log").to_string_lossy().as_ref()
+            );
+            // Consumed: the next Host start reports nothing.
+            assert!(take_last_result(&data, None).is_none());
+            assert!(reports.join("update-a1.log").is_file());
+            let state = UpdateState::desktop(facts.clone(), Some(last.clone()));
+            assert_eq!(state.snapshot()["last_install"], last);
+            assert_eq!(state.snapshot()["state"], "idle");
+        }
+        for malformed in [
+            "operation=../escape\nresult=failed\n",
+            "operation=update-a1\nresult=unknown\n",
+            "result=failed\n",
+        ] {
+            std::fs::write(reports.join("last-result.txt"), malformed).unwrap();
+            assert!(take_last_result(&data, None).is_none(), "{malformed}");
+        }
+        assert!(UpdateState::desktop(facts, None).snapshot()["last_install"].is_null());
+        // The next Host start removes a finished updater's workspace, and
+        // nothing that is not one.
+        let parent = data.join("workspaces");
+        for (name, plan) in [("update-a1", true), ("update-a2", false)] {
+            std::fs::create_dir_all(parent.join(name)).unwrap();
+            if plan {
+                std::fs::write(parent.join(name).join("plan.json"), "{}").unwrap();
+            }
+        }
+        for operation in ["update-a1", "update-a2"] {
+            std::fs::write(
+                reports.join("last-result.txt"),
+                format!("operation={operation}\nresult=failed\n"),
+            )
+            .unwrap();
+            take_last_result(&data, Some(&parent)).unwrap();
+        }
+        assert!(!parent.join("update-a1").exists());
+        assert!(parent.join("update-a2").exists());
+        // The notice shows the ordinary Windows form of a canonical path.
+        for (canonical, shown) in [
+            (
+                r"\\?\C:\bilikara 安装\runtime\data\update-logs\u.log",
+                r"C:\bilikara 安装\runtime\data\update-logs\u.log",
+            ),
+            (r"\\?\UNC\server\share\u.log", r"\\server\share\u.log"),
+            (
+                "/Users/a/Library/Application Support/bilikara/data/update-logs/u.log",
+                "/Users/a/Library/Application Support/bilikara/data/update-logs/u.log",
+            ),
+        ] {
+            assert_eq!(desktop_install::display_path(canonical), shown);
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[test]
     fn android_update_requires_apk_hash_and_uses_shared_channel_decision() {
         let releases = json!([release("v0.8.1"), release("v0.9.0-preview.1")]);

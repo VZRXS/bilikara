@@ -110,6 +110,65 @@ fn candidates(package: &Value) -> Vec<crate::DownloadCandidate> {
         .collect()
 }
 
+/// A path as users know it: canonical Windows roots are verbatim `\\?\C:\...`.
+pub(crate) fn display_path(path: &str) -> String {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_owned(),
+        Some(rest) => rest
+            .strip_prefix(r"UNC\")
+            .map_or_else(|| path.to_owned(), |share| format!(r"\\{share}")),
+        None => path.to_owned(),
+    }
+}
+
+/// Consume the outcome a previous helper kept under the data root, once, at
+/// desktop Host start. Its log stays for diagnosis; malformed markers are
+/// ignored rather than reported as an update result. A finished updater's
+/// workspace (which a running Windows updater cannot delete) is removed.
+pub(crate) fn take_last_result(
+    data: &std::path::Path,
+    workspaces: Option<&std::path::Path>,
+) -> Option<Value> {
+    let reports = crate::update_installer::native::reports(data);
+    let marker = reports.join("last-result.txt");
+    let mut text = String::new();
+    std::fs::File::open(&marker)
+        .ok()?
+        .take(512)
+        .read_to_string(&mut text)
+        .ok()?;
+    let _ = std::fs::remove_file(&marker);
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|line| line.trim_end_matches('\r').strip_prefix(key))
+            .map(str::to_owned)
+    };
+    let (operation, result) = (field("operation=")?, field("result=")?);
+    if operation.is_empty()
+        || operation.len() > 96
+        || !operation
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+        || !matches!(result.as_str(), "installed" | "failed" | "owners_running")
+    {
+        return None;
+    }
+    if let Some(workspace) = workspaces.map(|parent| parent.join(&operation))
+        && operation.starts_with("update-")
+        && workspace
+            .join(crate::update_installer::apply::PLAN_FILE)
+            .is_file()
+    {
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+    let log = reports.join(format!("{operation}.log"));
+    Some(json!({
+        "operation": operation,
+        "result": result,
+        "log": log.is_file().then(|| display_path(&log.to_string_lossy())),
+    }))
+}
+
 fn current(context: &HostContext, operation: u64, phase: &AtomicU8) -> bool {
     if context.stop.load(Ordering::Acquire) || phase.load(Ordering::Acquire) >= ACTIVATING {
         return false;
@@ -302,6 +361,7 @@ fn run(
             &installation,
             &archive,
             &workspace,
+            &context.directory,
             package["tag"].as_str().unwrap_or_default(),
             || current(&context, operation, &phase),
         )

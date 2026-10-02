@@ -402,6 +402,7 @@ const state = {
   startupUpdateCheckScheduled: false,
   updateCheckRequestInFlight: false,
   manualUpdateCheck: null,
+  reportedLastInstall: "",
   updateManualVisibleChannel: "",
   updatePreviewEnabled: false,
   ratingPromptElement: null,
@@ -10773,8 +10774,23 @@ function maybeReportManualUpdateCheckOutcome(update) {
   }
 }
 
+// A previous helper's kept outcome arrives once, in the Host's first status.
+function maybeReportLastInstall(update) {
+  const last = update?.last_install;
+  if (!last?.operation || state.reportedLastInstall === last.operation) return;
+  state.reportedLastInstall = last.operation;
+  const log = String(last.log || "");
+  if (last.result === "installed") {
+    setAppMessage(t("service.updateLastInstalled", { version: String(update.current_version || "") }));
+  } else {
+    const key = last.result === "owners_running" ? "service.updateLastOwnersRunning" : "service.updateLastFailed";
+    setAppMessage(t(key, { log }), true);
+  }
+}
+
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
+  maybeReportLastInstall(update);
   if (update.state === "prepared") {
     globalThis.BilikaraHostUpdates?.applyPrepared?.(update).catch((error) => setAppMessage(error.message, true));
   }
@@ -18694,8 +18710,11 @@ async function checkAppUpdate(event) {
     type: "install-app-update",
     includePreview: Boolean(update.include_preview),
     releaseUrl: update.release_url,
+    // Host status messages are not translated; the prompt uses the UI language.
     message: t("service.installUpdatePrompt", {
-      message: update?.message || t("service.updateFoundPrompt"),
+      message: t(globalThis.BilikaraHostUpdates?.manualRelease
+        ? "service.desktopUpdateFound"
+        : "service.updateFoundPrompt"),
     }),
     primaryLabel: t("service.update"),
     ...point,
