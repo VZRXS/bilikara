@@ -58,6 +58,38 @@ const { chromium } = require("playwright");
     await page.waitForFunction(() => window.outputReady);
     await page.evaluate(async () => {
       window.mediaFixtures = [];
+      async function checkedFixtureUrl(blob, width, height) {
+        const label = `WebM fixture ${width}x${height} (${blob.size} bytes)`;
+        if (!blob.size) throw new Error(`${label}: recording is empty`);
+        const url = URL.createObjectURL(blob);
+        const probe = document.createElement("video");
+        probe.muted = true;
+        probe.preload = "auto";
+        try {
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => finish("decode preflight timed out"), 10000);
+            function finish(error) {
+              clearTimeout(timeout);
+              probe.onloadeddata = probe.onerror = null;
+              if (error) reject(new Error(`${label}: ${error}`));
+              else resolve();
+            }
+            probe.onerror = () => finish(probe.error?.message || "decode failed");
+            probe.onloadeddata = () => finish(probe.videoWidth === width && probe.videoHeight === height
+              ? null : `decoded ${probe.videoWidth}x${probe.videoHeight}, expected ${width}x${height}`);
+            probe.src = url;
+            probe.load();
+          });
+          return url;
+        } catch (error) {
+          URL.revokeObjectURL(url);
+          throw error;
+        } finally {
+          probe.onloadeddata = probe.onerror = null;
+          probe.removeAttribute("src");
+          probe.load();
+        }
+      }
       for (const [width, height] of [[360, 640], [1920, 480]]) {
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
@@ -68,13 +100,22 @@ const { chromium } = require("playwright");
         const chunks = [], recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
         recorder.ondataavailable = event => chunks.push(event.data);
         const finished = new Promise(resolve => { recorder.onstop = resolve; });
-        recorder.start();
-        painter.fillRect(0, 0, width, 20);
-        stream.getVideoTracks()[0].requestFrame();
-        await new Promise(resolve => setTimeout(resolve, 250));
-        recorder.stop(); await finished;
-        stream.getTracks().forEach(track => track.stop());
-        window.mediaFixtures.push(URL.createObjectURL(new Blob(chunks, { type: "video/webm" })));
+        try {
+          recorder.start();
+          // A single unchanged frame and a 250 ms stop can yield an undecodable
+          // WebM in Edge. Keep painting distinct frames before finalizing it.
+          for (let frame = 0; frame < 12; frame++) {
+            painter.fillStyle = frame % 2 ? "#0055cc" : "#00c889";
+            painter.fillRect(0, 20, width, height - 40);
+            stream.getVideoTracks()[0].requestFrame();
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          recorder.stop(); await finished;
+        } finally {
+          if (recorder.state !== "inactive") recorder.stop();
+          stream.getTracks().forEach(track => track.stop());
+        }
+        window.mediaFixtures.push(await checkedFixtureUrl(new Blob(chunks, { type: "video/webm" }), width, height));
       }
       window.sendScene = (index, sequence) => {
         window.__emit("bilikara-presentation-output-state", window.BilikaraPresentationSync.makeEnvelope("master-state", {
