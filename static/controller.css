@@ -36,6 +36,8 @@ body.is-cursor-hidden * {
   position: absolute;
   inset: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   place-items: center;
   border: 0;
   border-radius: 0;
@@ -45,6 +47,8 @@ body.is-cursor-hidden * {
 
 .presentation-output-frame video[data-presentation-output-video] {
   display: block;
+  min-width: 0;
+  min-height: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;

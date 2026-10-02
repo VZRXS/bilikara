@@ -41,6 +41,7 @@ fn main() {
         "publish_presentation_playback_state",
         "publish_presentation_output_state",
         "request_presentation_output_state",
+        "record_presentation_video_geometry",
         "deactivate_local_presentation",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(app_manifest);

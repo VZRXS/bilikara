@@ -110,6 +110,27 @@ in `runtime/logs/`, WebView browser storage in `runtime/webview/`, and window
 preferences in `runtime/main-window-geometry-v1.json`. This directory is created on use, never shipped in an update
 archive. macOS retains the system user-data directory outside the signed app.
 
+Desktop audience video geometry is recorded as `presentation_video_geometry` in
+the shell's `desktop-startup.log` (Windows: `runtime/logs/desktop-startup.log`).
+Records contain the presentation generation and per-window video sequence,
+intrinsic `videoWidth`/`videoHeight`, video/frame DOM bounds in CSS pixels,
+WebView inner/outer sizes and device pixel ratio, plus native window inner/outer
+physical sizes and scale factor. Media URLs, titles and credentials are excluded.
+Mount/metadata, intrinsic-video resize and viewport/element resize trigger
+frame-coalesced, deduplicated snapshots; playback-clock updates do not poll or log
+geometry. Native writes use the existing bounded, nonblocking diagnostic queue.
+The audience Grid has one `minmax(0, 1fr)` track on each axis, and the video has
+zero minimum dimensions with `object-fit: contain`, so portrait media cannot
+inflate the track beyond the output viewport. Resizing does not replace media.
+
+The offline regression `node tests/browser/presentation_video_geometry.cjs`
+uses test-only Playwright and browser-recorded portrait/ultrawide fixtures with
+the real audience page. It covers 1280x720, 720x1280 and 1600x600 viewports,
+DPR 1.5, source changes, geometry payloads and log failure isolation. The original
+portrait failure expanded a 1280x720 stage's video element to about 1280x2276;
+the fixed element stays within the stage. Physical multi-display/WebView device
+acceptance remains separate from this browser regression.
+
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
 FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
 aria2c uses the existing Rust preparation and managed-tool policy; macOS carries

@@ -69,6 +69,7 @@ pub(crate) fn run() {
             presentation::publish_presentation_playback_state,
             presentation::publish_presentation_output_state,
             presentation::request_presentation_output_state,
+            presentation::record_presentation_video_geometry,
             presentation::deactivate_local_presentation,
         ])
         .setup(move |app| {

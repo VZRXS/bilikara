@@ -33,6 +33,10 @@
     remoteQrPinned: false,
     lastPointerType: "",
     outputRequestTimer: null,
+    geometryFrame: null,
+    geometryKey: "",
+    videoSequence: 0,
+    stopGeometryObservation: null,
   };
 
   const elements = {
@@ -444,6 +448,11 @@
   }
 
   function retireVideo() {
+    state.stopGeometryObservation?.();
+    state.stopGeometryObservation = null;
+    if (state.geometryFrame !== null) window.cancelAnimationFrame(state.geometryFrame);
+    state.geometryFrame = null;
+    state.geometryKey = "";
     if (!state.video) return;
     state.video.pause();
     state.video.removeAttribute("src");
@@ -521,6 +530,54 @@
     });
   }
 
+  // Measure only media/layout events, never the playback-clock interval. The
+  // desktop logger is best effort and receives numeric geometry, not media URLs.
+  function observeVideoGeometry(video) {
+    if (androidDisplay || typeof invoke !== "function") return;
+    const videoSequence = ++state.videoSequence;
+    const rect = element => {
+      const bounds = element.getBoundingClientRect();
+      return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    };
+    const report = () => {
+      state.geometryFrame = null;
+      if (state.failedClosed || state.video !== video || !video.isConnected) return;
+      const generation = state.session?.generation;
+      if (!Number.isSafeInteger(generation) || !["activating", "active"].includes(state.session?.phase)) return;
+      const geometry = {
+        videoSequence, videoWidth: video.videoWidth, videoHeight: video.videoHeight,
+        videoBounds: rect(video), frameBounds: rect(elements.frame),
+        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+        windowWidth: window.outerWidth, windowHeight: window.outerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      };
+      const key = JSON.stringify({ generation, geometry });
+      if (key === state.geometryKey) return;
+      state.geometryKey = key;
+      invoke("record_presentation_video_geometry", { generation, geometry }).catch(() => {
+        // A missing/closing shell or unavailable log must never interrupt playback.
+      });
+    };
+    const schedule = () => {
+      if (state.video === video && state.geometryFrame === null) {
+        state.geometryFrame = window.requestAnimationFrame(report);
+      }
+    };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    observer?.observe(elements.frame);
+    observer?.observe(video);
+    video.addEventListener("loadedmetadata", schedule);
+    video.addEventListener("resize", schedule);
+    window.addEventListener("resize", schedule);
+    state.stopGeometryObservation = () => {
+      observer?.disconnect();
+      video.removeEventListener("loadedmetadata", schedule);
+      video.removeEventListener("resize", schedule);
+      window.removeEventListener("resize", schedule);
+    };
+    schedule();
+  }
+
   function mountScene(scene) {
     retireVideo();
     document.documentElement.dataset.theme = scene.theme;
@@ -545,6 +602,7 @@
     video.addEventListener("error", () => setError(t("controller.outputVideoFailed"), "controller.outputVideoFailed"));
     state.video = video;
     preserveOverlayAndReplace(video);
+    observeVideoGeometry(video);
     renderOverlay();
     applyClock();
   }

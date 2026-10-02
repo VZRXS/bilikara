@@ -19,6 +19,7 @@
     "allow-get-presentation-session",
     "allow-mark-presentation-controller-ready",
     "allow-request-presentation-output-state",
+    "allow-record-presentation-video-geometry",
     "allow-deactivate-local-presentation"
   ]
 }

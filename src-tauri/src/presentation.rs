@@ -3177,6 +3177,40 @@ pub(crate) fn request_presentation_output_state(
     .map_err(|error| format!("failed to request presentation output state: {error}"))
 }
 
+// Geometry is platform diagnostics, not player state or a command authority.
+// Validate the audience origin/generation before querying native window facts;
+// the existing bounded log queue keeps disk I/O off the IPC/GUI path.
+#[tauri::command]
+pub(crate) async fn record_presentation_video_geometry(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
+    state: tauri::State<'_, PresentationState>,
+    generation: u64,
+    geometry: crate::presentation_geometry::VideoGeometry,
+) -> Result<(), String> {
+    authorize_window(&window, &backend, &["controller"])?;
+    state.ensure_output_generation(generation)?;
+    geometry.validate()?;
+    let inner = window
+        .inner_size()
+        .ok()
+        .map(|size| [size.width, size.height]);
+    let outer = window
+        .outer_size()
+        .ok()
+        .map(|size| [size.width, size.height]);
+    let scale = window.scale_factor().ok();
+    crate::desktop_diagnostics::append_desktop_diagnostic(
+        "presentation_video_geometry",
+        serde_json::json!({
+            "generation": generation,
+            "geometry": geometry,
+            "nativeWindow": { "innerPhysicalSize": inner, "outerPhysicalSize": outer, "scaleFactor": scale },
+        }).to_string(),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn deactivate_local_presentation(
     app: tauri::AppHandle,

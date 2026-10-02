@@ -96,6 +96,27 @@ class ControllerFrontendTest(unittest.TestCase):
         self.assertNotIn("/api/player/", self.source)
         self.assertNotIn('invoke("send_presentation_command"', self.source)
 
+    def test_output_grid_and_video_can_shrink_below_intrinsic_dimensions(self):
+        frame = self.css.split(".presentation-output-frame {", 2)[-1].split("}", 1)[0]
+        video = self.css.split("video[data-presentation-output-video] {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", frame)
+        self.assertIn("grid-template-rows: minmax(0, 1fr)", frame)
+        self.assertIn("min-width: 0", video)
+        self.assertIn("min-height: 0", video)
+        self.assertIn("object-fit: contain", video)
+
+    def test_output_geometry_is_desktop_only_event_driven_and_released(self):
+        body = self.source.split("function observeVideoGeometry(video)", 1)[1].split("function mountScene", 1)[0]
+        self.assertIn('if (androidDisplay || typeof invoke !== "function") return', body)
+        for value in ("video.videoWidth", "video.videoHeight", "getBoundingClientRect()", "window.innerWidth", "window.outerHeight", "window.devicePixelRatio"):
+            self.assertIn(value, body)
+        self.assertIn("if (key === state.geometryKey) return", body)
+        self.assertIn('invoke("record_presentation_video_geometry", { generation, geometry }).catch', body)
+        self.assertNotIn("video.src", body)
+        self.assertNotIn("setInterval", body)
+        self.assertIn("observer?.disconnect()", body)
+        self.assertIn("state.stopGeometryObservation?.()", self.source)
+
     def test_output_state_arrives_through_the_shell_after_ready(self):
         # Browser channels are only a fast path; desktop WebViews need not share storage.
         start = self.source.index("async function start()")
