@@ -1,3 +1,8 @@
+"""Native desktop build/staging entry; no Python runtime payload is shipped.
+
+Retained freezer argument helpers below support historical compatibility tests;
+main() uses only scripts.native_desktop_bundle for current products.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +17,6 @@ import urllib.parse
 from pathlib import Path
 
 APP_NAME = "bilikara"
-APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("BBDown",)
@@ -187,54 +191,6 @@ def finalize_macos_app_bundle(app_path: Path) -> None:
         raise RuntimeError(f"Strict codesign verification failed for {app_path}")
 
     _show_codesign_details(app_path)
-
-
-def _write_windows_version_info(bundle_version: str, spec_dir: Path) -> Path:
-    version_tuple = _windows_version_tuple(bundle_version)
-    version_text = bundle_version or "dev"
-    version_file = spec_dir / "bilikara_version_info.txt"
-    version_file.write_text(
-        """# UTF-8
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers={version_tuple!r},
-    prodvers={version_tuple!r},
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
-  ),
-  kids=[
-    StringFileInfo([
-      StringTable(
-        '040904B0',
-        [
-          StringStruct('CompanyName', {publisher!r}),
-          StringStruct('FileDescription', 'bilikara backend launcher'),
-          StringStruct('FileVersion', {version_text!r}),
-          StringStruct('InternalName', {app_name!r}),
-          StringStruct('LegalCopyright', 'Copyright (c) VZRXS'),
-          StringStruct('OriginalFilename', {original_filename!r}),
-          StringStruct('ProductName', {app_name!r}),
-          StringStruct('ProductVersion', {version_text!r})
-        ]
-      )
-    ]),
-    VarFileInfo([VarStruct('Translation', [1033, 1200])])
-  ]
-)
-""".format(
-            version_tuple=version_tuple,
-            publisher=APP_PUBLISHER,
-            version_text=version_text,
-            app_name=APP_NAME,
-            original_filename=f"{APP_NAME}.exe",
-        ),
-        encoding="utf-8",
-    )
-    return version_file
 
 
 def _windows_version_tuple(version: str) -> tuple[int, int, int, int]:

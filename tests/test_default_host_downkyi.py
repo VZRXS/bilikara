@@ -666,8 +666,8 @@ class NativeDesktopDownKyiTest(unittest.TestCase):
                 def current():
                     snapshot = api("/api/state")
                     return snapshot.get("current_item") or snapshot["playlist"][0]
-                def until(predicate):
-                    end = time.monotonic() + 20
+                def until(predicate, timeout=20):
+                    end = time.monotonic() + timeout
                     while time.monotonic() < end:
                         result = predicate()
                         if result: return result
@@ -693,14 +693,31 @@ class NativeDesktopDownKyiTest(unittest.TestCase):
                 until(lambda: current()["artifact_set_id"] != native_id and current()["cache_status"] == "ready")
                 item = current()
                 previous = len(list(control.glob("*.started")))
-                (control / "mode").write_text("invalid")
+                (control / "mode").write_text("invalid", encoding="utf-8")
+                # Automatic preference replacement keeps the readable program
+                # when the new media fails validation.
+                api("/api/cache-policy", {"download_source": "downkyi", "audio_hires": True})
+                until(lambda: len(list(control.glob("*.started"))) > previous)
+                until(all_reaped)
+                # Ten validation attempts include nine real three-second waits.
+                # Observe the terminal projection, not just a gap between children.
+                until(lambda: current()["cache_message"].startswith("缓存失败:"), timeout=45)
+                self.assertEqual(current()["cache_status"], "ready")
+                self.assertEqual(current()["artifact_set_id"], item["artifact_set_id"])
+                self.assertTrue((home / "cache" / item["video_relative_path"]).is_file())
+                with client.open(base + item["video_media_url"], timeout=5) as media:
+                    self.assertGreater(len(media.read()), 0)
+                # Explicit repair retires the old playback program immediately,
+                # and invalid replacement media must never become playable.
+                previous = len(list(control.glob("*.started")))
                 api("/api/cache/retry", {"item_id": item["id"], "expected_item_incarnation_id": item["item_incarnation_id"], "force": True})
                 until(lambda: len(list(control.glob("*.started"))) > previous)
                 until(all_reaped)
-                self.assertEqual(current()["artifact_set_id"], item["artifact_set_id"])
-                self.assertTrue((home / "media" / item["video_relative_path"]).is_file())
-                with client.open(base + item["video_media_url"], timeout=5) as media:
-                    self.assertGreater(len(media.read()), 0)
+                until(lambda: current()["cache_status"] == "failed", timeout=45)
+                failed = current()
+                self.assertEqual(failed["artifact_set_id"], "")
+                self.assertEqual(failed["video_media_url"], "")
+                self.assertEqual(failed["audio_variants"], [])
             finally:
                 process.terminate()
                 process.wait(timeout=35)

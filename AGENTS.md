@@ -16,9 +16,10 @@ Bilikara is a Bilibili-based Karaoke system consisting of a Host (PC display & d
 The architecture consists of the following primary layers:
 
 - `static/`: Frontend Host and Remote user interfaces built with vanilla JavaScript, HTML5, and CSS3. UI components use state-driven re-rendering and subscribe to real-time state updates via Server-Sent Events (SSE) at `/api/events`. Bundled and served by the Host server or packaged into the Tauri desktop shell.
-- `bilikara/`: Python Host transport and compatibility adapter. Handles HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, trusted tool configuration, BBDown preparation and retained yt-dlp orchestration/source-mode media CLI compatibility, version checks/updates, and frozen Python compatibility references. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
-- `rust/`: Shared typed Rust domain core crate (`bilikara_rust`), compiled as both `cdylib` (for CFFI loading in Python) and `rlib` (for native Rust crate callers). Implements pure, deterministic business logic domains.
-- `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, Rust Native cache/runtime services, operational I/O such as the independent HTTP media downloader, and a temporary C ABI for the Python Host adapter.
+- `bilikara/`: Retained Python source Host transport and compatibility adapter, used by development workflows and tests, not native desktop products or their build imports. Handles legacy HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, trusted tool configuration, BBDown preparation and retained yt-dlp orchestration/source-mode media CLI compatibility, version checks/updates, and frozen Python compatibility references. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
+- `rust/`: Shared typed Rust domain core crate (`bilikara_rust`). Native products link its `rlib`; the `cdylib` and C ABI remain for Python compatibility/integration tests and source workflows. Implements pure, deterministic business logic domains.
+- `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, production native HTTP/SSE Host, Rust Native cache/runtime services and operational I/O such as the independent HTTP media downloader. Its C ABI remains for the legacy Python adapter and tests; native products link Rust directly.
+- `build_bundle.py`, `scripts/`, `media-libav/`: Build/package and verification tooling. Python is allowed here; native build paths must not import `bilikara` application modules. Shared package validation belongs in the tooling layer.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
 - `tests/`: Project test suite using standard Python `unittest`. Includes direct unit tests, integration tests enforcing native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`), and tests that launch Node.js scripts to evaluate frontend JavaScript behavior.
 
@@ -34,15 +35,15 @@ For all **new backend or business functionality** from this point forward:
 - Rust is the authoritative implementation.
 - Do not add an equivalent Python business-rule implementation or a new
   `_py_*` mirror of a new Rust capability.
-- Python may adapt objects, transport FFI payloads, validate native results,
-  and perform the current v0.7 I/O/orchestration listed in Section 4. That glue
-  must not independently recompute the new policy.
+- The retained source Host may adapt objects, transport FFI payloads, validate
+  native results, and perform the legacy I/O/orchestration listed in Section 4.
+  That glue must not independently recompute the new policy.
 - A new Rust-only capability must fail explicitly or report itself unavailable
   when Rust cannot execute it. Do not silently add a Python semantic fallback.
 - New stateful backend features must extend the authoritative Rust `AppState`;
   they must not create Python-owned state or a parallel authority.
 - This boundary is not a new "Phase 3." The current architectural milestone is
-  **v0.8 Rust Core Convergence / Preview**.
+  **v0.8 Preview 2 stabilization after Rust Core Convergence**.
 
 Pure deterministic policy remains a good small Rust-domain boundary when all
 of the following criteria are met:
@@ -82,8 +83,11 @@ available for isolated tests or a deliberate import.
 the native data root; it does not select a different backend. See
 `docs/native-desktop.md` for layouts, builds, storage and explicit legacy import.
 Packaged Windows/macOS update installation uses the shared Rust installer and
-private shell lifecycle boundary. These contracts do not establish full Preview 2
-feature parity or release acceptance.
+private shell lifecycle boundary. **v0.8.0-preview.2 has been released** with
+this Rust desktop runtime. Current work stabilizes that baseline and scopes
+remaining Python to tooling, testing, compatibility or development workflows;
+it is not another desktop migration. Per-platform validation is still required
+for each subsequent change.
 
 The retained legacy Python Host has the following adapter responsibilities.
 They are not dependencies of normal native desktop launch or packaging; the
@@ -116,7 +120,7 @@ public-interface retention decisions remain unchanged.
 
 ### 5.1 Behavior baseline and shared ownership
 
-- Use the shipped **v0.8.0-preview.1 Python desktop Host**, plus subsequently approved changes, as the desktop behavior baseline. Rust/Android previews do not replace that baseline.
+- Use the released **v0.8.0-preview.2 native desktop Host**, plus subsequently approved changes, as the current desktop behavior baseline. Preserve all approved Preview 1 behavior and later changes; Android previews do not redefine desktop behavior.
 - Reuse shared components, actions, tokens and layout definitions across Host, local Remote and public Remote. Keep platform adaptations narrow; do not copy whole screens.
 - Treat viewport size, input method and platform capabilities separately. Narrow desktop windows retain desktop navigation, tool rail, playback controls and mouse/keyboard operations. Width alone must not select Android workflows or hide supported desktop features.
 - Native player fullscreen must hide the Host toolbar, tool rail and workspace at every desktop width, release narrow-layout stacking isolation, and restore them on exit without recreating media nodes. Test the native fullscreen path separately from browser DOM fullscreen, including high-DPI-sized logical viewports.
@@ -283,6 +287,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 - **Domain Boundaries**: Do not begin work on an unrelated business domain or migration area.
 - **Behavior Preservation**: Preserve existing fallback behaviors and user-visible functionality unless explicitly directed to alter them.
 - **Test Quality**: Never weaken, disable, or delete assertions to force a passing build.
+- **Python Retirement**: Identify repository, CI, release-script and test consumers before removing legacy code. Keep useful source entry points, frozen references and compatibility coverage. Native build tooling must run without importing the Python application package; keep package layout, provenance/metadata validation and artifact verification unchanged.
 - **Explicit UTF-8 for Repository Text**: Python code and tests reading repository JavaScript (especially files containing Chinese text), HTML, CSS, JSON, Markdown, or other UTF-8 source/assets must explicitly pass `encoding="utf-8"` to `Path.read_text()`, `Path.write_text()`, and text-mode `open()`. Text subprocess pipes carrying this content, including Node.js test harnesses, must also specify `encoding="utf-8"` in `subprocess.run()` / `Popen()`; `text=True` alone is insufficient. Never rely on the OS locale, Linux defaults, `PYTHONUTF8`, or a CI environment switch to make these operations portable: Windows may default to CP1252/GBK. Apply this rule to new and modified scripts/tests; do not fix decode failures by ignoring/replacing invalid bytes or weakening assertions.
 - **Reviewability**: Each business-rule domain change should remain independently reviewable and revertible.
 - **Git Hygiene**: Do not create unexpected branches, worktrees, tags, release builds, or remote pushes unless requested. Never rewrite published history without an explicit request and backup.
@@ -349,7 +354,13 @@ When completing a task, agents must report:
 
 ## 9. Directory and Module Map
 
-### Python Host Layer (`bilikara/`)
+### Retained Python Source Host and Compatibility Layer (`bilikara/`)
+
+This layer supports source development and compatibility/equivalence tests. It
+is not shipped or imported by the native desktop build. `ffmpeg_vendor.py`
+retains its legacy import surface by forwarding to `scripts/libav_manifest.py`;
+native packaging calls the tooling module directly.
+
 | File | Purpose |
 | :--- | :--- |
 | `server.py` | HTTP Server, API endpoints, SSE event hub (`AppContext`). |

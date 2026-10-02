@@ -79,7 +79,7 @@ class NativeRecheckRegressionTest(unittest.TestCase):
             try:
                 host.api("/api/session-users/add", {"name": "Fixture"})
                 host.api("/api/cache-policy", {"download_source": "bbdown", "audio_hires": True})
-                for selected in ([2], [2, 1]):
+                for selected, expected_page, expected_label in (([2], 2, "P2"), ([2, 1], 1, "original")):
                     with self.subTest(audio_pages=selected):
                         state = host.api("/api/playlist/add", {"url": "https://www.bilibili.com/video/BV1xx411c7mD", "requester_name": "Fixture",
                             "selected_video_page": 1, "selected_audio_pages": selected, "allow_repeat": True})
@@ -93,8 +93,10 @@ class NativeRecheckRegressionTest(unittest.TestCase):
                         self.assertEqual(item["video_page"], 1)
                         self.assertEqual([v["page"] for v in item["audio_variants"]], selected)
                         chosen = next(v for v in item["audio_variants"] if v["id"] == item["selected_audio_variant_id"])
-                        self.assertEqual(chosen["page"], 2)
-                        self.assertEqual(chosen["label"], "P2")
+                        # Keep the requested track order; admission's preferred
+                        # audio/video-page selection survives cache publication.
+                        self.assertEqual(chosen["page"], expected_page)
+                        self.assertEqual(chosen["label"], expected_label)
                         self.assertIn(str(len(selected)), item["cache_message"])
             finally:
                 host.close()

@@ -44,6 +44,8 @@ class NativeDesktopAdminTests(unittest.TestCase):
                 calls.append((self.path, body, self.headers.get("Authorization")))
                 if self.path == "/admin/verify":
                     self.reply({"verified": body.get("BILIKARA_ADMIN_SECRET") == "fixture-admin"})
+                elif self.path == "/admin/review/approve":
+                    self.reply({"success": True, "approved_bvids": body["bvids"]})
                 elif self.path == "/admin/blacklist/list" and body.get("query") == "reject-fixture":
                     self.reply({"error": "forbidden"}, 403)
                 else:
@@ -85,9 +87,16 @@ class NativeDesktopAdminTests(unittest.TestCase):
                         self.assertEqual(error.exception.code, 403)
                     self.assertFalse(any(path == "/admin/blacklist/list" for path, _, _ in calls))
                     self.assertTrue(host.api("/api/bilikara-secret/verify", secret)["verified"])
+                    for bvids in ([], ["invalid"]):
+                        with self.subTest(bvids=bvids), self.assertRaises(urllib.error.HTTPError) as error:
+                            host.api("/api/admin-review/approve", {**secret, "bvids": bvids})
+                        self.assertEqual(error.exception.code, 400)
+                    self.assertFalse(any(path == "/admin/review/approve" for path, _, _ in calls))
+                    approved = host.api("/api/admin-review/approve", {**secret, "bvids": ["BV1tPC2BEEjq"]})
+                    self.assertEqual(approved["approved_bvids"], ["BV1tPC2BEEjq"])
+                    self.assertEqual(approved["approved"], 1)
                     for route, fields in [
                         ("/api/admin-review/pending", {}),
-                        ("/api/admin-review/approve", {"bvids": []}),
                         ("/api/admin-review/reject", {"bvid": "BV1tPC2BEEjq"}),
                         ("/api/admin-blacklist/list", {}),
                         ("/api/admin-blacklist/restore", {"bvid": "BV1tPC2BEEjq"}),

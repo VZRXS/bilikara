@@ -6,6 +6,11 @@ Cargo, source checkout or preview environment variable is needed by an installed
 product. Python remains a build/test tool and the legacy source Host remains
 available for compatibility tests; it is not included in the native bundle.
 
+v0.8.0-preview.2 has been released with this architecture. Stabilization uses
+that desktop behavior baseline, including approved Preview 1 behavior and later
+changes. Remaining Python maintenance does not reopen the runtime migration or
+alter published Preview 2 tags/assets, storage paths or update contracts.
+
 LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
 an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
 establishes a Remote device cookie and then shows username registration, matching
@@ -72,6 +77,37 @@ backend. `python build_bundle.py` alone prepares the backend/resource layout
 used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
 matching runner target; foreign tool/libav architectures fail closed.
 `CARGO_TARGET_DIR` and the selected debug/release profile are respected.
+
+Python is required on the build/test machine for these scripts, not on the
+installed product's machine. Native build imports stay within `build_bundle.py`
+and tooling modules under `scripts/`; they do not import the legacy `bilikara`
+application package. `scripts/libav_manifest.py` owns the shared manifest and
+flat dependency-closure validation. The legacy `bilikara.ffmpeg_vendor` import
+forwards to it for existing source Host and diagnostic callers. Same-build
+libav provenance checks, pinned BBDown validation and native release artifact
+verification remain in their existing build steps.
+
+`start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
+scripts remain development/compatibility entry points. The Python HTTP/SSE
+Host, FFI adapters, source-mode media helpers and frozen reference functions
+remain useful to integration/equivalence tests; they are not desktop launch or
+packaging dependencies. Build helpers, native bundle smoke drivers and test
+fixtures also remain Python tooling. Historical PyInstaller argument helpers
+that still have compatibility tests are retained in `build_bundle.py`; its
+native entry does not call them. The unused private PyInstaller Windows version
+resource generator has been retired; native version metadata is unchanged.
+
+`requirements-packaging.txt` is still shared by CI build and test jobs: `pefile`
+supports Windows native dependency inspection, while `certifi`/`truststore`
+remain for retained Python HTTPS and freezer-compatibility tests/workflows.
+Their presence in the build environment does not put them in native products.
+
+`python -m unittest tests.test_native_build_isolation -v` exercises native
+prefix validation and resource staging in a fresh interpreter that rejects
+all `bilikara` imports. It also checks missing dependencies/provenance and
+BBDown version rejection. Actual artifact validation remains
+`python scripts/check_native_desktop_bundle.py PATH_TO_NATIVE_HOST`; mocked
+architecture fixtures do not replace target-platform bundle acceptance.
 
 The Windows archive keeps the `bilikara/` directory. Its only top-level executable
 is `bilikara-desktop.exe`; `_internal/` contains `bilikara-desktop-host.exe`, `static/`,
@@ -440,6 +476,10 @@ under the worker/AppState locks before reserving a replacement attempt. Normal
 manual retries enter the front of the normal queue. Only a forced retry of the
 current song while a different song occupies the primary worker uses the urgent
 lane; `force` does not bypass cache-window or backend capability checks.
+An explicit forced repair retires the old playback program immediately; a
+failed repair does not republish it. Automatic preference replacements keep
+the readable artifact until a validated replacement is published, including
+when the replacement attempt fails. The native package tests cover both paths.
 
 ### Audit compatibility decisions
 

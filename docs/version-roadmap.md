@@ -9,9 +9,16 @@ storage and migration details belong in [native desktop launch and bundles](nati
 
 ### v0.8.0 — Rust core convergence and release stabilization
 
+- v0.8.0-preview.2 has been released. The desktop runtime migration is complete;
+  current work stabilizes that release, preserving approved Preview 1 behavior
+  and subsequent changes rather than starting another migration.
 - Native desktop bundles use the Rust HTTP/SSE Host and one authoritative Rust
-  `AppState`. Python remains a legacy transport/compatibility adapter and is
-  not included in native desktop bundles.
+  `AppState`. They include no Python runtime, PyInstaller payload or Python FFI
+  libraries. Python remains intentionally scoped to build/package scripts,
+  tests, legacy compatibility and source development workflows.
+- Decouple native build tools from legacy application imports. Retire legacy
+  code only after checking actual consumers; keep useful compatibility coverage
+  and preserve bundle/storage layouts, update contracts and public APIs.
 - Keep backend state and new business functionality Rust-owned. Preserve
   compatibility through narrow adapters and validated snapshots.
 - Stabilize desktop playback, fullscreen, audience windows, updates and

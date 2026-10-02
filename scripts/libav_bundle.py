@@ -32,7 +32,7 @@ def package_prefix() -> Path | None:
     prefix = Path(value)
     if not prefix.is_absolute():
         raise RuntimeError("Libav packaging requires an absolute same-build prefix")
-    from bilikara.ffmpeg_vendor import runtime_files
+    from scripts.libav_manifest import runtime_files
     if runtime_files(prefix / "bin") is None or not (prefix / "bin" / COMPANIONS[platform.system()]).is_file():
         raise RuntimeError("Libav prefix is incomplete; no system fallback")
     data = json.loads((prefix / "bin/ffmpeg-runtime.json").read_text(encoding="utf-8"))
