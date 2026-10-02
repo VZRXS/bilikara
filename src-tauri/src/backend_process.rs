@@ -366,7 +366,15 @@ fn request_update(
     let mut stream = TcpStream::connect((address.connect_host.as_str(), address.port))
         .map_err(|_| "backend unavailable")?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(
+            if route == "/api/app/update/activate" {
+                // The updater has a bounded 10s readiness handshake; leave time
+                // for failure cleanup and the authoritative Host error response.
+                30
+            } else {
+                5
+            },
+        )))
         .map_err(|e| e.to_string())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -406,12 +414,15 @@ fn request_update(
 }
 
 pub(crate) fn activate_update(backend: &BackendProcess, operation: u64) -> Result<(), String> {
-    request_update(
+    let result = request_update(
         backend,
         "/api/app/update/activate",
         serde_json::json!({"operation":operation}),
-    )
-    .map(|_| ())
+    )?;
+    if result["committed"] != true {
+        return Err("updater did not acknowledge installation; application remains running".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -911,39 +922,49 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            assert_eq!(line, "POST /api/app/update/activate HTTP/1.1\r\n");
-            let mut length = 0;
-            let mut private = false;
-            loop {
-                line.clear();
+            for (body, delayed) in [
+                (r#"{"ok":true,"data":{"committed":true}}"#, true),
+                (r#"{"ok":true,"data":{"committed":false}}"#, false),
+                (r#"{"ok":true,"data":{}}"#, false),
+                (r#"{"ok":false,"error":"updater startup failed"}"#, false),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                if line.trim().is_empty() {
-                    break;
+                assert_eq!(line, "POST /api/app/update/activate HTTP/1.1\r\n");
+                let mut length = 0;
+                let mut private = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.strip_prefix("Content-Length: ") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                    private |= line == "X-Bilikara-Shutdown-Token: fixture-capability\r\n";
                 }
-                if let Some(value) = line.strip_prefix("Content-Length: ") {
-                    length = value.trim().parse::<usize>().unwrap();
+                assert!(private);
+                let mut request_body = vec![0; length];
+                reader.read_exact(&mut request_body).unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&request_body).unwrap(),
+                    serde_json::json!({"operation":7})
+                );
+                if delayed {
+                    // Real updater startup may exceed the old 5s HTTP timeout.
+                    std::thread::sleep(Duration::from_secs(6));
                 }
-                private |= line == "X-Bilikara-Shutdown-Token: fixture-capability\r\n";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
             }
-            assert!(private);
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                serde_json::json!({"operation":7})
-            );
-            let body = r#"{"ok":true,"data":{"committed":true}}"#;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
         });
         let backend = BackendProcess {
             child: Arc::new(Mutex::new(None)),
@@ -956,6 +977,9 @@ mod tests {
             force_export_exit: Arc::new(AtomicBool::new(false)),
         };
         activate_update(&backend, 7).unwrap();
+        for _ in 0..3 {
+            assert!(activate_update(&backend, 7).is_err());
+        }
         server.join().unwrap();
         // A stopped/unreachable Host is unknown even when no shell download
         // is active (the export may have originated on a Remote).

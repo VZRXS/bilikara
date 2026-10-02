@@ -1026,19 +1026,27 @@ pub(crate) async fn apply_desktop_update(
             return Err("application shutdown is already in progress".into());
         }
     }
-    if let Err(error) = prepare_application_restart_on_main_thread(&app, &window).await {
-        lifecycle.release_restart_after_preparation_failure();
-        return Err(error);
-    }
     let owned = backend.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         backend_process::activate_update(&owned, operation)
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+    .and_then(|result| result);
     if let Err(error) = result {
         lifecycle.release_restart_after_preparation_failure();
         return Err(error);
+    }
+    // Do not close the audience/controller or mark presentation as shutting
+    // down until the updater is ready. A failed launch leaves playback usable.
+    if prepare_application_restart_on_main_thread(&app, &window)
+        .await
+        .is_err()
+    {
+        // The updater has accepted ownership. Even if the main-thread queue
+        // is closing, finish Host shutdown and exit instead of reopening an
+        // update action whose replacement is already committed.
+        append_desktop_diagnostic("desktop_update", "stage=main_thread_cleanup status=failed");
     }
     let owned = backend.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {

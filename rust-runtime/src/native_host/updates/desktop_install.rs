@@ -502,7 +502,7 @@ pub(super) fn activate(context: &HostContext, operation: u64) -> Result<(), ApiE
         job.phase.store(ACTIVATING, Ordering::Release);
         update.status["state"] = json!("restarting");
         update.status["cancellable"] = json!(false);
-        update.status["message"] = json!("更新替换已提交，正在关闭并重新启动应用");
+        update.status["message"] = json!("正在等待独立更新程序就绪");
         session.revision += 1;
         Ok(Some((prepared, job.phase.clone())))
     })?;
@@ -510,21 +510,29 @@ pub(super) fn activate(context: &HostContext, operation: u64) -> Result<(), ApiE
         return Ok(());
     };
     let result = launch(prepared.command);
-    phase.store(
-        if result.is_ok() { COMMITTED } else { CANCELLED },
-        Ordering::Release,
-    );
-    if result.is_err() {
+    if let Err(error) = result {
+        let message = format!(
+            "无法启动独立更新程序，应用继续运行，原安装未修改：{}",
+            error.message
+        );
         let _ = with_app(|app| {
             let session = app.native();
             if session.updates.operation == operation {
                 session.updates.status["state"] = json!("failed");
-                session.updates.status["error"] = json!("无法启动更新 helper，原安装未修改");
+                session.updates.status["error"] = json!(message);
+                session.updates.status["message"] = json!(message);
+                session.updates.status["update_installable"] = json!(false);
+                session.updates.status["requires_recheck"] = json!(true);
+                session.updates.status["updated_at"] = json!(now());
+                session.updates.install = None;
+                session.updates.package = None;
                 session.revision += 1;
             }
             Ok(())
         });
-        return Err(failure("无法启动更新 helper，原安装未修改"));
+        phase.store(CANCELLED, Ordering::Release);
+        return Err(failure(message));
     }
+    phase.store(COMMITTED, Ordering::Release);
     Ok(())
 }

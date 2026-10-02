@@ -2,9 +2,9 @@
 //!
 //! The Host validates the downloaded package, then starts a copy of the
 //! installed `bilikara-updater` from the update workspace with a plan. This
-//! module is that program's logic. It never kills an owner. Every check runs
-//! after both owners exit, so any failure before commit reopens the untouched
-//! installation. Before any reopen it keeps a timestamped log and a one-line
+//! module is that program's logic. It never kills an owner. Startup validates
+//! the plan and pins owners before acknowledging readiness. Replacement runs
+//! after both owners exit. Before any reopen it keeps a timestamped log and a one-line
 //! result under the data root, which the next Host start reports once.
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -152,14 +152,18 @@ impl Log {
 /// Keep the log and the one-line result where the next Host start finds them.
 fn report(plan: &Plan, log: &Log, outcome: Outcome) {
     log.line(format!("result: {}", outcome.as_str()));
+    let reports = report_directory(plan);
+    if reports != plan.reports {
+        log.line(format!(
+            "installation not restored; keeping recovery report at {}",
+            reports.display()
+        ));
+    }
     let kept = (|| {
-        fs::create_dir_all(&plan.reports)?;
-        fs::copy(
-            &log.path,
-            plan.reports.join(format!("{}.log", plan.operation)),
-        )?;
+        fs::create_dir_all(&reports)?;
+        fs::copy(&log.path, reports.join(format!("{}.log", plan.operation)))?;
         // Written last and replaced atomically: a reader never sees half.
-        let partial = plan.reports.join(format!("{RESULT_FILE}.partial"));
+        let partial = reports.join(format!("{RESULT_FILE}.partial"));
         fs::write(
             &partial,
             format!(
@@ -168,11 +172,28 @@ fn report(plan: &Plan, log: &Log, outcome: Outcome) {
                 outcome.as_str()
             ),
         )?;
-        fs::rename(partial, plan.reports.join(RESULT_FILE))
+        fs::rename(partial, reports.join(RESULT_FILE))
     })();
     if let Err(error) = kept {
         log.line(format!("could not keep the result: {error}"));
     }
+}
+
+fn report_directory(plan: &Plan) -> PathBuf {
+    // With portable Windows data, a failed restoration leaves that data in
+    // the backup. Never recreate an empty destination just to write a log:
+    // that would obstruct recovery and look like a launchable installation.
+    if !plan.destination.is_dir()
+        && let Ok(relative) = plan.reports.strip_prefix(&plan.destination)
+    {
+        let previous = plan.previous();
+        return if previous.is_dir() {
+            previous.join(relative)
+        } else {
+            plan.workspace.join("recovery-report")
+        };
+    }
+    plan.reports.clone()
 }
 
 /// Retry an operation while the OS reports the target as in use.
@@ -235,6 +256,16 @@ pub fn apply(
     wait: impl Fn(&[u32], Duration) -> io::Result<bool>,
     relaunch: impl Fn(&Path) -> io::Result<()>,
 ) -> Outcome {
+    apply_with_rename(plan, log, wait, relaunch, |from, to| fs::rename(from, to))
+}
+
+fn apply_with_rename(
+    plan: &Plan,
+    log: &Log,
+    wait: impl Fn(&[u32], Duration) -> io::Result<bool>,
+    relaunch: impl Fn(&Path) -> io::Result<()>,
+    mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Outcome {
     log.line(format!(
         "updater {} started for {}",
         env!("CARGO_PKG_VERSION"),
@@ -273,15 +304,24 @@ pub fn apply(
             }
         }
         retry_in_use(log, "the installation", || {
-            fs::rename(&plan.destination, &previous)
+            rename(&plan.destination, &previous)
         })
         .map_err(|e| format!("the installation stayed in use: {e}"))?;
-        if let Err(error) = fs::rename(&incoming, &plan.destination) {
+        if let Err(error) = retry_in_use(log, "the new installation", || {
+            rename(&incoming, &plan.destination)
+        }) {
             log.line(format!(
                 "moving the new installation failed ({error}), restoring"
             ));
-            fs::rename(&previous, &plan.destination)
-                .map_err(|e| format!("restoring the previous installation failed: {e}"))?;
+            retry_in_use(log, "restoring the previous installation", || {
+                rename(&previous, &plan.destination)
+            })
+            .map_err(|e| {
+                format!(
+                    "restoring the previous installation failed: {e}; backup: {}",
+                    previous.display()
+                )
+            })?;
             return Err("the new installation could not be moved into place".into());
         }
         Ok(())
@@ -296,14 +336,24 @@ pub fn apply(
         }
         Err(message) => {
             log.line(message);
-            if created && incoming.exists() {
+            if created && incoming.exists() && plan.destination.is_dir() {
                 let _ = fs::remove_dir_all(&incoming);
             }
-            log.line("replacement failed, relaunching the previous installation");
+            log.line(if plan.destination.is_dir() {
+                "replacement failed, relaunching the previous installation".to_owned()
+            } else {
+                format!(
+                    "replacement failed; backup and staged package retained for manual recovery: {}, {}",
+                    previous.display(), incoming.display(),
+                )
+            });
             Outcome::Failed
         }
     };
     report(plan, log, outcome);
+    if !plan.destination.is_dir() {
+        return outcome;
+    }
     if let Err(error) = relaunch(&plan.destination) {
         log.line(format!("relaunching failed: {error}"));
         // Keep the reason next to the result for diagnosis.
@@ -317,75 +367,109 @@ pub fn apply(
 
 /// Wait until every owner has exited, without ever signalling one.
 pub fn wait_for_owners(pids: &[u32], timeout: Duration) -> io::Result<bool> {
-    let deadline = Instant::now() + timeout;
+    Owners::open(pids)?.wait(timeout)
+}
+
+struct Owners {
     #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::{
-            CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT,
-        };
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
-        };
-        struct Owned(Vec<windows_sys::Win32::Foundation::HANDLE>);
-        impl Drop for Owned {
-            fn drop(&mut self) {
-                for &handle in &self.0 {
-                    // SAFETY: each handle came from OpenProcess and is closed once.
-                    unsafe { CloseHandle(handle) };
-                }
-            }
-        }
-        // Pin every owner's identity first, while they are still running, so
-        // a reused PID can never be mistaken for an owner later.
-        let mut owned = Owned(Vec::new());
-        for &pid in pids {
-            // SAFETY: documented Win32 call; the handle is owned by `owned`.
-            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-            if handle.is_null() {
-                // An absent process is the only accepted "already exited".
-                if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
-                    continue;
-                }
-                return Err(io::Error::last_os_error());
-            }
-            owned.0.push(handle);
-        }
-        for &handle in &owned.0 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            // SAFETY: a live handle owned above.
-            let status = unsafe {
-                WaitForSingleObject(
-                    handle,
-                    remaining.as_millis().min(u32::MAX as u128 - 1) as u32,
-                )
-            };
-            match status {
-                WAIT_OBJECT_0 => {}
-                WAIT_TIMEOUT => return Ok(false),
-                _ => return Err(io::Error::last_os_error()),
-            }
-        }
-        Ok(true)
-    }
+    handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
     #[cfg(unix)]
-    {
-        for &pid in pids {
-            loop {
-                // SAFETY: signal 0 performs only an existence/permission check.
-                if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
-                    let error = io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::ESRCH) {
-                        break;
-                    }
-                    return Err(error);
-                }
-                if Instant::now() >= deadline {
-                    return Ok(false);
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
+    pids: Vec<libc::pid_t>,
+}
+
+#[cfg(windows)]
+impl Drop for Owners {
+    fn drop(&mut self) {
+        for &handle in &self.handles {
+            // SAFETY: each handle came from OpenProcess and is closed once.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         }
-        Ok(true)
+    }
+}
+
+impl Owners {
+    fn open(pids: &[u32]) -> io::Result<Self> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, GetLastError};
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            // Pin every owner's identity first, while they are still running, so
+            // a reused PID can never be mistaken for an owner later.
+            let mut owned = Self {
+                handles: Vec::new(),
+            };
+            for &pid in pids {
+                // SAFETY: documented Win32 call; the handle is owned by `owned`.
+                let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                if handle.is_null() {
+                    // An absent process is the only accepted "already exited".
+                    if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
+                        continue;
+                    }
+                    return Err(io::Error::last_os_error());
+                }
+                owned.handles.push(handle);
+            }
+            Ok(owned)
+        }
+        #[cfg(unix)]
+        {
+            let pids = pids
+                .iter()
+                .map(|&pid| {
+                    libc::pid_t::try_from(pid)
+                        .ok()
+                        .filter(|pid| *pid > 0)
+                        .ok_or_else(|| invalid("invalid owner PID"))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok(Self { pids })
+        }
+    }
+
+    fn wait(&self, timeout: Duration) -> io::Result<bool> {
+        let deadline = Instant::now() + timeout;
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            for &handle in &self.handles {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                // SAFETY: a live handle owned above.
+                let status = unsafe {
+                    WaitForSingleObject(
+                        handle,
+                        remaining.as_millis().min(u32::MAX as u128 - 1) as u32,
+                    )
+                };
+                match status {
+                    WAIT_OBJECT_0 => {}
+                    WAIT_TIMEOUT => return Ok(false),
+                    _ => return Err(io::Error::last_os_error()),
+                }
+            }
+            Ok(true)
+        }
+        #[cfg(unix)]
+        {
+            for &pid in &self.pids {
+                loop {
+                    // SAFETY: signal 0 performs only an existence/permission check.
+                    if unsafe { libc::kill(pid, 0) } != 0 {
+                        let error = io::Error::last_os_error();
+                        if error.raw_os_error() == Some(libc::ESRCH) {
+                            break;
+                        }
+                        return Err(error);
+                    }
+                    if Instant::now() >= deadline {
+                        return Ok(false);
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+            Ok(true)
+        }
     }
 }
 
@@ -448,16 +532,41 @@ pub fn relaunch(destination: &Path) -> io::Result<()> {
 
 /// The updater's entry: read the plan beside it, apply it, report, exit.
 pub fn run_from_plan(plan_path: &Path) -> io::Result<Outcome> {
-    let plan: Plan = serde_json::from_slice(&fs::read(plan_path)?)
-        .map_err(|e| invalid(&format!("unreadable update plan: {e}")))?;
-    plan.validate(plan_path)?;
-    let log = Log::create(&plan.workspace)?;
-    let outcome = apply(&plan, &log, wait_for_owners, relaunch);
+    let handoff = super::handoff::Handoff::receive(
+        plan_path
+            .parent()
+            .ok_or_else(|| invalid("missing workspace"))?,
+    )?;
+    let started = (|| {
+        let plan: Plan = serde_json::from_slice(&fs::read(plan_path)?)
+            .map_err(|e| invalid(&format!("unreadable update plan: {e}")))?;
+        plan.validate(plan_path)?;
+        let log = Log::create(&plan.workspace)?;
+        if !plan.source.is_dir() || !plan.destination.is_dir() {
+            return Err(invalid("update source or installation is missing"));
+        }
+        let owners = Owners::open(&plan.wait_pids)?;
+        if let Some(handoff) = &handoff {
+            handoff.ready()?;
+            log.line("Host acknowledged updater readiness");
+        }
+        Ok((plan, log, owners))
+    })();
+    let (plan, log, owners) = match started {
+        Ok(started) => started,
+        Err(error) => {
+            if let Some(handoff) = &handoff {
+                handoff.reject(&error);
+            }
+            return Err(error);
+        }
+    };
+    let outcome = apply(&plan, &log, |_, timeout| owners.wait(timeout), relaunch);
     // The log is kept under `reports`. The running updater lives in the
     // workspace: Unix may unlink it now; Windows cannot, so the next Host
     // start removes that workspace when it reads the result.
     #[cfg(unix)]
-    if outcome != Outcome::OwnersRunning {
+    if outcome != Outcome::OwnersRunning && plan.destination.is_dir() {
         let _ = fs::remove_dir_all(&plan.workspace);
     }
     Ok(outcome)
@@ -511,6 +620,15 @@ pub mod windows {
         directory: &Path,
         environment: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
     ) -> io::Result<()> {
+        spawn_detached_owned(program, arguments, directory, environment).map(|_| ())
+    }
+
+    pub(in crate::update_installer) fn spawn_detached_owned(
+        program: &Path,
+        arguments: &[&OsStr],
+        directory: &Path,
+        environment: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+    ) -> io::Result<Child> {
         use windows_sys::Win32::System::Threading::{
             CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
             DETACHED_PROCESS,
@@ -536,21 +654,63 @@ pub mod windows {
             block
         });
         let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT;
-        // Leave the caller's kill-on-close job when allowed. An outer job
-        // that forbids breakaway refuses the flag; then start inside it.
-        let attempts: &[u32] = if in_job() {
-            &[flags | CREATE_BREAKAWAY_FROM_JOB, flags]
+        // Fail closed if breakaway is refused. An updater left in the Host's
+        // kill-on-close job would be killed exactly when it needs to install.
+        let flags = if in_job()? {
+            flags | CREATE_BREAKAWAY_FROM_JOB
         } else {
-            &[flags]
+            flags
         };
-        let mut last = None;
-        for &flags in attempts {
-            match create(&application, &mut line, flags, block.as_deref(), &directory) {
-                Ok(()) => return Ok(()),
-                Err(error) => last = Some(error),
+        create(&application, &mut line, flags, block.as_deref(), &directory)
+    }
+
+    pub(in crate::update_installer) struct Child(windows_sys::Win32::Foundation::HANDLE);
+
+    impl Child {
+        pub fn exited(&self) -> io::Result<bool> {
+            self.wait_for(0)
+        }
+
+        fn wait_for(&self, milliseconds: u32) -> io::Result<bool> {
+            use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+            // SAFETY: this process handle is owned until Drop.
+            match unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(self.0, milliseconds)
+            } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                _ => Err(io::Error::last_os_error()),
             }
         }
-        Err(last.unwrap())
+
+        pub fn kill(&mut self) -> io::Result<()> {
+            if self.exited()? {
+                return Ok(());
+            }
+            // SAFETY: only the updater process we created is terminated.
+            if unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.0, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        pub fn wait(&self) -> io::Result<()> {
+            if self.wait_for(5000)? {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "updater did not exit",
+                ))
+            }
+        }
+    }
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            // SAFETY: each owned process handle is closed exactly once.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+        }
     }
 
     fn create(
@@ -559,7 +719,7 @@ pub mod windows {
         flags: u32,
         block: Option<&[u16]>,
         directory: &[u16],
-    ) -> io::Result<()> {
+    ) -> io::Result<Child> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
             CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
@@ -586,20 +746,21 @@ pub mod windows {
                 return Err(io::Error::last_os_error());
             }
             CloseHandle(process.hThread);
-            CloseHandle(process.hProcess);
+            Ok(Child(process.hProcess))
         }
-        Ok(())
     }
 
-    fn in_job() -> bool {
+    fn in_job() -> io::Result<bool> {
         use windows_sys::Win32::System::JobObjects::IsProcessInJob;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
         let mut result = 0;
         // SAFETY: the pseudo-handle needs no closing; result is an out BOOL.
         unsafe {
-            IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut result) != 0
-                && result != 0
+            if IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut result) == 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
+        Ok(result != 0)
     }
 }
 
@@ -685,9 +846,10 @@ mod tests {
     }
 
     fn kept(plan: &Plan) -> (String, String) {
+        let reports = report_directory(plan);
         (
-            fs::read_to_string(plan.reports.join(RESULT_FILE)).unwrap(),
-            fs::read_to_string(plan.reports.join("update-op.log")).unwrap(),
+            fs::read_to_string(reports.join(RESULT_FILE)).unwrap(),
+            fs::read_to_string(reports.join("update-op.log")).unwrap(),
         )
     }
 
@@ -854,5 +1016,99 @@ mod tests {
         }
         assert!(plan.validate(&root.join(PLAN_FILE)).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_and_rollback_retry_locks_and_keep_recoverable_files() {
+        for scenario in ["new_locked", "rollback_locked", "rollback_failed"] {
+            let Fixture { root, mut plan } = fixture("windows");
+            if scenario == "rollback_failed" {
+                plan.reports = plan.destination.join("runtime/data/update-logs");
+            }
+            let log = Log::create(&plan.workspace).unwrap();
+            let relaunched = RefCell::new(Vec::new());
+            let mut incoming_attempts = 0;
+            let mut restoring_attempts = 0;
+            let outcome = apply_with_rename(
+                &plan,
+                &log,
+                |_, _| Ok(true),
+                |path| {
+                    relaunched.borrow_mut().push(path.to_owned());
+                    Ok(())
+                },
+                |from, to| {
+                    if from == plan.incoming() {
+                        incoming_attempts += 1;
+                        if scenario != "new_locked" {
+                            return Err(io::Error::other("injected replacement failure"));
+                        }
+                        if incoming_attempts == 1 {
+                            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                        }
+                    }
+                    if from == plan.previous() {
+                        restoring_attempts += 1;
+                        if scenario == "rollback_failed" {
+                            return Err(io::Error::other("injected restoration failure"));
+                        }
+                        if restoring_attempts == 1 {
+                            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                        }
+                    }
+                    fs::rename(from, to)
+                },
+            );
+            assert_eq!(
+                outcome,
+                if scenario == "new_locked" {
+                    Outcome::Installed
+                } else {
+                    Outcome::Failed
+                }
+            );
+            let kept_data = if scenario == "rollback_failed" {
+                plan.previous()
+            } else {
+                plan.destination.clone()
+            };
+            assert_eq!(
+                fs::read_to_string(kept_data.join("runtime/data/user.json")).unwrap(),
+                "keep"
+            );
+            match scenario {
+                "new_locked" => {
+                    assert_eq!(incoming_attempts, 2);
+                    assert!(plan.destination.join("new-only.txt").is_file());
+                }
+                "rollback_locked" => {
+                    assert_eq!(restoring_attempts, 2);
+                    assert!(plan.destination.join("old-only.txt").is_file());
+                    assert!(!plan.incoming().exists());
+                }
+                _ => {
+                    assert!(relaunched.borrow().is_empty());
+                    assert!(!plan.destination.exists());
+                    assert!(plan.previous().join("old-only.txt").is_file());
+                    assert!(plan.incoming().join("new-only.txt").is_file());
+                    assert_eq!(
+                        fs::read_to_string(
+                            plan.previous()
+                                .join("runtime/data/update-logs/last-result.txt")
+                        )
+                        .unwrap(),
+                        "operation=update-op\nresult=failed\n",
+                    );
+                    assert!(kept(&plan).1.contains("backup and staged package retained"));
+                }
+            }
+            if scenario != "rollback_failed" {
+                assert_eq!(
+                    relaunched.borrow().as_slice(),
+                    std::slice::from_ref(&plan.destination)
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

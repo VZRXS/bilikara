@@ -355,16 +355,38 @@ every Windows/macOS package ships beside its backend
 the embedded backend app). After validating the downloaded package, the Host
 copies the installed updater into the update workspace, writes `plan.json`
 there and starts it detached: on Windows it inherits no handles and leaves the
-Host's kill-on-close job; on macOS it starts a new session. An installation
+Host's kill-on-close job; a denied breakaway fails the update instead of
+starting a helper that would die with the Host. On macOS it starts a new
+session. An installation
 without an updater offers manual updates only. Installed releases predating the
 updater keep their own generated CMD/shell helper for the update to this one.
 
-The updater pins and waits for the owned backend and shell to exit (without
-ever terminating one), stages a sibling installation, moves the old one aside
+Before the shell tears down presentation or exits, the updater reads and
+validates its plan, opens its workspace log and prepares to wait for the owned
+backend and shell (pinning their process handles on Windows). A private,
+attempt-bound readiness/acknowledgement exchange in that workspace is bounded
+to ten seconds at the Host. A launch error, early exit or readiness timeout
+keeps the application running and reports a retryable failure. The Host stops
+only the updater it just created on failure. An updater without the Host's
+acknowledgement cannot replace files, even if the user later closes the app.
+The shell's activation request allows thirty seconds for startup, failure
+cleanup and the Host response; other private requests retain their timeouts.
+These are private handoff files; the `--plan` entry, plan schema, public APIs,
+package layout and release metadata contracts remain unchanged.
+
+After acknowledgement, the updater waits for the owned backend and shell to
+exit (without ever terminating one), stages a sibling installation, moves the old one aside
 as `.previous-update-*`, moves the new one into place and opens it. A file or
-folder still held open is retried for about 30 seconds. Every check runs after
-both owners exit, so any failure before commit restores or retains the old
-installation and reopens it; an owner that never exits leaves everything
+folder still held open is retried for about 30 seconds, including the final
+replacement and rollback renames. File changes run only after both owners
+exit. A failure before commit restores or retains the old installation and
+reopens it when restoration succeeds. If restoration itself fails, both the
+previous installation and staged package remain for manual recovery, with
+their paths in the log; the missing installation is not launched. Portable
+Windows recovery logs stay with the data in the previous installation, and
+the workspace remains available; logging does not recreate an empty install
+directory that would obstruct restoring the backup. An owner
+that never exits leaves everything
 unchanged and nothing is reopened. Before reopening, the updater keeps its
 timestamped log as `update-logs/<operation>.log` under the data root and writes
 `update-logs/last-result.txt` (`installed`, `failed` or `owners_running`). The
@@ -395,9 +417,10 @@ flat and `backend/` Windows native layouts. Earlier development candidates
 whose validator rejects `_internal/` as a Python directory require manual
 replacement to reach this layout; they cannot acquire new validation rules
 before installing it. Their existing native data can reopen
-without importing it again. Real package
-installation and platform acceptance remain necessary before a Preview 2 release;
-this launch/update contract does not establish full product parity.
+without importing it again. Preview 2 has been released. Subsequent updater
+changes still require real package installation and platform acceptance;
+Linux fault-injection tests do not verify Windows Job behavior or macOS signing
+and relaunch behavior.
 
 New native data roots default to 1080P high frame rate with Hi-Res preferred;
 saved or explicitly imported quality preferences remain unchanged. Settings

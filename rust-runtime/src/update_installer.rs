@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use zip::ZipArchive;
 
 pub mod apply;
+mod handoff;
 pub mod native;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,17 +90,27 @@ fn native_updater(command: &[String]) -> Option<(&Path, &Path)> {
 /// handles and leaves the Host's kill-on-close job; on Unix it starts a new
 /// session with null standard streams.
 fn launch_native_updater(updater: &Path, plan: &Path) -> io::Result<()> {
+    launch_native_updater_with_timeout(updater, plan, handoff::START_TIMEOUT)
+}
+
+fn launch_native_updater_with_timeout(
+    updater: &Path,
+    plan: &Path,
+    timeout: std::time::Duration,
+) -> io::Result<()> {
+    let handshake = handoff::Handoff::begin(
+        plan.parent()
+            .ok_or_else(|| io::Error::other("missing updater workspace"))?,
+    )?;
     #[cfg(windows)]
-    {
-        apply::windows::spawn_detached(
-            updater,
-            &[std::ffi::OsStr::new("--plan"), plan.as_os_str()],
-            updater.parent().unwrap_or(updater),
-            None,
-        )
-    }
+    let mut child = apply::windows::spawn_detached_owned(
+        updater,
+        &[std::ffi::OsStr::new("--plan"), plan.as_os_str()],
+        updater.parent().unwrap_or(updater),
+        None,
+    )?;
     #[cfg(unix)]
-    {
+    let mut child = {
         use std::os::unix::process::CommandExt;
         let mut command = Command::new(updater);
         command
@@ -117,8 +128,25 @@ fn launch_native_updater(updater: &Path, plan: &Path) -> io::Result<()> {
                 Ok(())
             });
         }
-        command.spawn().map(|_| ())
+        command.spawn()?
+    };
+    let result = handshake.wait_ready(timeout, || {
+        #[cfg(unix)]
+        {
+            child.try_wait().map(|status| status.is_some())
+        }
+        #[cfg(windows)]
+        {
+            child.exited()
+        }
+    });
+    if result.is_err() {
+        // Only our newly created updater is stopped, never either application
+        // owner. Without ACK even a delayed startup cannot apply the package.
+        let _ = child.kill();
+        let _ = child.wait();
     }
+    result
 }
 
 /// The helper process exactly as `launch_update_helper` starts it.
@@ -457,6 +485,40 @@ fn error(kind: &'static str, message: impl Into<String>) -> UpdateInstallerError
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn updater_early_exit_or_timeout_does_not_commit_or_leave_a_child() {
+        use std::os::unix::fs::PermissionsExt;
+        for (label, script) in [
+            ("exited", "#!/bin/sh\nexit 0\n"),
+            ("unresponsive", "#!/bin/sh\nexec /bin/sleep 60\n"),
+        ] {
+            let workspace =
+                std::env::temp_dir().join(format!("update-{label}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&workspace);
+            fs::create_dir(&workspace).unwrap();
+            let updater = workspace.join("bilikara-updater");
+            fs::write(&updater, script).unwrap();
+            fs::set_permissions(&updater, fs::Permissions::from_mode(0o700)).unwrap();
+            let error = launch_native_updater_with_timeout(
+                &updater,
+                &workspace.join("plan.json"),
+                std::time::Duration::from_millis(150),
+            )
+            .unwrap_err();
+            if label == "unresponsive" {
+                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            } else {
+                assert!(
+                    error.to_string().contains("exited before accepting"),
+                    "{error}"
+                );
+            }
+            assert!(!workspace.join("handoff-ack").exists());
+            fs::remove_dir_all(workspace).unwrap();
+        }
+    }
+
     #[test]
     fn lowercase_desktop_payload_keeps_legacy_name_compatible() {
         let root =

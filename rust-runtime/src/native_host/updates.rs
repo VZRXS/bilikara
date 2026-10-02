@@ -1559,6 +1559,38 @@ mod tests {
         post("/api/app/update/check", json!({"include_preview":false}));
         post("/api/app/update/install", json!({"include_preview":false}));
         let ready = wait("prepared");
+        // The installed fixture is not an executable. Exercise the real
+        // launcher failure: no committed response, no stuck restart state,
+        // no loss of the existing installation, and a fresh check can retry.
+        let failed = client
+            .post(format!("{base}/api/app/update/activate"))
+            .header("x-bilikara-shutdown-token", "private-shell-fixture")
+            .json(&json!({"operation":ready["operation"]}))
+            .send()
+            .unwrap();
+        assert!(!failed.status().is_success());
+        let failed = state();
+        assert_eq!(failed["state"], "failed");
+        assert_eq!(failed["update_installable"], false);
+        assert_eq!(failed["requires_recheck"], true);
+        assert_eq!(failed["message"], failed["error"]);
+        assert!(failed["error"].as_str().unwrap().contains("应用继续运行"));
+        assert_eq!(
+            std::fs::read(installed.join("old-record")).unwrap(),
+            b"preserved"
+        );
+        while completed_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+            != ready["operation"].as_u64().unwrap()
+        {}
+        assert_eq!(
+            post("/api/app/update/check", json!({"include_preview":false})).0,
+            200
+        );
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":false})).0,
+            200
+        );
+        let ready = wait("prepared");
         *desktop_install::LAUNCH_INTENTS.lock().unwrap() = Some(Vec::new());
         for _ in 0..2 {
             let result = client
