@@ -28,7 +28,7 @@ pub struct Plan {
     /// Active notices plus unseen notes for the installed version. Empty when
     /// the whole eligible batch has already been shown.
     pub automatic: Vec<usize>,
-    /// Published, platform-applicable history, including ended notices.
+    /// Published, platform-applicable releases and currently active notices.
     pub history: Vec<Entry>,
 }
 
@@ -48,7 +48,7 @@ pub fn plan(
             entry.published_at <= now
                 && (entry.platforms.is_empty() || entry.platforms.iter().any(|p| p == platform))
                 && match entry.kind {
-                    Kind::Notice { starts_at, ends_at } => starts_at <= now && starts_at < ends_at,
+                    Kind::Notice { starts_at, ends_at } => starts_at <= now && now < ends_at,
                     Kind::Release { .. } => true,
                 }
         })
@@ -184,8 +184,37 @@ mod tests {
         assert_eq!(plan(&entries, "", "android", 10, &shown).automatic, [0]);
         let ended = plan(&entries, "", "android", 20, &shown);
         assert!(ended.automatic.is_empty());
-        assert!(ended.history[0].expired);
-        assert_eq!(ended.history.len(), 1);
+        assert!(ended.history.is_empty());
+        assert!(plan(&entries, "", "android", 21, &shown).history.is_empty());
+    }
+
+    #[test]
+    fn expired_notices_are_absent_from_manual_history_without_hiding_releases() {
+        let entries = [
+            notice("expired-unseen", 9, 0, 10),
+            notice("expired-shown", 8, 0, 10),
+            notice("active-shown", 1, 0, 20),
+            release("old", "0.7.0", 2),
+            release("installed", "0.8.0", 3),
+        ];
+        let shown = BTreeSet::from([
+            "expired-shown".into(),
+            "active-shown".into(),
+            "installed".into(),
+        ]);
+        for platform in ["windows", "macos", "linux", "android"] {
+            let result = plan(&entries, "0.8.0", platform, 10, &shown);
+            assert!(result.automatic.is_empty());
+            assert_eq!(
+                result
+                    .history
+                    .iter()
+                    .map(|entry| entry.index)
+                    .collect::<Vec<_>>(),
+                [2, 4, 3]
+            );
+            assert!(result.history.iter().all(|entry| !entry.expired));
+        }
     }
 
     #[test]

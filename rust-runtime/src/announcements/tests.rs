@@ -97,13 +97,50 @@ fn shown_batch_survives_restart_and_cached_feed_revalidation() {
 }
 
 #[test]
-fn expired_notice_remains_manual_but_cannot_auto_pop_up_from_offline_cache() {
+fn expired_notice_is_hidden_from_offline_cache_but_release_history_remains() {
     let directory = Directory::new();
     let mut state = fresh(&directory);
     state.finish(&directory.0, Err("announcement_network".into()), now());
     let snapshot = state.snapshot(timestamp("2026-09-03T00:00:00Z").unwrap());
     assert_eq!(snapshot["automatic_ids"], json!(["example-release-0.8.0"]));
-    assert_eq!(snapshot["items"][0]["expired"], true);
+    assert_eq!(snapshot["items"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["items"][0]["id"], "example-release-0.8.0");
+    assert_eq!(snapshot["items"][0]["expired"], false);
+    assert_eq!(snapshot["error"], "announcement_network");
+}
+
+#[test]
+fn fresh_cache_hides_notice_at_deadline_without_fetching_or_forgetting_shown_ids() {
+    let directory = Directory::new();
+    let mut state = fresh(&directory);
+    let deadline = timestamp(sample().announcements[1].ends_at.as_deref().unwrap()).unwrap();
+    state.finish(&directory.0, Ok(Refresh::Unchanged), deadline - 1);
+    let snapshot = state.snapshot(deadline - 1);
+    let ids: Vec<String> = serde_json::from_value(snapshot["automatic_ids"].clone()).unwrap();
+    assert_eq!(ids.len(), 2);
+    state.shown(&directory.0, &ids).unwrap();
+    let before = fs::read(directory.0.join("announcements.json")).unwrap();
+    let reloaded = State::load(&directory.0, "0.8.0".into(), "windows".into());
+    for state in [&state, &reloaded] {
+        assert!(state.fresh(deadline));
+        assert_eq!(
+            state.snapshot(deadline - 1)["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let snapshot = state.snapshot(deadline);
+        assert_eq!(snapshot["items"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["items"][0]["id"], "example-release-0.8.0");
+        assert_eq!(snapshot["automatic_ids"], json!([]));
+        assert_eq!(snapshot["checked_at"], deadline - 1);
+        assert!(state.saved.shown.contains("example-service-20260901"));
+    }
+    assert_eq!(
+        fs::read(directory.0.join("announcements.json")).unwrap(),
+        before
+    );
 }
 
 #[test]
