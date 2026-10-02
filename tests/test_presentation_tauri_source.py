@@ -75,12 +75,14 @@ class PresentationTauriSourceTest(unittest.TestCase):
                 "allow-get-presentation-session",
                 "allow-mark-presentation-controller-ready",
                 "allow-request-presentation-output-state",
+                "allow-record-presentation-video-geometry",
                 "allow-deactivate-local-presentation",
             },
         )
         # Only the Host publishes output; the audience may only ask for a replay.
         self.assertIn("allow-publish-presentation-output-state", main_permissions)
         self.assertNotIn("allow-request-presentation-output-state", main_permissions)
+        self.assertNotIn("allow-record-presentation-video-geometry", main_permissions)
         self.assertNotIn("allow-publish-presentation-output-state", controller_permissions)
         self.assertNotIn("core:default", controller_permissions)
         self.assertNotIn("core:event:allow-emit", controller_permissions)
@@ -112,6 +114,7 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "publish_presentation_playback_state",
             "publish_presentation_output_state",
             "request_presentation_output_state",
+            "record_presentation_video_geometry",
             "deactivate_local_presentation",
         )
         handler_match = re.search(r"tauri::generate_handler!\[(.*?)\]\)", self.main, re.DOTALL)
@@ -150,6 +153,21 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertIn('envelope["payload"]["scene"]["generation"].as_u64() != Some(generation)', validation)
         self.assertIn("size > MAX_OUTPUT_STATE_BYTES", validation)
         self.assertIn("const MAX_OUTPUT_STATE_BYTES: usize = 2 * 1024 * 1024;", self.presentation)
+
+    def test_video_geometry_log_is_audience_scoped_and_generation_checked(self):
+        command = self.presentation.split("pub(crate) async fn record_presentation_video_geometry", 1)[1].split(
+            "pub(crate) fn deactivate_local_presentation", 1
+        )[0]
+        self.assertIn('authorize_window(&window, &backend, &["controller"])?', command)
+        self.assertIn("state.ensure_output_generation(generation)?", command)
+        self.assertIn("geometry.validate()?", command)
+        compact = re.sub(r"\s+", "", command)
+        self.assertLess(compact.index("geometry.validate()?"), compact.index("window.inner_size()"))
+        for field in ("window.inner_size()", "window.outer_size()", "window.scale_factor()"):
+            self.assertIn(field, compact)
+        self.assertIn("append_desktop_diagnostic", command)
+        self.assertIn('"presentation_video_geometry"', command)
+        self.assertNotIn("std::fs", command)
 
     def test_windows_main_and_audience_windows_share_one_webview_store(self):
         # Tauri ignores a configured window's dataDirectory; separate stores share

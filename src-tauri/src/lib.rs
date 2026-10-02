@@ -15,6 +15,8 @@ mod platform;
 #[cfg(desktop)]
 mod presentation;
 #[cfg(desktop)]
+mod presentation_geometry;
+#[cfg(desktop)]
 mod window_chrome;
 #[cfg(desktop)]
 mod window_lifecycle;

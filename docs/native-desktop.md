@@ -110,6 +110,53 @@ in `runtime/logs/`, WebView browser storage in `runtime/webview/`, and window
 preferences in `runtime/main-window-geometry-v1.json`. This directory is created on use, never shipped in an update
 archive. macOS retains the system user-data directory outside the signed app.
 
+Desktop audience video geometry is recorded as `presentation_video_geometry` in
+the shell's `desktop-startup.log` (Windows: `runtime/logs/desktop-startup.log`).
+Records contain the presentation generation and per-window video sequence,
+intrinsic `videoWidth`/`videoHeight`, video/frame DOM bounds in CSS pixels,
+WebView inner/outer sizes and device pixel ratio, plus native window inner/outer
+physical sizes and scale factor. Media URLs, titles and credentials are excluded.
+Mount/metadata, intrinsic-video resize and viewport/element resize trigger
+frame-coalesced, deduplicated snapshots; playback-clock updates do not poll or log
+geometry. Native writes use the existing bounded, nonblocking diagnostic queue.
+The audience Grid has one `minmax(0, 1fr)` track on each axis, and the video has
+zero minimum dimensions with `object-fit: contain`, so portrait media cannot
+inflate the track beyond the output viewport. Resizing does not replace media.
+
+The offline regression `node tests/browser/presentation_video_geometry.cjs`
+uses test-only Playwright and browser-recorded portrait/ultrawide fixtures with
+the real audience page. It covers 1280x720, 720x1280 and 1600x600 viewports,
+DPR 1.5, source changes, geometry payloads and log failure isolation. The original
+portrait failure expanded a 1280x720 stage's video element to about 1280x2276;
+the fixed element stays within the stage. Physical multi-display/WebView device
+acceptance remains separate from this browser regression.
+
+Fixture recording paints twelve changing frames over approximately 1.2 seconds
+and waits for the final recorder data before releasing its tracks. Each WebM
+must be nonempty and decode a frame at its expected intrinsic dimensions in a
+separate video element before entering the audience layout checks. The bounded
+preflight reports fixture dimensions, byte count and the decoder error directly;
+it never retries or skips the unchanged geometry assertions. This replaces the
+short single-frame recording that intermittently failed in Edge before any layout
+assertion. It adds no application dependency, bundled media or production change.
+
+Fixture follow-up validation (2026-10-02, Windows / Edge 154.0.4258.53):
+
+- `node --check tests/browser/presentation_video_geometry.cjs`: passed.
+- `node tests/browser/presentation_video_geometry.cjs`: ten consecutive complete
+  runs passed using the existing Playwright installation (`NODE_PATH` configured).
+- `python -m unittest tests.test_controller_frontend tests.test_presentation_tauri_source -v`:
+  27 passed.
+- `git diff --check`: passed.
+- Read-only, in-memory Node fault injection confirmed that empty WebM, corrupt
+  WebM and incorrect expected dimensions all fail explicitly before layout
+  assertions. A source comparison confirmed that all original geometry and
+  lifecycle assertions remain unchanged.
+
+This test/documentation-only follow-up changes no Python or Rust production
+logic. The full release gate, bundle builds and physical-display/device acceptance
+were not rerun; these checks do not establish a new application release result.
+
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
 FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
 aria2c uses the existing Rust preparation and managed-tool policy; macOS carries

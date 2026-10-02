@@ -117,7 +117,8 @@ async function setup(browser, viewport, options = {}) {
       assert.equal(await page.locator("#announcements-content img, #announcements-content script").count(), 0);
       assert.equal(await page.locator("#announcements-content a").count(), 1);
       assert.equal(await page.locator("#announcements-content a").getAttribute("rel"), "noopener noreferrer");
-      assert.equal(await page.locator(".announcement-kind").last().textContent(), messages.zh["announcements.ended"]);
+      assert.equal(await page.locator(".announcement-item").count(), 1, "manual viewing hides an ended notice even from an older response");
+      assert.equal(await page.locator(".announcement-kind").textContent(), messages.zh["announcements.release"]);
       assert.equal(await page.locator("#announcements-status").textContent(), messages.zh["announcements.cached"]);
       await page.locator("#announcements-content a").focus();
       await page.keyboard.press("Tab");
@@ -127,6 +128,21 @@ async function setup(browser, viewport, options = {}) {
       await page.locator("#announcements-close").click();
       assert.deepEqual(errors, []); assert.deepEqual(network, []); await page.close();
     }
-    console.log("Announcement browser checks passed: portrait/desktop/landscape, scrolling, dismissal, busy guards, once-only batch, focus, safe Markdown, localization, unchanged media/drafts; no network.");
+    {
+      const { page, errors, network } = await setup(browser, { width: 900, height: 640 });
+      await page.evaluate(() => {
+        feed.items = feed.items.filter(item => item.kind === "notice").map(item => ({ ...item, expired: true }));
+        feed.automatic_ids = feed.items.map(item => item.id);
+      });
+      await page.evaluate(() => board.sync());
+      assert.equal(await page.evaluate(() => board.isOpen()), false, "expired-only batches do not open automatically");
+      await page.evaluate(() => board.manual());
+      assert.equal(await page.locator(".announcement-item").count(), 0);
+      assert.equal(await page.locator(".announcement-empty").textContent(), messages.zh["announcements.empty"]);
+      assert.equal(await page.evaluate(() => calls.filter(call => call.url.endsWith("/shown")).length), 0, "hidden notices are not marked as shown");
+      await page.locator("#announcements-close").click();
+      assert.deepEqual(errors, []); assert.deepEqual(network, []); await page.close();
+    }
+    console.log("Announcement browser checks passed: portrait/desktop/landscape, scrolling, dismissal, busy guards, once-only batch, hidden expired notices, focus, safe Markdown, localization, unchanged media/drafts; no network.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-record-presentation-video-geometry"
+description = "Enables the record_presentation_video_geometry command without any pre-configured scope."
+commands.allow = ["record_presentation_video_geometry"]
+
+[[permission]]
+identifier = "deny-record-presentation-video-geometry"
+description = "Denies the record_presentation_video_geometry command without any pre-configured scope."
+commands.deny = ["record_presentation_video_geometry"]

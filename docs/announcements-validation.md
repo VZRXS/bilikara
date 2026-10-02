@@ -184,3 +184,50 @@ wrangler r2 object put bilikara-releases/bilikara/announcements/index.json --rem
 最终测试包的 FFmpeg/BBDown 来源说明均已包含 SHA-256。本机入口是 `dist/bilikara/bilikara-desktop.exe`，需要保留同级 `_internal` 和 `license` 目录一起使用；不是单文件发行包。原本缺少环境造成的 Python 错误与桌面 bundle 失败已经解决，剩余两项 Rust Windows 测试问题未改动。
 
 这是本地验证和一条公告的发布，不是应用商店/正式软件版本发布，也不是全量发布门禁通过声明。桌面和 Android 实机验收仍独立进行。
+
+## 2026-10-02：到期限时公告直接隐藏
+
+原规则仅从自动弹窗排除到期通知，手动历史仍保留并显示「已结束」。按新要求，共享 Rust 规则改为仅在 `starts_at <= now < ends_at` 时返回限时公告；版本公告历史、排序及已展示 ID 保持不变。每次生成快照都会重算有效期，不延长本地缓存 TTL、不新增网络轮询、请求或 D1 操作。前端只消费 Rust 的到期判断，并防御性忽略旧响应中已标记过期的通知，不另写一份时间业务规则。
+
+修改文件（没有新增 Python 业务逻辑）：
+
+- `rust/src/announcement_policy.rs`：纯确定性展示策略及结束边界、已读/未读、跨平台回归。
+- `rust-runtime/src/announcements/tests.rs`：缓存命中、离线、重启及已展示记录不变的回归；Runtime 生产实现未改。
+- `static/announcements.js`：隐藏过期条目，不渲染「已结束」徽标。
+- `tests/announcements_browser.cjs`：手动列表排除、仅过期条目时不自动打开/不确认展示、空列表回归。
+- `docs/announcements.md`：更新有效期及手动查看说明。
+- `docs/announcements-validation.md`：本次验证记录。
+
+先在旧实现复现了 Rust 策略、缓存快照和浏览器列表断言失败，再应用修复；没有删除断言或放宽对其他行为的要求。浏览器使用上文已安装的 Playwright/Edge 环境，全程离线，无依赖变更。
+
+| 实际验证命令 | 结果 |
+| --- | --- |
+| `cargo test --manifest-path rust/Cargo.toml --locked announcement_policy` | 5 通过 |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host announcements` | 9 通过 |
+| `node --check static/announcements.js` | 通过 |
+| `node --check tests/announcements_browser.cjs` | 通过 |
+| `node tests/announcements_browser.cjs` | 三种布局、到期隐藏及原有交互回归通过 |
+| `python -m unittest discover -s tests -p test_copy_i18n.py -v` | 4 通过 |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | 通过 |
+| `cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings` | 通过 |
+| `cargo test --manifest-path rust/Cargo.toml --locked` | 233 通过 |
+| `cargo build --manifest-path rust/Cargo.toml --release --locked` | 通过 |
+| `cargo fmt --manifest-path rust-runtime/Cargo.toml --check` | 通过 |
+| `cargo clippy --manifest-path rust-runtime/Cargo.toml --all-targets --locked --features native-host -- -D warnings` | 通过 |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host --quiet` | 463 通过、2 失败、8 ignored；详情见下 |
+| `cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host` | 通过；首次因并行 Python 测试占用 DLL 失败，测试退出后重跑通过 |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | 通过 |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings` | 通过 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked --quiet` | 105 通过、1 原条件 ignored |
+| `cargo build --manifest-path src-tauri/Cargo.toml --release --locked` | 通过 |
+| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest discover -s tests -q` | 1808 项，7 failures、1 error、129 原条件 skips；详情见下 |
+| `python -m compileall -q bilikara` | 通过 |
+| `python -m py_compile start_bilikara.py build_bundle.py` | 通过 |
+| `git diff --check` | 通过 |
+
+全量门禁仍未全绿，未修改以下任务范围外的失败：
+
+- Runtime 的 `native_host::desktop::tests::isolated_root_never_enrolls_existing_data`（Windows canonicalize 的 `\\?\` 前缀差异）和 `networking::tests::live_windows_gateways_match_net_ip_configuration`（实际网卡事实比对），与此前记录一致。
+- Python 的 2 项 `test_build_bundle` 用例涉及本机 libav 前缀/ffprobe 解析，另 6 项 BBDown 回归涉及固定 vendor 路径和下载失败预期。它们不经过本次修改的公告规则；本轮未修复构建/下载器代码，也不将全量结果描述为通过。
+
+未运行 `npm ci`/`npm run build`：无依赖变化，现有打包脚本会删除并重建 `dist/bilikara`，本次未请求覆盖上一轮测试包。未执行 Android 实机验收；共享规则及手机尺寸浏览器覆盖不代替 APK 验收。上述实现与验证阶段未更改或发布线上公告，也未 commit、push 或触发 Actions；后续提交与 CI 状态以对应 PR 为准。

@@ -111,10 +111,10 @@
       const nodes = document.createDocumentFragment();
       for (const item of visibleItems) {
         const article = document.createElement("article");
-        article.className = `announcement-item${item.kind === "notice" && !item.expired ? " is-active-notice" : ""}`;
+        article.className = `announcement-item${item.kind === "notice" ? " is-active-notice" : ""}`;
         const meta = document.createElement("div"); meta.className = "announcement-meta";
         const badge = document.createElement("span"); badge.className = "announcement-kind";
-        badge.textContent = t(item.expired ? "announcements.ended" : item.kind === "notice" ? "announcements.notice" : "announcements.release");
+        badge.textContent = t(item.kind === "notice" ? "announcements.notice" : "announcements.release");
         const time = document.createElement("time"); time.dateTime = item.published_at; time.textContent = date(item.published_at);
         meta.append(badge, time);
         const title = document.createElement("h3"); title.textContent = localized(item.title, language());
@@ -137,7 +137,9 @@
     async function present(data, automatic, token) {
       if (token !== generation) return;
       const ids = new Set(data.automatic_ids || []);
-      visibleItems = (data.items || []).filter(item => !automatic || ids.has(item.id));
+      // Rust owns deadline evaluation; also ignore expired notices supplied by
+      // an older Host response rather than presenting an ended-history badge.
+      visibleItems = (data.items || []).filter(item => (item.kind !== "notice" || !item.expired) && (!automatic || ids.has(item.id)));
       if (automatic && !visibleItems.length) return;
       viewError = data.storage_error ? "announcements.storageError"
         : data.error ? (data.available ? "announcements.cached" : "announcements.unavailable") : "";
