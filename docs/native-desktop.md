@@ -53,12 +53,39 @@ npm ci
 npm run dev
 ```
 
-Tauri's development hook runs `python build_bundle.py --dev`, builds the native
-backend with `native-host`, and stages it and its resources in `_internal/` beside the debug shell.
+Tauri's development hook and `npm run prepare:desktop` run the independent Rust
+build tool:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop
+```
+
+This builds both `bilikara-desktop-host` (with `native-host`) and
+`bilikara-updater`, then stages them with the existing resources in `_internal/`
+beside the shell output. The tool does not link the application Runtime or need
+libav to compile. The preparation path, including the hook used by `npm run dev`
+and `dev:rust`, invokes no Python. It consumes prepared tool/libav inputs; it
+does not rebuild or download them.
+The development hook explicitly waits for preparation to finish before starting
+the shell, including on a first build or with a shared Cargo output directory.
 For direct `cargo run --manifest-path src-tauri/Cargo.toml --locked`, run
 `npm run prepare:desktop` first. There is no runtime search through the checkout
 or fallback to Python. A development layout may report external tools/libav as
 unavailable until explicitly configured.
+
+`--target TRIPLE` (also `npm run prepare:desktop -- --target TRIPLE`) takes
+precedence over `CARGO_BUILD_TARGET`; foreign tool/libav targets are rejected.
+Cargo metadata resolves output directories, including `CARGO_TARGET_DIR`.
+The outer Cargo `--target host-tuple` builds the tool for the current machine,
+so a backend target override cannot cross-compile the tool itself; the tool's
+`--target` follows `prepare-desktop` and selects the backend/shell output.
+The Tauri target hint keeps its existing native-target behavior.
+`TAURI_ENV_DEBUG=false` or `0` selects release-profile adjacent preparation and
+requires the same complete prefix, BBDown execution/version check and macOS
+portability checks as before. Other values retain debug preparation. The
+Android/iOS development hook returns without building or staging desktop code.
+Source macOS development retains the adjacent `_internal` layout; final macOS
+bundle assembly/signing is a separate release step.
 
 For a product build, prepare the existing pinned BBDown vendor and a matching
 libav-only prefix using `scripts/prepare_bbdown_vendor.py` and the documented
@@ -78,14 +105,39 @@ used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
 matching runner target; foreign tool/libav architectures fail closed.
 `CARGO_TARGET_DIR` and the selected debug/release profile are respected.
 
-Python is required on the build/test machine for these scripts, not on the
-installed product's machine. Native build imports stay within `build_bundle.py`
+Python remains required for release assembly, existing dependency-preparation
+scripts and Python test drivers; it is not required by the selected Rust
+development-preparation path or the installed product. Native release build
+imports stay within `build_bundle.py`
 and tooling modules under `scripts/`; they do not import the legacy `bilikara`
 application package. `scripts/libav_manifest.py` owns the shared manifest and
 flat dependency-closure validation. The legacy `bilikara.ffmpeg_vendor` import
 forwards to it for existing source Host and diagnostic callers. Same-build
 libav provenance checks, pinned BBDown validation and native release artifact
 verification remain in their existing build steps.
+
+On Linux, the third-party Tauri CLI optionally probes the system's
+`lsb_release` before invoking the hook; some distributions implement that command
+in Python. This is separate from project-owned preparation. A complete Tauri
+development startup also works with Python and that optional utility excluded
+from PATH; the system utility and the upstream CLI remain unmodified.
+
+The Rust tool preserves the development preparation contract: version
+provenance, `native-desktop.json`, the single vendor tree, Signalsmith notices,
+prepared libav manifest/closure/provenance checks, binary import inspection and
+rebuild materials. Python source files included as compliance materials are
+copied, not executed. `tests/test_desktop_prepare_contract.py` compares this
+slice with the retained Python implementation using isolated native executable
+fixtures; `xtask` tests also cover foreign platform descriptors, which do not
+constitute native Windows/macOS acceptance. Linux preparation and Tauri startup
+are locally exercised; Windows/macOS GUI qualification remains separate.
+
+The next bounded engineering target is ordinary release construction/assembly
+and its CI build callers, including remaining self-owned dependency-preparation
+helpers, using this same tool. Until that cutover is qualified, `npm run build`,
+release signing/upload and Python verification gates retain their current
+entries. Keep the old preparation implementation as an independent contract
+reference during this interval; do not evolve two packaging policies.
 
 `start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
 scripts remain development/compatibility entry points. The Python HTTP/SSE

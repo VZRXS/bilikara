@@ -1,0 +1,17 @@
+[package]
+name = "bilikara-xtask"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+object = { version = "=0.37.3", default-features = false, features = ["std", "read_core", "pe", "unaligned"] }
+regex = "1"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

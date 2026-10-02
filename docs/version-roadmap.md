@@ -16,13 +16,31 @@ storage and migration details belong in [native desktop launch and bundles](nati
   `AppState`. They include no Python runtime, PyInstaller payload or Python FFI
   libraries. Python remains intentionally scoped to build/package scripts,
   tests, legacy compatibility and source development workflows.
-- Decouple native build tools from legacy application imports. Retire legacy
-  code only after checking actual consumers; keep useful compatibility coverage
-  and preserve bundle/storage layouts, update contracts and public APIs.
+- Delivered: native packaging no longer imports the legacy Python application;
+  build-time manifest validation lives in the tooling layer.
+- Preview 3 preparation: the independent Rust `xtask` now handles desktop
+  development preparation (`prepare:desktop` and the Tauri development hook),
+  including backend/updater compilation and existing resource/tool/libav
+  staging. Linux execution and contract comparisons qualify this slice;
+  Windows/macOS native GUI validation remains separate. This does not publish
+  Preview 3 or replace the current release assembly/signing pipeline.
+- Next engineering target: move ordinary self-owned release construction and
+  assembly, its CI build callers and remaining self-owned dependency-preparation
+  helpers to the same Rust tool in bounded increments. Explicitly document any
+  third-party rebuild exceptions; do not hide Python inside Actions/containers.
+- Later retirement: remove compatibility/test consumers and project-owned CI
+  Python dependencies while preserving useful coverage. The long-term target
+  is development/build/verification/CI without project-owned Python requirements;
+  rewriting every Python test or legacy adapter is not a v0.8 release gate.
+  Retire code only after checking consumers; preserve bundle/storage layouts,
+  update contracts and public APIs.
 - Keep backend state and new business functionality Rust-owned. Preserve
   compatibility through narrow adapters and validated snapshots.
 - Stabilize desktop playback, fullscreen, audience windows, updates and
   persistence against the approved desktop behavior baseline.
+- Preview 3 primarily fixes Preview 2 desktop experience regressions, with small
+  qualified engineering increments. Stable v0.8 requires reliable desktop
+  behavior, preserved data/layout and an accurately described upgrade path.
 - Share frontend components, actions and layout definitions across desktop
   and Android Host, local Remote and public Remote, with narrow platform
   adapters and separate role privileges. See [shared Host UI](shared-host-ui.md).
