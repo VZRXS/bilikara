@@ -358,8 +358,10 @@ there and starts it detached: on Windows it inherits no handles and leaves the
 Host's kill-on-close job; a denied breakaway fails the update instead of
 starting a helper that would die with the Host. On macOS it starts a new
 session. An installation
-without an updater offers manual updates only. Installed releases predating the
-updater keep their own generated CMD/shell helper for the update to this one.
+without an updater offers manual updates only. Already installed releases
+predating the updater still execute their own generated CMD/shell helper;
+downloading a new package cannot repair that old executable's update logic.
+For published Preview 2, see the one-time replacement instructions below.
 
 Before the shell tears down presentation or exits, the updater reads and
 validates its plan, opens its workspace log and prepares to wait for the owned
@@ -389,10 +391,13 @@ directory that would obstruct restoring the backup. An owner
 that never exits leaves everything
 unchanged and nothing is reopened. Before reopening, the updater keeps its
 timestamped log as `update-logs/<operation>.log` under the data root and writes
-`update-logs/last-result.txt` (`installed`, `failed` or `owners_running`). The
-next Host start consumes that result once, shows it with the log path and
-removes the finished workspace (a running Windows updater cannot delete
-itself); the log stays. The relaunched application does not inherit the old
+`update-logs/last-result.txt` (`installed`, `failed` or `owners_running`).
+`installed` means that files were replaced, not that the new application became
+ready. If automatic reopening fails, the installed files and backup remain;
+the next manual launch reports that restart failure with the kept log path.
+The next Host consumes the result once and cleans an owned workspace only
+after the updater finishes; recovery workspaces and older workspaces without
+completion evidence remain available. The log stays. The relaunched application does not inherit the old
 shell's private Host variables. This is not a general crash-rollback guarantee.
 After checking the new installation, the user may remove that previous
 application directory.
@@ -421,6 +426,41 @@ without importing it again. Preview 2 has been released. Subsequent updater
 changes still require real package installation and platform acceptance;
 Linux fault-injection tests do not verify Windows Job behavior or macOS signing
 and relaunch behavior.
+
+### One-time full-package replacement from published Preview 2
+
+The published `v0.8.0-preview.2` assets come from `3d5a8c6`, before the external
+updater. Its Windows helper passes canonical `\\?\C:\...` paths directly to
+CMD directory changes and relaunch commands. This old path can fail before
+replacement or reopening; a newer package does not retroactively fix it.
+Use a full-package replacement for this Windows transition. The macOS first
+transition also needs native platform verification; full-package replacement
+is available there without changing existing native data.
+
+1. Close Bilikara's desktop windows and wait for its Host/updater to exit.
+   Keep a backup of the complete old installation and all configured external
+   data roots. If a previous attempt left `.previous-update-*` or
+   `.incoming-update-*` directories, retain them until the recovered session
+   has been checked; do not combine competing data copies.
+2. Download the complete package for the same OS and CPU architecture from
+   [GitHub Releases](https://github.com/VZRXS/bilikara/releases), then extract
+   it into a **new sibling directory**, keeping its packaged directory structure.
+   Do not overlay immutable files onto the old installation.
+3. **Windows:** copy the entire old `runtime/` into the new installation beside
+   `bilikara-desktop.exe`, before the first launch. This includes `runtime/data/`,
+   caches, credentials, WebView storage, window preferences and logs. Also carry
+   over existing top-level `data/` and `updates/` if present. Keep custom data-root
+   overrides and any adjacent `<native-directory>.desktop` storage unchanged;
+   an override inside the old installation must point to the corresponding
+   preserved directory at its final location. Never delete `runtime/` to upgrade.
+4. **macOS:** retain the intact new `bilikara-desktop.app`, including nested
+   bundles and relative resource links. With the app closed, keep the old app
+   as a backup and put the complete new app in its place using Finder (or
+   `ditto`). Leave `~/Library/Application Support/bilikara/` and any configured
+   external data root intact. Native Preview 2 data needs no legacy import.
+5. Open the new desktop launcher, check its displayed version and confirm the
+   intended session, queue, settings and cached media. Keep the backup until
+   these checks pass. Update shortcuts to the new location if it changed.
 
 New native data roots default to 1080P high frame rate with Hi-Res preferred;
 saved or explicitly imported quality preferences remain unchanged. Settings

@@ -4,7 +4,7 @@
 //! installed `bilikara-updater` from the update workspace with a plan. This
 //! module is that program's logic. It never kills an owner. Startup validates
 //! the plan and pins owners before acknowledging readiness. Replacement runs
-//! after both owners exit. Before any reopen it keeps a timestamped log and a one-line
+//! after both owners exit. Before any reopen it keeps a timestamped log and a small
 //! result under the data root, which the next Host start reports once.
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub const PLAN_FILE: &str = "plan.json";
 pub const LOG_FILE: &str = "apply.log";
 pub const RESULT_FILE: &str = "last-result.txt";
+const WORKSPACE_LOCK: &str = "updater.lock";
 
 /// The updater's file name in a package for `platform`.
 pub fn updater_name(platform: &str) -> &'static str {
@@ -48,6 +49,7 @@ pub struct Plan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// File replacement succeeded; this does not prove application readiness.
     Installed,
     Failed,
     /// An owner outlived the wait; nothing changed and nothing is reopened.
@@ -149,8 +151,9 @@ impl Log {
     }
 }
 
-/// Keep the log and the one-line result where the next Host start finds them.
-fn report(plan: &Plan, log: &Log, outcome: Outcome) {
+/// Keep replacement and restart results separate: a failed reopen must not
+/// undo an installed package or hide the reason from the next manual launch.
+fn report(plan: &Plan, log: &Log, outcome: Outcome, relaunch_failed: bool) {
     log.line(format!("result: {}", outcome.as_str()));
     let reports = report_directory(plan);
     if reports != plan.reports {
@@ -167,9 +170,14 @@ fn report(plan: &Plan, log: &Log, outcome: Outcome) {
         fs::write(
             &partial,
             format!(
-                "operation={}\nresult={}\n",
+                "operation={}\nresult={}\n{}",
                 plan.operation,
-                outcome.as_str()
+                outcome.as_str(),
+                if relaunch_failed {
+                    "relaunch=failed\n"
+                } else {
+                    ""
+                },
             ),
         )?;
         fs::rename(partial, reports.join(RESULT_FILE))
@@ -275,14 +283,14 @@ fn apply_with_rename(
         Ok(true) => log.line("owners exited"),
         Ok(false) => {
             log.line("an owner did not exit in time; nothing was changed");
-            report(plan, log, Outcome::OwnersRunning);
+            report(plan, log, Outcome::OwnersRunning, false);
             return Outcome::OwnersRunning;
         }
         Err(error) => {
             log.line(format!(
                 "could not inspect the owners ({error}); nothing was changed"
             ));
-            report(plan, log, Outcome::OwnersRunning);
+            report(plan, log, Outcome::OwnersRunning, false);
             return Outcome::OwnersRunning;
         }
     }
@@ -350,17 +358,13 @@ fn apply_with_rename(
             Outcome::Failed
         }
     };
-    report(plan, log, outcome);
+    report(plan, log, outcome, false);
     if !plan.destination.is_dir() {
         return outcome;
     }
     if let Err(error) = relaunch(&plan.destination) {
         log.line(format!("relaunching failed: {error}"));
-        // Keep the reason next to the result for diagnosis.
-        let _ = fs::copy(
-            &log.path,
-            plan.reports.join(format!("{}.log", plan.operation)),
-        );
+        report(plan, log, outcome, true);
     }
     outcome
 }
@@ -541,6 +545,14 @@ pub fn run_from_plan(plan_path: &Path) -> io::Result<Outcome> {
         let plan: Plan = serde_json::from_slice(&fs::read(plan_path)?)
             .map_err(|e| invalid(&format!("unreadable update plan: {e}")))?;
         plan.validate(plan_path)?;
+        // Held until all reporting/relaunch work ends. A newly opened Host
+        // must not remove a workspace merely because a result exists already.
+        let lease = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(plan.workspace.join(WORKSPACE_LOCK))?;
+        fs2::FileExt::try_lock_exclusive(&lease)?;
         let log = Log::create(&plan.workspace)?;
         if !plan.source.is_dir() || !plan.destination.is_dir() {
             return Err(invalid("update source or installation is missing"));
@@ -550,9 +562,9 @@ pub fn run_from_plan(plan_path: &Path) -> io::Result<Outcome> {
             handoff.ready()?;
             log.line("Host acknowledged updater readiness");
         }
-        Ok((plan, log, owners))
+        Ok((plan, log, owners, lease))
     })();
-    let (plan, log, owners) = match started {
+    let (plan, log, owners, lease) = match started {
         Ok(started) => started,
         Err(error) => {
             if let Some(handoff) = &handoff {
@@ -561,6 +573,11 @@ pub fn run_from_plan(plan_path: &Path) -> io::Result<Outcome> {
             return Err(error);
         }
     };
+    // This is the standalone program's one-shot entry. Keep the lease until
+    // OS process teardown, including the return to main: on Windows the EXE
+    // can still be in use after this function returns. No handles are inherited
+    // by the new application. The OS closes this file on updater exit.
+    std::mem::forget(lease);
     let outcome = apply(&plan, &log, |_, timeout| owners.wait(timeout), relaunch);
     // The log is kept under `reports`. The running updater lives in the
     // workspace: Unix may unlink it now; Windows cannot, so the next Host
@@ -570,6 +587,33 @@ pub fn run_from_plan(plan_path: &Path) -> io::Result<Outcome> {
         let _ = fs::remove_dir_all(&plan.workspace);
     }
     Ok(outcome)
+}
+
+/// Remove only an owned, finished workspace. Missing leases from older helpers
+/// are retained: a marker alone is not evidence that its writer has stopped.
+#[cfg(feature = "native-host")]
+pub(crate) fn cleanup_workspace(workspace: &Path, reports: &Path) -> io::Result<()> {
+    use std::io::Read;
+    if !fs::symlink_metadata(workspace)?.is_dir() {
+        return Err(invalid("update workspace is not a directory"));
+    }
+    let plan_path = workspace.join(PLAN_FILE);
+    let mut bytes = Vec::new();
+    fs::File::open(&plan_path)?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)?;
+    let plan: Plan =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("unreadable cleanup plan"))?;
+    plan.validate(&plan_path)?;
+    if plan.reports != reports || !plan.destination.is_dir() {
+        return Err(invalid("workspace is unrelated or needed for recovery"));
+    }
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(workspace.join(WORKSPACE_LOCK))?;
+    fs2::FileExt::try_lock_exclusive(&lease)?;
+    fs::remove_dir_all(workspace)
 }
 
 #[cfg(windows)]
@@ -921,6 +965,38 @@ mod tests {
     }
 
     #[test]
+    fn relaunch_failure_keeps_installed_files_and_reports_the_distinct_failure() {
+        let Fixture { root, plan } = fixture("windows");
+        let log = Log::create(&plan.workspace).unwrap();
+        let outcome = apply(
+            &plan,
+            &log,
+            |_, _| Ok(true),
+            |_| Err(io::Error::other("fixture: application could not start")),
+        );
+        assert_eq!(outcome, Outcome::Installed);
+        assert_eq!(
+            fs::read_to_string(plan.destination.join("new-only.txt")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(plan.destination.join("runtime/data/user.json")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            fs::read_to_string(plan.previous().join("old-only.txt")).unwrap(),
+            "old"
+        );
+        let (result, kept_log) = kept(&plan);
+        assert_eq!(
+            result,
+            "operation=update-op\nresult=installed\nrelaunch=failed\n"
+        );
+        assert!(kept_log.contains("relaunching failed: fixture: application could not start"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn failure_before_commit_reopens_the_untouched_installation() {
         let Fixture { root, mut plan } = fixture("windows");
         // An owner that already exited (and was reaped) is not waited for.
@@ -964,14 +1040,20 @@ mod tests {
     #[test]
     fn owners_that_stay_running_change_nothing_and_reopen_nothing() {
         let Fixture { root, mut plan } = fixture("windows");
+        let mut exited = owner(0);
+        exited.wait().unwrap();
         let mut process = owner(30);
-        plan.wait_pids = vec![process.id()];
+        plan.wait_pids = vec![exited.id(), process.id()];
         let log = Log::create(&plan.workspace).unwrap();
         let outcome = apply(
             &plan,
             &log,
             |pids, _| wait_for_owners(pids, Duration::from_millis(600)),
             |_| panic!("a running owner must not be joined by a second instance"),
+        );
+        assert!(
+            process.try_wait().unwrap().is_none(),
+            "timeout must not kill an owner"
         );
         process.kill().unwrap();
         process.wait().unwrap();

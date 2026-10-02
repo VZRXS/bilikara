@@ -76,6 +76,41 @@ class AppUpdateFrontendTest(unittest.TestCase):
         self.assertIn('"service.autoCheckUpdates"', self.i18n)
         self.assertIn('"service.update"', self.i18n)
 
+    def test_relaunch_failure_is_distinct_from_replacement_and_reported_once(self):
+        function = self.source[
+            self.source.index("function maybeReportLastInstall("):
+            self.source.index("function renderUpdatePreviewControl(")
+        ]
+        result = self.run_node(f"""
+const state = {{}};
+const messages = [];
+const t = (key, args) => ({{key, args}});
+const setAppMessage = (message, error = false) => messages.push({{message, error}});
+{function}
+for (const [operation, result, relaunch_failed] of [
+  ["update-1", "installed", true], ["update-2", "installed", undefined],
+  ["update-3", "failed", true], ["update-4", "failed", undefined],
+  ["update-5", "owners_running", undefined]
+]) {{
+  const update = {{current_version:"v0.8.0-preview.4", last_install:{{operation,result,relaunch_failed,log:"kept.log"}}}};
+  maybeReportLastInstall(update);
+  maybeReportLastInstall(update);
+}}
+process.stdout.write(JSON.stringify(messages));
+""")
+        self.assertEqual(len(result), 5)
+        self.assertEqual([r["message"]["key"] for r in result], [
+            "service.updateLastInstalledRestartFailed", "service.updateLastInstalled",
+            "service.updateLastFailedRestartFailed", "service.updateLastFailed",
+            "service.updateLastOwnersRunning",
+        ])
+        self.assertEqual([r["error"] for r in result], [True, False, True, True, True])
+        self.assertEqual(result[0]["message"]["args"], {"log":"kept.log", "version":"v0.8.0-preview.4"})
+        translations = json.loads(self.i18n)
+        for language in ("zh", "en", "ja"):
+            for key in ("service.updateLastInstalledRestartFailed", "service.updateLastFailedRestartFailed"):
+                self.assertIn("{log}", translations["languages"][language][key])
+
     def test_startup_and_manual_paths_use_check_only_without_installing(self):
         self.assertIn('apiPost("/api/app/update/check"', self.source)
         self.assertIn("function scheduleStartupAppUpdateCheck", self.source)
@@ -344,7 +379,7 @@ vm.runInNewContext(fs.readFileSync("static/desktop-platform.js","utf8"),desktop)
  assert.equal(android.window.BilikaraDesktopPlatform,undefined);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        result = subprocess.run([node, "-"], input=script, text=True, capture_output=True, cwd=ROOT, timeout=10)
+        result = subprocess.run([node, "-"], input=script, text=True, encoding="utf-8", capture_output=True, cwd=ROOT, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

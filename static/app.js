@@ -10784,7 +10784,10 @@ function maybeReportLastInstall(update) {
   if (!last?.operation || state.reportedLastInstall === last.operation) return;
   state.reportedLastInstall = last.operation;
   const log = String(last.log || "");
-  if (last.result === "installed") {
+  if (last.relaunch_failed === true) {
+    const key = last.result === "installed" ? "service.updateLastInstalledRestartFailed" : "service.updateLastFailedRestartFailed";
+    setAppMessage(t(key, { log, version: String(update.current_version || "") }), true);
+  } else if (last.result === "installed") {
     setAppMessage(t("service.updateLastInstalled", { version: String(update.current_version || "") }));
   } else {
     const key = last.result === "owners_running" ? "service.updateLastOwnersRunning" : "service.updateLastFailed";

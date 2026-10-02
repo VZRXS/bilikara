@@ -16,17 +16,23 @@ use std::time::{Duration, Instant};
 #[test]
 fn built_updater_replaces_after_owner_exit_and_keeps_its_result() {
     for handshake in [true, false] {
-        replace_and_report(handshake);
+        for special_path in [false, true] {
+            replace_and_report(handshake, special_path);
+        }
     }
 }
 
-fn replace_and_report(handshake: bool) {
+fn replace_and_report(handshake: bool, special_path: bool) {
     let root = std::env::temp_dir().join(format!(
-        "bilikara-updater-bin-{}-{handshake}",
+        "bilikara-updater-bin-{}-{handshake}-{special_path}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    let base = root.join("更新 测试 (x86) & bin");
+    let base = root.join(if special_path {
+        "更新 测试 (x86) & bin"
+    } else {
+        "ordinary"
+    });
     let platform = if cfg!(target_os = "macos") {
         "macos"
     } else {
@@ -34,15 +40,19 @@ fn replace_and_report(handshake: bool) {
     };
     let destination = base.join(if platform == "macos" {
         "bilikara-desktop.app"
-    } else {
+    } else if special_path {
         "bilikara 安装"
+    } else {
+        "bilikara"
     });
     let workspace = base.join("update-bin");
     let source = workspace.join("extracted/bilikara");
     for (path, text) in [
         (destination.join("old-only.txt"), "old"),
         (destination.join("runtime/data/user.json"), "keep"),
+        (destination.join("APP_VERSION"), "v0.8.0-preview.3"),
         (source.join("new-only.txt"), "new"),
+        (source.join("APP_VERSION"), "v0.8.0-preview.4"),
     ] {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
@@ -102,6 +112,15 @@ fn replace_and_report(handshake: bool) {
         assert!(workspace.join("handoff-ack").is_file());
         assert!(destination.join("old-only.txt").is_file());
         assert!(!destination.join("new-only.txt").exists());
+        let lease = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(workspace.join("updater.lock"))
+            .unwrap();
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&lease).is_err(),
+            "running updater must hold the cleanup lease"
+        );
         // Repeating the same handoff cannot start a second installer.
         assert!(
             launch_update_helper(&LaunchUpdateHelperRequest {
@@ -132,9 +151,27 @@ fn replace_and_report(handshake: bool) {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // The marker precedes relaunch; wait for reporting to finish before
+    // inspecting the restart result. A spawn/exit code is not shell readiness.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(workspace.join("updater.lock"))
+        {
+            Ok(lease) if fs2::FileExt::try_lock_exclusive(&lease).is_ok() => break,
+            Err(_) if !workspace.exists() => break,
+            _ => assert!(Instant::now() < deadline, "updater is still reporting"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let marker = fs::read_to_string(&result).unwrap();
+    assert!(marker.starts_with("operation=update-bin\nresult=installed\n"));
+    #[cfg(not(any(windows, target_os = "macos")))]
     assert_eq!(
-        fs::read_to_string(&result).unwrap(),
-        "operation=update-bin\nresult=installed\n"
+        marker,
+        "operation=update-bin\nresult=installed\nrelaunch=failed\n"
     );
     assert!(
         started.elapsed() >= Duration::from_millis(1500),
@@ -146,10 +183,16 @@ fn replace_and_report(handshake: bool) {
     );
     assert!(!destination.join("old-only.txt").exists());
     assert_eq!(
+        fs::read_to_string(destination.join("APP_VERSION")).unwrap(),
+        "v0.8.0-preview.4"
+    );
+    assert_eq!(
         destination.join("runtime/data/user.json").exists(),
         platform == "windows"
     );
     let kept = fs::read_to_string(plan.reports.join("update-bin.log")).unwrap();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    assert!(kept.contains("relaunching failed: desktop updates are not supported here"));
     assert!(
         kept.contains("] installed, previous installation kept at"),
         "{kept}"

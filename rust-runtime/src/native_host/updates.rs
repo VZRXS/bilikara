@@ -1318,12 +1318,17 @@ mod tests {
         );
         let host = super::super::start(
             &directory,
-            Arc::new(|_| None),
+            Arc::new(|path| {
+                matches!(path, "remote.html" | "controller.html").then(|| super::super::Asset {
+                    bytes: b"<html>update identity fixture</html>".to_vec(),
+                    mime: "text/html".into(),
+                })
+            }),
             true,
             Some("private-shell-fixture".into()),
         )
         .unwrap();
-        set_facts("0.8.0-preview.2", "windows", "x64");
+        set_facts("0.8.0-preview.3", "windows", "x64");
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(15))
@@ -1343,6 +1348,46 @@ mod tests {
             .unwrap()
             .to_owned();
         let base = format!("http://127.0.0.1:{}", host.local_port());
+        // Remote and audience/controller WebViews have valid identities, but
+        // none carries the main shell's private installation capability.
+        for entry in [
+            format!("{base}/remote"),
+            format!(
+                "{}?page=controller&presentationGeneration=42",
+                host.bootstrap_url()
+            ),
+        ] {
+            let response = client
+                .get(entry)
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "document")
+                .send()
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let identity = response.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned();
+            for (route, body) in [
+                ("install", json!({"include_preview": false})),
+                ("activate", json!({"operation": 1})),
+                ("cancel", json!({})),
+            ] {
+                assert_eq!(
+                    client
+                        .post(format!("{base}/api/app/update/{route}"))
+                        .header("cookie", &identity)
+                        .json(&body)
+                        .send()
+                        .unwrap()
+                        .status(),
+                    403
+                );
+            }
+        }
         let post = |path: &str, body: Value| -> (u16, Value) {
             let mut request = client
                 .post(format!("{base}{path}"))
@@ -1592,11 +1637,14 @@ mod tests {
         );
         let ready = wait("prepared");
         *desktop_install::LAUNCH_INTENTS.lock().unwrap() = Some(Vec::new());
-        for _ in 0..2 {
+        for body in [
+            json!({"operation":ready["operation"],"command":["untrusted"],"install_root":"/other","plan_path":"/other/plan.json"}),
+            json!({"operation":ready["operation"]}),
+        ] {
             let result = client
                 .post(format!("{base}/api/app/update/activate"))
                 .header("x-bilikara-shutdown-token", "private-shell-fixture")
-                .json(&json!({"operation":ready["operation"]}))
+                .json(&body)
                 .send()
                 .unwrap();
             assert_eq!(result.status(), 200);
@@ -1734,8 +1782,8 @@ mod tests {
             assert!(take_last_result(&data, None).is_none(), "{malformed}");
         }
         assert!(UpdateState::desktop(facts, None).snapshot()["last_install"].is_null());
-        // The next Host start removes a finished updater's workspace, and
-        // nothing that is not one.
+        // A directory name or a file called plan.json is not ownership proof.
+        // Old helpers without a workspace lease are conservatively retained.
         let parent = data.join("workspaces");
         for (name, plan) in [("update-a1", true), ("update-a2", false)] {
             std::fs::create_dir_all(parent.join(name)).unwrap();
@@ -1751,7 +1799,7 @@ mod tests {
             .unwrap();
             take_last_result(&data, Some(&parent)).unwrap();
         }
-        assert!(!parent.join("update-a1").exists());
+        assert!(parent.join("update-a1").exists());
         assert!(parent.join("update-a2").exists());
         // The notice shows the ordinary Windows form of a canonical path.
         for (canonical, shown) in [
@@ -1766,6 +1814,102 @@ mod tests {
             ),
         ] {
             assert_eq!(desktop_install::display_path(canonical), shown);
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn result_cleanup_waits_for_the_updater_and_preserves_unrelated_workspaces() {
+        use crate::update_installer::apply::Plan;
+        let data = std::env::temp_dir().join(format!("update-cleanup-{}", token().unwrap()));
+        let parent = data.join("workspaces");
+        let workspace = parent.join("update-running");
+        let reports = crate::update_installer::native::reports(&data);
+        let plan = Plan {
+            schema_version: 1,
+            platform: "windows".into(),
+            operation: "update-running".into(),
+            source: workspace.join("extracted/package"),
+            destination: data.join("installed"),
+            workspace: workspace.clone(),
+            reports: reports.clone(),
+            preserve: vec!["runtime".into()],
+            wait_pids: vec![std::process::id()],
+        };
+        for path in [&plan.source, &plan.destination, &reports] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(
+            workspace.join("plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+        let lease = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create_new(true)
+            .open(workspace.join("updater.lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&lease).unwrap();
+        let busy =
+            crate::update_installer::apply::cleanup_workspace(&workspace, &reports).unwrap_err();
+        assert_eq!(
+            busy.raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        std::fs::write(
+            reports.join("last-result.txt"),
+            "operation=update-running\nresult=installed\nrelaunch=failed\n",
+        )
+        .unwrap();
+        std::fs::write(reports.join("update-running.log"), "kept restart error").unwrap();
+        let last = take_last_result(&data, Some(&parent)).unwrap();
+        assert_eq!(last["result"], "installed");
+        assert!(
+            workspace.join("plan.json").is_file(),
+            "must not clean a running updater"
+        );
+        assert_eq!(last["relaunch_failed"], true);
+        assert!(take_last_result(&data, Some(&parent)).is_none());
+        // The next Host can report immediately, but cleanup must wait until
+        // the updater has finished writing its log and released its lease.
+        drop(lease);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while workspace.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!workspace.exists());
+        assert_eq!(
+            std::fs::read_to_string(reports.join("update-running.log")).unwrap(),
+            "kept restart error"
+        );
+        // Valid-looking plans with a different report owner, missing leases,
+        // or an unrestored installation must not authorize deletion either.
+        for kind in ["unrelated", "legacy", "recovery"] {
+            let workspace = parent.join(format!("update-{kind}"));
+            let mut other = plan.clone();
+            other.operation = format!("update-{kind}");
+            other.workspace = workspace.clone();
+            other.source = workspace.join("extracted/package");
+            if kind == "unrelated" {
+                other.reports = data.join("someone-else");
+            }
+            if kind == "recovery" {
+                other.destination = data.join("missing-installation");
+            }
+            std::fs::create_dir_all(&other.source).unwrap();
+            std::fs::write(
+                workspace.join("plan.json"),
+                serde_json::to_vec(&other).unwrap(),
+            )
+            .unwrap();
+            if kind != "legacy" {
+                std::fs::write(workspace.join("updater.lock"), "").unwrap();
+            }
+            assert!(
+                crate::update_installer::apply::cleanup_workspace(&workspace, &reports).is_err()
+            );
+            assert!(workspace.join("plan.json").is_file());
         }
         std::fs::remove_dir_all(data).unwrap();
     }

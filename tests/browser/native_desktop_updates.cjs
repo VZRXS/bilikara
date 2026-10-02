@@ -1,7 +1,7 @@
 "use strict";
 // Real relocated native backend/assets; desktop OS bridge and release status
 // are fixtures. Rust route/transfer/preparation is covered by native HTTP tests.
-const assert=require("node:assert/strict"),fs=require("node:fs/promises"),path=require("node:path"),os=require("node:os");
+const assert=require("node:assert/strict"),fs=require("node:fs/promises"),path=require("node:path"),os=require("node:os"),http=require("node:http");
 const {spawn}=require("node:child_process"),{once}=require("node:events"),{createInterface}=require("node:readline"),{chromium}=require("playwright");
 const [packageDir,evidenceDir]=process.argv.slice(2);
 (async()=>{
@@ -10,12 +10,38 @@ const [packageDir,evidenceDir]=process.argv.slice(2);
  const relocated=path.join(root,"package");await fs.cp(path.resolve(packageDir),relocated,{recursive:true});
  const empty=path.join(root,"empty-path");await fs.mkdir(empty);
  const env={...process.env,PATH:empty,BILIKARA_NATIVE_DATA_DIR:path.join(root,"native"),BILIKARA_SHUTDOWN_TOKEN:"fixture-private",HTTP_PROXY:"http://127.0.0.1:1",HTTPS_PROXY:"http://127.0.0.1:1",NO_PROXY:"127.0.0.1,localhost"};
+ const reports=path.join(root,"native","update-logs");
  for(const key of Object.keys(env)) if(/^(PYTHON|BILIKARA_(BILIBILI|DESKTOP|LIBAV)|BB_DOWN|ARIA2C)/.test(key)) delete env[key];
- const server=spawn(path.join(relocated,"bilikara-desktop-host"),[],{cwd:root,env,stdio:["ignore","pipe","pipe"]});
- let stderr="";server.stderr.on("data",d=>stderr=(stderr+d).slice(-3000));
- const lines=createInterface({input:server.stdout});let browser,page,ready;
+ let server,lines,browser,page,ready;
+ const start=async()=>{
+  server=spawn(path.join(relocated,"_internal","bilikara-desktop-host"),[],{cwd:root,env,stdio:["ignore","pipe","pipe"]});
+  let stderr="";server.stderr.on("data",d=>stderr=(stderr+d).slice(-3000));
+  lines=createInterface({input:server.stdout});
+  return JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(server,"exit").then(()=>{throw Error(stderr);})]));
+ };
  try {
-  ready=JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(server,"exit").then(()=>{throw Error(stderr);})]));
+  // Enroll an isolated data root through the real Host before adding an update
+  // marker. Existing non-native data must continue to be rejected at startup.
+  ready=await start();
+  const cookie=await new Promise((resolve,reject)=>{
+   http.get(ready.bootstrapUrl,{headers:{"sec-fetch-mode":"navigate","sec-fetch-dest":"document"}},response=>{
+    response.resume();
+    const cookies=response.headers["set-cookie"];
+    if(!cookies?.length) return reject(Error(`Bootstrap rejected: ${response.statusCode}`));
+    resolve(cookies[0].split(";",1)[0]);
+   }).on("error",reject);
+  });
+  for(const [route,body] of [["/api/session-users/add",{name:"Updater fixture"}],["/api/player/volume",{volume_percent:43}]]) {
+   const response=await fetch(ready.baseUrl+route,{method:"POST",headers:{cookie,"content-type":"application/json"},body:JSON.stringify(body)});
+   assert.equal(response.status,200);await response.text();
+  }
+  const firstExit=once(server,"exit");
+  await fetch(ready.baseUrl+"/api/app/shutdown",{method:"POST",headers:{"x-bilikara-shutdown-token":"fixture-private"}});
+  assert.equal((await firstExit)[0],0);lines.close();ready=null;
+  await fs.mkdir(reports,{recursive:true});
+  await fs.writeFile(path.join(reports,"last-result.txt"),"operation=update-kept-restart\nresult=installed\nrelaunch=failed\n");
+  await fs.writeFile(path.join(reports,"update-kept-restart.log"),"fixture: automatic reopening failed\n");
+  ready=await start();
   browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000}});
   await context.addInitScript(()=>{
    localStorage.setItem("bilikara.update.automatic","false");
@@ -34,15 +60,35 @@ const [packageDir,evidenceDir]=process.argv.slice(2);
   page.on("console",m=>{if(["error","warning"].includes(m.type())) consoleMessages.push({type:m.type(),message:m.text()});});
   await page.goto(ready.bootstrapUrl);await page.waitForFunction(()=>state.hasValidStateResponse);
   assert.equal(await page.title(),"bilikara host");assert.equal(new URL(page.url()).pathname,"/");
+  await page.evaluate(()=>setLanguage("zh"));
+  await page.locator('[data-session-choice="continue"]').click();
+  await page.waitForFunction(()=>state.reportedLastInstall === "update-kept-restart");
+  assert.equal(await page.evaluate(()=>state.data.player_settings.volume_percent),43);
+  assert.ok((await page.evaluate(()=>state.data.session_users)).includes("Updater fixture"));
   // Pause state polling only for deterministic update presentation fixtures.
   // Rust tests separately assert authoritative route/status/SSE agreement.
   await page.evaluate(()=>{fetchState=async()=>{};});
   await page.locator("#work-rail-settings").click();
   // A kept helper outcome is shown once, with its log, however often status renders.
   const toastText=()=>page.evaluate(()=>{const n=document.getElementById("app-toast");return n.classList.contains("hidden")?"":n.textContent;});
+  assert.equal(await page.evaluate(()=>state.data.app_update.last_install.relaunch_failed),true);
+  assert.match(await toastText(),/自动重新打开失败/);
+  assert.match(await toastText(),/update-kept-restart\.log/);
+  await assert.rejects(fs.access(path.join(reports,"last-result.txt")));
+  assert.match(await fs.readFile(path.join(reports,"update-kept-restart.log"),"utf8"),/reopening failed/);
+  await page.evaluate(()=>{setAppMessage("");renderUpdatePreviewControl();renderUpdatePreviewControl();});
+  assert.equal(await toastText(),"");
   await page.evaluate(()=>{state.data.app_update={...state.data.app_update,last_install:{operation:"update-fixture",result:"failed",log:"C:\\bilikara\\runtime\\data\\update-logs\\update-fixture.log"}};renderUpdatePreviewControl();});
   assert.match(await toastText(),/update-fixture\.log/);
   assert.equal(await page.locator("#app-toast").evaluate(n=>n.classList.contains("is-error")),true);
+  await page.evaluate(()=>{setAppMessage("");renderUpdatePreviewControl();renderUpdatePreviewControl();});
+  assert.equal(await toastText(),"");
+  // Installed means file replacement, not a successful automatic restart.
+  await page.evaluate(()=>{state.data.app_update={...state.data.app_update,current_version:"v0.8.0-preview.4",last_install:{operation:"update-restart-failed",result:"installed",relaunch_failed:true,log:"C:\\bilikara\\runtime\\data\\update-logs\\update-restart-failed.log"}};renderUpdatePreviewControl();});
+  assert.match(await toastText(),/自动重新打开失败/);
+  assert.match(await toastText(),/v0\.8\.0-preview\.4/);
+  assert.equal(await page.locator("#app-toast").evaluate(n=>n.classList.contains("is-error")),true);
+  await page.screenshot({path:path.join(evidence,"restart-failed.png"),mask:[page.locator(".remote-mini-control")]});
   await page.evaluate(()=>{setAppMessage("");renderUpdatePreviewControl();renderUpdatePreviewControl();});
   assert.equal(await toastText(),"");
   await page.evaluate(()=>{

@@ -123,8 +123,8 @@ pub(crate) fn display_path(path: &str) -> String {
 
 /// Consume the outcome a previous helper kept under the data root, once, at
 /// desktop Host start. Its log stays for diagnosis; malformed markers are
-/// ignored rather than reported as an update result. A finished updater's
-/// workspace (which a running Windows updater cannot delete) is removed.
+/// ignored rather than reported as an update result. Cleanup waits for the
+/// updater's workspace lease; publishing a result does not mean it has exited.
 pub(crate) fn take_last_result(
     data: &std::path::Path,
     workspaces: Option<&std::path::Path>,
@@ -159,14 +159,39 @@ pub(crate) fn take_last_result(
             .join(crate::update_installer::apply::PLAN_FILE)
             .is_file()
     {
-        let _ = std::fs::remove_dir_all(workspace);
+        let cleanup_reports = reports.clone();
+        let _ = std::thread::Builder::new()
+            .name("update-cleanup".into())
+            .spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    match crate::update_installer::apply::cleanup_workspace(
+                        &workspace,
+                        &cleanup_reports,
+                    ) {
+                        Err(error)
+                            if (error.kind() == std::io::ErrorKind::WouldBlock
+                                || error.raw_os_error()
+                                    == fs2::lock_contended_error().raw_os_error())
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        _ => break,
+                    }
+                }
+            });
     }
     let log = reports.join(format!("{operation}.log"));
-    Some(json!({
+    let mut result = json!({
         "operation": operation,
         "result": result,
         "log": log.is_file().then(|| display_path(&log.to_string_lossy())),
-    }))
+    });
+    if field("relaunch=").as_deref() == Some("failed") {
+        result["relaunch_failed"] = json!(true);
+    }
+    Some(result)
 }
 
 fn current(context: &HostContext, operation: u64, phase: &AtomicU8) -> bool {
