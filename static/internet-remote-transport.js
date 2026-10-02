@@ -3,7 +3,10 @@
 
   const encoder = new TextEncoder();
   const MAX_FRAME_BYTES = 12 * 1024;
-  const MAX_TRANSFER_BYTES = 512 * 1024;
+  const MAX_TRANSFER_BYTES = 32 * 1024 * 1024;
+  const MAX_PENDING_BYTES = 64 * 1024 * 1024;
+  const CHUNK_BYTES = 9 * 1024;
+  const MAX_CHUNKS = Math.ceil(MAX_TRANSFER_BYTES / (CHUNK_BYTES - 3));
   const MAX_PENDING_TRANSFERS = 8;
 
   function utf8Bytes(value) {
@@ -40,7 +43,7 @@
     return difference === 0;
   }
 
-  function splitText(value, targetBytes = 9 * 1024) {
+  function splitText(value, targetBytes = CHUNK_BYTES) {
     const chunks = [];
     let current = "";
     let bytes = 0;
@@ -58,18 +61,17 @@
     return chunks;
   }
 
-  function send(channel, payload) {
-    if (!channel || channel.readyState !== "open") throw new Error("DataChannel is not open");
+  function* frames(payload) {
     const serialized = JSON.stringify(payload);
     const totalBytes = utf8Bytes(serialized);
     if (totalBytes > MAX_TRANSFER_BYTES) throw new Error("Internet Remote message is too large");
     if (totalBytes <= MAX_FRAME_BYTES) {
-      channel.send(serialized);
+      yield serialized;
       return;
     }
     const transferId = crypto.randomUUID();
     const chunks = splitText(serialized);
-    chunks.forEach((data, index) => {
+    for (const [index, data] of chunks.entries()) {
       const frame = JSON.stringify({
         type: "__chunk",
         transfer_id: transferId,
@@ -79,8 +81,21 @@
         data,
       });
       if (utf8Bytes(frame) > MAX_FRAME_BYTES) throw new Error("Internet Remote frame is too large");
-      channel.send(frame);
-    });
+      yield frame;
+    }
+  }
+
+  function send(channel, payload, { buffered = false } = {}) {
+    if (!channel || channel.readyState !== "open") throw new Error("DataChannel is not open");
+    if (buffered) {
+      return (async () => {
+        for (const frame of frames(payload)) {
+          await waitForBufferedAmount(channel);
+          channel.send(frame);
+        }
+      })();
+    }
+    for (const frame of frames(payload)) channel.send(frame);
   }
 
   class Decoder {
@@ -97,7 +112,7 @@
       if (
         typeof id !== "string" || typeof data !== "string"
         || !Number.isInteger(index) || !Number.isInteger(total) || !Number.isInteger(totalBytes)
-        || index < 0 || total < 2 || total > 128 || index >= total
+        || index < 0 || total < 2 || total > MAX_CHUNKS || index >= total
         || totalBytes < 1 || totalBytes > MAX_TRANSFER_BYTES
       ) throw new Error("Invalid Internet Remote chunk");
       const cutoff = Date.now() - 30_000;
@@ -106,12 +121,18 @@
       }
       let item = this.pending.get(id);
       if (!item) {
-        if (this.pending.size >= MAX_PENDING_TRANSFERS) throw new Error("Too many Internet Remote transfers");
-        item = { createdAt: Date.now(), total, totalBytes, chunks: new Array(total), received: 0 };
+        if (this.pending.size >= MAX_PENDING_TRANSFERS
+          || [...this.pending.values()].reduce((sum, entry) => sum + entry.totalBytes, totalBytes) > MAX_PENDING_BYTES) throw new Error("Too many Internet Remote transfers");
+        item = { createdAt: Date.now(), total, totalBytes, chunks: new Array(total), received: 0, receivedBytes: 0 };
         this.pending.set(id, item);
       }
       if (item.total !== total || item.totalBytes !== totalBytes) throw new Error("Mismatched Internet Remote chunk");
       if (item.chunks[index] === undefined) {
+        item.receivedBytes += utf8Bytes(data);
+        if (item.receivedBytes > item.totalBytes) {
+          this.pending.delete(id);
+          throw new Error("Corrupt Internet Remote transfer");
+        }
         item.chunks[index] = data;
         item.received += 1;
       }

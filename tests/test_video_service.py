@@ -218,8 +218,10 @@ class VideoServiceTest(unittest.TestCase):
             self.assertEqual(store.current_item.cid, 456)
             self.assertEqual(store.current_item.selected_cids, [789])
             self.assertEqual(admission.call_args.args[0].selected_audio_variant_id, "p2_track_1")
-            # Existing admission clears pending variants until cache publication.
-            self.assertEqual(store.current_item.selected_audio_variant_id, "")
+            # Admission preserves the parsed preference while clearing media.
+            self.assertEqual(store.current_item.selected_audio_variant_id, "p2_track_1")
+            self.assertEqual(store.current_item.audio_variants, [])
+            self.assertEqual(store.current_item.video_media_url, "")
             self.assertEqual(store.current_item.requester_name, "fixture-user")
             self.assertTrue(store.current_item.item_incarnation_id)
             context.cache_manager.sync_with_playlist.assert_called_once()

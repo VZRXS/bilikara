@@ -5543,6 +5543,8 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
+  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
   const bbdownMessage = localizedBBDownLoginMessage(raw);
   if (bbdownMessage && bbdownMessage !== raw) {
     return bbdownMessage;
@@ -16208,6 +16210,7 @@ function reportPlayerStatusHeartbeat(itemId, video, session) {
 }
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
+  state.renderedQueue = { playlist, version: state.data?.queue_version || "" };
   if (!playlist.length) {
     const signature = `${state.data?.current_item ? "empty-with-current" : "empty"}|${state.language}`;
     if (signature === state.playlistEmptyRenderSignature) {
@@ -18928,8 +18931,8 @@ async function handleLocalPlaybackEnded(
   });
 }
 
-async function reorderPlaylist(itemId, index) {
-  const accepted = await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index });
+async function reorderPlaylist(itemId, index, queueVersion) {
+  const accepted = await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index, expected_queue_version: queueVersion });
   render();
   return accepted;
 }
@@ -20926,6 +20929,7 @@ elements.playlist.addEventListener("click", async (event) => {
     closeOpenMenus({ restoreFocus: false });
     openConfirm({
       type: "reorder-item",
+      queueVersion: state.renderedQueue?.version,
       itemId,
       targetIndex,
       focusItemId: itemId,
@@ -21299,7 +21303,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "reorder-item" && intent.itemId && Number.isInteger(intent.targetIndex)) {
-      const accepted = await reorderPlaylist(intent.itemId, intent.targetIndex);
+      const accepted = await reorderPlaylist(intent.itemId, intent.targetIndex, intent.queueVersion);
       closeConfirm();
       if (intent.focusItemId) {
         focusPlaylistItemMenuTrigger(intent.focusItemId);
@@ -21530,6 +21534,7 @@ elements.playlist.addEventListener("dragstart", (event) => {
   }
 
   state.dragItemId = item.dataset.id || "";
+  state.dragQueue = state.renderedQueue;
   state.dragTargetId = "";
   state.dragTargetAfter = false;
 
@@ -21592,7 +21597,8 @@ elements.playlist.addEventListener("drop", async (event) => {
   event.preventDefault();
 
   const draggedId = state.dragItemId;
-  const playlist = state.data.playlist;
+  const playlist = state.dragQueue?.playlist || [];
+  const queueVersion = state.dragQueue?.version || "";
   const sourceIndex = playlist.findIndex((item) => item.id === draggedId);
   if (sourceIndex === -1 || !state.dragTargetId) {
     clearDragState();
@@ -21621,6 +21627,7 @@ elements.playlist.addEventListener("drop", async (event) => {
   const point = anchorPointForEvent(event, elements.playlist);
   openConfirm({
     type: "reorder-item",
+    queueVersion,
     itemId: draggedId,
     targetIndex,
     x: point.x,

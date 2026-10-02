@@ -540,6 +540,7 @@
       schema_version: 1,
       state_epoch: typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "",
       state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
+      queue_version: String(remoteState.queue_version || ""),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
       playback_mode: remoteState.playback_mode || "local",
@@ -787,7 +788,7 @@
           expected_revision: expectedRevision(),
         }, "control", playlistAddRequestTimeoutMs);
       } else if (method === "POST" && url.pathname === "/api/playlist/reorder") {
-        response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_revision: expectedRevision() });
+        response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_queue_version: body.expected_queue_version, expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/playlist/resort") {
         response = await request("playlist.resort", { expected_revision: expectedRevision() });
       } else if (method === "POST" && ["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now"].includes(url.pathname)) {

@@ -43,6 +43,7 @@
 
 .queue-badge-column {
   display: grid;
+  grid-template-rows: 44px minmax(12px, auto);
   justify-items: center;
   align-content: center;
   gap: 1px;
@@ -130,6 +131,7 @@
 }
 
 .queue-drag-handle.remote-info-button {
+  grid-area: 1 / 1;
   border: none;
   border-radius: 10px;
   width: 44px;
@@ -147,13 +149,46 @@
   touch-action: none;
 }
 
+.queue-drag-handle,
+.queue-drag-handle * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .queue-drag-handle:active {
   cursor: grabbing;
+}
+
+.queue-drag-grip {
+  display: none;
+  position: absolute;
+  inset: 0;
+  width: 20px;
+  height: 20px;
+  margin: auto;
+  color: var(--queue-order-color);
+  pointer-events: none;
+}
+
+.queue-drag-handle.is-drag-ready {
+  grid-row: 1 / 3;
+  align-self: center;
+}
+
+.queue-drag-handle.is-drag-ready .queue-order,
+.queue-drag-handle.is-drag-ready + .queue-state {
+  visibility: hidden;
+}
+
+.queue-drag-handle.is-drag-ready .queue-drag-grip {
+  display: block;
 }
 
 .queue-drag-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .queue-state {
+  grid-area: 2 / 1;
   width: 100%;
   min-height: 12px;
   padding: 0;

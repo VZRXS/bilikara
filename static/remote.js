@@ -629,6 +629,8 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
+  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
   const bbdownMessage = localizedBBDownLoginMessage(raw);
   if (bbdownMessage && bbdownMessage !== raw) {
     return bbdownMessage;
@@ -7330,7 +7332,7 @@ async function submitPoolConfigSheet() {
 }
 
 function openReorderConfirmSheet(intent) {
-  if (!intent?.itemId || !Number.isInteger(intent.targetIndex) || !elements.reorderConfirmSheet) {
+  if (state.reorderConfirmSaving || !intent?.itemId || !Number.isInteger(intent.targetIndex) || !elements.reorderConfirmSheet) {
     return;
   }
 
@@ -7340,6 +7342,7 @@ function openReorderConfirmSheet(intent) {
   state.reorderConfirmIntent = {
     itemId: intent.itemId,
     targetIndex: intent.targetIndex,
+    queueVersion: intent.queueVersion,
     title,
   };
   state.reorderConfirmSaving = false;
@@ -7364,7 +7367,6 @@ function openReorderConfirmSheet(intent) {
 function closeReorderConfirmSheet() {
   state.reorderConfirmSheetOpen = false;
   state.reorderConfirmIntent = null;
-  state.reorderConfirmSaving = false;
   elements.reorderConfirmSheet?.classList.remove("is-open");
   elements.reorderConfirmSheet?.setAttribute("aria-hidden", "true");
   window.setTimeout(() => {
@@ -7375,7 +7377,7 @@ function closeReorderConfirmSheet() {
     if (elements.reorderConfirmSheetText) {
       elements.reorderConfirmSheetText.textContent = "";
     }
-    if (elements.reorderConfirmSheetConfirm) {
+    if (elements.reorderConfirmSheetConfirm && !state.reorderConfirmSaving) {
       elements.reorderConfirmSheetConfirm.disabled = false;
       elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderConfirm");
     }
@@ -7391,6 +7393,7 @@ async function confirmReorderConfirmSheet() {
   state.reorderConfirmSaving = true;
   if (elements.reorderConfirmSheetConfirm) {
     elements.reorderConfirmSheetConfirm.disabled = true;
+    elements.reorderConfirmSheetConfirm.setAttribute("aria-busy", "true");
     elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderMoving");
   }
 
@@ -7398,17 +7401,20 @@ async function confirmReorderConfirmSheet() {
     applyStateSnapshot(await apiPost("/api/playlist/reorder", {
       item_id: intent.itemId,
       index: intent.targetIndex,
+      expected_queue_version: intent.queueVersion,
     }));
     closeReorderConfirmSheet();
     setFormMessage(t("remote.queueOrderUpdated"));
     render();
   } catch (error) {
+    setFormMessage(error.message, true);
+  } finally {
     state.reorderConfirmSaving = false;
     if (elements.reorderConfirmSheetConfirm) {
+      elements.reorderConfirmSheetConfirm.removeAttribute("aria-busy");
       elements.reorderConfirmSheetConfirm.disabled = false;
       elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderConfirm");
     }
-    setFormMessage(error.message, true);
   }
 }
 async function confirmGatchaFavlistSheet() {

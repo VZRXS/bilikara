@@ -697,12 +697,15 @@ class PlaylistStore:
             self._request("move_to_next", item_id=str(item_id))
         )
 
-    def move_item_to_index(self, item_id: str, target_index: int) -> bool:
+    def move_item_to_index(
+        self, item_id: str, target_index: int, *, expected_queue_version: str | None = None
+    ) -> bool:
         return self._changed_or_found(
             self._request(
                 "move_item_to_index",
                 item_id=str(item_id),
                 target_index=int(target_index),
+                expected_queue_version=expected_queue_version,
             )
         )
 

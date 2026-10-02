@@ -749,8 +749,12 @@ class AppContext:
         self.store.move_item(item_id, direction)
         self.cache_manager.sync_with_playlist()
 
-    def move_item_to_index(self, item_id: str, index: int) -> None:
-        self.store.move_item_to_index(item_id, index)
+    def move_item_to_index(
+        self, item_id: str, index: int, *, expected_queue_version: str | None = None
+    ) -> None:
+        self.store.move_item_to_index(
+            item_id, index, expected_queue_version=expected_queue_version
+        )
         self.cache_manager.sync_with_playlist()
 
     def resort_playlist_by_cycle(self) -> None:
@@ -2245,7 +2249,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 index = body.get("index")
                 if not isinstance(index, int):
                     raise ValueError("index 必须是整数")
-                CONTEXT.move_item_to_index(body["item_id"], index)
+                CONTEXT.move_item_to_index(
+                    body["item_id"], index,
+                    expected_queue_version=body.get("expected_queue_version"),
+                )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/resort":
@@ -2782,12 +2789,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 status=exc.status_code or {
                     "player_busy": HTTPStatus.TOO_MANY_REQUESTS,
                     "stale_command": HTTPStatus.CONFLICT,
+                    "queue_changed": HTTPStatus.CONFLICT,
+                    "queue_item_missing": HTTPStatus.CONFLICT,
                 }.get(exc.kind, HTTPStatus.BAD_REQUEST),
             )
         except PlaylistStoreCommandError as exc:
             status = {
                 "player_busy": HTTPStatus.TOO_MANY_REQUESTS,
                 "stale_command": HTTPStatus.CONFLICT,
+                "queue_changed": HTTPStatus.CONFLICT,
+                "queue_item_missing": HTTPStatus.CONFLICT,
             }.get(exc.kind, HTTPStatus.BAD_REQUEST)
             self._write_json({"ok": False, "error": str(exc), "code": exc.kind}, status=status)
         except ValueError as exc:
@@ -2869,11 +2880,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             )
         except Exception as exc:  # noqa: BLE001
             error = " ".join(str(exc).split())[:300] or type(exc).__name__
-            print(
-                f"[bilikara:catalog] background append scheduling failed: {error}",
-                file=sys.stderr,
-                flush=True,
-            )
+            try:
+                print(
+                    f"[bilikara:catalog] background append scheduling failed: {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except (OSError, ValueError):
+                # Console failures cannot invalidate the committed song request.
+                pass
         self._write_json({"ok": True, "data": CONTEXT.snapshot()})
 
     def _delete_missing_bvid_from_pool_if_needed(self, body: dict, error: Exception) -> None:

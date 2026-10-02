@@ -434,7 +434,7 @@
       if (peers.get(peer.id) !== peer || peer[lane]?.readyState !== "open") return;
       await transport.waitForBufferedAmount(peer[lane]);
       if (peers.get(peer.id) === peer && peer[lane]?.readyState === "open") {
-        transport.send(peer[lane], message);
+        await transport.send(peer[lane], message, { buffered: true });
       }
     });
     peer.outbound[lane] = operation.catch(() => {});

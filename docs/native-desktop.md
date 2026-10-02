@@ -557,6 +557,96 @@ queue, recent-session listing, and exporting current or archived sessions. Raw
 export-data projections and queue-wide clearing remain Host-only; Internet
 Remote still does not expose file export.
 
+### Queue ordering rules
+
+The current program is separate from the waiting queue. Queue ordering is owned
+by Rust AppState and serialized with admissions and playback transitions; a
+successful sort moves existing item IDs and their complete payloads, rather than
+reconstructing or removing requests.
+
+| Action | Waiting-queue behavior | Current program |
+| --- | --- | --- |
+| Ordinary request (`点歌`) | Insert a `cycle` item into the singer rotation, leaving existing items in relative order. | Starts the item only when there is no current program. |
+| Queue next (`顶歌`) | Move the selected ID to index 0 as `priority`. Multiple queue-next actions put the most recently committed action first. Repeating an action on the same ID does not duplicate it. | Unchanged. |
+| Drag / move to position | Move the selected ID to the requested final zero-based index (clamped to the current queue bounds), mark it `manual`, then rebuild the remaining cycle slots. Moving to its existing index leaves its slot type unchanged. | Unchanged. |
+| Default sort (`重新排序`) | Clear every `priority` / `manual` marker, including a queue with just one waiting song, and rebuild singer rotation. Within each singer, preserve the songs' **current** relative order, not their original request order. | Unchanged. |
+| Next song | Take waiting index 0 as the new current program, then rotate the remaining cycle slots from that singer. Stale or repeated playback-generation commands are rejected. | Finishes the previous program. |
+| Play now (`立即播放`) | Remove the selected waiting ID and make it the current program immediately. | Finishes and replaces the previous program. This is a different action from queue next. |
+
+Singer rotation follows the session seating order, starting after the current
+program's singer and wrapping around. For singers A/B/C with A currently singing,
+ordinary waiting songs alternate B/C/A, skipping singers with no waiting song.
+Only registered singers' `cycle` items participate. During a cycle rebuild,
+`priority`, `manual`, and unregistered-singer items keep their occupied slots;
+explicit moves, insertions ahead of them, and playback can still shift their
+numeric positions. A new ordinary request is inserted after all existing fixed
+slots, so a manually moved song near the end can delay an otherwise earlier
+singer turn until default sort clears that marker. Removing a singer does not
+remove that singer's queued songs.
+
+Cycle counts use currently waiting cycle songs, not historical plays. A singer
+with no waiting songs can return after several empty rounds without accumulating
+an old turn count. Readding a deleted singer's name makes that singer's retained
+cycle songs eligible for rotation again. Changing seating rebuilds cycle slots
+without releasing existing priority/manual markers.
+
+For example, with A singing and A1/A2/B1/B2 waiting, topping A2 and then default
+sorting yields B1/A2/B2/A1. Default sort restores alternating singers, but keeps
+A2 ahead of A1. Repeated priority actions can postpone ordinary requests; there
+is no priority quota or automatic timeout.
+
+Concurrency boundaries to keep in mind when interpreting feedback:
+
+- Host, LAN and public Remote bind a drag confirmation to the displayed queue's
+  `queue_version`, including item incarnations, singer seats and slot types. Rust
+  checks it under the mutation lock. A changed queue rejects the old destination;
+  cache progress, metadata and player settings do not invalidate it. Identical
+  ordering policy and item incarnations have the same content token.
+- Top, positional moves and Play now reject a no-longer-waiting ID with
+  `queue_item_missing`; removing an absent ID also fails. A valid move to the
+  existing index remains a successful no-op and preserves its slot type.
+- Internet Remote projects the full queue and history, without the former 1,000
+  item truncation. Positions cover the full 10,000-item core capacity. The shared
+  transport splits messages into bounded frames, supports up to 32 MiB per
+  transfer and bounds pending receive buffers to 64 MiB. Oversized messages fail
+  explicitly; they do not silently hide tail items.
+- Finished programs have session-play ledger entries. A program that never
+  started can be absent from the eligible history list after Next/Play now, even
+  though sorting itself never removed it. Duplicate-request checks cover active
+  songs and started songs in this session's history, across all singers. An
+  unstarted skipped song can be requested again; repeating an active/recorded
+  song requires the explicit repeat confirmation.
+
+Regression coverage in `tests/test_playlist_order_stress.py` checks singleton
+marker resets, repeated priority actions, per-singer relative order, concurrent
+native callers, and conservation across admissions, moves and playback changes.
+`tests/test_playlist_lifecycle_stress.py` adds deterministic random user counts,
+seating changes, additions/removals/renames, returning singers, concurrent roster
+changes and admissions, empty/full rosters, duplicate/repeat rules, invalid
+targets and stale playback commands. Every successful admission must remain in
+the active queue/current program or have an ended session-play ledger entry.
+Expected waiting IDs and ended IDs are accounted for from the submitted action,
+so an unexpected removal cannot pass merely by being recorded as ended.
+
+The shared AppState bounds the current program plus waiting queue to 10,000
+items. Both ordinary and priority admissions enforce this bound under the state
+lock, including when the current slot is empty. Desktop Host is exempt from
+Native Beta's separate 200-waiting-song HTTP limit. Rejected admissions do not
+evict an older song or write an unrestorable oversized backup.
+
+Replay the larger deterministic run (100 random sessions × 500 steps, plus eight
+concurrent sessions with eight callers × 96 steps each) with the native runtime
+library built:
+
+```bash
+BILIKARA_REQUIRE_RUST_LIB=1 python -m tests.test_playlist_lifecycle_stress --stress
+```
+
+`--seeds`, `--steps`, and `--concurrent-sessions` adjust this opt-in run; ordinary
+unittest discovery keeps a smaller regression workload. Successful pressure
+tests establish the checked invariants for those runs, not a diagnosis of a
+historical user report without its operation trace.
+
 These legacy routes remain unavailable (501 `native_unavailable`):
 
 | Legacy route | Current in-repository workflow |

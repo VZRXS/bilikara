@@ -600,6 +600,56 @@ const send = new AsyncFunction("body", "request", "let response;\\n" + BODY + "\
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_public_drag_keeps_the_captured_queue_version_when_sending_later(self):
+        start = self.remote_transport.index('response = await request("playlist.move",')
+        end = self.remote_transport.index('\n      } else if', start)
+        script = r'''const assert = require("node:assert/strict");
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const send = new AsyncFunction("body", "request", "expectedRevision", "let response;\n" + BODY);
+(async()=>{
+  let observed;
+  await send({item_id:"old-target",index:1200,expected_queue_version:"a".repeat(64)},async(kind,body)=>{observed={kind,body};},()=>999);
+  assert.deepEqual(observed,{kind:"playlist.move",body:{item_id:"old-target",target_index:1200,expected_queue_version:"a".repeat(64),expected_revision:999}});
+})().catch(error=>{console.error(error);process.exitCode=1;});'''.replace("BODY", json.dumps(self.remote_transport[start:end]))
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_full_public_queue_roundtrips_chunking_and_limits_malicious_buffers(self):
+        script = r'''const assert = require("node:assert/strict");
+require("./static/internet-remote-transport.js");
+const api = globalThis.BilikaraInternetTransport;
+const playlist = Array.from({length:10000}, (_, i) => ({id:`song-${i}`, title:"中文歌曲/日本語の曲".repeat(8)}));
+const payload = {type:"state", data:{playlist}};
+const frames = [];
+api.send({readyState:"open",send:frame=>frames.push(frame)}, payload);
+assert.ok(frames.length > 128);
+const decoder = new api.Decoder();
+const decoded = frames.flatMap(frame=>decoder.consume(frame));
+assert.deepEqual(decoded, [payload]);
+const bad = new api.Decoder();
+assert.throws(()=>bad.consume(JSON.stringify({type:"__chunk",transfer_id:"bad",index:0,total:2,total_bytes:1,data:"too big"})), /Corrupt/);
+assert.equal(bad.pending.size, 0);
+(async () => {
+  const channel = new EventTarget();
+  channel.readyState = "open"; channel.bufferedAmount = 0;
+  let sent = 0, maximum = 0;
+  channel.send = frame => {
+    sent++; channel.bufferedAmount += new TextEncoder().encode(frame).length;
+    maximum = Math.max(maximum, channel.bufferedAmount);
+    setTimeout(() => { channel.bufferedAmount = 0; channel.dispatchEvent(new Event("bufferedamountlow")); }, 0);
+  };
+  await api.send(channel, payload, {buffered:true});
+  assert.equal(sent, frames.length);
+  assert.ok(maximum <= 140 * 1024, maximum);
+})().catch(error=>{console.error(error); process.exitCode=1;});
+for (let i=0;i<2;i++) bad.consume(JSON.stringify({type:"__chunk",transfer_id:`big-${i}`,index:0,total:2,total_bytes:32*1024*1024,data:"x"}));
+assert.throws(()=>bad.consume(JSON.stringify({type:"__chunk",transfer_id:"overflow",index:0,total:2,total_bytes:1,data:"x"})), /Too many/);
+'''
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
     def test_retry_transport_preserves_force_true_false_and_legacy_absence(self):
         start = self.remote_transport.index('response = await request("cache.retry", {')
         end = self.remote_transport.index('\n      } else if', start)

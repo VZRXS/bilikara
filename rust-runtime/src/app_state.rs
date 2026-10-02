@@ -11,6 +11,7 @@ use bilikara_rust::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
@@ -488,6 +489,8 @@ pub enum AppStateRequest {
         schema_version: u32,
         item_id: String,
         target_index: i64,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         now: f64,
     },
     ResortPlaylistByCycle {
@@ -903,6 +906,7 @@ pub struct PlaybackProgram {
 pub struct AppSnapshot {
     pub schema_version: u32,
     pub revision: u64,
+    pub queue_version: String,
     pub session_generation: u64,
     pub playback_generation: u64,
     pub playback_program: Option<PlaybackProgram>,
@@ -1998,6 +2002,7 @@ impl AppStateData {
         AppSnapshot {
             schema_version: SCHEMA_VERSION,
             revision: self.revision,
+            queue_version: self.queue_version(),
             session_generation: self.session_generation,
             playback_generation: self.playback_generation,
             playback_program,
@@ -2027,6 +2032,34 @@ impl AppStateData {
                     .map(|entry| entry.items.len()),
             },
         }
+    }
+
+    // Bind positional edits to the queue the user saw. Cache progress, playback
+    // ticks and metadata do not change ordering policy. Incarnations distinguish
+    // re-admissions (including a restarted Host that reuses an item ID).
+    fn queue_version(&self) -> String {
+        let mut digest = Sha256::new();
+        let mut field = |value: &str| {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+        };
+        field(&self.session_generation.to_string());
+        field(&self.session_users.len().to_string());
+        for name in &self.session_users {
+            field(name);
+        }
+        for item in self.current_item.iter().chain(self.playlist.iter()) {
+            field(&item.id);
+            field(&item.item_incarnation_id);
+            field(&item.requester_name);
+            field(&item.queue_slot_type);
+        }
+        field(if self.current_item.is_some() {
+            "current"
+        } else {
+            "empty"
+        });
+        format!("{:x}", digest.finalize())
     }
 
     fn persistence_snapshot(&self) -> PersistenceSnapshot {
@@ -2866,7 +2899,16 @@ fn apply_mutation(
             if !matches!(position.as_str(), "tail" | "next") {
                 return Err(rejected("invalid_position", "playlist position is invalid"));
             }
+            // Keep every admission path within the same bound as saved-state
+            // validation, including priority inserts and an empty current slot.
+            if data.playlist.len() + usize::from(data.current_item.is_some()) >= MAX_ITEMS {
+                return Err(rejected("too_many_items", "too many playlist items"));
+            }
+            // Keep a fresh request's parsed preference while retiring artifacts.
+            // Seed/backup restoration still discards prior audio selections.
+            let selected_audio_variant_id = std::mem::take(&mut item.selected_audio_variant_id);
             assign_new_item_incarnation(&mut item, identity_namespace, next_item_incarnation_id)?;
+            item.selected_audio_variant_id = selected_audio_variant_id;
             item.requester_name = requester;
             item.queue_slot_type = if position == "next" {
                 "priority".to_owned()
@@ -2921,7 +2963,10 @@ fn apply_mutation(
                 return Ok(MutationResult::changed(mutation_value(true), true));
             }
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+                return Err(rejected(
+                    "queue_item_missing",
+                    "歌曲已离开等待队列，请刷新后重试",
+                ));
             };
             data.playlist.remove(index);
             rebuild_playlist_order(data, None)?;
@@ -3009,7 +3054,10 @@ fn apply_mutation(
             item_id, direction, ..
         } => {
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+                return Err(rejected(
+                    "queue_item_missing",
+                    "歌曲已离开等待队列，请刷新后重试",
+                ));
             };
             let target = match direction.as_str() {
                 "up" if index > 0 => Some(index - 1),
@@ -3032,7 +3080,10 @@ fn apply_mutation(
         }
         AppStateRequest::MoveToNext { item_id, .. } => {
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+                return Err(rejected(
+                    "queue_item_missing",
+                    "歌曲已离开等待队列，请刷新后重试",
+                ));
             };
             let mut item = data.playlist.remove(index);
             item.queue_slot_type = "priority".to_owned();
@@ -3043,14 +3094,18 @@ fn apply_mutation(
         AppStateRequest::MoveItemToIndex {
             item_id,
             target_index,
+            expected_queue_version,
             ..
         } => {
-            let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
-            };
-            if data.playlist.is_empty() {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+            if expected_queue_version.is_some_and(|version| version != data.queue_version()) {
+                return Err(rejected("queue_changed", "队列已更新，请重新拖动"));
             }
+            let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
+                return Err(rejected(
+                    "queue_item_missing",
+                    "歌曲已离开等待队列，请刷新后重试",
+                ));
+            };
             let target = target_index.clamp(0, data.playlist.len() as i64 - 1) as usize;
             if target == index {
                 return Ok(MutationResult::unchanged(
@@ -3064,7 +3119,12 @@ fn apply_mutation(
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::ResortPlaylistByCycle { .. } => {
-            if data.playlist.len() < 2 {
+            if data.playlist.len() < 2
+                && data
+                    .playlist
+                    .iter()
+                    .all(|item| item.queue_slot_type == "cycle")
+            {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
             for item in &mut data.playlist {
@@ -3080,7 +3140,10 @@ fn apply_mutation(
             ..
         } => {
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+                return Err(rejected(
+                    "queue_item_missing",
+                    "歌曲已离开等待队列，请刷新后重试",
+                ));
             };
             archive_current(data, now)?;
             let item = data.playlist.remove(index);
@@ -3918,13 +3981,24 @@ impl AppState {
             Err(error) => return internet_remote_error_response(error),
         };
         if !validation.accepted {
-            return internet_remote_reply(
+            let mut response = internet_remote_reply(
                 data,
                 &validation,
                 json!(project_remote_state(&snapshot)),
                 None,
                 true,
             );
+            if let AppStateResponse::Success(success) = &mut response {
+                let (code, message) =
+                    if matches!(validation.request, RemoteRequestV1::PlaylistMove { .. }) {
+                        ("queue_changed", "队列已更新，请重新拖动")
+                    } else {
+                        ("stale_command", "操作对应的状态已更新，请刷新后重试")
+                    };
+                success.result["code"] = json!(code);
+                success.result["error"] = json!(message);
+            }
+            return response;
         }
 
         let request = validation.request.clone();
@@ -4222,12 +4296,14 @@ impl AppState {
             RemoteRequestV1::PlaylistMove {
                 item_id,
                 target_index,
+                expected_queue_version,
                 ..
             } => (
                 AppStateRequest::MoveItemToIndex {
                     schema_version: SCHEMA_VERSION,
                     item_id,
                     target_index: i64::from(target_index),
+                    expected_queue_version,
                     now,
                 },
                 Some(json!({"kind": "sync_cache"})),
@@ -8052,6 +8128,144 @@ mod tests {
     }
 
     #[test]
+    fn admissions_at_capacity_reject_both_positions_without_changing_state() {
+        for has_current in [false, true] {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            if has_current {
+                initial.current_item = Some(item("playing", "BV-playing", "Alice"));
+            }
+            initial.playlist = (0..MAX_ITEMS - usize::from(has_current))
+                .map(|index| item(&format!("q{index}"), &format!("BV{index:010}"), "Alice"))
+                .collect();
+            initialize(&mut state, initial);
+            let before = state.data.clone();
+            let incarnation_counter = state.next_item_incarnation_id;
+            for position in ["tail", "next"] {
+                let rejected = failure(state.execute(AppStateRequest::AddItem {
+                    schema_version: 1,
+                    item: item("extra", "BV-extra", "Bob"),
+                    position: position.to_owned(),
+                    requester_name: "Bob".to_owned(),
+                    reset_av_delay: true,
+                    allow_repeat: true,
+                    now: 11.0,
+                }));
+                assert_eq!(rejected.error.kind, "too_many_items");
+                assert_eq!(state.data, before);
+                assert_eq!(state.next_item_incarnation_id, incarnation_counter);
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_admissions_share_the_last_available_slot() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("playing", "BV-playing", "Alice"));
+        initial.playlist = (0..MAX_ITEMS - 2)
+            .map(|index| item(&format!("q{index}"), &format!("BV{index:010}"), "Alice"))
+            .collect();
+        initialize(&mut state, initial);
+        let before_revision = state.data.as_ref().unwrap().revision;
+        let before_counter = state.next_item_incarnation_id;
+        let state = Arc::new(Mutex::new(state));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|index| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let response = state.lock().unwrap().execute(AppStateRequest::AddItem {
+                        schema_version: 1,
+                        item: item(
+                            &format!("extra-{index}"),
+                            &format!("BV-extra-{index}"),
+                            "Bob",
+                        ),
+                        position: if index % 2 == 0 { "tail" } else { "next" }.to_owned(),
+                        requester_name: "Bob".to_owned(),
+                        reset_av_delay: false,
+                        allow_repeat: false,
+                        now: 11.0,
+                    });
+                    match response {
+                        AppStateResponse::Success(success) => {
+                            assert!(success.committed);
+                            true
+                        }
+                        AppStateResponse::Failure(failure) => {
+                            assert_eq!(failure.error.kind, "too_many_items");
+                            false
+                        }
+                    }
+                })
+            })
+            .collect();
+        let admitted = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|admitted| *admitted)
+            .count();
+        assert_eq!(admitted, 1);
+        let state = state.lock().unwrap();
+        let data = state.data.as_ref().unwrap();
+        assert_eq!(data.playlist.len() + 1, MAX_ITEMS);
+        assert_eq!(data.current_item.as_ref().unwrap().id, "playing");
+        assert_eq!(data.revision, before_revision + 1);
+        assert_eq!(state.next_item_incarnation_id, before_counter + 1);
+        assert_eq!(
+            data.playlist
+                .iter()
+                .filter(|item| item.id.starts_with("extra-"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn resort_clears_single_fixed_slot_before_future_cycle_admission() {
+        for slot in ["priority", "manual"] {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            initial.current_item = Some(item("playing", "BV-playing", "Alice"));
+            let mut waiting = item("alice-next", "BV-alice", "Alice");
+            waiting.queue_slot_type = slot.to_owned();
+            initial.playlist = vec![waiting];
+            initialize(&mut state, initial);
+            let reordered = success(state.execute(AppStateRequest::ResortPlaylistByCycle {
+                schema_version: 1,
+                now: 11.0,
+            }));
+            assert!(reordered.committed);
+            let snapshot = reordered.snapshot.expect("snapshot");
+            assert_eq!(snapshot.playlist.len(), 1);
+            assert_eq!(snapshot.playlist[0].queue_slot_type, "cycle");
+            assert_eq!(snapshot.current_item.unwrap().id, "playing");
+            let added = success(state.execute(AppStateRequest::AddItem {
+                schema_version: 1,
+                item: item("bob-next", "BV-bob", "Bob"),
+                position: "tail".to_owned(),
+                requester_name: "Bob".to_owned(),
+                reset_av_delay: false,
+                allow_repeat: false,
+                now: 12.0,
+            }));
+            assert_eq!(
+                added
+                    .snapshot
+                    .unwrap()
+                    .playlist
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["bob-next", "alice-next"]
+            );
+        }
+    }
+
+    #[test]
     fn playlist_duplicate_order_advance_and_history_are_committed_in_rust() {
         let mut state = AppState::default();
         initialize(&mut state, seed());
@@ -9254,6 +9468,89 @@ mod tests {
                 serde_json::from_value::<AppStateRequest>(request).is_err(),
                 "UpdateItem accepted protected field {field}"
             );
+        }
+    }
+
+    #[test]
+    fn added_audio_preselection_survives_admission_and_cache_publication() {
+        for (video_page, parts, ids) in [
+            (
+                2,
+                ["Off Vocal", "On Vocal"],
+                ["p1_off_vocal", "p2_on_vocal"],
+            ),
+            (
+                1,
+                ["on vocal", "off vocal"],
+                ["p1_on_vocal", "p2_off_vocal"],
+            ),
+            (2, ["伴奏", "原唱"], ["p1_track_1", "p2_track_2"]),
+        ] {
+            let mut state = AppState::default();
+            initialize(&mut state, seed());
+            for (id, bvid) in [("current", "BV-current"), ("queued", "BV-queued")] {
+                let mut requested = item(id, bvid, "");
+                requested.page = video_page;
+                requested.video_page = video_page;
+                requested.selected_pages = vec![1, 2];
+                requested.selected_parts = parts.map(str::to_owned).to_vec();
+                requested.selected_cids = vec![10, 20];
+                requested.selected_durations = vec![120, 120];
+                requested.available_pages = requested.selected_pages.clone();
+                requested.available_parts = requested.selected_parts.clone();
+                requested.available_cids = requested.selected_cids.clone();
+                requested.available_durations = requested.selected_durations.clone();
+                let selected_id = ids[video_page as usize - 1];
+                requested.selected_audio_variant_id = selected_id.to_owned();
+                // Admission must still discard caller-supplied cached media.
+                let caller_incarnation = "i-00000000000000000000000000000001-0000000000000001";
+                requested.item_incarnation_id = caller_incarnation.to_owned();
+                requested.video_relative_path = "old-video.mp4".to_owned();
+                requested.video_media_url = "/media/old-video.mp4".to_owned();
+                success(state.execute(AppStateRequest::AddItem {
+                    schema_version: 1,
+                    item: requested,
+                    position: "tail".to_owned(),
+                    requester_name: "Alice".to_owned(),
+                    reset_av_delay: false,
+                    allow_repeat: false,
+                    now: 11.0,
+                }));
+                let admitted = state.data.as_ref().unwrap().find_item(id).unwrap();
+                assert_eq!(admitted.selected_audio_variant_id, selected_id);
+                assert!(valid_authoritative_identity(
+                    &admitted.item_incarnation_id,
+                    'i'
+                ));
+                assert_ne!(admitted.item_incarnation_id, caller_incarnation);
+                assert_eq!(admitted.cache_status, "pending");
+                assert!(admitted.video_relative_path.is_empty());
+                assert!(admitted.video_media_url.is_empty());
+                assert!(admitted.audio_variants.is_empty());
+                assert!(admitted.artifact_set_id.is_empty());
+                let (token, _) = begin_cache_attempt(&mut state, id);
+                success(apply_cache(
+                    &mut state,
+                    id,
+                    token,
+                    CacheEvent::Started {
+                        message: "downloading".to_owned(),
+                    },
+                    12.0,
+                ));
+                let ready = ready_event(
+                    &state,
+                    id,
+                    token,
+                    "video.mp4",
+                    &[(ids[0], "first.m4a"), (ids[1], "second.m4a")],
+                    ids[0],
+                );
+                success(apply_cache(&mut state, id, token, ready, 13.0));
+                let cached = state.data.as_ref().unwrap().find_item(id).unwrap();
+                assert_eq!(cached.cache_status, "ready");
+                assert_eq!(cached.selected_audio_variant_id, selected_id);
+            }
         }
     }
 

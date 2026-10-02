@@ -1,10 +1,9 @@
 use crate::app_state::{AppSnapshot, HistoryEntry, PlaylistItem};
 use bilikara_rust::{
-    INTERNET_REMOTE_PROTOCOL_VERSION, MAX_REMOTE_STATE_ITEMS, RemoteAudioVariantV1,
-    RemoteCacheStatusV1, RemoteHistoryEntryV1, RemoteLane, RemotePlaybackModeV1,
-    RemotePlayerSettingsV1, RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError,
-    RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteStateV1, RemoteValidationContext,
-    decode_remote_request_v1,
+    INTERNET_REMOTE_PROTOCOL_VERSION, RemoteAudioVariantV1, RemoteCacheStatusV1,
+    RemoteHistoryEntryV1, RemoteLane, RemotePlaybackModeV1, RemotePlayerSettingsV1,
+    RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError, RemoteRequestEnvelopeV1,
+    RemoteRequestV1, RemoteStateV1, RemoteValidationContext, decode_remote_request_v1,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -280,7 +279,13 @@ fn validation_result(
     snapshot: &AppSnapshot,
 ) -> InternetRemoteValidation {
     let expected_revision = expected_revision(&decoded.request);
-    let stale_revision = expected_revision.is_some_and(|value| value != snapshot.revision);
+    let stale_revision = match &decoded.request {
+        RemoteRequestV1::PlaylistMove {
+            expected_queue_version: Some(version),
+            ..
+        } => version != &snapshot.queue_version,
+        _ => expected_revision.is_some_and(|value| value != snapshot.revision),
+    };
     let stale_target = stale_request_target(&decoded.request, snapshot);
     let stale = stale_revision || stale_target;
     let include_state = stale
@@ -388,6 +393,7 @@ fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
 pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
     RemoteStateV1 {
         v: INTERNET_REMOTE_PROTOCOL_VERSION,
+        queue_version: snapshot.queue_version.clone(),
         revision: snapshot.revision,
         session_generation: snapshot.session_generation,
         playback_generation: snapshot.playback_generation,
@@ -397,18 +403,8 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
             RemotePlaybackModeV1::Local
         },
         current_item: snapshot.current_item.as_ref().map(project_item),
-        playlist: snapshot
-            .playlist
-            .iter()
-            .take(MAX_REMOTE_STATE_ITEMS)
-            .map(project_item)
-            .collect(),
-        history: snapshot
-            .history
-            .iter()
-            .take(MAX_REMOTE_STATE_ITEMS)
-            .map(project_history)
-            .collect(),
+        playlist: snapshot.playlist.iter().map(project_item).collect(),
+        history: snapshot.history.iter().map(project_history).collect(),
         session_users: snapshot.session_users.clone(),
         player_settings: RemotePlayerSettingsV1 {
             effective_av_delay_ms: snapshot.player_settings.av_offset_ms,

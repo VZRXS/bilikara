@@ -1645,7 +1645,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(updated)
                 self.assertEqual(updated.cache_status, "pending")
                 self.assertEqual(updated.audio_variants, [])
-                self.assertEqual(updated.selected_audio_variant_id, "")
+                self.assertEqual(updated.selected_audio_variant_id, "p2_off_vocal")
             finally:
                 manager.shutdown()
 

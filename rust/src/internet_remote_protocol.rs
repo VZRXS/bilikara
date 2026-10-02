@@ -7,7 +7,7 @@ pub const MAX_CONTROL_MESSAGE_BYTES: usize = 16 * 1024;
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_SEARCH_RESULTS: u16 = 80;
 pub const MAX_BROWSE_RESULTS: u16 = 100;
-pub const MAX_REMOTE_STATE_ITEMS: usize = 1_000;
+pub const MAX_REMOTE_STATE_ITEMS: usize = 10_000;
 
 const MAX_EPOCH_BYTES: usize = 22;
 const MAX_CATALOG_ID_BYTES: usize = 128;
@@ -290,6 +290,8 @@ pub enum RemoteRequestV1 {
     PlaylistMove {
         item_id: String,
         target_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.resort")]
@@ -595,6 +597,8 @@ struct IncarnationMutationBody {
 struct MoveItemBody {
     item_id: String,
     target_index: u32,
+    #[serde(default)]
+    expected_queue_version: Option<String>,
     expected_revision: u64,
 }
 
@@ -904,10 +908,14 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::PlaylistMove {
             item_id,
             target_index,
+            expected_queue_version,
             expected_revision,
         } => {
             valid_item(item_id)
                 && (*target_index as usize) < MAX_REMOTE_STATE_ITEMS
+                && expected_queue_version.as_ref().is_none_or(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
                 && valid_expected(*expected_revision)
         }
         RemoteRequestV1::PlaylistResort { expected_revision } => valid_expected(*expected_revision),
@@ -1184,6 +1192,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::PlaylistMove {
                 item_id: body.item_id,
                 target_index: body.target_index,
+                expected_queue_version: body.expected_queue_version,
                 expected_revision: body.expected_revision,
             }
         }
@@ -1450,6 +1459,8 @@ pub struct RemotePlaybackStatusV1 {
 #[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
     pub v: u16,
+    #[serde(default)]
+    pub queue_version: String,
     pub revision: u64,
     pub session_generation: u64,
     pub playback_generation: u64,
@@ -2254,6 +2265,7 @@ mod tests {
     #[test]
     fn remote_state_shape_has_no_local_paths_urls_or_maintenance_state() {
         let state = RemoteStateV1 {
+            queue_version: "version".to_owned(),
             v: INTERNET_REMOTE_PROTOCOL_VERSION,
             revision: 4,
             session_generation: 2,

@@ -372,6 +372,7 @@ pub(super) fn dispatch(
             }
             "/api/playlist/reorder" => {
                 command["command"] = json!("move_item_to_index");
+                command["expected_queue_version"] = body["expected_queue_version"].clone();
                 command["item_id"] = json!(text(&body, "item_id")?);
                 command["target_index"] =
                     body.get("index").unwrap_or(&body["target_index"]).clone();

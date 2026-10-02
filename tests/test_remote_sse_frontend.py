@@ -1605,7 +1605,7 @@ class Node {
   querySelectorAll(){const button=this.querySelector('action');button.dataset.action='retry-cache';return [button];}
 }
 const list = {nodes:[],replaceChildren(){replacements++;this.nodes=[];},appendChild(n){this.nodes.push(n);},
- querySelectorAll(){return this.nodes.flatMap(n=>n.querySelectorAll());}};
+ querySelectorAll(selector){return selector==='[data-drag-handle]'?[]:this.nodes.flatMap(n=>n.querySelectorAll());}};
 const elements={queueList:list,queueItemTemplate:{content:{firstElementChild:{cloneNode:()=>new Node()}}}};
 function applyStaticI18n(){} function t(k){return k;}
 function requesterBadgeText(name){return name;} function queueNoteText(item){return item.cache_message||'';}
@@ -1629,6 +1629,46 @@ const renamed=list.nodes[0];renderQueue([{...items[0],display_title:'Renamed',it
 assert.notEqual(list.nodes[0],renamed);
 const previous=list.nodes[0];state.language='en';renderQueue(items);assert.notEqual(list.nodes[0],previous);
 renderQueue([]);const empty=list.nodes[0];renderQueue([]);assert.equal(list.nodes[0],empty);
+console.log(JSON.stringify({ok:true}));
+"""
+        self.assertEqual(self.run_node(script), {"ok": True})
+
+    def test_queue_drag_feedback_has_one_handle_and_pauses_expiry_during_drag(self):
+        start = self.queue_source.index("const dragHandleRestoreDelayMs")
+        end = self.queue_source.index("renderQueue =", start)
+        helpers = self.queue_source[start:end]
+        start = self.queue_source.index("function beginDrag")
+        end = self.queue_source.index("async function finishDrag", start)
+        script = r"""
+const assert = require('node:assert/strict');
+const state = {listView:'queue',dragItemId:''};
+let nextTimer=0, dragStartX=0, dragStartY=0, suppressDragClick=false;
+const timers=new Map(), closed=[];
+const window={setTimeout(callback,delay){assert.equal(delay,5000);timers.set(++nextTimer,callback);return nextTimer;},clearTimeout(id){timers.delete(id);}};
+function handle(id){
+  const classes=new Set(), wrap={id};
+  return {id,expanded:'false',classes,
+    classList:{toggle(name,on){if(on)classes.add(name);else classes.delete(name);}},
+    closest(selector){return selector==='.queue-item'?{dataset:{id}}:wrap;},
+    getAttribute(){return this.expanded;},setPointerCapture(){}};
+}
+let handles=[handle('a'),handle('b')];
+const elements={queueList:{querySelectorAll(){return handles;},querySelector(){return handles.find(button=>button.classes.has('is-drag-ready'));}}};
+function hideRemoteContextualInfo(wrap){closed.push(wrap.id);}
+function active(){return handles.filter(button=>button.classes.has('is-drag-ready')).map(button=>button.id);}
+function expire(){assert.equal(timers.size,1);[...timers.values()][0]();assert.equal(timers.size,0);}
+""" + helpers + self.queue_source[start:end] + r"""
+activateQueueDragHandle('a');assert.deepEqual(active(),['a']);assert.equal(timers.size,1);
+activateQueueDragHandle('b');assert.deepEqual(active(),['b']);assert.equal(timers.size,1);
+handles[1].expanded='true';expire();assert.deepEqual(active(),[]);assert.deepEqual(closed,['b']);
+activateQueueDragHandle('a');
+handles=[handle('a'),handle('b')];syncQueueDragHandles();
+assert.deepEqual(active(),['a'],'a rerender preserves the chosen handle');
+beginDrag(handles[0],{pointerType:'touch',button:0,pointerId:7,clientX:20,clientY:30,preventDefault(){}});
+assert.equal(state.dragItemId,'a');assert.equal(timers.size,0);
+scheduleDragHandleRestore();assert.equal(timers.size,0,'holding a drag must not start the expiry timer');
+state.dragItemId='';scheduleDragHandleRestore();expire();
+assert.deepEqual(active(),[]);assert.deepEqual(closed,['b'],'an expired handle must not close unrelated help');
 console.log(JSON.stringify({ok:true}));
 """
         self.assertEqual(self.run_node(script), {"ok": True})
