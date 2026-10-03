@@ -9,7 +9,7 @@ import urllib.error
 from urllib.parse import parse_qs, urlsplit
 import uuid
 
-from scripts.check_native_desktop_bundle import RunningHost, isolated_environment
+from tests.native_host_support import RunningHost, isolated_environment
 from tests.video_service_fixture import VideoFixture
 
 

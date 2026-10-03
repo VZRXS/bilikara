@@ -155,14 +155,15 @@ from one operating system or architecture never proves another target passed.
 For every published target, CI must:
 
 - use the repository's pinned Rust toolchain;
-- use all three committed Cargo lockfiles and `package-lock.json`;
+- use the application Cargo lockfiles, `xtask/Cargo.lock` and `package-lock.json`;
 - build `bilikara-desktop-host` with `native-host` and the native updater for
   the target, then complete the locked Tauri v2 build for that architecture;
-- use Python staging tools without importing legacy `bilikara` application
-  modules; retain libav provenance/dependency validation, pinned BBDown metadata
+- use the independent Rust xtask construction/preparation entries without
+  importing legacy `bilikara` application modules; retain libav provenance/dependency
+  validation, pinned BBDown metadata
   checks and the established bundle layout;
 - verify the extracted native product with
-  `scripts/check_native_desktop_bundle.py`, including bootstrap, HTTP/SSE,
+  `xtask verify-native-desktop`, including bootstrap, HTTP/SSE,
   shutdown/reopen and absence of Python/PyInstaller/FFI payloads.
 
 The test matrix separately builds the Rust `cdylib` compatibility targets and

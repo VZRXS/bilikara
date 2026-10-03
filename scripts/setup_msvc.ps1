@@ -35,3 +35,10 @@ foreach ($line in ($environmentText -split "`r?`n")) {
 if ($env:VSCMD_ARG_TGT_ARCH -ne $Arch -or $env:VSCMD_ARG_HOST_ARCH -ne $hostArch) {
     throw 'MSVC did not initialize the requested native architecture'
 }
+# Git Bash adds its own usr/bin ahead of the inherited Windows PATH. Run this
+# initializer in every subsequent Bash step so Cargo's host build scripts also
+# resolve the selected MSVC link.exe, without target flags or nightly Cargo.
+$bashEnv = Join-Path $PSScriptRoot 'msvc-bash-env.sh'
+if (-not (Test-Path -LiteralPath $bashEnv -PathType Leaf)) { throw 'MSVC Bash initializer unavailable' }
+$bashEnv = [System.IO.Path]::GetFullPath($bashEnv).Replace('\', '/')
+"BASH_ENV=$bashEnv" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

@@ -17,7 +17,7 @@ normalization and publication. No media CLI is invoked by these tests.
 
 The DownKyi HEVC/Dolby passthrough test needs the packaged libav validator.
 Build the libraries with `bash media-libav/build-posix-libraries.sh`, then run
-`python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test`
+`cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test`
 (using an absolute `BILIKARA_LIBAV_PREFIX`), and set
 `BILIKARA_TEST_LIBAV_COMPANION` to the resulting
 `bin/libbilikara_media_libav.so` when running the Linux Python suite. The test

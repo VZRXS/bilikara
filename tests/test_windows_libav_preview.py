@@ -16,11 +16,8 @@ import unittest
 from unittest.mock import Mock, call, patch
 from types import SimpleNamespace
 
-import build_bundle
 from bilikara.ffmpeg_vendor import MANIFEST, runtime_files
 from bilikara.windows_preview_smoke import ModuleSnapshotPending, backend, clean_environment, comparison_has_same_build, module_paths, remove_package_dependency, require_native_pe, run
-from scripts import windows_libav_preview as preview
-from scripts import libav_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,7 +82,7 @@ class WindowsPreviewTests(unittest.TestCase):
         self.vendor = self.root / "bin"
         self.vendor.mkdir()
         self.names = ["ffmpeg.exe", "ffprobe.exe", "avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swresample-7.dll", "vcruntime140.dll"]
-        for name in self.names + [preview.COMPANION]:
+        for name in self.names + ["bilikara_media_libav.dll"]:
             (self.vendor / name).write_bytes(b"selected")
         self.manifest = {"schema_version": 1, "version": "9.0.1", "target": "x86_64-pc-windows-msvc",
                          "runtime_files": self.names}
@@ -98,21 +95,6 @@ class WindowsPreviewTests(unittest.TestCase):
     def write_manifest(self):
         (self.vendor / MANIFEST).write_text(json.dumps(self.manifest), encoding="utf-8")
 
-    def test_unconfigured_tool_helper_preserves_developer_discovery(self):
-        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": ""}), patch("build_bundle.shutil.which", return_value="/chosen/ffmpeg"), patch("build_bundle.platform.system", return_value="Linux"):
-            self.assertIsNone(libav_bundle.package_prefix())
-            self.assertEqual(build_bundle._resolve_bundle_binary_path("ffmpeg"), Path("/chosen/ffmpeg"))
-
-    def test_prefix_is_explicit_fail_closed_and_never_uses_path(self):
-        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": str(self.root)}), patch.object(preview.platform, "system", return_value="Windows"), patch.object(preview.platform, "machine", return_value="AMD64"), patch("build_bundle.shutil.which", side_effect=AssertionError("system fallback")):
-            self.assertEqual(build_bundle._resolve_bundle_binary_path("ffmpeg"), self.vendor / "ffmpeg.exe")
-            (self.vendor / "avutil-61.dll").unlink()
-            with self.assertRaises(RuntimeError):
-                build_bundle._resolve_bundle_binary_path("ffprobe")
-            with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": "relative-prefix"}):
-                with self.assertRaises(RuntimeError):
-                    libav_bundle.package_prefix()
-
     def test_manifest_rejects_escape_wrong_target_and_missing_dependencies(self):
         for change in ({"runtime_files": [*self.names, "../outside.dll"]}, {"target": "i686-pc-windows-msvc"}, {"version": "8.1.2"}, {"runtime_files": [*self.names, "missing.dll"]}):
             with self.subTest(change=change):
@@ -122,14 +104,6 @@ class WindowsPreviewTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     runtime_files(self.vendor)
                 self.manifest = old
-
-    def test_shared_cli_stages_as_data_avoiding_pyinstaller_import_search(self):
-        paths = {"ffmpeg": self.vendor / "ffmpeg.exe", "ffprobe": self.vendor / "ffprobe.exe", "BBDown": self.root / "BBDown.exe"}
-        with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": str(self.root)}), patch.object(build_bundle, "_resolved_bundle_binary_paths", return_value=(paths, [])):
-            args = build_bundle._bundled_binary_args(";")
-        self.assertEqual(args[0], "--add-data")
-        self.assertEqual(args[2], "--add-data")
-        self.assertEqual(args[4], "--add-binary")
 
     def test_restore_copies_shared_closure_and_rejects_system_probe(self):
         from bilikara.cache import CacheManager
@@ -163,33 +137,6 @@ class WindowsPreviewTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 manager._ensure_ffmpeg()
 
-    def test_dependency_collection_uses_import_closure_and_rejects_foreign(self):
-        redist, system = self.root / "redist", self.root / "system"
-        redist.mkdir()
-        system.mkdir()
-        (redist / "vcruntime140.dll").write_bytes(b"vc-redist")
-        (self.vendor / "vcruntime140.dll").unlink()
-        imports = {
-            "ffmpeg.exe": ["avformat-63.dll"], "ffprobe.exe": ["avformat-63.dll"],
-            preview.COMPANION: ["avformat-63.dll"], "bilikara_media_libav_test.dll": ["avformat-63.dll"],
-            "avformat-63.dll": ["avcodec-63.dll", "avutil-61.dll"],
-            "avcodec-63.dll": ["swresample-7.dll", "avutil-61.dll"],
-            "avutil-61.dll": ["vcruntime140.dll"], "swresample-7.dll": [], "vcruntime140.dll": [],
-        }
-        def info(p):
-            return {"machine": "x64", "imports": imports[p.name] + ["api-ms-win-crt-runtime-l1-1-0.dll"]}
-        with patch.object(preview, "pe_info", side_effect=info):
-            data = preview.collect(self.root, redist, system)
-            self.assertIn("swresample-7.dll", data["runtime_files"])
-            self.assertIn(preview.COMPANION, data["runtime_files"])
-            self.assertNotIn("ffmpeg.exe", data["runtime_files"])
-            self.assertNotIn("ffprobe.exe", data["runtime_files"])
-            self.assertEqual((self.vendor / "vcruntime140.dll").read_bytes(), b"vc-redist")
-            imports["avcodec-63.dll"].append("avcodec-OLD.dll")
-            (system / "avcodec-OLD.dll").write_bytes(b"foreign")
-            with self.assertRaises(RuntimeError):
-                preview.collect(self.root, redist, system)
-
     def test_extracted_machine_check_rejects_wrong_architecture_and_non_pe(self):
         path = self.root / "tool.exe"
         for host, expected in (("AMD64", 0x8664), ("arm64", 0xaa64)):
@@ -208,38 +155,6 @@ class WindowsPreviewTests(unittest.TestCase):
             path.write_bytes(b"not a PE executable")
             with patch("platform.machine", return_value=host), self.assertRaisesRegex(RuntimeError, "missing PE header"):
                 require_native_pe(path)
-
-    def test_stage_preserves_runtime_closure_and_omits_developer_payload(self):
-        (self.vendor / preview.TEST_COMPANION).write_bytes(b"test-only")
-        self.manifest.update(
-            pe={n: {} for n in [*self.names, preview.COMPANION, preview.TEST_COMPANION]},
-            vc_redist_files=["vcruntime140.dll"],
-        )
-        self.write_manifest()
-        (self.root / "driver").mkdir()
-        for name in ("libav_metadata.exe", "libav-runtime-tests.exe"):
-            (self.root / "driver" / name).write_bytes(b"developer-exe")
-        (self.root / "records").mkdir()
-        (self.root / "records/config.log").write_text("same build")
-        (self.root / "source/source.asc").write_text("source signature fixture")
-        bundle = self.root / "package"
-        (bundle / "THIRD_PARTY_SOURCES").mkdir(parents=True)
-        with patch.object(preview, "pe_info", return_value={"machine": "x64", "imports": []}):
-            preview.stage(self.root, bundle)
-        for name in [*self.names, preview.COMPANION]:
-            self.assertEqual((bundle / "_internal/vendor" / name).read_bytes(), b"selected")
-        self.assertEqual(
-            [path.name for path in runtime_files(bundle / "_internal/vendor")],
-            self.names,
-        )
-        self.assertFalse((bundle / "_internal/vendor" / preview.TEST_COMPANION).exists())
-        packaged_manifest = json.loads((bundle / "_internal/vendor" / MANIFEST).read_text())
-        self.assertNotIn("pe", packaged_manifest)
-        self.assertNotIn("driver_pe", packaged_manifest)
-        self.assertFalse((bundle / "preview").exists())
-        self.assertTrue((bundle / "THIRD_PARTY_SOURCES/source.asc").is_file())
-        self.assertTrue((bundle / "THIRD_PARTY_SOURCES/media-libav/fixtures/synthetic.h264").is_file())
-        self.assertFalse((bundle / "libav-smoke.ps1").exists())
 
     def test_smoke_environment_excludes_tool_and_credential_overrides(self):
         class WindowsEnvironment(dict):
@@ -384,12 +299,13 @@ assert any(p.samefile(expected) for p in candidates), candidates
         self.assertIn("Upload signed APK to GitHub Release", text)
         for before, after in (("Setup native MSVC", "Build Windows libav"),
                               ("Build Windows libav", "Prepare native driver"),
-                              ("Prepare native driver", "Build app bundle"),
-                              ("Build POSIX libav", "Build app bundle"),
-                              ("Build app bundle", "Inject Tauri into Windows"),
-                              ("Inject Tauri into Windows", "Archive Windows bundle"),
-                              ("Inject Tauri into macOS", "Embed signed backend"),
-                              ("Embed signed backend", "Stage and verify macOS bundles"),
+                              ("Prepare native driver", "Build release backend from prepared dependencies"),
+                              ("Build POSIX libav", "Build release backend from prepared dependencies"),
+                              ("Build release backend from prepared dependencies", "Build Tauri App on Windows"),
+                              ("Build Tauri App on Windows", "Assemble release desktop"),
+                              ("Build Tauri App on macOS", "Assemble release desktop"),
+                              ("Assemble release desktop", "Archive Windows bundle"),
+                              ("Assemble release desktop", "Stage and verify macOS bundles"),
                               ("Stage and verify macOS bundles", "Archive and verify round-trip macOS bundle"),
                               ("Archive Windows bundle", "Verify extracted Windows bundle"),
                               ("Verify extracted Windows bundle", "Upload native bundle")):

@@ -3,8 +3,8 @@
 The desktop shell starts one `bilikara-desktop-host` process by default. The
 backend owns the Rust AppState and native HTTP/SSE/media services. No Python,
 Cargo, source checkout or preview environment variable is needed by an installed
-product. Python remains a build/test tool and the legacy source Host remains
-available for compatibility tests; it is not included in the native bundle.
+product. Python remains a dependency-preparation/test tool and the legacy source
+Host remains available for compatibility tests; neither is included in the native bundle.
 
 v0.8.0-preview.2 has been released with this architecture. Stabilization uses
 that desktop behavior baseline, including approved Preview 1 behavior and later
@@ -87,34 +87,92 @@ Android/iOS development hook returns without building or staging desktop code.
 Source macOS development retains the adjacent `_internal` layout; final macOS
 bundle assembly/signing is a separate release step.
 
-For a product build, prepare the existing pinned BBDown vendor and a matching
-libav-only prefix using `scripts/prepare_bbdown_vendor.py` and the documented
-`media-libav` build scripts. Set `BILIKARA_LIBAV_PREFIX` to its absolute path and
-put the prepared BBDown on the **build** PATH, then run:
+For a product build, prepare the existing pinned BBDown vendor on a matching
+native runner with Rust and curl, then prepare a matching libav-only prefix with
+the documented `media-libav` scripts:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown /absolute/generated/bbdown-vendor
+```
+
+The optional `--platform` / `--arch` retain the existing target aliases. The tool
+verifies the unchanged six archive pins before selecting one safe executable,
+then checks `--help` in private staging with a 30-second bound. GitHub is tried
+before the existing mirror only on transport failure; an integrity mismatch
+fails immediately.
+`bin/BBDown[.exe]` and the six-field `metadata.env` retain their existing meanings.
+Metadata is published last; failed preparation preserves existing output where
+possible and never recursively clears the vendor tree. CI sets up the pinned
+Rust toolchain and native MSVC environment before this command. It requires no
+product build, libav prefix, Python or application Runtime.
+
+Set `BILIKARA_LIBAV_PREFIX` to its absolute path, consume `metadata.env` as build
+environment values, and put the prepared BBDown on the **build** PATH, then run:
 
 ```sh
 npm run build
 ```
 
-`build_bundle.py` is a staging tool, not a freezer. It builds a release Rust
-backend, copies static assets/fonts/Signalsmith and version metadata, stages
-the libav companion/dependencies and licenses, and builds the Tauri shell.
-macOS keeps nested-code signing and seals the outer app after embedding the
-backend. `python build_bundle.py` alone prepares the backend/resource layout
-used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
-matching runner target; foreign tool/libav architectures fail closed.
-`CARGO_TARGET_DIR` and the selected debug/release profile are respected.
+`npm run build` invokes `xtask build-desktop`: release Host and updater, shared
+resource/libav staging, compliance materials, Tauri, then final assembly.
+macOS signs nested code and the backend, embeds it with `ditto`, preserves
+signature metadata and seals the outer app last. No project Python is executed
+in this construction path. Release commands always select the release profile
+and complete prepared inputs, independent of Tauri's debug/mobile environment.
+`--target TRIPLE` supports an explicit matching runner target; foreign tool/libav
+architectures fail closed. Cargo metadata resolves `CARGO_TARGET_DIR` and targets.
 
-Python remains required for release assembly, existing dependency-preparation
-scripts and Python test drivers; it is not required by the selected Rust
-development-preparation path or the installed product. Native release build
-imports stay within `build_bundle.py`
-and tooling modules under `scripts/`; they do not import the legacy `bilikara`
-application package. `scripts/libav_manifest.py` owns the shared manifest and
-flat dependency-closure validation. The legacy `bilikara.ffmpeg_vendor` import
-forwards to it for existing source Host and diagnostic callers. Same-build
-libav provenance checks, pinned BBDown validation and native release artifact
-verification remain in their existing build steps.
+CI preserves its split backend/tool checks and shell compilation:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
+# Existing npm/Tauri shell build and platform checks.
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
+```
+
+Assembly consumes the existing release shell output without recompiling it;
+`--shell PATH` can supply that compiled executable/app explicitly. All three
+release entries share the same rules. Generated outputs default to `dist/`;
+`--dist-dir PATH` is limited to repository `dist/` or an isolated subdirectory
+of ignored `.tmp/`. Cleanup replaces only the named generated product and
+rejects links, input overlap and user-data directories.
+
+The libav prerequisite chain is also Rust-owned. The retained
+`media-libav/build-{posix,windows}-libraries.sh` recipes verify the signed pinned
+FFmpeg 9.0.1 source, then run the existing configure/make/native compiler recipe.
+They use `xtask libav-cache key/snapshot/restore`; schema 3 rotates the former
+Python cache identity once. Keys cover the selected C recipe, native target,
+compiler/SDK, flags and prefix, without depending on Runtime/companion/UI edits
+or the entire xtask executable/lockfile. Only upstream C libraries/headers and
+source/license/recipe records enter that cache. Restore validates hashes, paths,
+relative links, permissions, provenance and actual library facts before use.
+
+`xtask libav-companion --prefix PATH --out PATH [--test] [--sanitize]` probes the
+selected libraries directly and compiles the existing C shim. Windows rejects
+sanitizers; POSIX retains ASan/UBSan. `libav-finish --prefix PATH` builds fresh
+release `libav_metadata` and Runtime test executables from Cargo compiler-artifact
+records, collects native dependencies and writes the prepared manifests. Windows
+also supplies the selected `--redist PATH --system PATH` and retains its installed
+MSVC licence collection in PowerShell. `libav-collect` shares that collector.
+The full POSIX/Windows wrappers compose these stages; Linux CI keeps its lighter
+library-plus-companion prerequisite. No project Python runs in either cold or
+warm-cache production path. A local `BILIKARA_LIBAV_SOURCE_DIR` may supply the
+three pinned archive/signature/key files; signature verification is still required.
+
+The Python BBDown vendor preparer and its dedicated Python tests are retired;
+independent pin, archive, HTTP failure and native executable coverage belongs to
+xtask, with CI bootstrap/caller coverage in Node. Python remains required by
+standalone verification/test drivers in CI, plus independent publication tooling
+and legacy/source-mode compatibility adapters.
+The replaced Python desktop construction, embedding, libav companion,
+cache and collector references and their dedicated tests are retired.
+`build_windows.bat` and `build_macos.command` install the locked npm tooling
+and invoke `npm run build`; they require the already prepared native inputs,
+repository Rust toolchain and native compiler/linker environment.
+`scripts/libav_manifest.py` retains the Python
+manifest/closure interface for legacy diagnostics and compatibility consumers;
+`bilikara.ffmpeg_vendor` forwards to it. Prepared same-build libav provenance,
+the pinned BBDown checks and native release artifact gates remain required.
 
 On Linux, the third-party Tauri CLI optionally probes the system's
 `lsb_release` before invoking the hook; some distributions implement that command
@@ -126,40 +184,75 @@ The Rust tool preserves the development preparation contract: version
 provenance, `native-desktop.json`, the single vendor tree, Signalsmith notices,
 prepared libav manifest/closure/provenance checks, binary import inspection and
 rebuild materials. Python source files included as compliance materials are
-copied, not executed. `tests/test_desktop_prepare_contract.py` compares this
-slice with the retained Python implementation using isolated native executable
-fixtures; `xtask` tests also cover foreign platform descriptors, which do not
-constitute native Windows/macOS acceptance. Linux preparation and Tauri startup
-are locally exercised; Windows/macOS GUI qualification remains separate.
+copied, not executed. `npm run test:desktop-build` runs the Node entry and
+construction contracts, using the current Cargo compiler-artifact-selected xtask
+and compiled native command fixtures. Complete independent expected inventories
+check preparation/full and split release paths, resource bytes, metadata, modes,
+links, compliance, failure and preservation cases; the superseded Python drivers
+and construction-expectation module are retired. `xtask` also tests foreign
+descriptors and macOS tool/signature order. These fixtures do not constitute
+native Windows/macOS acceptance. Real Linux release construction and backend
+execution are locally exercised; Windows/macOS binary/signature/startup/archive
+qualification remains required on native runners.
 
-The next bounded engineering target is ordinary release construction/assembly
-and its CI build callers, including remaining self-owned dependency-preparation
-helpers, using this same tool. Until that cutover is qualified, `npm run build`,
-release signing/upload and Python verification gates retain their current
-entries. Keep the old preparation implementation as an independent contract
-reference during this interval; do not evolve two packaging policies.
+Real Linux cold source construction, warm restore, companion/shim sanitizers,
+reference output comparisons and release consumption cover this prerequisite
+slice. Process traces with Python excluded cover the producing chain. Foreign
+command/PE fixtures do not qualify Windows MSVC/DLL loading or macOS signing;
+their native CI gates remain required. The compliance source kit includes the
+locked independent xtask sources and [rebuild instructions](../media-libav/REBUILD.md)
+so migrated library/companion wrappers remain usable without the application Runtime.
+
+Replaced Python construction references and the native desktop package gate
+are retired, along with desktop construction test drivers. The next bounded slice
+is real-libav prerequisite/media verification drivers, followed by native business
+and legacy Host/FFI consumers without reducing regression coverage. Remaining Python verification and publication
+entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
+Python requirements.
 
 `start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
 scripts remain development/compatibility entry points. The Python HTTP/SSE
 Host, FFI adapters, source-mode media helpers and frozen reference functions
 remain useful to integration/equivalence tests; they are not desktop launch or
-packaging dependencies. Build helpers, native bundle smoke drivers and test
-fixtures also remain Python tooling. Historical PyInstaller argument helpers
-that still have compatibility tests are retained in `build_bundle.py`; its
-native entry does not call them. The unused private PyInstaller Windows version
-resource generator has been retired; native version metadata is unchanged.
+packaging dependencies. Other verification drivers and test fixtures still use Python tooling.
+The retired package gate is implemented independently in xtask; six retained
+native business/FFI test modules share only `tests/native_host_support.py`
+HTTP/startup transport, which performs no package inspection. Historical PyInstaller/Python-runtime
+construction helpers and tests solely for those retired interfaces are removed;
+native version metadata is unchanged.
 
-`requirements-packaging.txt` is still shared by CI build and test jobs: `pefile`
-supports Windows native dependency inspection, while `certifi`/`truststore`
-remain for retained Python HTTPS and freezer-compatibility tests/workflows.
+`requirements-packaging.txt` is still shared by CI build and test jobs:
+`certifi`/`truststore` remain for retained Python HTTPS adapters/tests. The unused
+`pefile` dependency is removed with the Python collector; xtask reads PE imports.
 Their presence in the build environment does not put them in native products.
 
-`python -m unittest tests.test_native_build_isolation -v` exercises native
-prefix validation and resource staging in a fresh interpreter that rejects
-all `bilikara` imports. It also checks missing dependencies/provenance and
-BBDown version rejection. Actual artifact validation remains
-`python scripts/check_native_desktop_bundle.py PATH_TO_NATIVE_HOST`; mocked
-architecture fixtures do not replace target-platform bundle acceptance.
+`npm run test:desktop-build` exercises native construction with a controlled PATH
+without Python, including missing dependencies/provenance, BBDown version
+rejection and no application Runtime linkage. CI runs that same command once
+after pinned host-native xtask checks and Node setup. The separately scoped Python
+libav prerequisite driver keeps actual C/ABI/sanitizer/cache checks; the remaining
+`test_native_build_isolation.py` checks only the legacy manifest adapter.
+Validate an already-produced release package from the pinned repository root:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop PATH_TO_NATIVE_HOST
+BILIKARA_TEST_NATIVE_PACKAGE=/absolute/extracted/PATH_TO_NATIVE_HOST cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
+```
+
+The verifier never builds or repairs its input. `BILIKARA_EXPECT_RELEASE_VERSION`
+requires that exact release label. It copies the supplied installation, preserving
+relative links/modes and omitting portable user data, into owned temporary storage.
+The actual Host runs with private data locations, empty PATH and offline proxies;
+bootstrap cookies/tokens stay private. Its JSON success report follows layout,
+independent-window authentication, resource/HTTP/SSE, capability, successful
+shutdown/listener closure and reopening checks. Installed tests also cover legacy
+import preservation, platform discovery policy, checkpoint/cache recovery and
+invalid-input refusal. Installed tests are marked `ignored` with the actual-artifact prerequisite by
+default. Explicitly running them with `--ignored` requires the supplied artifact
+and fails if it is absent; omitted tests are not installed-package acceptance. The mandatory verifier fails on absent or
+unexecutable inputs. CI supplies the actual extracted Windows/macOS artifact to
+both entries, retaining native architecture/signature/archive gates. Linux actual
+execution and native fixtures do not replace target-platform bundle acceptance.
 
 The Windows archive keeps the `bilikara/` directory. Its only top-level executable
 is `bilikara-desktop.exe`; `_internal/` contains `bilikara-desktop-host.exe`, `static/`,

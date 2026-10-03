@@ -13,8 +13,9 @@
     "android:build:debug": "tauri android build --debug --apk --target aarch64 --ci",
     "dev": "tauri dev",
     "dev:rust": "tauri dev",
-    "build": "python build_bundle.py --desktop",
-    "prepare:desktop": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop"
+    "build": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-desktop",
+    "prepare:desktop": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop",
+    "test:desktop-build": "node --test tests/desktop_prepare_entry.test.mjs tests/bbdown_prepare_entry.test.mjs tests/msvc_bash_env.test.mjs tests/native_package_entry.test.mjs tests/desktop_construction_contract.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"

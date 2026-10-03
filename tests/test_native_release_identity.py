@@ -1,33 +1,12 @@
-"""Release packaging must reject matching records with the wrong version."""
-import json
-import os
-from pathlib import Path
-import tempfile
-import unittest
-from unittest.mock import patch
+"""Manual artifact labels must not authorize a published release.
 
-from scripts.check_native_desktop_bundle import inspect_package
+Wrong-version package rejection is independently tested in xtask/native_package.
+"""
+from pathlib import Path
+import unittest
 
 
 class NativeReleaseIdentityTests(unittest.TestCase):
-    def test_release_gate_rejects_matching_but_wrong_version_records(self):
-        expected = "v0.8.0-preview.3"
-        wrong = f"{expected}-g0123456789ab-dirty"
-        facts = {
-            "schema_version": 1, "backend": "rust", "version": wrong,
-            "resource_layout": "internal-v1", "platform": "windows",
-            "arch": "x64", "development": False,
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            internal = Path(directory) / "_internal"
-            internal.mkdir()
-            (internal / "native-desktop.json").write_text(json.dumps(facts), encoding="utf-8")
-            (internal / "APP_VERSION").write_text(wrong, encoding="utf-8")
-            with patch.dict(os.environ, BILIKARA_EXPECT_RELEASE_VERSION=expected):
-                with self.assertRaisesRegex(AssertionError, "Release version mismatch"):
-                    inspect_package(internal / "bilikara-desktop-host.exe")
-
-
     def test_manual_bundle_version_labels_artifacts_without_releasing(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci-bundle.yml").read_text(encoding="utf-8")
         self.assertIn("bundle_version:", workflow)

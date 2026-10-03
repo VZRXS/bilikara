@@ -73,13 +73,13 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
         backend_source = (
             ROOT / "src-tauri" / "src" / "backend_process.rs"
         ).read_text(encoding="utf-8")
-        bundle_source = (ROOT / "scripts" / "native_desktop_bundle.py").read_text(encoding="utf-8")
+        bundle_source = (ROOT / "xtask" / "src" / "files.rs").read_text(encoding="utf-8")
 
         self.assertEqual(tauri["build"]["frontendDist"], "../static")
         self.assertIn('"bilikara-desktop-host.exe"', backend_source)
         self.assertIn('"bilikara-desktop-host"', backend_source)
-        self.assertIn('source_static = bundle.ROOT_DIR / "static"', bundle_source)
-        self.assertIn('shutil.copytree(source_static, static,', bundle_source)
+        self.assertIn('let source_static = config.root.join("static")', bundle_source)
+        self.assertIn('copy(&entry.path(), &assets.join(entry.file_name()))?', bundle_source)
 
 
 if __name__ == "__main__":

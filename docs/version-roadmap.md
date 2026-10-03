@@ -14,20 +14,61 @@ storage and migration details belong in [native desktop launch and bundles](nati
   and subsequent changes rather than starting another migration.
 - Native desktop bundles use the Rust HTTP/SSE Host and one authoritative Rust
   `AppState`. They include no Python runtime, PyInstaller payload or Python FFI
-  libraries. Python remains intentionally scoped to build/package scripts,
-  tests, legacy compatibility and source development workflows.
+  libraries. Python remains scoped to remaining verification/tests, auxiliary
+  preparation/publication tooling, legacy compatibility and source development
+  workflows.
+  Replaced desktop/libav/BBDown Python construction producers are retired.
 - Delivered: native packaging no longer imports the legacy Python application;
   build-time manifest validation lives in the tooling layer.
 - Preview 3 preparation: the independent Rust `xtask` now handles desktop
   development preparation (`prepare:desktop` and the Tauri development hook),
   including backend/updater compilation and existing resource/tool/libav
   staging. Linux execution and contract comparisons qualify this slice;
-  Windows/macOS native GUI validation remains separate. This does not publish
-  Preview 3 or replace the current release assembly/signing pipeline.
-- Next engineering target: move ordinary self-owned release construction and
-  assembly, its CI build callers and remaining self-owned dependency-preparation
-  helpers to the same Rust tool in bounded increments. Explicitly document any
-  third-party rebuild exceptions; do not hide Python inside Actions/containers.
+  Windows/macOS native GUI validation remains separate.
+- Ordinary release construction/assembly now uses the same tool: `npm run build`
+  builds Host, updater and Tauri; CI uses `build-backend` and `assemble-desktop`
+  around its existing shell build and checks. Compliance and macOS nested signing
+  belong to Rust orchestration. Linux native execution and reference comparisons
+  cover the local slice; Windows/macOS native signing/startup/archive gates remain
+  required in CI. This source change does not publish or qualify a new release.
+- Libav build prerequisites now use that tool for upstream C-only cache identity,
+  snapshot/validated restore, actual library probing, C companion construction,
+  fresh Cargo verification drivers, dependency relocation and prepared manifests.
+  The existing signed 9.0.1 C recipes remain; normal Windows/macOS prefix callers
+  and Linux CI media prerequisites execute no project Python. Linux cold/warm
+  execution and reference comparisons cover the local slice; native Windows
+  MSVC/DLL and macOS signing gates remain required. Rebuild kits include the locked
+  independent tool sources. This increment does not publish Preview 3.
+- Pinned build-time BBDown preparation now uses `xtask prepare-bbdown`; CI sets
+  up the pinned Rust toolchain/native linker before invoking it. The redundant
+  Python producer and its dedicated tests are removed, with independent Rust
+  pin/archive/HTTP/native-help coverage and Node caller/order checks. Pins,
+  vendor layout and runtime behavior remain unchanged; native Windows/macOS
+  tool and package gates remain required.
+- Replaced Python desktop construction, macOS embedding, libav companion,
+  cache and collector references are retired. Their useful package, provenance,
+  compiler-output and failure coverage directly checks Rust entries with independent
+  expectations. Local platform build wrappers also use the existing npm/Rust entry;
+  locked Rust rebuild kits no longer need the Python companion reference.
+- Native desktop package verification now uses `xtask verify-native-desktop` on
+  each actual extracted Windows/macOS artifact. It independently checks layout,
+  executes the supplied Host with private data/empty PATH, and checks bootstrap
+  roles, HTTP/SSE and authorized shutdown/reopening. The redundant Python gate
+  and installed-package test driver are retired; their installed import/recovery/
+  refusal checks run in Rust against those artifacts. Retained Python business
+  tests use a small test-only transport helper. Linux actual-package execution
+  and native verifier fixtures cover the local boundary; foreign native CI gates
+  remain required.
+- Desktop development/release construction contracts now run through
+  `npm run test:desktop-build` in local workflows and CI, using actual xtask and
+  compiled native fixtures with independent complete package expectations. The
+  Python preparation/release drivers and shared construction expectations are
+  retired; useful success, failure, isolation and preservation coverage remains.
+  These fixture checks do not qualify foreign native packages or GUI behavior.
+- Next retirement slice: real-libav prerequisite/media verification drivers,
+  then native business and legacy Host/FFI test consumers, preserving coverage.
+  Third-party rebuild exceptions and
+  remaining Python callers stay explicit; do not hide Python inside Actions/containers.
 - Later retirement: remove compatibility/test consumers and project-owned CI
   Python dependencies while preserving useful coverage. The long-term target
   is development/build/verification/CI without project-owned Python requirements;
@@ -38,8 +79,9 @@ storage and migration details belong in [native desktop launch and bundles](nati
   compatibility through narrow adapters and validated snapshots.
 - Stabilize desktop playback, fullscreen, audience windows, updates and
   persistence against the approved desktop behavior baseline.
-- Preview 3 primarily fixes Preview 2 desktop experience regressions, with small
-  qualified engineering increments. Stable v0.8 requires reliable desktop
+- Preview 3 concentrates safely completed migration and source retirement
+  alongside Preview 2 desktop experience fixes; keep product/build changes
+  limited during subsequent stabilization. Stable v0.8 requires reliable desktop
   behavior, preserved data/layout and an accurately described upgrade path.
 - Share frontend components, actions and layout definitions across desktop
   and Android Host, local Remote and public Remote, with narrow platform

@@ -10,7 +10,7 @@ tests but do not supply a packaged media fallback.
 
 Set an absolute `BILIKARA_LIBAV_PREFIX`, then run `build-posix.sh` or, in the
 native MSVC environment, `build-windows.sh` and `prepare-windows.ps1`.
-`build_bundle.py` requires that complete prefix, including source, license,
+`npm run build` / `xtask build-backend` require that complete prefix, including source, license,
 build records, native drivers and the verified private dependency closure.
 Windows requires the shared MSVC CRT; MSYS2 supplies build tools only.
 

@@ -18,7 +18,22 @@ impl Environment {
         Self(env::vars_os().collect())
     }
     pub fn get(&self, key: &str) -> Option<&OsStr> {
-        self.0.get(OsStr::new(key)).map(OsString::as_os_str)
+        if let Some(value) = self.0.get(OsStr::new(key)) {
+            return Some(value.as_os_str());
+        }
+        // Windows preserves names such as Path when enumerating the process
+        // environment, but native lookup is case-insensitive. Keep values and
+        // POSIX name semantics unchanged when taking our immutable snapshot.
+        #[cfg(windows)]
+        {
+            self.0.iter().find_map(|(name, value)| {
+                name.to_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(key))
+                    .then_some(value.as_os_str())
+            })
+        }
+        #[cfg(not(windows))]
+        None
     }
     pub fn text(&self, key: &str) -> String {
         self.get(key)

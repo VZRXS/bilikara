@@ -14,7 +14,7 @@ From the repository root, reuse the accepted prefix and fixtures:
 M3_PREFIX=/sunhonglin/bilikara/.tmp/m1-libav-9/ffmpeg-prefix
 M3_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures
 M3_OUT=/tmp/bilikara-m3
-python media-libav/build.py --prefix "$M3_PREFIX" --out "$M3_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M3_PREFIX" --out "$M3_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata -- \
   compare "$M3_OUT/companion/libbilikara_media_libav.so" "$M3_PREFIX" \

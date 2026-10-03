@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import zipfile
 
-from scripts.check_native_desktop_bundle import RunningHost, isolated_environment
+from tests.native_host_support import RunningHost, isolated_environment
 from tests.video_service_fixture import VideoFixture
 
 ROOT = Path(__file__).resolve().parents[1]

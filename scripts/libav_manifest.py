@@ -1,6 +1,7 @@
 """Build/tooling manifest validation shared with legacy source-mode diagnostics.
 
-Standard-library only: native packaging must not import the Python Host.
+Standard-library only; retained by legacy cache/routing and diagnostic tests.
+Native construction validates this contract in the independent Rust xtask.
 """
 from __future__ import annotations
 
