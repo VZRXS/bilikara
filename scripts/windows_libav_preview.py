@@ -1,4 +1,7 @@
-"""MSVC dependency collection and package staging for x64 and ARM64."""
+"""Frozen MSVC collection/staging reference for compatibility tests.
+
+Normal prefix collection uses the existing Rust xtask.
+"""
 from __future__ import annotations
 
 import json

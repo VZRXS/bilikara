@@ -1,4 +1,4 @@
-"""Cache only the verified upstream C libraries, never application binaries."""
+"""Frozen upstream-cache reference; normal callers use xtask libav-cache."""
 from __future__ import annotations
 
 import hashlib

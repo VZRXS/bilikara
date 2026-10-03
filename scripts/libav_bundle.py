@@ -1,4 +1,7 @@
-"""Build-only same-source libav package assembly for native desktop targets."""
+"""Frozen collection/assembly reference and retained verification interfaces.
+
+Normal prefix collection uses xtask libav-finish/libav-collect.
+"""
 from __future__ import annotations
 
 import json

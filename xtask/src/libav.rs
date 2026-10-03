@@ -202,6 +202,8 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         "test_shim.c",
         "windows_io.h",
         "build.py",
+        "xtask.sh",
+        "REBUILD.md",
         "fixtures/synthetic.h264",
     ];
     rebuild.extend(if config.platform.os == Os::Windows {
@@ -219,6 +221,24 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
             &sources.join("media-libav").join(name),
         )?;
     }
+    // The migrated wrappers need this independent tool in the source kit.
+    // Include its locked sources, never a compiled tool or application Runtime.
+    for name in ["Cargo.toml", "Cargo.lock"] {
+        files::copy(
+            &config.root.join("xtask").join(name),
+            &sources.join("xtask").join(name),
+        )?;
+    }
+    files::tree(
+        &config.root.join("xtask/src"),
+        &sources.join("xtask/src"),
+        false,
+    )?;
+    files::copy(&config.root.join("LICENSE"), &sources.join("xtask/LICENSE"))?;
+    files::copy(
+        &config.root.join("rust-toolchain.toml"),
+        &sources.join("rust-toolchain.toml"),
+    )?;
     let host = layout
         .code
         .join(config.platform.executable("bilikara-desktop-host"));

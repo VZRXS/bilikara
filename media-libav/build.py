@@ -1,4 +1,7 @@
-"""Explicit companion build. No pkg-config or system FFmpeg discovery."""
+"""Frozen independent companion construction reference for retained tests.
+
+Normal prerequisites use xtask libav-companion; this is not a live fallback.
+"""
 import argparse
 import ctypes
 import json

@@ -113,9 +113,9 @@ class DesktopReleaseContractTests(DesktopConstructionFixtures):
         new_commands, env = self.release_path(False, overrides, args, error, full)
         if not error:
             self.assertEqual(old_commands, new_commands)
-            self.assert_same_inventory(self.inventory(self.reference / "dist" / self.product), self.inventory(self.new_dist / self.product))
+            self.assert_same_inventory(self.reference_inventory(self.reference / "dist" / self.product), self.inventory(self.new_dist / self.product))
             if full and self.product.endswith(".app"):
-                self.assert_same_inventory(self.inventory(self.reference / "dist/bilikara-desktop.app"), self.inventory(self.new_dist / "bilikara-desktop.app"))
+                self.assert_same_inventory(self.reference_inventory(self.reference / "dist/bilikara-desktop.app"), self.inventory(self.new_dist / "bilikara-desktop.app"))
         return new_commands, env
 
     def test_full_release_compiles_both_backend_binaries_shell_and_complete_compliance(self):
@@ -145,7 +145,7 @@ class DesktopReleaseContractTests(DesktopConstructionFixtures):
         self.assertEqual(log.read_text(encoding="utf-8"), "")
         self.assertEqual(sum(command[0] == "exec" for command in old_commands), 1)
         final = "bilikara-desktop.app" if self.product.endswith(".app") else self.product
-        self.assert_same_inventory(self.inventory(self.reference / "dist" / final), self.inventory(self.new_dist / final))
+        self.assert_same_inventory(self.reference_inventory(self.reference / "dist" / final), self.inventory(self.new_dist / final))
 
     def test_full_migrated_entry_runs_with_no_python_on_isolated_path(self):
         isolated = self.root / "only native fixture and inspection tools"

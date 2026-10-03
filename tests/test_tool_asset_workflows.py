@@ -83,13 +83,14 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertIn('"--features", "native-host"', backend)
         for filename in ("build-posix.sh", "prepare-windows.ps1"):
             script = (ROOT / "media-libav" / filename).read_text(encoding="utf-8")
-            builds = [line for line in script.splitlines()
-                      if "cargo " in line and "rust-runtime/Cargo.toml" in line]
-            self.assertEqual(len(builds), 2, filename)
-            for command in builds:
-                self.assertIn("--features native-host", command, filename)
-                self.assertIn("--release", command)
-                self.assertIn("--locked", command)
+            self.assertIn("libav-finish", script, filename)
+            self.assertNotIn("rust-runtime/Cargo.toml", script, filename)
+        implementation = (ROOT / "xtask/src/libav_prepare.rs").read_text(encoding="utf-8")
+        self.assertIn('"--features",\n            "native-host"', implementation)
+        self.assertIn('"--release",\n            "--locked"', implementation)
+        self.assertIn('command.args(["--lib", "--no-run"])', implementation)
+        self.assertIn('command.args(["--example", "libav_metadata"])', implementation)
+        self.assertIn('record["reason"] == "compiler-artifact"', implementation)
 
     @unittest.skipIf(os.name == "nt", "Exercises the Linux-only prerequisite step")
     def test_linux_media_prerequisite_builds_only_the_consumed_companion_and_fails_closed(self):
@@ -105,13 +106,13 @@ class ToolAssetWorkflowTest(unittest.TestCase):
   printf 'bash:%s\\n' "$*" >> calls.log
   test "$FAIL_AT" != libraries
 }
-python() {
-  printf 'python:%s\\n' "$*" >> calls.log
+cargo() {
+  printf 'cargo:%s\\n' "$*" >> calls.log
   test "$FAIL_AT" != companion
 }
 '''
             expected = ["bash:media-libav/build-posix-libraries.sh",
-                        f"python:media-libav/build.py --prefix {root / 'prefix'} --out {root / 'prefix/bin'} --test"]
+                        f"cargo:run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix {root / 'prefix'} --out {root / 'prefix/bin'} --test"]
             for failure in ("", "libraries", "companion"):
                 with self.subTest(failure=failure):
                     (root / "calls.log").unlink(missing_ok=True)
@@ -338,9 +339,28 @@ python() {
         bundle_job = self.bundle_workflow[self.bundle_workflow.index("  bundle:"):self.bundle_workflow.index("  android-bundle:")]
         self.assertLess(bundle_job.index("Setup Node.js"), bundle_job.index("Build Tauri App on Windows"))
         self.assertIn("./xtask -> target", bundle_job)
-        for gate in ("Setup Python", "scripts/prepare_bbdown_vendor.py", "scripts/libav_cache.py", "check_native_desktop_bundle.py",
+        for gate in ("Setup Python", "scripts/prepare_bbdown_vendor.py", "--target host-tuple -- libav-cache key", "check_native_desktop_bundle.py",
                      "Verify extracted Windows bundle", "Archive and verify round-trip macOS bundle", "plutil -lint", "--verify --deep --strict", "README-macOS.txt"):
             self.assertIn(gate, bundle_job)
+
+    def test_libav_production_callers_use_host_native_rust_and_keep_python_verifiers(self):
+        self.assertEqual(self.bundle_workflow.count("--target host-tuple -- libav-cache key"), 2)
+        self.assertNotIn("python scripts/libav_cache.py", self.bundle_workflow)
+        self.assertNotIn("python media-libav/build.py", self.bundle_workflow)
+        for name in ("build-posix-libraries.sh", "build-posix.sh", "build-windows-libraries.sh", "build-windows.sh", "prepare-windows.ps1", "xtask.sh"):
+            script = (ROOT / "media-libav" / name).read_text(encoding="utf-8")
+            for dependency in ("pythonLocation", "python3", "python -", "python media-", "libav_cache.py", "build.py", "windows_libav_preview.py"):
+                self.assertNotIn(dependency, script, name)
+        for name in ("build-posix-libraries.sh", "build-windows-libraries.sh"):
+            script = (ROOT / "media-libav" / name).read_text(encoding="utf-8")
+            self.assertIn("libav-cache restore", script)
+            self.assertIn("libav-cache snapshot", script)
+            self.assertIn("set -euo pipefail", script)
+            self.assertIn("FCF986EA15E6E293A5644F10B4322F04D67658D8", script)
+        self.assertIn("--target host-tuple", (ROOT / "media-libav/xtask.sh").read_text(encoding="utf-8"))
+        self.assertIn("python -m unittest discover -s tests -v", self.bundle_workflow)
+        self.assertIn("python scripts/check_native_desktop_bundle.py", self.bundle_workflow)
+        self.assertIn("setup-python", self.bundle_workflow)
 
 
 if __name__ == "__main__":

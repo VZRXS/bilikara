@@ -120,11 +120,34 @@ release entries share the same rules. Generated outputs default to `dist/`;
 of ignored `.tmp/`. Cleanup replaces only the named generated product and
 rejects links, input overlap and user-data directories.
 
-Python remains required by existing dependency-preparation/cache/source
-verification scripts and standalone verification/test drivers in CI.
+The libav prerequisite chain is also Rust-owned. The retained
+`media-libav/build-{posix,windows}-libraries.sh` recipes verify the signed pinned
+FFmpeg 9.0.1 source, then run the existing configure/make/native compiler recipe.
+They use `xtask libav-cache key/snapshot/restore`; schema 3 rotates the former
+Python cache identity once. Keys cover the selected C recipe, native target,
+compiler/SDK, flags and prefix, without depending on Runtime/companion/UI edits
+or the entire xtask executable/lockfile. Only upstream C libraries/headers and
+source/license/recipe records enter that cache. Restore validates hashes, paths,
+relative links, permissions, provenance and actual library facts before use.
+
+`xtask libav-companion --prefix PATH --out PATH [--test] [--sanitize]` probes the
+selected libraries directly and compiles the existing C shim. Windows rejects
+sanitizers; POSIX retains ASan/UBSan. `libav-finish --prefix PATH` builds fresh
+release `libav_metadata` and Runtime test executables from Cargo compiler-artifact
+records, collects native dependencies and writes the prepared manifests. Windows
+also supplies the selected `--redist PATH --system PATH` and retains its installed
+MSVC licence collection in PowerShell. `libav-collect` shares that collector.
+The full POSIX/Windows wrappers compose these stages; Linux CI keeps its lighter
+library-plus-companion prerequisite. No project Python runs in either cold or
+warm-cache production path. A local `BILIKARA_LIBAV_SOURCE_DIR` may supply the
+three pinned archive/signature/key files; signature verification is still required.
+
+Python remains required by pinned BBDown acquisition and standalone
+verification/test drivers in CI, plus independent publication tooling.
 `build_bundle.py`, `scripts/native_desktop_bundle.py` and the Python embedding
-helper are frozen independent contract references, with no normal production
-caller or live fallback. `scripts/libav_manifest.py` retains the Python
+helper, `media-libav/build.py` and the old cache/collector producers are frozen
+independent contract references, with no normal production caller or live
+fallback. `scripts/libav_manifest.py` retains the Python
 manifest/closure interface for those references and legacy diagnostics;
 `bilikara.ffmpeg_vendor` forwards to it. Prepared same-build libav provenance,
 the pinned BBDown checks and native release artifact gates remain required.
@@ -148,9 +171,16 @@ native Windows/macOS acceptance. Real Linux release construction and backend
 execution are locally exercised; Windows/macOS binary/signature/startup/archive
 qualification remains required on native runners.
 
-The next bounded engineering slice is the remaining self-owned dependency
-preparation/cache/libav companion tooling and CI build prerequisites. Existing
-Python verification and publication entries remain; this construction cutover
+Real Linux cold source construction, warm restore, companion/shim sanitizers,
+reference output comparisons and release consumption cover this prerequisite
+slice. Process traces with Python excluded cover the producing chain. Foreign
+command/PE fixtures do not qualify Windows MSVC/DLL loading or macOS signing;
+their native CI gates remain required. The compliance source kit includes the
+locked independent xtask sources and [rebuild instructions](../media-libav/REBUILD.md)
+so migrated library/companion wrappers remain usable without the application Runtime.
+
+The next bounded engineering slice is pinned BBDown vendor preparation. Existing
+Python verification and publication entries remain; this prerequisite cutover
 does not publish Preview 3 or retire all CI Python requirements.
 
 `start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch

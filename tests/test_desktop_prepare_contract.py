@@ -137,12 +137,41 @@ class DesktopConstructionFixtures(unittest.TestCase):
                 self.assertEqual(expected.get(name), actual.get(name), name)
         self.assertEqual(differing, [], "product inventory differs")
 
+    def reference_inventory(self, root):
+        expected = self.inventory(root)
+        # The cutover intentionally adds the independent locked Rust tool to
+        # rebuild materials. Assert those exact new files/bytes/modes as well
+        # as every pre-existing reference entry; do not ignore source-kit paths.
+        kits = [name.removesuffix("media-libav/build.py") for name in expected
+                if name.endswith("THIRD_PARTY_SOURCES/media-libav/build.py")]
+        if not kits:
+            return expected
+        additions = self.root / "expected Rust rebuild source kit"
+        additions.mkdir(exist_ok=True)
+        for source, relative in [(ROOT / "media-libav/xtask.sh", "media-libav/xtask.sh"),
+                                 (ROOT / "media-libav/REBUILD.md", "media-libav/REBUILD.md"),
+                                 (ROOT / "xtask/Cargo.toml", "xtask/Cargo.toml"),
+                                 (ROOT / "xtask/Cargo.lock", "xtask/Cargo.lock"),
+                                 (ROOT / "LICENSE", "xtask/LICENSE"),
+                                 (ROOT / "rust-toolchain.toml", "rust-toolchain.toml")]:
+            destination = additions / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        shutil.copytree(ROOT / "xtask/src", additions / "xtask/src", dirs_exist_ok=True)
+        for kit in kits:
+            for relative, item in self.inventory(additions).items():
+                key = kit + relative
+                if key in expected:
+                    self.assertEqual(expected[key], item, key)
+                expected[key] = item
+        return expected
+
     def pair(self, environment=None, args=(), expected_error=None):
         old, old_commands = self.run_path("old", environment, args, expected_error)
         new, new_commands = self.run_path("new", environment, args, expected_error)
         self.assertEqual(old_commands, new_commands)
         if not expected_error:
-            self.assert_same_inventory(self.inventory(old), self.inventory(new))
+            self.assert_same_inventory(self.reference_inventory(old), self.inventory(new))
         return old, new, old_commands
 
 

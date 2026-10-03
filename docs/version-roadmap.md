@@ -30,10 +30,17 @@ storage and migration details belong in [native desktop launch and bundles](nati
   belong to Rust orchestration. Linux native execution and reference comparisons
   cover the local slice; Windows/macOS native signing/startup/archive gates remain
   required in CI. This source change does not publish or qualify a new release.
-- Next engineering slice: remaining self-owned dependency preparation/cache/libav
-  companion tooling and CI build prerequisites, based on their live callers.
-  Explicitly document third-party rebuild exceptions; do not hide Python inside
-  Actions/containers.
+- Libav build prerequisites now use that tool for upstream C-only cache identity,
+  snapshot/validated restore, actual library probing, C companion construction,
+  fresh Cargo verification drivers, dependency relocation and prepared manifests.
+  The existing signed 9.0.1 C recipes remain; normal Windows/macOS prefix callers
+  and Linux CI media prerequisites execute no project Python. Linux cold/warm
+  execution and reference comparisons cover the local slice; native Windows
+  MSVC/DLL and macOS signing gates remain required. Rebuild kits include the locked
+  independent tool sources. This increment does not publish Preview 3.
+- Next independent prerequisite slice: pinned BBDown vendor preparation.
+  Third-party rebuild exceptions and remaining Python callers stay explicit;
+  do not hide Python inside Actions/containers.
 - Later retirement: remove compatibility/test consumers and project-owned CI
   Python dependencies while preserving useful coverage. The long-term target
   is development/build/verification/CI without project-owned Python requirements;

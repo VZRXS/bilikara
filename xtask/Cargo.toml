@@ -6,13 +6,12 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+libloading = "=0.8.9"
 object = { version = "=0.37.3", default-features = false, features = ["std", "read_core", "pe", "unaligned"] }
 regex = "1"
 serde_json = "1"
 sha2 = "=0.10.9"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-tempfile = "3"

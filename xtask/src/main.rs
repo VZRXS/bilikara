@@ -4,6 +4,10 @@ mod compliance;
 mod config;
 mod files;
 mod libav;
+mod libav_cache;
+mod libav_prepare;
+#[cfg(test)]
+mod libav_prerequisite_tests;
 mod macos;
 mod release;
 #[cfg(test)]
@@ -28,6 +32,9 @@ fn run() -> Result<()> {
         .next()
         .ok_or("expected prepare-desktop, build-backend, build-desktop or assemble-desktop")?;
     let action = action.to_str().ok_or("invalid desktop command")?;
+    if action.starts_with("libav-") {
+        return libav_prepare::run(action, args.collect());
+    }
     if !matches!(
         action,
         "prepare-desktop" | "build-backend" | "build-desktop" | "assemble-desktop"

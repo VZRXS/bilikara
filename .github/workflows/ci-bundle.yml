@@ -133,7 +133,9 @@ jobs:
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        env:
+          BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
 
       - name: Cache verified Linux media test libraries
         if: runner.os == 'Linux'
@@ -153,7 +155,7 @@ jobs:
           # This suite loads only the companion. Release drivers/test binaries
           # and packaging records are built by the desktop bundle jobs.
           bash media-libav/build-posix-libraries.sh
-          python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
           echo "BILIKARA_TEST_LIBAV_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so" >> "$GITHUB_ENV"
 
       - name: Run unit tests
@@ -279,7 +281,7 @@ jobs:
       - name: Resolve libav cache identity
         id: libav-cache-key
         shell: bash
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
 
       - name: Restore verified libav libraries
         id: libav-cache

@@ -1,5 +1,10 @@
 # libav media integration
 
+Current native prerequisites and cache use the independent Rust `xtask` through
+the platform recipes; see [rebuild commands](REBUILD.md) and
+[current desktop builds](../docs/native-desktop.md). `build.py` is a frozen test
+reference. The M1–M6 procedures/receipts below retain their historical boundaries.
+
 ## Current M6 behavior
 
 Supported provisioned packages now use libav first in normal Host/CacheRuntime
