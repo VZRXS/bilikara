@@ -5,26 +5,10 @@ if ($arch -notin @('x64', 'arm64')) { throw 'Expected native x64 or ARM64 MSVC e
 $rustArch = if ($arch -eq 'arm64') { 'aarch64' } else { 'x86_64' }
 $rustInfo = & rustc -vV
 if ($LASTEXITCODE -ne 0 -or -not ($rustInfo -match "^host: $rustArch-pc-windows-msvc$")) { throw 'Expected the matching native Rust MSVC host target' }
-$driver = Join-Path $prefix 'driver'
-New-Item -ItemType Directory -Force $driver | Out-Null
-# Match the packaged backend so its optimized Runtime library can be reused.
-cargo build --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --example libav_metadata 2>&1 | Tee-Object (Join-Path $prefix "records/driver-build.log")
-if ($LASTEXITCODE -ne 0) { throw 'Developer driver build failed' }
-Copy-Item rust-runtime/target/release/examples/libav_metadata.exe $driver
-$messages = & cargo test --manifest-path rust-runtime/Cargo.toml --release --locked --features native-host --lib --no-run --message-format=json
-$testExit = $LASTEXITCODE
-$messages | Out-File (Join-Path $prefix 'records/runtime-test-build.jsonl') -Encoding utf8
-if ($testExit -ne 0) { throw 'Runtime smoke test build failed' }
-$tests = @($messages | ForEach-Object {
-    $record = $_ | ConvertFrom-Json
-    if ($record.reason -eq 'compiler-artifact' -and $record.target.name -eq 'bilikara_runtime' -and $record.profile.test -and $record.executable) { $record.executable }
-})
-if ($tests.Count -ne 1) { throw 'Expected one Runtime library test executable' }
-Copy-Item $tests[0] (Join-Path $driver 'libav-runtime-tests.exe')
 $redist = @(Get-ChildItem (Join-Path $env:VCToolsRedistDir "$arch/Microsoft.VC*.CRT") -Directory)
 if ($redist.Count -ne 1) { throw 'Expected one selected MSVC redistributable directory' }
-& (Join-Path $env:pythonLocation 'python.exe') scripts/windows_libav_preview.py collect $prefix $redist[0].FullName (Join-Path $env:SystemRoot 'System32')
-if ($LASTEXITCODE -ne 0) { throw 'PE dependency collection failed' }
+& cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-finish --prefix $prefix --redist $redist[0].FullName --system (Join-Path $env:SystemRoot 'System32')
+if ($LASTEXITCODE -ne 0) { throw 'Native driver/dependency preparation failed' }
 # Resolve the product terms from this installation's catalog: recent VS
 # installers link the EULA rather than installing Licenses/*/license.txt.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'

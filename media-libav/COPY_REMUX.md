@@ -20,7 +20,7 @@ FLAC-in-MP4、raw FLAC、其他 codec/container、加密和动态 decoder config
 ```bash
 M5_PREFIX="$PWD/.tmp/m1-libav-9/ffmpeg-prefix"
 M5_OUT=/tmp/bilikara-m5
-python media-libav/build.py --prefix "$M5_PREFIX" --out "$M5_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M5_PREFIX" --out "$M5_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 rust-runtime/target/debug/examples/libav_metadata compare \
   "$M5_OUT/companion/libbilikara_media_libav.so" "$M5_PREFIX" \

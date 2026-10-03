@@ -30,47 +30,12 @@ fn executable(path: &Path) -> bool {
 }
 
 pub fn bbdown(config: &Config) -> Result<Option<PathBuf>> {
-    let mut paths: Vec<_> = env::split_paths(config.env.get("PATH").unwrap_or_default()).collect();
-    let extensions: Vec<_> = if config.platform.os == Os::Windows {
-        paths.insert(0, env::current_dir()?);
-        config
-            .env
-            .get("PATHEXT")
-            .filter(|v| !v.is_empty())
-            .unwrap_or(".COM;.EXE;.BAT;.CMD".as_ref())
-            .to_string_lossy()
-            .split(';')
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect()
-    } else {
-        vec![String::new()]
-    };
-    let candidate = paths
-        .iter()
-        .flat_map(|path| {
-            extensions
-                .iter()
-                .map(move |ext| path.join(format!("BBDown{ext}")))
-        })
-        .find(|p| executable(p));
-    let tool = if config.platform.os == Os::Windows {
-        candidate.and_then(|p| windows_tool(&p))
-    } else {
-        candidate
-    };
+    let tool = bbdown_path(config)?;
     if let Some(path) = &tool
         && !config.development
     {
-        let mut command = Command::new(path);
-        command.arg("--help");
-        let result = timed_output(command, Duration::from_secs(30))?;
-        let output = format!(
-            "{}{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        if !result.status.success() || output.trim().is_empty() {
+        let (success, output) = help(path)?;
+        if !success || output.trim().is_empty() {
             return Err(format!(
                 "BBDown failed its release build execution check: {}",
                 output.trim()
@@ -113,6 +78,54 @@ pub fn bbdown(config: &Config) -> Result<Option<PathBuf>> {
         }
     }
     Ok(tool)
+}
+
+pub fn help(path: &Path) -> Result<(bool, String)> {
+    let mut command = Command::new(path);
+    command.arg("--help");
+    let result = timed_output(command, Duration::from_secs(30))?;
+    Ok((
+        result.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        )
+        .replace("\r\n", "\n")
+        .replace('\r', "\n"), // Python's retained text pipe used universal newlines.
+    ))
+}
+
+pub fn bbdown_path(config: &Config) -> Result<Option<PathBuf>> {
+    let mut paths: Vec<_> = env::split_paths(config.env.get("PATH").unwrap_or_default()).collect();
+    let extensions: Vec<_> = if config.platform.os == Os::Windows {
+        paths.insert(0, env::current_dir()?);
+        config
+            .env
+            .get("PATHEXT")
+            .filter(|v| !v.is_empty())
+            .unwrap_or(".COM;.EXE;.BAT;.CMD".as_ref())
+            .to_string_lossy()
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    let candidate = paths
+        .iter()
+        .flat_map(|path| {
+            extensions
+                .iter()
+                .map(move |ext| path.join(format!("BBDown{ext}")))
+        })
+        .find(|p| executable(p));
+    Ok(if config.platform.os == Os::Windows {
+        candidate.and_then(|p| windows_tool(&p))
+    } else {
+        candidate
+    })
 }
 
 fn windows_tool(candidate: &Path) -> Option<PathBuf> {
@@ -175,7 +188,7 @@ pub fn aria2_metadata(config: &Config, vendor: &Path) -> Result<()> {
     files::copy(&intermediate, &vendor.join("aria2-macos.json"))
 }
 
-fn expand_metadata_path(config: &Config, value: &str) -> Result<PathBuf> {
+pub fn expand_metadata_path(config: &Config, value: &str) -> Result<PathBuf> {
     let Some(rest) = value.strip_prefix('~') else {
         return Ok(value.into());
     };

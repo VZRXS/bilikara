@@ -8,26 +8,35 @@ case "${VSCMD_ARG_TGT_ARCH:-}" in
 esac
 export BILIKARA_LIBAV_TARGET="$rust_arch-pc-windows-msvc"
 repo="$(pwd)"
-python_bin="$(cygpath -u "$pythonLocation")/python.exe"
+source "$repo/media-libav/xtask.sh"
 prefix="$(cygpath -m "$BILIKARA_LIBAV_PREFIX")"
 work="$(cygpath -u "$RUNNER_TEMP")/bilikara-ffmpeg-source"
 compiler_dir="$(cygpath -u "$VCToolsInstallDir")/bin/Host${VSCMD_ARG_HOST_ARCH}/${VSCMD_ARG_TGT_ARCH}"
 export PATH="$compiler_dir:$PATH"
-mkdir -p "$prefix/source" "$prefix/licenses" "$prefix/records" "$work"
-trap 'test ! -f "$work/ffmpeg-9.0.1/ffbuild/config.log" || cp "$work/ffmpeg-9.0.1/ffbuild/config.log" "$prefix/records/config.log"' EXIT
+paths=(libav-cache check-paths "$prefix" "$(cygpath -m "$work")")
+if [ -n "${BILIKARA_LIBAV_CACHE:-}" ]; then paths+=("$BILIKARA_LIBAV_CACHE"); fi
+bilikara_xtask "${paths[@]}"
 version=9.0.1
 url="https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz"
 if [ "${BILIKARA_LIBAV_CACHE_HIT:-false}" = true ]; then
-  "$python_bin" "$repo/scripts/libav_cache.py" restore "$BILIKARA_LIBAV_CACHE" "$prefix"
+  bilikara_xtask libav-cache restore "$BILIKARA_LIBAV_CACHE" "$prefix"
 else
-  curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
-  curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
-  curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
+  mkdir -p "$prefix/source" "$prefix/licenses" "$prefix/records" "$work"
+  trap 'test ! -f "$work/ffmpeg-9.0.1/ffbuild/config.log" || cp "$work/ffmpeg-9.0.1/ffbuild/config.log" "$prefix/records/config.log"' EXIT
+  if [ -n "${BILIKARA_LIBAV_SOURCE_DIR:-}" ]; then
+    for name in "ffmpeg-${version}.tar.xz" "ffmpeg-${version}.tar.xz.asc" ffmpeg-devel.asc; do
+      cp "$BILIKARA_LIBAV_SOURCE_DIR/$name" "$prefix/source/$name"
+    done
+  else
+    curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
+    curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
+    curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
+  fi
   # Same pinned official release signer used by the accepted Linux 9.0.1 build.
   mkdir -p "$work/keyring"
   chmod 700 "$work/keyring"
-  gpg --homedir "$work/keyring" --batch --import "$prefix/source/ffmpeg-devel.asc"
-  gpg --homedir "$work/keyring" --batch --status-fd 1 --verify \
+  gpg --homedir "$work/keyring" --no-autostart --batch --import "$prefix/source/ffmpeg-devel.asc"
+  gpg --homedir "$work/keyring" --no-autostart --batch --status-fd 1 --verify \
     "$prefix/source/ffmpeg-${version}.tar.xz.asc" "$prefix/source/ffmpeg-${version}.tar.xz" \
     > "$prefix/records/signature.log" 2>&1
   grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$prefix/records/signature.log"
@@ -45,7 +54,8 @@ else
   make install 2>&1 | tee "$prefix/records/install.log"
   cp COPYING* LICENSE.md "$prefix/licenses/"
   cp config.h config_components.h ffbuild/config.mak "$prefix/records/"
+  cp ffbuild/config.log "$prefix/records/config.log"
   if [ -n "${BILIKARA_LIBAV_CACHE:-}" ]; then
-    "$python_bin" "$repo/scripts/libav_cache.py" snapshot "$prefix" "$BILIKARA_LIBAV_CACHE"
+    bilikara_xtask libav-cache snapshot "$prefix" "$BILIKARA_LIBAV_CACHE"
   fi
 fi

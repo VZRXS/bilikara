@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-
-import build_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,34 +40,6 @@ class ReleaseVersionConsistencyTest(unittest.TestCase):
         self.assertEqual(package_lock["version"], EXPECTED_VERSION)
         self.assertEqual(package_lock["packages"][""]["version"], EXPECTED_VERSION)
 
-    def test_bundle_and_windows_versions_use_release_representation(self):
-        commit = "abcdef1234567890abcdef1234567890abcdef1234"
-        def git_output(*args):
-            return {
-                ("rev-parse", "--verify", "HEAD"): commit,
-                ("symbolic-ref", "--quiet", "--short", "HEAD"): None,
-                ("status", "--porcelain", "--untracked-files=normal"): "",
-                ("describe", "--exact-match", "--tags", "HEAD"): "v0.8.0",
-                ("rev-parse", "--verify", "refs/tags/v0.8.0^{commit}"): commit,
-            }.get(args)
-        git_patch = patch.object(build_bundle, "_build_git_output", side_effect=git_output)
-        git_patch.start()
-        self.addCleanup(git_patch.stop)
-        with patch.dict(os.environ, {"BILIKARA_VERSION": "v0.8.0"}, clear=False):
-            self.assertEqual(build_bundle._bundle_version(), "v0.8.0")
-        with patch.dict(
-            os.environ,
-            {"BILIKARA_VERSION": "", "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "work/v0.8.0", "GITHUB_HEAD_REF": ""},
-            clear=False,
-        ):
-            self.assertEqual(build_bundle._bundle_version(), "work/v0.8.0-gabcdef123456")
-        with patch.dict(
-            os.environ,
-            {"BILIKARA_VERSION": "", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.8.0"},
-            clear=False,
-        ):
-            self.assertEqual(build_bundle._bundle_version(), "v0.8.0")
-        self.assertEqual(build_bundle._windows_version_tuple("v0.8.0"), (0, 8, 0, 0))
 
 
 if __name__ == "__main__":

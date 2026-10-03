@@ -197,10 +197,10 @@ class PresentationStaticInvariantsTest(unittest.TestCase):
         ]
         self.assertIn("relative = route.lstrip", static_handler)
         self.assertIn("not static_path.exists()", static_handler)
-        bundle_source = (ROOT / "scripts" / "native_desktop_bundle.py").read_text(encoding="utf-8")
-        self.assertIn('static = resources / "static"', bundle_source)
-        self.assertIn('source_static = bundle.ROOT_DIR / "static"', bundle_source)
-        self.assertIn('shutil.copytree(source_static, static,', bundle_source)
+        bundle_source = (ROOT / "xtask" / "src" / "files.rs").read_text(encoding="utf-8")
+        self.assertIn('let assets = resources.join("static")', bundle_source)
+        self.assertIn('let source_static = config.root.join("static")', bundle_source)
+        self.assertIn('copy(&entry.path(), &assets.join(entry.file_name()))?', bundle_source)
 
 
 if __name__ == "__main__":

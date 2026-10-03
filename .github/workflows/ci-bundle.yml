@@ -88,15 +88,15 @@ jobs:
           # Separate feature sets; rotate once because exact hits are immutable.
           shared-key: ci-test-workspace-v1
 
-      - name: Desktop preparation tool checks
+      - name: Desktop construction tool checks
         shell: bash
         run: |
           set -euo pipefail
           cargo fmt --manifest-path xtask/Cargo.toml --check
-          cargo clippy --manifest-path xtask/Cargo.toml --all-targets --locked -- -D warnings
-          cargo test --manifest-path xtask/Cargo.toml --locked
-          cargo build --manifest-path xtask/Cargo.toml --locked
-          node --test tests/desktop_prepare_entry.test.mjs
+          cargo clippy --manifest-path xtask/Cargo.toml --all-targets --locked --target host-tuple -- -D warnings
+          cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple
+          cargo build --manifest-path xtask/Cargo.toml --locked --target host-tuple
+          npm run test:desktop-build
 
       - name: Rust Checks and Build
         shell: bash
@@ -122,7 +122,7 @@ jobs:
       - name: Compile Python files
         run: |
           python -m compileall -q bilikara
-          python -m py_compile start_bilikara.py build_bundle.py
+          python -m py_compile start_bilikara.py
 
       - name: Test release mirror verification
         run: node --test tests/release_mirror.test.mjs
@@ -133,7 +133,9 @@ jobs:
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        env:
+          BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
 
       - name: Cache verified Linux media test libraries
         if: runner.os == 'Linux'
@@ -153,7 +155,7 @@ jobs:
           # This suite loads only the companion. Release drivers/test binaries
           # and packaging records are built by the desktop bundle jobs.
           bash media-libav/build-posix-libraries.sh
-          python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
           echo "BILIKARA_TEST_LIBAV_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so" >> "$GITHUB_ENV"
 
       - name: Run unit tests
@@ -234,14 +236,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew list gnupg >/dev/null 2>&1 || brew install gnupg
 
-      - name: Prepare pinned BBDown vendor
-        shell: bash
-        run: |
-          bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
-          python scripts/prepare_bbdown_vendor.py "$bbdown_dir"
-          printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
-          cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
-
       - name: Install packaging dependencies
         run: |
           python -m pip install --upgrade pip
@@ -267,6 +261,7 @@ jobs:
           workspaces: |
             ./rust-runtime -> target
             ./src-tauri -> target
+            ./xtask -> target
           cache-workspace-crates: true
           shared-key: ci-desktop-bundle-workspace-v1
 
@@ -275,10 +270,18 @@ jobs:
         shell: pwsh
         run: ./scripts/setup_msvc.ps1 -Arch '${{ matrix.arch }}'
 
+      - name: Prepare pinned BBDown vendor
+        shell: bash
+        run: |
+          bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown "$bbdown_dir" --platform '${{ matrix.slug }}' --arch '${{ matrix.arch }}'
+          printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
+          cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
+
       - name: Resolve libav cache identity
         id: libav-cache-key
         shell: bash
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
 
       - name: Restore verified libav libraries
         id: libav-cache
@@ -320,8 +323,8 @@ jobs:
           path: ${{ env.BILIKARA_LIBAV_CACHE }}
           key: ${{ steps.libav-cache-key.outputs.key }}
 
-      - name: Build app bundle
-        run: python build_bundle.py
+      - name: Build release backend from prepared dependencies
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
 
@@ -381,19 +384,9 @@ jobs:
           npm exec -- tauri icon static/pic/icon.png
           npm exec -- tauri build --bundles app -- --locked
 
-      - name: Inject Tauri into Windows Bundle
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
-
-
-      - name: Inject Tauri into macOS Bundle
-        if: runner.os == 'macOS'
-        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/bilikara-desktop.app
-
-      - name: Embed signed backend in macOS Desktop bundle
-        if: runner.os == 'macOS'
-        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/bilikara-desktop.app
+      - name: Assemble release desktop using the compiled Tauri output
+        # Cargo metadata locates the existing release output. No shell rebuild.
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
 
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'
@@ -507,12 +500,18 @@ jobs:
         shell: pwsh
         run: |
           $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/_internal/bilikara-desktop-host.exe'
-          python scripts/check_native_desktop_bundle.py "$backend"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop "$backend"
+          if ($LASTEXITCODE -ne 0) { throw "Extracted native desktop verification failed" }
+          $env:BILIKARA_TEST_NATIVE_PACKAGE = $backend
+          cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Extracted installed-entry regressions failed" }
 
       - name: Verify extracted native desktop and no-media-CLI layout on macOS
         if: runner.os == 'macOS'
         run: |
-          python scripts/check_native_desktop_bundle.py test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
+          backend="$GITHUB_WORKSPACE/test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop "$backend"
+          BILIKARA_TEST_NATIVE_PACKAGE="$backend" cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
 
       - name: Upload native bundle
         uses: actions/upload-artifact@v7

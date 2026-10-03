@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from scripts.check_native_desktop_bundle import RunningHost, isolated_environment
+from tests.native_host_support import RunningHost, isolated_environment
 
 
 @unittest.skipUnless(os.environ.get("BILIKARA_TEST_NATIVE_PACKAGE"), "requires built native desktop package")

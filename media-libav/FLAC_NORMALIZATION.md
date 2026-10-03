@@ -72,7 +72,7 @@ scratch。已存在目标、初检后竞态目标、源的 hardlink/symlink 均�
 ```bash
 M5_FLAC_PREFIX="$PWD/.tmp/m1-libav-9/ffmpeg-prefix"
 M5_FLAC_OUT=/tmp/bilikara-m5-flac
-python media-libav/build.py --prefix "$M5_FLAC_PREFIX" --out "$M5_FLAC_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M5_FLAC_PREFIX" --out "$M5_FLAC_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 rust-runtime/target/debug/examples/libav_metadata compare \
   "$M5_FLAC_OUT/companion/libbilikara_media_libav.so" "$M5_FLAC_PREFIX" \

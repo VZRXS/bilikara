@@ -1,6 +1,5 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements-packaging.txt
-python3 build_bundle.py
+npm ci
+npm run build

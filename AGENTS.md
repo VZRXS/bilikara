@@ -19,10 +19,10 @@ The architecture consists of the following primary layers:
 - `bilikara/`: Retained Python source Host transport and compatibility adapter, used by development workflows and tests, not native desktop products or their build imports. Handles legacy HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, trusted tool configuration, BBDown preparation and retained yt-dlp orchestration/source-mode media CLI compatibility, version checks/updates, and frozen Python compatibility references. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
 - `rust/`: Shared typed Rust domain core crate (`bilikara_rust`). Native products link its `rlib`; the `cdylib` and C ABI remain for Python compatibility/integration tests and source workflows. Implements pure, deterministic business logic domains.
 - `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, production native HTTP/SSE Host, Rust Native cache/runtime services and operational I/O such as the independent HTTP media downloader. Its C ABI remains for the legacy Python adapter and tests; native products link Rust directly.
-- `build_bundle.py`, `scripts/`, `media-libav/`: Build/package and verification tooling. Python is allowed here; native build paths must not import `bilikara` application modules. Shared package validation belongs in the tooling layer.
-- `xtask/`: Independent Rust build tool for adjacent desktop development preparation, called by `prepare:desktop` and Tauri's development hook. It consumes prepared tool/libav inputs and must not invoke Python or link the application Runtime. Release assembly/signing and existing Python test drivers remain separate until their bounded cutover is qualified.
+- `scripts/`, `media-libav/`: Platform recipes, independent verification and retained compatibility tooling. Replaced Python desktop/libav construction references and their dedicated tests are retired; normal native desktop construction uses `xtask` and must not execute Python or import `bilikara` application modules. Shared package validation belongs in the tooling layer.
+- `xtask/`: Independent Rust build and package-verification tool for adjacent desktop development preparation, ordinary release construction/assembly, libav prerequisites/cache and pinned build-time BBDown acquisition (`prepare-bbdown`). `prepare:desktop`, Tauri's development hook and `npm run build` use it; CI uses its shared backend/assembly entries around the existing Tauri build and native checks. Libav shell/MSVC recipes use its C-only cache, library probe, companion and dependency/metadata stages. It must not invoke Python or link the application Runtime. The extracted native package gate uses `verify-native-desktop` with isolated actual Host execution; remaining Python verification drivers stay separate. Retained Python business tests use only `tests/native_host_support.py` transport; foreign-platform fixtures do not qualify native Windows/macOS products.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
-- `tests/`: Project test suite using standard Python `unittest`. Includes direct unit tests, integration tests enforcing native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`), and tests that launch Node.js scripts to evaluate frontend JavaScript behavior.
+- `tests/`: Node desktop construction contracts and entry checks run via `npm run test:desktop-build`, using actual xtask and compiled native fixtures with independent expectations. Remaining Python `unittest` covers media, business/legacy/FFI and frontend consumers, including native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`). Construction drivers no longer require Python; native package qualification remains a separate artifact gate.
 
 ## 3. Backend Ownership After Phase 2
 
@@ -316,13 +316,16 @@ cargo test --locked
 cargo build --release --locked
 cd ..
 
+# 1c. Desktop Construction Contracts (Node 24, pinned host-native xtask)
+npm run test:desktop-build
+
 # 2. Python Test Suite (forcing native library verification)
 BILIKARA_REQUIRE_RUST_LIB=1 \
 python -m unittest discover -s tests -v
 
 # 3. Python Compilation Checks
 python -m compileall -q bilikara
-python -m py_compile start_bilikara.py build_bundle.py
+python -m py_compile start_bilikara.py
 
 # 4. Tauri Shell Checks
 cd src-tauri
@@ -360,7 +363,8 @@ When completing a task, agents must report:
 This layer supports source development and compatibility/equivalence tests. It
 is not shipped or imported by the native desktop build. `ffmpeg_vendor.py`
 retains its legacy import surface by forwarding to `scripts/libav_manifest.py`;
-native packaging calls the tooling module directly.
+legacy diagnostics use that tooling verifier; native construction validates the
+same manifest contract in xtask.
 
 | File | Purpose |
 | :--- | :--- |

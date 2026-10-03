@@ -1,5 +1,10 @@
 # libav media integration
 
+Current native prerequisites and cache use the independent Rust `xtask` through
+the platform recipes; see [rebuild commands](REBUILD.md) and
+[current desktop builds](../docs/native-desktop.md). `build.py` is a frozen test
+reference. The M1–M6 procedures/receipts below retain their historical boundaries.
+
 ## Current M6 behavior
 
 Supported provisioned packages now use libav first in normal Host/CacheRuntime
@@ -58,7 +63,7 @@ shared-library build is installed in the separate prefix below. The previous
 ```bash
 M1_OUT="$PWD/.tmp/m1-libav-9"
 M1_PREFIX="$M1_OUT/ffmpeg-prefix"
-python media-libav/build.py --prefix "$M1_PREFIX" --out "$M1_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M1_PREFIX" --out "$M1_OUT/companion" --test
 python media-libav/generate_fixtures.py --prefix "$M1_PREFIX" \
   --h264-source /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_video.mp4 \
   --out "$M1_OUT/fixtures"
@@ -229,7 +234,7 @@ Sanitizer reproduction (GCC ASan/UBSan, Linux; test binary path is printed by
 `cargo test --no-run --manifest-path rust-runtime/Cargo.toml --locked --lib`):
 
 ```bash
-python media-libav/build.py --prefix "$M1_PREFIX" --out "$M1_OUT/asan" --sanitize --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M1_PREFIX" --out "$M1_OUT/asan" --sanitize --test
 # Substitute the lib test executable printed by Cargo for M1_TEST_BINARY.
 LD_PRELOAD=/usr/lib/gcc/x86_64-linux-gnu/11/libasan.so \
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
