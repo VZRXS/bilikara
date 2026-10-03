@@ -88,7 +88,7 @@ jobs:
           # Separate feature sets; rotate once because exact hits are immutable.
           shared-key: ci-test-workspace-v1
 
-      - name: Desktop preparation tool checks
+      - name: Desktop construction tool checks
         shell: bash
         run: |
           set -euo pipefail
@@ -267,6 +267,7 @@ jobs:
           workspaces: |
             ./rust-runtime -> target
             ./src-tauri -> target
+            ./xtask -> target
           cache-workspace-crates: true
           shared-key: ci-desktop-bundle-workspace-v1
 
@@ -320,8 +321,8 @@ jobs:
           path: ${{ env.BILIKARA_LIBAV_CACHE }}
           key: ${{ steps.libav-cache-key.outputs.key }}
 
-      - name: Build app bundle
-        run: python build_bundle.py
+      - name: Build release backend from prepared dependencies
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
 
@@ -381,19 +382,9 @@ jobs:
           npm exec -- tauri icon static/pic/icon.png
           npm exec -- tauri build --bundles app -- --locked
 
-      - name: Inject Tauri into Windows Bundle
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
-
-
-      - name: Inject Tauri into macOS Bundle
-        if: runner.os == 'macOS'
-        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/bilikara-desktop.app
-
-      - name: Embed signed backend in macOS Desktop bundle
-        if: runner.os == 'macOS'
-        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/bilikara-desktop.app
+      - name: Assemble release desktop using the compiled Tauri output
+        # Cargo metadata locates the existing release output. No shell rebuild.
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
 
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'

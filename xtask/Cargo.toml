@@ -9,6 +9,7 @@ publish = false
 object = { version = "=0.37.3", default-features = false, features = ["std", "read_core", "pe", "unaligned"] }
 regex = "1"
 serde_json = "1"
+sha2 = "=0.10.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

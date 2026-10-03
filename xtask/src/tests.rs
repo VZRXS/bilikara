@@ -1,6 +1,7 @@
 use crate::{
+    compliance,
     config::{Config, Environment, Os, Platform},
-    files, libav, tools,
+    files, libav, macos, release, tools,
 };
 use serde_json::json;
 use std::{ffi::OsString, fs, path::Path, process::Command};
@@ -374,4 +375,152 @@ fn copy_preserves_link_content_and_modes_without_truncating_same_files() {
     fs::hard_link(&source, &hardlink).unwrap();
     assert!(files::copy(&source, &hardlink).is_err());
     assert_eq!(fs::read(source).unwrap(), b"executable content");
+}
+
+#[test]
+fn release_cleanup_is_scoped_and_preserves_data_and_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let c = config(temp.path(), &[]);
+    for path in [
+        ".",
+        "target",
+        "src-tauri/target",
+        ".tmp",
+        "runtime",
+        "dist/../../outside",
+    ] {
+        assert!(
+            release::dist_directory(&c, Some(Path::new(path))).is_err(),
+            "{path}"
+        );
+    }
+    let dist = release::dist_directory(&c, Some(Path::new(".tmp/release 空 $()"))).unwrap();
+    fs::create_dir_all(dist.join("bilikara/runtime/data")).unwrap();
+    let data = dist.join("bilikara/runtime/data/sentinel");
+    fs::write(&data, b"user records").unwrap();
+    assert!(release::clean_product(&c, &dist, "bilikara", &[]).is_err());
+    assert_eq!(fs::read(&data).unwrap(), b"user records");
+    fs::remove_dir_all(dist.join("bilikara/runtime")).unwrap();
+    let input = dist.join("bilikara/input");
+    fs::write(&input, b"prepared input").unwrap();
+    assert!(release::clean_product(&c, &dist, "bilikara", &[&input]).is_err());
+    assert_eq!(fs::read(&input).unwrap(), b"prepared input");
+    fs::write(dist.join("unrelated"), b"keep").unwrap();
+    assert!(release::clean_product(&c, &dist, "target", &[]).is_err());
+    release::clean_product(&c, &dist, "bilikara", &[]).unwrap();
+    assert!(!input.exists());
+    assert_eq!(fs::read(dist.join("unrelated")).unwrap(), b"keep");
+}
+
+#[cfg(unix)]
+#[test]
+fn release_output_and_product_symlinks_are_rejected_before_cleanup() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let c = config(temp.path(), &[]);
+    let installed = temp.path().join("installed application");
+    fs::create_dir_all(&installed).unwrap();
+    fs::write(installed.join("sentinel"), b"installed").unwrap();
+    symlink(&installed, temp.path().join("dist")).unwrap();
+    assert!(release::dist_directory(&c, None).is_err());
+    let dist = temp.path().join(".tmp/generated");
+    fs::create_dir_all(&dist).unwrap();
+    symlink(&installed, dist.join("bilikara")).unwrap();
+    assert!(release::clean_product(&c, &dist, "bilikara", &[]).is_err());
+    assert_eq!(fs::read(installed.join("sentinel")).unwrap(), b"installed");
+    // A trusted checkout may have a system/link ancestor (macOS /var, /tmp).
+    let real = temp.path().join("real checkout");
+    fs::create_dir(&real).unwrap();
+    let alias = temp.path().join("checkout alias");
+    symlink(&real, &alias).unwrap();
+    let c = config(&alias, &[]);
+    let dist = release::dist_directory(&c, None).unwrap();
+    release::clean_product(&c, &dist, "bilikara", &[]).unwrap();
+    assert!(real.join("dist").is_dir());
+}
+
+#[test]
+fn release_compliance_enforces_configured_source_digest_and_license() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("exact source 空.tar.xz");
+    fs::write(&archive, b"abc").unwrap();
+    let license = temp.path().join("third_party/BBDown-LICENSE.txt");
+    fs::create_dir_all(license.parent().unwrap()).unwrap();
+    fs::write(&license, b"MIT").unwrap();
+    let mut c = config(
+        temp.path(),
+        &[
+            ("BILIKARA_FFMPEG_SOURCE_ARCHIVE", archive.to_str().unwrap()),
+            (
+                "BILIKARA_FFMPEG_SOURCE_SHA256",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+        ],
+    );
+    assert_eq!(
+        compliance::input_files(&c).unwrap(),
+        [license.clone(), archive.clone()]
+    );
+    c.env.0.insert(
+        "BILIKARA_FFMPEG_SOURCE_SHA256".into(),
+        "0".repeat(64).into(),
+    );
+    assert!(
+        compliance::input_files(&c)
+            .unwrap_err()
+            .to_string()
+            .contains("SHA-256 mismatch")
+    );
+    c.env
+        .0
+        .remove(std::ffi::OsStr::new("BILIKARA_FFMPEG_SOURCE_SHA256"));
+    fs::remove_file(archive).unwrap();
+    assert!(
+        compliance::input_files(&c)
+            .unwrap_err()
+            .to_string()
+            .contains("source archive not found")
+    );
+    c.env
+        .0
+        .remove(std::ffi::OsStr::new("BILIKARA_FFMPEG_SOURCE_ARCHIVE"));
+    fs::remove_file(license).unwrap();
+    assert!(
+        compliance::input_files(&c)
+            .unwrap_err()
+            .to_string()
+            .contains("BBDown license file not found")
+    );
+}
+
+#[test]
+fn final_layout_and_plist_preserve_platform_resource_roles_and_numeric_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let c = config(temp.path(), &[]);
+    fs::write(temp.path().join("package.json"), r#"{"version":"0.8.0"}"#).unwrap();
+    let app = temp.path().join("bilikara.app");
+    fs::create_dir_all(app.join("Contents")).unwrap();
+    let layout = files::Layout::new(&app, true);
+    assert_eq!(layout.code, app.join("Contents/MacOS"));
+    assert_eq!(layout.vendor, app.join("Contents/Frameworks"));
+    assert_eq!(layout.docs, app.join("Contents/Resources/license"));
+    for (label, numeric) in [
+        ("work/v0.8.0-gabcdef-dirty", "0.8.0"),
+        ("v7.6.5-preview.99", "7.6.5"),
+        ("v999999.1.2", "65535.1.2"),
+    ] {
+        macos::write_backend_plist(&c, &app, label).unwrap();
+        let plist = fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+        assert_eq!(
+            plist
+                .matches(&format!("<string>{numeric}</string>"))
+                .count(),
+            2
+        );
+        assert!(plist.contains("<key>LSUIElement</key>\n\t<true/>"));
+        assert!(plist.contains("com.bilikara.backend"));
+    }
+    let development = files::Layout::new(&app, false);
+    assert_eq!(development.vendor, app.join("_internal/vendor"));
+    assert_eq!(development.code, app.join("_internal"));
 }

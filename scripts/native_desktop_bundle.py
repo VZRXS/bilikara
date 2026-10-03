@@ -1,4 +1,7 @@
-"""Native desktop build/staging, never imported by the installed product."""
+"""Frozen independent construction reference; normal build callers use xtask.
+
+Kept for contract/compatibility tests, never a fallback or installed payload.
+"""
 from __future__ import annotations
 
 import json

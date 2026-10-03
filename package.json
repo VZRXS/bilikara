@@ -13,7 +13,7 @@
     "android:build:debug": "tauri android build --debug --apk --target aarch64 --ci",
     "dev": "tauri dev",
     "dev:rust": "tauri dev",
-    "build": "python build_bundle.py --desktop",
+    "build": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-desktop",
     "prepare:desktop": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop"
   },
   "devDependencies": {

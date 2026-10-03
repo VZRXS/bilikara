@@ -38,30 +38,30 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             for directory in ("MacOS", "Frameworks", "Resources/vendor"):
                 (contents / directory).mkdir(parents=True)
             backend = contents / "MacOS/bilikara-desktop-host"
-            backend.write_text("#!/bin/sh\nexit 0\n")
+            backend.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             backend.chmod(0o755)
             updater = contents / "MacOS/bilikara-updater"
-            updater.write_text("#!/bin/sh\nexit 0\n")
+            updater.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             updater.chmod(0o755)
-            (contents / "Resources/native-desktop.json").write_text("{}")
+            (contents / "Resources/native-desktop.json").write_text("{}", encoding="utf-8")
             tool = contents / "Frameworks/BBDown"
-            tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n')
+            tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n', encoding="utf-8")
             tool.chmod(0o755)
             (contents / "Resources/vendor/BBDown").symlink_to("../../Frameworks/BBDown")
 
             def run_gate():
                 return subprocess.run(["bash", "-e", "-c", script], cwd=root,
-                                      capture_output=True, text=True, timeout=10)
+                                      capture_output=True, text=True, encoding="utf-8", timeout=10)
 
             result = run_gate()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((root / "calls.log").read_text(), "--help\n")
+            self.assertEqual((root / "calls.log").read_text(encoding="utf-8"), "--help\n")
             tool.chmod(0o644)
             self.assertNotEqual(run_gate().returncode, 0)
             tool.unlink()
             self.assertNotEqual(run_gate().returncode, 0)
             # A bundle without the external updater is not a complete package.
-            tool.write_text("#!/bin/sh\nexit 0\n")
+            tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             tool.chmod(0o755)
             self.assertEqual(run_gate().returncode, 0)
             updater.unlink()
@@ -117,15 +117,15 @@ python() {
                     (root / "calls.log").unlink(missing_ok=True)
                     (root / "environment").unlink(missing_ok=True)
                     result = subprocess.run(["bash", "-e", "-c", stub + script], cwd=root,
-                                            env={**env, "FAIL_AT": failure}, capture_output=True, text=True, timeout=10)
-                    self.assertEqual((root / "calls.log").read_text().splitlines(),
+                                            env={**env, "FAIL_AT": failure}, capture_output=True, text=True, encoding="utf-8", timeout=10)
+                    self.assertEqual((root / "calls.log").read_text(encoding="utf-8").splitlines(),
                                      expected[:1] if failure == "libraries" else expected)
                     if failure:
                         self.assertNotEqual(result.returncode, 0)
                         self.assertFalse((root / "environment").exists())
                     else:
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertEqual((root / "environment").read_text().strip(),
+                        self.assertEqual((root / "environment").read_text(encoding="utf-8").strip(),
                                          f"BILIKARA_TEST_LIBAV_COMPANION={root / 'prefix/bin/libbilikara_media_libav.so'}")
 
     def test_rust_gate_stops_before_later_commands_can_hide_a_failure(self):
@@ -152,9 +152,9 @@ python() {
 }
 '''
             result = subprocess.run([bash, "--noprofile", "--norc", "-c", stub + script],
-                                    cwd=root, capture_output=True, text=True, timeout=10)
+                                    cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=10)
             self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
-            self.assertEqual((root / "calls.log").read_text().splitlines(), [
+            self.assertEqual((root / "calls.log").read_text(encoding="utf-8").splitlines(), [
                 "rust:fmt --check", "rust:clippy --all-targets --locked -- -D warnings",
             ])
 
@@ -225,17 +225,17 @@ python() {
                         env_file = root / "env"
                         result = subprocess.run(
                             [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
-                            cwd=root, capture_output=True, text=True, timeout=10,
+                            cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=10,
                             env={**os.environ, "GITHUB_REF_TYPE": ref_type, "GITHUB_REF_NAME": ref_name,
                                  "BUNDLE_SLUG": slug, "BUNDLE_ARCH": arch,
                                  "GITHUB_OUTPUT": output_file.as_posix(), "GITHUB_ENV": env_file.as_posix()},
                         )
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         artifact_name = "bilikara-" + expected_suffix.format(slug=slug, arch=arch)
-                        self.assertEqual(output_file.read_text().splitlines(), [
+                        self.assertEqual(output_file.read_text(encoding="utf-8").splitlines(), [
                             f"archive_name={artifact_name}.zip", f"artifact_name={artifact_name}",
                         ])
-                        self.assertEqual(env_file.read_text().splitlines(), [f"BUNDLE_ARCHIVE={artifact_name}.zip"])
+                        self.assertEqual(env_file.read_text(encoding="utf-8").splitlines(), [f"BUNDLE_ARCHIVE={artifact_name}.zip"])
 
     def test_tool_asset_publication_is_manual_only_and_least_privileged(self):
         trigger_block = self.tool_workflow.split("\non:\n", 1)[1].split(
@@ -283,8 +283,8 @@ python() {
         self.assertNotIn("choco install ffmpeg", self.bundle_workflow)
         for script in ("build-windows.sh", "build-posix.sh"):
             recipe = script.replace(".sh", "-libraries.sh")
-            self.assertIn(f'/{recipe}"', (ROOT / "media-libav" / script).read_text())
-            self.assertIn("--disable-programs", (ROOT / "media-libav" / recipe).read_text())
+            self.assertIn(f'/{recipe}"', (ROOT / "media-libav" / script).read_text(encoding="utf-8"))
+            self.assertIn("--disable-programs", (ROOT / "media-libav" / recipe).read_text(encoding="utf-8"))
         self.assertIn("check_native_desktop_bundle.py", self.bundle_workflow)
         self.assertNotIn("ilammy/msvc-dev-cmd", self.bundle_workflow)
         self.assertNotIn("for ($attempt", self.bundle_workflow)
@@ -311,7 +311,8 @@ python() {
         self.assertIn("native-desktop.json", self.bundle_workflow)
 
     def test_macos_desktop_embedding_is_part_of_final_signing_and_smoke_gate(self):
-        self.assertIn("scripts/embed_macos_backend.py", self.bundle_workflow)
+        self.assertIn("--target host-tuple -- assemble-desktop", self.bundle_workflow)
+        self.assertNotIn("python scripts/embed_macos_backend.py", self.bundle_workflow)
         self.assertIn("bilikara-backend.app", self.bundle_workflow)
         self.assertIn(
             "codesign --verify --deep --strict --verbose=4 \"$embedded_backend\"",
@@ -323,6 +324,23 @@ python() {
         self.assertIn("isolated-app", smoke_source)
         self.assertIn("candidate_type=macos-embedded-backend", smoke_source)
         self.assertIn("FINDER_LIKE_PATH", smoke_source)
+
+    def test_release_producers_use_shared_rust_tool_and_preserve_split_checks(self):
+        backend = "--target host-tuple -- build-backend"
+        assembly = "--target host-tuple -- assemble-desktop"
+        self.assertIn(backend, self.bundle_workflow)
+        self.assertIn(assembly, self.bundle_workflow)
+        self.assertNotIn("python build_bundle.py", self.bundle_workflow)
+        self.assertNotIn("-- build-desktop", self.bundle_workflow)  # CI reuses its compiled shell.
+        for platform in ("Windows", "macOS"):
+            self.assertLess(self.bundle_workflow.index(backend), self.bundle_workflow.index(f"Verify native backend and bundled tools on {platform}"))
+            self.assertLess(self.bundle_workflow.index(f"Build Tauri App on {platform}"), self.bundle_workflow.index(assembly))
+        bundle_job = self.bundle_workflow[self.bundle_workflow.index("  bundle:"):self.bundle_workflow.index("  android-bundle:")]
+        self.assertLess(bundle_job.index("Setup Node.js"), bundle_job.index("Build Tauri App on Windows"))
+        self.assertIn("./xtask -> target", bundle_job)
+        for gate in ("Setup Python", "scripts/prepare_bbdown_vendor.py", "scripts/libav_cache.py", "check_native_desktop_bundle.py",
+                     "Verify extracted Windows bundle", "Archive and verify round-trip macOS bundle", "plutil -lint", "--verify --deep --strict", "README-macOS.txt"):
+            self.assertIn(gate, bundle_job)
 
 
 if __name__ == "__main__":

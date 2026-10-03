@@ -1,5 +1,5 @@
-//! Only validation/staging reached by adjacent development preparation. Prefix
-//! construction and final application-bundle signing remain release tooling.
+//! Shared validation/staging of prepared libav inputs. Dependency construction
+//! and collection remain outside the desktop construction commands.
 use crate::{
     Result,
     config::{Config, Os, Platform},
@@ -121,8 +121,9 @@ fn validate_manifest(vendor: &Path, data: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn stage(config: &Config, prefix: &Path, resources: &Path, docs: &Path) -> Result<()> {
-    let vendor = resources.join("vendor");
+pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<()> {
+    let vendor = &layout.vendor;
+    let docs = &layout.docs;
     let manifest: Value = serde_json::from_slice(&fs::read(prefix.join("bin").join(MANIFEST))?)?;
     let test_companion = if config.platform.os == Os::Windows {
         "bilikara_media_libav_test.dll".to_owned()
@@ -157,7 +158,25 @@ pub fn stage(config: &Config, prefix: &Path, resources: &Path, docs: &Path) -> R
             runtime.insert(key.into(), value.clone());
         }
     }
-    files::write_json(&vendor.join(MANIFEST), &Value::Object(runtime))?;
+    if layout.macos_app {
+        let resource_vendor = layout.resources.join("vendor");
+        files::write_json(&resource_vendor.join(MANIFEST), &Value::Object(runtime))?;
+        files::relative_link(
+            Path::new("../Resources/vendor/ffmpeg-runtime.json"),
+            &vendor.join(MANIFEST),
+        )?;
+        for entry in fs::read_dir(vendor)? {
+            let entry = entry?;
+            if entry.file_name() != MANIFEST {
+                files::relative_link(
+                    &Path::new("../../Frameworks").join(entry.file_name()),
+                    &resource_vendor.join(entry.file_name()),
+                )?;
+            }
+        }
+    } else {
+        files::write_json(&vendor.join(MANIFEST), &Value::Object(runtime))?;
+    }
     files::tree(
         &prefix.join("licenses"),
         &docs.join("THIRD_PARTY_LICENSES/libav"),
@@ -200,7 +219,9 @@ pub fn stage(config: &Config, prefix: &Path, resources: &Path, docs: &Path) -> R
             &sources.join("media-libav").join(name),
         )?;
     }
-    let host = resources.join(config.platform.executable("bilikara-desktop-host"));
+    let host = layout
+        .code
+        .join(config.platform.executable("bilikara-desktop-host"));
     let forbidden: &[&str] = if config.platform.os == Os::Windows {
         &["bilikara_media_libav", "avformat-", "avcodec-", "avutil-"]
     } else {

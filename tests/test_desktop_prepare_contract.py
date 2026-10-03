@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -25,10 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SUFFIX = ".exe" if os.name == "nt" else ""
 
 
-class DesktopPrepareContractTests(unittest.TestCase):
+class DesktopConstructionFixtures(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temporary = tempfile.TemporaryDirectory(prefix="desktop-prep-fixtures-")
+        (ROOT / ".tmp").mkdir(exist_ok=True)
+        cls.temporary = tempfile.TemporaryDirectory(prefix="desktop-build-fixtures-", dir=ROOT / ".tmp")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.fixture = Path(cls.temporary.name) / ("fixture" + SUFFIX)
         # Do not let selected-path input overrides cross-compile the test tool.
@@ -67,7 +69,7 @@ class DesktopPrepareContractTests(unittest.TestCase):
         manifest = dict(schema_version=1, kind="libav", version="9.0.1", target=target,
                         runtime_files=[companion, dependency], build_run="contract", build_attempt="1")
         for name in manifest["runtime_files"]:
-            (prefix / "bin" / name).write_bytes(b"declared closure fixture, not executable acceptance")
+            shutil.copy2(self.fixture, prefix / "bin" / name)
         (prefix / "bin/ffmpeg-runtime.json").write_text(json.dumps(manifest), encoding="utf-8")
         for name in ("source/ffmpeg-9.0.1.tar.xz", "source/ffmpeg-9.0.1.tar.xz.asc", "licenses/COPYING.LGPLv2.1", "build-info.json"):
             path = prefix / name
@@ -108,24 +110,43 @@ class DesktopPrepareContractTests(unittest.TestCase):
         result = {}
         for path in root.rglob("*"):
             relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                mode = stat.S_IMODE(path.lstat().st_mode) if os.name != "nt" else None
+                result[relative] = ("symlink", os.readlink(path), path.exists(), mode)
+                continue
             if path.is_dir():
-                result[relative] = "directory"
+                mode = stat.S_IMODE(path.stat().st_mode) if os.name != "nt" else None
+                result[relative] = ("directory", mode)
                 continue
             content = path.read_bytes()
             if path.name in {"native-desktop.json", "ffmpeg-runtime.json"}:
                 content = json.loads(content)
+            elif path.name == "Info.plist":
+                content = plistlib.loads(content)
             mode = stat.S_IMODE(path.stat().st_mode) if os.name != "nt" else None
             result[relative] = (content, mode, path.is_symlink())
         return result
+
+    def assert_same_inventory(self, expected, actual):
+        # Compare every value, but do not feed font/image bytes into unittest's
+        # quadratic text diff when a small metadata or permission field differs.
+        differing = [name for name in sorted(expected.keys() | actual.keys())
+                     if name not in expected or name not in actual or expected[name] != actual[name]]
+        for name in differing:
+            if Path(name).name in {"APP_VERSION", "native-desktop.json", "ffmpeg-runtime.json", "Info.plist"}:
+                self.assertEqual(expected.get(name), actual.get(name), name)
+        self.assertEqual(differing, [], "product inventory differs")
 
     def pair(self, environment=None, args=(), expected_error=None):
         old, old_commands = self.run_path("old", environment, args, expected_error)
         new, new_commands = self.run_path("new", environment, args, expected_error)
         self.assertEqual(old_commands, new_commands)
         if not expected_error:
-            self.assertEqual(self.inventory(old), self.inventory(new))
+            self.assert_same_inventory(self.inventory(old), self.inventory(new))
         return old, new, old_commands
 
+
+class DesktopPrepareContractTests(DesktopConstructionFixtures):
     def test_normal_and_repeated_preparation_preserve_static_vendor_and_unrelated_data(self):
         old, new, commands = self.pair()
         self.assertIn("native-host", commands[0])

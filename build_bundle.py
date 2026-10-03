@@ -1,7 +1,8 @@
-"""Native desktop build/staging entry; no Python runtime payload is shipped.
+"""Frozen independent desktop-construction reference for active contract tests.
 
 Retained freezer argument helpers below support historical compatibility tests;
-main() uses only scripts.native_desktop_bundle for current products.
+normal npm/CI production callers use xtask. This is not a production fallback;
+do not evolve a second release policy here.
 """
 from __future__ import annotations
 

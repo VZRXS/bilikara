@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Frozen embedding reference for contract tests; release assembly uses xtask."""
 from __future__ import annotations
 
 import argparse

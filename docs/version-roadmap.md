@@ -14,20 +14,26 @@ storage and migration details belong in [native desktop launch and bundles](nati
   and subsequent changes rather than starting another migration.
 - Native desktop bundles use the Rust HTTP/SSE Host and one authoritative Rust
   `AppState`. They include no Python runtime, PyInstaller payload or Python FFI
-  libraries. Python remains intentionally scoped to build/package scripts,
-  tests, legacy compatibility and source development workflows.
+  libraries. Python remains intentionally scoped to dependency preparation,
+  verification/tests, frozen construction references, legacy compatibility and
+  source development workflows.
 - Delivered: native packaging no longer imports the legacy Python application;
   build-time manifest validation lives in the tooling layer.
 - Preview 3 preparation: the independent Rust `xtask` now handles desktop
   development preparation (`prepare:desktop` and the Tauri development hook),
   including backend/updater compilation and existing resource/tool/libav
   staging. Linux execution and contract comparisons qualify this slice;
-  Windows/macOS native GUI validation remains separate. This does not publish
-  Preview 3 or replace the current release assembly/signing pipeline.
-- Next engineering target: move ordinary self-owned release construction and
-  assembly, its CI build callers and remaining self-owned dependency-preparation
-  helpers to the same Rust tool in bounded increments. Explicitly document any
-  third-party rebuild exceptions; do not hide Python inside Actions/containers.
+  Windows/macOS native GUI validation remains separate.
+- Ordinary release construction/assembly now uses the same tool: `npm run build`
+  builds Host, updater and Tauri; CI uses `build-backend` and `assemble-desktop`
+  around its existing shell build and checks. Compliance and macOS nested signing
+  belong to Rust orchestration. Linux native execution and reference comparisons
+  cover the local slice; Windows/macOS native signing/startup/archive gates remain
+  required in CI. This source change does not publish or qualify a new release.
+- Next engineering slice: remaining self-owned dependency preparation/cache/libav
+  companion tooling and CI build prerequisites, based on their live callers.
+  Explicitly document third-party rebuild exceptions; do not hide Python inside
+  Actions/containers.
 - Later retirement: remove compatibility/test consumers and project-owned CI
   Python dependencies while preserving useful coverage. The long-term target
   is development/build/verification/CI without project-owned Python requirements;

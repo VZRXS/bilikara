@@ -9,13 +9,13 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 const tauri = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
 const command = 'cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop';
 
-test('real npm/Tauri development entries share Rust preparation; release entry is retained', () => {
+test('real npm release and development entries share the independent Rust tool', () => {
   assert.equal(pkg.scripts['prepare:desktop'], command);
   assert.equal(tauri.build.beforeDevCommand.script, command);
   assert.equal(tauri.build.beforeDevCommand.wait, true);
   assert.equal(pkg.scripts.dev, 'tauri dev');
   assert.equal(pkg.scripts['dev:rust'], 'tauri dev');
-  assert.equal(pkg.scripts.build, 'python build_bundle.py --desktop');
+  assert.equal(pkg.scripts.build, command.replace('prepare-desktop', 'build-desktop'));
   assert.equal(tauri.build.beforeBuildCommand, '');
 });
 
@@ -31,3 +31,14 @@ for (const platform of ['android', 'ios']) {
     assert.doesNotMatch(result.stderr, /Compiling bilikara_runtime/);
   });
 }
+
+test('actual npm release entry requires prepared inputs even in a Tauri debug/mobile environment', () => {
+  const env = { ...process.env, TAURI_ENV_PLATFORM: 'android', TAURI_ENV_DEBUG: 'true',
+    BILIKARA_LIBAV_PREFIX: '', CARGO_BUILD_TARGET: '', TAURI_ENV_TARGET_TRIPLE: '' };
+  const program = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const result = spawnSync(program, ['run', 'build'], { cwd: root, env, encoding: 'utf8', timeout: 120_000,
+    shell: process.platform === 'win32' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /BILIKARA_LIBAV_PREFIX is required for a complete native bundle/);
+  assert.doesNotMatch(result.stdout + result.stderr, /build_bundle\.py|embed_macos_backend\.py/);
+});

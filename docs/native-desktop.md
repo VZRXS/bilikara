@@ -3,8 +3,8 @@
 The desktop shell starts one `bilikara-desktop-host` process by default. The
 backend owns the Rust AppState and native HTTP/SSE/media services. No Python,
 Cargo, source checkout or preview environment variable is needed by an installed
-product. Python remains a build/test tool and the legacy source Host remains
-available for compatibility tests; it is not included in the native bundle.
+product. Python remains a dependency-preparation/test tool and the legacy source
+Host remains available for compatibility tests; neither is included in the native bundle.
 
 v0.8.0-preview.2 has been released with this architecture. Stabilization uses
 that desktop behavior baseline, including approved Preview 1 behavior and later
@@ -96,25 +96,38 @@ put the prepared BBDown on the **build** PATH, then run:
 npm run build
 ```
 
-`build_bundle.py` is a staging tool, not a freezer. It builds a release Rust
-backend, copies static assets/fonts/Signalsmith and version metadata, stages
-the libav companion/dependencies and licenses, and builds the Tauri shell.
-macOS keeps nested-code signing and seals the outer app after embedding the
-backend. `python build_bundle.py` alone prepares the backend/resource layout
-used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
-matching runner target; foreign tool/libav architectures fail closed.
-`CARGO_TARGET_DIR` and the selected debug/release profile are respected.
+`npm run build` invokes `xtask build-desktop`: release Host and updater, shared
+resource/libav staging, compliance materials, Tauri, then final assembly.
+macOS signs nested code and the backend, embeds it with `ditto`, preserves
+signature metadata and seals the outer app last. No project Python is executed
+in this construction path. Release commands always select the release profile
+and complete prepared inputs, independent of Tauri's debug/mobile environment.
+`--target TRIPLE` supports an explicit matching runner target; foreign tool/libav
+architectures fail closed. Cargo metadata resolves `CARGO_TARGET_DIR` and targets.
 
-Python remains required for release assembly, existing dependency-preparation
-scripts and Python test drivers; it is not required by the selected Rust
-development-preparation path or the installed product. Native release build
-imports stay within `build_bundle.py`
-and tooling modules under `scripts/`; they do not import the legacy `bilikara`
-application package. `scripts/libav_manifest.py` owns the shared manifest and
-flat dependency-closure validation. The legacy `bilikara.ffmpeg_vendor` import
-forwards to it for existing source Host and diagnostic callers. Same-build
-libav provenance checks, pinned BBDown validation and native release artifact
-verification remain in their existing build steps.
+CI preserves its split backend/tool checks and shell compilation:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
+# Existing npm/Tauri shell build and platform checks.
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
+```
+
+Assembly consumes the existing release shell output without recompiling it;
+`--shell PATH` can supply that compiled executable/app explicitly. All three
+release entries share the same rules. Generated outputs default to `dist/`;
+`--dist-dir PATH` is limited to repository `dist/` or an isolated subdirectory
+of ignored `.tmp/`. Cleanup replaces only the named generated product and
+rejects links, input overlap and user-data directories.
+
+Python remains required by existing dependency-preparation/cache/source
+verification scripts and standalone verification/test drivers in CI.
+`build_bundle.py`, `scripts/native_desktop_bundle.py` and the Python embedding
+helper are frozen independent contract references, with no normal production
+caller or live fallback. `scripts/libav_manifest.py` retains the Python
+manifest/closure interface for those references and legacy diagnostics;
+`bilikara.ffmpeg_vendor` forwards to it. Prepared same-build libav provenance,
+the pinned BBDown checks and native release artifact gates remain required.
 
 On Linux, the third-party Tauri CLI optionally probes the system's
 `lsb_release` before invoking the hook; some distributions implement that command
@@ -126,18 +139,19 @@ The Rust tool preserves the development preparation contract: version
 provenance, `native-desktop.json`, the single vendor tree, Signalsmith notices,
 prepared libav manifest/closure/provenance checks, binary import inspection and
 rebuild materials. Python source files included as compliance materials are
-copied, not executed. `tests/test_desktop_prepare_contract.py` compares this
-slice with the retained Python implementation using isolated native executable
-fixtures; `xtask` tests also cover foreign platform descriptors, which do not
-constitute native Windows/macOS acceptance. Linux preparation and Tauri startup
-are locally exercised; Windows/macOS GUI qualification remains separate.
+copied, not executed. `tests/test_desktop_prepare_contract.py` and
+`tests/test_desktop_release_contract.py` compare preparation/release paths,
+resource bytes, metadata, modes, links, compliance and failures against the
+frozen references using native executable fixtures. `xtask` also tests foreign
+descriptors and macOS tool/signature order. These fixtures do not constitute
+native Windows/macOS acceptance. Real Linux release construction and backend
+execution are locally exercised; Windows/macOS binary/signature/startup/archive
+qualification remains required on native runners.
 
-The next bounded engineering target is ordinary release construction/assembly
-and its CI build callers, including remaining self-owned dependency-preparation
-helpers, using this same tool. Until that cutover is qualified, `npm run build`,
-release signing/upload and Python verification gates retain their current
-entries. Keep the old preparation implementation as an independent contract
-reference during this interval; do not evolve two packaging policies.
+The next bounded engineering slice is the remaining self-owned dependency
+preparation/cache/libav companion tooling and CI build prerequisites. Existing
+Python verification and publication entries remain; this construction cutover
+does not publish Preview 3 or retire all CI Python requirements.
 
 `start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
 scripts remain development/compatibility entry points. The Python HTTP/SSE
