@@ -33,6 +33,8 @@ pub(crate) struct PendingPlaylistAdd {
     pub position: RemotePlaylistPositionV1,
     pub allow_repeat: bool,
     pub session_name: String,
+    pub session_user_id: String,
+    pub session_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +151,32 @@ impl InternetRemotePeers {
         self.peers.remove(peer_id).is_some()
     }
 
+    pub(crate) fn reconcile_identities(
+        &mut self,
+        before: &HashMap<String, String>,
+        after: &HashMap<String, String>,
+        session_changed: bool,
+    ) {
+        for peer in self.peers.values_mut() {
+            peer.session_name = if session_changed {
+                None
+            } else {
+                peer.session_name
+                    .as_ref()
+                    .and_then(|name| before.get(name))
+                    .and_then(|id| {
+                        after
+                            .iter()
+                            .find(|(_, candidate)| *candidate == id)
+                            .map(|(name, _)| name.clone())
+                    })
+            };
+            if session_changed {
+                peer.pending_playlist_adds.clear();
+            }
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.peers.clear();
     }
@@ -212,6 +240,7 @@ impl InternetRemotePeers {
         position: RemotePlaylistPositionV1,
         allow_repeat: bool,
         binding_selection: Option<PlaylistAddBindingSelection<'_>>,
+        snapshot: &AppSnapshot,
     ) -> Result<(), InternetRemoteError> {
         let peer = self
             .peers
@@ -239,6 +268,14 @@ impl InternetRemotePeers {
             position,
             allow_repeat,
             session_name: session_name.to_owned(),
+            session_user_id: snapshot
+                .session_user_entries
+                .iter()
+                .find(|user| user.name == session_name)
+                .ok_or(InternetRemoteError::IdentityRequired)?
+                .id
+                .clone(),
+            session_generation: snapshot.session_generation,
         };
         peer.pending_playlist_adds
             .insert(validation.request_id.clone(), pending);
@@ -406,6 +443,16 @@ pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
         playlist: snapshot.playlist.iter().map(project_item).collect(),
         history: snapshot.history.iter().map(project_history).collect(),
         session_users: snapshot.session_users.clone(),
+        session_user_entries: snapshot
+            .session_user_entries
+            .iter()
+            .map(|user| bilikara_rust::RemoteSessionUserV1 {
+                id: user.id.clone(),
+                name: user.name.clone(),
+            })
+            .collect(),
+        session_users_version: snapshot.session_users_version.clone(),
+        session_user_edit_version: snapshot.session_user_edit_version,
         player_settings: RemotePlayerSettingsV1 {
             effective_av_delay_ms: snapshot.player_settings.av_offset_ms,
             av_delay_locked: snapshot.player_settings.av_delay.locked,
@@ -657,6 +704,9 @@ mod tests {
         let response = state.execute(AppStateRequest::Initialize {
             schema_version: 1,
             state: Box::new(AppStateSeed {
+                session_user_ids: std::collections::HashMap::new(),
+                requester_user_ids: std::collections::HashMap::new(),
+
                 playback_mode: "local".into(),
                 player_settings: PlayerSettingsSeed::default(),
                 current_item: None,

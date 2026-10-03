@@ -100,6 +100,8 @@ pub enum RemoteOperation {
     PlayerSetAudioVariant,
     PlayerSetAvDelay,
     SessionSetIdentity,
+    SessionRename,
+    SessionResume,
     RatingSubmit,
     CacheRetry,
 }
@@ -135,7 +137,9 @@ impl RemoteOperation {
             | Self::PlayerSetKeyShift
             | Self::PlayerSetAudioVariant
             | Self::PlayerSetAvDelay => RemoteCapability::PlayerSettingsWrite,
-            Self::SessionSetIdentity => RemoteCapability::SessionIdentityWrite,
+            Self::SessionSetIdentity | Self::SessionRename | Self::SessionResume => {
+                RemoteCapability::SessionIdentityWrite
+            }
             Self::RatingSubmit => RemoteCapability::RatingWrite,
             Self::CacheRetry => RemoteCapability::CacheRetry,
             Self::GatchaPoolConfigSet
@@ -358,6 +362,14 @@ pub enum RemoteRequestV1 {
     PlayerAvDelayAction(RemoteAvDelayActionV1),
     #[serde(rename = "session.set_identity")]
     SessionSetIdentity { name: String },
+    #[serde(rename = "session.rename")]
+    SessionRename {
+        name: String,
+        user_id: String,
+        expected_name: String,
+    },
+    #[serde(rename = "session.resume")]
+    SessionResume { user_id: String },
     #[serde(rename = "rating.submit")]
     RatingSubmit { play_id: String, score: u8 },
     #[serde(rename = "cache.retry")]
@@ -409,6 +421,8 @@ impl RemoteRequestV1 {
             Self::PlayerSetAvDelay { .. } => RemoteOperation::PlayerSetAvDelay,
             Self::PlayerAvDelayAction(_) => RemoteOperation::PlayerSetAvDelay,
             Self::SessionSetIdentity { .. } => RemoteOperation::SessionSetIdentity,
+            Self::SessionRename { .. } => RemoteOperation::SessionRename,
+            Self::SessionResume { .. } => RemoteOperation::SessionResume,
             Self::RatingSubmit { .. } => RemoteOperation::RatingSubmit,
             Self::CacheRetry { .. } => RemoteOperation::CacheRetry,
         }
@@ -984,6 +998,23 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
             }
             _ => true,
         },
+        RemoteRequestV1::SessionResume { user_id } => {
+            user_id.len() == 64 && user_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
+        RemoteRequestV1::SessionRename {
+            name,
+            user_id,
+            expected_name,
+        } => {
+            valid_text(name, MAX_SESSION_NAME_BYTES, MAX_SESSION_NAME_CHARS)
+                && valid_text(
+                    expected_name,
+                    MAX_SESSION_NAME_BYTES,
+                    MAX_SESSION_NAME_CHARS,
+                )
+                && user_id.len() == 64
+                && user_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
         RemoteRequestV1::SessionSetIdentity { name } => {
             valid_text(name, MAX_SESSION_NAME_BYTES, MAX_SESSION_NAME_CHARS)
         }
@@ -1280,6 +1311,32 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: IdentityBody = body(value)?;
             RemoteRequestV1::SessionSetIdentity { name: body.name }
         }
+        "session.resume" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ResumeBody {
+                user_id: String,
+            }
+            let body: ResumeBody = body(value)?;
+            RemoteRequestV1::SessionResume {
+                user_id: body.user_id,
+            }
+        }
+        "session.rename" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct RenameBody {
+                name: String,
+                user_id: String,
+                expected_name: String,
+            }
+            let body: RenameBody = body(value)?;
+            RemoteRequestV1::SessionRename {
+                name: body.name,
+                user_id: body.user_id,
+                expected_name: body.expected_name,
+            }
+        }
         "rating.submit" => {
             let body: RatingBody = body(value)?;
             RemoteRequestV1::RatingSubmit {
@@ -1457,6 +1514,13 @@ pub struct RemotePlaybackStatusV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RemoteSessionUserV1 {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
     pub v: u16,
     #[serde(default)]
@@ -1469,6 +1533,12 @@ pub struct RemoteStateV1 {
     pub playlist: Vec<RemotePlaylistItemV1>,
     pub history: Vec<RemoteHistoryEntryV1>,
     pub session_users: Vec<String>,
+    #[serde(default)]
+    pub session_user_entries: Vec<RemoteSessionUserV1>,
+    #[serde(default)]
+    pub session_users_version: String,
+    #[serde(default)]
+    pub session_user_edit_version: u32,
     pub player_settings: RemotePlayerSettingsV1,
     pub player_status: Option<RemotePlaybackStatusV1>,
 }
@@ -2303,6 +2373,9 @@ mod tests {
             }),
             playlist: vec![],
             history: vec![],
+            session_user_entries: vec![],
+            session_users_version: String::new(),
+            session_user_edit_version: 0,
             session_users: vec!["Guest".into()],
             player_settings: RemotePlayerSettingsV1 {
                 effective_av_delay_ms: 0,

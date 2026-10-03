@@ -100,14 +100,6 @@ impl RatingLedger {
         });
         Ok(Some(self.sequence))
     }
-    pub(crate) fn rename(&mut self, old: &str, new: &str) {
-        for entry in &mut self.entries {
-            if entry.user == old.to_lowercase() {
-                entry.user = new.to_lowercase();
-                entry.payload["session_user_name"] = json!(new);
-            }
-        }
-    }
     fn finish(&mut self, submission: &Submission, success: bool) {
         if self.generation == submission.generation
             && let Some(index) = self.entries.iter().position(|e| e.id == submission.id)
@@ -137,6 +129,13 @@ pub(super) fn prepare(
     if !snapshot.session_users.contains(&user) {
         return Err(ApiError::new(403, "identity_required", "请先登记点歌人"));
     }
+    let user_id = snapshot
+        .session_user_entries
+        .iter()
+        .find(|entry| entry.name == user)
+        .ok_or_else(|| ApiError::new(403, "identity_required", "请先登记点歌人"))?
+        .id
+        .clone();
     let play = crate::app_state::native_session::text(body, "play_id")?;
     let bvid = crate::app_state::native_session::text(body, "bvid")?;
     let score = body["score"]
@@ -179,15 +178,16 @@ pub(super) fn prepare(
             "此歌曲未播放达到 50%，评分已失效",
         ));
     }
-    let payload = json!({"session_user_name":user,"play_id":play,"bvid":bvid,"score":score});
+    let payload = json!({"session_user_name":user,"session_user_id":user_id,"play_id":play,"bvid":bvid,"score":score});
     // Waiting ratings are still editable. Replace the payload under the same
     // AppState lock used by take_ready, so the pump sends exactly one version.
     let owner = app.native().host_token.clone();
     let ledger = &mut app.native().ratings;
     if ledger.generation == snapshot.session_generation
-        && let Some(entry) = ledger.entries.iter_mut().find(|entry| {
-            entry.user == user.to_lowercase() && entry.play == play && entry.status == "waiting"
-        })
+        && let Some(entry) = ledger
+            .entries
+            .iter_mut()
+            .find(|entry| entry.user == user_id && entry.play == play && entry.status == "waiting")
     {
         entry.payload = payload.clone();
         let id = entry.id;
@@ -200,10 +200,10 @@ pub(super) fn prepare(
             waiting: true,
         }));
     }
-    let id = app
-        .native()
-        .ratings
-        .reserve(snapshot.session_generation, &user, &play, !eligible)?;
+    let id =
+        app.native()
+            .ratings
+            .reserve(snapshot.session_generation, &user_id, &play, !eligible)?;
     if let Some(id) = id {
         let entry = app
             .native()
@@ -324,7 +324,7 @@ impl RatingLedger {
                 .filter(|entry| Some(entry.play.as_str()) == current
                     || Some(entry.play.as_str()) == previous)
                 .map(|entry| json!({
-                    "session_user_name":entry.user,"play_id":entry.play,
+                    "session_user_name":entry.payload["session_user_name"],"session_user_id":entry.user,"play_id":entry.play,
                     "status":entry.status,"score":entry.payload["score"]
                 }))
                 .collect::<Vec<_>>()
@@ -365,9 +365,9 @@ fn take_ready(app: &mut AppState) -> Result<Option<Submission>, ApiError> {
             continue;
         }
         let user_exists = snapshot
-            .session_users
+            .session_user_entries
             .iter()
-            .any(|user| user.to_lowercase() == entry.user);
+            .any(|user| user.id == entry.user);
         let eligible = snapshot
             .session_played
             .iter()
@@ -438,6 +438,8 @@ mod tests {
             "title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"",
             "selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"]})).unwrap();
         app.native_execute(crate::AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item,
             position: "tail".into(),

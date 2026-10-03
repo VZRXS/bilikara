@@ -118,8 +118,6 @@ const state = {
   listHeaderRenderSignature: "",
   requesterSelectRenderSignature: "",
   sessionUsersRenderSignature: "",
-  sessionUserActionsName: "",
-  sessionUserActionPending: null,
   remoteAccessRenderSignature: "",
   remoteAccessFailure: null,
   remoteAccessRequestSequence: 0,
@@ -5760,12 +5758,22 @@ function ratingSubmissionPlayId(item) {
   return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
+function ratingSubmissionUserId(item) {
+  return state.data?.session_user_entries?.find(user => user.name === ratingSubmissionUserName(item))?.id || "";
+}
+
+function ratingBelongsToUser(entry, item) {
+  const id = ratingSubmissionUserId(item);
+  return id && entry.session_user_id ? entry.session_user_id === id
+    : String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase();
+}
+
 function ratingSubmissionKey(item) {
   const playId = ratingSubmissionPlayId(item);
   if (!playId) {
     return "";
   }
-  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserId(item) || ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
 function renderCurrentRatingButton(current) {
@@ -5789,9 +5797,8 @@ function renderCurrentRatingButton(current) {
 
 function serverRatingStatus(item) {
   const playId = ratingSubmissionPlayId(item);
-  const user = ratingSubmissionUserName(item).toLowerCase();
   const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
-    && String(entry.session_user_name || "").toLowerCase() === user);
+    && ratingBelongsToUser(entry, item));
   const key = ratingSubmissionKey(item);
   if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
   if (entry) return entry.status;
@@ -9751,13 +9758,15 @@ function render() {
 
 function renderRequesterSelect(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify(users);
+  const entries = state.data?.session_user_entries || [];
+  const signature = JSON.stringify([users, entries]);
   if (signature === state.requesterSelectRenderSignature) {
     return;
   }
   state.requesterSelectRenderSignature = signature;
 
-  const previousValue = selectedRequesterName();
+  const previousId = elements.requesterSelect.selectedOptions?.[0]?.dataset.userId;
+  const previousValue = entries.find(user => user.id === previousId)?.name || selectedRequesterName();
   elements.requesterSelect.innerHTML = "";
 
   const placeholder = document.createElement("option");
@@ -9768,6 +9777,7 @@ function renderRequesterSelect(sessionUsers) {
   users.forEach((userName) => {
     const option = document.createElement("option");
     option.value = userName;
+    option.dataset.userId = entries.find(user => user.name === userName)?.id || "";
     option.textContent = userName;
     elements.requesterSelect.appendChild(option);
   });
@@ -9796,108 +9806,23 @@ function renderRequesterSelect(sessionUsers) {
   }
 }
 
-const SESSION_USER_ACTIONS = [
-  {id: "up", label: "common.moveUp", glyph: "↑"},
-  {id: "down", label: "common.moveDown", glyph: "↓"},
-  {id: "remove", label: "common.delete"},
-];
-
-function renderSessionUsers(sessionUsers) {
-  const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify(users);
-  if (signature === state.sessionUsersRenderSignature) {
-    syncSessionUserControls();
-    return;
-  }
-  state.sessionUsersRenderSignature = signature;
-
-  elements.sessionUserList.classList.toggle("is-empty", !users.length);
-
-  if (!users.length) {
-    elements.sessionUserList.innerHTML = `<div class="request-session-user-notice session-user-empty" role="status">${htmlT("session.empty")}</div>`;
-    return;
-  }
-
-  const focused = elements.sessionUserList.contains(document.activeElement) ? document.activeElement : null;
-  const badges = new Map(Array.from(elements.sessionUserList.querySelectorAll(".session-user-badge"), item => [item.dataset.name, item]));
-  for (const child of Array.from(elements.sessionUserList.children)) {
-    if (!users.includes(child.dataset.name)) child.remove();
-  }
-  users.forEach((userName, index) => {
-    let item = badges.get(userName);
-    if (!item) {
-      item = document.createElement("div");
-      item.className = "session-user-badge";
-      item.dataset.name = userName;
-      item.innerHTML = `
-        <span class="session-user-order-number"></span>
-        <span class="session-user-name android-user-toggle" role="button" tabindex="0" aria-expanded="false">${escapeHtml(userName)}</span>
-        <div class="android-user-actions" hidden>${SESSION_USER_ACTIONS.map(action => `
-          <button type="button" data-user-action="${action.id}" aria-label="${escapeHtml(t(action.label))}">${action.glyph || htmlT(action.label)}</button>
-        `).join("")}</div>
-      `;
-    }
-    item.dataset.index = index;
-    item.querySelector(".session-user-order-number").textContent = String(index + 1);
-    elements.sessionUserList.appendChild(item);
-  });
-  syncSessionUserControls();
-  if (focused?.isConnected && !focused.disabled) focused.focus({preventScroll: true});
-}
-
 function syncSessionUserControls() {
-  const users = state.data?.session_users || [];
-  if (!users.includes(state.sessionUserActionsName)) state.sessionUserActionsName = "";
-  const touch = Boolean(window.matchMedia?.("(pointer: coarse)").matches
-    && !window.matchMedia?.("(any-pointer: fine)").matches);
-  document.documentElement.dataset.hostTouchUsers = String(touch);
-  const help = document.querySelector('[data-i18n="session.help"], [data-i18n="mobile.sessionHelp"]');
-  if (help) {
-    help.dataset.i18n = touch ? "mobile.sessionHelp" : "session.help";
-    help.textContent = t(help.dataset.i18n);
-  }
-  for (const badge of elements.sessionUserList.querySelectorAll(".session-user-badge")) {
-    const pending = state.sessionUserActionPending;
-    const open = badge.dataset.name === state.sessionUserActionsName;
-    badge.draggable = !touch && !pending;
-    badge.classList.toggle("is-actions-open", open);
-    badge.querySelector(".android-user-toggle").setAttribute("aria-expanded", String(open));
-    badge.querySelector(".android-user-actions").hidden = !open;
-    for (const button of badge.querySelectorAll("[data-user-action]")) {
-      const action = button.dataset.userAction;
-      const definition = SESSION_USER_ACTIONS.find(entry => entry.id === action);
-      const active = pending?.name === badge.dataset.name && pending.action === action;
-      const index = Number(badge.dataset.index);
-      button.disabled = Boolean(pending) || (action === "up" && index === 0)
-        || (action === "down" && index === users.length - 1);
-      if (active) button.setAttribute("aria-busy", "true");
-      else button.removeAttribute("aria-busy");
-      button.textContent = active ? t("remoteIdentity.saving") : definition.glyph || t(definition.label);
-      button.setAttribute("aria-label", t(definition.label));
-    }
-  }
+  state.sessionUserEditor?.sync();
 }
 
-async function handleSessionUserAction(event) {
-  const badge = event.target.closest(".session-user-badge");
-  if (!badge || state.sessionUserActionPending) return;
-  const button = event.target.closest("[data-user-action]");
-  if (!button) {
-    state.sessionUserActionsName = state.sessionUserActionsName === badge.dataset.name ? "" : badge.dataset.name;
-    syncSessionUserControls();
-    return;
+function renderSessionUsers() {
+  if (!state.sessionUserEditor) {
+    state.sessionUserEditor = new window.BilikaraSessionUserEditor({
+      stage: document.getElementById("session-user-stage"),
+      list: elements.sessionUserList,
+      t, post: async (url, payload) => {
+        await apiPostStateSnapshot(url, payload);
+        render();
+      }, message: setAppMessage,
+    });
+    elements.sessionUserTrash = state.sessionUserEditor.trash;
   }
-  if (button.disabled) return;
-  const action = button.dataset.userAction;
-  state.sessionUserActionPending = {name: badge.dataset.name, action};
-  syncSessionUserControls();
-  try {
-    if (action === "remove") await removeSessionUser(badge.dataset.name);
-    else await moveSessionUser(badge.dataset.name, Number(badge.dataset.index) + (action === "up" ? -1 : 1));
-  } finally {
-    state.sessionUserActionPending = null;
-    syncSessionUserControls();
-  }
+  state.sessionUserEditor.render(state.data);
 }
 
 function syncHostAccountPresentation() {
@@ -18734,43 +18659,29 @@ async function checkAppUpdate(event) {
 
 
 async function addSessionUser() {
-  const name = String(elements.sessionUserInput.value || "").trim();
-  if (!name) {
-    setAppMessage(t("session.nameRequired"), true);
+  const button = elements.sessionUserForm.querySelector('[type="submit"]');
+  if (button.disabled) return;
+  const draft = elements.sessionUserInput.value;
+  const name = String(draft || "").trim();
+  if (!name || Array.from(name).length > 24) {
+    setAppMessage(t(name ? "session.nameLength" : "session.nameRequired"), true);
     return;
   }
+  button.disabled = true; button.setAttribute("aria-busy", "true");
+  const originalText = button.textContent;
+  button.textContent = t("remoteIdentity.saving");
   try {
     await apiPostStateSnapshot("/api/session-users/add", { name });
-    elements.sessionUserInput.value = "";
+    if (elements.sessionUserInput.value === draft) elements.sessionUserInput.value = "";
     setAppMessage(t("session.added", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    button.disabled = false; button.removeAttribute("aria-busy"); button.textContent = originalText;
   }
 }
 
-async function moveSessionUser(name, index) {
-  try {
-    await apiPostStateSnapshot("/api/session-users/reorder", { name, index });
-    setAppMessage(t("session.orderUpdated"));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
-}
-
-async function removeSessionUser(name) {
-  try {
-    await apiPostStateSnapshot("/api/session-users/remove", { name });
-    if (elements.requesterSelect.value === name) {
-      elements.requesterSelect.value = "";
-    }
-    setAppMessage(t("session.removed", { name }));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
-}
 
 async function advanceLocalPlayerNow({
   showTransition = true,
@@ -19732,260 +19643,6 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await addSessionUser();
 });
-
-let draggedSessionUser = null;
-let sessionUserDragImage = null;
-
-function removeSessionUserDragImage() {
-  sessionUserDragImage?.remove();
-  sessionUserDragImage = null;
-}
-
-function createSessionUserDragImage(badge) {
-  removeSessionUserDragImage();
-  const dragImage = badge.cloneNode(true);
-  dragImage.className = "session-user-drag-image";
-  dragImage.removeAttribute("draggable");
-  dragImage.removeAttribute("data-index");
-  dragImage.removeAttribute("data-name");
-  dragImage.setAttribute("aria-hidden", "true");
-  document.body.appendChild(dragImage);
-  sessionUserDragImage = dragImage;
-  return dragImage;
-}
-
-function clearSessionUserDropIndicators() {
-  elements.sessionUserList
-    ?.querySelectorAll(".session-user-badge")
-    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
-}
-
-async function removeDraggedSessionUser() {
-  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
-    return;
-  }
-  const name = draggedSessionUser.dataset.name;
-  draggedSessionUser.dataset.deleted = "true";
-  draggedSessionUser.style.display = "none";
-  await removeSessionUser(name);
-}
-
-function finishSessionUserDragUi() {
-  draggedSessionUser?.classList.remove("dragging");
-  elements.sessionUsersPanel?.classList.remove("is-dragging");
-  elements.sessionUserTrash?.classList.remove("drag-over");
-  clearSessionUserDropIndicators();
-  removeSessionUserDragImage();
-}
-
-// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
-document.addEventListener("dragenter", (e) => {
-  if (draggedSessionUser) {
-    e.preventDefault();
-  }
-});
-
-// 2. Prevent default on document dragover to permit drop anywhere.
-document.addEventListener("dragover", (e) => {
-  if (!draggedSessionUser) {
-    return;
-  }
-  e.preventDefault();
-  if (e.dataTransfer) {
-    e.dataTransfer.dropEffect = "move";
-  }
-  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
-  const target = e.target instanceof Element ? e.target : null;
-  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-    clearSessionUserDropIndicators();
-  }
-});
-
-document.addEventListener("drop", (e) => {
-  if (draggedSessionUser) {
-    e.preventDefault();
-  }
-});
-
-// 3. Handle drag start for badge items.
-elements.sessionUserList.addEventListener("click", handleSessionUserAction);
-elements.sessionUserList.addEventListener("keydown", event => {
-  if (event.target.matches('.android-user-toggle') && ['Enter', ' '].includes(event.key)) {
-    event.preventDefault();
-    handleSessionUserAction(event);
-  }
-});
-elements.sessionUserList.addEventListener("contextmenu", event => {
-  if (document.documentElement.dataset.hostTouchUsers === "true") event.preventDefault();
-});
-document.addEventListener("click", event => {
-  if (event.target.closest("#session-user-list") || state.sessionUserActionPending || !state.sessionUserActionsName) return;
-  state.sessionUserActionsName = "";
-  syncSessionUserControls();
-});
-for (const query of ["(pointer: coarse)", "(any-pointer: fine)"]) {
-  window.matchMedia?.(query)?.addEventListener?.("change", syncSessionUserControls);
-}
-elements.sessionUserList.addEventListener("dragstart", (e) => {
-  const badge = e.target.closest(".session-user-badge");
-  if (!badge || !badge.draggable) { e.preventDefault(); return; }
-  draggedSessionUser = badge;
-  e.dataTransfer.effectAllowed = "move";
-  e.dataTransfer.setData("text/plain", badge.dataset.name);
-  if (typeof e.dataTransfer.setDragImage === "function") {
-    const rect = badge.getBoundingClientRect();
-    const dragImage = createSessionUserDragImage(badge);
-    const dragImageRect = dragImage.getBoundingClientRect();
-    e.dataTransfer.setDragImage(
-      dragImage,
-      Math.min(Math.max(0, dragImageRect.width - 1), Math.max(0, e.clientX - rect.left)),
-      Math.min(Math.max(0, dragImageRect.height - 1), Math.max(0, e.clientY - rect.top)),
-    );
-  }
-  setTimeout(() => {
-    badge.classList.add("dragging");
-    elements.sessionUsersPanel?.classList.add("is-dragging");
-  }, 0);
-});
-
-// 4. Handle dragover for reordering.
-elements.sessionUserList.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  if (!draggedSessionUser) return;
-  e.dataTransfer.dropEffect = "move";
-
-  const allElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
-  const draggableElements = allElements.filter(el => el !== draggedSessionUser);
-  allElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
-
-  if (allElements.length === 0) {
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-    return;
-  }
-
-  let closestElement = null;
-  let minDistance = Infinity;
-
-  for (const child of allElements) {
-    const box = child.getBoundingClientRect();
-    const centerX = box.left + box.width / 2;
-    const centerY = box.top + box.height / 2;
-    const distance = (e.clientX - centerX) ** 2 + (e.clientY - centerY) ** 2;
-    if (distance < minDistance) {
-      minDistance = distance;
-      closestElement = child;
-    }
-  }
-
-  if (closestElement) {
-    const box = closestElement.getBoundingClientRect();
-    const isAfter = e.clientX >= box.left + box.width / 2;
-
-    if (closestElement === draggedSessionUser) {
-      if (isAfter) {
-        const next = draggedSessionUser.nextElementSibling;
-        if (next && next.classList.contains("session-user-badge")) {
-          state.sessionUserDragTarget = next;
-          state.sessionUserDragAfter = false;
-          next.classList.add("drop-before");
-        } else {
-          state.sessionUserDragTarget = null;
-          state.sessionUserDragAfter = true;
-          draggedSessionUser.classList.add("drop-after");
-        }
-      } else {
-        state.sessionUserDragTarget = draggedSessionUser;
-        state.sessionUserDragAfter = false;
-        const prev = draggedSessionUser.previousElementSibling;
-        if (prev && prev.classList.contains("session-user-badge")) {
-          prev.classList.add("drop-after");
-        } else {
-          draggedSessionUser.classList.add("drop-before");
-        }
-      }
-    } else {
-      if (isAfter) {
-        if (closestElement.nextElementSibling === draggedSessionUser) {
-          state.sessionUserDragTarget = draggedSessionUser;
-          state.sessionUserDragAfter = false;
-          closestElement.classList.add("drop-after");
-        } else {
-          const idx = draggableElements.indexOf(closestElement);
-          if (idx !== -1 && idx < draggableElements.length - 1) {
-            state.sessionUserDragTarget = draggableElements[idx + 1];
-            state.sessionUserDragAfter = false;
-            draggableElements[idx + 1].classList.add("drop-before");
-          } else {
-            state.sessionUserDragTarget = null;
-            state.sessionUserDragAfter = true;
-            closestElement.classList.add("drop-after");
-          }
-        }
-      } else {
-        state.sessionUserDragTarget = closestElement;
-        state.sessionUserDragAfter = false;
-        closestElement.classList.add("drop-before");
-      }
-    }
-  }
-});
-
-// 5. Handle drag end.
-document.addEventListener("dragend", async (e) => {
-  if (draggedSessionUser) {
-    finishSessionUserDragUi();
-
-    if (!draggedSessionUser.dataset.deleted) {
-      if (state.sessionUserDragTarget) {
-        elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
-      } else if (state.sessionUserDragAfter) {
-        elements.sessionUserList.appendChild(draggedSessionUser);
-      }
-
-      const name = draggedSessionUser.dataset.name;
-      const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
-      const newIndex = newElements.indexOf(draggedSessionUser);
-      const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
-
-      if (newIndex !== -1 && newIndex !== oldIndex) {
-        await moveSessionUser(name, newIndex);
-      }
-    }
-    draggedSessionUser = null;
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-  }
-});
-
-// 6. Handle trash can events natively.
-if (elements.sessionUserTrash) {
-  elements.sessionUserTrash.addEventListener("dragenter", (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    elements.sessionUserTrash.classList.add("drag-over");
-    clearSessionUserDropIndicators();
-  });
-
-  elements.sessionUserTrash.addEventListener("dragleave", (e) => {
-    elements.sessionUserTrash.classList.remove("drag-over");
-  });
-
-  elements.sessionUserTrash.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    elements.sessionUserTrash.classList.add("drag-over");
-    clearSessionUserDropIndicators();
-  });
-
-  elements.sessionUserTrash.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    finishSessionUserDragUi();
-    await removeDraggedSessionUser();
-  });
-}
 
 
 elements.queueNextButton.addEventListener("click", async (event) => {

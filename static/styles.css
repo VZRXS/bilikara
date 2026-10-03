@@ -9573,7 +9573,7 @@ body[data-tauri-platform="linux"] .app-shell {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -9583,7 +9583,7 @@ body[data-tauri-platform="linux"] .app-shell {
 }
 
 /* With an on-screen keyboard, let the user section scroll as one region
-   instead of squeezing its badge list beneath the fixed form and help rows. */
+   instead of squeezing its badge list beneath the fixed form. */
 @media (max-height: 480px) {
   .host-workspace-region .session-users-panel {
     display: flex;
@@ -12020,3 +12020,84 @@ html .volume-adjust-popover::backdrop {
 :root :is(.host-workspace-region .history-list, .source-browse-scroll) { padding-right: 0; }
 :root #host-workspace-request .tag-browser-tags.has-scroll-inset,
 :root :is(.host-workspace-region .history-list, .source-browse-scroll).has-scroll-inset { padding-right: 4px; }
+
+/* Editing keeps the existing 36px tags and vertical scrolling. The footer is
+   outside the scroll track; its 52px trash slot includes the 1.15 enlargement. */
+.session-user-stage {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 52px;
+  gap: 8px;
+}
+.session-user-stage .session-user-list {
+  min-height: 0;
+  max-height: none;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.session-user-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.session-user-selection-count { margin-inline-end: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.session-user-badge { max-width: 100%; box-sizing: border-box; }
+.session-user-tools .session-user-mode-button,
+.session-user-tools .session-user-trash {
+  box-sizing: border-box;
+  position: static;
+  width: 44px; min-width: 44px; max-width: 44px;
+  height: 44px; min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  box-shadow: none;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition: border-color 120ms, background-color 120ms, transform 120ms;
+}
+.session-user-tools svg { display: block; width: 20px; height: 20px; margin: auto; }
+.session-user-tools [data-mode][aria-pressed="true"] { border-color: var(--accent); color: var(--accent-deep); }
+.session-user-trash-slot { width: 52px; height: 52px; display: grid; place-items: center; flex: 0 0 52px; }
+.session-user-tools .session-user-trash { color: var(--danger-btn-color, var(--red)); background: var(--danger-icon-bg, rgba(177,69,69,.12)); }
+.session-user-tools .session-user-trash::before { content: none; }
+.session-user-tools .session-user-trash.drag-over { transform: scale(1.15); background: var(--red); color: white; }
+.session-user-stage[data-edit-mode="select"] .session-user-order-number { background: transparent; padding: 0; }
+.session-user-order-number { touch-action: none; }
+.session-user-checkbox {
+  appearance: auto; -webkit-appearance: checkbox;
+  width: 16px; min-width: 16px; height: 16px; min-height: 16px;
+  margin: 0; padding: 0; border: 0; border-radius: 0;
+  accent-color: var(--accent); box-shadow: none;
+}
+.session-user-tools [hidden], .session-user-order-number [hidden] { display: none !important; }
+.session-user-badge.is-selected { outline: 1px solid var(--accent); outline-offset: 1px; }
+.session-user-stage[data-edit-mode="rename"] .session-user-badge { cursor: pointer; }
+.session-user-tools button:disabled { opacity: .5; cursor: default; }
+.session-user-rename-panel {
+  position: fixed; margin: 0;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  padding: 20px;
+  display: grid; gap: 12px;
+  z-index: var(--host-layer-modal, 80);
+}
+.session-user-rename-panel[popover]:not(:popover-open) { display: none; }
+.session-user-rename-panel input { width: 100%; min-width: 0; box-sizing: border-box; }
+.session-user-rename-label { font-size: 18px; font-weight: 700; line-height: 24px; }
+.session-user-rename-head { display: flex; justify-content: space-between; gap: 8px; min-height: 32px; }
+.session-user-rename-head .banner-close { flex: 0 0 32px; max-width: 32px; margin-right: -4px; }
+.session-user-rename-head .banner-close svg { width: 18px; height: 18px; display: block; margin: auto; }
+.session-user-rename-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.session-user-rename-actions button { height: 44px; font-size: 16px; font-weight: 400; border-radius: 14px; }
+@media (hover: hover) and (pointer: fine) {
+  .session-user-tools .session-user-mode-button:not(:disabled):hover { border-color: var(--accent); transform: translateY(-1px); }
+  .session-user-tools .session-user-mode-button:not(:disabled):active { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-user-tools button { transition: none; }
+}

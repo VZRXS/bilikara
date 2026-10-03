@@ -17,8 +17,12 @@ use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
 mod native_persistence;
+#[cfg(test)]
+mod session_user_tests;
+mod session_users;
 #[cfg(feature = "native-host")]
 pub(crate) use native_persistence::prepare_import;
+pub use session_users::{SessionUserEdit, SessionUserEntry};
 pub(crate) mod artifact_lifetime;
 mod player_control;
 pub use player_control::PlayerControlInput;
@@ -306,6 +310,10 @@ pub struct AppStateSeed {
     pub session_history: Vec<HistoryEntry>,
     #[serde(default)]
     pub session_users: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub session_user_ids: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub requester_user_ids: HashMap<String, String>,
     /// Private LAN registration digests, never bearer tokens or public state.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub remote_identities: HashMap<String, String>,
@@ -435,6 +443,8 @@ pub enum AppStateRequest {
         item: PlaylistItem,
         position: String,
         requester_name: String,
+        #[serde(default)]
+        requester_user_id: Option<String>,
         #[serde(default)]
         reset_av_delay: bool,
         #[serde(default)]
@@ -574,6 +584,16 @@ pub enum AppStateRequest {
         schema_version: u32,
         current_name: String,
         new_name: String,
+        #[serde(default)]
+        expected_user_id: Option<String>,
+        #[serde(default)]
+        expected_name: Option<String>,
+        now: f64,
+    },
+    EditSessionUsers {
+        schema_version: u32,
+        expected_version: String,
+        edit: SessionUserEdit,
         now: f64,
     },
     MoveSessionUserToIndex {
@@ -761,6 +781,7 @@ impl AppStateRequest {
             | Self::RegisterRemoteUser { schema_version, .. }
             | Self::RemoveSessionUser { schema_version, .. }
             | Self::RenameSessionUser { schema_version, .. }
+            | Self::EditSessionUsers { schema_version, .. }
             | Self::MoveSessionUserToIndex { schema_version, .. }
             | Self::SetSessionUsers { schema_version, .. }
             | Self::RestoreBackup { schema_version, .. }
@@ -818,6 +839,7 @@ impl AppStateRequest {
             | Self::RegisterRemoteUser { now, .. }
             | Self::RemoveSessionUser { now, .. }
             | Self::RenameSessionUser { now, .. }
+            | Self::EditSessionUsers { now, .. }
             | Self::MoveSessionUserToIndex { now, .. }
             | Self::SetSessionUsers { now, .. }
             | Self::RestoreBackup { now, .. }
@@ -918,6 +940,9 @@ pub struct AppSnapshot {
     pub history: Vec<HistoryEntry>,
     pub session_history: Vec<HistoryEntry>,
     pub session_users: Vec<String>,
+    pub session_user_entries: Vec<SessionUserEntry>,
+    pub session_users_version: String,
+    pub session_user_edit_version: u32,
     pub session_played: Vec<SessionPlayedEntry>,
     pub updated_at: f64,
     pub backup: BackupSummary,
@@ -930,6 +955,8 @@ pub struct PersistenceSnapshot {
     player_settings: PlayerSettingsSeed,
     history: Vec<HistoryEntry>,
     session_users: Vec<String>,
+    session_user_ids: HashMap<String, String>,
+    requester_user_ids: HashMap<String, String>,
     session_started_at: f64,
     session_played_file: String,
     session_played: Vec<SessionPlayedEntry>,
@@ -1019,6 +1046,9 @@ struct AppStateData {
     history: Vec<HistoryEntry>,
     session_history: Vec<HistoryEntry>,
     session_users: Vec<String>,
+    session_user_ids: HashMap<String, String>,
+    requester_user_ids: HashMap<String, String>,
+    session_user_epoch: String,
     remote_identities: HashMap<String, String>,
     gatcha_pool_preferences: HashMap<String, Value>,
     session_started_at: f64,
@@ -1779,6 +1809,7 @@ fn validate_backup(backup: &BackupSeed) -> Result<(), ExecuteError> {
 }
 
 fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
+    session_users::validate_user_ids(seed)?;
     if seed.remote_identities.iter().any(|(digest, name)| {
         digest.len() != 64
             || !digest.bytes().all(|c| c.is_ascii_hexdigit())
@@ -1876,7 +1907,7 @@ impl AppStateData {
             assign_new_item_incarnation(item, namespace, next_item_incarnation_id)?;
         }
         validate_seed(&seed)?;
-        Ok(Self {
+        let mut data = Self {
             revision: 1,
             native_session_choice_pending: false,
             session_generation: 1,
@@ -1889,6 +1920,9 @@ impl AppStateData {
             history: seed.history,
             session_history: seed.session_history,
             session_users: seed.session_users,
+            session_user_ids: seed.session_user_ids,
+            requester_user_ids: seed.requester_user_ids,
+            session_user_epoch: namespace.iter().map(|byte| format!("{byte:02x}")).collect(),
             remote_identities: seed.remote_identities,
             gatcha_pool_preferences: seed.gatcha_pool_preferences,
             session_started_at: seed.session_started_at,
@@ -1903,7 +1937,10 @@ impl AppStateData {
                 .filter(|entry| entry.current_item.is_some() || !entry.playlist.is_empty()),
             updated_at: seed.updated_at,
             active_cache_attempts: HashMap::new(),
-        })
+        };
+        data.sync_user_ids(namespace);
+        data.restore_requester_ids();
+        Ok(data)
     }
 
     fn current_identity(&self) -> Option<&str> {
@@ -2021,6 +2058,9 @@ impl AppStateData {
             history: self.history.clone(),
             session_history: self.session_history.clone(),
             session_users: self.session_users.clone(),
+            session_user_entries: self.user_entries(),
+            session_users_version: self.users_version(),
+            session_user_edit_version: 1,
             session_played: self.session_played.clone(),
             updated_at: self.updated_at,
             backup: self.backup_summary(),
@@ -2046,12 +2086,12 @@ impl AppStateData {
         field(&self.session_generation.to_string());
         field(&self.session_users.len().to_string());
         for name in &self.session_users {
-            field(name);
+            field(&self.session_user_ids[name]);
         }
         for item in self.current_item.iter().chain(self.playlist.iter()) {
             field(&item.id);
             field(&item.item_incarnation_id);
-            field(&item.requester_name);
+            field(&self.requester_order_key(item));
             field(&item.queue_slot_type);
         }
         field(if self.current_item.is_some() {
@@ -2068,6 +2108,8 @@ impl AppStateData {
             player_settings: self.player_settings.clone(),
             history: self.history.clone(),
             session_users: self.session_users.clone(),
+            session_user_ids: self.session_user_ids.clone(),
+            requester_user_ids: self.requester_user_ids.clone(),
             session_started_at: self.session_started_at,
             session_played_file: self.session_played_file.clone(),
             session_played: self.session_played.clone(),
@@ -2174,7 +2216,7 @@ fn rebuild_playlist_order(
             Ok(PlaylistOrderItem {
                 original_index: index,
                 item_id: item.id.clone(),
-                requester_name: normalize_session_user_name(&item.requester_name),
+                requester_name: data.requester_order_key(item),
                 slot_type: slot_type(&item.queue_slot_type)?,
             })
         })
@@ -2185,18 +2227,22 @@ fn rebuild_playlist_order(
             Ok(PlaylistOrderItem {
                 original_index: items.len(),
                 item_id: item.id.clone(),
-                requester_name: normalize_session_user_name(&item.requester_name),
+                requester_name: data.requester_order_key(item),
                 slot_type: slot_type(&item.queue_slot_type)?,
             })
         })
         .transpose()?;
     let plan = plan_playlist_order(PlaylistOrderRequest {
         operation,
-        session_users: data.session_users.clone(),
+        session_users: data
+            .user_entries()
+            .into_iter()
+            .map(|user| user.id)
+            .collect(),
         current_requester: data
             .current_item
             .as_ref()
-            .map(|item| normalize_session_user_name(&item.requester_name)),
+            .map(|item| data.requester_order_key(item)),
         items,
         candidate: candidate_descriptor,
     })
@@ -2860,6 +2906,7 @@ fn apply_mutation(
             mut item,
             position,
             requester_name,
+            requester_user_id,
             reset_av_delay,
             allow_repeat,
             now,
@@ -2879,7 +2926,16 @@ fn apply_mutation(
                     "请先在服务端添加本场 KTV 用户",
                 ));
             }
-            let requester = if requester.is_empty() {
+            let requester = if let Some(id) = requester_user_id.as_deref() {
+                let current = data.user_name_for_id(id).ok_or_else(|| {
+                    rejected("session_user_not_found", "点歌人已移除，请重新选择")
+                })?;
+                if requester.is_empty() {
+                    current.to_owned()
+                } else {
+                    requester
+                }
+            } else if requester.is_empty() {
                 data.session_users[0].clone()
             } else if data.session_users.contains(&requester) {
                 requester
@@ -2909,6 +2965,9 @@ fn apply_mutation(
             let selected_audio_variant_id = std::mem::take(&mut item.selected_audio_variant_id);
             assign_new_item_incarnation(&mut item, identity_namespace, next_item_incarnation_id)?;
             item.selected_audio_variant_id = selected_audio_variant_id;
+            let user_id =
+                requester_user_id.unwrap_or_else(|| data.session_user_ids[&requester].clone());
+            data.requester_user_ids.insert(item.id.clone(), user_id);
             item.requester_name = requester;
             item.queue_slot_type = if position == "next" {
                 "priority".to_owned()
@@ -3342,6 +3401,8 @@ fn apply_mutation(
                     schema_version: 1,
                     current_name,
                     new_name: name.clone(),
+                    expected_user_id: None,
+                    expected_name: None,
                     now,
                 })
             } else if !data.session_users.contains(&name) {
@@ -3409,6 +3470,7 @@ fn apply_mutation(
                 ));
             }
             data.session_users.push(normalized);
+            data.sync_user_ids(identity_namespace);
             rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
@@ -3422,72 +3484,36 @@ fn apply_mutation(
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             };
             data.session_users.remove(index);
+            data.sync_user_ids(identity_namespace);
             rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::RenameSessionUser {
             current_name,
             new_name,
+            expected_user_id,
+            expected_name,
             ..
         } => {
-            let current = normalize_session_user_name(&current_name);
-            let renamed = normalize_session_user_name(&new_name);
-            let Some(index) = data.session_users.iter().position(|user| user == &current) else {
+            if expected_name
+                .as_ref()
+                .is_some_and(|name| name != &current_name)
+                || expected_user_id
+                    .as_ref()
+                    .is_some_and(|id| data.user_name_for_id(id) != Some(current_name.as_str()))
+            {
                 return Err(rejected(
-                    "session_user_not_found",
-                    "session user does not exist",
-                ));
-            };
-            if renamed.is_empty() {
-                return Err(rejected(
-                    "invalid_session_user",
-                    "user name cannot be empty",
+                    "session_users_changed",
+                    "用户名已更新，请重新打开修改",
                 ));
             }
-            if renamed != current && data.session_users.contains(&renamed) {
-                return Err(rejected(
-                    "duplicate_session_user",
-                    "session user already exists",
-                ));
-            }
-            if renamed == current {
-                return Ok(MutationResult::unchanged(json!({"name": renamed})));
-            }
-            data.session_users[index] = renamed.clone();
-            if let Some(config) = data
-                .gatcha_pool_preferences
-                .remove(&format!("user:{current}"))
-            {
-                data.gatcha_pool_preferences
-                    .insert(format!("user:{renamed}"), config);
-            }
-            if let Some(item) = &mut data.current_item
-                && item.requester_name == current
-            {
-                item.requester_name.clone_from(&renamed);
-            }
-            for item in &mut data.playlist {
-                if item.requester_name == current {
-                    item.requester_name.clone_from(&renamed);
-                }
-            }
-            for entry in data
-                .history
-                .iter_mut()
-                .chain(data.session_history.iter_mut())
-            {
-                if entry.requester_name == current {
-                    entry.requester_name.clone_from(&renamed);
-                }
-            }
-            for entry in &mut data.session_played {
-                if entry.requester_name == current {
-                    entry.requester_name.clone_from(&renamed);
-                }
-            }
-            rebuild_playlist_order(data, None)?;
-            Ok(MutationResult::changed(json!({"name": renamed}), true))
+            session_users::rename(data, &current_name, &new_name)
         }
+        AppStateRequest::EditSessionUsers {
+            expected_version,
+            edit,
+            ..
+        } => session_users::apply_edit(data, &expected_version, edit),
         AppStateRequest::MoveSessionUserToIndex {
             name, target_index, ..
         } => {
@@ -3523,6 +3549,7 @@ fn apply_mutation(
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
             data.session_users = normalized;
+            data.sync_user_ids(identity_namespace);
             rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
@@ -4268,6 +4295,7 @@ impl AppState {
                         video_page,
                         audio_pages: &selected_audio_pages,
                     }),
+                    &snapshot,
                 ) {
                     return internet_remote_error_response(error);
                 }
@@ -4482,6 +4510,56 @@ impl AppState {
                 None,
                 None,
             ),
+            RemoteRequestV1::SessionResume { user_id } => {
+                let Some(name) = data.user_name_for_id(&user_id).map(str::to_owned) else {
+                    return execute_error_response(rejected(
+                        "identity_required",
+                        "点歌人已移除，请重新登记",
+                    ));
+                };
+                if let Err(error) = self
+                    .internet_remote_peers
+                    .commit_identity(&validation.peer_id, name.clone())
+                {
+                    return internet_remote_error_response(error);
+                }
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!({"name":name,"state":project_remote_state(&snapshot)}),
+                    None,
+                    false,
+                );
+            }
+            RemoteRequestV1::SessionRename {
+                name,
+                user_id,
+                expected_name,
+            } => {
+                let name = normalize_session_user_name(&name);
+                let current = validation.session_name.as_deref();
+                if current != Some(expected_name.as_str())
+                    || data.user_name_for_id(&user_id) != current
+                {
+                    return execute_error_response(rejected(
+                        "session_users_changed",
+                        "用户名已更新，请重新打开修改",
+                    ));
+                }
+                (
+                    AppStateRequest::EditSessionUsers {
+                        schema_version: SCHEMA_VERSION,
+                        expected_version: data.users_version(),
+                        edit: SessionUserEdit::Rename {
+                            user_id,
+                            name: name.clone(),
+                        },
+                        now,
+                    },
+                    None,
+                    Some(name),
+                )
+            }
             RemoteRequestV1::SessionSetIdentity { name } => {
                 let normalized = normalize_session_user_name(&name);
                 if data.session_users.contains(&normalized) {
@@ -4604,7 +4682,9 @@ impl AppState {
         let Some(data) = self.data.as_ref() else {
             return uninitialized_response();
         };
-        if !data.session_users.contains(&pending.session_name) {
+        if data.session_generation != pending.session_generation
+            || data.user_name_for_id(&pending.session_user_id).is_none()
+        {
             return execute_error_response(rejected(
                 "internet_remote_identity_missing",
                 "Internet Remote identity is no longer active",
@@ -4638,6 +4718,8 @@ impl AppState {
             ));
         }
         let response = self.execute(AppStateRequest::AddItem {
+            requester_user_id: Some(pending.session_user_id),
+
             schema_version: SCHEMA_VERSION,
             item,
             position: match pending.position {
@@ -5127,6 +5209,7 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 if mutation.changed {
+                    next.sync_user_ids(&namespace);
                     if current.session_generation != next.session_generation {
                         next.remote_identities.clear();
                     } else {
@@ -5190,9 +5273,22 @@ impl AppState {
                             effects.delete_backup = true;
                         }
                     }
+                    let live_ids: HashSet<_> = next
+                        .current_item
+                        .iter()
+                        .chain(next.playlist.iter())
+                        .chain(next.backup.iter().flat_map(|backup| {
+                            backup.current_item.iter().chain(backup.playlist.iter())
+                        }))
+                        .map(|item| item.id.clone())
+                        .collect();
+                    next.requester_user_ids
+                        .retain(|id, _| live_ids.contains(id));
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
                     let clears_controls = current.playback_generation != next.playback_generation;
+                    let previous_user_ids = current.session_user_ids.clone();
+                    let session_changed = current.session_generation != next.session_generation;
                     if let Err(error) = self.persist_native(&next) {
                         return storage_error_response(error);
                     }
@@ -5200,8 +5296,16 @@ impl AppState {
                     // boundary, after persistence succeeds. A later same-name
                     // user must not restore an old device's registration.
                     #[cfg(feature = "native-host")]
-                    self.native_session
-                        .reconcile_identities(&next.session_users, next.session_generation);
+                    self.native_session.reconcile_identities(
+                        &previous_user_ids,
+                        &next.session_user_ids,
+                        next.session_generation,
+                    );
+                    self.internet_remote_peers.reconcile_identities(
+                        &previous_user_ids,
+                        &next.session_user_ids,
+                        session_changed,
+                    );
                     if clears_controls {
                         self.player_controls.clear();
                     }
@@ -5768,6 +5872,9 @@ mod tests {
 
     fn seed() -> AppStateSeed {
         AppStateSeed {
+            session_user_ids: std::collections::HashMap::new(),
+            requester_user_ids: std::collections::HashMap::new(),
+
             playback_mode: "local".to_owned(),
             player_settings: PlayerSettingsSeed::default(),
             current_item: None,
@@ -6094,6 +6201,8 @@ mod tests {
         );
         youtube.id = "duplicate-youtube".into();
         let duplicate = failure(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: youtube,
             position: "tail".into(),
@@ -6104,6 +6213,8 @@ mod tests {
         }));
         assert_eq!(duplicate.error.kind, "duplicate_session_request");
         success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("bilibili", "BV1ab411c7mD", ""),
             position: "tail".into(),
@@ -6369,6 +6480,8 @@ mod tests {
             now: 13.0,
         }));
         success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("b", "BV-b-new", ""),
             position: "tail".to_owned(),
@@ -7155,6 +7268,8 @@ mod tests {
         let mut state = AppState::default();
         let first = initialize(&mut state, seed());
         let added = success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-a", ""),
             position: "tail".to_owned(),
@@ -7206,6 +7321,8 @@ mod tests {
         assert_eq!(empty_value["playback_program"], Value::Null);
 
         let pending = success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-a", ""),
             position: "tail".to_owned(),
@@ -7299,6 +7416,8 @@ mod tests {
         let mut state = AppState::default();
         let initial = initialize(&mut state, seed());
         let pending = success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-a", ""),
             position: "tail".to_owned(),
@@ -7624,6 +7743,8 @@ mod tests {
             schema_version: 1,
             current_name: "Alice".to_owned(),
             new_name: "Alicia".to_owned(),
+            expected_user_id: None,
+            expected_name: None,
             now: 12.2,
         });
 
@@ -8143,6 +8264,8 @@ mod tests {
             let incarnation_counter = state.next_item_incarnation_id;
             for position in ["tail", "next"] {
                 let rejected = failure(state.execute(AppStateRequest::AddItem {
+                    requester_user_id: None,
+
                     schema_version: 1,
                     item: item("extra", "BV-extra", "Bob"),
                     position: position.to_owned(),
@@ -8178,6 +8301,8 @@ mod tests {
                 thread::spawn(move || {
                     barrier.wait();
                     let response = state.lock().unwrap().execute(AppStateRequest::AddItem {
+                        requester_user_id: None,
+
                         schema_version: 1,
                         item: item(
                             &format!("extra-{index}"),
@@ -8244,6 +8369,8 @@ mod tests {
             assert_eq!(snapshot.playlist[0].queue_slot_type, "cycle");
             assert_eq!(snapshot.current_item.unwrap().id, "playing");
             let added = success(state.execute(AppStateRequest::AddItem {
+                requester_user_id: None,
+
                 schema_version: 1,
                 item: item("bob-next", "BV-bob", "Bob"),
                 position: "tail".to_owned(),
@@ -8275,6 +8402,8 @@ mod tests {
             ("c", "BV-c", "Alice"),
         ] {
             let response = state.execute(AppStateRequest::AddItem {
+                requester_user_id: None,
+
                 schema_version: 1,
                 item: item(id, bvid, ""),
                 position: "tail".to_owned(),
@@ -8306,6 +8435,8 @@ mod tests {
 
         let revision = snapshot.revision;
         let duplicate = failure(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("duplicate-a", "BV-a", ""),
             position: "tail".to_owned(),
@@ -8352,6 +8483,8 @@ mod tests {
         initialize(&mut state, seed());
         for (id, bvid) in [("a", "BV-a"), ("b", "BV-b"), ("c", "BV-c")] {
             success(state.execute(AppStateRequest::AddItem {
+                requester_user_id: None,
+
                 schema_version: 1,
                 item: item(id, bvid, ""),
                 position: "tail".to_owned(),
@@ -8584,6 +8717,8 @@ mod tests {
             now: 11.0,
         }));
         let replacement = success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-new", ""),
             position: "tail".to_owned(),
@@ -8770,6 +8905,8 @@ mod tests {
             now: 11.0,
         }));
         success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-new", ""),
             position: "tail".to_owned(),
@@ -8811,6 +8948,8 @@ mod tests {
             now: 11.0,
         }));
         success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-new", ""),
             position: "tail".to_owned(),
@@ -9180,6 +9319,8 @@ mod tests {
         ));
         assert_eq!(removed.error.kind, "cache_attempt_not_active");
         success(state.execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("a", "BV-new", ""),
             position: "tail".to_owned(),
@@ -9508,6 +9649,8 @@ mod tests {
                 requested.video_relative_path = "old-video.mp4".to_owned();
                 requested.video_media_url = "/media/old-video.mp4".to_owned();
                 success(state.execute(AppStateRequest::AddItem {
+                    requester_user_id: None,
+
                     schema_version: 1,
                     item: requested,
                     position: "tail".to_owned(),

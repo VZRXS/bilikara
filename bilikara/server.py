@@ -662,11 +662,13 @@ class AppContext:
         position: str,
         requester_name: str,
         allow_repeat: bool,
+        requester_user_id: str | None = None,
     ) -> None:
         self.store.add_item(
             item,
             position=position,
             requester_name=requester_name,
+            requester_user_id=requester_user_id,
             reset_av_delay=self.cache_manager.reset_offset_on_next,
             allow_repeat=allow_repeat,
         )
@@ -817,6 +819,15 @@ class AppContext:
             if self.store.remove_session_user(name):
                 self.remote_identities.revoke_name(name)
 
+    def edit_session_users(self, expected_version: str, edit: dict[str, object]) -> None:
+        with self._remote_identity_lock:
+            result = self.store.edit_session_users(expected_version, edit)
+            if result.get("previous_name"):
+                self.remote_identities.apply_native_rename(str(result["previous_name"]), str(result["name"]))
+                self._rename_rating_identity(str(result["previous_name"]), str(result["name"]))
+            for name in result.get("removed_names", []):
+                self.remote_identities.revoke_name(str(name))
+
     def remote_identity_snapshot(self, token: str) -> dict[str, object]:
         with self._remote_identity_lock:
             name = self.remote_identities.resolve(token)
@@ -826,6 +837,7 @@ class AppContext:
             return {
                 "registered": bool(name),
                 "name": name,
+                "user_id": next((user["id"] for user in self.store.snapshot().get("session_user_entries", []) if user["name"] == name), ""),
                 "session_id": self.remote_identities.snapshot_session_id(),
             }
 
@@ -850,22 +862,23 @@ class AppContext:
             return token, {
                 "registered": True,
                 "name": normalized,
+                "user_id": next((user["id"] for user in self.store.snapshot().get("session_user_entries", []) if user["name"] == normalized), ""),
                 "session_id": self.remote_identities.snapshot_session_id(),
             }
 
-    def rename_remote_identity(self, token: str, new_name: str) -> dict[str, object]:
+    def rename_remote_identity(self, token: str, new_name: str, *, expected_user_id: str | None = None, expected_name: str | None = None) -> dict[str, object]:
         with self._remote_identity_lock:
             current_name = self.remote_identities.resolve(token)
             if not current_name or not self.store.has_session_user(current_name):
                 self.remote_identities.revoke_token(token)
                 raise ValueError("remote identity is no longer valid")
-            renamed = self.store.rename_session_user(current_name, new_name)
-            if not self.remote_identities.rename(token, renamed):
-                raise ValueError("remote identity is no longer valid")
+            renamed = self.store.rename_session_user(current_name, new_name, expected_user_id=expected_user_id, expected_name=expected_name)
+            self.remote_identities.apply_native_rename(current_name, renamed)
             self._rename_rating_identity(current_name, renamed)
             return {
                 "registered": True,
                 "name": renamed,
+                "user_id": next((user["id"] for user in self.store.snapshot().get("session_user_entries", []) if user["name"] == renamed), ""),
                 "session_id": self.remote_identities.snapshot_session_id(),
             }
 
@@ -1893,6 +1906,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 identity = CONTEXT.rename_remote_identity(
                     self._remote_identity_token(),
                     str(body.get("name") or ""),
+                    expected_user_id=body.get("user_id"),
+                    expected_name=body.get("expected_name"),
                 )
                 self._write_json({"ok": True, "data": identity})
                 return
@@ -1990,6 +2005,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not name:
                     raise ValueError("missing name")
                 CONTEXT.remove_session_user(name)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/session-users/edit":
+                CONTEXT.edit_session_users(str(body.get("expected_version") or ""), body.get("edit") or {})
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/session-users/reorder":
@@ -2823,16 +2842,21 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         selected_audio_pages = raw_selected_audio_pages if isinstance(raw_selected_audio_pages, list) else None
         if not CONTEXT.has_session_users():
             raise ValueError("请先在服务端添加本场 KTV 用户")
+        admission = CONTEXT.snapshot()
+        requester_user_id = next((user["id"] for user in admission.get("session_user_entries", []) if user["name"] == requester_name), None)
         item = fetch_video_item(
             url,
             selected_video_page=selected_video_page,
             selected_audio_pages=selected_audio_pages,
         )
         try:
+            if CONTEXT.snapshot().get("session_generation") != admission.get("session_generation"):
+                raise ValueError("本场已结束，请重新点歌")
             CONTEXT.add_item(
                 item,
                 position=position,
                 requester_name=requester_name,
+                requester_user_id=requester_user_id,
                 allow_repeat=allow_repeat,
             )
         except PlaylistStoreCommandError as exc:

@@ -147,6 +147,7 @@ Immediate UI actions (open/close, expand/collapse, tabs, fullscreen, mute and lo
 - Coalesce progress-only paints to once per second; do not delay terminal states or playback controls.
 - Measure layout on content, size and font changes, not on timers or playback ticks. Keep observers scoped and coalesce their work.
 - Localize dynamic labels in place without resetting form state or busy guards.
+- Session-user edits use stable user IDs and a roster version. Preserve selections and tag nodes across unrelated snapshots; new users start unselected. Reject stale batch edits atomically and cancel interrupted drags without committing them. A rename changes future requests only: existing song/history/export labels remain request-time records, while device bindings, queue rotation and rating guards follow the stable ID.
 
 ### 5.3 Component geometry and control roles
 
@@ -167,6 +168,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 | Compact request entries | 72px; title 14px/16px; metadata 12px/16px | 16px corners |
 | Settings group cards | Single-language 16px subheading | 14px corners and outline |
 | Info bubbles | 13px, weight 400; line height 1.45; maximum width 320px | 12px corners |
+| Session-user editing tools | 44px circular icon targets; select-all uses the 30px compact tool definition | Reserve a 52px trash slot, including its 1.15 drag-over enlargement |
 
 - Action order follows the component role. Dialog footer groups place secondary/cancel actions before the primary completion action (left-to-right; preserve DOM and keyboard order). Export uses CSV on the left and image export on the right in both clients. Inline task forms retain their established workflow order (for example, request then queue-next); do not reverse every primary/secondary pair. Matching components share order across Host/local/public Remote. Secondary and cancel actions retain the shared neutral fill.
 - Pills use a fully rounded radius (currently 999px). Circles constrain width, height and min/max-width equally so inherited button minima cannot stretch them.
@@ -192,6 +194,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 - Floating surfaces share `static/ui-surfaces.css`: 18px corners, theme-aware translucent fill, shadow and panel-confined backdrop blur. Keep opacity in shared tokens; no per-dialog/client overrides.
 - Blur only the outer floating panel, never its header, groups or controls. The collapsed Remote playback dock also blurs once, preserving its fill/progress tint. Removing nested blur must preserve theme colors and opacity.
+- A narrow desktop tool sheet is a floating panel and uses that same outer blur/fill. Its workspace content is transparent; resident wide-screen workspace cards retain their normal surface.
 - Verify visible blur, not only computed CSS; distinguish screenshot-renderer limitations from real-device behavior.
 - Host dialogs do not dim or blur the surrounding page or source card.
 - Remote large modals (entry gates, details, ratings, selection/export and playback sheet) use a theme-aware page-wide dimmed backdrop with opacity entry/exit, without page blur. Small anchored menus, help and volume editors use shadow without a second backdrop.
@@ -222,6 +225,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 - Bilingual pairs describe the same feature. Chinese/Japanese use its full English title as eyebrow; English uses the corresponding Chinese title. Host/Remote and dynamic headings remain equivalent. Compact navigation labels do not supply full section headings; playback status and individual control labels are not bilingual pairs.
 - Settings groups use single-language 16px subheadings.
 - Browse loading, selection hints and empty results use one plain centered muted 13px/1.5 status block with 8px vertical padding and no filled card. Place it directly below relevant controls/content, at the start of the list region, never at the bottom of a tall Host panel or duplicated in a footer. Remote may naturally end below it because its panel shrinks to content.
+- Session-user guidance appears only in the empty list state; populated lists do not keep an instructional message.
 - Preserve actionable errors through their existing error/toast owner. Empty display-list guidance uses bold accent text without a message-card background.
 - If an action's busy label already expresses checking/channel changes, do not duplicate that status in a message. Retain failures and completed outcomes.
 
@@ -234,6 +238,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 - A search action beside a horizontal card strip centers on the card track, excluding padding and scrollbar from the center calculation.
 - Host song-result grids (search/category/name/artist) and large category covers share `--request-song-card-min-inline-size: 200px`, including narrow overrides. Add columns before cards become oversized; scale category-cover titles to the card. Name/artist entry cards instead reuse compact UP/favorites widths, surface, typography and feedback.
 - Remote queue order badges own a 44px square drag/tap target without a separate grip column. A tap opens the shared localized help bubble; movement of at least 6px begins dragging, with no long-press delay. Keep small pointer jitter as a tap, suppress post-drag help clicks, and cancel interrupted gestures without committing a reorder.
+- Session-user lists retain their tag sizes and vertical scrolling in normal, selection and rename modes. Keep rename, multi-select and trash tools outside the scroll track; rename and multi-select are mutually exclusive. Selection replaces only number badges with native checkboxes. Batch dragging preserves roster order within the selection; touch dragging belongs to the number/checkbox target so names and list space remain scrollable. Anchored rename editors use shared floating-panel geometry, ordinary fields/actions and keyboard focus management.
 - Scroll regions reserve scrollbar space only when actually scrolling. Native scrollbar width participates in layout; never apply unconditional `scrollbar-gutter: stable`. Use the queue's conditional overflow handling as the pattern.
 - Bounded name/artist, history and source lists add a 4px content gap only while scrolling. Name/artist grids retain 2px vertical paint room so first-row Host hover lift is not clipped. Remote request lists use document scrolling; bounded Remote queue/history lists use the same conditional gap. Observe content/size changes, not playback ticks.
 - Ordinary song/source lists keep bottom and side insets equal. Host result totals appear only in administrator mode, with a reserved footer track and at least 16px bottom clearance.

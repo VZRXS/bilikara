@@ -636,6 +636,7 @@ class PlaylistStore:
         position: str = "tail",
         *,
         requester_name: str = "",
+        requester_user_id: str | None = None,
         reset_av_delay: bool = False,
         allow_repeat: bool = True,
     ) -> None:
@@ -644,6 +645,7 @@ class PlaylistStore:
             item=item.serialize(),
             position=str(position),
             requester_name=str(requester_name or ""),
+            requester_user_id=requester_user_id,
             reset_av_delay=bool(reset_av_delay),
             allow_repeat=bool(allow_repeat),
         )
@@ -1042,13 +1044,18 @@ class PlaylistStore:
             self._request("remove_session_user", name=str(name or ""))
         )
 
-    def rename_session_user(self, current_name: str, new_name: str) -> str:
+    def rename_session_user(self, current_name: str, new_name: str, *, expected_user_id: str | None = None, expected_name: str | None = None) -> str:
         result = self._request(
             "rename_session_user",
             current_name=str(current_name or ""),
             new_name=str(new_name or ""),
+            expected_user_id=expected_user_id,
+            expected_name=expected_name,
         )
         return str(result["name"])
+
+    def edit_session_users(self, expected_version: str, edit: dict[str, Any]) -> dict[str, Any]:
+        return self._request("edit_session_users", expected_version=expected_version, edit=edit)
 
     def move_session_user_to_index(self, name: str, target_index: int) -> bool:
         return self._changed_or_found(
@@ -1549,6 +1556,8 @@ class PlaylistStore:
                 self.session_users_state_file,
                 {
                     "session_users": list(persistence["session_users"]),
+                    "session_user_ids": copy.deepcopy(persistence.get("session_user_ids", {})),
+                    "requester_user_ids": copy.deepcopy(persistence.get("requester_user_ids", {})),
                     "updated_at": persistence["updated_at"],
                 },
             )
@@ -1655,6 +1664,8 @@ class PlaylistStore:
             "history": history,
             "session_history": [],
             "session_users": users,
+            "session_user_ids": copy.deepcopy(users_payload.get("session_user_ids", {})),
+            "requester_user_ids": copy.deepcopy(users_payload.get("requester_user_ids", {})),
             "session_started_at": now,
             "session_played_file": session_file.name,
             "session_played": [],

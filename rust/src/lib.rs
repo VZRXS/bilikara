@@ -69,8 +69,8 @@ pub use internet_remote_protocol::{
     RemoteCatalogBrowseKindV1, RemoteHistoryEntryV1, RemoteLane, RemoteOperation,
     RemotePlaybackModeV1, RemotePlaybackStatusV1, RemotePlayerSettingsV1, RemotePlaylistItemV1,
     RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError, RemoteRequestEnvelopeV1,
-    RemoteRequestV1, RemoteStateV1, RemoteValidationContext, decode_remote_request_v1,
-    profile_allows,
+    RemoteRequestV1, RemoteSessionUserV1, RemoteStateV1, RemoteValidationContext,
+    decode_remote_request_v1, profile_allows,
 };
 pub use media_download_candidate_planning::{
     MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,

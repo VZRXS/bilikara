@@ -37,10 +37,17 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
                 store.shutdown()
 
     def snapshot(self):
-        return rust_runtime.app_state_request("snapshot")["snapshot"]
+        return self.with_requester_ids(rust_runtime.app_state_request("snapshot"))["snapshot"]
+
+    @staticmethod
+    def with_requester_ids(response):
+        # Ownership is a separate persisted identity; requester_name is the
+        # immutable display label and cannot group songs after a rename.
+        response["snapshot"]["requester_user_ids"] = response["persistence"]["requester_user_ids"]
+        return response
 
     def command(self, command, **fields):
-        return rust_runtime.app_state_request(command, now=1000.0, **fields)
+        return self.with_requester_ids(rust_runtime.app_state_request(command, now=1000.0, **fields))
 
     def add(self, item_id, user, *, position="tail", song=None, allow_repeat=False):
         return self.command("add_item", item=asdict(item(item_id, song=song)),
@@ -51,20 +58,22 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
         return snapshot["playlist"] + ([snapshot["current_item"]] if snapshot["current_item"] else [])
 
     def cycle_schedule(self, snapshot, candidate=None):
-        seats = snapshot["session_users"]
-        current_user = (snapshot["current_item"] or {}).get("requester_name")
+        seats = [user["id"] for user in snapshot["session_user_entries"]]
+        owners = snapshot["requester_user_ids"]
+        current_user = owners.get((snapshot["current_item"] or {}).get("id"))
         if current_user in seats:
             offset = seats.index(current_user) + 1
             seats = seats[offset:] + seats[:offset]
         buckets = [[entry["id"] for entry in snapshot["playlist"]
-            if entry["queue_slot_type"] == "cycle" and entry["requester_name"] == user] for user in seats]
+            if entry["queue_slot_type"] == "cycle" and owners.get(entry["id"]) == user] for user in seats]
         if candidate is not None:
-            buckets[seats.index(candidate["requester_name"])].append(candidate["id"])
+            owner = next(user["id"] for user in snapshot["session_user_entries"] if user["name"] == candidate["requester_name"])
+            buckets[seats.index(owner)].append(candidate["id"])
         return [item_id for round_ in zip_longest(*buckets) for item_id in round_ if item_id is not None]
 
     def assert_cycle_order(self, snapshot):
         actual = [entry["id"] for entry in snapshot["playlist"]
-            if entry["queue_slot_type"] == "cycle" and entry["requester_name"] in snapshot["session_users"]]
+            if entry["queue_slot_type"] == "cycle" and snapshot["requester_user_ids"].get(entry["id"]) in {user["id"] for user in snapshot["session_user_entries"]}]
         self.assertEqual(actual, self.cycle_schedule(snapshot))
 
     def assert_conserved(self, snapshot, admitted):
@@ -78,7 +87,7 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
         self.assertEqual(len(snapshot["session_users"]), len(set(snapshot["session_users"])))
         self.assertLessEqual(len(snapshot["session_users"]), 32)
         for entry in active:
-            # Only slot markers and an explicit singer rename may change data.
+            # Even a rename must preserve all request-time content.
             expected = admitted[entry["id"]]
             self.assertEqual({key: value for key, value in entry.items() if key != "queue_slot_type"},
                 {key: value for key, value in expected.items() if key != "queue_slot_type"})
@@ -194,22 +203,18 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
                                     scheduled = self.cycle_schedule(before, admitted[requested_id])
                                     predecessors = set(scheduled[:scheduled.index(requested_id)])
                                     predecessors.update(entry["id"] for entry in queue
-                                        if entry["queue_slot_type"] != "cycle" or entry["requester_name"] not in users)
+                                        if entry["queue_slot_type"] != "cycle" or before["requester_user_ids"].get(entry["id"]) not in {user["id"] for user in before["session_user_entries"]})
                                     expected_index = max((index + 1 for index, item_id in enumerate(old_ids) if item_id in predecessors), default=0)
                                     self.assertEqual(new_ids.index(requested_id), expected_index, (seed, step))
-                        if command == "rename_session_user":
-                            for entry in admitted.values():
-                                if entry["requester_name"] == fields["current_name"]:
-                                    entry["requester_name"] = fields["new_name"]
                         self.assert_conserved(after, admitted)
-                        if command not in {"advance_to_next", "move_to_front", "add_item", "rename_session_user"}:
+                        if command not in {"advance_to_next", "move_to_front", "add_item"}:
                             self.assertEqual(after["current_item"], before["current_item"])
                             self.assertEqual(after["playback_generation"], before["playback_generation"])
                         if command == "resort_playlist_by_cycle":
                             self.assertTrue(all(entry["queue_slot_type"] == "cycle" for entry in after["playlist"]))
-                            for user in users:
-                                self.assertEqual([entry["id"] for entry in after["playlist"] if entry["requester_name"] == user],
-                                    [entry["id"] for entry in queue if entry["requester_name"] == user], (seed, step, user))
+                            for user in before["session_user_entries"]:
+                                self.assertEqual([entry["id"] for entry in after["playlist"] if after["requester_user_ids"].get(entry["id"]) == user["id"]],
+                                    [entry["id"] for entry in queue if before["requester_user_ids"].get(entry["id"]) == user["id"]], (seed, step, user))
                         if command == "move_to_next" and fields["item_id"] in {entry["id"] for entry in queue}:
                             self.assertEqual(after["playlist"][0]["id"], fields["item_id"])
                             self.assertEqual(after["playlist"][0]["queue_slot_type"], "priority")
@@ -221,12 +226,15 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
                             expected.remove(fields["name"])
                             expected.insert(max(0, min(fields["target_index"], len(users) - 1)), fields["name"])
                             self.assertEqual(after["session_users"], expected)
-                        if result["committed"] and command != "add_item":
+                        if command == "rename_session_user":
+                            self.assertEqual(after["playlist"], before["playlist"])
+                            self.assertEqual(after["requester_user_ids"], before["requester_user_ids"])
+                        if result["committed"] and command not in {"add_item", "rename_session_user"}:
                             self.assert_cycle_order(after)
                         if command in {"add_session_user", "remove_session_user", "rename_session_user", "move_session_user_to_index", "resort_playlist_by_cycle"}:
                             for index, entry in enumerate(queue):
-                                requester = fields["new_name"] if command == "rename_session_user" and entry["requester_name"] == fields["current_name"] else entry["requester_name"]
-                                fixed = (command != "resort_playlist_by_cycle" and entry["queue_slot_type"] != "cycle") or requester not in after["session_users"]
+                                requester = before["requester_user_ids"].get(entry["id"])
+                                fixed = (command != "resort_playlist_by_cycle" and entry["queue_slot_type"] != "cycle") or requester not in {user["id"] for user in after["session_user_entries"]}
                                 if fixed:
                                     self.assertEqual(after["playlist"][index]["id"], entry["id"])
         for command in ["move_session_user_to_index", "move_to_next", "add_item", "move_item_to_index", "add_session_user", "remove_session_user", "resort_playlist_by_cycle", "rename_session_user", "advance_to_next", "move_to_front"]:
@@ -246,7 +254,7 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
             self.add("a-return", "A")
             self.assertEqual([entry["id"] for entry in self.snapshot()["playlist"]], ["a-return", "b-return"])
 
-    def test_removing_and_readding_a_singer_preserves_all_their_waiting_songs(self):
+    def test_same_name_registration_preserves_but_does_not_adopt_old_waiting_songs(self):
         with self.session(["A", "B", "C"]):
             self.add("a0", "A")
             self.add("b1", "B")
@@ -261,7 +269,9 @@ class PlaylistLifecycleStressTest(unittest.TestCase):
             self.add("b3", "B")
             self.command("resort_playlist_by_cycle")
             after = self.snapshot()
-            self.assertEqual([entry["id"] for entry in after["playlist"]], ["c1", "b1", "b2", "b3"])
+            self.assertEqual([entry["id"] for entry in after["playlist"]], ["b1", "c1", "b2", "b3"])
+            self.assertEqual(after["requester_user_ids"]["b1"], before["requester_user_ids"]["b1"])
+            self.assertNotEqual(after["requester_user_ids"]["b1"], after["requester_user_ids"]["b3"])
 
     def test_zero_and_max_users_and_duplicate_names_reject_without_side_effects(self):
         with self.session([]):

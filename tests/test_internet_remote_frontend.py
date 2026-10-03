@@ -973,18 +973,56 @@ console.log(JSON.stringify({{ sent, reconnects }}));
             {"sent": [1000, 12001, 14001], "reconnects": 1},
         )
 
-    def test_remote_identity_registration_is_idempotent_in_the_browser_adapter(self):
-        start = self.remote_transport.index(
-            'if (method === "POST" && ["/api/remote-identity/register"'
-        )
-        end = self.remote_transport.index(
-            'if (method === "POST" && url.pathname === "/api/gatcha/pool-config")',
-            start,
-        )
-        source = self.remote_transport[start:end]
-        same_name = source.index("requestedName === state.identity")
-        rust_request = source.index('request("session.set_identity"')
-        self.assertLess(same_name, rust_request)
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_public_rename_revalidates_identity_and_preserves_newer_broadcasts(self):
+        script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const source = fs.readFileSync('static/remote-transport-client.js', 'utf8').replace(
+  '})(globalThis);',
+  'globalThis.adapter={state,fetchInternet,publishState,stub:fn=>{request=fn;}}; })(globalThis);'
+);
+const storage=new Map();
+const sandbox={fetch:async()=>{throw new Error('Unexpected network request');},
+ location:{hash:'#room=fixture',origin:'https://example.test',href:'https://example.test/#room=fixture'},
+ localStorage:{getItem:key=>storage.get(key)||'',setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
+ URLSearchParams,URL,Response,Headers,queueMicrotask,setTimeout:()=>1,clearTimeout:()=>{},clearInterval:()=>{},
+ navigator:{onLine:true},addEventListener:()=>{},dispatchEvent:()=>{},Event:class{},
+ BilikaraInternetTransport:{randomBase64Url:()=> 'fixture',Decoder:class{}},
+ document:{addEventListener:()=>{},documentElement:{dataset:{}}}};
+vm.runInNewContext(source,sandbox);
+const {state,fetchInternet,publishState,stub}=sandbox.adapter;
+const id='a'.repeat(64);
+const roster=(revision,name)=>({state_epoch:'epoch',revision,session_generation:1,session_user_edit_version:1,
+ session_users:[name],session_user_entries:[{id,name}],player_settings:{}});
+(async()=>{
+ state.authorized=true;state.identity='Alice';state.identityUserId=id;
+ publishState(roster(1,'Alice'));
+ const calls=[];
+ stub(async(kind,body)=>{calls.push({kind,body});return {data:{name:'Alice',state:roster(1,'Alice')}};});
+ const post=(route,body)=>fetchInternet(route,{method:'POST',body:JSON.stringify(body)});
+ await post('/api/remote-identity/register',{name:'Alice'});
+ assert.equal(calls[0].kind,'session.set_identity'); // Same-name requests still reach Rust.
+ stub(async(kind,body)=>{calls.push({kind,body});publishState(roster(3,'Latest'));return {data:{name:'Aimer',state:roster(2,'Aimer')}};});
+ let response=await (await post('/api/remote-identity/rename',{name:'Aimer',user_id:id,expected_name:'Alice'})).json();
+ assert.equal(calls[1].kind,'session.rename');assert.equal(calls[1].body.user_id,id);
+ assert.equal(response.data.name,'Latest');assert.equal(response.data.user_id,id);
+ assert.equal(storage.get('bilikara.internetRemote.identity.v1.fixture.userId'),id);
+ publishState({...roster(4,''),session_users:[],session_user_entries:[]});
+ assert.equal(state.identity,'');assert.equal(state.identityUserId,'');
+ assert.equal(storage.has('bilikara.internetRemote.identity.v1.fixture.userId'),false);
+ // Older Hosts must never receive the old rename-as-registration request.
+ state.remoteState.session_user_edit_version=0;
+ response=await post('/api/remote-identity/rename',{name:'Old host'});
+ assert.equal(response.status,409);assert.equal(calls.length,2);
+ console.log('ok');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        completed = subprocess.run([shutil.which("node"), "-e", script], capture_output=True,
+                                   text=True, encoding="utf-8", timeout=10, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "ok")
 
     def test_control_and_bulk_requests_have_independent_ordered_queues(self):
         self.assertIn('queues: { control: Promise.resolve(), bulk: Promise.resolve() }', self.host_js)

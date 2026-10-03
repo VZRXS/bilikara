@@ -1010,21 +1010,19 @@ assert.equal(prevented, 2);
             self.assertNotIn("ガチャキャッシュ", "\n".join(str(value) for value in values.values()))
 
     def test_session_user_drag_surface_spacing_and_trash_are_not_clipped(self):
-        self.assertIn('dragImage.className = "session-user-drag-image"', self.script)
+        editor = (ROOT / "static/session-user-editor.js").read_text(encoding="utf-8")
+        self.assertIn('dragImage.className = "session-user-drag-image"', editor)
         drag_image_rule = re.search(
             r"\.session-user-drag-image\s*\{([^}]*)\}", self.styles
         ).group(1)
         self.assertIn("background: transparent", drag_image_rule)
         self.assertIn("box-shadow: none", drag_image_rule)
-        spacing_rule = re.search(
-            r"\.session-user-form \+ \.message-surface\s*\{([^}]*)\}", self.styles
-        ).group(1)
-        self.assertIn("margin-top: 10px", spacing_rule)
-        trash_rule = re.search(
-            r"(?m)^\.session-user-trash\s*\{([^}]*)\}", self.styles
-        ).group(1)
-        self.assertRegex(trash_rule, r"bottom:\s*[1-9]\d*px")
-        self.assertRegex(trash_rule, r"right:\s*[1-9]\d*px")
+        slot = re.search(r"\.session-user-trash-slot\s*\{([^}]*)\}", self.styles).group(1)
+        self.assertIn("width: 52px", slot)
+        self.assertIn("height: 52px", slot)
+        self.assertGreaterEqual(52, 44 * 1.15)
+        self.assertIn("grid-template-rows: minmax(0, 1fr) 52px", self.styles)
+        self.assertIn('this.drag?.image?.remove()', editor)
 
     def test_audio_variants_are_persistent_and_expand_as_one_popup(self):
         player_frame = self.markup.index('id="player-frame"')
@@ -1188,8 +1186,10 @@ assert.equal(prevented, 2);
             self.styles,
         )
         self.assertEqual(len(session_empty), 1)
-        self.assertIn('class="request-session-user-notice session-user-empty" role="status"', self.script)
-        self.assertNotIn('class="queue-empty session-user-empty"', self.script)
+        editor = (ROOT / "static/session-user-editor.js").read_text(encoding="utf-8")
+        self.assertIn('empty.className = "request-session-user-notice session-user-empty"', editor)
+        self.assertIn('empty.setAttribute("role", "status")', editor)
+        self.assertNotIn('class="queue-empty session-user-empty"', editor)
         self.assertNotIn("background:", session_empty[0])
         self.assertNotIn("color:", session_empty[0])
         self.assertEqual(
