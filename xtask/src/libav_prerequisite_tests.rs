@@ -163,9 +163,17 @@ fn cache_rejects_corruption_target_schema_missing_and_unlisted_outputs() {
 #[test]
 fn cache_rejects_traversal_and_app_objects_even_with_a_manifest_entry() {
     for name in [
+        "",
         "../outside",
         "/absolute",
+        "\\rooted",
+        "\\\\server\\share\\file",
+        "//server/share/file",
+        "\\\\?\\C:\\device",
+        "\\\\.\\device",
         "C:/windows",
+        "C:relative",
+        "lib/header:stream",
         "lib\\escape",
         "lib/../outside",
         "driver/tests",
@@ -179,7 +187,10 @@ fn cache_rejects_traversal_and_app_objects_even_with_a_manifest_entry() {
         data["entries"][name] = json!({"kind":"file","sha256":"made-up","size":1,"mode":420});
         files::write_json(&root.join("cache-manifest.json"), &data).unwrap();
         assert!(
-            cache::validated(root, "selected-key", "x86_64-unknown-linux-gnu").is_err(),
+            cache::validated(root, "selected-key", "x86_64-unknown-linux-gnu")
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid libav cache path"),
             "{name}"
         );
     }

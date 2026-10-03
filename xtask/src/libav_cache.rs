@@ -262,13 +262,16 @@ fn excluded(relative: &Path) -> bool {
                 || name == "msvc-version.txt"
         })
 }
-fn relative(path: &Path) -> Result<()> {
-    if path.as_os_str().is_empty()
+// Manifest keys are untrusted portable strings. Never normalize a backslash
+// or a drive/stream prefix into a valid key, including on Windows.
+fn manifest_key(name: &str) -> Result<()> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || name.contains(['\\', ':'])
         || path.is_absolute()
         || path
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
-        || path.to_str().is_none_or(|name| name.contains(['\\', ':']))
         || !path
             .components()
             .next()
@@ -278,6 +281,63 @@ fn relative(path: &Path) -> Result<()> {
         return Err("Invalid libav cache path".into());
     }
     Ok(())
+}
+
+// DirEntry paths use the executing OS's separators. Encode components only
+// after rejecting non-relative syntax; a POSIX literal backslash stays invalid.
+fn native_key(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for part in path.components() {
+        let Component::Normal(part) = part else {
+            return Err("Invalid libav cache path".into());
+        };
+        let part = part.to_str().ok_or("Invalid UTF-8 cache filename")?;
+        if part.contains(['\\', ':']) {
+            return Err("Invalid libav cache path".into());
+        }
+        parts.push(part);
+    }
+    let key = parts.join("/");
+    manifest_key(&key)?;
+    Ok(key)
+}
+
+fn manifest_link(target: &str) -> Result<()> {
+    let path = Path::new(target);
+    if target.is_empty()
+        || target.contains(['\\', ':'])
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+    {
+        return Err("Unsafe libav cache link".into());
+    }
+    Ok(())
+}
+
+fn native_link(path: &Path) -> Result<String> {
+    for part in path.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir => {
+                return Err("Unsafe libav cache link".into());
+            }
+            Component::Normal(name)
+                if name.to_str().is_none_or(|name| name.contains(['\\', ':'])) =>
+            {
+                return Err("Unsafe libav cache link".into());
+            }
+            _ => {}
+        }
+    }
+    // Retain '.'/'..' and the existing link text on POSIX. Containment and the
+    // allowed/excluded destination are checked against the resolved native path.
+    let target = path
+        .to_str()
+        .ok_or("Invalid link target")?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    manifest_link(&target)?;
+    Ok(target)
 }
 fn mode(metadata: &fs::Metadata) -> u32 {
     #[cfg(unix)]
@@ -330,25 +390,18 @@ pub(crate) fn inventory(root: &Path, filter: bool) -> Result<BTreeMap<String, Va
             {
                 continue;
             }
-            super::libav_cache::relative(relative)?;
-            let name = relative
-                .to_str()
-                .ok_or("Invalid UTF-8 cache filename")?
-                .replace(std::path::MAIN_SEPARATOR, "/");
+            let name = native_key(relative)?;
             let metadata = fs::symlink_metadata(&full)?;
             let value = if metadata.file_type().is_symlink() {
                 let link = fs::read_link(&full)?;
-                if link.is_absolute() || link.to_str().is_none_or(|name| name.contains(['\\', ':']))
-                {
-                    return Err("Unsafe libav cache link".into());
-                }
+                let link = native_link(&link)?;
                 let resolved = full.canonicalize()?;
                 if !resolved.starts_with(root.canonicalize()?) {
                     return Err("Unsafe libav cache link".into());
                 }
                 let target = resolved.strip_prefix(root.canonicalize()?)?.to_owned();
-                super::libav_cache::relative(&target)?;
-                json!({"kind":"link","target":link.to_str().ok_or("Invalid link target")?})
+                native_key(&target)?;
+                json!({"kind":"link","target":link})
             } else if metadata.is_dir() {
                 let value = json!({"kind":"directory","mode":mode(&metadata)});
                 visit(root, &full, filter, entries)?;
@@ -373,6 +426,7 @@ fn copy_entries(
     entries: &BTreeMap<String, Value>,
 ) -> Result<()> {
     for (name, entry) in entries {
+        manifest_key(name)?;
         let from = source.join(name);
         let to = destination.join(name);
         let parent = to.parent().ok_or("Missing cache parent")?;
@@ -396,6 +450,10 @@ fn copy_entries(
                 )?;
             }
             Some("link") => {
+                let target = entry["target"]
+                    .as_str()
+                    .ok_or("Invalid cache link target")?;
+                manifest_link(target)?;
                 if to.exists() || to.is_symlink() {
                     if !to.is_symlink() {
                         return Err("Cache link would replace a real output".into());
@@ -403,12 +461,7 @@ fn copy_entries(
                     fs::remove_file(&to)?;
                 }
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(
-                    entry["target"]
-                        .as_str()
-                        .ok_or("Invalid cache link target")?,
-                    &to,
-                )?;
+                std::os::unix::fs::symlink(target, &to)?;
                 #[cfg(not(unix))]
                 return Err("Windows upstream cache does not accept symlinks".into());
             }
@@ -463,8 +516,15 @@ pub(crate) fn validated(
         return Err("Libav cache target/toolchain/key mismatch".into());
     }
     let entries: BTreeMap<String, Value> = serde_json::from_value(manifest["entries"].clone())?;
-    for name in entries.keys() {
-        relative(Path::new(name))?;
+    for (name, entry) in &entries {
+        manifest_key(name)?;
+        if entry["kind"] == "link" {
+            manifest_link(
+                entry["target"]
+                    .as_str()
+                    .ok_or("Invalid cache link target")?,
+            )?;
+        }
     }
     if inventory(cache, false)? != entries {
         return Err("Invalid libav cache content, links or permissions".into());
@@ -559,4 +619,231 @@ pub fn restore(
         copy_entries(staging.path(), prefix, &entries)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn native_inventory_round_trip() {
+        let temp = tempfile::Builder::new()
+            .prefix("libav paths 中文 ")
+            .tempdir()
+            .unwrap();
+        let prefix = temp.path().join("prefix with spaces");
+        let cache = temp.path().join("cache");
+        let restored = temp.path().join("restored 中文");
+        let fixtures = [
+            (vec!["bin", "avcodec-63.dll"], "upstream library fixture"),
+            (vec!["include", "libavutil", "avutil.h"], "header"),
+            (
+                vec!["include", "libavformat", "internal", "header 中文.h"],
+                "nested header",
+            ),
+            (vec!["lib", "pkgconfig", "libavcodec.pc"], "configuration"),
+            (vec!["source", "ffmpeg-9.0.1.tar.xz"], "source fixture"),
+            (vec!["licenses", "COPYING.LGPLv2.1"], "license"),
+            (vec!["records", "signature.log"], "signature fixture"),
+        ];
+        for (parts, contents) in &fixtures {
+            let native: std::path::PathBuf = parts.iter().collect();
+            #[cfg(windows)]
+            assert!(native.to_str().unwrap().contains('\\'));
+            let file = prefix.join(native);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, contents).unwrap();
+        }
+        let resolved = prefix
+            .join("include")
+            .join("libavutil")
+            .join("avutil.h")
+            .canonicalize()
+            .unwrap();
+        // Resolved link destinations have the same native-path boundary (and
+        // Windows may add a verbatim prefix to both canonical absolute paths).
+        assert_eq!(
+            native_key(
+                resolved
+                    .strip_prefix(prefix.canonicalize().unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            "include/libavutil/avutil.h"
+        );
+        for name in [
+            "bin/bilikara_media_libav.dll",
+            "driver/runtime-tests",
+            "build-info.json",
+        ] {
+            let file = prefix.join(name);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "must not enter the C cache").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("pkgconfig/libavcodec.pc", prefix.join("lib/libavcodec.pc"))
+            .unwrap();
+        let entries = inventory(&prefix, true).unwrap();
+        let mut expected = vec![
+            "bin",
+            "bin/avcodec-63.dll",
+            "include",
+            "include/libavformat",
+            "include/libavformat/internal",
+            "include/libavformat/internal/header 中文.h",
+            "include/libavutil",
+            "include/libavutil/avutil.h",
+            "lib",
+            "lib/pkgconfig",
+            "lib/pkgconfig/libavcodec.pc",
+            "licenses",
+            "licenses/COPYING.LGPLv2.1",
+            "records",
+            "records/signature.log",
+            "source",
+            "source/ffmpeg-9.0.1.tar.xz",
+        ];
+        #[cfg(unix)]
+        expected.push("lib/libavcodec.pc");
+        expected.sort_unstable();
+        assert_eq!(
+            entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+        assert!(!entries.keys().any(|key| key.contains('\\')));
+        copy_entries(&prefix, &cache, &entries).unwrap();
+        let target = Platform::new(std::env::consts::OS, std::env::consts::ARCH)
+            .unwrap()
+            .target();
+        fs::write(
+            cache.join(MANIFEST),
+            serde_json::to_vec(
+                &json!({"schema_version":3,"key":"fixture-key","target":target,"entries":entries}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let checked = validated(&cache, "fixture-key", &target).unwrap();
+        assert_eq!(checked, entries);
+        copy_entries(&cache, &restored, &checked).unwrap();
+        assert_eq!(inventory(&restored, false).unwrap(), entries);
+        for (parts, contents) in fixtures {
+            let native: std::path::PathBuf = parts.iter().collect();
+            assert_eq!(
+                fs::read(restored.join(native)).unwrap(),
+                contents.as_bytes()
+            );
+        }
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_link(restored.join("lib/libavcodec.pc")).unwrap(),
+            Path::new("pkgconfig/libavcodec.pc")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn native_cache_directory_inventory_manifest_and_copy_round_trip() {
+        native_inventory_round_trip();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_cache_directory_inventory_manifest_and_copy_round_trip() {
+        // This executes real Windows PathBuf construction and DirEntry
+        // enumeration on the native CI runner, not a simulated Platform value.
+        native_inventory_round_trip();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_literal_backslash_and_stream_like_filenames_are_rejected() {
+        for name in ["header\\name.h", "header:stream.h"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir(dir.path().join("include")).unwrap();
+            fs::write(dir.path().join("include").join(name), "header").unwrap();
+            assert!(inventory(dir.path(), false).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn native_link_components_encode_without_relaxing_wire_targets() {
+        let native = Path::new("..")
+            .join("lib")
+            .join("pkgconfig")
+            .join("libavcodec.pc");
+        assert_eq!(
+            native_link(&native).unwrap(),
+            "../lib/pkgconfig/libavcodec.pc"
+        );
+        for target in [
+            "lib\\file",
+            "..\\lib\\file",
+            "/lib/file",
+            "\\rooted",
+            "//server/share",
+            "\\\\server\\share",
+            "C:relative",
+            "C:/absolute",
+            "lib/file:stream",
+            "\\\\?\\C:\\device",
+            "\\\\.\\device",
+        ] {
+            assert!(manifest_link(target).is_err(), "{target}");
+        }
+        for target in ["../lib/libavcodec.so.63", "./libavcodec.so.63"] {
+            // Parent/current components remain meaningful relative-link text;
+            // inventory separately enforces containment and payload exclusions.
+            assert!(manifest_link(target).is_ok());
+            assert_eq!(native_link(Path::new(target)).unwrap(), target);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_links_reject_escaping_excluded_and_backslash_targets() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("prefix");
+        for file in ["lib/pkgconfig/libavcodec.pc", "driver/runtime-tests"] {
+            let file = root.join(file);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "fixture").unwrap();
+        }
+        fs::write(dir.path().join("outside"), "outside").unwrap();
+        let link = root.join("lib/libavcodec.pc");
+        for target in [
+            "../../outside",
+            "../driver/runtime-tests",
+            "../include/header\\name.h",
+        ] {
+            if target.contains('\\') {
+                fs::create_dir_all(root.join("include")).unwrap();
+                fs::write(root.join("include/header\\name.h"), "fixture").unwrap();
+                assert!(native_link(Path::new(target)).is_err());
+            }
+            symlink(target, &link).unwrap();
+            assert!(inventory(&root, true).is_err(), "{target}");
+            fs::remove_file(&link).unwrap();
+        }
+        fs::remove_file(root.join("include/header\\name.h")).unwrap();
+        symlink("./pkgconfig/libavcodec.pc", &link).unwrap();
+        let entries = inventory(&root, true).unwrap();
+        assert_eq!(
+            entries["lib/libavcodec.pc"]["target"],
+            "./pkgconfig/libavcodec.pc"
+        );
+        let cache = dir.path().join("cache");
+        copy_entries(&root, &cache, &entries).unwrap();
+        let mut manifest = json!({"schema_version":3,"key":"fixture-key","target":"fixture-target","entries":entries});
+        fs::write(cache.join(MANIFEST), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(validated(&cache, "fixture-key", "fixture-target").is_ok());
+        manifest["entries"]["lib/libavcodec.pc"]["target"] = json!(".\\pkgconfig\\libavcodec.pc");
+        fs::write(cache.join(MANIFEST), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            validated(&cache, "fixture-key", "fixture-target")
+                .unwrap_err()
+                .to_string()
+                .contains("Unsafe libav cache link")
+        );
+    }
 }
