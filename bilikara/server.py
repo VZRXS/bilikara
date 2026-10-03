@@ -757,6 +757,17 @@ class AppContext:
         self.store.resort_playlist_by_cycle()
         self.cache_manager.sync_with_playlist()
 
+    def defer_current_item(self, body: dict) -> None:
+        self.store.defer_current_item(
+            body.get("item_id"),
+            expected_item_incarnation_id=body.get("expected_item_incarnation_id"),
+            expected_playback_generation=body.get("playback_generation"),
+            expected_playlist_item_ids=body.get("expected_playlist_item_ids"),
+            target_index=body.get("index"),
+            reset_av_delay=self.cache_manager.reset_offset_on_next,
+        )
+        self.cache_manager.sync_with_playlist()
+
     def move_to_next(self, item_id: str) -> None:
         self.store.move_to_next(item_id)
         self.cache_manager.sync_with_playlist()
@@ -2246,6 +2257,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(index, int):
                     raise ValueError("index 必须是整数")
                 CONTEXT.move_item_to_index(body["item_id"], index)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/playlist/defer-current":
+                self._require_id(body)
+                CONTEXT.defer_current_item(body)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/resort":

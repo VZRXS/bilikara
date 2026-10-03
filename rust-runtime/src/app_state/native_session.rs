@@ -535,6 +535,7 @@ impl AppState {
         if self.native_session.desktop {
             match &mut command {
                 AppStateRequest::AdvanceToNext { reset_av_delay, .. }
+                | AppStateRequest::DeferCurrentItem { reset_av_delay, .. }
                 | AppStateRequest::MoveToFront { reset_av_delay, .. }
                 | AppStateRequest::SetCurrentItem { reset_av_delay, .. } => {
                     *reset_av_delay = self.native_session.cache_policy.reset_offset_on_next

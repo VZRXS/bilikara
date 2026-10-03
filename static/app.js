@@ -251,6 +251,7 @@ const state = {
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
   dragItemId: "",
+  immediateDeferTransition: null,
   dragTargetId: "",
   dragTargetAfter: false,
   confirmIntent: null,
@@ -11529,7 +11530,10 @@ function syncPresentationPanelVisibility() {
   }
 }
 
+let currentQueueDefer = null;
+
 function renderQueueCurrent(currentItem) {
+  currentQueueDefer?.sync();
   if (!currentItem) {
     const signature = `empty|${state.language}`;
     if (signature === state.queueCurrentRenderSignature) {
@@ -12338,6 +12342,19 @@ function showSongTransitionOverlayForData(
 }
 
 function maybeShowSongTransitionOverlay(previousData, nextData, { force = false, generation = 0 } = {}) {
+  const defer = state.immediateDeferTransition;
+  if (defer
+    && previousData?.playback_generation === defer.playback_generation
+    && nextData?.playback_generation > defer.playback_generation
+    && nextData.current_item?.id === defer.expected_playlist_item_ids[0]
+    && nextData.playlist?.some(item => item.id === defer.item_id
+      && item.item_incarnation_id === defer.expected_item_incarnation_id)) {
+    // This explicit gesture starts B immediately, even if ordinary Next uses
+    // a countdown. Admission precedes the POST so an SSE-first response works.
+    state.immediateDeferTransition = null;
+    clearLocalAdvanceDelay({ resetInFlight: true });
+    return;
+  }
   if (!nextData) {
     return;
   }
@@ -21498,6 +21515,29 @@ function handleFullscreenChange() {
 
 document.addEventListener("fullscreenchange", handleFullscreenChange);
 document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+
+async function deferCurrentSong(payload) {
+  state.immediateDeferTransition = payload;
+  try {
+    return await apiPostStateSnapshot("/api/playlist/defer-current", payload);
+  } finally {
+    if (state.immediateDeferTransition === payload) state.immediateDeferTransition = null;
+  }
+}
+
+currentQueueDefer = window.BilikaraQueueDefer?.mount({
+  handle: elements.queueCurrentProgressBadge,
+  card: elements.queueCurrent,
+  list: elements.playlist,
+  getSnapshot: () => state.data,
+  submit: deferCurrentSong,
+  started: () => closeCacheAdvancedInfo(),
+  changed: () => { render(); setFormMessage(t("queue.deferred")); },
+  failed: error => {
+    render();
+    setFormMessage(error.code === "defer_current_conflict" ? t("queue.deferConflict") : error.message, true);
+  },
+});
 
 elements.playlist.addEventListener("dragstart", (event) => {
   const item = event.target.closest(".song-item");

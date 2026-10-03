@@ -538,6 +538,83 @@ function counts() {{
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
+    def test_deferred_item_returns_with_fresh_zero_time_media_not_its_old_playhead(self):
+        result = self.run_foundation("""
+const a = item();
+const b = item({ itemId: 'song-b', incarnation: 'i-b', artifactId: 'a-b' });
+installSnapshot(7, a);
+const first = reconcileHostPlaybackSession(a);
+first.session.readyCommitted = true;
+first.session.logicalPlayIntent = true;
+first.video.currentTime = 70;
+first.audio.currentTime = 70;
+installSnapshot(8, b);
+const second = reconcileHostPlaybackSession(b);
+installSnapshot(9, a);
+const replay = reconcileHostPlaybackSession(a);
+process.stdout.write(JSON.stringify({
+  retired: first.session.phase,
+  newVideo: replay.video !== first.video,
+  newAudio: replay.audio !== first.audio,
+  videoTime: Number(replay.video.currentTime || 0),
+  audioTime: Number(replay.audio.currentTime || 0),
+  restore: replay.session.playbackRestore,
+  playing: replay.session.logicalPlayIntent,
+  counts: counts(),
+}));
+""")
+        self.assertEqual(result, {
+            "retired": "retired", "newVideo": True, "newAudio": True,
+            "videoTime": 0, "audioTime": 0, "restore": None,
+            "playing": True, "counts": {"video": 1, "audio": 1},
+        })
+
+    def test_defer_gesture_skips_only_its_own_countdown_including_sse_first(self):
+        overlay = self.source_slice("function maybeShowSongTransitionOverlay", "function hasPendingSongTransitionOverlayForItem")
+        submit = self.source_slice("async function deferCurrentSong", "currentQueueDefer = window.BilikaraQueueDefer")
+        script = """
+const assert = require('node:assert/strict');
+const state = {};
+let clears = 0, holds = 0;
+function clearLocalAdvanceDelay() { clears++; }
+function currentItemIdFromData(data) { return data?.current_item?.id || ''; }
+function hasLocalAdvanceDelayOverlay() { return false; }
+function manualTransitionOverlaySeconds() { return 3; }
+function registerManualTransitionHold() { return ++holds; }
+const payload = {item_id:'a',expected_item_incarnation_id:'i-a',playback_generation:7,expected_playlist_item_ids:['b','c']};
+const before = {playback_generation:7,current_item:{id:'a'}};
+const after = {playback_generation:8,current_item:{id:'b'},playlist:[{id:'a',item_incarnation_id:'i-a'},{id:'c'}]};
+async function apiPostStateSnapshot(url, body) {
+  assert.equal(url, '/api/playlist/defer-current');
+  assert.equal(body, payload);
+  assert.equal(state.immediateDeferTransition, payload);
+  // SSE commits before the HTTP acknowledgement returns.
+  maybeShowSongTransitionOverlay(before, after);
+  return true;
+}
+""" + overlay + submit + """
+(async () => {
+  await deferCurrentSong(payload);
+  assert.equal(clears, 1); assert.equal(holds, 0);
+  assert.equal(state.immediateDeferTransition, null);
+  // Coalesced SSE can already contain B's ready-artifact generation.
+  state.immediateDeferTransition = payload;
+  maybeShowSongTransitionOverlay(before, {...after, playback_generation:9});
+  assert.equal(clears, 2); assert.equal(holds, 0);
+  // Normal Next still observes the configured countdown, even with a pending
+  // defer request, because A was NOT retained by that transition.
+  state.immediateDeferTransition = payload;
+  maybeShowSongTransitionOverlay(before, {...after, playlist:[{id:'c'}]});
+  assert.equal(clears, 2); assert.equal(holds, 1);
+  apiPostStateSnapshot = async () => { throw Error('fixture failure'); };
+  await assert.rejects(deferCurrentSong(payload));
+  assert.equal(state.immediateDeferTransition, null);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        completed = subprocess.run([self.node, "-"], input=script, capture_output=True,
+                                   text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_session_state_machine_owns_one_exact_pair(self):
         result = self.run_foundation(
             """

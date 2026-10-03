@@ -63,6 +63,34 @@ class RustAppStateStoreTest(unittest.TestCase):
             on_change=on_change,
         )
 
+    def test_defer_current_is_one_rust_commit_and_persists_the_original_request(self):
+        changes = []
+        store = self.store(on_change=lambda: changes.append(True))
+        store.add_session_user("Alice")
+        for item_id in ("a", "b", "c", "d"):
+            store.add_item(item(item_id), requester_name="Alice")
+        current = store.get_item("a")
+        payload = dict(
+            expected_item_incarnation_id=current.item_incarnation_id,
+            expected_playback_generation=store.playback_generation,
+            expected_playlist_item_ids=["b", "c", "d"],
+            target_index=1,
+        )
+        changes.clear()
+        self.assertTrue(store.defer_current_item("a", **payload))
+        after = store.authoritative_snapshot()
+        self.assertEqual(after["current_item"]["id"], "b")
+        self.assertEqual([row["id"] for row in after["playlist"]], ["c", "a", "d"])
+        self.assertEqual(changes, [True])
+        with self.assertRaises(PlaylistStoreCommandError) as raised:
+            store.defer_current_item("a", **payload)
+        self.assertEqual(raised.exception.kind, "defer_current_conflict")
+        self.assertEqual(store.authoritative_snapshot(), after)
+        self.assertEqual(changes, [True])
+        persisted = json.loads(store.backup_file.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["current_item"]["id"], "b")
+        self.assertEqual([row["id"] for row in persisted["playlist"]], ["c", "a", "d"])
+
     def test_existing_files_round_trip_through_one_rust_initialization(self):
         store = self.store()
         store.add_session_user("Alice")

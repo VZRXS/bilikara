@@ -709,6 +709,20 @@ class PlaylistStore:
     def resort_playlist_by_cycle(self) -> bool:
         return self._changed(self._request("resort_playlist_by_cycle"))
 
+    def defer_current_item(
+        self, item_id: str, *, expected_item_incarnation_id: str,
+        expected_playback_generation: int, expected_playlist_item_ids: list[str],
+        target_index: int, reset_av_delay: bool = False,
+    ) -> bool:
+        # Transport only: validation and the atomic transition belong to Rust.
+        return self._changed(self._request(
+            "defer_current_item", item_id=item_id,
+            expected_item_incarnation_id=expected_item_incarnation_id,
+            expected_playback_generation=expected_playback_generation,
+            expected_playlist_item_ids=expected_playlist_item_ids,
+            target_index=target_index, reset_av_delay=bool(reset_av_delay),
+        ))
+
     def move_to_front(self, item_id: str, *, reset_av_delay: bool = False) -> bool:
         return self._changed(
             self._request(

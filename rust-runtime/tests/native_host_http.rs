@@ -1054,30 +1054,64 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .unwrap()["data"]
             .clone()
     };
+    let before_defer = read_queue();
+    let defer = json!({
+        "item_id": before_defer["current_item"]["id"],
+        "expected_item_incarnation_id": before_defer["current_item"]["item_incarnation_id"],
+        "playback_generation": before_defer["playback_generation"],
+        "expected_playlist_item_ids": ["queue-1", "queue-2"], "index": 1,
+    });
+    // Experimental gesture is Host-only; the existing Remote operations below
+    // keep their unchanged permissions and behavior.
     assert_eq!(
-        post(
-            "/api/playlist/move-next",
-            json!({"item_id":"queue-2"}),
-            &remote_cookie
-        )
-        .status(),
-        200
+        post("/api/playlist/defer-current", defer.clone(), &remote_cookie).status(),
+        403
     );
+    let deferred = post("/api/playlist/defer-current", defer.clone(), &cookie);
+    assert_eq!(deferred.status(), 200);
+    let after_defer = deferred.json::<Value>().unwrap()["data"].clone();
+    assert_eq!(after_defer["current_item"]["id"], "queue-1");
+    assert_eq!(after_defer["playlist"][1]["id"], "queue-0");
+    assert_eq!(
+        post("/api/playlist/defer-current", defer, &cookie).status(),
+        409
+    );
+    let invalid = json!({
+        "item_id": "queue-1", "expected_item_incarnation_id": after_defer["current_item"]["item_incarnation_id"],
+        "playback_generation": after_defer["playback_generation"],
+        "expected_playlist_item_ids": ["queue-2", "queue-0"], "index": -1,
+    });
+    assert_eq!(
+        post("/api/playlist/defer-current", invalid, &cookie).status(),
+        400
+    );
+    // Keep exercising real Remote mutations, not a move of the already-first
+    // item or play-now on the song the deferral just made current.
     assert_eq!(read_queue()["playlist"][0]["id"], "queue-2");
     assert_eq!(
         post(
-            "/api/playlist/play-now",
-            json!({"item_id":"queue-1"}),
+            "/api/playlist/move-next",
+            json!({"item_id":"queue-0"}),
             &remote_cookie
         )
         .status(),
         200
     );
-    assert_eq!(read_queue()["current_item"]["id"], "queue-1");
+    assert_eq!(read_queue()["playlist"][0]["id"], "queue-0");
+    assert_eq!(
+        post(
+            "/api/playlist/play-now",
+            json!({"item_id":"queue-2"}),
+            &remote_cookie
+        )
+        .status(),
+        200
+    );
+    assert_eq!(read_queue()["current_item"]["id"], "queue-2");
     assert_eq!(
         post(
             "/api/playlist/remove",
-            json!({"item_id":"queue-2"}),
+            json!({"item_id":"queue-0"}),
             &remote_cookie
         )
         .status(),
@@ -1088,7 +1122,7 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["id"] == "queue-2")
+            .any(|v| v["id"] == "queue-0")
     );
     assert_eq!(
         post("/api/playlist/clear", json!({}), &remote_cookie).status(),

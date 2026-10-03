@@ -490,6 +490,18 @@ pub enum AppStateRequest {
         target_index: i64,
         now: f64,
     },
+    DeferCurrentItem {
+        schema_version: u32,
+        item_id: String,
+        expected_item_incarnation_id: String,
+        expected_playback_generation: u64,
+        expected_playlist_item_ids: Vec<String>,
+        // Index in the waiting queue AFTER its original head becomes current.
+        target_index: usize,
+        #[serde(default)]
+        reset_av_delay: bool,
+        now: f64,
+    },
     ResortPlaylistByCycle {
         schema_version: u32,
         now: f64,
@@ -744,6 +756,7 @@ impl AppStateRequest {
             | Self::MoveItem { schema_version, .. }
             | Self::MoveToNext { schema_version, .. }
             | Self::MoveItemToIndex { schema_version, .. }
+            | Self::DeferCurrentItem { schema_version, .. }
             | Self::ResortPlaylistByCycle { schema_version, .. }
             | Self::MoveToFront { schema_version, .. }
             | Self::SetCurrentItem { schema_version, .. }
@@ -801,6 +814,7 @@ impl AppStateRequest {
             | Self::MoveItem { now, .. }
             | Self::MoveToNext { now, .. }
             | Self::MoveItemToIndex { now, .. }
+            | Self::DeferCurrentItem { now, .. }
             | Self::ResortPlaylistByCycle { now, .. }
             | Self::MoveToFront { now, .. }
             | Self::SetCurrentItem { now, .. }
@@ -3003,6 +3017,59 @@ fn apply_mutation(
                 record_session_played(data, &item, now)?;
             }
             rebuild_playlist_order(data, None)?;
+            Ok(MutationResult::changed(mutation_value(true), true))
+        }
+        AppStateRequest::DeferCurrentItem {
+            item_id,
+            expected_item_incarnation_id,
+            expected_playback_generation,
+            expected_playlist_item_ids,
+            target_index,
+            reset_av_delay,
+            now,
+            ..
+        } => {
+            // Reject a stale drag as a whole. Progress-only revisions may advance
+            // during a gesture, so compare playback identity and queue order,
+            // not the global revision. Never compose this from Next + Add.
+            if expected_playback_generation != data.playback_generation
+                || !data.current_item.as_ref().is_some_and(|item| {
+                    item.id == item_id && item.item_incarnation_id == expected_item_incarnation_id
+                })
+                || !data
+                    .playlist
+                    .iter()
+                    .map(|item| &item.id)
+                    .eq(expected_playlist_item_ids.iter())
+            {
+                return Err(rejected(
+                    "defer_current_conflict",
+                    "playback or queue changed before the current song could be deferred",
+                ));
+            }
+            if data.playlist.is_empty() || target_index >= data.playlist.len() {
+                return Err(rejected(
+                    "invalid_defer_target",
+                    "deferring requires a next song and a valid waiting-queue position",
+                ));
+            }
+            let mut deferred = data.current_item.take().expect("validated current item");
+            // This is a suspended request, not a completed/removed request. End
+            // its playback segment without inflating the history request count.
+            mark_session_played_ended(data, &deferred.id, now);
+            let next = data.playlist.remove(0);
+            record_session_played(data, &next, now)?;
+            data.current_item = Some(next);
+            data.current_item_started = false;
+            data.player_settings.key_shift = 0;
+            if reset_av_delay {
+                reset_local_av_delay(data);
+            }
+            deferred.queue_slot_type = "manual".to_owned();
+            data.playlist.insert(target_index, deferred);
+            // Keep the user's explicit order, including all other manual slots.
+            // The normal fair-order rebuild on subsequent Next preserves A's
+            // manual position. Item/cache identities are deliberately unchanged.
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::MoveItem {
@@ -5719,6 +5786,153 @@ mod tests {
         }))
         .snapshot
         .expect("initialize snapshot")
+    }
+
+    #[test]
+    fn defer_current_preserves_every_item_and_explicit_position() {
+        for index in 0..3 {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            initial.current_item = Some(item("a", "BV-a", "Alice"));
+            initial.current_item_started = true;
+            initial.session_played = vec![played("a", "Alice")];
+            initial.playlist = vec![
+                item("b", "BV-b", "Bob"),
+                item("c", "BV-c", "Alice"),
+                item("d", "BV-d", "Bob"),
+            ];
+            initial.player_settings.key_shift = 3;
+            initial.player_settings.volume_percent = 150;
+            let before = initialize(&mut state, initial);
+            let original = before.current_item.as_ref().unwrap();
+            let command = AppStateRequest::DeferCurrentItem {
+                schema_version: 1,
+                item_id: original.id.clone(),
+                expected_item_incarnation_id: original.item_incarnation_id.clone(),
+                expected_playback_generation: before.playback_generation,
+                expected_playlist_item_ids: vec!["b".into(), "c".into(), "d".into()],
+                target_index: index,
+                reset_av_delay: true,
+                now: 20.0,
+            };
+            // Unrelated settings/progress revisions must not invalidate a drag.
+            success(state.execute(AppStateRequest::ApplyAvDelay {
+                schema_version: 1,
+                action: AvDelayCommand::Adjust { delta_ms: 150 },
+                now: 19.0,
+            }));
+            let after = success(state.execute(command.clone())).snapshot.unwrap();
+            assert_eq!(after.current_item.as_ref().unwrap().id, "b");
+            assert_eq!(after.current_item.as_ref().unwrap(), &before.playlist[0]);
+            let mut expected = vec!["c", "d"];
+            expected.insert(index, "a");
+            assert_eq!(
+                after
+                    .playlist
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let mut retained = original.clone();
+            retained.queue_slot_type = "manual".into();
+            assert_eq!(after.playlist[index], retained);
+            assert!(!after.current_item_started);
+            assert_eq!(after.playback_generation, before.playback_generation + 1);
+            assert_eq!(after.player_settings.key_shift, 0);
+            assert_eq!(after.player_settings.volume_percent, 100);
+            assert_eq!(after.player_settings.av_offset_ms, 0);
+            assert!(after.history.is_empty());
+            assert!(after.session_history.is_empty());
+            assert_eq!(after.session_played[0].ended_at, Some(20.0));
+            assert_eq!(after.session_played[1].item_id, "b");
+            let committed = state.data.clone();
+            assert_eq!(
+                failure(state.execute(command)).error.kind,
+                "defer_current_conflict"
+            );
+            assert_eq!(
+                state.data, committed,
+                "duplicate drop must not advance twice"
+            );
+            let mut snapshot = after;
+            for _ in 0..=index {
+                snapshot = success(state.execute(AppStateRequest::AdvanceToNext {
+                    schema_version: 1,
+                    expected_playback_generation: snapshot.playback_generation,
+                    reset_av_delay: false,
+                    now: 21.0,
+                }))
+                .snapshot
+                .unwrap();
+            }
+            assert_eq!(snapshot.current_item.as_ref().unwrap(), &retained);
+            assert!(!snapshot.current_item_started);
+            success(state.execute(AppStateRequest::MarkCurrentItemStarted {
+                schema_version: 1,
+                item_id: "a".into(),
+                now: 22.0,
+            }));
+            let ended = success(state.execute(AppStateRequest::AdvanceToNext {
+                schema_version: 1,
+                expected_playback_generation: snapshot.playback_generation,
+                reset_av_delay: false,
+                now: 23.0,
+            }))
+            .snapshot
+            .unwrap();
+            assert_eq!(ended.history.len(), 1);
+            assert_eq!(ended.history[0].request_count, 1);
+        }
+    }
+
+    #[test]
+    fn defer_current_rejects_stale_or_invalid_drops_without_any_mutation() {
+        for scenario in [
+            "current",
+            "incarnation",
+            "generation",
+            "order",
+            "target",
+            "empty",
+            "missing-current",
+        ] {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            initial.current_item =
+                (scenario != "missing-current").then(|| item("a", "BV-a", "Alice"));
+            initial.playlist = vec![item("b", "BV-b", "Bob"), item("c", "BV-c", "Alice")];
+            if scenario == "empty" {
+                initial.playlist.clear();
+            }
+            let before = initialize(&mut state, initial);
+            let command = AppStateRequest::DeferCurrentItem {
+                schema_version: 1,
+                item_id: if scenario == "current" { "wrong" } else { "a" }.into(),
+                expected_item_incarnation_id: if scenario == "incarnation" {
+                    "wrong".into()
+                } else {
+                    before
+                        .current_item
+                        .as_ref()
+                        .map(|item| item.item_incarnation_id.clone())
+                        .unwrap_or_default()
+                },
+                expected_playback_generation: before.playback_generation
+                    + u64::from(scenario == "generation"),
+                expected_playlist_item_ids: if scenario == "order" {
+                    vec!["c".into(), "b".into()]
+                } else {
+                    before.playlist.iter().map(|item| item.id.clone()).collect()
+                },
+                target_index: if scenario == "target" { 2 } else { 0 },
+                reset_av_delay: false,
+                now: 20.0,
+            };
+            let data = state.data.clone();
+            assert!(state.execute(command).error().is_some(), "{scenario}");
+            assert_eq!(state.data, data, "{scenario}");
+        }
     }
 
     #[test]
