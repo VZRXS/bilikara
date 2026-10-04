@@ -177,7 +177,7 @@ catalog/Gatcha I/O results and does not independently recompute AppState.
 `internet-remote-worker/` is a standalone signaling Worker. One opaque room is
 one SQLite-backed Durable Object with one Host and at most ten Remote signaling
 sockets. It stores only SHA-256 token hashes plus Worker-generated creation and
-expiry times. It has no Bilikara D1 binding and never receives search, queue,
+expiry times. It has no bilikara D1 binding and never receives search, queue,
 playback, media, or room-password data. WebSockets use the Hibernation API, and
 Worker Rate Limit bindings cover room creation and per-room socket admission.
 Current Hosts request an integer lifetime from one through twenty-four hours;
@@ -193,7 +193,7 @@ per minute across the room. Unauthenticated or incomplete peers are evicted
 after 20 seconds.
 
 This is an online password gate, not a PAKE. A leaked QR link alone does not
-authorize Bilikara commands, but it can consume signaling attempts; the Host can
+authorize bilikara commands, but it can consume signaling attempts; the Host can
 invalidate it immediately by rebuilding the room. A public room directory is
 intentionally excluded until a PAKE or equivalent low-entropy password protocol
 is available.

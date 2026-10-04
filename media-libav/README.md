@@ -5,28 +5,15 @@ the platform recipes; see [rebuild commands](REBUILD.md) and
 [current desktop builds](../docs/native-desktop.md). The replaced Python companion
 builder, comparison runner and fixture generator are retired. Node comparison
 uses the actual Rust driver and explicit same-build FFmpeg/ffprobe test oracles;
-ordinary product prefixes disable programs. The M1–M6 procedures/receipts below
-retain their historical boundaries, including the former source Host/CLI routes.
+ordinary product prefixes disable programs. Current native packages use
+`xtask verify-native-desktop` and contain neither a PyInstaller backend nor
+FFmpeg/ffprobe programs or private media test executables. The former frozen-package
+smoke engines and their Windows wrapper are retired. Source media-CLI routing,
+manifest validation and tool restoration remain supported separately; see
+[Source compatibility](../docs/source-compatibility.md).
 
-## M6 behavior at acceptance
-
-Supported provisioned packages now use libav first in normal Host/CacheRuntime
-operations: metadata, complete selected-track packet traversal, the accepted
-H.264/AAC MP4 copy/fast-start profile, and FLAC-in-MP4 to native FLAC. The one
-startup rollback is `BILIKARA_MEDIA_BACKEND=legacy`; unset or `default` selects
-libav first where provisioned. No smoke flag activates ordinary media routing.
-Unprovisioned targets retain their existing routes. Rust owns capability and
-error decisions; only explicit eligible Unsupported/Unavailable failures can
-use one operation-specific compatibility implementation. Profile timing/config
-limits that the retained writer cannot satisfy stay errors.
-
-The accepted Linux source-build prefix remains a local integration fixture, not
-a deployable package path. Windows x64 uses the actual packaged Python backend
-and restricted loader; Actions execution after push and manual playback remain
-pending separately from code review. See [M6 Windows integration](WINDOWS_PREVIEW.md).
-CLI remains packaged, with its own DownKyi timestamp and BBDown workflows.
-M7 CLI removal, other platforms/formats, full decode certification and historical
-Hi-Res acceptance are outside this closeout.
+The M1–M5 developer procedures below retain their original operation boundaries.
+They do not describe the current application layout or release acceptance.
 
 ## Historical M1–M5 developer entries
 

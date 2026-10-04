@@ -15,7 +15,8 @@ Python, Node or Deno. HTTP extraction and transfer remain Rust-owned.
 The complete upstream license texts are in `static/youtube-native-LICENSES.txt`,
 shipped with the desktop static assets and Android embedded assets. EJS source,
 provenance and checksums are in `rust-runtime/vendor/yt-dlp-ejs/`.
-See `docs/native-youtube.md` for scope and maintenance requirements.
+Supported input and playback limits are documented in `docs/quick-start.md`;
+build requirements are in `docs/native-desktop.md`.
 
 ## QR image generation
 
@@ -39,7 +40,7 @@ updater or desktop build tool.
 
 ## Browser verification
 
-[Playwright](https://github.com/microsoft/playwright) 1.55.1 (Apache-2.0) is a
+[Playwright](https://github.com/microsoft/playwright) 1.63.0 (Apache-2.0) is a
 Node test-only dependency for rendered browser regressions. Its separate browser
 installation is a test prerequisite; neither Playwright nor that browser is
 bundled in the desktop product.
@@ -85,7 +86,7 @@ It does not apply to third-party tools, platform content, downloaded media, cach
 
 - Project: FFmpeg, https://ffmpeg.org/
 - License: LGPL-2.1-or-later for the selected library build; see https://ffmpeg.org/legal.html
-- Native desktop bundles use FFmpeg 9.0.1 libraries and Bilikara's dynamically
+- Native desktop bundles use FFmpeg 9.0.1 libraries and bilikara's dynamically
   loaded companion. They do not ship or invoke the `ffmpeg` or `ffprobe` programs.
 - The native build disables programs and external-library autodetection, and
   does not enable GPL or nonfree components. The private dependency closure is

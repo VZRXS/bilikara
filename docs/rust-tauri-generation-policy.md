@@ -46,7 +46,7 @@ release baseline.
 
 Advance the pinned compiler only when at least one of these applies:
 
-- a major Bilikara release is being prepared;
+- a major bilikara release is being prepared;
 - a scheduled dependency-maintenance review is in progress;
 - a dependency requires a newer stable compiler;
 - a relevant compiler bug or security fix is needed;

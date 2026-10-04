@@ -275,18 +275,18 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertEqual(cache_plan["pending_order"], ["first", "active"])
         self.assertEqual(cache_plan["preempt_ids"], ["active"])
 
-    def test_phase1_capability_documentation_matches_backend_symbols(self):
+    def test_source_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)
         self.assertTrue(EXPECTED_PHASE1_CAPABILITIES.issubset(rust_backend._SYMBOLS))
 
         inventory_path = (
             Path(__file__).resolve().parent.parent
             / "docs"
-            / "history" / "rust-native-utility-inventory.md"
+            / "source-compatibility.md"
         )
         inventory = inventory_path.read_text(encoding="utf-8")
         capability_section = inventory.split(
-            "### Python capabilities and fallback conventions", 1
+            "## 保留的纯工具能力", 1
         )[1]
         documented_block = capability_section.split("```text", 1)[1].split("```", 1)[0]
         documented = {

@@ -3,7 +3,7 @@
 The desktop shell starts one `bilikara-desktop-host` process by default. The
 backend owns the Rust AppState and native HTTP/SSE/media services. No Python,
 Cargo, source checkout or preview environment variable is needed by an installed
-product. Python remains a dependency-preparation/test tool and the legacy source
+product. Python remains in supported Source/FFI development and its tests; the legacy source
 Host remains available for compatibility tests; neither is included in the native bundle.
 
 v0.8.0-preview.2 has been released with this architecture. Stabilization uses
@@ -206,7 +206,8 @@ so migrated library/companion wrappers remain usable without the application Run
 Replaced Python construction references and the native desktop package gate
 are retired, along with desktop construction and libav prerequisite test drivers.
 Media-operation and native business drivers now use Node and native artifacts;
-remaining legacy Host/FFI consumers are being retired while preserving coverage. Remaining Python verification and publication
+remaining Source Host/FFI consumers stay active until faithful replacements
+preserve their coverage. Remaining Python verification and publication
 entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
 Python requirements.
 
@@ -220,6 +221,8 @@ entries with the native launcher would change their supported behavior.
 Source HTTP/FFI, loader/result-validation and media-routing tests remain active
 Python consumers until their faithful replacements are covered. These are
 separate from desktop launch, construction and native package verification.
+The retained capability/failure contract is summarized in
+[Source compatibility](source-compatibility.md).
 The retired package gate is implemented independently in xtask. Native business
 regressions use `npm run test:native-host` and the test-only Node HTTP/startup
 transport, which performs no package inspection. It executes the current locked
@@ -258,6 +261,11 @@ its system prerequisites before this required gate. It checks authorization,
 eligibility, retries, duplicate guards, bounded Catalog contributions and late
 completion after reset/shutdown. Synthetic played records qualify these
 contracts, not media playback or foreign native window/signature behavior.
+
+Playwright is locked to 1.63.0 with its matching browsers. The older 1.55.1
+test client could hang Chromium AudioWorklet loading; upgrading the test client
+does not change the packaged WebView or Signalsmith assets. After a test-client
+upgrade, reinstall its browsers and run the affected native browser gates.
 
 `npm run test:native-transport` runs actual Host HTTP and Chromium/WebRTC with
 isolated data, verified local TLS and synthetic VP8 test media. It covers LAN/
@@ -327,6 +335,11 @@ declared inputs. `node media-libav/generate_fixtures.mjs` retains the synthetic
 fixture formats; `test:media-fixtures` requires `BILIKARA_TEST_MEDIA_PREFIX`.
 These Node drivers replace the Python media comparison/generator. The ordinary
 prepared product prefix still disables programs and ships no media CLI.
+
+`npm run test:native-users` exercises actual Host HTTP/SSE and two rendered
+Remotes, including synchronized rename, stale editing, batch deletion, mouse
+and touch dragging, and 700/1024/1440 desktop layouts. CI runs it after installing
+its test-only Chromium; it does not qualify physical display/window behavior.
 
 `npm run test:frontend` runs the current Node VM/command fixtures and frontend
 source contracts, including split-player synchronization, SSE ordering, export,
@@ -442,32 +455,6 @@ portrait failure expanded a 1280x720 stage's video element to about 1280x2276;
 the fixed element stays within the stage. Physical multi-display/WebView device
 acceptance remains separate from this browser regression.
 
-Fixture recording paints twelve changing frames over approximately 1.2 seconds
-and waits for the final recorder data before releasing its tracks. Each WebM
-must be nonempty and decode a frame at its expected intrinsic dimensions in a
-separate video element before entering the audience layout checks. The bounded
-preflight reports fixture dimensions, byte count and the decoder error directly;
-it never retries or skips the unchanged geometry assertions. This replaces the
-short single-frame recording that intermittently failed in Edge before any layout
-assertion. It adds no application dependency, bundled media or production change.
-
-Fixture follow-up validation (2026-10-02, Windows / Edge 154.0.4258.53):
-
-- `node --check tests/browser/presentation_video_geometry.cjs`: passed.
-- `node tests/browser/presentation_video_geometry.cjs`: ten consecutive complete
-  runs passed using the existing Playwright installation (`NODE_PATH` configured).
-- `python -m unittest tests.test_controller_frontend tests.test_presentation_tauri_source -v`:
-  27 passed.
-- `git diff --check`: passed.
-- Read-only, in-memory Node fault injection confirmed that empty WebM, corrupt
-  WebM and incorrect expected dimensions all fail explicitly before layout
-  assertions. A source comparison confirmed that all original geometry and
-  lifecycle assertions remain unchanged.
-
-This test/documentation-only follow-up changes no Python or Rust production
-logic. The full release gate, bundle builds and physical-display/device acceptance
-were not rerun; these checks do not establish a new application release result.
-
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
 FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
 aria2c uses the existing Rust preparation and managed-tool policy; macOS carries
@@ -508,6 +495,10 @@ A complete release-profile build from `work/…` can therefore have
 `development: false` and still correctly report a development version.
 
 ## Data and import
+
+For ordinary upgrades and platform-specific data preservation, see
+[the user upgrade guide](upgrading.md). Session startup, source-library usage and
+archived-session export are explained in [quick start and FAQ](quick-start.md).
 
 Default writable native roots are:
 
@@ -712,12 +703,12 @@ Use a full-package replacement for this Windows transition. The macOS first
 transition also needs native platform verification; full-package replacement
 is available there without changing existing native data.
 
-1. Close Bilikara's desktop windows and wait for its Host/updater to exit.
+1. Close bilikara's desktop windows and wait for its Host/updater to exit.
    Keep a backup of the complete old installation and all configured external
    data roots. If a previous attempt left `.previous-update-*` or
    `.incoming-update-*` directories, retain them until the recovered session
    has been checked; do not combine competing data copies.
-2. Download the complete package for the same OS and CPU architecture from
+2. Download the complete package for the same OS and architecture from
    [GitHub Releases](https://github.com/VZRXS/bilikara/releases), then extract
    it into a **new sibling directory**, keeping its packaged directory structure.
    Do not overlay immutable files onto the old installation.
@@ -964,6 +955,13 @@ playback compatibility checks.
 Rust owns input normalization; the public Remote transport extracts the same
 catalog identity. Both parsers run `tests/fixtures/youtube_inputs.json`.
 
+Native YouTube signature solving uses the pinned in-process QuickJS/EJS assets;
+the product launches no yt-dlp, Node or Python helper. Building the runtime
+requires libclang for rquickjs bindings (set `LIBCLANG_PATH` when it is not
+discoverable). Compatible independent H.264/AAC tracks use the existing media
+normalizer and player; input and service limitations are in the
+[quick guide](quick-start.md#youtube-可以怎样点歌).
+
 ### Queue ordering rules
 
 The current program is separate from the waiting queue. Queue ordering is owned
@@ -993,8 +991,10 @@ remove that singer's queued songs.
 
 Cycle counts use currently waiting cycle songs, not historical plays. A singer
 with no waiting songs can return after several empty rounds without accumulating
-an old turn count. Readding a deleted singer's name makes that singer's retained
-cycle songs eligible for rotation again. Changing seating rebuilds cycle slots
+an old turn count. Readding a deleted name creates a new stable identity: retained songs keep their
+old owner and do not silently join the new singer's rotation. Renaming preserves
+the identity, bound devices and queue ownership; existing request/history labels
+remain the names recorded at request time. Changing seating rebuilds cycle slots
 without releasing existing priority/manual markers.
 
 For example, with A singing and A1/A2/B1/B2 waiting, topping A2 and then default

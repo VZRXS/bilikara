@@ -23,7 +23,7 @@ this.remote_styles = readFileSync(path.join(path.join(ROOT, "static"), "remote.c
 this.script = readFileSync(path.join(path.join(ROOT, "static"), "app.js"), "utf8");
 this.remote_script = readFileSync(path.join(path.join(ROOT, "static"), "remote.js"), "utf8");
 this.translations = JSON.parse(readFileSync(path.join(path.join(ROOT, "static"), "i18n.json"), "utf8"));
-this.design = readFileSync(path.join(path.join(path.join(ROOT, "docs"), "history"), "host-shell-v0.8-design.txt"), "utf8");
+this.design = readFileSync(path.join(ROOT, "docs", "shared-host-ui.md"), "utf8");
 },
 async test_host_and_remote_share_one_theme_accent_palette() {
 let accent, palette, rule, selector, styles;
@@ -862,9 +862,9 @@ assert.ok(!contains("min-height: 118px", this.styles));
 cover = this.styles.match(new RegExp("\\.category-browser-card-name\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("font-size: clamp(18px, 13cqi, 34px)", cover));
 },
-async test_design_records_corrected_contract_and_scroll_owner_table() {
+async test_shared_ui_records_current_workspace_and_scroll_ownership() {
 let phrase;
-for (const phrase of iterableValues(["Queue and History are direct destinations", "Queue's Now Playing card", "independent fixed right-side tool rail", "same width at a fixed viewport", "width-and-height measured Stage modes", "one-line icon-plus-label global toolbar", "platform-specific integrated window chrome", "Scroll-owner table"])) {
+for (const phrase of iterableValues(["Queue and History", "Direct destinations", "Queue's Now Playing card", "independent fixed right-side tool rail", "same width at a fixed viewport", "width-and-height measured Stage modes", "one-line icon-plus-label controls", "platform-specific integrated window chrome", "workspace and scroll ownership"])) {
 assert.ok(contains(phrase, this.design));
 }
 }
@@ -910,4 +910,4 @@ test("HostBuildReviewRepairTest.test_service_ready_mark_matches_the_web_indicato
 test("HostBuildReviewRepairTest.test_latest_shell_review_uses_shared_tabs_controls_scrollbars_and_responsive_detail", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_latest_shell_review_uses_shared_tabs_controls_scrollbars_and_responsive_detail(); });
 test("HostBuildReviewRepairTest.test_scroll_regions_reserve_scrollbar_space_only_while_scrolling", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_scroll_regions_reserve_scrollbar_space_only_while_scrolling(); });
 test("HostBuildReviewRepairTest.test_request_grids_add_columns_before_cards_become_oversized", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_request_grids_add_columns_before_cards_become_oversized(); });
-test("HostBuildReviewRepairTest.test_design_records_corrected_contract_and_scroll_owner_table", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_design_records_corrected_contract_and_scroll_owner_table(); });
+test("HostBuildReviewRepairTest.test_shared_ui_records_current_workspace_and_scroll_ownership", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_shared_ui_records_current_workspace_and_scroll_ownership(); });

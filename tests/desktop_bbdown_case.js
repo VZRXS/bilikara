@@ -175,11 +175,19 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   for(const pid of windowPids)assert.ok((await running()).includes(pid),"Urgent retry must not preempt the other primary song");
   await mode("success");await retry();await ready();
   await okay("/api/cache-policy",{max_cache_items:1});await reaped(windowPids);
+  // Child reaping precedes the worker's cancellation event and its AppState
+  // projection. Await that terminal state before checking a rejected retry;
+  // otherwise normal downloading -> pending settlement races the assertion.
+  await until(async()=> (await okay("/api/state")).playlist[0].cache_status==="pending");
   const outside=(await okay("/api/state")).playlist[0];
+  assert.equal(outside.cache_status,"pending","Window shrink must finish cancelling the queued item");
+  assert.deepEqual(outside.cache_download_tracks,[]);
+  const outsideStarts=(await starts()).length;
   const outsideRetry=await api("/api/cache/retry",{item_id:outside.id,expected_item_incarnation_id:outside.item_incarnation_id,force:true});
   assert.equal(outsideRetry.status,409,"Force cannot bypass the automatic cache window");
   assert.equal((await okay("/api/state")).playlist[0].artifact_set_id,outside.artifact_set_id);
   assert.equal((await okay("/api/state")).playlist[0].cache_status,outside.cache_status);
+  assert.equal((await starts()).length,outsideStarts,"Rejected out-of-window retry must not start BBDown");
   await mode("success");await okay("/api/cache-policy",{max_cache_items:2});
   await until(async()=> (await okay("/api/state")).playlist[0].cache_status==="ready");
   const queued=(await okay("/api/state")).playlist[0];

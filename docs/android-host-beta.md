@@ -46,15 +46,13 @@ signed release. The technical bootstrap names `android-alpha.html` and
 
 Room lifetimes follow the shared 1–24-hour UI (default 12) and the expiration
 returned by the deployed signaling Worker. This work does not deploy a Worker.
-The earlier [catalog pagination patch](worker-patches/20260912-browse-pagination.patch)
-still needs applying if the online catalog Worker has not yet been updated.
+The catalog Worker must support the documented cursor-pagination contract.
 
 ## Deferred by the user
 
 General external-link integration, developer mode and diagnostic ZIP packages.
-Independent Android audience output is now implemented; see the
-[external-display guide](android-external-display.md). System WiFi/HDMI mirroring
-remains the fallback. Neither real hardware display latency nor long-session
+Independent Android audience output depends on a device exposing a separate
+presentation display; system WiFi/HDMI mirroring is a different capability. Neither real hardware display latency nor long-session
 reliability is claimed by desktop browser or emulator tests.
 
 ## APK workflow and signing
