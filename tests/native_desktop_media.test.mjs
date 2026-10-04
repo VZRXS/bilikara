@@ -7,6 +7,7 @@ import { root } from './desktop_construction_support.mjs';
 import { TransportFixture } from './native_transport_support.mjs';
 import { runDesktopBrowser } from './run_desktop_rust_host.mjs';
 import './shared_workspace_icon.test.mjs';
+import './shared_host_layout_browser.test.mjs';
 
 test('actual Host serves a working Signalsmith AudioWorklet under pinned Chromium', {
   skip: process.platform !== 'linux' && 'Linux browser gate; no foreign audio-device qualification',

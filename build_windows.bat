@@ -8,7 +8,7 @@ call npm ci
 if errorlevel 1 goto :error
 
 echo.
-echo Building Bilikara...
+echo Building bilikara...
 call npm run build
 if errorlevel 1 goto :error
 

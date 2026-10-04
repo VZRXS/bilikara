@@ -204,7 +204,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
     await page.locator("#diagnostic-copy-button").click();
     await page.waitForFunction(()=>!state.diagnosticsBusy);
     const markdown=await page.evaluate(()=>navigator.clipboard.readText());
-    assert.ok(markdown.includes("Bilikara Diagnostic Report"),"Shared copy .md must copy the real native diagnostic report");
+    assert.ok(markdown.includes("bilikara Diagnostic Report"),"Shared copy .md must copy the real native diagnostic report");
     await page.screenshot({path:path.join(directory,"portrait-settings.png")});
     await page.goBack();
     assert.equal(await page.locator("#android-my-page").isVisible(),true);

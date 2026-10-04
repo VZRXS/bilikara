@@ -286,11 +286,20 @@
       this.positionEditor(); input.focus({ preventScroll: true }); input.select();
     }
 
-    closeEditor() {
+    closeEditor({ restoreFocus = true } = {}) {
       const editor = this.editor;
       this.editor = null;
-      editor?.node.remove();
-      if (editor?.anchor.isConnected) editor.anchor.querySelector(".session-user-name")?.focus({ preventScroll: true });
+      if (!editor) return;
+      const node = editor.node;
+      node.classList.add("closing");
+      node.inert = true;
+      // A replacement editor may open before exit finishes. Keep this surface
+      // and its coordinates, without duplicate live field IDs or callbacks
+      // that could remove/focus the replacement.
+      editor.input.removeAttribute("id");
+      Promise.allSettled((node.getAnimations?.() || []).map(animation => animation.finished))
+        .then(() => node.remove());
+      if (restoreFocus && editor.anchor.isConnected) editor.anchor.querySelector(".session-user-name")?.focus({ preventScroll: true });
     }
 
     positionEditor() {
@@ -298,7 +307,8 @@
       const { node, anchor } = this.editor;
       const box = anchor.getBoundingClientRect();
       const bounds = this.list.getBoundingClientRect();
-      if (box.bottom < bounds.top || box.top > bounds.bottom || !anchor.isConnected) { if (!this.busy) this.closeEditor(); return; }
+      if (!anchor.isConnected || !anchor.getClientRects().length || !bounds.width || !bounds.height
+        || box.bottom < bounds.top || box.top > bounds.bottom) { if (!this.busy) this.closeEditor(); return; }
       const width = node.offsetWidth; const height = node.offsetHeight;
       node.style.left = `${Math.max(12, Math.min(innerWidth - width - 12, box.left))}px`;
       const below = innerHeight - box.bottom >= height + 20;

@@ -12085,6 +12085,11 @@ html .volume-adjust-popover::backdrop {
   padding: 20px;
   display: grid; gap: 12px;
   z-index: var(--host-layer-modal, 80);
+  animation: scale-from-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.session-user-rename-panel.closing {
+  pointer-events: none;
+  animation: scale-to-center-card 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 .session-user-rename-panel[popover]:not(:popover-open) { display: none; }
 .session-user-rename-panel input { width: 100%; min-width: 0; box-sizing: border-box; }
@@ -12100,4 +12105,5 @@ html .volume-adjust-popover::backdrop {
 }
 @media (prefers-reduced-motion: reduce) {
   .session-user-tools button { transition: none; }
+  .session-user-rename-panel, .session-user-rename-panel.closing { animation-duration: 1ms; }
 }

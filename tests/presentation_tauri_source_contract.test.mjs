@@ -176,7 +176,7 @@ assert.ok(!contains("host.set_fullscreen(true)", finalization));
 },
 async test_audience_output_is_frameless_and_fills_the_selected_monitor() {
 let placement;
-assert.ok(contains(".title(\"Bilikara Stage\")", this.presentation));
+assert.ok(contains(".title(\"bilikara Stage\")", this.presentation));
 assert.ok(contains(".decorations(false)", this.presentation));
 assert.ok(contains(".resizable(false)", this.presentation));
 placement = this.presentation.slice(sourceIndex(this.presentation, "fn place_controller_for_activation"), sourceIndex(this.presentation, "pub(crate) fn authorize_window"));

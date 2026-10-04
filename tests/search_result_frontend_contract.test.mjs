@@ -95,7 +95,7 @@ remote_html = readFileSync(path.join(path.join(ROOT, "static"), "remote.html"), 
 assert.deepEqual(countOccurrences(host_js, "renderOwnerBadgeLabel(owner, ownerName);"), 1);
 assert.deepEqual(countOccurrences(remote_js, "renderOwnerBadgeLabel(owner, ownerName);"), 1);
 for (const source of iterableValues([host_js, remote_js])) {
-assert.ok(contains("window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);", source));
+assert.ok(contains("window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName, state.followBrowseData?.owners);", source));
 assert.ok(contains("link.className = \"rating-link song-detail-bilibili-link\";", source));
 assert.ok(contains("link.textContent = t(\"search.openOnBilibili\");", source));
 }
@@ -886,3 +886,24 @@ test("SearchResultFrontendTest.test_detail_motion_matches_rating_and_playback_co
 test("SearchResultFrontendTest.test_song_detail_uses_x_close_and_retired_remote_modal_is_absent", async () => { const instance = Object.create(SearchResultFrontendTest); await instance.test_song_detail_uses_x_close_and_retired_remote_modal_is_absent(); });
 test("SearchResultFrontendTest.test_close_button_motion_is_platform_consistent", async () => { const instance = Object.create(SearchResultFrontendTest); await instance.test_close_button_motion_is_platform_consistent(); });
 test("SearchResultFrontendTest.test_mobile_remote_song_detail_close_is_svg_without_optical_correction", async () => { const instance = Object.create(SearchResultFrontendTest); await instance.test_mobile_remote_song_detail_close_is_svg_without_optical_correction(); });
+
+test('shared owner label renders cached identity without changing the item or accepting a mismatched owner', async () => {
+  const source = readFileSync(path.join(ROOT, 'static/song-detail.js'), 'utf8');
+  const helpers = source.slice(sourceIndex(source, 'function stringValue'), sourceIndex(source, 'function formatDuration'));
+  const result = await checked(process.execPath, ['-e', `
+    const document = {createElement: tag => ({tag, className:'', textContent:''})};
+    ${helpers}
+    const owners = [{uid:'671767',name:'VZRXS',avatar_url:'https://i1.hdslb.com/avatar.jpg'}];
+    function render(item) {
+      const before = JSON.stringify(item);
+      const label = {classList:{add(){}},replaceChildren(...children){this.children=children;}};
+      renderOwnerLabel(label,item,item.owner_name,owners);
+      return {tag:label.children[0].tag,src:label.children[0].src || '',text:label.children[0].textContent,name:label.children[1].textContent,unchanged:JSON.stringify(item)===before};
+    }
+    console.log(JSON.stringify([render({owner_name:'VZRXS',owner_mid:3145040}),render({owner_name:'Someone else',owner_mid:671767})]));
+  `], root);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    {tag:'img',src:'https://i1.hdslb.com/avatar.jpg',text:'',name:'VZRXS',unchanged:true},
+    {tag:'span',src:'',text:'UP',name:'Someone else',unchanged:true},
+  ]);
+});

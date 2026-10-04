@@ -26,3 +26,37 @@ test('failed ACK retries its head without applying a relative seek twice or send
   consume();consume();assert.equal(calls,2);assert.equal(applied,1);assert.equal(video.currentTime,7);
   resolveAck({ok:true});await microtaskTurn();assert.equal(state.playerControlAckInFlight.size,0);
 });
+
+for (const [action, timing, expected] of [
+  ['seek-relative', {delta_seconds: 7}, 27],
+  ['seek-absolute', {target_seconds: 12}, 12],
+]) test(`${action} remains at the FIFO head when the media pair cannot yet seek`, async () => {
+  const source = readFileSync(path.join(root, 'static/app.js'), 'utf8');
+  const start = source.indexOf('function applyRemotePlayerControl('), end = source.indexOf('function observedHostPlayerStatus(', start);
+  assert.ok(start >= 0 && end > start);
+  const state = {data: {playback_generation: 3}, hostPlaybackSession: {playbackGeneration: 3, readyCommitted: false},
+    lastAppliedPlayerControlSeq: 0, localShouldBePlaying: true};
+  const video = {currentTime: 0, duration: NaN, paused: true}, audio = {};
+  const seeks = [], acknowledgements = [];
+  const apply = runInNewContext(source.slice(start, end) + '; applyRemotePlayerControl;', {
+    state, elements: {playerFrame: {querySelector: selector => selector === 'video' ? video : audio}},
+    isCurrentHostPlaybackSession: session => session === state.hostPlaybackSession,
+    isTauriWebKitRuntime: () => false,
+    beginSplitPlayerSeek: (_video, _audio, options) => {
+      if (!state.hostPlaybackSession.readyCommitted) return false;
+      seeks.push(options.targetTime); video.currentTime = options.targetTime; return true;
+    },
+    apiPost: async (route, body) => { assert.equal(route, '/api/player/control-ack'); acknowledgements.push(body.seq); },
+  });
+  const command = {seq: 7, action, item_id: 'same-song', playback_generation: 3, ...timing};
+  const consume = () => apply(command, {id: 'same-song'}, 'local');
+  consume(); consume();
+  assert.equal(state.lastAppliedPlayerControlSeq, 0);
+  assert.deepEqual(seeks, []); assert.deepEqual(acknowledgements, []);
+  video.currentTime = 20; video.duration = 90; video.paused = false;
+  state.hostPlaybackSession.readyCommitted = true;
+  consume(); consume();
+  assert.deepEqual(seeks, [expected]); assert.equal(state.lastAppliedPlayerControlSeq, 7);
+  assert.deepEqual(acknowledgements, [7]);
+  await microtaskTurn();
+});

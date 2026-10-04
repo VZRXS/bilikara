@@ -581,7 +581,7 @@
   function mountScene(scene) {
     retireVideo();
     document.documentElement.dataset.theme = scene.theme;
-    document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
+    document.title = scene.title ? `${scene.title} · bilikara Stage` : "bilikara Stage";
     if (!scene.videoUrl) {
       showEmpty("controller.noSong");
       renderOverlay();

@@ -1,7 +1,7 @@
 [package]
 name = "bilikara"
 version = "0.8.0"
-description = "Bilikara Tauri MVP"
+description = "bilikara Tauri MVP"
 authors = ["VZRXS"]
 edition = "2024"
 rust-version = "1.88"

@@ -508,7 +508,7 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
         .unwrap_or_else(|| json!({}));
     let browser = browser_label(system.get("browser"));
     let mut lines = vec![
-        "# Bilikara Diagnostic Report".to_owned(),
+        "# bilikara Diagnostic Report".to_owned(),
         String::new(),
         format!("Generated: `{}`", text_field(system, "generated_at")),
         String::new(),

@@ -76,7 +76,7 @@ internal class PlaylistExport(private val request: ExportRequest, private val ro
         line(row.title, 72f, y, 18f, true, 616, 2)
         line(listOf(row.requester, row.owner, row.bvid, time(row.at)).filter { it.isNotEmpty() }.joinToString(" · "), 72f, y + 45, 12f, width = 616)
       }
-      line("Bilikara Android · github.com/VZRXS/bilikara", 32f, bitmap.height - 36f, 13f)
+      line("bilikara Android · github.com/VZRXS/bilikara", 32f, bitmap.height - 36f, 13f)
       check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "PNG encoding failed" }
     } finally { bitmap.recycle() }
   }

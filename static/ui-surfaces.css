@@ -100,6 +100,8 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .audio-variant-button-label.is-overflowing .audio-variant-button-text { animation: none; }
 }
 :root {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: var(--font-sans);
   --modal-surface-rgb: 255, 250, 244;
   --modal-card-bg: rgba(var(--modal-surface-rgb), 0.90);
   --modal-card-border: 1px solid var(--line);
@@ -229,7 +231,8 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Explicit form geometry avoids Safari's compact native select rendering. */
-:root :is(.confirm-source, .confirm-page-size, .history-export-source, .history-export-page-size) {
+:root :is(.confirm-source, .confirm-page-size, .history-export-source, .history-export-page-size,
+  .cache-quality-select) {
   appearance: none;
   -webkit-appearance: none;
   width: 100%;
@@ -244,7 +247,15 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   background-position: right 12px center;
   color: var(--ink);
   font-size: 16px;
+  font-weight: 400;
   line-height: normal;
+}
+:root .cache-quality-select { border-radius: 999px; }
+:root .session-user-rename-panel input {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 16px;
 }
 
 /* Native inputs retain keyboard/label semantics without text-field sizing or

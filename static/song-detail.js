@@ -98,9 +98,9 @@
     );
   }
 
-  function renderOwnerLabel(container, item, name) {
+  function renderOwnerLabel(container, item, name, owners = []) {
     container.classList.add("song-detail-owner");
-    const avatarUrl = normalizedAvatarUrl(item);
+    const avatarUrl = ownerAvatarFromCachedOwners(item, owners);
     const mark = document.createElement(avatarUrl ? "img" : "span");
     if (avatarUrl) {
       mark.className = "song-detail-owner-avatar";

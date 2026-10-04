@@ -7,7 +7,7 @@ const {resolveLayout} = require("../static/host-layout-preferences.js");
 
 function setup(native = true, orientationType = "portrait-primary", width = 412, client = null, platform = "android") {
   class Node {
-    constructor(id) { this.id=id; this.dataset={}; this.attrs={}; this.value="0"; this.style={setProperty(){}}; this.hidden=true; this.inert=false; this.listeners={}; this.children=[]; this.parentElement=null; this.classes=new Set();
+    constructor(id) { this.id=id; this.dataset={}; this.attrs={}; this.value="0"; this.style={setProperty(key,value){this[key]=String(value);},removeProperty(key){const value=this[key] || "";delete this[key];return value;}}; this.hidden=true; this.inert=false; this.listeners={}; this.children=[]; this.parentElement=null; this.classes=new Set();
       this.classList={toggle:(k,v)=>v?this.classes.add(k):this.classes.delete(k),remove:k=>this.classes.delete(k)}; }
     setAttribute(k,v) { this.attrs[k]=String(v); }
     removeAttribute(k) { delete this.attrs[k]; }
@@ -43,7 +43,7 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   requestTabs.children.push(random);
   const root={dataset:{nativeHost:native?"true":"false",hostPlatform:native?platform:"desktop"}};
   const state={activeHostWorkspace:"queue",requestSubview:"quick",cacheSettingsOpen:false};
-  const elements={leftColumn:get("stage"),hostWorkspaceRegion:get("workspace")};
+  const elements={leftColumn:get("stage"),hostWorkspaceRegion:get("workspace"),cachePanel:get("cache-panel")};
   const listeners={};
   const orientation={type:orientationType,addEventListener:(k,fn)=>{listeners.orientation=fn;}};
   const history={state:null,entries:[],replaceState(s){this.state=s;this.entries[this.entries.length-1]=s;},pushState(s){this.state=s;this.entries.push(s);}};
@@ -136,11 +136,14 @@ assert.equal(mobile.get("bbdown-status-row").parentElement.id,"cache-usage-side"
 assert.equal(mobile.get("bbdown-login-panel").parentElement.id,"host-account-settings");
 assert.equal(mobile.get("shared-request-tabs").parentElement.id,"request-header");
 assert.equal(mobile.get("presentation-settings").parentElement.id,"top-controls");
+Object.assign(mobile.elements.cachePanel.style,{position:"fixed",left:"120px",right:"auto",top:"64px","--fixture-token":"preserved"});
 mobile.window.innerWidth=412;
 mobile.orientation.type="portrait-primary"; mobile.listeners.orientation();
 assert.equal(mobile.dock.hidden,false);
 assert.equal(mobile.root.dataset.hostPage,"my");
 assert.equal(mobile.get("cache-settings").parentElement.id,"android-settings-slot");
+for(const property of ["position","left","right","top"]) assert.equal(mobile.elements.cachePanel.style[property],undefined,"Phone flow releases desktop popup geometry");
+assert.equal(mobile.elements.cachePanel.style["--fixture-token"],"preserved","Unrelated inline styles are retained");
 mobile.listeners.popstate({state:{hostLayout:{page:"request",requestView:"random",queueView:"history"}}});
 assert.equal(mobile.root.dataset.hostPage,"request");
 assert.equal(mobile.state.activeHostWorkspace,"random");

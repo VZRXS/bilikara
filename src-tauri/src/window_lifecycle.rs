@@ -1001,7 +1001,7 @@ pub(crate) async fn restart_application(
         // Locked Tauri 2.11.2 sets restart_on_exit, requests its restart
         // exit code, then runs App::run exit callbacks and Tauri cleanup
         // before the core relaunch. Its request-exit failure path performs
-        // the same cleanup/core relaunch directly. Bilikara cleanup has
+        // the same cleanup/core relaunch directly. bilikara cleanup has
         // completed above in either case.
         app.request_restart();
     })
@@ -1236,7 +1236,7 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                             let dialog = closing
                                 .dialog()
                                 .message(message)
-                                .title("Bilikara")
+                                .title("bilikara")
                                 .kind(MessageDialogKind::Warning)
                                 .buttons(MessageDialogButtons::OkCancelCustom(
                                     confirm.into(),

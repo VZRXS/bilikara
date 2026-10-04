@@ -393,7 +393,7 @@ fn schema_version() -> u32 {
 }
 
 fn default_user_agent() -> String {
-    "Mozilla/5.0 Bilikara Rust Runtime".to_owned()
+    "Mozilla/5.0 bilikara Rust Runtime".to_owned()
 }
 
 fn default_referer() -> String {

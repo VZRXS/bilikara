@@ -76,6 +76,8 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     assert.equal(await host.locator(".session-user-checkbox:visible").count(),0);
     await host.locator('#session-user-list .session-user-badge[data-name="Alice"] .session-user-name').click();
     await host.locator("#session-user-rename-input").fill("Aimer");
+    await host.locator('.session-user-rename-panel').evaluate(panel=>
+      Promise.allSettled(panel.getAnimations().map(animation=>animation.finished)));
     const actions=await host.locator('.session-user-rename-actions button').evaluateAll(buttons=>buttons.map(button=>{
       const style=getComputedStyle(button);
       return {height:button.getBoundingClientRect().height,font:style.fontSize,radius:style.borderRadius,background:style.backgroundColor};

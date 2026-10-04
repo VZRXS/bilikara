@@ -287,7 +287,7 @@ class DiagnosticArtifactTest(unittest.TestCase):
                 )
 
             self.assertIsNotNone(artifact)
-            self.assertIn("Bilikara Diagnostic Report", artifact.markdown)
+            self.assertIn("bilikara Diagnostic Report", artifact.markdown)
 
             with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
                 names = set(archive.namelist())

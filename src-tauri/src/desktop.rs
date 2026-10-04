@@ -89,7 +89,7 @@ pub(crate) fn run() {
                     application.append(&tauri::menu::MenuItem::with_id(
                         app,
                         "bilikara-quit",
-                        "Quit Bilikara",
+                        "Quit bilikara",
                         true,
                         Some("CmdOrCtrl+Q"),
                     )?)?;

@@ -540,7 +540,7 @@ def _build_markdown(
     logs: dict[str, str],
 ) -> str:
     lines = [
-        "# Bilikara Diagnostic Report",
+        "# bilikara Diagnostic Report",
         "",
         f"Generated: `{system.get('generated_at', '')}`",
         "",

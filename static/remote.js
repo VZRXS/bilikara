@@ -1889,7 +1889,8 @@ function renderRemoteIdentity() {
           : "remoteIdentity.registerSubmit",
     );
     elements.remoteIdentitySubmit.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
-    elements.remoteIdentitySubmit.toggleAttribute("aria-busy", state.remoteIdentitySaving);
+    if (state.remoteIdentitySaving) elements.remoteIdentitySubmit.setAttribute("aria-busy", "true");
+    else elements.remoteIdentitySubmit.removeAttribute("aria-busy");
   }
   if (elements.remoteIdentityInput) {
     elements.remoteIdentityInput.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
@@ -1975,12 +1976,21 @@ function openRemoteIdentityRename() {
 }
 
 function closeRemoteIdentityRename() {
-  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving || state.remoteIdentityModalMode !== "rename") {
     return;
   }
   state.remoteIdentityModalMode = "register";
   state.remoteIdentityError = "";
   renderRemoteIdentity();
+  const modal = elements.remoteIdentityModal;
+  const animations = modal?.querySelector(".remote-identity-card")?.getAnimations() || [];
+  Promise.allSettled(animations.map((animation) => animation.finished)).then(() => {
+    if (modal?.classList.contains("hidden") && state.remoteIdentity.registered
+      && state.remoteIdentityModalMode !== "rename" && !anotherRemoteModalIsOpen()
+      && (document.activeElement === document.body || modal.contains(document.activeElement))) {
+      elements.remoteIdentityRename?.focus({ preventScroll: true });
+    }
+  });
 }
 
 async function submitRemoteIdentity(event) {
@@ -2489,7 +2499,7 @@ function renderRatingPromptContent() {
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
-  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName, state.followBrowseData?.owners);
   copy.append(owner);
   if (url) {
     const link = document.createElement("a");
@@ -10225,6 +10235,16 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (remoteIdentityModalIsOpen()) {
+    if (event.key === "Tab") {
+      trapFocusWithin(elements.remoteIdentityModal, event, elements.remoteIdentityInput);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeRemoteIdentityRename();
+    }
+    return;
+  }
   if (elements.historyExportDialog?.open) {
     if (event.key === "Tab") {
       trapFocusWithin(elements.historyExportDialog, event, elements.historyExportClose);

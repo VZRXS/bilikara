@@ -4203,12 +4203,16 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
     // Resizing while editing must not hide/inert the active form. Keep the
     // shared tool drawer open for that focus owner; idle layouts still fold.
     state.hostWorkspaceOverlayOpen = typeof document !== "undefined"
-      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement));
+      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement)
+        || state.sessionUserEditor?.editor?.node.contains(document.activeElement));
   } else if (!narrowToolSheet) {
     state.hostWorkspaceOverlayOpen = false;
   }
   state.hostNarrowToolSheetActive = narrowToolSheet;
   const narrowToolSheetClosed = narrowToolSheet && !state.hostWorkspaceOverlayOpen;
+  if (activeWorkspace !== "users" || narrowToolSheetClosed) {
+    state.sessionUserEditor?.closeEditor({ restoreFocus: false });
+  }
   const workspaceTransition = state.hostWorkspaceTransition?.to === activeWorkspace
     ? state.hostWorkspaceTransition
     : null;
@@ -5951,7 +5955,7 @@ function renderRatingPromptContent() {
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
-  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName, state.followBrowseData?.owners);
   copy.append(owner);
   if (url) {
     const link = document.createElement("a");
@@ -14569,7 +14573,12 @@ function recoverAudioPitchOutput(audio, kind) {
     // A captured element cannot regain native output by disconnecting its source.
     // Use the existing session restore path when its context/clock is unusable.
     if (state.audioContext?.state === "closed") state.audioContext = null;
-    retireHostPlaybackSession(session, { preserveAdvanceDelayOverlay: true });
+    // Replace only the unusable media graph. Retiring its still-current native
+    // program would prevent the same owner from claiming the replacement pair.
+    retireHostPlaybackSession(session, {
+      preserveAdvanceDelayOverlay: true,
+      releaseProgramOwnership: false,
+    });
     renderPlayer(item, frontendPlaybackMode(state.data?.playback_mode));
   });
 }
@@ -15092,7 +15101,7 @@ function isCurrentHostPlaybackSession(session, video, audio) {
 
 function retireHostPlaybackSession(
   session,
-  { preserveAdvanceDelayOverlay = false } = {},
+  { preserveAdvanceDelayOverlay = false, releaseProgramOwnership = true } = {},
 ) {
   if (
     !session
@@ -15153,7 +15162,7 @@ function retireHostPlaybackSession(
   if (state.hostPlaybackSession === session) {
     state.hostPlaybackSession = null;
   }
-  acknowledgeRetiredHostPlaybackSession(session);
+  if (releaseProgramOwnership) acknowledgeRetiredHostPlaybackSession(session);
   return true;
 }
 
@@ -15960,7 +15969,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
               ? Math.min(nextTime, duration)
               : nextTime;
             if (audio) {
-              beginSplitPlayerSeek(video, audio, {
+              const started = beginSplitPlayerSeek(video, audio, {
                 resumeAfterSeek,
                 targetTime: clampedNextTime,
                 diagnosticAction: "manual-video-seek",
@@ -15970,6 +15979,10 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
                   }
                 },
               });
+              // A replacement pair may still be binding after an audio-track
+              // change. Leave this command at the native FIFO head until the
+              // pair can seek; an ACK here would discard an unapplied action.
+              if (started === false) return;
             } else {
               const session = state.hostPlaybackSession;
               if (session) {
