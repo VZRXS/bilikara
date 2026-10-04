@@ -139,6 +139,117 @@ mod tests {
     }
 
     #[test]
+    fn complete_prepare_matrix_has_independent_typed_and_wire_expectations() {
+        use ToolPrepareAction::{FetchInstallUpdate, UseInstalled, UseOverride};
+        for (override_exists, installed, force, metadata, action, label, probe) in [
+            (
+                false,
+                false,
+                false,
+                false,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                false,
+                false,
+                false,
+                true,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                false,
+                false,
+                true,
+                false,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                false,
+                false,
+                true,
+                true,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                false,
+                true,
+                false,
+                false,
+                UseInstalled,
+                "use_installed",
+                true,
+            ),
+            (
+                false,
+                true,
+                false,
+                true,
+                UseInstalled,
+                "use_installed",
+                false,
+            ),
+            (
+                false,
+                true,
+                true,
+                false,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                false,
+                true,
+                true,
+                true,
+                FetchInstallUpdate,
+                "fetch_install_update",
+                false,
+            ),
+            (
+                true,
+                false,
+                false,
+                false,
+                UseOverride,
+                "use_override",
+                false,
+            ),
+            (true, false, false, true, UseOverride, "use_override", false),
+            (true, false, true, false, UseOverride, "use_override", false),
+            (true, false, true, true, UseOverride, "use_override", false),
+            (true, true, false, false, UseOverride, "use_override", false),
+            (true, true, false, true, UseOverride, "use_override", false),
+            (true, true, true, false, UseOverride, "use_override", false),
+            (true, true, true, true, UseOverride, "use_override", false),
+        ] {
+            let expected = ToolPrepareDecision {
+                action,
+                probe_installed_version: probe,
+            };
+            assert_eq!(
+                decide_tool_prepare(facts(override_exists, installed, force, metadata)),
+                expected
+            );
+            let request = serde_json::json!({"schema_version":1,"override_exists":override_exists,
+                "installed_exists":installed,"force_refresh":force,"version_metadata_present":metadata});
+            let result = decide_tool_prepare_policy_json(&request.to_string()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&result).unwrap(),
+                serde_json::json!({"schema_version":1,"action":label,"probe_installed_version":probe})
+            );
+        }
+    }
+
+    #[test]
     fn wire_adapter_rejects_unknown_or_wrong_schema() {
         assert!(decide_tool_prepare_policy_json(
             r#"{"schema_version":1,"override_exists":false,"installed_exists":true,"force_refresh":false,"version_metadata_present":true}"#

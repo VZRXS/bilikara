@@ -581,4 +581,190 @@ mod tests {
             ReleaseSelection::Selected { selected_index: 0 }
         );
     }
+
+    #[test]
+    fn independent_release_selection_matrix() {
+        // Selection picks the best eligible input, even when no upgrade applies.
+        // The prerelease flag does not override the tag's channel semantics.
+        let cases = [
+            ("empty", "v0.7.0", false, vec![], None),
+            (
+                "drafts",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0", true, false), ("v0.9.0", true, false)],
+                None,
+            ),
+            (
+                "invalid",
+                "v0.7.0",
+                false,
+                vec![("invalid-tag", false, false), ("v1.x.y", false, false)],
+                None,
+            ),
+            (
+                "mixed",
+                "v0.7.0",
+                false,
+                vec![("invalid-tag", false, false), ("v0.8.0", false, false)],
+                Some(1),
+            ),
+            (
+                "stable",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0-preview.1", false, false), ("v0.8.0", false, false)],
+                Some(1),
+            ),
+            (
+                "preview",
+                "v0.7.0",
+                true,
+                vec![("v0.8.0", false, false), ("v0.9.0-preview.1", false, false)],
+                Some(1),
+            ),
+            (
+                "exclude preview",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0-preview.1", false, false)],
+                None,
+            ),
+            (
+                "newer current",
+                "v0.7.0",
+                false,
+                vec![("v0.6.0", false, false)],
+                Some(0),
+            ),
+            (
+                "equal current",
+                "v0.7.0",
+                false,
+                vec![("v0.7.0", false, false)],
+                Some(0),
+            ),
+            (
+                "older candidate",
+                "v0.7.0",
+                false,
+                vec![("v0.6.0", false, false)],
+                Some(0),
+            ),
+            (
+                "preview current",
+                "v0.8.0-preview.1",
+                false,
+                vec![("v0.8.0", false, false)],
+                Some(0),
+            ),
+            (
+                "duplicate",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0", false, false), ("v0.8.0", false, false)],
+                Some(0),
+            ),
+            (
+                "normalized tie",
+                "v0.7.0",
+                false,
+                vec![
+                    ("v0.8.0", false, false),
+                    ("v0.8.0", false, false),
+                    ("0.8.0", false, false),
+                ],
+                Some(0),
+            ),
+            (
+                "uppercase V",
+                "v0.7.0",
+                false,
+                vec![("V0.8.0", false, false)],
+                Some(0),
+            ),
+            (
+                "multiple stable",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0", false, false), ("v0.9.0", false, false)],
+                Some(1),
+            ),
+            (
+                "multiple preview",
+                "v0.7.0",
+                true,
+                vec![
+                    ("v0.8.0-preview.1", false, true),
+                    ("v0.8.0-preview.2", false, true),
+                ],
+                Some(1),
+            ),
+            (
+                "channels stable",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0", false, false), ("v0.9.0-preview.1", false, true)],
+                Some(0),
+            ),
+            (
+                "channels preview",
+                "v0.7.0",
+                true,
+                vec![("v0.8.0", false, false), ("v0.9.0-preview.1", false, true)],
+                Some(1),
+            ),
+            (
+                "shuffled",
+                "v0.7.0",
+                false,
+                vec![
+                    ("v0.9.0", false, false),
+                    ("v0.8.0", false, false),
+                    ("v1.0.0", false, false),
+                ],
+                Some(2),
+            ),
+            (
+                "tag channel",
+                "v0.7.0",
+                false,
+                vec![("v0.8.0", false, true)],
+                Some(0),
+            ),
+            (
+                "no match",
+                "v0.7.0",
+                false,
+                vec![("invalid", false, false)],
+                None,
+            ),
+        ];
+        for (name, current, preview, releases, expected) in cases {
+            let req = request(current, preview, releases);
+            let actual = match select_release(&req).unwrap() {
+                ReleaseSelection::Selected { selected_index } => Some(selected_index),
+                ReleaseSelection::NoMatch => None,
+            };
+            assert_eq!(actual, expected, "{name}");
+            let wire = serde_json::json!({"schema_version":1,"current_version":current,"include_preview":preview,
+                "releases":req.releases.iter().map(|release|serde_json::json!({"tag_name":release.tag_name,"draft":release.draft,"prerelease":release.prerelease})).collect::<Vec<_>>()});
+            let response: serde_json::Value =
+                serde_json::from_str(&select_release_json(&wire.to_string()).unwrap()).unwrap();
+            assert_eq!(
+                response["selected_index"],
+                serde_json::json!(expected),
+                "{name}"
+            );
+            assert_eq!(
+                response["status"],
+                if expected.is_some() {
+                    "selected"
+                } else {
+                    "no_match"
+                },
+                "{name}"
+            );
+        }
+    }
 }

@@ -44,8 +44,10 @@ on:
       - .github/workflows/internet-remote-sync.yml
       - scripts/sync_internet_remote_assets.ps1
       - static/**
-      - tests/test_internet_remote_frontend.py
-      - tests/test_internet_remote_deployment.py
+      - tests/internet_remote_frontend_contract.test.mjs
+      - tests/internet_remote_deployment.test.mjs
+      - tests/frontend_contract_support.mjs
+      - tests/desktop_construction_support.mjs
   workflow_dispatch:
 
 permissions:
@@ -65,18 +67,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
 
       - name: Validate shared Remote contract
-        run: python -m unittest tests.test_internet_remote_frontend tests.test_internet_remote_deployment -v
+        env:
+          BILIKARA_REQUIRE_REMOTE_SYNC_TEST: "1"
+        run: node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_deployment.test.mjs
 
       - name: Check browser scripts
         run: |

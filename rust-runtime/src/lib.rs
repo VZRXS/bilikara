@@ -5,6 +5,7 @@ mod artifact_service;
 mod bilibili_service;
 mod cache_application;
 mod cache_runtime;
+pub mod catalog_maintenance;
 mod cloudflare_service;
 mod desktop_login;
 mod diagnostics;

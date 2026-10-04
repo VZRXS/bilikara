@@ -2,10 +2,13 @@
 
 Current native prerequisites and cache use the independent Rust `xtask` through
 the platform recipes; see [rebuild commands](REBUILD.md) and
-[current desktop builds](../docs/native-desktop.md). `build.py` is a frozen test
-reference. The M1–M6 procedures/receipts below retain their historical boundaries.
+[current desktop builds](../docs/native-desktop.md). The replaced Python companion
+builder, comparison runner and fixture generator are retired. Node comparison
+uses the actual Rust driver and explicit same-build FFmpeg/ffprobe test oracles;
+ordinary product prefixes disable programs. The M1–M6 procedures/receipts below
+retain their historical boundaries, including the former source Host/CLI routes.
 
-## Current M6 behavior
+## M6 behavior at acceptance
 
 Supported provisioned packages now use libav first in normal Host/CacheRuntime
 operations: metadata, complete selected-track packet traversal, the accepted
@@ -64,7 +67,7 @@ shared-library build is installed in the separate prefix below. The previous
 M1_OUT="$PWD/.tmp/m1-libav-9"
 M1_PREFIX="$M1_OUT/ffmpeg-prefix"
 cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M1_PREFIX" --out "$M1_OUT/companion" --test
-python media-libav/generate_fixtures.py --prefix "$M1_PREFIX" \
+node media-libav/generate_fixtures.mjs --prefix "$M1_PREFIX" \
   --h264-source /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_video.mp4 \
   --out "$M1_OUT/fixtures"
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
@@ -72,7 +75,7 @@ cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metad
   "$M1_OUT/companion/libbilikara_media_libav.so" "$M1_OUT/fixtures/av.mp4"
 ```
 
-`build.py` uses only the explicit prefix, no pkg-config. It builds one C shared
+`xtask libav-companion` uses only the explicit prefix, no pkg-config. It builds one C shared
 companion with a private shim, outside every Cargo build graph. No new Cargo
 dependency or lockfile entry is needed: the Linux loader uses existing `libc`.
 The fixture generator creates a small PCM WAV, uses the same-build CLI for
@@ -271,7 +274,7 @@ Complete M1 file list (one modified, ten new):
   `rust-runtime/src/experimental_libav/tests.rs`,
   `rust-runtime/examples/libav_metadata.rs`.
 - New: `media-libav/probe.h`, `media-libav/probe.c`, `media-libav/build.py`,
-  `media-libav/generate_fixtures.py`, `media-libav/test_shim.c`,
+  `media-libav/generate_fixtures.mjs`, `media-libav/test_shim.c`,
   `media-libav/README.md`.
 
 Architecture: Rust runtime adapter owns explicit loading, request validation,

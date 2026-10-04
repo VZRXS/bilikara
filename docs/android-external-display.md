@@ -70,7 +70,7 @@ physical HDMI/WiFi audio/video latency. There is no new fixed AV compensation.
 ## Regression checks
 
 ```powershell
-python -m unittest tests.test_android_presentation tests.test_android_portrait tests.test_controller_frontend tests.test_presentation_host_frontend -v
+node --test tests/frontend_static_contract.test.mjs tests/frontend_command_contract.test.mjs tests/controller_frontend_contract.test.mjs tests/presentation_host_frontend_contract.test.mjs
 npm run android:build:debug
 ```
 

@@ -120,8 +120,7 @@ Build the driver once, then run the suite (no missing-artifact skips):
 
 ```bash
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
-python media-libav/test_comparison.py \
-  --driver /sunhonglin/bilikara/rust-runtime/target/debug/examples/libav_metadata \
+npm run test:media -- \
   --companion /sunhonglin/bilikara/.tmp/m1-libav-9/companion/libbilikara_media_libav.so \
   --prefix /sunhonglin/bilikara/.tmp/m1-libav-9/ffmpeg-prefix \
   --fixtures /sunhonglin/bilikara/.tmp/m1-libav-9/fixtures \
@@ -141,7 +140,7 @@ serialization/output; cumulative process time includes earlier report output.
 Pure Rust sample scanning is different work; no speedup target or memory/leak
 claim follows from these timings.
 
-The Python suite orchestrates the executable and asserts Rust decisions. It
+The Node suite orchestrates the current Cargo-selected executable and asserts Rust decisions. It
 also invokes the existing M1 AppState/default isolation test and the explicit
 Rust normalization-rejection test, verifies missing artifacts and active-child
 cancellation/reaping, and creates one synthetic tagged copy outside the repo

@@ -229,11 +229,20 @@ mod tests {
 
     #[test]
     fn maps_every_dash_quality_id_without_trimming() {
-        for quality in ALL_QUALITIES {
-            assert_eq!(
-                decide(quality.label(), "", None).dash_max_quality_id,
-                quality.dash_quality_id()
-            );
+        for (label, expected) in [
+            ("360P 流畅", 16),
+            ("480P 清晰", 32),
+            ("720P 高清", 64),
+            ("720P 60帧", 74),
+            ("1080P 高清", 80),
+            ("1080P 高码率", 112),
+            ("1080P 高帧率", 116),
+            ("4K 超清", 120),
+            ("HDR 真彩", 125),
+            ("杜比视界", 126),
+            ("8K 超高清", 127),
+        ] {
+            assert_eq!(decide(label, "", None).dash_max_quality_id, expected);
         }
         assert_eq!(decide(" 4K 超清 ", "", None).dash_max_quality_id, 80);
         assert_eq!(decide("", "", None).dash_max_quality_id, 80);
@@ -241,7 +250,16 @@ mod tests {
 
     #[test]
     fn choice_indices_and_boundaries_match_active_choices() {
-        for (index, quality) in ACTIVE_QUALITIES.iter().enumerate() {
+        for (index, quality) in [
+            VideoQuality::Q1080HighFrameRate,
+            VideoQuality::Q1080,
+            VideoQuality::Q720,
+            VideoQuality::Q480,
+            VideoQuality::Q360,
+        ]
+        .iter()
+        .enumerate()
+        {
             assert_eq!(
                 decide("", "", Some(index as i64)).indexed_quality,
                 Some(*quality)
@@ -294,6 +312,45 @@ mod tests {
             decide_quality_policy(&request),
             decide_quality_policy(&request)
         );
+    }
+
+    #[test]
+    fn independent_raw_quality_and_cap_matrix_preserves_full_decisions() {
+        use VideoQuality::{Q360, Q480, Q720, Q1080, Q1080HighFrameRate};
+        for (raw, normalized, optional, dash_id) in [
+            ("", Q1080HighFrameRate, None, 80),
+            ("invalid", Q1080HighFrameRate, None, 80),
+            (" 720P 高清 ", Q720, Some(Q720), 80),
+            ("4K 超清", Q1080HighFrameRate, None, 120),
+            ("歌曲", Q1080HighFrameRate, None, 80),
+        ] {
+            for (cap, optional_cap, capped_height) in [
+                ("", None, None),
+                ("720P 高清", Some(Q720), Some(720)),
+                (" 480P 清晰 ", Some(Q480), Some(480)),
+                ("invalid", None, None),
+            ] {
+                let (height, order) = match capped_height {
+                    Some(480) => (480, vec![Q480, Q360]),
+                    Some(720) => (720, vec![Q720, Q480, Q360]),
+                    None if normalized == Q720 => (720, vec![Q720, Q480, Q360]),
+                    None => (1080, vec![Q1080HighFrameRate, Q1080, Q720, Q480, Q360]),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    decide(raw, cap, None),
+                    QualityPolicyDecision {
+                        normalized_quality: normalized,
+                        optional_quality: optional,
+                        optional_cap,
+                        indexed_quality: None,
+                        dash_max_quality_id: dash_id,
+                        effective_max_height: height,
+                        bbdown_quality_order: order,
+                    }
+                );
+            }
+        }
     }
 
     #[test]

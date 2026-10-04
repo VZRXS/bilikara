@@ -103,6 +103,18 @@ def observe_cache_projection(manager, item_id, token, projection, *, artifact=No
 
 
 class CacheManagerOutputTest(unittest.TestCase):
+    def test_source_tool_prepare_rejects_malformed_native_response(self):
+        request = {"schema_version": 1, "override_exists": False, "installed_exists": True,
+                   "force_refresh": False, "version_metadata_present": True}
+        with patch.object(rust_backend, "_call_json_capability", return_value={"schema_version": 1}):
+            self.assertEqual(rust_backend.try_decide_tool_prepare_policy(request), (False, None))
+
+    def test_source_tool_prepare_fails_closed_when_native_is_unavailable(self):
+        request = {"schema_version": 1, "override_exists": False, "installed_exists": True,
+                   "force_refresh": False, "version_metadata_present": True}
+        with patch.object(rust_backend, "_rust_lib", None):
+            self.assertEqual(rust_backend.try_decide_tool_prepare_policy(request), (False, None))
+
     def test_prewarm_prepares_legacy_tools_without_overriding_runtime_status(self):
         manager = CacheManager.__new__(CacheManager)
         manager.lock = threading.RLock()
@@ -3768,6 +3780,13 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         self.cache_dir = root / "cache"
         self.cache_dir.mkdir()
         self.log_path = root / "downkyi.log"
+        # Real source-mode remux subprocesses need an owned working directory,
+        # even when the downloader worker is disabled and no BBDown is installed.
+        tool_dir = root / "tools"
+        tool_dir.mkdir()
+        tool_patch = patch("bilikara.cache.BB_DOWN_DIR", tool_dir)
+        tool_patch.start()
+        self.addCleanup(tool_patch.stop)
         self.store = PlaylistStore(root / "state.json", root / "backup.json")
         self.store.add_session_user("diagnostic-user")
 
@@ -6794,6 +6813,37 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
 
         self.assertFalse(CacheManager._is_terminal_track_failure(unknown))
         self.assertTrue(CacheManager._is_terminal_track_failure(authentication))
+
+
+class SourceLoginConsumerGuardTest(unittest.TestCase):
+    def test_source_consumer_hook_and_log_failure_do_not_undo_committed_login(self):
+        from login_service_fixture import LoginFixture
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = CacheManager.__new__(CacheManager)
+            manager.lock = threading.RLock()
+            manager.stop_event = threading.Event()
+            manager.log_dir = root / "logs"
+            hooks = []
+            def failed_hook():
+                hooks.append("refresh")
+                raise RuntimeError("synthetic follow-up failure")
+            manager.on_bbdown_login_success = failed_hook
+            rust_runtime.reset_bilibili_login_status()
+            try:
+                with patch("bilikara.cache.BB_DOWN_DIR", root), LoginFixture(), patch.object(manager, "_append_log_line", side_effect=OSError("synthetic log failure")):
+                    generation = rust_runtime.desktop_login("start", data_path=str(root / "BBDown.data"), force=False)["generation"]
+                    manager._bbdown_login_worker(generation)
+                    self.assertTrue(manager.bbdown_login_status()["logged_in"])
+                    self.assertTrue((root / "BBDown.data").exists())
+                    manager._bbdown_login_worker(generation)
+                self.assertEqual(hooks, ["refresh"])
+                with patch.object(rust_runtime, "_runtime_lib", None):
+                    with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                        manager.start_bbdown_login()
+            finally:
+                rust_runtime.desktop_login("logout", data_path=str(root / "BBDown.data"))
+                rust_runtime.reset_bilibili_login_status()
 
 
 if __name__ == "__main__":

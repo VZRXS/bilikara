@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from bilikara import rust_backend
+from bilikara.cache import CacheManager
 
 
 def request(mode="dash_streams", kind="video", streams=None):
@@ -16,6 +17,21 @@ def request(mode="dash_streams", kind="video", streams=None):
 
 
 class MediaDownloadCandidatePlanningBackendTest(unittest.TestCase):
+    def test_source_public_wrappers_fail_closed_without_reference_execution(self):
+        dash = {"audio": [{"url": " a ", "backup_urls": ["", "a"]}]}
+        preferred = {"url": " a ", "backup_urls": ["", "a"]}
+        with patch.object(rust_backend, "try_plan_media_download_candidates", return_value=(False, None)), patch.object(
+            rust_backend, "python_fallback", side_effect=AssertionError("unexpected reference execution")
+        ) as dash_fallback, patch.object(
+            rust_backend, "_strict_equivalence_result", side_effect=AssertionError("unexpected reference execution")
+        ) as preferred_fallback:
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._dash_stream_urls(dash, "audio")
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._preferred_audio_urls(preferred)
+            dash_fallback.assert_not_called()
+            preferred_fallback.assert_not_called()
+
     def _mock_response(self, response_json):
         class Library:
             @staticmethod

@@ -64,7 +64,7 @@ cargo test --manifest-path rust/Cargo.toml --locked announcement_policy
 cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host announcements
 node --check static/announcements.js
 node tests/announcements_browser.cjs
-python -m unittest discover -s tests -p test_copy_i18n.py -v
+node --test tests/copy_i18n_contract.test.mjs
 ```
 
 浏览器检查需要 Playwright/Chromium。测试使用离线样例和回环 HTTP，不发布测试通知、不请求线上公告或数据库。Android 返回键和包版本来源仍需 APK 实机验收。

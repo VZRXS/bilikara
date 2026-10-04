@@ -33,7 +33,7 @@ class ConfiguredRefreshFixture:
         self.stack.enter_context(patch.object(bilibili, "_default_gatcha_uids", return_value=self.uids))
         self.stack.enter_context(patch.object(shared_catalog, "_CLOUDFLARE_API_URL", f"http://127.0.0.1:{self.provider.server.server_port}"))
         # No production Python worker, repository, or indexing callback may run.
-        for name in ("refresh_gatcha_cache", "_append_catalog_entries_async", "_py_refresh_gatcha_cache"):
+        for name in ("refresh_gatcha_cache", "_append_catalog_entries_async"):
             self.stack.enter_context(patch.object(bilibili, name, side_effect=AssertionError("retired Python path: " + name)))
         self.write("uids", {"schema_version": 1 if self.legacy else 2, "uids": self.uids, "profiles": {}})
         self.write("cache", {"schema_version": 2 if self.legacy else 3, "uids": {}, "profiles": {}})

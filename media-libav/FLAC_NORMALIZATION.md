@@ -104,8 +104,7 @@ tags、私有输入路径、stderr 或凭证，也没有 file/diff/PCM hash ledg
 有限 live suite（继承 M1/M2/M3、原 MP4/extended HE-AAC 测试，复用 M5 lifecycle helper）：
 
 ```bash
-python media-libav/test_comparison.py \
-  --driver "$PWD/rust-runtime/target/debug/examples/libav_metadata" \
+npm run test:media -- \
   --companion "$M5_FLAC_OUT/companion/libbilikara_media_libav.so" \
   --prefix "$M5_FLAC_PREFIX" --fixtures "$PWD/.tmp/m1-libav-9/fixtures" \
   --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \

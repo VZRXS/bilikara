@@ -4,7 +4,7 @@ __pycache__/
 data/
 tools/*
 !tools/aria2/
-!tools/load_test_remote_sse.py
+!tools/load_test_remote_sse.mjs
 build/
 dist/
 .vscode/

@@ -248,12 +248,11 @@ pub(super) fn dispatch(
             let result = app.native_execute(AppStateRequest::AddItem {
                 schema_version: 1,
                 item: item.clone(),
-                position: if body["position"] == "next" {
-                    "next"
-                } else {
-                    "tail"
-                }
-                .into(),
+                position: body["position"]
+                    .as_str()
+                    .filter(|position| !position.is_empty())
+                    .unwrap_or("tail")
+                    .into(),
                 requester_name: requester,
                 reset_av_delay,
                 allow_repeat: body["allow_repeat"].as_bool().unwrap_or(false),

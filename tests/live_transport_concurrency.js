@@ -1,7 +1,7 @@
 "use strict";
 // Production closures are exposed for observation only; their algorithms are
 // loaded verbatim. SDP signaling is a local fixture; RTCPeerConnection, ordered
-// DataChannels, authentication, decoder, Host dispatch, HTTP and FFI are real.
+// DataChannels, authentication, decoder, native Host dispatch and HTTP are real.
 const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
@@ -15,9 +15,12 @@ async function check(name, operation) {
   catch (error) { checks.push({ name, passed: false, error: error.stack }); }
 }
 async function main() {
-  const browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
+  const browser = await chromium.launch({ executablePath, headless: true, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toLowerCase().includes('proxy'))), args: ["--no-sandbox", "--disable-background-networking"] });
   try {
     const context = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+    assert.ok(process.env.BILIKARA_TRANSPORT_BOOTSTRAP, 'actual Native Host bootstrap required');
+    const bootstrap = await context.request.get(process.env.BILIKARA_TRANSPORT_BOOTSTRAP);
+    assert.equal(bootstrap.status(), 200);
     await context.route("**/*", async (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== base) {
@@ -34,6 +37,19 @@ async function main() {
         read("index.html").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gu, "") });
       if (url.pathname === "/__fixture/remote") return route.fulfill({ contentType: "text/html", body:
         '<!doctype html><html><head><meta charset="utf-8"><title>Internet concurrency fixture</title><style>.hidden{display:none}body{font:18px sans-serif;padding:24px;background:#f4f7fa;color:#172536}pre{white-space:pre-wrap}</style></head><body><h1>Internet Remote · deterministic regression</h1><pre id="connection-evidence"></pre></body></html>' });
+      if (url.pathname === '/__fixture/media.webm') {
+        assert.ok(process.env.BILIKARA_TRANSPORT_MEDIA, 'test-owned synthetic media required');
+        let body = fs.readFileSync(process.env.BILIKARA_TRANSPORT_MEDIA), status = 200;
+        const headers = {'accept-ranges': 'bytes', 'content-type': 'video/webm'};
+        const range = route.request().headers().range;
+        if (range) {
+          const match = /^bytes=(\d+)-(\d*)$/u.exec(range); assert.ok(match);
+          const first = Number(match[1]), last = match[2] ? Number(match[2]) : body.length - 1;
+          assert.ok(first <= last && last < body.length);
+          headers['content-range'] = `bytes ${first}-${last}/${body.length}`; body = body.subarray(first, last + 1); status = 206;
+        }
+        return route.fulfill({status, headers, body});
+      }
       return route.continue();
     });
     const host = await context.newPage(), remote = await context.newPage();
@@ -79,9 +95,13 @@ async function main() {
     }
     await connect();
     const nativeFetch = async (route, body) => {
-      const response = await fetch(base + route, body === undefined ? {} : {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = body === undefined ? await context.request.get(base + route) : await context.request.post(base + route, {headers: {Origin: base}, data: body});
       return response.json();
+    };
+    const fixturePost = async route => {
+      assert.ok(process.env.BILIKARA_TRANSPORT_PROVIDER);
+      const response = await fetch(process.env.BILIKARA_TRANSPORT_PROVIDER + route, {method: 'POST', body: '{}', signal: AbortSignal.timeout(10000)});
+      assert.equal(response.status, 200); return response.json();
     };
     const send = (route, body) => remote.evaluate(async ({ route, body }) => (await fetch(route, {
       method: "POST", body: JSON.stringify(body) })).json(), { route, body });
@@ -91,7 +111,7 @@ async function main() {
     // A real seekable HTMLVideoElement; only unrelated playback/session plumbing
     // is fixture-owned. applyRemotePlayerControl and ACK are production source.
     await host.evaluate(({ initial, apply }) => {
-      document.body.insertAdjacentHTML("afterbegin", '<section id="concurrency-evidence" style="position:fixed;inset:0;z-index:999999;background:#f4f7fa;padding:32px;color:#172536"><h1>LAN / Internet concurrency baseline</h1><p>Real Chromium video + WebRTC DataChannels + desktop HTTP / Rust FFI</p><div id="fixture-player"><video controls preload="auto" width="640" src="/__fixture/media.webm"></video></div><pre id="fixture-result"></pre></section>');
+      document.body.insertAdjacentHTML("afterbegin", '<section id="concurrency-evidence" style="position:fixed;inset:0;z-index:999999;background:#f4f7fa;padding:32px;color:#172536"><h1>LAN / Internet concurrency baseline</h1><p>Real Chromium video + WebRTC DataChannels + native Host HTTP</p><div id="fixture-player"><video controls preload="auto" width="640" src="/__fixture/media.webm"></video></div><pre id="fixture-result"></pre></section>');
       const video = document.querySelector("#fixture-player video");
       const state = { data: initial, hostPlaybackSession: { playbackGeneration: initial.playback_generation }, lastAppliedPlayerControlSeq: 0, localShouldBePlaying: false };
       const elements = { playerFrame: document.querySelector("#fixture-player") };
@@ -170,24 +190,20 @@ async function main() {
       assert.equal(result.after, result.before); return result;
     });
     await check("bulk_delay_does_not_block_control_datachannel", async () => {
-      const entered = deferred(), release = deferred();
-      const pattern = "**/api/internet-remote/dispatch";
-      const handler = async (route) => {
-        const envelope = JSON.parse(route.request().postDataJSON().message);
-        if (envelope.kind !== "catalog.search") return route.fallback();
-        entered.resolve(); await release.promise;
-        await route.fulfill({ json: { ok: true, data: { request_id: envelope.id, sequence: envelope.seq,
-          accepted: true, stale: false, revision: 1, data: { items: [] } } } });
-      };
-      await host.route(pattern, handler);
+      await fixturePost('/__fixture/hold-search');
       let searchDone = false;
       const search = remote.evaluate(async () => (await fetch("/api/catalog/search?q=synthetic")).json()).then((r) => { searchDone = true; return r; });
-      await entered.promise;
       try {
+        const deadline = Date.now() + 8000;
+        while (!(await fixturePost('/__fixture/search-entered')).entered) {
+          assert.ok(Date.now() < deadline, 'actual catalog upstream did not reach barrier');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
         const response = await send("/api/player/key-shift", { key_shift: 2 });
         assert.equal(response.ok, true); assert.equal(searchDone, false);
-      } finally { release.resolve(); await search; await host.unroute(pattern, handler); }
-      return { controlCompletedBeforeBulkRelease: true, bulkMetadata: "local fixture" };
+      } finally { await fixturePost('/__fixture/release-search'); }
+      const response = await search; assert.equal(response.ok, true); assert.equal(response.data.items.length, 4);
+      return { controlCompletedBeforeBulkRelease: true, bulkMetadata: "actual Host/local HTTP upstream", items: 4 };
     });
     await check("internet_relative_av_delay_preserves_concurrent_lan_increment", async () => {
       await nativeFetch("/api/player/av-delay-action", { type: "set_effective", effective_delay_ms: 0 });
@@ -267,13 +283,15 @@ async function main() {
       assert.equal((await nativeFetch("/api/state")).data.player_settings.key_shift, -1);
       return { roomRebuilt: true, lanDuringClosedRoom: true, network: "loopback; fixture signaling" };
     });
-    await host.screenshot({ path: path.join(output, "host-consumption.png") });
+    await host.bringToFront();
+    await host.screenshot({ path: path.join(output, "host-consumption.png"), animations: 'disabled' });
     await remote.evaluate(() => { document.querySelector("#connection-evidence").textContent = JSON.stringify({
       connection: __remote.state.peer.connectionState, authenticated: __remote.state.authorized,
       identity: __remote.state.identity, control: __remote.state.control.label, bulk: __remote.state.bulk.label,
       pendingRequests: __remote.state.pending.size, signaling: "Local SDP fixture; no external STUN/TURN",
     }, null, 2); });
-    await remote.screenshot({ path: path.join(output, "remote-connection.png") });
+    await remote.bringToFront();
+    await remote.screenshot({ path: path.join(output, "remote-connection.png"), animations: 'disabled' });
     await check("browser_identity_render_and_console", async () => {
       assert.equal(await host.locator("#concurrency-evidence video").isVisible(), true);
       assert.equal(await remote.locator(".internet-remote-join-overlay").evaluate((e) => e.classList.contains("hidden")), true);

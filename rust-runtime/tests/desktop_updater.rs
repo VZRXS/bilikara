@@ -13,8 +13,124 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+fn desktop_process_job() -> windows_sys::Win32::Foundation::HANDLE {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::{JobObjects::*, Threading::*};
+
+    // Git Bash may place tests in a job that forbids breakaway. Production
+    // Hosts first create their own kill-on-close, breakaway-enabled inner job.
+    // Exercise that actual lifecycle rather than weakening the updater launcher.
+    static JOB: OnceLock<usize> = OnceLock::new();
+    let job = *JOB.get_or_init(|| {
+        // SAFETY: documented Win32 POD structures; one unnamed non-inheritable
+        // job is intentionally retained until process exit, exactly as the Host
+        // does. Closing it in a test thread would terminate the test process.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            assert!(!job.is_null(), "{}", std::io::Error::last_os_error());
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            assert_ne!(
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                ),
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            assert_ne!(
+                AssignProcessToJobObject(job, GetCurrentProcess()),
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            job as usize
+        }
+    });
+    job as windows_sys::Win32::Foundation::HANDLE
+}
+
+#[cfg(windows)]
+fn assert_updater_left_desktop_job(workspace: &std::path::Path) {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::{Diagnostics::ToolHelp::*, JobObjects::IsProcessInJob, Threading::*},
+    };
+    let expected = fs::canonicalize(workspace.join("bilikara-updater.exe")).unwrap();
+    let mut matches = Vec::new();
+    // SAFETY: read-only snapshot/query handles are closed before assertions.
+    // Identify only this fixture's exact compiled executable, never a log's
+    // version number or an unrelated updater with the same basename.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert_ne!(
+            snapshot,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of_val(&entry) as u32;
+        let mut found = Process32FirstW(snapshot, &mut entry);
+        while found != 0 {
+            let length = entry
+                .szExeFile
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            if String::from_utf16(&entry.szExeFile[..length])
+                .is_ok_and(|name| name.eq_ignore_ascii_case("bilikara-updater.exe"))
+            {
+                let process =
+                    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                if !process.is_null() {
+                    let mut image = vec![0_u16; 32768];
+                    let mut length = image.len() as u32;
+                    if QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length) != 0
+                    {
+                        let image =
+                            PathBuf::from(std::ffi::OsString::from_wide(&image[..length as usize]));
+                        if fs::canonicalize(image).ok().as_ref() == Some(&expected) {
+                            let mut in_job = 0;
+                            let queried =
+                                IsProcessInJob(process, desktop_process_job(), &mut in_job);
+                            matches.push((
+                                entry.th32ProcessID,
+                                queried,
+                                in_job,
+                                std::io::Error::last_os_error(),
+                            ));
+                        }
+                    }
+                    CloseHandle(process);
+                }
+            }
+            found = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+    }
+    assert_eq!(
+        matches.len(),
+        1,
+        "one actual updater for {}: {matches:?}",
+        expected.display()
+    );
+    for (_, queried, in_job, error) in matches {
+        assert_ne!(queried, 0, "{error}");
+        assert_eq!(in_job, 0, "updater must outlive the Host's job");
+    }
+}
+
 #[test]
 fn built_updater_replaces_after_owner_exit_and_keeps_its_result() {
+    #[cfg(windows)]
+    desktop_process_job();
     for handshake in [true, false] {
         for special_path in [false, true] {
             replace_and_report(handshake, special_path);
@@ -108,6 +224,8 @@ fn replace_and_report(handshake: bool, special_path: bool) {
             ],
         })
         .unwrap();
+        #[cfg(windows)]
+        assert_updater_left_desktop_job(&workspace);
         assert!(workspace.join("handoff-ready").is_file());
         assert!(workspace.join("handoff-ack").is_file());
         assert!(destination.join("old-only.txt").is_file());
@@ -211,6 +329,8 @@ fn replace_and_report(handshake: bool, special_path: bool) {
 
 #[test]
 fn built_updater_without_host_acknowledgement_never_replaces_files() {
+    #[cfg(windows)]
+    desktop_process_job();
     let root = std::env::temp_dir().join(format!("bilikara-updater-no-ack-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let workspace = root.join("update-abandoned");
@@ -270,6 +390,8 @@ fn built_updater_without_host_acknowledgement_never_replaces_files() {
 
 #[test]
 fn built_updater_startup_failures_leave_the_application_and_installation_running() {
+    #[cfg(windows)]
+    desktop_process_job();
     for case in [
         "invalid_plan",
         "missing_payload",
@@ -321,6 +443,14 @@ fn built_updater_startup_failures_leave_the_application_and_installation_running
         })
         .unwrap_err();
         assert_eq!(error.kind, "launch_failed", "{case}");
+        assert!(
+            error.message.contains(if case == "stale_ack" {
+                "stale updater handshake"
+            } else {
+                "updater startup failed:"
+            }),
+            "{case} must reach its declared failure boundary: {error:?}"
+        );
         assert_eq!(
             fs::read_to_string(destination.join("old.txt")).unwrap(),
             "keep"

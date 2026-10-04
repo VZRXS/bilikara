@@ -1,5 +1,10 @@
 # M6 default routing and Windows x64 package
 
+This is the historical M6 acceptance boundary. Released Preview 2 and current
+native products use the Rust Host and libav-only media operations; Python/CLI
+package expectations below do not describe current artifacts. See
+[current desktop builds and native gates](../docs/native-desktop.md).
+
 S1–S3, M1–M3 and M5 are accepted; this patch closes the implemented capability
 scope through M6 application/package integration. The inherited M6 work was
 uncommitted on `work/v0.8.0` after M5; the maintainer confirmed that status and

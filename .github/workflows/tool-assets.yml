@@ -32,6 +32,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -53,10 +58,10 @@ jobs:
           set -euo pipefail
           output_dir="$RUNNER_TEMP/bilikara-portable-aria2"
           metadata_file="$output_dir/aria2-macos-${TARGET_ARCH}.json"
-          asset_name="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])' "$metadata_file")"
-          asset_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
-          object_key="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["object_key"])' "$metadata_file")"
-          metadata_key="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["metadata_object_key"])' "$metadata_file")"
+          asset_name="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" name)"
+          asset_sha="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" sha256)"
+          object_key="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" object_key)"
+          metadata_key="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" metadata_object_key)"
           asset_path="$output_dir/$asset_name"
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
@@ -136,8 +141,8 @@ jobs:
           set -euo pipefail
           output_dir="$RUNNER_TEMP/bilikara-portable-aria2"
           metadata_file="$output_dir/aria2-macos-${TARGET_ARCH}.json"
-          asset_url="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["url"])' "$metadata_file")"
-          expected_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
+          asset_url="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" url)"
+          expected_sha="$(node scripts/tool_asset_metadata.mjs read "$metadata_file" sha256)"
           downloaded="$RUNNER_TEMP/aria2-public-roundtrip.tar.gz"
           extracted="$RUNNER_TEMP/aria2-public-roundtrip"
           curl --fail --location --retry 5 --retry-delay 2 --show-error --silent "$asset_url" --output "$downloaded"

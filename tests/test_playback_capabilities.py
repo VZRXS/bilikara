@@ -118,7 +118,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                     "selected_indices": [],
                     "automatic_video_index": None,
                 },
-                "python_patch": "bilikara.bilibili._py_decide_audio_binding",
+                "python_patch": "bilikara.rust_backend._strict_equivalence_result",
                 "invoke": lambda: decide_audio_binding(pages),
                 "expected": AudioBindingDecision("single", (0,), None),
             },
@@ -130,7 +130,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                     **quality_response,
                     "normalized_quality": "invented",
                 },
-                "python_patch": "bilikara.cache.CacheManager._py_optional_video_quality",
+                "python_patch": "bilikara.rust_backend._strict_equivalence_result",
                 "invoke": lambda: CacheManager._optional_video_quality("720P 高清"),
                 "expected": "720P 高清",
             },
@@ -139,7 +139,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                 "native_patch": "bilikara.cache.rust_backend.try_select_video_stream",
                 "native_response": video_response,
                 "invalid_response": {**video_response, "selected_index": 99},
-                "python_patch": "bilikara.cache.CacheManager._py_select_dash_video_stream",
+                "python_patch": "bilikara.rust_backend._strict_equivalence_result",
                 "invoke": lambda: CacheManager._select_dash_video_stream(
                     video_streams, max_quality_id=80
                 ),
@@ -150,7 +150,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                 "native_patch": "bilikara.cache.rust_backend.try_select_audio_stream",
                 "native_response": audio_response,
                 "invalid_response": {**audio_response, "selected_index": 99},
-                "python_patch": "bilikara.cache.CacheManager._py_select_dash_audio_stream",
+                "python_patch": "bilikara.rust_backend._strict_equivalence_result",
                 "invoke": lambda: CacheManager._select_dash_audio_stream(
                     audio_streams, audio_hires=True
                 ),
@@ -167,7 +167,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                     "selected_regular_index": 99,
                 },
                 "python_patch": (
-                    "bilikara.cache.CacheManager._py_select_preferred_dash_audio"
+                    "bilikara.rust_backend._strict_equivalence_result"
                 ),
                 "invoke": lambda: CacheManager._select_preferred_dash_audio(
                     regular_audio, None, None, audio_hires=True
@@ -190,7 +190,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
                         candidate_response["candidates"][1],
                     ],
                 },
-                "python_patch": "bilikara.cache.CacheManager._py_dash_stream_urls",
+                "python_patch": "bilikara.rust_backend._strict_equivalence_result",
                 "invoke": lambda: CacheManager._dash_stream_urls(
                     dash_streams, "video"
                 ),
@@ -223,7 +223,7 @@ class PlaybackCapabilityProductionTest(unittest.TestCase):
             native_call.assert_called_once()
             self.assertEqual(
                 native_call.call_args.kwargs,
-                {"allow_python_reference": False},
+                {} if case["capability"] == "decide_audio_binding" else {"allow_python_reference": False},
             )
 
     def test_unavailable_capability_fails_explicitly_without_fallback(self):

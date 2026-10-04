@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from bilikara import rust_backend
+from bilikara.cache import CacheManager
 
 
 def request(asset=None, bases=None, tool="bbdown"):
@@ -16,6 +17,17 @@ def request(asset=None, bases=None, tool="bbdown"):
 
 
 class ToolDownloadCandidatePlanningBackendTest(unittest.TestCase):
+    def test_source_public_wrapper_preserves_complete_legacy_fallback(self):
+        asset = {"name": "tool", "browser_download_url": "primary"}
+        with patch.object(rust_backend, "try_plan_tool_download_candidates", return_value=(False, None)), patch.object(
+            CacheManager, "_py_tool_download_candidates", wraps=CacheManager._py_tool_download_candidates
+        ) as fallback:
+            self.assertEqual(
+                CacheManager._plan_tool_download_candidates("bbdown", asset, "unused", ["mirror"]),
+                ["primary", "mirror/tool"],
+            )
+            fallback.assert_called_once()
+
     def _mock_response(self, response_json):
         class Library:
             @staticmethod

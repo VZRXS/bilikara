@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import struct
 import subprocess
@@ -277,49 +276,6 @@ assert candidates, [p.name for p in paths]
 assert any(p.samefile(expected) for p in candidates), candidates
 """, str(library)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_workflow_tests_three_latest_platforms_and_bundles_windows_macos_without_preview_input(self):
-        text = (ROOT / ".github/workflows/ci-bundle.yml").read_text(encoding="utf-8")
-        test_match = re.search(r"^        os: (.+)$", text, re.M)
-        bundle_match = re.search(r"^        include: (.+)$", text, re.M)
-        self.assertIsNotNone(test_match)
-        self.assertIsNotNone(bundle_match)
-        self.assertEqual(json.loads(test_match[1]), ["ubuntu-latest", "windows-latest", "macos-latest"])
-        bundles = json.loads(bundle_match[1])
-        self.assertEqual([entry["os"] for entry in bundles],
-                         ["windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"])
-        self.assertEqual({(e["slug"], e["arch"]) for e in bundles},
-                         {(os, arch) for os in ("windows", "macos") for arch in ("x64", "arm64")})
-        bundle_job = text.split("\n  bundle:\n", 1)[1].split("\n  android-bundle:\n", 1)[0]
-        self.assertNotIn("runner.os == 'Linux'", bundle_job)
-        self.assertNotIn("windows_libav_preview", text)
-        self.assertNotIn("BILIKARA_WINDOWS_LIBAV_PREVIEW", text)
-        self.assertEqual(text.count("if: startsWith(github.ref, 'refs/tags/v')"), 3)
-        self.assertIn("needs: [bundle, android-bundle]", text)
-        self.assertIn("Upload signed APK to GitHub Release", text)
-        for before, after in (("Setup native MSVC", "Build Windows libav"),
-                              ("Build Windows libav", "Prepare native driver"),
-                              ("Prepare native driver", "Build release backend from prepared dependencies"),
-                              ("Build POSIX libav", "Build release backend from prepared dependencies"),
-                              ("Build release backend from prepared dependencies", "Build Tauri App on Windows"),
-                              ("Build Tauri App on Windows", "Assemble release desktop"),
-                              ("Build Tauri App on macOS", "Assemble release desktop"),
-                              ("Assemble release desktop", "Archive Windows bundle"),
-                              ("Assemble release desktop", "Stage and verify macOS bundles"),
-                              ("Stage and verify macOS bundles", "Archive and verify round-trip macOS bundle"),
-                              ("Archive Windows bundle", "Verify extracted Windows bundle"),
-                              ("Verify extracted Windows bundle", "Upload native bundle")):
-            self.assertLess(text.index(before), text.index(after))
-        self.assertIn("Expand-Archive -Path $env:BUNDLE_ARCHIVE", text)
-        for build_only_operation in (
-            "--tool-smoke",
-            "& './libav-smoke.ps1'",
-            "BILIKARA_REQUIRE_BACKEND_SMOKE",
-            "BILIKARA_REQUIRE_TAURI_SMOKE",
-            "strip_build_only_validation_payload",
-        ):
-            self.assertNotIn(build_only_operation, bundle_job)
-        self.assertNotIn("Upload native libav diagnostics", text)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required for installed MSVC license collection")
     def test_msvc_license_collection_selects_product_and_requires_records(self):

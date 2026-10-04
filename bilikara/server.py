@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from monthly_gatcha_d1_refresh import start_monthly_refresh_in_background
+from .rust_runtime import start_monthly_refresh_in_background
 
 from . import rust_runtime
 from .bilibili import (

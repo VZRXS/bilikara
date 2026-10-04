@@ -15,9 +15,38 @@
     "dev:rust": "tauri dev",
     "build": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-desktop",
     "prepare:desktop": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop",
-    "test:desktop-build": "node --test tests/desktop_prepare_entry.test.mjs tests/bbdown_prepare_entry.test.mjs tests/native_package_entry.test.mjs tests/desktop_construction_contract.test.mjs"
+    "test:desktop-build": "node --test tests/desktop_prepare_entry.test.mjs tests/bbdown_prepare_entry.test.mjs tests/native_package_entry.test.mjs tests/desktop_construction_contract.test.mjs",
+    "test:libav-wrapper": "node --test tests/libav_xtask_wrapper.test.mjs tests/libav_prerequisite_entry.test.mjs",
+    "test:libav-prerequisites": "node --test tests/libav_prerequisite_contract.test.mjs",
+    "test:media-entry": "node --test tests/media_driver_entry.test.mjs",
+    "test:media-fixtures": "node --test tests/media_fixture_contract.test.mjs",
+    "test:media": "node media-libav/test_comparison.mjs",
+    "test:native-host": "node --test tests/native_host_business.test.mjs tests/native_host_sources.test.mjs tests/native_host_recheck.test.mjs",
+    "test:native-host-entry": "node --test tests/native_host_entry.test.mjs",
+    "test:playlist-stress": "node tests/run_playlist_stress.mjs",
+    "test:playlist-entry": "node --test tests/native_playlist_entry.test.mjs",
+    "test:native-http": "node --test tests/native_host_http.test.mjs",
+    "test:native-catalog": "node --test tests/native_catalog.test.mjs",
+    "catalog:refresh": "cargo run --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --bin bilikara-catalog-refresh --",
+    "test:catalog-maintenance": "node --test tests/catalog_maintenance.test.mjs",
+    "test:native-qr": "node --test tests/internet_qr_boundary.test.mjs",
+    "test:native-images": "node --test tests/native_images.test.mjs",
+    "test:native-login": "node --test tests/desktop_login_native.test.mjs",
+    "test:native-ratings": "node --test tests/native_ratings_browser.test.mjs",
+    "test:native-transport": "node --test tests/native_transport.test.mjs tests/native_transport_browser.test.mjs",
+    "test:native-transport-entry": "node --test tests/native_transport_entry.test.mjs",
+    "test:native-media": "node --test tests/native_desktop_media.test.mjs",
+    "test:native-media-entry": "node --test tests/native_desktop_media_entry.test.mjs",
+    "test:native-shared": "node tests/run_desktop_rust_host.mjs",
+    "test:native-launcher": "node --test tests/desktop_launcher.test.mjs",
+    "test:native-smoke": "node tests/run_native_smoke.mjs",
+    "test:remote-load": "node --test tests/remote_sse_load.test.mjs",
+    "test:frontend": "node --test tests/frontend_tests.test.mjs",
+    "test:auxiliary": "node --test tests/signalsmith_vendor.test.mjs tests/tool_asset_metadata.test.mjs tests/tool_asset_workflows.test.mjs",
+    "test:remote-sync": "node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_deployment.test.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2"
+    "@tauri-apps/cli": "^2.11.2",
+    "playwright": "1.55.1"
   }
 }

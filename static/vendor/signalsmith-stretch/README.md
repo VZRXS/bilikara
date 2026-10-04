@@ -7,7 +7,7 @@ MIT; see `LICENSE.txt`. `SignalsmithStretch.js` is the upstream
 both Host static servers use their existing JavaScript MIME mapping.
 
 To reproduce, download that revision's `web/release/SignalsmithStretch.mjs`
-and run `python scripts/vendor_signalsmith.py /path/to/SignalsmithStretch.mjs`.
+and run `node scripts/vendor_signalsmith.mjs /path/to/SignalsmithStretch.mjs`.
 The script applies bounded JS-only changes: share WASM compilation within the
 worklet realm; add terminal `destroy()`/AbortSignal handling; reject outstanding
 requests on initialization/processor errors or timeout; fix dynamic channel

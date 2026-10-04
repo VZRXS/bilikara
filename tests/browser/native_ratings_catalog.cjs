@@ -10,14 +10,15 @@ const shutdown="synthetic-rating-shutdown";
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function fixture(query) {return (await fetch(control+"/fixture/"+query)).json();}
 async function stats() {return fixture("stats");}
-async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;await pause(25);}throw Error("Timed out: "+label);}
+async function until(fn, label, timeout=5000) {const deadline=performance.now()+timeout;do{if(await fn())return;await pause(25);}while(performance.now()<deadline);throw Error("Timed out: "+label);}
 (async()=>{
  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),"native-ratings-catalog-"));
  const home=path.join(temporary,"native"),legacy=path.join(temporary,"legacy");
  let child, lines, browser, ready, stderr="";
- const played=Array.from({length:10},(_,i)=>({key:`played-${i}`,item_id:`played-${i}`,bvid,title:"Trusted played fixture",display_title:"Trusted played fixture",part_title:"on vocal",original_url:url,resolved_url:url,aid:123,cid:456,page:1,played_at:i+1}));
+ const played=Array.from({length:10},(_,i)=>({key:`played-${i}`,item_id:`played-${i}`,bvid,title:"Trusted played fixture",display_title:"Trusted played fixture",part_title:"on vocal",original_url:url,resolved_url:url,aid:123,cid:456,page:1,played_at:i+1,threshold_reached:i!==8}));
  await fs.mkdir(path.join(legacy,"data/played_sessions"),{recursive:true});
  await fs.writeFile(path.join(legacy,"data/session_users.json"),JSON.stringify({session_users:["Alice","Bob"]}));
+ await fs.writeFile(path.join(legacy,"data/gatcha_uids.json"),JSON.stringify({schema_version:2,uids:[],profiles:{}}));
  await fs.writeFile(path.join(legacy,"data/played_sessions/played-synthetic.json"),JSON.stringify({session_started_at:1,items:played}));
  await fs.writeFile(path.join(legacy,"data/playlist_backup.json"),JSON.stringify({current_item:null,playlist:[],played_session:{file:"played-synthetic.json",session_started_at:1},updated_at:12}));
  const http=await request.newContext();
@@ -33,28 +34,35 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
  let seq=0;const peer="rating-peer",epoch="abcdefghijklmnopqrstuv";
  const send=(kind,body={},profilePeer=peer)=>api("/api/internet-remote/dispatch",{peer_id:profilePeer,lane:"control",message:JSON.stringify({v:1,lane:"control",epoch,seq:++seq,id:randomUUID(),kind,body})},hostCookie);
  try {
-  child=spawn(path.resolve("rust-runtime/target/debug/bilikara-desktop-host"),["--import-from",legacy,"--data-dir",home,"--static-dir",path.resolve("static"),"--port","0"],{env:{...process.env,BILIKARA_SHUTDOWN_TOKEN:shutdown},stdio:["ignore","pipe","pipe"]});
+  assert.ok(path.isAbsolute(process.env.BILIKARA_TEST_NATIVE_HOST || ""), "current Cargo artifact from run_native_ratings_catalog.mjs is required");
+  child=spawn(process.env.BILIKARA_TEST_NATIVE_HOST,["--import-from",legacy,"--data-dir",home,"--static-dir",path.resolve("static"),"--port","0"],{env:{...process.env,BILIKARA_SHUTDOWN_TOKEN:shutdown},stdio:["ignore","pipe","pipe"]});
   child.stderr.on("data",d=>{stderr=(stderr+d).slice(-12000);});lines=createInterface({input:child.stdout});
   ready=JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(child,"exit").then(()=>{throw Error(stderr);})]));
   assert.equal(ready.backend,"rust");
-  const bootstrap=await http.get(ready.bootstrapUrl);hostCookie=bootstrap.headers()["set-cookie"].split(";")[0];
+  const {HttpClient}=await import("../native_host_support.mjs");
+  const bootstrapClient=new HttpClient(ready.baseUrl);
+  assert.equal((await bootstrapClient.request(ready.bootstrapUrl)).status,200);
+  hostCookie=[...bootstrapClient.cookies].map(([key,value])=>`${key}=${value}`).join("; ");
   await okay("/api/session/startup-choice",{choice:"continue"},hostCookie);
   let state=await okay("/api/state",undefined,hostCookie);
-  assert.equal(state.capabilities.song_rating,true);assert.equal(state.capabilities.catalog_write,false);assert.equal(state.capabilities.maintenance,false);
+  // Current native capabilities describe operations; authorization is checked below.
+  assert.equal(state.capabilities.song_rating,true);assert.equal(state.capabilities.catalog_write,true);assert.equal(state.capabilities.maintenance,true);
   assert.equal((await stats()).calls.length,0,"startup/imported played records must not upload");
-  const remoteJoin=await http.get(state.remote_access.lan_urls[0].replace(/http:\/\/[^/]+/,ready.baseUrl));
-  remoteCookie=remoteJoin.headers()["set-cookie"].split(";")[0];
+  const remoteClient=new HttpClient(ready.baseUrl);
+  assert.equal((await remoteClient.request(state.remote_access.lan_urls[0].replace(/http:\/\/[^/]+/,ready.baseUrl))).status,200);
+  remoteCookie=[...remoteClient.cookies].map(([key,value])=>`${key}=${value}`).join("; ");
   assert.equal((await postRating(rating(),remoteCookie)).status,403);
   await okay("/api/remote-identity/register",{name:"Remote"},remoteCookie);
   assert.equal((await postRating(rating(),"forged=cookie")).status,403);
   assert.equal((await postRating(rating(),"")).status,403);
   for(const patch of [{score:0},{score:6},{score:1.5},{play_id:"forged"},{bvid:"BV1xx411c7mE"},{session_user_name:"forged"}])assert.notEqual((await postRating({...rating(),...patch})).status,200);
+  assert.equal((await postRating(rating(8))).body.code,"rating_not_eligible");
   for(const [route,method] of [["/api/rating/submit","GET"],["/api/rating/submit","PUT"],["/api/rating/admin","POST"],["/api/app/update/finish","POST"],["/api/app/execute","POST"],["/api/admin-maintenance/trigger","POST"],["/api/bilikara-secret/verify","POST"]])assert.notEqual((await api(route,method==="GET"?undefined:{},hostCookie,method)).status,200,route);
   for(const route of ["/api/app/update/check","/api/cache-downloader/prepare","/api/internet-remote/peer/open"])assert.equal((await api(route,{download_source:"downkyi"},remoteCookie)).status,403,route);
   assert.equal((await stats()).calls.length,0);
   await fixture("control?rating=hold");
-  let settled=false;const pending=postRating(rating()).then(r=>{settled=true;return r;});
-  await until(async()=>(await stats()).calls.length===1,"rating reaches TLS fixture");
+  let settled=false,pendingResult;const pending=postRating(rating()).then(r=>{settled=true;pendingResult=r;return r;});
+  await until(async()=>{assert.equal(settled,false,JSON.stringify(pendingResult));return (await stats()).calls.length===1;},"rating reaches TLS fixture");
   assert.equal(settled,false,"no acceptance before service result");
   assert.equal((await postRating(rating())).body.code,"rating_pending");
   await okay("/api/state",undefined,hostCookie); // Network I/O releases AppState.
@@ -132,10 +140,11 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
    for(const width of [1440,412]){
     await page.setViewportSize({width,height:900});
     if(role==="host") {
-     if(width===412)await page.locator('[data-android-page="queue"]').click();
-     else if(!await page.locator("#open-rating-button").isVisible())await page.locator("#work-rail-queue").click();
+     if(!await page.locator("#open-rating-button").isVisible())await page.locator("#work-rail-queue").click();
     } else if(!await page.locator("#open-rating-button").isVisible())await page.locator("#playback-dock").click();
     await page.locator("#open-rating-button").click();
+    await page.locator('.rating-modal:not(.closing) [data-rating-tab="previous"]').click();
+    assert.equal(await page.evaluate(()=>activeRatingPromptItem().play_id),"played-9");
     await page.locator('.rating-modal:not(.closing) [data-rating-score="4"]').click();
     await page.locator('.rating-modal:not(.closing)').evaluate(async el=>{
       await Promise.all(el.getAnimations({subtree:true}).filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));
@@ -143,9 +152,9 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
     await page.screenshot({path:path.join(evidence,`${role}-${width}-dialog.png`),mask:[page.locator(".remote-mini-control")]});
     await fixture("control?rating_mode=http_failure");
     const before=(await stats()).calls.filter(c=>c.path==="/rate-song").length;
-    await page.locator('.rating-modal:not(.closing) .rating-actions [data-rating-close]').click();
+    await page.locator('.rating-modal:not(.closing) .rating-actions [data-rating-submit]').click();
     await until(async()=>(await stats()).calls.filter(c=>c.path==="/rate-song").length===before+1,"rendered submit");
-    await page.waitForFunction(()=>state.ratingSubmittedKeys.size===0 && state.ratingPendingKeys.size===0);
+    await page.waitForFunction(()=>!hasSubmittedSongRating({play_id:"played-9",bvid:"BV1xx411c7mD"}) && !state.ratingPendingKeys.has(ratingSubmissionKey({play_id:"played-9",bvid:"BV1xx411c7mD"})));
     assert.equal(await page.locator("#open-rating-button").isEnabled(),true);
     await page.waitForFunction(()=>!document.querySelector(".rating-modal"));
     await page.screenshot({path:path.join(evidence,`${role}-${width}-retry.png`),mask:[page.locator(".remote-mini-control")]});
@@ -153,20 +162,22 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
    }
    await fixture("control?rating_mode=success&rating=hold");
    await page.locator("#open-rating-button").click();
+   await page.locator('.rating-modal:not(.closing) [data-rating-tab="previous"]').click();
    await page.locator('.rating-modal:not(.closing) [data-rating-score="3"]').click();
    const before=(await stats()).calls.filter(c=>c.path==="/rate-song").length;
-   const button=await page.locator('.rating-modal:not(.closing) .rating-actions [data-rating-close]').elementHandle();
+   const button=await page.locator('.rating-modal:not(.closing) .rating-actions [data-rating-submit]').elementHandle();
    await button.click();assert.equal(await button.getAttribute("aria-busy"),"true");
    await until(async()=>(await stats()).calls.filter(c=>c.path==="/rate-song").length===before+1,"pending UI rating");
    const submittedPayload=(await stats()).calls.filter(c=>c.path==="/rate-song").at(-1).body;
    assert.equal(submittedPayload.session_user_name,role==="host"?"Bob":"Renamed");
    assert.equal(submittedPayload.score,3);
-   assert.equal(await page.evaluate(()=>state.ratingSubmittedKeys.size),0,"pending UI is not rated");
+   assert.equal(submittedPayload.play_id,"played-9");
+   assert.equal(await page.evaluate(()=>hasSubmittedSongRating({play_id:"played-9",bvid:"BV1xx411c7mD"})),false,"pending UI is not rated");
    for(const width of [1440,412,1440,412]){await page.setViewportSize({width,height:900});await page.evaluate(()=>render());}
-   assert.equal(await page.evaluate(()=>submitSongRating(state.data.current_item,5)),false);
+   assert.equal(await page.evaluate(()=>submitSongRating({play_id:"played-9",bvid:"BV1xx411c7mD"},5)),false);
    assert.equal((await stats()).calls.filter(c=>c.path==="/rate-song").length,before+1);
    await fixture("control?rating=release");await until(async()=>await button.getAttribute("aria-busy")===null,"busy restored");
-   assert.equal(await page.evaluate(()=>hasSubmittedSongRating(state.data.current_item)),true);
+   assert.equal(await page.evaluate(()=>hasSubmittedSongRating({play_id:"played-9",bvid:"BV1xx411c7mD"})),true);
    await page.screenshot({path:path.join(evidence,`${role}-accepted.png`),mask:[page.locator(".remote-mini-control")]});
    // Expected network failures are deliberately exercised; any script error fails.
    const unexpected=logs.filter(s=>!/(503|Rating submit failed|评分提交失败|video|media|Media|音频|缓存|ERR_FAILED)/.test(s));
@@ -178,10 +189,14 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
   await fs.writeFile(path.join(evidence,"browser-summary.json"),JSON.stringify({passed:true,summaries,pageErrors:errors,consoleEvidence,playbackEvidence:false},null,2));
   // Saturate the existing bounded queue. No accepted local request rolls back.
   const beforeQueue=await appendCount();await fixture("control?append=hold");
-  for(let i=0;i<70;i++)assert.equal((await add({allow_repeat:true})).status,200);
+  assert.equal((await add({allow_repeat:true})).status,200);
+  await until(async()=>await appendCount()===beforeQueue+1,"held append starts");
+  // Stay below the Host HTTP concurrency bound while filling the append queue
+  // before its first upstream request reaches the unchanged 10-second deadline.
+  for(let offset=0;offset<69;offset+=8)for(const result of await Promise.all(Array.from({length:Math.min(8,69-offset)},()=>add({allow_repeat:true}))))assert.equal(result.status,200);
   assert.ok(stderr.includes("native catalog append could not be scheduled"),"full queue reported independently");
   assert.equal((await okay("/api/state",undefined,hostCookie)).playlist.length,72);
-  await fixture("control?append=release");await until(async()=>await appendCount()===beforeQueue+65,"bounded queue drain");
+  await fixture("control?append=release");await until(async()=>await appendCount()===beforeQueue+65,"bounded queue drain",15000);
   console.log("Rendered Host/Remote desktop + phone controls and bounded append queue: PASS");
   const stableAppends=await appendCount();
   await fixture("control?metadata=hold");metadata=(await stats()).counts.metadata;
@@ -202,12 +217,17 @@ async function until(fn, label) {for(let n=0;n<200;n++){if(await fn())return;awa
   assert.equal(await appendCount(),stableAppends);
   assert.equal((await postRating(rating(5),remoteCookie)).status,403);
   await okay("/api/session-users/add",{name:"Alice"},hostCookie);
+  assert.equal((await postRating(rating(5))).body.data.success,true,"data reset preserves eligible played records");
+  assert.equal((await add({allow_repeat:true})).status,200);
+  await until(async()=>await appendCount()===stableAppends+1,"new current item contributes once");
+  await okay("/api/backup/discard",{},hostCookie);
   assert.equal((await postRating(rating(5))).body.code,"rating_stale");
+  const stoppedAppends=await appendCount();
   await fixture("control?metadata=hold");metadata=(await stats()).counts.metadata;
   const stoppedAdd=add();await until(async()=>(await stats()).counts.metadata>metadata,"stopped delayed add");
   const shutdownResponse=await fetch(ready.baseUrl+"/api/app/shutdown",{method:"POST",headers:{"x-bilikara-shutdown-token":shutdown}});
   assert.equal(shutdownResponse.status,200);await fixture("control?metadata=release");
-  assert.equal((await stoppedAdd).body.code,"stopped");assert.equal(await appendCount(),stableAppends);
+  assert.equal((await stoppedAdd).body.code,"stopped");assert.equal(await appendCount(),stoppedAppends);
   if(child.exitCode===null)await once(child,"exit");
   console.log("Removed owner, changed session and stopped Host reject late adds without contributions: PASS");
  } finally {

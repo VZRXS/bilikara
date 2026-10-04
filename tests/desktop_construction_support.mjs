@@ -19,9 +19,9 @@ function assertCommands(actual, expected) {
   assert.deepEqual(normalize(actual), normalize(expected));
 }
 
-export function runNative(program, args, env = process.env, timeout = 120_000) {
+export function runNative(program, args, env = process.env, timeout = 120_000, cwd = root, encoding = 'utf8', input) {
   return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { cwd: root, env, detached: process.platform !== 'win32', windowsHide: true });
+    const child = spawn(program, args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true });
     const stdout = [], stderr = []; let size = 0, failure, cleanupTimer;
     function terminate(error) {
       if (failure) return;
@@ -47,14 +47,39 @@ export function runNative(program, args, env = process.env, timeout = 120_000) {
       else chunks.push(bytes);
     });
     child.on('error', terminate);
+    if (input !== undefined) {
+      // An early child exit closes the pipe; retain its real exit status and
+      // stderr rather than replacing those diagnostics with an EPIPE error.
+      child.stdin.on('error', error => { if (error.code !== 'EPIPE') terminate(error); });
+      child.stdin.end(input, 'utf8');
+    }
     const deadline = setTimeout(() => terminate(Object.assign(new Error(`${program} exceeded ${timeout}ms`), { code: 'ETIMEDOUT' })), timeout);
     child.on('close', (status, signal) => {
       clearTimeout(deadline); clearTimeout(cleanupTimer);
       if (failure) reject(failure);
       else if (signal) reject(new Error(`${program} terminated by ${signal}`));
-      else resolve({ status, signal, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') });
+      else {
+        const out = Buffer.concat(stdout), err = Buffer.concat(stderr);
+        resolve({ status, signal, stdout: encoding === null ? out : out.toString(encoding), stderr: encoding === null ? err : err.toString(encoding) });
+      }
     });
   });
+}
+
+// Shared bootstrap only; real-libav checks do not instantiate command fixtures.
+export async function buildXtask() {
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'CARGO_BUILD_TARGET'));
+  const build = await runNative('cargo', ['build', '--manifest-path', path.join(root, 'xtask/Cargo.toml'),
+    '--locked', '--target', 'host-tuple', '--message-format=json'], environment, 300_000);
+  assert.equal(build.status, 0, build.stderr);
+  const records = build.stdout.trim().split('\n').map(JSON.parse);
+  const compiledTargets = records.filter(record => record.reason === 'compiler-artifact').map(record => record.target.name);
+  const artifacts = records.filter(record =>
+    record.reason === 'compiler-artifact' && record.target.name === 'bilikara-xtask' && record.executable);
+  assert.equal(artifacts.length, 1, 'one current host-native compiler artifact is required');
+  const tool = artifacts[0].executable;
+  assert.ok(existsSync(tool));
+  return { tool, compiledTargets, environment };
 }
 
 export function executableOnPath(name, environment = process.env) {
@@ -75,17 +100,8 @@ export class ConstructionFixtures {
   }
   async initialize() {
     try {
-      const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'CARGO_BUILD_TARGET'));
-      const build = await runNative('cargo', ['build', '--manifest-path', path.join(root, 'xtask/Cargo.toml'),
-        '--locked', '--target', 'host-tuple', '--message-format=json'], environment, 300_000);
-      assert.equal(build.status, 0, build.stderr);
-      const records = build.stdout.trim().split('\n').map(JSON.parse);
-      this.compiledTargets = records.filter(record => record.reason === 'compiler-artifact').map(record => record.target.name);
-      const artifacts = records.filter(record =>
-        record.reason === 'compiler-artifact' && record.target.name === 'bilikara-xtask' && record.executable);
-      assert.equal(artifacts.length, 1, 'one current host-native compiler artifact is required');
-      this.tool = artifacts[0].executable;
-      assert.ok(existsSync(this.tool));
+      const { tool, compiledTargets, environment } = await buildXtask();
+      this.tool = tool; this.compiledTargets = compiledTargets;
       this.fixture = path.join(this.temporary, `fixture${suffix}`);
       const compile = await runNative('rustc', ['--edition=2024', '--target', nativeTarget(), '--crate-name', 'desktop_commands',
         path.join(root, 'tests/fixtures/desktop_prepare_cargo.rs'), '-o', this.fixture], environment);

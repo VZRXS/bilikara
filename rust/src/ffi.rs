@@ -794,6 +794,76 @@ mod tests {
     }
 
     #[test]
+    fn audio_binding_export_matches_independent_legacy_boundary_vectors() {
+        use serde_json::json;
+        // Literal expected decisions, independent of native policy helpers.
+        // Page numbers can repeat; original indices identify each input entry.
+        type Page<'a> = (i32, i32, &'a str);
+        type Case<'a> = (&'a [Page<'a>], &'a str, Option<usize>);
+        let cases: &[Case<'_>] = &[
+            (&[], "no_match", None),
+            (&[(7, 300, "plain")], "single", None),
+            (
+                &[(1, 300, "main track"), (2, 301, "music track")],
+                "manual_required",
+                None,
+            ),
+            (&[(1, 300, "plain"), (2, 301, "ON")], "automatic", None),
+            (&[(1, 300, "plain"), (2, 301, "Off")], "automatic", None),
+            (&[(1, 300, "plain"), (2, 301, "人声")], "automatic", None),
+            (&[(1, 300, "plain"), (2, 301, "原唱")], "automatic", None),
+            (&[(1, 300, "plain"), (2, 301, "伴奏")], "automatic", None),
+            (
+                &[(1, 300, "plain"), (2, 301, " office ")],
+                "automatic",
+                None,
+            ),
+            (
+                &[(1, 300, "on_vocal"), (2, 301, "off-vocal")],
+                "automatic",
+                Some(0),
+            ),
+            (
+                &[(1, 300, "off vocal"), (1, 301, "on vocal")],
+                "automatic",
+                Some(1),
+            ),
+            (&[(1, 300, "plain"), (2, 302, "off")], "automatic", None),
+            (&[(1, 300, "plain"), (2, 303, "off")], "automatic", None),
+            (
+                &[(1, 300, "plain"), (2, 304, "off")],
+                "manual_required",
+                None,
+            ),
+            (&[(2, 301, "off"), (1, 300, "plain")], "automatic", None),
+            (&[(1, 300, "on"), (2, 301, "plain")], "automatic", None),
+            (&[(1, 300, "on"), (2, 301, "off")], "automatic", None),
+            (&[(3, 300, "plain"), (4, 301, "off")], "automatic", None),
+            (&[(1, 300, "plain"), (1, 301, "off")], "automatic", None),
+            (
+                &[(1, 300, "on"), (2, 301, "off"), (3, 302, "伴奏")],
+                "manual_required",
+                None,
+            ),
+        ];
+        for &(pages, mode, video) in cases {
+            let payload = json!({"schema_version":1,"tolerance_seconds":3,"pages":pages.iter().enumerate().map(|(index,(page,duration,part))|json!({"original_index":index,"page":page,"duration":duration,"part":part})).collect::<Vec<_>>()});
+            let request = CString::new(payload.to_string()).unwrap();
+            let expected = json!({"schema_version":1,"status":if mode=="no_match" {"no_match"} else {"decided"},"mode":if mode=="no_match" {None} else {Some(mode)},"selected_indices":match mode {"single"=>vec![0],"automatic"=>vec![0,1],_=>vec![]},"automatic_video_index":video});
+            for _ in 0..20 {
+                unsafe {
+                    let pointer = rust_decide_audio_binding(request.as_ptr());
+                    assert!(!pointer.is_null(), "{payload}");
+                    let result: serde_json::Value =
+                        serde_json::from_str(CStr::from_ptr(pointer).to_str().unwrap()).unwrap();
+                    rust_free_string(pointer);
+                    assert_eq!(result, expected, "{payload}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn audio_binding_export_uses_shared_panic_containment() {
         let result = ffi_string_result(|| -> Option<String> {
             panic!("simulated audio binding panic");
@@ -1271,6 +1341,70 @@ mod tests {
             panic!("simulated playlist planning panic");
         });
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn playlist_and_delay_exports_preserve_exact_nonempty_results_and_ownership() {
+        type Operation = unsafe extern "C" fn(*const c_char) -> *mut c_char;
+        let cases: [(Operation, &str, &str); 3] = [
+            (
+                rust_plan_playlist_order,
+                r#"{"schema_version":1,"operation":"rebuild","session_users":["A","B"],"current_requester":"A","items":[{"original_index":0,"item_id":"a","requester_name":"A","slot_type":"cycle"},{"original_index":1,"item_id":"b","requester_name":"B","slot_type":"cycle"}],"candidate":null}"#,
+                r#"{"schema_version":1,"ordered_ids":["b","a"]}"#,
+            ),
+            (
+                rust_decide_playlist_duplicate,
+                r#"{"schema_version":1,"candidate":{"bvid":"BVCase","aid":1,"video_page":2,"selected_audio_pages":[2,1,2]},"current_item":null,"queued_items":[],"history_entries":[{"original_index":4,"key":"BVCase:p2:a2-1-2"}]}"#,
+                r#"{"schema_version":1,"identity_key":"BVCase:p2:a2-1-2","active_duplicate_id":null,"history_duplicate_index":4}"#,
+            ),
+            (
+                rust_apply_av_delay_action,
+                r#"{"schema_version":1,"state":{"global_delay_ms":100,"local_delay_ms":25,"locked":false},"action":{"type":"toggle_lock"}}"#,
+                r#"{"schema_version":1,"global_delay_ms":125,"local_delay_ms":0,"effective_delay_ms":125,"locked":true,"has_local_adjustment":false,"lock_button_enabled":true}"#,
+            ),
+        ];
+        for (operation, request, expected) in cases {
+            let request = CString::new(request).unwrap();
+            let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
+            for _ in 0..20 {
+                // SAFETY: Valid owned NUL-terminated UTF-8 input; every non-null
+                // result is read once and released by its matching Rust allocator.
+                unsafe {
+                    let result = operation(request.as_ptr());
+                    assert!(!result.is_null());
+                    let actual: serde_json::Value =
+                        serde_json::from_str(CStr::from_ptr(result).to_str().unwrap()).unwrap();
+                    rust_free_string(result);
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn av_delay_export_rejects_invalid_pointers_wire_actions_and_numbers() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid = [
+            "not json",
+            r#"{"schema_version":2,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":false},"action":{"type":"snapshot"}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":false},"action":{"type":"bad"}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":false},"action":{"type":"adjust","delta_ms":true}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":false},"action":{"type":"adjust","delta_ms":2147483648}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":5001,"locked":false},"action":{"type":"snapshot"}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":-4999,"local_delay_ms":-2,"locked":true},"action":{"type":"snapshot"}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":1},"action":{"type":"snapshot"}}"#,
+            r#"{"schema_version":1,"state":{"global_delay_ms":0,"local_delay_ms":0,"locked":false},"action":{"type":"snapshot"},"unknown":1}"#,
+        ];
+        // SAFETY: Null is supported; invalid UTF-8 and every other input are
+        // NUL-terminated with a valid lifetime throughout their call.
+        unsafe {
+            assert!(rust_apply_av_delay_action(std::ptr::null()).is_null());
+            assert!(rust_apply_av_delay_action(invalid_utf8.as_ptr()).is_null());
+            for request in invalid {
+                let request = CString::new(request).unwrap();
+                assert!(rust_apply_av_delay_action(request.as_ptr()).is_null());
+            }
+        }
     }
 
     #[test]
