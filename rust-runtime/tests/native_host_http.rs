@@ -1032,6 +1032,8 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         let item = serde_json::from_value(json!({"id":format!("queue-{index}"),"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":index+1,"page":index+1,"title":"Fixture","part_title":"Fixture","display_title":"Fixture","cover_url":"","embed_url":""})).unwrap();
         assert!(
             execute_app_state(AppStateRequest::AddItem {
+                requester_user_id: None,
+
                 schema_version: 1,
                 item,
                 position: "tail".into(),

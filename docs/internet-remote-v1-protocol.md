@@ -82,6 +82,16 @@ management operations explicitly enumerated in the Rust module.
 The controller allowlist is intentionally explicit. Adding a new capability
 does not grant it automatically. Gatcha management uses dedicated typed
 messages and retained Host I/O; it is not access to the Python route table.
+`session.set_identity` registers or claims a display name. Hosts advertising
+`session_user_edit_version: 1` also support `session.rename` with `name`,
+`user_id` and `expected_name`, and `session.resume` with `user_id`. Renaming
+uses the same serialized Rust command as Host/local Remote edits and updates
+all connected bindings, without rewriting existing request/history labels.
+The sanitized state carries ordered `session_user_entries` and a roster
+version. Renames preserve the user ID; removal and same-name registration do
+not reuse it. Metadata fetches retain the admitted ID/name/session generation.
+An older Host remains usable for registration, but the new Remote disables
+rename rather than emulating it with registration.
 Maintenance operations such as application updates, diagnostics, downloader
 configuration, arbitrary URL fetch/open, and raw HTTP requests are not
 protocol kinds.
@@ -207,11 +217,13 @@ Safari-specific SDP fingerprint extraction.
 
 ## Recovery
 
-The Remote keeps a random endpoint ID and its non-secret display name in browser
-storage. Passwords are never persisted. On a connectivity transition it opens
+The Remote keeps a random endpoint ID, its non-secret display name and a
+room-scoped stable user ID in browser storage. Passwords are never persisted. On a connectivity transition it opens
 a new signaling socket,
 replaces the previous peer connection, creates a new epoch, authenticates again,
-and resends its session identity. Rust resets that peer's replay window when the
+and resumes its user ID after reading the Host's capability/state. This follows
+a renamed user and never recreates a deleted user; legacy Hosts retain their
+name-based registration path. Rust resets that peer's replay window when the
 new epoch opens. Old connection callbacks are identity-checked so they cannot
 close or mutate the replacement peer.
 

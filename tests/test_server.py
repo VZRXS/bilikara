@@ -1819,7 +1819,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
                 active_duplicate_for_item=lambda _item: None,
             ),
             add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
-            snapshot=lambda: {"playlist": []},
+            snapshot=lambda: {"playlist": [], "session_generation": 1, "session_user_entries": [{"name": "VZRXS", "id": "a" * 64}]},
         )
 
         with patch("bilikara.server.CONTEXT", context), patch(
@@ -1840,6 +1840,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
             {
                 "position": "tail",
                 "requester_name": "VZRXS",
+                "requester_user_id": "a" * 64,
                 "allow_repeat": False,
             },
         )
@@ -1856,7 +1857,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
                 }
             ]
         )
-        self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
+        self.assertEqual(writes, [({"ok": True, "data": context.snapshot()}, None)])
 
     def test_duplicate_add_is_decided_atomically_by_rust_appstate(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -1904,6 +1905,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         context = SimpleNamespace(
             has_session_users=lambda: True,
             add_item=reject_add,
+            snapshot=lambda: {"session_generation": 1, "session_user_entries": [{"name": "VZRXS", "id": "a" * 64}]},
         )
 
         with patch("bilikara.server.CONTEXT", context), patch(

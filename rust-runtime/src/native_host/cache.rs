@@ -645,7 +645,8 @@ mod log_tests {
             for index in 0..5 {
                 let id = format!("song{index}");
                 let item = serde_json::from_value(json!({"id":id,"original_url":"https://example.test/song","resolved_url":"https://example.test/song","bvid":"BV1xx411c7mD","aid":1,"cid":index+1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[index+1],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[index+1],"available_durations":[120],"available_parts":["P1"]})).unwrap();
-                app.native_execute(AppStateRequest::AddItem {schema_version:1,item,position:"tail".into(),requester_name:"Alice".into(),reset_av_delay:false,allow_repeat:true,now:2.0})?;
+                app.native_execute(AppStateRequest::AddItem { requester_user_id: None,
+schema_version:1,item,position:"tail".into(),requester_name:"Alice".into(),reset_av_delay:false,allow_repeat:true,now:2.0})?;
                 let item = app.native_core_snapshot()?.current_item.into_iter().chain(app.native_core_snapshot()?.playlist).find(|i| i.id == id).unwrap();
                 let reservation = app.reserve_runtime_attempt(&id,&item.item_incarnation_id).unwrap();
                 let relative = &reservation.artifact_relative_directory;

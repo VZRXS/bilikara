@@ -213,6 +213,7 @@ jobs:
           # Test-only pinned browser, after the native compiler graphs/prefix.
           # FFmpeg above generates only synthetic test media; not bundled.
           npm exec -- playwright install --with-deps chromium webkit
+          npm run test:native-users
           npm run test:native-ratings
           npm run test:native-transport
           npm run test:native-media

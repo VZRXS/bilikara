@@ -33,6 +33,7 @@
     "test:native-images": "node --test tests/native_images.test.mjs",
     "test:native-login": "node --test tests/desktop_login_native.test.mjs",
     "test:native-ratings": "node --test tests/native_ratings_browser.test.mjs",
+    "test:native-users": "node --test tests/native_session_users_browser.test.mjs",
     "test:native-transport": "node --test tests/native_transport.test.mjs tests/native_transport_browser.test.mjs",
     "test:native-transport-entry": "node --test tests/native_transport_entry.test.mjs",
     "test:native-media": "node --test tests/native_desktop_media.test.mjs",

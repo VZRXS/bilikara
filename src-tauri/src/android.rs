@@ -212,6 +212,9 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
     let response = initialize_native_host(
         &directory,
         AppStateSeed {
+            session_user_ids: std::collections::HashMap::new(),
+            requester_user_ids: std::collections::HashMap::new(),
+
             playback_mode: "local".to_owned(),
             player_settings: PlayerSettingsSeed::default(),
             current_item: None,

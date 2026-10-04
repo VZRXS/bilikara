@@ -20,7 +20,14 @@ impl Session {
     fn wire(&self, request: Value) -> Value {
         let request: AppStateRequest = serde_json::from_value(request.clone())
             .unwrap_or_else(|error| panic!("invalid test request {request}: {error}"));
-        serde_json::to_value(self.0.lock().unwrap().execute(request)).unwrap()
+        let mut response = serde_json::to_value(self.0.lock().unwrap().execute(request)).unwrap();
+        // Ownership is persisted privately, rather than exposed by the public snapshot.
+        // Attach that actual persistence projection only inside this test harness.
+        let owners = response["persistence"]["requester_user_ids"].clone();
+        if let Some(snapshot) = response.get_mut("snapshot").and_then(Value::as_object_mut) {
+            snapshot.insert("requester_user_ids".to_owned(), owners);
+        }
+        response
     }
 
     fn initialize(&self, state: Value) {
@@ -46,9 +53,14 @@ impl Session {
     }
 
     fn add(&self, id: &str, user: &str, position: &str) -> Value {
+        let snapshot = self.snapshot();
+        let owner = rows(&snapshot["session_user_entries"])
+            .iter()
+            .find(|entry| entry["name"] == user)
+            .map(|entry| entry["id"].clone());
         self.call(
             "add_item",
-            json!({"item":item(id,id),"requester_name":user,"position":position,
+            json!({"item":item(id,id),"requester_name":user,"requester_user_id":owner,"position":position,
             "allow_repeat":false,"reset_av_delay":false}),
         )
     }
@@ -95,13 +107,13 @@ fn canonical(mut value: Value) -> Value {
 
 // Independent bucket/round oracle, not the production cycle keys or planner.
 fn cycle_schedule(snapshot: &Value, candidate: Option<&Value>) -> Vec<String> {
-    let mut seats: Vec<_> = rows(&snapshot["session_users"])
+    let mut seats: Vec<_> = rows(&snapshot["session_user_entries"])
         .iter()
-        .map(|u| u.as_str().unwrap())
+        .map(|u| u["id"].as_str().unwrap())
         .collect();
     if let Some(index) = seats
         .iter()
-        .position(|&u| snapshot["current_item"]["requester_name"] == u)
+        .position(|&u| owner(snapshot, &snapshot["current_item"]) == Some(u))
     {
         let count = seats.len();
         seats.rotate_left((index + 1) % count);
@@ -111,7 +123,9 @@ fn cycle_schedule(snapshot: &Value, candidate: Option<&Value>) -> Vec<String> {
         .map(|&user| {
             rows(&snapshot["playlist"])
                 .iter()
-                .filter(|row| row["queue_slot_type"] == "cycle" && row["requester_name"] == user)
+                .filter(|row| {
+                    row["queue_slot_type"] == "cycle" && owner(snapshot, row) == Some(user)
+                })
                 .map(|row| row["id"].as_str().unwrap().to_owned())
                 .collect()
         })
@@ -119,7 +133,11 @@ fn cycle_schedule(snapshot: &Value, candidate: Option<&Value>) -> Vec<String> {
     if let Some(candidate) = candidate {
         let index = seats
             .iter()
-            .position(|&u| candidate["requester_name"] == u)
+            .position(|&u| {
+                rows(&snapshot["session_user_entries"])
+                    .iter()
+                    .any(|entry| entry["id"] == u && entry["name"] == candidate["requester_name"])
+            })
             .unwrap();
         buckets[index].push(candidate["id"].as_str().unwrap().to_owned());
     }
@@ -131,13 +149,22 @@ fn cycle_schedule(snapshot: &Value, candidate: Option<&Value>) -> Vec<String> {
         })
         .collect()
 }
+fn owner<'a>(snapshot: &'a Value, item: &Value) -> Option<&'a str> {
+    snapshot["requester_user_ids"]
+        .get(item["id"].as_str()?)?
+        .as_str()
+}
+fn registered(snapshot: &Value, item: &Value) -> bool {
+    owner(snapshot, item).is_some_and(|id| {
+        rows(&snapshot["session_user_entries"])
+            .iter()
+            .any(|entry| entry["id"] == id)
+    })
+}
 fn assert_cycle(snapshot: &Value) {
     let actual: Vec<_> = rows(&snapshot["playlist"])
         .iter()
-        .filter(|row| {
-            row["queue_slot_type"] == "cycle"
-                && rows(&snapshot["session_users"]).contains(&row["requester_name"])
-        })
+        .filter(|row| row["queue_slot_type"] == "cycle" && registered(snapshot, row))
         .map(|row| row["id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(actual, cycle_schedule(snapshot, None));
@@ -468,8 +495,7 @@ fn lifecycle(seeds: usize, steps: usize) {
                             queue
                                 .iter()
                                 .filter(|e| {
-                                    e["queue_slot_type"] != "cycle"
-                                        || !users.contains(&e["requester_name"])
+                                    e["queue_slot_type"] != "cycle" || !registered(&before, e)
                                 })
                                 .map(|e| e["id"].as_str().unwrap().to_owned()),
                         );
@@ -485,21 +511,11 @@ fn lifecycle(seeds: usize, steps: usize) {
                 }
             }
             if command == "rename_session_user" {
-                for entry in admitted.values_mut() {
-                    if entry["requester_name"] == fields["current_name"] {
-                        entry["requester_name"] = fields["new_name"].clone();
-                    }
-                }
+                assert_eq!(after["playlist"], before["playlist"]);
+                assert_eq!(after["requester_user_ids"], before["requester_user_ids"]);
             }
             assert_conserved(after, &admitted);
-            if ![
-                "advance_to_next",
-                "move_to_front",
-                "add_item",
-                "rename_session_user",
-            ]
-            .contains(&command)
-            {
+            if !["advance_to_next", "move_to_front", "add_item"].contains(&command) {
                 for key in ["current_item", "playback_generation"] {
                     assert_eq!(after[key], before[key]);
                 }
@@ -510,15 +526,15 @@ fn lifecycle(seeds: usize, steps: usize) {
                         .iter()
                         .all(|e| e["queue_slot_type"] == "cycle")
                 );
-                for user in users {
-                    let by_user = |list: &Value| {
-                        rows(list)
+                for user in rows(&before["session_user_entries"]) {
+                    let by_user = |snapshot: &Value| {
+                        rows(&snapshot["playlist"])
                             .iter()
-                            .filter(|e| e["requester_name"] == *user)
+                            .filter(|e| owner(snapshot, e) == user["id"].as_str())
                             .map(|e| e["id"].clone())
                             .collect::<Vec<_>>()
                     };
-                    assert_eq!(by_user(&after["playlist"]), by_user(&before["playlist"]));
+                    assert_eq!(by_user(after), by_user(&before));
                 }
             }
             if command == "move_to_next" {
@@ -545,7 +561,9 @@ fn lifecycle(seeds: usize, steps: usize) {
                 );
                 assert_eq!(rows(&after["session_users"]), expected);
             }
-            if response["committed"] == true && command != "add_item" {
+            if response["committed"] == true
+                && !["add_item", "rename_session_user"].contains(&command)
+            {
                 assert_cycle(after);
             }
             if [
@@ -558,16 +576,9 @@ fn lifecycle(seeds: usize, steps: usize) {
             .contains(&command)
             {
                 for (index, entry) in queue.iter().enumerate() {
-                    let requester = if command == "rename_session_user"
-                        && entry["requester_name"] == fields["current_name"]
-                    {
-                        &fields["new_name"]
-                    } else {
-                        &entry["requester_name"]
-                    };
                     let fixed = (command != "resort_playlist_by_cycle"
                         && entry["queue_slot_type"] != "cycle")
-                        || !rows(&after["session_users"]).contains(requester);
+                        || !registered(after, entry);
                     if fixed {
                         assert_eq!(after["playlist"][index]["id"], entry["id"]);
                     }
@@ -707,7 +718,16 @@ fn returning_and_removed_singers_rejoin_without_losing_waiting_songs() {
     session.call("resort_playlist_by_cycle", json!({}));
     assert_eq!(
         ids(&session.snapshot()["playlist"]),
-        ["c1", "b1", "b2", "b3"]
+        ["b1", "c1", "b2", "b3"]
+    );
+    let after = session.snapshot();
+    assert_eq!(
+        owner(&after, &after["playlist"][0]),
+        owner(&before, &before["playlist"][0])
+    );
+    assert_ne!(
+        owner(&after, &after["playlist"][0]),
+        owner(&after, &after["playlist"][3])
     );
 }
 

@@ -8,6 +8,7 @@
   const internetMode = Boolean(roomId || joinToken);
   const lowLevel = global.BilikaraInternetTransport;
   const identityStorageKey = "bilikara.internetRemote.identity.v1";
+  const identityUserStorageKey = `${identityStorageKey}.${roomId}.userId`;
   const endpointStorageKey = "bilikara.internetRemote.endpoint.v1";
   const heartbeatIntervalMs = 2_000;
   const heartbeatTimeoutMs = 8_000;
@@ -50,6 +51,7 @@
     revisionMutationTail: Promise.resolve(),
     remoteState: null,
     identity: localStorage.getItem(identityStorageKey) || "",
+    identityUserId: localStorage.getItem(identityUserStorageKey) || "",
     password: "",
     authorized: false,
     reconnectAttempts: 0,
@@ -174,6 +176,7 @@
         setConnectionStatus("请输入用户名和 4–32 位房间密码。", true);
         return;
       }
+      if (identity !== state.identity) { state.identityUserId = ""; localStorage.removeItem(identityUserStorageKey); }
       state.identity = identity;
       state.password = password;
       localStorage.setItem(identityStorageKey, identity);
@@ -333,9 +336,15 @@
       state.authorized = true;
       global.dispatchEvent(new Event("remote-invitation-changed"));
       state.reconnectAttempts = 0;
-      request("session.set_identity", { name: state.identity }).then((response) => {
-        const next = response?.data?.state;
-        if (next) publishState(next);
+      (async () => {
+        const resumeUserId = state.identityUserId;
+        const initial = await request("state.get", {}, "bulk");
+        if (initial?.data) publishState(initial.data.state || initial.data);
+        const response = await request(state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? "session.resume" : "session.set_identity",
+          state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? { user_id: resumeUserId } : { name: state.identity });
+        state.identity = String(response.data?.name || state.identity);
+        if (response?.data?.state) publishState(response.data.state);
+        rememberIdentity();
         state.overlay.classList.add("hidden");
         document.documentElement.dataset.remoteTransport = "internet";
         state.connectButton.disabled = false;
@@ -343,7 +352,7 @@
         state.connectionMessage = "";
         renderConnectionCopy();
         state.readyResolve?.();
-      }).catch(fail);
+      })().catch(fail);
       startHeartbeat();
       setTimeout(() => state.socket?.close(1000, "WebRTC connected"), 1_000);
       return;
@@ -557,7 +566,10 @@
       session_played: (remoteState.session_played || []).map(localHistoryItem).filter(Boolean),
       song_ratings: remoteState.song_ratings || [],
       session_users: Array.isArray(remoteState.session_users) ? remoteState.session_users : [],
-      remote_session_id: `internet-${roomId}`,
+      session_user_entries: remoteState.session_user_entries || [],
+      session_user_edit_version: Number(remoteState.session_user_edit_version || 0),
+      session_users_version: String(remoteState.session_users_version || ""),
+      remote_session_id: identitySessionId(),
       player_settings: {
         av_offset_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
         av_delay: {
@@ -582,6 +594,18 @@
       gatcha: remoteState.gatcha || state.remoteState?.gatcha || { busy: false },
       gatcha_pool_config: remoteState.gatcha_pool_config || state.remoteState?.gatcha_pool_config || {},
     };
+  }
+
+  function identitySessionId() {
+    return `internet-${roomId}-${state.remoteState?.state_epoch || ""}-${state.remoteState?.session_generation || 0}`;
+  }
+
+  function rememberIdentity() {
+    const user = state.remoteState?.session_user_entries?.find(user => user.name === state.identity);
+    if (user) state.identityUserId = user.id;
+    localStorage.setItem(identityStorageKey, state.identity);
+    if (state.identityUserId) localStorage.setItem(identityUserStorageKey, state.identityUserId);
+    else localStorage.removeItem(identityUserStorageKey);
   }
 
   function publishState(next) {
@@ -612,6 +636,15 @@
       gatcha: next.gatcha || state.remoteState?.gatcha,
       gatcha_pool_config: next.gatcha_pool_config || state.remoteState?.gatcha_pool_config,
     };
+    if (state.identityUserId && state.remoteState.session_user_edit_version >= 1) {
+      const user = state.remoteState.session_user_entries?.find(user => user.id === state.identityUserId);
+      if (user) state.identity = user.name;
+      else {
+        state.identity = ""; state.identityUserId = "";
+        localStorage.removeItem(identityUserStorageKey);
+      }
+      localStorage.setItem(identityStorageKey, state.identity);
+    }
     const data = JSON.stringify(localState(state.remoteState));
     for (const listener of listeners) listener({ type: "state", data });
   }
@@ -702,7 +735,7 @@
     try {
       let response;
       if (method === "GET" && url.pathname === "/api/remote-identity") {
-        return jsonResponse({ ok: true, data: { registered: state.authorized, name: state.identity, session_id: `internet-${roomId}` } });
+        return jsonResponse({ ok: true, data: { registered: state.authorized && Boolean(state.identity), name: state.identity, user_id: state.identityUserId, session_id: identitySessionId() } });
       }
       if (method === "GET" && url.pathname === "/api/state") {
         response = await request("state.get", { since_revision: null }, "bulk");
@@ -770,14 +803,24 @@
       }
       if (method === "POST" && ["/api/remote-identity/register", "/api/remote-identity/rename"].includes(url.pathname)) {
         const requestedName = String(body.name || "").trim();
-        if (requestedName === state.identity) {
-          return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+        const rename = url.pathname.endsWith("/rename");
+        if (rename && !(state.remoteState?.session_user_edit_version >= 1)) {
+          return jsonResponse({ ok: false, code: "session_user_edit_unavailable", error: "此 Host 尚不支持保留点歌记录的改名，请先更新 Host。" }, 409);
         }
-        response = await request("session.set_identity", { name: requestedName });
-        state.identity = String(response.data?.name || body.name || "").trim();
-        localStorage.setItem(identityStorageKey, state.identity);
+        response = await request(rename ? "session.rename" : "session.set_identity", rename ? {
+          name: requestedName, user_id: body.user_id || state.identityUserId,
+          expected_name: body.expected_name || state.identity,
+        } : { name: requestedName });
         if (response.data?.state) publishState(response.data.state);
-        return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+        // The state response may have lost to a newer broadcast. Resolve the
+        // ID in the latest accepted roster rather than restoring an old name.
+        const userId = rename ? body.user_id || state.identityUserId : "";
+        const user = state.remoteState?.session_user_entries?.find(user => userId ? user.id === userId : user.name === String(response.data?.name || requestedName));
+        state.identity = user?.name || String(response.data?.name || requestedName).trim();
+        state.identityUserId = user?.id || userId;
+        if (state.remoteState?.session_user_edit_version >= 1 && !user) { state.identity = ""; state.identityUserId = ""; }
+        rememberIdentity();
+        return jsonResponse({ ok: true, data: { registered: Boolean(state.identity), name: state.identity, user_id: state.identityUserId, session_id: identitySessionId() } });
       }
       if (method === "POST" && url.pathname === "/api/gatcha/pool-config") {
         response = await request("gatcha.pool_config_set", {

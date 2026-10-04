@@ -53,6 +53,18 @@ class RemoteIdentityStore:
             self._save_unlocked()
             return True
 
+    def apply_native_rename(self, previous_name: str, name: str) -> None:
+        """Transport names follow a committed Rust rename, never decide it here."""
+        with self.lock:
+            changed = False
+            for identity in self.identities.values():
+                if identity.get("name") == previous_name:
+                    identity["name"] = name
+                    identity["updated_at"] = time.time()
+                    changed = True
+            if changed:
+                self._save_unlocked()
+
     def revoke_name(self, name: str) -> int:
         normalized = str(name or "").strip()
         if not normalized:

@@ -67,6 +67,8 @@ impl AppStateData {
             history: self.history.clone(),
             session_history: self.session_history.clone(),
             session_users: self.session_users.clone(),
+            session_user_ids: self.session_user_ids.clone(),
+            requester_user_ids: self.requester_user_ids.clone(),
             remote_identities: self.remote_identities.clone(),
             gatcha_pool_preferences: self.gatcha_pool_preferences.clone(),
             session_started_at: self.session_started_at,
@@ -874,6 +876,8 @@ mod tests {
         fs::rename(&checkpoint, &original).unwrap();
         fs::create_dir(&checkpoint).unwrap(); // Deterministic replacement failure on every platform.
         let request = || AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item("new"),
             position: "tail".into(),
