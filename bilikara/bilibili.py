@@ -9,7 +9,6 @@ import re
 import urllib.parse
 import urllib.request
 import re
-import random
 import hashlib
 import time
 from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
@@ -1049,26 +1048,6 @@ def _gatcha_favlist_folder_summary(folder: dict) -> dict:
     }
 
 
-def _py_preview_gatcha_favlist(raw_mid: object) -> dict:
-    mid = _normalize_gatcha_uid(raw_mid)
-    folders = _request_gatcha_favlist_folders(mid)
-    public_folders: list[dict] = []
-    for folder in folders:
-        title = str(folder.get("title") or "").strip()
-        if not title or not _is_public_gatcha_favlist_folder(folder):
-            continue
-        summary = _gatcha_favlist_folder_summary(folder)
-        if summary["id"]:
-            public_folders.append(summary)
-    return {
-        "uid": mid,
-        "folder_count": len(folders),
-        "public_folder_count": len(public_folders),
-        "selected_folder_ids": [folder["id"] for folder in public_folders if folder.get("selected")],
-        "folders": public_folders,
-    }
-
-
 def _request_gatcha_favlist_page(media_id: str, page_number: int, page_size: int = 20) -> dict:
     params = {
         "media_id": str(media_id),
@@ -1235,34 +1214,6 @@ def _refresh_gatcha_favlist_unlocked(raw_mid: object, raw_folder_ids: object = N
     }
 
 
-def _py_refresh_gatcha_favlist(
-    raw_mid: object,
-    raw_folder_ids: object = None,
-    *,
-    on_start: callable | None = None,
-    on_done: callable | None = None,
-) -> dict:
-    if not rust_runtime.try_begin_gatcha_refresh(
-        busy_message=GATCHA_TASK_BUSY_MESSAGE
-    ):
-        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
-    result: dict | None = None
-    entries: list[dict] = []
-    try:
-        if on_start is not None:
-            on_start()
-        result = _refresh_gatcha_favlist_unlocked(raw_mid, raw_folder_ids)
-        with _GATCHA_FAVLIST_LOCK:
-            entries = list(_load_gatcha_favlist().get("items") or [])
-    finally:
-        rust_runtime.release_gatcha_refresh()
-        if on_done is not None:
-            on_done()
-    if entries:
-        _append_catalog_entries_async(entries)
-    return result or {}
-
-
 def _refresh_existing_gatcha_favlist_cache() -> dict | None:
     if not _GATCHA_FAVLIST_FILE.exists():
         return None
@@ -1301,40 +1252,6 @@ def _refresh_existing_gatcha_favlist_cache() -> dict | None:
         "folder_count": refreshed_folders,
         "added_count": added_count,
         "total_count": len(merged_entries),
-    }
-
-
-def _py_preview_gatcha_uid(raw_mid: object) -> dict:
-    if not effective_bilibili_cookie():
-        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
-
-    mid = _normalize_gatcha_uid(raw_mid)
-    profile = _request_gatcha_uid_profile(mid)
-    mid = str(profile["uid"])
-
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-    followed_uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
-    if not isinstance(followed_uids, list):
-        followed_uids = []
-
-    with _GATCHA_CACHE_LOCK:
-        cache_payload = _load_gatcha_cache()
-    uid_cache = cache_payload.get("uids") if isinstance(cache_payload, dict) else {}
-    if not isinstance(uid_cache, dict):
-        uid_cache = {}
-    existing_entries = _dedupe_gatcha_entries(uid_cache.get(mid, []))
-    cache_mode = "incremental" if existing_entries else "full"
-
-    return {
-        "uid": mid,
-        "name": str(profile.get("name") or ""),
-        "space_url": str(profile.get("space_url") or f"https://space.bilibili.com/{mid}"),
-        "avatar_url": str(profile.get("avatar_url") or ""),
-        "already_followed": mid in followed_uids,
-        "cache_mode": cache_mode,
-        "cache_mode_label": "最新" if cache_mode == "incremental" else "所有",
-        "cached_count": len(existing_entries),
     }
 
 
@@ -1420,58 +1337,6 @@ def _refresh_gatcha_uid_cache(cache_payload: dict, mid: str, *, force_full: bool
         "added_count": len(cache_payload["uids"][mid]),
         "total_count": len(cache_payload["uids"][mid]),
     }
-
-
-def _py_refresh_gatcha_cache() -> dict:
-    if not effective_bilibili_cookie():
-        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
-
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-    configured_uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
-    if not isinstance(configured_uids, list):
-        configured_uids = []
-    known_profiles = uid_payload.get("profiles") if isinstance(uid_payload, dict) else {}
-    if not isinstance(known_profiles, dict):
-        known_profiles = {}
-
-    with _GATCHA_CACHE_LOCK:
-        cache_payload = _load_gatcha_cache(reset_legacy=True)
-
-    if not isinstance(cache_payload, dict):
-        cache_payload = _empty_gatcha_cache_payload()
-    if not isinstance(cache_payload.get("uids"), dict):
-        cache_payload["uids"] = {}
-    cache_profiles = cache_payload.get("profiles")
-    if not isinstance(cache_profiles, dict):
-        cache_profiles = {}
-    cache_payload["profiles"] = cache_profiles
-
-    refresh_summary = {
-        "uids": [],
-        "errors": [],
-        "favlist_error": "",
-        "updated_at": time.time(),
-    }
-    cache_payload["updated_at"] = time.time()
-    for raw_mid in configured_uids:
-        mid = str(raw_mid).strip()
-        if not mid:
-            continue
-        try:
-            profile = _resolve_gatcha_uid_profile(mid, known_profiles)
-            if profile is not None:
-                cache_profiles[str(profile["uid"])] = profile
-                known_profiles[str(profile["uid"])] = profile
-            refresh_summary["uids"].append(_refresh_gatcha_uid_cache(cache_payload, mid))
-        except Exception as exc:
-            refresh_summary["errors"].append({"uid": mid, "error": str(exc)})
-    try:
-        _refresh_existing_gatcha_favlist_cache()
-    except Exception as exc:
-        refresh_summary["favlist_error"] = str(exc)
-    cache_payload["refresh_summary"] = refresh_summary
-    return cache_payload
 
 
 def _gatcha_rebuild_temp_active() -> bool:
@@ -1601,92 +1466,6 @@ def refresh_gatcha_cache_in_background(
         }, on_start=on_start, on_done=on_done)
     except rust_runtime.RustRuntimeServiceError as exc:
         raise BilibiliError(str(exc)) from exc
-
-
-def _py_add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
-    if not rust_runtime.try_begin_gatcha_refresh(
-        busy_message=GATCHA_TASK_BUSY_MESSAGE
-    ):
-        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
-    entries: list[dict] = []
-    try:
-        if on_start is not None:
-            on_start()
-        preview = _py_preview_gatcha_uid(raw_mid)
-        mid = preview["uid"]
-        with _GATCHA_UIDS_LOCK:
-            uid_payload = _load_gatcha_uid_payload()
-            uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
-            if not isinstance(uids, list):
-                uids = []
-            added = False
-            if mid in uids:
-                uids = list(uids)
-            else:
-                uids.append(mid)
-                uid_payload["uids"] = uids
-                added = True
-            profiles = uid_payload.get("profiles")
-            if not isinstance(profiles, dict):
-                profiles = {}
-            profiles[mid] = {
-                "uid": mid,
-                "name": preview["name"],
-                "space_url": preview["space_url"],
-            }
-            if preview.get("avatar_url"):
-                profiles[mid]["avatar_url"] = preview["avatar_url"]
-            uid_payload["profiles"] = profiles
-            uid_payload["updated_at"] = time.time()
-            _save_gatcha_uid_payload(uid_payload)
-
-        with _GATCHA_CACHE_LOCK:
-            cache_payload = _load_gatcha_cache()
-        cache_profiles = cache_payload.get("profiles") if isinstance(cache_payload, dict) else {}
-        if not isinstance(cache_profiles, dict):
-            cache_profiles = {}
-        cache_profiles[mid] = {
-            "uid": mid,
-            "name": preview["name"],
-            "space_url": preview["space_url"],
-        }
-        if preview.get("avatar_url"):
-            cache_profiles[mid]["avatar_url"] = preview["avatar_url"]
-        cache_payload["profiles"] = cache_profiles
-        cache_result = _refresh_gatcha_uid_cache(cache_payload, mid)
-        with _GATCHA_CACHE_LOCK:
-            fresh_cache_payload = _load_gatcha_cache()
-        entries = _gatcha_cache_payload_entries(
-            {
-                "uids": {mid: fresh_cache_payload.get("uids", {}).get(mid, [])},
-                "profiles": {mid: fresh_cache_payload.get("profiles", {}).get(mid, {})},
-            }
-        )
-        temp_profile = fresh_cache_payload.get("profiles", {}).get(mid, {}) if isinstance(fresh_cache_payload, dict) else {}
-        if not isinstance(temp_profile, dict):
-            temp_profile = {
-                "uid": mid,
-                "name": preview["name"],
-                "space_url": preview["space_url"],
-                "avatar_url": preview.get("avatar_url", ""),
-            }
-        _merge_added_uid_into_rebuild_temp(mid, temp_profile, entries)
-    finally:
-        rust_runtime.release_gatcha_refresh()
-        if on_done is not None:
-            on_done()
-    if entries:
-        _append_catalog_entries_async(entries)
-
-    return {
-        "uid": mid,
-        "name": preview["name"],
-        "space_url": preview["space_url"],
-        "avatar_url": preview.get("avatar_url", ""),
-        "added": added,
-        "uids": list(uids),
-        "cache": cache_result,
-    }
 
 
 def preview_gatcha_uid(raw_mid: object) -> dict:
@@ -1846,28 +1625,6 @@ def _append_catalog_entries_async(entries: list[dict]) -> None:
         pass
 
 
-def _py_search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
-    normalized_query = str(query or "").strip().lower()
-    if not normalized_query:
-        return []
-
-    local_candidates = _local_gatcha_candidates() + _local_gatcha_favlist_candidates()
-    if not local_candidates and not effective_bilibili_cookie():
-        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
-
-    results: list[dict] = []
-    for entry in local_candidates:
-        title = str(entry.get("title") or "")
-        if normalized_query not in title.lower():
-            continue
-        results.append(
-            _gatcha_entry_payload(entry)
-        )
-        if len(results) >= max(1, int(limit)):
-            break
-    return _annotate_gatcha_owner_avatars(results)
-
-
 def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
     result = _rust_gatcha_repository(
         "search",
@@ -2011,156 +1768,6 @@ def _profile_from_cached_entries(mid: str, entries: list[dict]) -> dict:
         "uid": mid,
         "name": f"UID {mid}",
         "space_url": f"https://space.bilibili.com/{mid}",
-    }
-
-
-def _py_browse_gatcha_cache(uid: str = "", query: str = "") -> dict:
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-    configured_uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
-    if not isinstance(configured_uids, list):
-        configured_uids = []
-    profiles = uid_payload.get("profiles") if isinstance(uid_payload, dict) else {}
-    if not isinstance(profiles, dict):
-        profiles = {}
-
-    with _GATCHA_CACHE_LOCK:
-        cache_payload = _load_gatcha_cache()
-    cached_by_uid = cache_payload.get("uids") if isinstance(cache_payload, dict) else {}
-    if not isinstance(cached_by_uid, dict):
-        cached_by_uid = {}
-    cache_profiles = cache_payload.get("profiles") if isinstance(cache_payload, dict) else {}
-    if not isinstance(cache_profiles, dict):
-        cache_profiles = {}
-
-    owners: list[dict] = []
-    for raw_mid in configured_uids:
-        mid = str(raw_mid).strip()
-        if not mid:
-            continue
-        entries = _dedupe_gatcha_entries(cached_by_uid.get(mid, []))
-        profile = profiles.get(mid) if isinstance(profiles.get(mid), dict) else {}
-        if not profile or not str(profile.get("name") or "").strip():
-            profile = cache_profiles.get(mid) if isinstance(cache_profiles.get(mid), dict) else {}
-        if not profile or not str(profile.get("name") or "").strip():
-            profile = _profile_from_cached_entries(mid, entries)
-        owners.append(
-            {
-                "uid": mid,
-                "name": str(profile.get("name") or f"UID {mid}"),
-                "space_url": str(profile.get("space_url") or f"https://space.bilibili.com/{mid}"),
-                "avatar_url": str(profile.get("avatar_url") or ""),
-                "count": len(entries),
-            }
-        )
-
-    selected_uid = str(uid or "").strip()
-    if selected_uid and selected_uid not in {owner["uid"] for owner in owners}:
-        selected_uid = ""
-
-    items: list[dict] = []
-    normalized_query = str(query or "").strip().lower()
-    if selected_uid:
-        entries = _dedupe_gatcha_entries(cached_by_uid.get(selected_uid, []))
-        for entry in entries:
-            title = str(entry.get("title") or "")
-            if normalized_query and normalized_query not in title.lower():
-                continue
-            items.append(_gatcha_entry_payload(entry))
-
-    return {
-        "owners": owners,
-        "selected_uid": selected_uid,
-        "query": str(query or "").strip(),
-        "items": items,
-        "updated_at": float(cache_payload.get("updated_at") or 0) if isinstance(cache_payload, dict) else 0,
-    }
-
-
-def _py_browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
-    with _GATCHA_FAVLIST_LOCK:
-        favlist_payload = _load_gatcha_favlist()
-    folders_payload = favlist_payload.get("folders") if isinstance(favlist_payload, dict) else []
-    if not isinstance(folders_payload, list):
-        folders_payload = []
-    legacy_favlist_uid = str(favlist_payload.get("uid") or "").strip() if isinstance(favlist_payload, dict) else ""
-
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-    uid_profiles = uid_payload.get("profiles") if isinstance(uid_payload, dict) else {}
-    if not isinstance(uid_profiles, dict):
-        uid_profiles = {}
-
-    with _GATCHA_CACHE_LOCK:
-        cache_payload = _load_gatcha_cache()
-    cache_profiles = cache_payload.get("profiles") if isinstance(cache_payload, dict) else {}
-    if not isinstance(cache_profiles, dict):
-        cache_profiles = {}
-
-    def avatar_for_uid(uid: str) -> str:
-        profile = uid_profiles.get(uid) if isinstance(uid_profiles.get(uid), dict) else {}
-        if not profile:
-            profile = cache_profiles.get(uid) if isinstance(cache_profiles.get(uid), dict) else {}
-        return str(profile.get("avatar_url") or "")
-
-    folders: list[dict] = []
-    for raw_folder in folders_payload:
-        if not isinstance(raw_folder, dict):
-            continue
-        media_id = _gatcha_favlist_media_id(raw_folder)
-        if not media_id:
-            continue
-        folder_uid = _favlist_folder_uid(raw_folder, legacy_favlist_uid)
-        try:
-            media_count = int(raw_folder.get("media_count") or 0)
-        except (TypeError, ValueError):
-            media_count = 0
-        folders.append(
-            {
-                "id": _favlist_browser_id(folder_uid, media_id),
-                "folder_id": media_id,
-                "fid": str(raw_folder.get("fid") or ""),
-                "title": str(raw_folder.get("title") or media_id),
-                "media_count": media_count,
-                "count": media_count,
-                "uid": folder_uid,
-                "avatar_url": avatar_for_uid(folder_uid),
-            }
-        )
-
-    selected_folder_id = str(folder_id or "").strip()
-    folder_ids = {folder["id"] for folder in folders}
-    bare_folder_ids = {folder["folder_id"] for folder in folders}
-    if selected_folder_id and selected_folder_id not in folder_ids and selected_folder_id in bare_folder_ids:
-        selected_folder_id = next((folder["id"] for folder in folders if folder["folder_id"] == selected_folder_id), selected_folder_id)
-    if selected_folder_id and selected_folder_id not in folder_ids:
-        selected_folder_id = ""
-
-    items: list[dict] = []
-    normalized_query = str(query or "").strip().lower()
-    if selected_folder_id:
-        selected_uid, selected_media_id = _split_favlist_browser_id(selected_folder_id)
-        raw_items = favlist_payload.get("items") if isinstance(favlist_payload, dict) else []
-        for entry in _dedupe_gatcha_entries(raw_items):
-            if not isinstance(entry, dict):
-                continue
-            entry_folder_id = str(entry.get("fav_folder_id") or "").strip()
-            entry_uid = str(entry.get("fav_uid") or legacy_favlist_uid or "").strip()
-            if entry_folder_id != selected_media_id:
-                continue
-            if selected_uid and entry_uid != selected_uid:
-                continue
-            title = str(entry.get("title") or "")
-            if normalized_query and normalized_query not in title.lower():
-                continue
-            items.append(_gatcha_entry_payload(entry))
-
-    return {
-        "folders": folders,
-        "selected_folder_id": selected_folder_id,
-        "query": str(query or "").strip(),
-        "items": items,
-        "updated_at": float(favlist_payload.get("updated_at") or 0) if isinstance(favlist_payload, dict) else 0,
     }
 
 
@@ -2393,116 +2000,6 @@ def select_matching_pages(
     )
 
 
-def _py_part_keyword_match(part: str) -> bool:
-    normalized = str(part or "").strip().lower()
-    return any(keyword in normalized for keyword in ("on", "off", "人声", "原唱", "伴奏"))
-
-
-def _py_part_vocal_role(part: str) -> str | None:
-    normalized = str(part or "").strip().lower()
-    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
-    has_vocal = "vocal" in tokens
-    is_on = (
-        "人声" in normalized
-        or "原唱" in normalized
-        or "onvocal" in tokens
-        or (has_vocal and "on" in tokens)
-    )
-    is_off = (
-        "伴奏" in normalized
-        or "offvocal" in tokens
-        or (has_vocal and "off" in tokens)
-    )
-    if is_on == is_off:
-        return None
-    return "on" if is_on else "off"
-
-
-def _py_is_auto_dual_audio_pair(
-    pages: list[VideoPage],
-    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
-) -> bool:
-    if len(pages) != 2:
-        return False
-    if not any(_py_part_keyword_match(page.part) for page in pages):
-        return False
-    if abs(pages[0].duration - pages[1].duration) > tolerance_seconds:
-        return False
-    return True
-
-
-def _py_auto_dual_audio_video_index(pages: list[VideoPage]) -> int | None:
-    if len(pages) != 2:
-        return None
-    vocal_roles = [_py_part_vocal_role(page.part) for page in pages]
-    if sorted(role for role in vocal_roles if role is not None) == ["off", "on"]:
-        return vocal_roles.index("on")
-    return None
-
-
-def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
-    automatic_video_index = _py_auto_dual_audio_video_index(pages)
-    if automatic_video_index is None:
-        return None
-    return pages[automatic_video_index].page
-
-
-def _py_requires_manual_binding(
-    pages: list[VideoPage],
-    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
-) -> bool:
-    if len(pages) > 2:
-        return True
-    if len(pages) == 2 and not _py_is_auto_dual_audio_pair(
-        pages, tolerance_seconds
-    ):
-        return True
-    return False
-
-
-def _py_decide_audio_binding(
-    pages: list[VideoPage],
-    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
-) -> AudioBindingDecision | None:
-    if not pages:
-        return None
-    if len(pages) == 1:
-        return AudioBindingDecision(
-            mode="single",
-            selected_indices=(0,),
-            automatic_video_index=None,
-        )
-    if not _py_is_auto_dual_audio_pair(pages, tolerance_seconds):
-        return AudioBindingDecision(
-            mode="manual_required",
-            selected_indices=(),
-            automatic_video_index=None,
-        )
-
-    automatic_video_index = _py_auto_dual_audio_video_index(pages)
-    return AudioBindingDecision(
-        mode="automatic",
-        selected_indices=(0, 1),
-        automatic_video_index=automatic_video_index,
-    )
-
-
-def _part_keyword_match(part: str) -> bool:
-    return _py_part_keyword_match(part)
-
-
-def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
-    return _py_is_auto_dual_audio_pair(pages)
-
-
-def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
-    return _py_auto_dual_audio_video_page(pages)
-
-
-def _requires_manual_binding(pages: list[VideoPage]) -> bool:
-    return _py_requires_manual_binding(pages)
-
-
 def decide_audio_binding(
     pages: list[VideoPage],
     tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
@@ -2543,9 +2040,7 @@ def decide_audio_binding(
 
     return rust_backend.require_playback_capability(
         "decide_audio_binding",
-        lambda: rust_backend.try_decide_audio_binding(
-            request, allow_python_reference=False
-        ),
+        lambda: rust_backend.try_decide_audio_binding(request),
         decode=decode_native,
     )
 
@@ -2659,86 +2154,6 @@ def fetch_dash_playurl(
         error.api_code = api_code
         error.status_code = details.get("status_code")
         raise error from exc
-
-
-def _py_fetch_gatcha_candidate() -> dict | None:
-    pool_config = gatcha_pool_config_snapshot()
-    excluded_uid_set = set(pool_config.get("excluded_uids") or [])
-    excluded_folder_set = set(pool_config.get("excluded_favlist_folders") or [])
-    uid_weight = int(pool_config.get("uid_weight", 50))
-    favlist_weight = int(pool_config.get("favlist_weight", 50))
-
-    raw_candidates_by_uid = _local_gatcha_candidates_by_uid()
-    candidates_by_uid: dict[str, list[dict]] = {}
-    if uid_weight > 0:
-        for mid, entries in raw_candidates_by_uid.items():
-            if mid in excluded_uid_set:
-                continue
-            valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
-            if valid_entries:
-                candidates_by_uid[mid] = valid_entries
-
-    all_favlist_candidates = _local_gatcha_favlist_candidates()
-    favlist_candidates: list[dict] = []
-    if favlist_weight > 0:
-        for entry in all_favlist_candidates:
-            if _is_expired_gatcha_entry(entry):
-                continue
-            entry_fav_uid = str(entry.get("fav_uid") or "").strip()
-            entry_folder_id = str(entry.get("fav_folder_id") or "").strip()
-            folder_key = f"{entry_fav_uid}:{entry_folder_id}" if entry_fav_uid else entry_folder_id
-            if folder_key in excluded_folder_set or entry_folder_id in excluded_folder_set:
-                continue
-            favlist_candidates.append(entry)
-
-    if not candidates_by_uid and not favlist_candidates:
-        if not effective_bilibili_cookie():
-            raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
-        raise BilibiliError("本地稿件缓存还没准备好，请稍后再试")
-
-    total_weight = uid_weight + favlist_weight
-    if total_weight <= 0:
-        total_weight = 100
-        uid_weight = 50
-        favlist_weight = 50
-
-    pick_favlist = False
-    if favlist_candidates and not candidates_by_uid:
-        pick_favlist = True
-    elif candidates_by_uid and not favlist_candidates:
-        pick_favlist = False
-    elif favlist_candidates and candidates_by_uid:
-        pick_favlist = random.random() < (favlist_weight / total_weight)
-
-    if pick_favlist:
-        chosen = random.choice(favlist_candidates)
-        payload = {
-            "mid": str(chosen.get("mid") or ""),
-            "bvid": str(chosen.get("bvid") or ""),
-            "title": str(chosen.get("title") or ""),
-            "url": str(chosen.get("url") or ""),
-            "source": "favlist",
-        }
-        for key in ("cover_url", "played_count", "preserved_1"):
-            value = str(chosen.get(key) or "").strip()
-            if value:
-                payload[key] = value
-        return payload
-
-    chosen_mid = random.choice(list(candidates_by_uid.keys()))
-    chosen = random.choice(candidates_by_uid[chosen_mid])
-    payload = {
-        "mid": chosen_mid,
-        "bvid": str(chosen.get("bvid") or ""),
-        "title": str(chosen.get("title") or ""),
-        "url": str(chosen.get("url") or ""),
-        "source": "cache",
-    }
-    for key in ("cover_url", "played_count", "preserved_1"):
-        value = str(chosen.get(key) or "").strip()
-        if value:
-            payload[key] = value
-    return payload
 
 
 def fetch_gatcha_candidate() -> dict | None:

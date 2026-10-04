@@ -440,6 +440,30 @@ fn http_role_resource_sse_and_capability_failures_are_detected() {
     }
 }
 #[test]
+fn transport_failures_identify_the_stage_without_leaking_capabilities() {
+    for (mode, reason) in [("closed-health", "I/O"), ("stall", "timeout")] {
+        let fixture = Fixture::new(mode);
+        let host = fixture.start().unwrap();
+        let start = Instant::now();
+        let error = host
+            .check(&fixture.inspect().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("health"), "Missing request stage: {error}");
+        assert!(error.contains(reason), "Missing transport cause: {error}");
+        assert!(!error.contains("test-token") && !error.contains("test-host"));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let error = host
+            .request("/api/health?token=private-credential", None, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("health"));
+        assert!(!error.contains("private-credential") && !error.contains('?'));
+        drop(host);
+        fixture.gone();
+    }
+}
+#[test]
 fn shutdown_errors_stuck_process_and_nonzero_exit_are_never_success() {
     for mode in ["shutdown-403", "shutdown-stuck", "shutdown-exit"] {
         let fixture = Fixture::new(mode);

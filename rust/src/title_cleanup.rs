@@ -100,6 +100,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retained_manual_verification_cases_have_independent_expected_titles() {
+        for (input, expected) in [
+            ("【纯K投屏】【卡拉OK字幕】歌名 Song Name", "歌名 Song Name"),
+            (
+                "【纯k投屏 | ニコカラ | 主题】歌名 Song Name",
+                "歌名 Song Name",
+            ),
+            ("[ニコカラ]歌名 Song Name", "歌名 Song Name"),
+            ("[ニコカラ] 歌名 Song Name", "歌名 Song Name"),
+            ("(On/Off Vocal) 歌名 Song Name", "歌名 Song Name"),
+            ("歌名 Song Name (On/Off)", "歌名 Song Name"),
+            (
+                "【KTV字幕/主题】主题「歌名 Song Name」／歌手 [FLAC 48kHz]",
+                "主题「歌名 Song Name」／歌手",
+            ),
+        ] {
+            assert_eq!(clean_display_title_impl(input, "", ""), expected, "{input}");
+        }
+    }
+
+    #[test]
     fn clean_display_title_cases() {
         assert_eq!(clean_display_title_impl("【ニコカラ】歌词", "", ""), "歌词");
         assert_eq!(

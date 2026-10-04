@@ -152,7 +152,7 @@ def run_with_startup_logging() -> None:
     parser.add_argument("--https-smoke", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--tool-smoke",
-        choices=("native", "bbdown", "aria2c", "ffmpeg", "windows-libav-preview", "libav-package", "media-routing", "no-media-cli"),
+        choices=("native", "bbdown", "aria2c", "ffmpeg", "media-routing", "no-media-cli"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()

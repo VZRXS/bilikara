@@ -408,6 +408,57 @@ mod tests {
     }
 
     #[test]
+    fn independent_winner_matrix_survives_all_input_permutations() {
+        let values = [(116, 0, "hevc"), (80, 100, "avc"), (64, 100, "av1")];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            for (codec, without_cap, with_cap) in [
+                (None, [2, 1, 0], [2, 1, 0]),
+                (Some(""), [2, 1, 0], [2, 1, 0]),
+                (Some("avc"), [2, 1, 1], [2, 1, 0]),
+                (Some("hevc"), [2, 1, 0], [2, 1, 0]),
+                (Some("unknown"), [2, 1, 0], [2, 1, 0]),
+            ] {
+                for (cap, winners) in [(None, without_cap), (Some(64), with_cap)] {
+                    for (max_quality_id, identity) in [64, 80, 116].into_iter().zip(winners) {
+                        let input = VideoStreamSelectionRequest {
+                            max_quality_id,
+                            codec_filter: codec.map(VideoCodec::from_name),
+                            max_avc_quality_id: cap,
+                            streams: order
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &id)| {
+                                    let (quality, bandwidth, codec) = values[id];
+                                    stream(i, quality, bandwidth, codec)
+                                })
+                                .collect(),
+                        };
+                        let selected_index = order.iter().position(|&id| id == identity).unwrap();
+                        let VideoStreamSelection::Selected {
+                            selected_index: actual,
+                            ..
+                        } = select_video_stream(&input).unwrap()
+                        else {
+                            panic!("expected a native winner");
+                        };
+                        assert_eq!(
+                            actual, selected_index,
+                            "order={order:?}, codec={codec:?}, cap={cap:?}, quality={max_quality_id}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wire_rejects_invalid_schema_duplicate_or_non_increasing_indices() {
         assert!(select_video_stream_json("not json").is_none());
         assert!(select_video_stream_json(r#"{"schema_version":2,"max_quality_id":80,"codec_filter":null,"max_avc_quality_id":null,"streams":[]}"#).is_none());

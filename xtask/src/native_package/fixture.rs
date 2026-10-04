@@ -50,8 +50,11 @@ fn respond(mut stream: TcpStream, listener: &TcpListener, mode: &str, version: &
     let mut output = String::from("{}");
     let mut exit = None;
     let base = format!("http://{}", listener.local_addr().unwrap());
-    if mode == "stall" && path == "/api/health" {
+    if mode == "stall" && path.split('?').next() == Some("/api/health") {
         thread::sleep(Duration::from_secs(60));
+    }
+    if mode == "closed-health" && path.split('?').next() == Some("/api/health") {
+        return; // A real EOF before response headers, not a mocked client error.
     }
     if path.starts_with("/bootstrap/") {
         kind = "text/html";

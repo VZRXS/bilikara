@@ -204,34 +204,164 @@ locked independent xtask sources and [rebuild instructions](../media-libav/REBUI
 so migrated library/companion wrappers remain usable without the application Runtime.
 
 Replaced Python construction references and the native desktop package gate
-are retired, along with desktop construction test drivers. The next bounded slice
-is real-libav prerequisite/media verification drivers, followed by native business
-and legacy Host/FFI consumers without reducing regression coverage. Remaining Python verification and publication
+are retired, along with desktop construction and libav prerequisite test drivers.
+Media-operation and native business drivers now use Node and native artifacts;
+remaining legacy Host/FFI consumers are being retired while preserving coverage. Remaining Python verification and publication
 entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
 Python requirements.
 
 `start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
-scripts remain development/compatibility entry points. The Python HTTP/SSE
-Host, FFI adapters, source-mode media helpers and frozen reference functions
-remain useful to integration/equivalence tests; they are not desktop launch or
-packaging dependencies. Other verification drivers and test fixtures still use Python tooling.
-The retired package gate is implemented independently in xtask; six retained
-native business/FFI test modules share only `tests/native_host_support.py`
-HTTP/startup transport, which performs no package inspection. Historical PyInstaller/Python-runtime
+scripts still support Source development: Python HTTP/SSE transport around Rust
+AppState, yt-dlp orchestration and explicit media-CLI compatibility routing.
+The native Host disables yt-dlp and ships no media CLI, so replacing those Source
+entries with the native launcher would change their supported behavior.
+`scripts/dev_smoke_test.py` exercises these Source routes;
+`scripts/libav_manifest.py` still serves `bilikara.ffmpeg_vendor`.
+Source HTTP/FFI, loader/result-validation and media-routing tests remain active
+Python consumers until their faithful replacements are covered. These are
+separate from desktop launch, construction and native package verification.
+The retired package gate is implemented independently in xtask. Native business
+regressions use `npm run test:native-host` and the test-only Node HTTP/startup
+transport, which performs no package inspection. It executes the current locked
+host-native Cargo artifact, or the explicitly supplied native Host, with private
+data and local providers. Source/queue/login-cancellation media checks require the
+real Linux prepared companion and restricted local TLS trust fixture; missing
+declared inputs fail. Foreign platform checks remain separate. Historical PyInstaller/Python-runtime
 construction helpers and tests solely for those retired interfaces are removed;
 native version metadata is unchanged.
 
-`requirements-packaging.txt` is still shared by CI build and test jobs:
-`certifi`/`truststore` remain for retained Python HTTPS adapters/tests. The unused
+`requirements-packaging.txt` remains in the source/FFI test job:
+`certifi`/`truststore` serve retained Python HTTPS adapters/tests. The bundle job
+does not set up Python. The unused
 `pefile` dependency is removed with the Python collector; xtask reads PE imports.
 Their presence in the build environment does not put them in native products.
+
+`test:native-images`, `test:native-qr` and `test:native-login` run current Cargo
+test/Host artifacts through Node with isolated data and local TLS providers.
+The Rust test-only independent QR decoder verifies exact UTF-8/M-level payloads;
+full PNG/ZIP decoding, local time, copied fonts, archived-session isolation and
+login generations/credentials remain checked. The former Python image/login
+suites and Pillow/ZXing requirements are retired. A few live source-adapter
+failure guards remain in the source/FFI suites. Linux SSL_CERT_FILE fixtures do
+not qualify Windows/macOS trust or GUI behavior.
+
+Release selection, media-page ordering and audio-binding policy regressions run
+directly in the Rust Core test suite, with independent expected decisions and
+input-permutation checks. Their duplicate Python policy suites are retired;
+the still-used Source adapters retain separate validation/failure tests.
+
+`npm run test:native-ratings` runs the current native Host, typed Internet
+dispatch and rendered Host/Remote rating controls against a non-forwarding local
+TLS fixture. Install its pinned test-only Chromium with
+`npm exec -- playwright install chromium`; Linux CI installs the browser and
+its system prerequisites before this required gate. It checks authorization,
+eligibility, retries, duplicate guards, bounded Catalog contributions and late
+completion after reset/shutdown. Synthetic played records qualify these
+contracts, not media playback or foreign native window/signature behavior.
+
+`npm run test:native-transport` runs actual Host HTTP and Chromium/WebRTC with
+isolated data, verified local TLS and synthetic VP8 test media. It covers LAN/
+Internet control queues and ACKs, generation/revision races, slow metadata and
+catalog reads, AV adjustment, timeout/reconnect without mutation resubmission,
+and room rebuilding. CI runs it once after native inputs and Chromium setup.
+`node tests/run_native_transport.mjs --output /isolated/evidence` keeps the
+browser receipts. Local SDP signaling does not qualify public STUN/TURN/NAT or
+phones. The Python transport/browser drivers are retired; the frontend Node
+suite separately verifies failed ACK retry without replaying the seek.
+
+`npm run test:native-media` runs the current native Host and real libav companion
+with a restricted local TLS fixture, synthetic FFmpeg-generated test media and
+WebKit. Set `BILIKARA_TEST_LIBAV_COMPANION` to the actual native prepared library;
+missing, malformed or foreign inputs fail. Install the pinned test browser with
+`npm exec -- playwright install webkit`. Playback clocks, login/binding,
+LAN/Internet controls, PNG/CSV/ZIP, restart, cache policy/cancellation and a
+compiled BBDown command fixture remain exercised. FFmpeg is a test-only generator;
+the fixture does not qualify a real provider download. Linux CI runs this gate
+after preparing the prefix and installing browser/system prerequisites.
+
+`npm run test:native-shared -- /isolated/evidence --shared-ui` retains the full
+shared desktop/Android-profile browser regression, including media/DSP/node
+identity, drafts, asynchronous actions and session countdown/restart. A
+codec-capable browser and real audio service are required; Firefox is the default,
+and `BILIKARA_TEST_BROWSER` can select another installed browser.
+`BILIKARA_TEST_ACTIVE_PITCH=1` requires completed real Signalsmith DSP.
+This browser profile does not qualify Android devices or native windowing.
+An audio/engine failure is a failed validation, not a reason to stub DSP.
+`--bbdown-real` instead requires the explicitly supplied pinned
+`BILIKARA_TEST_BBDOWN_PATH`; synthetic provider responses alone do not establish
+real BBDown/provider compatibility. The Python desktop browser orchestrator is
+retired; source Host UI/FFI harnesses remain separate consumers.
+
+`BILIKARA_TEST_TAURI_EXE=/absolute/generated/bilikara/bilikara-desktop npm run
+test:native-launcher` executes the assembled Linux shell under test-only Xvfb,
+Openbox, xdotool and scrot. It relocates a clean candidate with links preserved,
+then checks default storage, an explicit data override, import/restart, real WM
+close, supervised Host reaping and listener closure. It rejects a candidate
+containing `runtime/` user data. `BILIKARA_REQUIRE_NATIVE_LAUNCHER=1` makes absent
+inputs an error; an optional local run explicitly skips without a candidate.
+The driver writes screenshots/logs with
+`node tests/run_desktop_launcher.mjs /isolated/evidence-directory` using the
+same declared executable. Linux execution does not qualify foreign windowing.
 
 `npm run test:desktop-build` exercises native construction with a controlled PATH
 without Python, including missing dependencies/provenance, BBDown version
 rejection and no application Runtime linkage. CI runs that same command once
-after pinned host-native xtask checks and Node setup. The separately scoped Python
-libav prerequisite driver keeps actual C/ABI/sanitizer/cache checks; the remaining
+after pinned host-native xtask checks and Node setup. `npm run test:libav-wrapper`
+checks the actual Bash helper from external source directories and independent
+rebuild kits using a recording Cargo command. `npm run test:libav-prerequisites`
+requires `BILIKARA_TEST_LIBAV_COMPANION` pointing to a real native prepared
+prefix's `bin/` companion; missing, invalid or incompatible input fails. It builds
+the current host-native xtask from compiler-artifact output and independently
+loads actual libraries with a small C probe. Repeated companion/shim construction,
+POSIX sanitizers, Linux ELF collection and C-only cache failure/preservation checks
+run without Python. CI runs that required suite after preparing/exporting the
+Linux prefix, rather than in the earlier desktop fixture entry. Foreign native
+execution remains separate. The remaining
 `test_native_build_isolation.py` checks only the legacy manifest adapter.
+Explicit media-operation comparison uses `npm run test:media -- ...` with the
+same-build **test-only** FFmpeg/ffprobe prefix and documented finite corpus in
+`media-libav/COMPARISON.md`, `PACKET_SCAN.md`, `COPY_REMUX.md` and
+`FLAC_NORMALIZATION.md`. It selects current locked host-native Cargo artifacts,
+executes the real companion and Rust lifecycle tests, and fails on missing
+declared inputs. `node media-libav/generate_fixtures.mjs` retains the synthetic
+fixture formats; `test:media-fixtures` requires `BILIKARA_TEST_MEDIA_PREFIX`.
+These Node drivers replace the Python media comparison/generator. The ordinary
+prepared product prefix still disables programs and ships no media CLI.
+
+`npm run test:frontend` runs the current Node VM/command fixtures and frontend
+source contracts, including split-player synchronization, SSE ordering, export,
+update actions, shared layouts and permissions. Their Python drivers are retired;
+these checks do not certify native window geometry or real-device rendering.
+`npm run test:remote-sync` checks the production Remote workflow and executes its
+PowerShell asset copy into a private destination when available. That workflow
+requires the real copy check and no longer sets up Python. Push/deployment filters
+and dispatch behavior are unchanged.
+`npm run test:auxiliary` covers Signalsmith vendoring, aria2 metadata and offline
+publication/workflow failures, including native matrices, prerequisite/assembly
+ordering and tag-only uploads. Signalsmith's pinned resource bytes are unchanged.
+The macOS aria2 recipe and bundle metadata/README gates use Node; native compiler,
+signature and public archive round-trip gates remain required on macOS. AWS CLI
+still uses third-party Python for the independent R2 publication jobs. The broader
+CI Python setup stays while source/FFI and other live verification consumers remain.
+
+`npm run test:native-http` runs the current Rust HTTP integration binary with
+diagnostic requests terminated by a local rejecting proxy. `test:remote-load`
+checks the read-only Node SSE load tool, its deadlines/reconnections and native
+authorization refusal. Invoke it as `node tools/load_test_remote_sse.mjs BASE_URL
+--clients 20 --duration 15`; it sends no credentials and cannot provision access.
+The former manual title-cleanup checks are independent Rust unit assertions.
+
+`test:native-catalog` exercises both native catalog adapters and shared caches
+with isolated HTTP fixtures. `test:native-smoke` uses compiled native process
+fixtures for pipe/deadline/group cleanup and checks the locked Tauri configuration.
+Its actual macOS GUI check requires a native app; a foreign runner explicitly
+skips it. CI runs `tests/macos_tauri_smoke.test.mjs` as a required gate against
+the extracted macOS shell, using private copies and test-owned HOME/data for
+both shell and Finder-like launches. Existing signature/architecture/archive
+and native backend checks remain separate. The obsolete Python packaged-FFmpeg/
+Python-FFI smoke expectations are retired; the native verifier rejects those
+payloads instead of requiring them.
+
 Validate an already-produced release package from the pinned repository root:
 
 ```sh
@@ -666,6 +796,17 @@ is never scheduled by startup, login or ordinary local-library refresh.
 Summary-only progress and outcomes are recorded in `logs/monthly-d1-refresh.log`;
 credentials and upstream bodies are excluded.
 
+The separate administrator CLI is `npm run catalog:refresh -- [options]`.
+It builds the current host-native `bilikara-catalog-refresh` with the locked
+repository toolchain. It preserves the source maintenance command's local/D1/
+union UID selection, latest/page-any probe, filtered-page traversal, bounded
+upload batches, dry-run and configurable retry limits (zero is unlimited).
+Set `BILIKARA_ADMIN_SECRET` in the environment; the secret is never a CLI argument.
+The retained Source Host transports this job to Rust, including its process-wide
+duplicate-start guard. The native Host's supervised job above keeps its existing
+fixed recipe and shutdown policy. Neither command runs automatically or acquires
+credentials. `test:catalog-maintenance` checks the CLI against isolated services.
+
 Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
 where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
 start with the song title. Logs are not merged or truncated at 1 MiB; orphaned
@@ -883,13 +1024,15 @@ Concurrency boundaries to keep in mind when interpreting feedback:
   unstarted skipped song can be requested again; repeating an active/recorded
   song requires the explicit repeat confirmation.
 
-Regression coverage in `tests/test_playlist_order_stress.py` checks singleton
+Regression coverage in `rust-runtime/tests/native_playlist_stress.rs` checks singleton
 marker resets, repeated priority actions, per-singer relative order, concurrent
 native callers, and conservation across admissions, moves and playback changes.
-`tests/test_playlist_lifecycle_stress.py` adds deterministic random user counts,
+The same actual AppState suite adds deterministic random user counts,
 seating changes, additions/removals/renames, returning singers, concurrent roster
 changes and admissions, empty/full rosters, duplicate/repeat rules, invalid
-targets and stale playback commands. Every successful admission must remain in
+targets and stale playback commands. `tests/native_host_business.test.mjs` checks
+the real persisted roster/queue and fresh incarnations across process restart.
+Every successful admission must remain in
 the active queue/current program or have an ended session-play ledger entry.
 Expected waiting IDs and ended IDs are accounted for from the submitted action,
 so an unexpected removal cannot pass merely by being recorded as ended.
@@ -901,15 +1044,16 @@ Native Beta's separate 200-waiting-song HTTP limit. Rejected admissions do not
 evict an older song or write an unrestorable oversized backup.
 
 Replay the larger deterministic run (100 random sessions × 500 steps, plus eight
-concurrent sessions with eight callers × 96 steps each) with the native runtime
-library built:
+concurrent sessions with eight callers × 96 steps each):
 
 ```bash
-BILIKARA_REQUIRE_RUST_LIB=1 python -m tests.test_playlist_lifecycle_stress --stress
+npm run test:playlist-stress -- --stress
 ```
 
 `--seeds`, `--steps`, and `--concurrent-sessions` adjust this opt-in run; ordinary
-unittest discovery keeps a smaller regression workload. Successful pressure
+Rust test discovery keeps a smaller regression workload. The Node entry selects
+the current locked host-native Cargo test artifact; it needs no Python/FFI adapter.
+Successful pressure
 tests establish the checked invariants for those runs, not a diagnosis of a
 historical user report without its operation trace.
 

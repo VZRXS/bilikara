@@ -302,6 +302,47 @@ mod tests {
     }
 
     #[test]
+    fn dash_literal_normalization_matrix_preserves_source_identity() {
+        let cases = [
+            ("", ""),
+            (" ", ""),
+            ("https://a", "https://a"),
+            (" https://a ", "https://a"),
+            ("歌曲", "歌曲"),
+            ("%E6%AD%8C", "%E6%AD%8C"),
+        ];
+        for (primary, normalized_primary) in cases {
+            for (backup, normalized_backup) in cases {
+                let input = request(
+                    MediaDownloadPlanMode::DashStreams,
+                    MediaStreamKind::Video,
+                    vec![stream(7, primary, &[backup, primary])],
+                );
+                let mut expected = Vec::new();
+                for (source, backup_index, url) in [
+                    (MediaCandidateSource::Primary, None, normalized_primary),
+                    (MediaCandidateSource::Backup, Some(0), normalized_backup),
+                    (MediaCandidateSource::Backup, Some(1), normalized_primary),
+                ] {
+                    if !url.is_empty() {
+                        expected.push(PlannedMediaCandidate {
+                            stream_index: 7,
+                            source,
+                            backup_index,
+                            url: url.to_owned(),
+                        });
+                    }
+                }
+                assert_eq!(
+                    plan_media_download_candidates(&input).unwrap().candidates,
+                    expected,
+                    "primary={primary:?}, backup={backup:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn empty_input_is_valid_and_execution_is_deterministic() {
         let request = request(
             MediaDownloadPlanMode::DashStreams,

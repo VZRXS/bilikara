@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
@@ -14,6 +15,29 @@ from bilikara.tool_smoke import packaged_tool_smoke_json
 
 
 class PackagedToolSmokeTest(unittest.TestCase):
+    def test_retired_package_targets_are_rejected_before_startup(self):
+        for target in ("libav-package", "windows-libav-preview"):
+            with self.subTest(target=target), patch.object(
+                sys, "argv", ["bilikara", "--tool-smoke", target]
+            ), patch("bilikara.launcher._ensure_std_streams") as streams, patch(
+                "bilikara.https_trust.initialize_https_trust"
+            ) as trust, patch("bilikara.server.run") as server, redirect_stderr(io.StringIO()) as error:
+                with self.assertRaises(SystemExit) as result:
+                    launcher.run_with_startup_logging()
+                self.assertEqual(result.exception.code, 2)
+                self.assertIn(f"invalid choice: '{target}'", error.getvalue())
+                streams.assert_not_called()
+                trust.assert_not_called()
+                server.assert_not_called()
+                with self.assertRaisesRegex(ValueError, "unsupported packaged tool smoke target"):
+                    packaged_tool_smoke_json(target)
+
+    def test_source_media_smoke_targets_keep_their_existing_drivers(self):
+        for target, module in (("media-routing", "media_smoke"), ("no-media-cli", "media_cli_smoke")):
+            with self.subTest(target=target), patch(f"bilikara.{module}.run", return_value="source result") as run:
+                self.assertEqual(packaged_tool_smoke_json(target), "source result")
+                run.assert_called_once_with()
+
     def test_launcher_smoke_writes_unicode_json_as_utf8_on_an_ansi_stream(self):
         payload = {"event": "bilikara.tool_smoke", "tool": "ffmpeg", "path": "C:/Bilikara preview \u7a7a/ffmpeg.exe"}
         output = io.BytesIO()
@@ -32,7 +56,7 @@ class PackagedToolSmokeTest(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue().decode("utf-8")), payload)
 
     def test_launcher_smoke_failure_exits_without_an_unhandled_gui_exception(self):
-        with patch.object(sys, "argv", ["bilikara", "--tool-smoke", "windows-libav-preview"]), patch(
+        with patch.object(sys, "argv", ["bilikara", "--tool-smoke", "media-routing"]), patch(
             "bilikara.launcher._ensure_std_streams"
         ), patch("bilikara.launcher._install_debug_log_streams"), patch(
             "bilikara.launcher._install_startup_exception_hooks"

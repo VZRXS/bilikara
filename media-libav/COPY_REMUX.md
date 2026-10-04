@@ -123,8 +123,7 @@ HE-AAC、不调整时间、不容忍 padding 偏差。报告单独列出该 repr
 ## 有限回归
 
 ```bash
-python media-libav/test_comparison.py \
-  --driver "$PWD/rust-runtime/target/debug/examples/libav_metadata" \
+npm run test:media -- \
   --companion "$M5_OUT/companion/libbilikara_media_libav.so" \
   --prefix "$M5_PREFIX" --fixtures "$PWD/.tmp/m1-libav-9/fixtures" \
   --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \

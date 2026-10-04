@@ -260,6 +260,49 @@ pub(crate) fn select_media_pages_json(request_json: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn all_input_permutations_preserve_original_identity_and_page_order() {
+        let cases = [
+            ([1, 2, 3], vec![0, 1, 2]),
+            ([1, 3, 2], vec![0, 2, 1]),
+            ([2, 1, 3], vec![1, 0, 2]),
+            ([2, 3, 1], vec![2, 0, 1]),
+            ([3, 1, 2], vec![1, 2, 0]),
+            ([3, 2, 1], vec![2, 1, 0]),
+        ];
+        for (order, expected) in cases {
+            let request = MediaPageSelectionRequest {
+                preferred_page: Some(1),
+                tolerance_seconds: 3,
+                pages: order
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, page)| {
+                        descriptor(
+                            index,
+                            page,
+                            100 + page,
+                            match page {
+                                1 => 301,
+                                2 => 300,
+                                3 => 302,
+                                _ => unreachable!(),
+                            },
+                            "カラオケ 🎤",
+                        )
+                    })
+                    .collect(),
+            };
+            assert_eq!(
+                select_media_pages(&request).unwrap(),
+                MediaPageSelection::Selected {
+                    selected_indices: expected
+                },
+                "{order:?}"
+            );
+        }
+    }
+
     fn descriptor(
         index: usize,
         page: i64,

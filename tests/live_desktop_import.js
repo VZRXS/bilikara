@@ -11,9 +11,10 @@ const evidence = path.resolve(process.argv[2]);
 const os = require("node:os");
 let directory, source, temporary, applicationPath, proxy, proxyUrl;
 const blockedRequests = [];
-const executable = path.resolve("rust-runtime/target/debug/bilikara-desktop-host");
+assert.ok(path.isAbsolute(process.env.BILIKARA_TEST_NATIVE_HOST || ""), "declare the current Cargo-selected Host from run_desktop_rust_host.mjs");
+const executable = process.env.BILIKARA_TEST_NATIVE_HOST;
 const shutdownToken = "synthetic-desktop-shutdown";
-let server, browser, lines, page, remote;
+let server, browser, lines, page, remote, clientId;
 const errors = [];
 let stderr = "";
 async function launch() {
@@ -45,10 +46,14 @@ async function stop(ready) {
   lines.close();
 }
 async function api(route, body) {
-  return page.evaluate(async ({route,body}) => {
-    const response = await fetch(route, {method:body===undefined?"GET":"POST",headers:{...clientHeaders(),"content-type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});
-    return {status:response.status, body:await response.json()};
-  }, {route,body});
+  const url=new URL(route,page.url());
+  // The context retains the actual bootstrap/identity cookies independently
+  // of a closed UI tab, so worker-only checks can isolate player recovery.
+  const response=await page.context().request.fetch(url.href,{
+    method:body===undefined?'GET':'POST',timeout:15000,headers:{origin:url.origin,'content-type':'application/json','x-bilikara-client':clientId},
+    ...(body===undefined?{}:{data:body}),
+  });
+  return {status:response.status(),body:await response.json()};
 }
 async function okay(route,body) {const r=await api(route,body);assert.equal(r.status,200,route+": "+JSON.stringify(r.body));return r.body.data;}
 async function capture(name, target) {
@@ -75,6 +80,7 @@ async function openHost(ready) {
   assert.equal(await page.locator("#android-host-dock").isVisible(),false);
   await page.locator('[data-session-choice="continue"]').click();
   await page.waitForFunction(()=>state.data?.session_flags?.startup_choice_pending===false);
+  clientId=await page.evaluate(()=>state.clientId);
   return host;
 }
 (async () => {
@@ -101,9 +107,12 @@ async function openHost(ready) {
   let ready=await launch();
   const unauthenticated = await fetch(ready.baseUrl+"/api/state");
   assert.equal(unauthenticated.status,403);
-  browser=await webkit.launch({headless:true,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
+  browser=await webkit.launch({headless:true,executablePath:process.env.BILIKARA_BROWSER_EXECUTABLE,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
   let host=await openHost(ready);let initial=await okay("/api/state");
-  assert.equal(initial.current_item.id,"current");assert.equal(initial.current_item.cache_status,"pending");assert.match(initial.current_item.cache_message,/unavailable/);
+  assert.equal(initial.current_item.id,"current");
+  // The independent scheduler can report the unavailable imported source before
+  // the browser's first snapshot; neither state has a completed artifact.
+  assert.ok(['pending','failed'].includes(initial.current_item.cache_status));assert.match(initial.current_item.cache_message,/unavailable/);
   assert.equal(initial.current_item.video_media_url,"");assert.equal(initial.current_item.video_relative_path,"");assert.deepEqual(initial.playlist.map(v=>v.id),["queued","remove-me"]);
   assert.deepEqual(initial.session_users,["Alice","Bob"]);assert.equal(initial.history.length,1);assert.equal(initial.session_played.length,1);
   assert.equal(initial.bbdown.logged_in,true);assert.equal(initial.cache_policy.download_source,"bbdown");assert.equal(initial.cache_policy.enabled,false);
@@ -165,8 +174,9 @@ async function openHost(ready) {
   assert.deepEqual(errors,[]);assert.deepEqual(blockedRequests,[],"Import/restart must not trigger remote catalog, credential or media requests");
   await fs.writeFile(path.join(evidence,"import-summary.json"),JSON.stringify({passed:true,actualRustEntry:true,pythonBackend:false,applicationPathEmpty:true,sourceBytesUnchanged:true,imports:1,restarts:1,queueMutation:true,settingsMutation:true,credentialRestored:true,archives:true,exports:["csv","png"],unavailableSource:"bbdown",reimportSkippedWithAbsentSource:true,pageErrors:errors,externalRequests:blockedRequests.length},null,2));
   console.log("Actual desktop import, exports, native mutations and no-reimport restart passed");
-})().catch(async error=>{console.error(error,stderr);if(process.env.BILIKARA_BBDOWN_FIXTURE){
+})().catch(async error=>{console.error(error,stderr);
     if(page)await fs.writeFile(path.join(evidence,"failure-state.json"),JSON.stringify(await api("/api/state"),null,2)).catch(()=>{});
+  if(process.env.BILIKARA_BBDOWN_FIXTURE){
     await fs.cp(path.join(directory,"logs"),path.join(evidence,"failure-cache-logs"),{recursive:true}).catch(()=>{});
     const fixtureRoot=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
     if(fixtureRoot)for(const file of await fs.readdir(fixtureRoot))if(file.endsWith(".started"))await fs.copyFile(path.join(fixtureRoot,file),path.join(evidence,file));

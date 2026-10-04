@@ -15,9 +15,17 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   const running=async()=>{const result=[];for(const file of await starts()){const pid=Number(file.split(".")[0]);try{await fs.stat(`/proc/${pid}`);result.push(pid);}catch{}}return result;};
   const reaped=async pids=>{await until(async()=>{for(const pid of pids){try{await fs.stat(`/proc/${pid}`);return false;}catch{}}return true;});};
   const current=async()=> (await okay("/api/state")).current_item;
-  const ready=async()=>{await until(async()=> (await current()).cache_status==="ready");return current();};
-  const retry=async()=>{const item=await current();return okay("/api/cache/retry",{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id,force:true});};
+  let previousRetryArtifact;
+  const ready=async()=>{await until(async()=>{const item=await current();return item.cache_status==="ready" && (previousRetryArtifact===undefined || item.artifact_set_id!==previousRetryArtifact);});previousRetryArtifact=undefined;return current();};
+  const retry=async()=>{const item=await current();previousRetryArtifact=item.artifact_set_id;return okay("/api/cache/retry",{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id,force:true});};
   const caps=avc=>okay("/api/client/media-capabilities",{hevc_supported:false,avc_supported:avc,max_avc_quality_index:4});
+  const removeTestVideo=async()=>{
+    const item=await current(),base=path.resolve(directory,'cache'),file=path.resolve(base,item.video_relative_path);
+    if(!item.video_relative_path){assert.equal(item.video_media_url,'');return;}
+    assert.match(item.video_relative_path,/^artifacts\/[^/]+\/[^/]+\/video-p\d+\.mp4$/);
+    assert.ok(file.startsWith(base+path.sep));assert.equal((await fs.lstat(file)).isFile(),true);
+    await fs.unlink(file); // one actual test-owned file; exercise missing-artifact recovery
+  };
   // Baseline import already proved missing BBDown is preserved and unavailable.
   assert.equal((await api("/api/cache-policy",{download_source:"bbdown"})).status,501);
   await okay("/api/cache-policy",{download_source:"native",max_cache_items:1,audio_hires:false});
@@ -39,23 +47,25 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
     await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,pinnedBBDown:"1.6.3",realChild:true,nonForwardingTLSFixture:true,providerDownloadTested:false,applicationPathEmpty:true,pythonBackend:false,mediaValidated:true,consoleErrors:errors,browserWarnings:warnings},null,2));
     return;
   }
-  // Guest admission must fail without a child; fixture login enables retry without restarting.
+  // BBDown supports guest downloads; DownKyi's credential requirement is
+  // separately checked by native login/HTTP tests. Do not revive the old policy.
+  const previousReady=await current();
   await caps(false);
-  await until(async()=> !(await current()).video_media_url);
+  await until(async()=> !(await okay('/api/state')).cache_policy.enabled);
+  assert.equal((await current()).video_media_url,previousReady.video_media_url,'Capability refusal preserves published immutable media');
+  assert.equal((await current()).artifact_set_id,previousReady.artifact_set_id);
+  await removeTestVideo();
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-wait");
   await okay("/api/bbdown/logout",{});
   const guestStarts=(await starts()).length;
+  await mode('success');
   await page.locator("#cache-download-source-select").selectOption("bbdown");
   await caps(true);
-  await until(async()=> (await current()).cache_status==="failed");
-  assert.match((await current()).cache_message,/下载需要登录 Bilibili/);
-  await page.waitForFunction(()=>document.querySelector("#app-toast")?.textContent.includes("Sign in to Bilibili"));
-  await capture("bbdown-login-required.png",page);
-  const guest=await current();
-  assert.equal((await api("/api/cache/retry",{item_id:guest.id,expected_item_incarnation_id:guest.item_incarnation_id})).status,403);
-  for(let n=0;n<4;n++)await okay("/api/state");
-  assert.equal((await starts()).length,guestStarts);
-  assert.match(await fs.readFile(path.join(directory,"logs/bbdown",guest.id+".log"),"utf8"),/download_login_required source=bbdown/);
+  await until(async()=> (await starts()).length>guestStarts && (await current()).cache_status==='ready');
+  assert.equal((await okay('/api/state')).bbdown.logged_in,false);
+  const guest=await current();assert.notEqual(guest.artifact_set_id,previousReady.artifact_set_id);
+  assert.equal((await page.request.get(new URL(guest.video_media_url,page.url()).href)).status(),200);
+  await capture("bbdown-guest-ready.png",page);
   const generations=async()=> (await (await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/login-stats")).json()).generations;
   await okay("/api/bbdown/login/start",{});
   await until(async()=>Boolean((await okay("/api/state")).bbdown.login.qr_image));
@@ -68,6 +78,8 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await until(async()=> (await okay("/api/state")).bbdown.logged_in);
   await mode("success");await retry();await ready();
   const completed=await current();
+  const initialLog=await fs.readFile(path.join(directory,'logs/bbdown',completed.id+'.log'),'utf8');
+  assert.match(initialLog,/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] start cache: Imported desktop song/);
   const plainReadyRetry=await api("/api/cache/retry",{item_id:completed.id,expected_item_incarnation_id:completed.item_incarnation_id});
   assert.equal(plainReadyRetry.status,409);
   assert.equal((await current()).artifact_set_id,completed.artifact_set_id,"Rejected ready retry preserves the readable artifact");
@@ -103,21 +115,35 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   // Hi-Res uses actual FLAC-in-MP4 input and shared normalization to .flac.
   await okay("/api/cache-policy",{audio_hires:true});
   await until(async()=>{const item=await current();return item.cache_status==="ready" && item.audio_variants.some(v=>v.audio_url.endsWith(".flac"));});
+  // Isolate the executor's explicit retry bound from the real player's own
+  // missing-media recovery. Its current video is deliberately removed below;
+  // keep UI/recovery coverage above and test worker admissions through HTTP.
+  const failureContext=page.context(),failureUrl=page.url();
+  await page.close();
   // Evict the readable artifact so failures exercise first-download semantics.
-  await caps(false);await until(async()=> !(await current()).video_media_url);
+  await caps(false);await removeTestVideo();
   await mode("missing");await caps(true);
   await until(async()=> (await current()).cache_status==="failed");
+  await reaped(await running());await sleep(1800);
+  assert.equal((await current()).cache_status,'failed');
   const outcomes=[];
   for(const failure of ["missing","invalid","exit"]){
-    await mode(failure);const before=(await starts()).length;await retry();
-    await until(async()=> (await current()).cache_status==="failed");
+    await mode(failure);const beforeFiles=await starts(),before=beforeFiles.length;await retry();
+    await until(async()=> (await starts()).length>before && (await current()).cache_status==="failed" && (await running()).length===0);
     await reaped(await running());await sleep(1800);
     const after=(await starts()).length;
+    if (after-before>2) {
+      const added=(await starts()).filter(file=>!beforeFiles.includes(file));
+      const children=await Promise.all(added.slice(0,8).map(async file=>({file,receipt:await fs.readFile(path.join(root,file),'utf8')})));
+      await fs.writeFile(path.join(evidence,'bbdown-unexpected-retries.json'),JSON.stringify({failure,children,current:await current()},null,2));
+    }
     assert.ok(after>before && after-before<=2,`${failure}: retry explosion ${after-before}`);
     for(let n=0;n<5;n++)await okay("/api/state");await sleep(1000);assert.equal((await starts()).length,after);
     const failed=await current();assert.ok(!failed.cache_message.includes("synthetic-secret-output"));
     outcomes.push({failure,children:after-before,message:failed.cache_message});
   }
+  page=await failureContext.newPage();watch();await page.goto(failureUrl);
+  await page.waitForFunction(()=>state.hasValidStateResponse);
   await capture("bbdown-failed-desktop.png",page);
   const beforeUnsupported=(await starts()).length;
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/bbdown-no-dash");
@@ -131,7 +157,9 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await mode("slow");await retry();await until(async()=> (await running()).length>=2);
   const disabledPids=await running();await caps(false);await reaped(disabledPids);
   assert.equal((await okay("/api/state")).cache_policy.enabled,false);
-  await until(async()=> !(await current()).video_media_url);
+  // Cancellation preserves the last readable publication. Explicitly remove
+  // this fixture's one video to exercise fresh admission on capability re-entry.
+  await removeTestVideo();
   await mode("late");await caps(true);await until(async()=> (await running()).length>=2);
   await page.waitForFunction(()=>state.data.cache_policy.download_source==="bbdown"
     && state.data.current_item.cache_status==="downloading"
@@ -188,7 +216,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   const unavailable=await okay("/api/state");assert.equal(unavailable.cache_policy.download_source,"bbdown");assert.equal(unavailable.cache_policy.enabled,false);
   assert.equal((await api("/api/cache/retry",{item_id:unavailable.current_item.id,expected_item_incarnation_id:unavailable.current_item.item_incarnation_id,force:true})).status,501);
   const log=(await Promise.all((await fs.readdir(path.join(directory,"logs/bbdown"))).map(name=>fs.readFile(path.join(directory,"logs/bbdown",name),"utf8")))).join("\n");assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(log));
-  assert.match(log,/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] start cache: Imported desktop song/);
+  assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(initialLog));
   assert.deepEqual(errors,[]);
   await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,fixtureChild:true,providerDownloadTested:false,pythonBackend:false,applicationPathEmpty:true,choices,success:true,hiresFlac:true,multiPageAudio:true,sourceReplacement:true,lateOldStagingResult:true,nonDashRejectedBeforeChild:true,userRetry:true,disablement:true,windowShrink:true,removal:true,shutdown:true,unavailable:true,outcomes,consoleErrors:errors,browserWarnings:warnings},null,2));
 };

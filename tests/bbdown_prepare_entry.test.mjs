@@ -39,8 +39,9 @@ test('toolchain repair, pinned setup, build cache and native linker precede ever
 test('native packaging gates and unrelated Python verification remain present', () => {
   for (const gate of ['-- build-backend', '-- assemble-desktop', '--target host-tuple -- verify-native-desktop',
     'Verify extracted Windows bundle', 'Archive and verify round-trip macOS bundle',
-    'codesign --verify --deep --strict', 'plutil -lint', 'actions/setup-python@v6',
-    'requirements-packaging.txt']) assert.ok(bundle.includes(gate), gate);
+    'codesign --verify --deep --strict', 'plutil -lint']) assert.ok(bundle.includes(gate), gate);
+  assert.doesNotMatch(bundle, /setup-python|pip install/);
+  for (const required of ['actions/setup-python@v6', 'requirements-packaging.txt', 'python -m unittest discover -s tests -v']) assert.ok(workflow.includes(required), required);
   assert.match(workflow, /npm run test:desktop-build/);
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.scripts['test:desktop-build'].includes('tests/bbdown_prepare_entry.test.mjs'));

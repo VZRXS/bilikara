@@ -1043,6 +1043,7 @@ pub struct AppState {
     player_controls: player_control::PlayerControls,
     catalog: crate::shared_catalog::CatalogState,
     artifact_lifetime: artifact_lifetime::ArtifactLifetime,
+    source_monthly_refresh_active: bool,
     #[cfg(feature = "native-host")]
     native_session: native_session::NativeSession,
 }
@@ -1091,6 +1092,7 @@ impl Default for AppState {
             player_controls: player_control::PlayerControls::default(),
             catalog: crate::shared_catalog::CatalogState::default(),
             artifact_lifetime: artifact_lifetime::ArtifactLifetime::default(),
+            source_monthly_refresh_active: false,
             #[cfg(feature = "native-host")]
             native_session: native_session::NativeSession::default(),
         }
@@ -1145,6 +1147,14 @@ enum ExecuteError {
 }
 
 static APP_STATE: OnceLock<Mutex<AppState>> = OnceLock::new();
+
+pub(crate) fn source_monthly_guard<T>(action: impl FnOnce(&mut bool) -> T) -> Result<T, ()> {
+    let mut state = APP_STATE
+        .get_or_init(|| Mutex::new(AppState::default()))
+        .lock()
+        .map_err(|_| ())?;
+    Ok(action(&mut state.source_monthly_refresh_active))
+}
 
 fn rejected(kind: &str, message: impl Into<String>) -> ExecuteError {
     ExecuteError::Rejected(AppStateError {

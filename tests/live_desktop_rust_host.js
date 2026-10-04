@@ -8,8 +8,9 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const {webkit} = require("playwright");
 const evidence = path.resolve(process.argv[2]);
-const directory = path.join(evidence, "preview");
-const executable = path.resolve("rust-runtime/target/debug/bilikara-desktop-host");
+const directory = process.env.BILIKARA_TEST_BROWSER_DATA_DIR || path.join(evidence, "preview");
+assert.ok(path.isAbsolute(process.env.BILIKARA_TEST_NATIVE_HOST || ""), "declare the current Cargo-selected Host from run_desktop_rust_host.mjs");
+const executable = process.env.BILIKARA_TEST_NATIVE_HOST;
 const shutdownToken = "synthetic-desktop-shutdown";
 let server, browser, lines, page, remote;
 const errors = [];
@@ -27,6 +28,9 @@ async function launch() {
   assert.equal((await fs.readFile(`/proc/${server.pid}/task/${server.pid}/children`,"utf8")).trim(), "");
   const maps = await fs.readFile(`/proc/${server.pid}/maps`,"utf8");
   assert.ok(!/libpython|libbilikara_runtime\.so/.test(maps));
+  // Test-owned configured sources; no unrelated background library refresh.
+  const uidsFile=path.join(directory,"gatcha_uids.json");
+  const uids=JSON.parse(await fs.readFile(uidsFile,"utf8"));uids.uids=[];uids.profiles={};await fs.writeFile(uidsFile,JSON.stringify(uids));
   return ready;
 }
 async function stop(ready) {
@@ -51,7 +55,7 @@ async function capture(name, target) {
 (async () => {
   await fs.mkdir(evidence,{recursive:true});
   let ready=await launch();
-  browser=await webkit.launch({headless:true,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
+  browser=await webkit.launch({headless:true,executablePath:process.env.BILIKARA_BROWSER_EXECUTABLE,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
   let host=await browser.newContext({viewport:{width:1440,height:1000}});
   page=await host.newPage();
   page.on("pageerror",e=>errors.push(e.message));
@@ -63,7 +67,8 @@ async function capture(name, target) {
   assert.equal(await page.locator("html").getAttribute("data-host-platform"),"desktop");
   assert.equal(await page.evaluate(()=>Boolean(window.BilikaraAndroidHost || window.BilikaraAndroidExport || window.BilikaraAndroidPlatform || window.BilikaraAndroidPlayback)),false);
   assert.equal(await page.locator("#android-host-dock").isVisible(),false);
-  assert.equal(await page.evaluate(()=>BilikaraHostLayout.isPortrait()),false);
+  assert.equal(await page.locator("html").getAttribute("data-host-layout"),"landscape");
+  assert.equal(await page.locator("#work-rail-request").isVisible(),true);
   assert.equal((await okay("/api/state")).capabilities.native_android_beta,false);
   await page.locator("#work-rail-users").click();
   await page.locator("#session-user-input").fill("Desktop Fixture");
@@ -86,14 +91,14 @@ async function capture(name, target) {
   const defaultPolicy=(await okay('/api/state')).cache_policy;
   assert.equal(defaultPolicy.video_quality,'1080P 高帧率');assert.equal(defaultPolicy.audio_hires,true);
   // Native Host restores the existing sanitized package download. Connectivity
-  // probes go only to run_desktop_rust_host.py's non-forwarding TLS fixture.
+  // probes go only to run_desktop_rust_host.mjs's non-forwarding TLS fixture.
   assert.equal((await fetch(ready.baseUrl+'/api/diagnostics/package',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
   assert.equal((await host.request.post(ready.baseUrl+'/api/diagnostics/package',{headers:{Origin:'https://foreign.invalid'},data:{}})).status(),403);
   await page.locator('#work-rail-settings').click();
   const diagnosticDownload=page.waitForEvent('download');
   await page.locator('#diagnostic-package-button').click();
   const diagnostic=await diagnosticDownload;
-  assert.equal(diagnostic.suggestedFilename(),'bilikara-diagnostics.zip');
+  assert.match(diagnostic.suggestedFilename(),/^bilikara-diagnostics-\d{8}-\d{6}\.zip$/);
   await diagnostic.saveAs(path.join(evidence,'diagnostics.zip'));
   await page.waitForFunction(()=>!state.diagnosticsBusy);
   assert.equal(await page.locator('#diagnostic-package-button').getAttribute('aria-busy'),null);
@@ -130,7 +135,7 @@ async function capture(name, target) {
   if(await variantToggle.isVisible()) await variantToggle.click();
   else assert.match(await remote.locator("#audio-variant-bar").getAttribute("class"),/\bis-inline\b/);
   const variant=first.current_item.audio_variants[1].id;
-  await remote.locator(`[data-variant-id="${variant}"]`).click();
+  await remote.locator(`[data-variant-id="${variant}"]:visible`).click();
   await page.waitForFunction(id=>state.data.current_item.selected_audio_variant_id===id,variant);
   // Metadata network work must not own AppState while controls are in flight.
   const delayed=okay("/api/playlist/add",{url:"https://www.bilibili.com/video/BV1xx411c7mF",requester_name:"Desktop Fixture"});

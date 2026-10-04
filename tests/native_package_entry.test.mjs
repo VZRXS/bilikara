@@ -39,7 +39,9 @@ test('both native gates verify the extracted artifact and then run actual instal
   assert.ok(rust >= 0 && rust < steps.indexOf(windows) && rust < steps.indexOf(macos));
   assert.ok(msvc >= 0 && msvc < steps.indexOf(windows));
   assert.ok(bundle.includes("BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.bundle_version || '' }}"));
-  for (const required of ['codesign --verify --deep --strict', 'lipo -archs', 'plutil -lint', 'cmp README-macOS.txt', 'actions/setup-python@v6', 'requirements-packaging.txt']) assert.ok(bundle.includes(required), required);
+  for (const required of ['codesign --verify --deep --strict', 'lipo -archs', 'plutil -lint', 'cmp README-macOS.txt']) assert.ok(bundle.includes(required), required);
+  assert.doesNotMatch(bundle, /setup-python|pip install/);
+  for (const required of ['actions/setup-python@v6', 'requirements-packaging.txt', 'python -m unittest discover -s tests -v']) assert.ok(workflow.includes(required), required);
 });
 
 test('real host-native verifier entry rejects missing and excess inputs without constructing a package', () => {
@@ -57,14 +59,15 @@ test('real host-native verifier entry rejects missing and excess inputs without 
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
-test('the old gate is removed and unrelated Python consumers use only test transport', () => {
+test('old package/business drivers are retired; independent Node transport does no package repair', () => {
   for (const file of ['scripts/check_native_desktop_bundle.py', 'scripts/check_no_media_cli_bundle.py', 'tests/test_native_desktop_bundle.py']) {
     assert.equal(existsSync(new URL(`../${file}`, import.meta.url)), false, file);
   }
-  const helper = readFileSync(new URL('./native_host_support.py', import.meta.url), 'utf8');
-  assert.doesNotMatch(helper, /def (?:check|inspect_package|check_auxiliary_window_entry|package_root|resources)\(/);
+  const helper = readFileSync(new URL('./native_host_support.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(helper, /(?:function|class) (?:check|inspectPackage|packageRoot|resources)\(/);
+  assert.equal(existsSync(new URL('./native_host_support.py', import.meta.url)), false);
   for (const name of ['test_native_desktop_admin', 'test_native_desktop_sources', 'test_native_source_queue', 'test_native_desktop_startup', 'test_native_compatibility_migration', 'test_native_recheck_regressions']) {
-    assert.match(readFileSync(new URL(`./${name}.py`, import.meta.url), 'utf8'), /from tests.native_host_support import RunningHost, isolated_environment/);
+    assert.equal(existsSync(new URL(`./${name}.py`, import.meta.url)), false, name);
   }
   assert.match(workflow, /npm run test:desktop-build/);
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

@@ -1,3 +1,4 @@
+import { readSourceText } from './frontend_contract_support.mjs';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import fs from "node:fs";
@@ -18,7 +19,7 @@ test("only tag APKs use the installable release name", () => {
   assert.equal(release.apk, "bilikara-v0.8.0-preview.1-android-arm64.apk");
 });
 test("Android SDK bootstrap excludes the unavailable legacy tools package", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/ci-bundle.yml", import.meta.url), "utf8");
+  const workflow = readSourceText(new URL("../.github/workflows/ci-bundle.yml", import.meta.url));
   const job = workflow.match(/\n  android-bundle:\n([\s\S]*?)(?=\n  [\w-]+:|$)/)?.[1];
   assert.ok(job, "Android APK job must exist");
   assert.match(job, /^    needs: test$/m);
@@ -32,7 +33,7 @@ test("Android SDK bootstrap excludes the unavailable legacy tools package", () =
   assert.match(workflow, /sdkmanager "platforms;android-36" "build-tools;36\.0\.0" "ndk;27\.0\.12077973"/);
 });
 test("mirror waits for APK and publishes the release index; tag build fails closed without signing", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/ci-bundle.yml", import.meta.url), "utf8");
+  const workflow = readSourceText(new URL("../.github/workflows/ci-bundle.yml", import.meta.url));
   assert.match(workflow, /needs: \[bundle, android-bundle\]/);
   assert.match(workflow, /aws s3 cp release-metadata\/releases.json/);
   const packaging = fs.readFileSync(new URL("../scripts/android_release.mjs", import.meta.url), "utf8");

@@ -6,6 +6,7 @@ readonly ARIA2_SOURCE_URL="https://github.com/aria2/aria2/releases/download/rele
 readonly ARIA2_SOURCE_SHA256="60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
 readonly DEFAULT_PUBLIC_BASE="https://download.kevinx96.icu/bilikara/tools"
 readonly BUILD_RECIPE_REVISION="portable-macos-appletls-v2"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "Portable aria2c builds must run on macOS" >&2
@@ -138,48 +139,11 @@ object_key="bilikara/tools/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos
 metadata_object_key="bilikara/tools/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${archive_sha256}.json"
 asset_url="${public_base}/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${asset_name}"
 
-python - \
+node "$script_dir/tool_asset_metadata.mjs" write \
   "$output_dir/aria2-macos-${target_arch}.json" \
   "$target_arch" "$asset_name" "$asset_url" "$archive_sha256" \
   "$ARIA2_VERSION" "$ARIA2_SOURCE_URL" "$ARIA2_SOURCE_SHA256" \
-  "$BUILD_RECIPE_REVISION" "$object_key" "$metadata_object_key" \
-  <<'PY'
-import json
-import sys
-
-(
-    output_path,
-    arch,
-    name,
-    url,
-    sha256,
-    version,
-    source_url,
-    source_sha256,
-    recipe_revision,
-    object_key,
-    metadata_object_key,
-) = sys.argv[1:]
-payload = {
-    "schema_version": 2,
-    "tool": "aria2c",
-    "provider": "bilikara-r2",
-    "platform": "darwin",
-    "arch": arch,
-    "name": name,
-    "url": url,
-    "sha256": sha256,
-    "version": version,
-    "source_url": source_url,
-    "source_sha256": source_sha256,
-    "recipe_revision": recipe_revision,
-    "object_key": object_key,
-    "metadata_object_key": metadata_object_key,
-}
-with open(output_path, "w", encoding="utf-8", newline="\n") as output:
-    json.dump(payload, output, ensure_ascii=True, indent=2, sort_keys=True)
-    output.write("\n")
-PY
+  "$BUILD_RECIPE_REVISION" "$object_key" "$metadata_object_key"
 
 printf '%s\n' "$asset_name" > "$output_dir/asset-name.txt"
 printf '%s\n' "$archive_sha256" > "$output_dir/asset-sha256.txt"

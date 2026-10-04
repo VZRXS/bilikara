@@ -140,6 +140,59 @@ fn agent(timeout: Duration) -> Agent {
         .into()
 }
 
+// Never print the request URL, cookies, headers or a library error's arbitrary
+// text: bootstrap URLs contain private capabilities. Keep enough information
+// to distinguish a deadline from EOF/reset/refusal at a known verifier stage.
+fn request_error(stage: &str, error: ureq::Error) -> Box<dyn std::error::Error> {
+    let cause = match error {
+        ureq::Error::Io(error) => format!(
+            "I/O {:?} (OS code {:?})",
+            error.kind(),
+            error.raw_os_error()
+        ),
+        ureq::Error::Timeout(phase) => format!("timeout {phase:?}"),
+        ureq::Error::Protocol(_) => "HTTP protocol failure".into(),
+        ureq::Error::Http(_) => "HTTP request construction failure".into(),
+        _ => "HTTP client failure".into(),
+    };
+    format!("Local Host HTTP request failed at {stage}: {cause}").into()
+}
+
+fn request_stage(path: &str) -> &'static str {
+    match path.split('?').next().unwrap_or("") {
+        "/api/health" => "health",
+        "/api/state" => "state",
+        "/api/app/update/status" => "update status",
+        "/api/events" => "SSE entry",
+        "/api/session-users/add" => "origin rejection",
+        "/api/app/shutdown" => "shutdown",
+        "/controller.html" => "audience document",
+        "/display-identifier.html" => "identifier document",
+        "/vendor/signalsmith-stretch/SignalsmithStretch.js" => "Signalsmith resource",
+        "/vendor/BBDown.exe"
+        | "/vendor/BBDown"
+        | "/vendor/ffmpeg-runtime.json"
+        | "/vendor/signalsmith-stretch/../ffmpeg-runtime.json" => "private resource rejection",
+        _ => "local request",
+    }
+}
+
+#[test]
+fn request_diagnostics_do_not_echo_untrusted_paths_or_error_text() {
+    let error = request_error(
+        request_stage("/bootstrap/private-capability?secret=private-credential"),
+        ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "private-capability private-credential",
+        )),
+    )
+    .to_string();
+    assert_eq!(
+        error,
+        "Local Host HTTP request failed at local request: I/O ConnectionReset (OS code None)"
+    );
+}
+
 fn read_body(response: &mut Response<Body>) -> Result<Vec<u8>> {
     response
         .body_mut()
@@ -461,7 +514,7 @@ impl RunningHost {
         let mut response = client
             .get(&bootstrap)
             .call()
-            .map_err(|_| "Native Host bootstrap request failed")?;
+            .map_err(|error| request_error("main bootstrap", error))?;
         status(&response, 200)?;
         session_cookie(&response, &client)?;
         read_body(&mut response)?;
@@ -511,7 +564,7 @@ impl RunningHost {
             }
             request.call()
         };
-        response.map_err(|_| "Local Host HTTP request failed or timed out".into())
+        response.map_err(|error| request_error(request_stage(path), error))
     }
     pub fn request(
         &self,
@@ -547,7 +600,7 @@ impl RunningHost {
             let mut response = client
                 .get(format!("{}?page={page}&{query}", self.bootstrap))
                 .call()
-                .map_err(|_| "Auxiliary bootstrap failed")?;
+                .map_err(|error| request_error("auxiliary bootstrap", error))?;
             status(&response, 200)?;
             session_cookie(&response, &client)?;
             let html = String::from_utf8(read_body(&mut response)?)

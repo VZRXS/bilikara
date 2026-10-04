@@ -59,7 +59,7 @@
   for (const button of workspaceButtons) {
     if (!defaultWorkspaces.has(button.dataset.compactPage)) defaultWorkspaces.set(button.dataset.compactPage, button.dataset.hostWorkspace);
   }
-  for (const link of document.querySelectorAll("[data-shared-workspace]")) {
+  for (const [index, link] of Array.from(document.querySelectorAll("[data-shared-workspace]")).entries()) {
     const source = workspaceButton(link.dataset.sharedWorkspace);
     const label = source.querySelector(".work-rail-label").cloneNode(true);
     label.removeAttribute("class");
@@ -67,6 +67,17 @@
     if (link.hasAttribute("data-workspace-icon")) {
       const icon = source.querySelector(".work-rail-icon").cloneNode(true);
       icon.removeAttribute("class");
+      // Each SVG mask belongs to its copy; duplicate document IDs can bind
+      // the compact icon to a hidden desktop definition.
+      for (const definition of icon.querySelectorAll("[id]")) {
+        const original = definition.id;
+        definition.id = `compact-workspace-${index}-${original}`;
+        for (const reference of icon.querySelectorAll("[mask]")) {
+          if (reference.getAttribute("mask") === `url(#${original})`) {
+            reference.setAttribute("mask", `url(#${definition.id})`);
+          }
+        }
+      }
       link.prepend(icon);
     }
     link.setAttribute("aria-controls", source.getAttribute("aria-controls"));

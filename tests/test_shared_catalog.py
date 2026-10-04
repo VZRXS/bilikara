@@ -468,37 +468,6 @@ class CatalogFixtureTest(unittest.TestCase):
         self.assertEqual(catalog.search_catalog("concurrent"),results[0])
         self.assertEqual(len(self.calls),1)
 
-    def test_python_http_and_internet_adapters_use_shared_rust_results(self):
-        from tests.test_transport_concurrency import DesktopFixture
-        from bilikara import server, internet_remote
-        from urllib.request import urlopen
-        from urllib.error import HTTPError
-        self.reply=lambda *_:(200,[self.item])
-        with DesktopFixture() as host, patch.object(server,"annotate_gatcha_local_status",side_effect=lambda x:x), patch.object(internet_remote,"annotate_gatcha_local_status",side_effect=lambda x:x):
-            with urlopen(host.base+"/api/catalog/search?q=adapters&limit=80",timeout=5) as response:
-                result=json.load(response)
-            self.assertEqual(result["data"]["items"][0]["bvid"],self.item["bvid"])
-            status,remote=host.remote("catalog.search",{"query":"adapters","limit":80},lane="bulk")
-            self.assertEqual(status,200)
-            self.assertEqual(remote["data"]["data"]["items"][0]["bvid"],self.item["bvid"])
-            self.assertEqual(remote["data"]["data"]["items"][0]["source"],"cloudflare")
-            self.assertEqual(len(self.calls),1,"Python HTTP and Internet requests share Rust's cache")
-            with urlopen(host.base+"/api/lark/search?q=adapters&limit=80",timeout=5) as response:
-                self.assertEqual(json.load(response)["data"],result["data"])
-            with self.assertRaises(HTTPError) as error:
-                urlopen(host.base+"/api/lark/search?q=x&table=1",timeout=5)
-            self.assertEqual(error.exception.code,410)
-            error.exception.close()
-            with self.assertRaises(HTTPError) as error:
-                urlopen(host.base+"/api/catalog/search?q=x&limit=99999",timeout=5)
-            self.assertEqual(error.exception.code,400)
-            error.exception.close()
-            self.reply=lambda *_:(403,{"error":"denied"})
-            status,remote=host.remote("catalog.search",{"query":"denied","limit":80},lane="bulk")
-            self.assertEqual(status,403)
-            self.assertFalse(remote["ok"])
-            self.assertEqual(remote["code"],"catalog_forbidden")
-
     def test_no_direct_feishu_implementation_or_credentials_remain(self):
         self.assertFalse(Path("bilikara/lark_pool_client.py").exists())
         for path in [*Path("bilikara").glob("*.py"),*Path("rust-runtime/src/shared_catalog").glob("*.rs")]:
@@ -561,26 +530,6 @@ class SheetsFixtureTest(unittest.TestCase):
                     catalog.search_catalog("fixture")
                 self.assertEqual(error.exception.code,"catalog_providers_unavailable")
         self.assertFalse(any(c[1] == "/never-follow" for c in self.calls))
-
-    def test_python_http_and_internet_share_sheets_results(self):
-        self.enable_sheets()
-        from tests.test_transport_concurrency import DesktopFixture
-        from bilikara import server, internet_remote
-        from urllib.request import urlopen
-        with DesktopFixture() as host, patch.object(server,"annotate_gatcha_local_status",side_effect=lambda x:x), patch.object(internet_remote,"annotate_gatcha_local_status",side_effect=lambda x:x):
-            with urlopen(host.base+"/api/catalog/search?q=fixture&limit=80",timeout=5) as response:
-                result=json.load(response)["data"]
-            self.assertEqual(result["items"][0]["source"],"sheets")
-            self.assertIn("unverified",result["exclusion_coverage"])
-            status, remote = host.remote("catalog.search",{"query":"动画","limit":80},lane="bulk")
-            self.assertEqual(status,200)
-            remote_item = remote["data"]["data"]["items"][0]
-            for key in ["bvid", "title", "source", "tag_1", "mid", "owner_name"]:
-                self.assertEqual(remote_item[key], result["items"][0][key])
-            self.assertEqual(remote_item["catalog_item_id"], result["items"][0]["bvid"])
-            self.assertNotIn("rank", remote_item)
-            self.assertNotIn("preserved_1", remote_item)
-            self.assertEqual(len(self.calls),2,"one D1 request and one snapshot shared across adapters and keywords")
 
     def test_enabled_fallback_preserves_primary_empty_auth_and_mutation_failures(self):
         self.enable_sheets()

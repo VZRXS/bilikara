@@ -91,8 +91,7 @@ needs a fixture explanation, not a null muxer in the companion or a tolerance.
 The live suite extends M2, including its privacy and retained S3 rejection tests:
 
 ```bash
-python media-libav/test_comparison.py \
-  --driver /sunhonglin/bilikara/rust-runtime/target/debug/examples/libav_metadata \
+npm run test:media -- \
   --companion "$M3_OUT/companion/libbilikara_media_libav.so" \
   --prefix "$M3_PREFIX" --fixtures "$M3_FIXTURES" \
   --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \

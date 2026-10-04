@@ -1366,6 +1366,55 @@ fn uid_page_entries(
     output
 }
 
+// The standalone/source maintenance CLI keeps its original source UID and
+// filtered-page contract. Reuse parsing/extras/WBI; do not change Host refresh.
+pub(crate) fn source_catalog_uid_page(
+    client: &BilibiliHttpClient,
+    uid: &str,
+    page: usize,
+    keywords: &[String],
+) -> Result<(Vec<Value>, usize), BilibiliServiceError> {
+    let payload = client.get_wbi_json(
+        SPACE_ARC_URL,
+        BTreeMap::from([
+            ("mid".into(), uid.into()),
+            ("ps".into(), "50".into()),
+            ("tid".into(), "0".into()),
+            ("pn".into(), page.to_string()),
+            ("order".into(), "pubdate".into()),
+            ("platform".into(), "web".into()),
+        ]),
+        "稿件列表拉取失败",
+    )?;
+    let mut output = Vec::new();
+    for video in payload
+        .pointer("/data/list/vlist")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for mut item in uid_page_entries(
+            uid,
+            std::slice::from_ref(video),
+            keywords,
+            &mut HashSet::new(),
+        ) {
+            item["mid"] = json!(uid);
+            if item.get("owner_url").is_some() {
+                item["owner_url"] = json!(format!("https://space.bilibili.com/{uid}"));
+            }
+            output.push(item);
+        }
+    }
+    Ok((
+        output,
+        payload
+            .pointer("/data/page/count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+    ))
+}
+
 /// One page for the explicit monthly catalog job; uses the same WBI client and
 /// entry interpretation as configured-library refresh, without changing local caches.
 #[cfg(feature = "native-host")]
@@ -3172,6 +3221,20 @@ mod tests {
         assert_eq!(cache["refresh_summary"]["completed_count"], 0);
         assert_eq!(cache["refresh_summary"]["total_count"], 3);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_candidate_retains_guest_and_authenticated_failure_messages() {
+        let root = temp_root("candidate-empty");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).unwrap();
+        let guest = draw_candidate(&paths, false, None).unwrap_err();
+        assert_eq!(guest.kind, "missing_cookie");
+        assert_eq!(guest.message, "请登录 Bilibili 账号或输入 Cookie");
+        let authenticated = draw_candidate(&paths, true, None).unwrap_err();
+        assert_eq!(authenticated.kind, "empty_pool");
+        assert_eq!(authenticated.message, "本地稿件缓存还没准备好，请稍后再试");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

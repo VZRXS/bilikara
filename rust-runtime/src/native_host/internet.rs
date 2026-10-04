@@ -69,7 +69,7 @@ pub(super) fn route(
     match path {
         "/api/internet-remote/qr" => {
             let value = text(body, "url")?;
-            if value.len() > 2048
+            if value.chars().count() > 2048
                 || !value.starts_with("https://rtc.kevinx96.icu/remote.html#")
                 || value.chars().any(char::is_control)
             {
