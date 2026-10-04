@@ -808,6 +808,8 @@ mod tests {
         });
         assert!(initialized.error().is_none());
         let result = app.execute(crate::AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: item.clone(),
             position: "tail".into(),

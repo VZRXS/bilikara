@@ -364,6 +364,8 @@ impl Fixture {
         assert!(
             self.app
                 .execute(AppStateRequest::AddItem {
+                    requester_user_id: None,
+
                     schema_version: 1,
                     item,
                     position: "tail".into(),

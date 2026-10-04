@@ -193,17 +193,28 @@ async function until(fn, label, timeout=5000) {const deadline=performance.now()+
   await until(async()=>await appendCount()===beforeQueue+1,"held append starts");
   // Stay below the Host HTTP concurrency bound while filling the append queue
   // before its first upstream request reaches the unchanged 10-second deadline.
+  const saturationStarted=performance.now();
   for(let offset=0;offset<69;offset+=8)for(const result of await Promise.all(Array.from({length:Math.min(8,69-offset)},()=>add({allow_repeat:true}))))assert.equal(result.status,200);
   assert.ok(stderr.includes("native catalog append could not be scheduled"),"full queue reported independently");
   assert.equal((await okay("/api/state",undefined,hostCookie)).playlist.length,72);
+  assert.equal(await appendCount(),beforeQueue+1,`the first held append must remain pending throughout saturation (${Math.round(performance.now()-saturationStarted)}ms)`);
   await fixture("control?append=release");await until(async()=>await appendCount()===beforeQueue+65,"bounded queue drain",15000);
   console.log("Rendered Host/Remote desktop + phone controls and bounded append queue: PASS");
   const stableAppends=await appendCount();
+  // Cache progress continues independently after the saturated append queue.
+  // Compare every request field/order, excluding only its seven live progress fields.
+  const cacheProgressFields=new Set(["cache_status","cache_progress","cache_activity_at","cache_download_current_bytes","cache_download_total_bytes","cache_download_tracks","cache_message"]);
+  const requestSnapshot=playlist=>playlist.map(item=>Object.fromEntries(Object.entries(item).filter(([key])=>!cacheProgressFields.has(key))));
+  const stablePlaylist=requestSnapshot((await okay("/api/state",undefined,hostCookie)).playlist);
   await fixture("control?metadata=hold");metadata=(await stats()).counts.metadata;
   const removedOwner=add({allow_repeat:true},remoteCookie);
   await until(async()=>(await stats()).counts.metadata>metadata,"owner's delayed add");
   await okay("/api/session-users/remove",{name:"Renamed"},hostCookie);
-  await fixture("control?metadata=release");assert.equal((await removedOwner).status,403);
+  await fixture("control?metadata=release");
+  const removedResult=await removedOwner;
+  assert.equal(removedResult.status,409);
+  assert.equal(removedResult.body.code,"identity_required","removed stable identity cannot authorize a late add");
+  assert.deepEqual(requestSnapshot((await okay("/api/state",undefined,hostCookie)).playlist),stablePlaylist);
   assert.equal(await appendCount(),stableAppends);
   await fixture("control?metadata=hold&rating=hold");metadata=(await stats()).counts.metadata;
   const changedSessionAdd=add({allow_repeat:true});

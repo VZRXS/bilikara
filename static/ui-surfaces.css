@@ -176,7 +176,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   line-height: 1;
   white-space: nowrap;
 }
-:root :is(.selection-modal-head .banner-close, .binding-sheet-close,
+:root :is(.session-user-rename-head .banner-close, .selection-modal-head .banner-close, .binding-sheet-close,
   #confirm-close,
   .rating-close, .song-detail-close, .stage-control-tray-head .banner-close,
   .playback-sheet-collapse),
@@ -331,7 +331,8 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 /* This footer scrolls with the settings content; it cannot obscure that content. */
 :root .settings-workspace-body .cache-panel-footer { border-top-color: transparent; }
 
-:root :is(.confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
+:root :is(.app-shell[data-narrow-tool-layout="overlay"] .host-workspace-region,
+  .session-user-rename-panel, .confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
   .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
@@ -342,6 +343,16 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   box-shadow: var(--rating-card-shadow);
   backdrop-filter: blur(var(--modal-surface-blur));
   -webkit-backdrop-filter: blur(var(--modal-surface-blur));
+}
+
+/* A narrow Host tool sheet is one floating surface. Inline workspaces retain
+   their ordinary cards; sheet content must not add a second opaque fill. */
+:root .app-shell[data-narrow-tool-layout="overlay"] .host-workspace-region > [data-host-workspace-panel] {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 /* Flat fills inside a floating panel must not stack its translucency twice. */
 .playback-sheet-status-header { background: transparent; }

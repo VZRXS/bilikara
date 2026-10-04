@@ -268,6 +268,8 @@ mod tests {
             let item = serde_json::from_value(json!({"id":mode,"original_url":"https://example.test/video","resolved_url":"https://example.test/video","bvid":mode,"aid":1,"cid":2,"page":1,"title":mode,"part_title":"P1","display_title":mode,"cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[120],"available_parts":["P1"]})).unwrap();
             assert!(
                 execute_app_state(AppStateRequest::AddItem {
+                    requester_user_id: None,
+
                     schema_version: 1,
                     item,
                     position: "tail".into(),

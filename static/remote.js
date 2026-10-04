@@ -1827,6 +1827,7 @@ function normalizedRemoteIdentity(payload) {
   return {
     registered: Boolean(payload?.registered),
     name: String(payload?.name || "").trim(),
+    userId: String(payload?.user_id || ""),
     sessionId: String(payload?.session_id || "").trim(),
   };
 }
@@ -1835,13 +1836,15 @@ function renderRemoteIdentity() {
   const identity = state.remoteIdentity;
   const registered = Boolean(identity.registered && identity.name);
   const renameMode = registered && state.remoteIdentityModalMode === "rename";
-  const modalOpen = (!registered && window.BilikaraRemoteTransport?.mode !== "internet") || renameMode;
+  const modalOpen = (!registered && (window.BilikaraRemoteTransport?.mode !== "internet" || state.data?.session_user_edit_version >= 1)) || renameMode;
 
   if (elements.remoteIdentityName) {
     elements.remoteIdentityName.textContent = registered ? identity.name : "—";
   }
   if (elements.remoteIdentityRename) {
-    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving;
+    const unavailable = window.BilikaraRemoteTransport?.mode === "internet" && !(state.data?.session_user_edit_version >= 1);
+    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving || unavailable;
+    elements.remoteIdentityRename.title = unavailable ? t("remoteIdentity.upgradeRequired") : t("remoteIdentity.rename");
   }
   const identityModal = elements.remoteIdentityModal;
   if (identityModal && modalOpen) {
@@ -1960,6 +1963,7 @@ function openRemoteIdentityRename() {
   if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
     return;
   }
+  state.remoteIdentityRenameTarget = { ...state.remoteIdentity };
   state.remoteIdentityModalMode = "rename";
   state.remoteIdentityError = "";
   if (elements.remoteIdentityInput) {
@@ -1985,8 +1989,8 @@ async function submitRemoteIdentity(event) {
     return;
   }
   const name = String(elements.remoteIdentityInput?.value || "").trim();
-  if (!name) {
-    state.remoteIdentityError = t("remoteIdentity.required");
+  if (!name || Array.from(name).length > 24) {
+    state.remoteIdentityError = t(name ? "session.nameLength" : "remoteIdentity.required");
     renderRemoteIdentity();
     return;
   }
@@ -1997,7 +2001,8 @@ async function submitRemoteIdentity(event) {
   try {
     const identity = await apiPost(
       renameMode ? "/api/remote-identity/rename" : "/api/remote-identity/register",
-      { name },
+      renameMode ? { name, user_id: state.remoteIdentityRenameTarget?.userId || state.remoteIdentity.userId,
+        expected_name: state.remoteIdentityRenameTarget?.name || state.remoteIdentity.name } : { name },
     );
     applyRemoteIdentity(identity);
     if (elements.remoteIdentityInput) {
@@ -2029,6 +2034,8 @@ async function submitRemoteIdentity(event) {
     state.remoteIdentitySaving = false;
     state.remoteIdentityError = error?.message || t("error.requestFailed");
     renderRemoteIdentity();
+  } finally {
+    if (!state.remoteIdentitySaving) syncRemoteIdentityWithSnapshot(state.data);
   }
 }
 
@@ -2048,6 +2055,7 @@ function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
+  const sessionUserId = ratingSubmissionUserId(item);
   if (!bvid) {
     return null;
   }
@@ -2097,7 +2105,7 @@ function submitSongRating(item, score, trigger = null) {
         state.ratingSavedScores.set(submissionKey, payload.score);
         const entry = (state.data?.song_ratings || []).find(entry => (
           entry.play_id === playId
-          && String(entry.session_user_name || "").toLowerCase() === sessionUserName.toLowerCase()
+          && (entry.session_user_id ? entry.session_user_id === sessionUserId : entry.session_user_name === sessionUserName)
         ));
         if (entry) entry.score = payload.score;
       }
@@ -2283,19 +2291,28 @@ function ratingSubmissionPlayId(item) {
   return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
+function ratingSubmissionUserId(item) {
+  return state.data?.session_user_entries?.find(user => user.name === ratingSubmissionUserName(item))?.id || "";
+}
+
+function ratingBelongsToUser(entry, item) {
+  const id = ratingSubmissionUserId(item);
+  return id && entry.session_user_id ? entry.session_user_id === id
+    : String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase();
+}
+
 function ratingSubmissionKey(item) {
   const playId = ratingSubmissionPlayId(item);
   if (!playId) {
     return "";
   }
-  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserId(item) || ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
 function serverRatingStatus(item) {
   const playId = ratingSubmissionPlayId(item);
-  const user = ratingSubmissionUserName(item).toLowerCase();
   const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
-    && String(entry.session_user_name || "").toLowerCase() === user);
+    && ratingBelongsToUser(entry, item));
   const key = ratingSubmissionKey(item);
   if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
   if (entry) return entry.status;
@@ -2316,7 +2333,7 @@ function savedSongRatingScore(item) {
   if (!item) return 5;
   const entry = (state.data?.song_ratings || []).find(entry => (
     entry.play_id === ratingSubmissionPlayId(item)
-    && String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase()
+    && ratingBelongsToUser(entry, item)
   ));
   const score = Number(entry?.score ?? state.ratingSavedScores.get(ratingSubmissionKey(item)) ?? 5);
   return Math.max(1, Math.min(5, Math.trunc(score) || 5));

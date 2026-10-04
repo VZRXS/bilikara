@@ -1291,20 +1291,12 @@
           </div>
 
           <form id="session-user-form" class="session-user-form">
-            <input id="session-user-input" name="session_user" type="text" maxlength="24" placeholder="输入用户名"
+            <input id="session-user-input" name="session_user" type="text" placeholder="输入用户名"
               data-i18n-placeholder="session.namePlaceholder" autocomplete="off" />
             <button type="submit" data-i18n="session.addUser">添加用户</button>
           </form>
-          <p class="help-text message-surface message-info" data-i18n="session.help">点歌会按这里的顺序轮转插入，可以拖拽调整顺序，拖到右下角删除。</p>
           <div class="session-user-stage" id="session-user-stage">
             <div id="session-user-list" class="session-user-list"></div>
-            <div id="session-user-trash" class="session-user-trash">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round">
-                <path
-                  d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-              </svg>
-            </div>
           </div>
         </section>
 
@@ -1924,6 +1916,7 @@
   <script src="/volume-control.js" defer></script>
   <script src="/incoming-request.js"></script>
   <script src="/fullscreen-controls.js"></script>
+  <script src="/session-user-editor.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>

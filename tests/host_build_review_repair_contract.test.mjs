@@ -617,16 +617,14 @@ assert.ok(!contains("ガチャキャッシュ", Array.from(Array.from(iterableVa
 }
 },
 async test_session_user_drag_surface_spacing_and_trash_are_not_clipped() {
-let drag_image_rule, spacing_rule, trash_rule;
-assert.ok(contains("dragImage.className = \"session-user-drag-image\"", this.script));
-drag_image_rule = this.styles.match(new RegExp("\\.session-user-drag-image\\s*\\{([^}]*)\\}",""))[1];
-assert.ok(contains("background: transparent", drag_image_rule));
-assert.ok(contains("box-shadow: none", drag_image_rule));
-spacing_rule = this.styles.match(new RegExp("\\.session-user-form \\+ \\.message-surface\\s*\\{([^}]*)\\}",""))[1];
-assert.ok(contains("margin-top: 10px", spacing_rule));
-trash_rule = this.styles.match(new RegExp("^\\.session-user-trash\\s*\\{([^}]*)\\}","m"))[1];
-assert.match(trash_rule, new RegExp("bottom:\\s*[1-9]\\d*px",""));
-assert.match(trash_rule, new RegExp("right:\\s*[1-9]\\d*px",""));
+const editor = readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8');
+assert.ok(contains('dragImage.className = "session-user-drag-image"', editor));
+const drag = this.styles.match(/\.session-user-drag-image\s*\{([^}]*)\}/)[1];
+assert.ok(contains('background: transparent', drag)); assert.ok(contains('box-shadow: none', drag));
+const slot = this.styles.match(/\.session-user-trash-slot\s*\{([^}]*)\}/)[1];
+assert.ok(contains('width: 52px', slot)); assert.ok(contains('height: 52px', slot));
+assert.ok(52 >= 44 * 1.15); assert.ok(contains('grid-template-rows: minmax(0, 1fr) 52px', this.styles));
+assert.ok(contains('this.drag?.image?.remove()', editor));
 },
 async test_audio_variants_are_persistent_and_expand_as_one_popup() {
 let anchor_markup, control_tray, extended_controls, player_frame, renderer, tray_markup, variants;
@@ -737,8 +735,9 @@ assert.ok(contains("border: 0", message_surfaces));
 assert.ok(contains("background: var(--btn-secondary-bg)", message_surfaces));
 session_empty = Array.from(this.styles.matchAll(new RegExp("^\\.session-user-list \\.session-user-empty\\s*\\{([^}]*)\\}","gm")), m => m.length === 1 ? m[0] : m.length === 2 ? m[1] : m.slice(1));
 assert.deepEqual(session_empty.length, 1);
-assert.ok(contains("class=\"request-session-user-notice session-user-empty\" role=\"status\"", this.script));
-assert.ok(!contains("class=\"queue-empty session-user-empty\"", this.script));
+assert.ok(contains('empty.className = "request-session-user-notice session-user-empty"', readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8')));
+assert.ok(contains('empty.setAttribute("role", "status")', readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8')));
+assert.ok(!contains("class=\"queue-empty session-user-empty\"", readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8')));
 assert.ok(!contains("background:", session_empty[0]));
 assert.ok(!contains("color:", session_empty[0]));
 assert.deepEqual(this.translations["languages"]["zh"]["list.emptyHint"], "请前往“点歌”界面点歌。");
