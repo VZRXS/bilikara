@@ -2,20 +2,20 @@
 
 `bilikara` 是一个基于 B 站卡拉 OK 视频的点歌平台。主要由 OpenAI Codex 协助设计与实现，并经过人工整理、验证与迭代。
 
-[下载桌面版](https://github.com/VZRXS/bilikara/releases) · [开始使用](#开始使用) · [开发文档](#开发)
+[下载桌面版](https://github.com/VZRXS/bilikara/releases) · [开始使用](#开始使用) · [快速说明与常见问题](docs/quick-start.md) · [开发文档](#开发)
 
 > [!IMPORTANT]
-> **v0.8.0 起切换至纯 Rust 后端。旧 Python 版无法通过应用内自动更新升级到此版本，请前往 [GitHub Releases](https://github.com/VZRXS/bilikara/releases) 手动下载对应系统的完整安装包。** 请勿只替换可执行文件。
+> **从 v0.7.2、v0.8.0-preview.1 或 preview.2 升级时，请下载对应系统的完整包，先备份再迁移数据。** Preview 2 已是原生 Rust 后端，但其旧更新器不能保证这次过渡；更早版本还需要导入旧记录。请按 [升级说明](docs/upgrading.md) 操作，不要只替换可执行文件。开发构建不代表 Preview 3 已发布。
 
 <p align="center">
-  <img src="images/host.png" alt="Host 主界面：左侧播放，右侧管理可滚动的点歌列表" width="1000"><br>
-  <sub>电脑播放与管理，手机参与点歌</sub>
+  <img src="images/host.png" alt="Host 主界面：左侧播放，右侧快速点歌与工作区导航" width="1000"><br>
+  <sub>电脑播放与管理，手机参与点歌；当前开发界面使用隔离示例歌单</sub>
 </p>
 
 ## 开始使用
 
 1. 从 [Releases](https://github.com/VZRXS/bilikara/releases) 下载并解压对应平台的完整包，Windows 打开 `bilikara-desktop.exe`，macOS 打开 `bilikara-desktop.app`。
-2. 粘贴视频链接或 BV / av 号点歌，也可搜索和浏览曲库。歌曲缓存完成后开始播放。
+2. 在「本场用户」添加参与者，选择点歌人，再粘贴 Bilibili / YouTube 视频链接或 BV / av 号；也可搜索和浏览曲库。缓存完成后开始播放。
 3. 手机与电脑连接同一网络，打开电脑右上角「手机点歌」并扫码。异地使用时，先创建公网房间，再通过公网入口和房间密码连接。
 
 <details>
@@ -25,13 +25,13 @@
 
 </details>
 
-手机无法连接时，请检查设备是否在同一网络、电脑防火墙是否放行；使用 VPN 或多网卡时，可尝试手机点歌菜单中的备用地址。
+手机连接、来源拉取、轮转排序和旧场次导出等具体用法见 [快速说明与常见问题](docs/quick-start.md)。Android Host 仍是预览版，桌面版优先用于正式点歌场景。
 
 ## 找歌与点歌
 
-- **快速点歌**：支持视频链接、BV / av 号，以及夹杂 b23.tv 短链的分享文案；可点歌或顶到下一首。
+- **快速点歌**：支持 Bilibili 链接、BV / av 号、b23.tv 分享文案及常见 YouTube 单视频链接；可点歌或顶到下一首。
 - **搜索与发现**：搜索共享曲库或本地曲库，按类别、作品名、歌手浏览；点击封面查看歌曲详情。
-- **来源与试试运气**：添加 UP 主和收藏夹，浏览已收录歌曲，或随机抽取一首。拉取期间可继续添加来源，任务会排队处理；失败后可手动重试。
+- **来源与试试运气**：按 UID 拉取 UP 主稿件、收藏夹等元数据，供来源、本地搜索与试试运气共用；共享曲库、类别和歌手浏览使用在线共享数据库。拉取任务排队处理，失败可重试。
 - **分 P 与音轨**：选择视频画面和音频轨道，播放时随时切换原唱、伴奏等音轨。
 
 <table>
@@ -54,7 +54,7 @@
 
 ## 手机控制
 
-扫码后，手机可以点歌、调整队列和控制播放。按住列表编号上下拖动排序，松手后确认；也可使用歌曲右侧菜单移除或顶歌。
+扫码并选择本场身份后，手机可以点歌、调整队列和控制播放。轻点编号可查看拖动提示，按住编号或手柄上下拖动，松手后提交；也可使用歌曲右侧菜单移除或顶歌。队列被其他设备改动时会提示重新拖动。
 
 <table>
   <tr>
@@ -84,27 +84,42 @@
   </tr>
 </table>
 
-## 本场用户
+## 组织一场点歌
 
-电脑的「本场用户」支持多选、批量拖动排序和删除，也可点击改名图标后选择用户修改名称。改名会同步到已连接的本地和公网手机；已有歌曲与历史保留点歌时的名字，之后点的歌使用新名字。
+电脑的「本场用户」定义轮转顺序，支持多选、批量拖动和删除，以及改名。改名同步到绑定同一身份的手机；已有歌曲、历史与导出保留点歌时的名字，之后点的歌使用新名字。Remote 可以修改自己的名字，整场名单由电脑管理，避免多人误操作。
+
+普通点歌按用户轮转；「顶歌」放到下一首，「立即播放」会替换当前节目，拖动排序保留人工安排。需要恢复轮转时使用「重新排序」。重新打开软件时，选择继续上一场可保留队列；关闭提示或等待倒计时结束会开新一场，旧场次记录仍保留。
 
 <p align="center">
   <img src="images/session_users.png" alt="本场用户多选与批量管理，右下角为改名、多选和删除工具" width="360">
 </p>
 
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="images/session_user_rename.png" alt="电脑修改选中用户的名字" width="320"><br>
+      <sub>Host 修改本场用户</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="images/remote_identity.png" alt="Remote 修改自己的名字，已有点歌记录不变" width="260"><br>
+      <sub>手机只修改自己的身份</sub>
+    </td>
+  </tr>
+</table>
+
 ## 历史与歌单导出
 
-历史记录保留点过的歌曲，方便重新点歌。进入 **「历史记录 → 导出」**，可将本场记录或全部历史保存为 CSV 或歌单图片；歌曲较多时可分成多张图片。
+历史记录保留点过的歌曲，方便重新点歌。进入 **「历史记录 → 导出」**，可选择本场已播放记录、按日期归档的指定场次，或累计点歌历史，保存为 CSV 或歌单图片；多页图片打包为 ZIP。结束一场并重新打开后仍可选择旧场次。指定场次只包含该场的记录，不混入更早场次。
 
 <table>
   <tr>
     <td align="center" valign="top" width="45%">
       <img src="images/playlist_export_dialog.png" alt="历史记录页打开导出歌单弹窗" width="260"><br>
-      <sub>从历史记录页导出</sub>
+      <sub>选择要导出的归档场次</sub>
     </td>
     <td align="center" valign="top" width="55%">
       <img src="images/playlist_export.png" alt="导出的歌单图片" width="420"><br>
-      <sub>保存本场歌单</sub>
+      <sub>仅导出所选场次的示例歌单</sub>
     </td>
   </tr>
 </table>
@@ -115,18 +130,10 @@
 
 **双屏模式需在系统显示设置中选择「扩展」，不能使用「复制」或镜像模式。** Windows 可按 `Win + P` 选择「扩展」。
 
-<table>
-  <tr>
-    <td align="center" valign="top" width="50%">
-      <img src="images/dual_screen_control.png" alt="双屏模式下的电脑操作界面" width="480"><br>
-      <sub>电脑操作屏</sub>
-    </td>
-    <td align="center" valign="top" width="50%">
-      <img src="images/fullscreen.png" alt="全屏播放、新点歌提示与手机点歌二维码" width="480"><br>
-      <sub>全屏播放：新点歌提示与扫码入口</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="images/fullscreen.png" alt="全屏播放与右上角手机点歌二维码" width="960"><br>
+  <sub>全屏播放与扫码入口；双屏的连接与设置见快速说明</sub>
+</p>
 
 ## 设置与维护
 
@@ -153,9 +160,10 @@
 
 桌面版使用 Rust 后端与 Tauri 窗口，Host / Remote 共用网页界面。构建步骤、依赖和运行参数集中在以下文档：
 
-- [原生桌面与本地构建](docs/native-desktop.md)
+- [原生桌面与本地构建](docs/native-desktop.md) · [macOS 开发包验收](docs/macos_testing.md)
 - [媒体依赖与打包](media-libav/PACKAGING.md) · [构建工作流](.github/workflows/ci-bundle.yml)
 - [版本路线图](docs/version-roadmap.md) · [移动端架构](docs/mobile-host-rust-architecture.md) · [共享曲库](docs/shared-catalog.md)
+- [Source 开发与兼容边界](docs/source-compatibility.md)
 
 ## 致谢
 
