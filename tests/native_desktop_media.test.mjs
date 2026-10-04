@@ -5,6 +5,7 @@ import test from 'node:test';
 import { root } from './desktop_construction_support.mjs';
 import { runDesktopBrowser } from './run_desktop_rust_host.mjs';
 import './shared_workspace_icon.test.mjs';
+import './shared_host_layout_browser.test.mjs';
 
 for (const [name, options, marker] of [
   ['actual native Host, login, media clocks, LAN/Internet controls, exports and restart', [], 'Desktop Rust entry/browser core loop passed'],

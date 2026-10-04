@@ -137,41 +137,54 @@ const token="shared-ui-private-fixture";
     if(height===320) {
      const neighbor=page.locator('.session-user-badge[data-name="Layout Two"]');
      const neighborHeight=(await neighbor.boundingBox()).height;
+     const coarse=await page.evaluate(()=>state.sessionUserEditor.coarse);
+     if(!coarse)await page.locator('.session-user-mode-button[data-mode="rename"]').click();
      await sharedUser.locator('.session-user-name').click({timeout:5000});
-     assert.equal(await sharedUser.locator('.session-user-name').getAttribute('aria-expanded'),'true');
+     if(coarse)assert.equal(await sharedUser.locator('.session-user-name').getAttribute('aria-expanded'),'true');
+     else await page.locator('.session-user-rename-panel').waitFor({state:'visible'});
      assert.ok(Math.abs((await neighbor.boundingBox()).height-neighborHeight)<1,'Opening one user must not stretch neighboring badges');
      await screenshot('short-viewport-user-actions');
-     await sharedUser.locator('.session-user-name').click();
+     if(coarse)await sharedUser.locator('.session-user-name').click();
+     else {
+      await page.locator('.session-user-rename-panel .banner-close').click();
+      await page.locator('.session-user-mode-button[data-mode="rename"]').click();
+     }
      await page.locator('#session-user-input').evaluate(e=>{e.focus();e.setSelectionRange(2,8);});
     }
     await screenshot('shared-users-'+width+'x'+height);
    }
    await page.locator('#session-user-input').clear();
-   await sharedUser.locator('.session-user-name').click();
+   const coarse=await page.evaluate(()=>state.sessionUserEditor.coarse);
+   if(coarse)await sharedUser.locator('.session-user-name').click();
+   else assert.equal(await sharedUser.getAttribute('draggable'),'true','fine pointers use the accepted drag control');
    const down=sharedUser.locator('[data-user-action="down"]');
+   const move=async action=>{
+    if(coarse)await sharedUser.locator(`[data-user-action="${action}"]`).click();
+    else await sharedUser.dragTo(page.locator(`.session-user-badge[data-name="${action==='down'?'Layout Three':'Layout Two'}"]`),{targetPosition:{x:8,y:18}});
+   };
    let resumeReorder;
    const reorderGate=new Promise(resolve=>{resumeReorder=resolve;});
-   await page.route('**/api/session-users/reorder',async route=>{await reorderGate;await route.continue();},{times:1});
-   const reorderBefore=counts['/api/session-users/reorder']||0;
-   await down.click();await page.keyboard.press('Enter');
-   assert.equal(await down.getAttribute('aria-busy'),'true');
-   assert.equal(counts['/api/session-users/reorder']-reorderBefore,1);
-   await page.setViewportSize({width:390,height:850});await go('users');
+   await page.route('**/api/session-users/edit',async route=>{await reorderGate;await route.continue();},{times:1});
+   const reorderBefore=counts['/api/session-users/edit']||0;
+   await move('down');await page.keyboard.press('Enter');
+   assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),'true');
+   assert.equal(counts['/api/session-users/edit']-reorderBefore,1);
+   await page.setViewportSize({width:platform==='desktop'?700:390,height:850});await go('users');
    assert.equal(await down.isDisabled(),true);
    assert.equal(await page.evaluate(()=>sharedComponents.actions===document.querySelector('.session-user-badge[data-name="Shared Fixture"] .android-user-actions')),true);
    resumeReorder();
-   await page.waitForFunction(()=>!state.sessionUserActionPending&&state.data.session_users[1]==='Shared Fixture');
-   assert.equal(await down.getAttribute('aria-busy'),null);
+   await page.waitForFunction(()=>!state.sessionUserEditor.busy&&state.data.session_users[1]==='Shared Fixture');
+   assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),null);
    // A service-error response is a local browser transport fixture; retry then
    // uses the real native route. No production endpoint is contacted.
-   await page.route('**/api/session-users/reorder',route=>route.fulfill({json:{ok:false,error:'Fixture reorder retry'}}),{times:1});
-   const up=sharedUser.locator('[data-user-action="up"]');await up.click();
-   await page.waitForFunction(()=>!state.sessionUserActionPending);
+   await page.route('**/api/session-users/edit',route=>route.fulfill({json:{ok:false,error:'Fixture reorder retry'}}),{times:1});
+   const up=sharedUser.locator('[data-user-action="up"]');await move('up');
+   await page.waitForFunction(()=>!state.sessionUserEditor.busy);
    await page.locator('.app-toast.is-error:not(.hidden)').filter({hasText:'Fixture reorder retry'}).waitFor({state:'visible'});
-   assert.equal(await up.isDisabled(),false);assert.equal(await up.getAttribute('aria-busy'),null);
+   assert.equal(await up.isDisabled(),false);assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),null);
    assert.equal(await page.evaluate(()=>state.data.session_users[1]),'Shared Fixture');
-   await up.click();await page.waitForFunction(()=>!state.sessionUserActionPending&&state.data.session_users[0]==='Shared Fixture');
-   assert.equal(counts['/api/session-users/reorder']-reorderBefore,3);
+   await move('up');await page.waitForFunction(()=>!state.sessionUserEditor.busy&&state.data.session_users[0]==='Shared Fixture');
+   assert.equal(counts['/api/session-users/edit']-reorderBefore,3);
    await page.setViewportSize(platform==='desktop'?{width:1440,height:1000}:{width:412,height:850});
    await go('users');
    // Common rail definitions feed compact labels/icons without duplicate IDs.

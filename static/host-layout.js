@@ -261,6 +261,11 @@
         displaySection.prepend(displaySettings);
       }
       requestTabs.append(sharedRequestTabs);
+      // Desktop anchoring writes inline coordinates. Release them before the
+      // same panel returns to normal flow inside the phone's My page.
+      for (const property of ["position", "left", "right", "top"]) {
+        elements.cachePanel.style.removeProperty(property);
+      }
       byId("android-settings-slot").append(cacheSettings);
       byId("android-account-slot").append(account);
       account.prepend(accountStatus);
