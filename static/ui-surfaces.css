@@ -1,4 +1,71 @@
 /* Shared panel surfaces; Remote modal backgrounds provide extra separation. */
+/* Remote queue numbering and presentation previews share one badge surface. */
+:root {
+  --queue-order-bg: rgba(255, 255, 255, 0.96);
+  --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
+  --queue-order-color: rgba(91, 78, 69, 0.92);
+  --queue-order-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
+  --queue-ready-border-color: rgba(43, 123, 96, 0.4);
+  --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
+}
+:root[data-theme="dark"] {
+  --queue-order-bg: rgba(30, 26, 23, 0.96);
+  --queue-order-border: 1.4px solid rgba(246, 241, 235, 0.15);
+  --queue-order-color: var(--ink);
+  --queue-order-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  --queue-ready-border-color: rgba(45, 212, 191, 0.36);
+  --queue-ready-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
+}
+:root[data-theme="blue"] {
+  --queue-order-bg: rgba(8, 18, 32, 0.96);
+  --queue-order-border: 1.4px solid rgba(148, 202, 233, 0.18);
+  --queue-order-color: var(--ink);
+  --queue-order-shadow: 0 8px 18px rgba(2, 8, 23, 0.28);
+  --queue-ready-border-color: rgba(52, 211, 153, 0.42);
+  --queue-ready-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+}
+.queue-order {
+  box-sizing: border-box;
+  width: var(--queue-order-size, 34px);
+  height: var(--queue-order-size, 34px);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--queue-order-bg);
+  border: var(--queue-order-border);
+  color: var(--queue-order-color);
+  font-size: var(--queue-order-font-size, 14px);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--queue-order-shadow);
+}
+.queue-order[data-cache-state] { color: var(--muted); }
+.queue-item.ready .queue-order,
+.queue-order[data-cache-state="ready"] {
+  border-color: var(--queue-ready-border-color);
+  color: var(--green);
+  box-shadow: var(--queue-order-shadow), var(--queue-ready-shadow);
+}
+.queue-order[data-cache-state="failed"] {
+  border-color: var(--red);
+  color: var(--red);
+  box-shadow: var(--queue-order-shadow), 0 0 0 3px var(--danger-btn-bg, rgba(177, 69, 69, 0.1));
+}
+.queue-badge-play,
+.queue-badge-error {
+  width: 70%;
+  height: 70%;
+  flex: 0 0 auto;
+}
+.queue-badge-error,
+.queue-order[data-cache-state="failed"] :is(.queue-badge-label, .queue-badge-play),
+.queue-order [hidden],
+.player-delay-section-title[hidden] { display: none; }
+.queue-order[data-cache-state="failed"] .queue-badge-error { display: block; }
+.queue-order.is-empty { visibility: hidden; }
+
 .request-workspace-actions { flex: 0 0 auto; }
 html[data-host-layout="portrait"] .developer-mode .request-workspace-head { display: flex; }
 .request-workspace-actions > [hidden] { display: none !important; }
@@ -345,6 +412,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
   .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
+  .presentation-feedback-card,
   .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
   border: var(--modal-card-border);
@@ -352,6 +420,62 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   box-shadow: var(--rating-card-shadow);
   backdrop-filter: blur(var(--modal-surface-blur));
   -webkit-backdrop-filter: blur(var(--modal-surface-blur));
+}
+
+/* Passive feedback belongs inside the fullscreen/audience root, never a body portal. */
+.presentation-feedback {
+  position: absolute;
+  top: 50%;
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 20;
+  display: none;
+  width: min(168px, calc(100% - 32px));
+  height: 0;
+  pointer-events: none;
+}
+.presentation-feedback-card {
+  position: absolute;
+  top: 0;
+  width: 100%;
+  height: 144px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px;
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 28px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(var(--feedback-offset, -50%)) translateX(3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms;
+  pointer-events: none;
+}
+:is(.presentation-output-shell, .player-panel:fullscreen, .player-panel:-webkit-full-screen,
+  .player-panel.is-tauri-fullscreen, body.is-presentation-stage-only .player-panel) > .presentation-feedback {
+  display: block;
+}
+.presentation-feedback-card.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(var(--feedback-offset, -50%)) translateX(0);
+}
+.presentation-feedback-icon { display: flex; flex: 0 0 32px; }
+.presentation-feedback svg { width: 32px; height: 32px; }
+.presentation-feedback-label {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.presentation-feedback-value { max-width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.presentation-feedback-value[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .presentation-feedback-card { transition: none; }
 }
 
 /* A narrow Host tool sheet is one floating surface. Inline workspaces retain
@@ -651,6 +775,30 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   }
   .is-card-title-overflowing .request-card-title-remainder::-webkit-scrollbar { display: none; }
   .is-card-title-overflowing .request-card-title-track { animation: none; }
+}
+
+/* Large overflow moves left continuously; small overflow keeps its existing
+   back-and-forth motion. The second copy is visual only, never announced. */
+:root .is-text-marquee-loop { position: relative; }
+:root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track {
+  animation: text-marquee-loop var(--text-marquee-loop-duration) linear infinite;
+  animation-play-state: var(--text-marquee-play-state, running);
+}
+:root .is-text-marquee-loop > .text-marquee-copy {
+  position: absolute;
+  top: 0;
+  left: var(--text-marquee-copy-left);
+  pointer-events: none;
+}
+:root .is-card-title-overflowing { --text-marquee-play-state: paused; }
+:root .is-card-title-overflowing.is-card-title-visible { --text-marquee-play-state: running; }
+@keyframes text-marquee-loop {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--text-marquee-loop-distance))); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track { animation: none; }
+  :root .is-text-marquee-loop > .text-marquee-copy { display: none; }
 }
 
 /* Shared discovery controls and a single inline status inside the list. */

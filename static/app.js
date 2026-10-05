@@ -607,6 +607,7 @@ const elements = {
   stageControlTray: document.getElementById("stage-control-tray"),
   stageExtendedControls: document.getElementById("stage-extended-controls"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
+  presentationFeedback: document.getElementById("presentation-feedback"),
   audioVariantAnchor: document.getElementById("audio-variant-anchor"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   audioVariantToggle: document.getElementById("audio-variant-toggle"),
@@ -978,6 +979,57 @@ function maybeShowIncomingRequestToast(previousData, nextData) {
   };
   if (isAudiencePlayerSurface()) fullscreenRequestNotice().show(state.presentationIncomingRequest);
   publishPresentationOutputState();
+}
+
+function renderPresentationFeedback() {
+  const feedback = window.BilikaraPresentationFeedback;
+  if (!feedback || !elements.presentationFeedback) return;
+  const next = feedback.snapshot(state.data);
+  const previous = state.presentationFeedbackSnapshot;
+  const changes = feedback.changes(previous, next);
+  state.presentationFeedbackSnapshot = next;
+  const dualScreen = state.presentationSession?.mode === "localDualScreen"
+    && ["activating", "active"].includes(state.presentationSession.phase);
+  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (previous && (previous.session !== next.session || previous.item !== next.item)) {
+    state.presentationFeedbackView.hide();
+    state.presentationActionFeedback = null;
+  }
+  if (!isAudiencePlayerSurface() && !dualScreen) {
+    state.presentationFeedbackView.hide();
+    state.presentationActionFeedback = null;
+    return;
+  }
+  if (!changes.length) {
+    if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
+    return;
+  }
+  showPresentationOperationFeedback(changes);
+}
+
+function showPresentationOperationFeedback(changes) {
+  const feedback = window.BilikaraPresentationFeedback;
+  const dualScreen = state.presentationSession?.mode === "localDualScreen"
+    && ["activating", "active"].includes(state.presentationSession.phase);
+  if (!feedback || !elements.presentationFeedback || (!isAudiencePlayerSurface() && !dualScreen)) return;
+  const notices = (Array.isArray(changes) ? changes : [changes]).map(change => ({
+    ...change,
+    key: `${state.presentationOutputSenderId}:${state.presentationFeedbackSequence = (state.presentationFeedbackSequence || 0) + 1}`,
+    expiresAt: Date.now() + feedback.durationMs,
+  }));
+  state.presentationActionFeedback = feedback.recent(state.presentationActionFeedback, notices);
+  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
+  publishPresentationOutputState();
+}
+
+function confirmPresentationPlaybackFeedback(session) {
+  if (session.presentationFeedbackPlayPending
+    && isCurrentHostPlaybackSession(session, session.video, session.audio)
+    && hostPlaybackSessionObservedPlaying(session, session.video, session.audio)) {
+    session.presentationFeedbackPlayPending = false;
+    showPresentationOperationFeedback({ kind: "play", value: "" });
+  }
 }
 
 function requesterBadgeText(requesterName) {
@@ -1591,6 +1643,20 @@ function presentationRendererApi() {
   return window.BilikaraPresentationRenderer || null;
 }
 
+function presentationCacheStatusForItem(item) {
+  if (!item) {
+    return "";
+  }
+  // Transition labels/order stay fixed, but cache state follows fresh snapshots
+  // of the same song incarnation rather than the currently playing song.
+  const identity = String(item.item_incarnation_id || item.id || "");
+  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const latest = [state.data?.current_item, ...playlist].find((candidate) => (
+    identity && String(candidate?.item_incarnation_id || candidate?.id || "") === identity
+  ));
+  return String((latest || item).cache_status || "");
+}
+
 function presentationOverlayModel() {
   const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
   const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
@@ -1612,11 +1678,13 @@ function presentationOverlayModel() {
     title: delayOverlayTitleForItem(primaryItem, t("player.prepareNext")),
     requester: primaryItem?.requester_name || "—",
     duration: formatDurationSeconds(durationSecondsForItem(primaryItem)),
+    cacheStatus: presentationCacheStatusForItem(primaryItem),
     queueHeading: t("player.followingQueue"),
     rows: visibleRows.map((item) => ({
       title: delayOverlayTitleForItem(item),
       requester: item?.requester_name || "—",
       duration: formatDurationSeconds(durationSecondsForItem(item)),
+      cacheStatus: presentationCacheStatusForItem(item),
     })),
     emptyText: visibleRows.length ? "" : t("player.followingQueueEmpty"),
     remainingText: remainingCount > 0 ? t("player.remainingQueue", { count: remainingCount }) : "",
@@ -1759,6 +1827,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     clock,
     language: state.language,
     incomingRequest: state.presentationIncomingRequest || null,
+    actionFeedback: state.presentationActionFeedback || null,
     remoteAccess: remoteAccessForPresentation(),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
@@ -2920,6 +2989,7 @@ function presentationHostAnnouncementSnapshot() {
     title: delayOverlayTitleForItem(item),
     requester: String(item?.requester_name || ""),
     durationSeconds: durationSecondsForItem(item),
+    cacheStatus: presentationCacheStatusForItem(item),
   }));
   const snapshotKey = JSON.stringify({
     presentationGeneration: Number(state.presentationSession?.generation || 0),
@@ -2942,7 +3012,7 @@ function presentationHostAnnouncementSnapshot() {
   state.presentationHostAnnouncementKey = snapshotKey;
   state.presentationHostAnnouncementModel = {
     visible: true,
-    heading: t("player.upNext"),
+    heading: t("player.followingQueue"),
     countdownLabel: "",
     deadline: 0,
     durationMs: 1000,
@@ -2951,11 +3021,13 @@ function presentationHostAnnouncementSnapshot() {
     duration: primaryItem
       ? formatDurationSeconds(durationSecondsForItem(primaryItem))
       : "—",
-    queueHeading: t("player.followingQueue"),
+    cacheStatus: presentationCacheStatusForItem(primaryItem),
+    queueHeading: "",
     rows: followItems.map((item) => ({
       title: delayOverlayTitleForItem(item),
       requester: item?.requester_name || "—",
       duration: formatDurationSeconds(durationSecondsForItem(item)),
+      cacheStatus: presentationCacheStatusForItem(item),
     })),
     emptyText: "",
     remainingText: "",
@@ -2977,6 +3049,7 @@ function renderPresentationHostAnnouncement() {
   renderer.renderOverlay(overlay, presentationHostAnnouncementSnapshot(), {
     manageVisibility: true,
     now: 0,
+    primaryIndex: state.data?.playlist?.length ? 1 : null,
   });
   return overlay;
 }
@@ -4349,6 +4422,13 @@ function currentHostWorkspaceVisualSource(fallbackWorkspace) {
     .map((panel) => ({
       workspace: normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, ""),
       ...hostWorkspaceContentVisual(panel),
+      geometry: (() => {
+        const box = panel.getBoundingClientRect();
+        const region = elements.hostWorkspaceRegion.getBoundingClientRect();
+        return { display: getComputedStyle(panel).display, width: box.width, height: box.height,
+          left: box.left - region.left - elements.hostWorkspaceRegion.clientLeft,
+          top: box.top - region.top - elements.hostWorkspaceRegion.clientTop };
+      })(),
     }))
     .filter((candidate) => candidate.workspace);
   candidates.sort((left, right) => right.opacity - left.opacity);
@@ -4360,11 +4440,23 @@ function currentHostWorkspaceVisualSource(fallbackWorkspace) {
 
 function applyHostWorkspaceTransitionVisual(panel, transition, role) {
   panel.style?.removeProperty?.("--host-tool-start-opacity");
+  for (const key of ["display", "width", "height", "left", "top"]) {
+    panel.style?.removeProperty?.(`--host-tool-exit-${key}`);
+  }
   if (!transition || !role) {
     return;
   }
   if (role === "out") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.outgoingOpacity ?? 1));
+    const geometry = transition.outgoingGeometry;
+    if (geometry) {
+      // Leaving content keeps its grid/flex layout and border-box size. Only
+      // opacity changes; switching the next workspace must not reflow it.
+      for (const key of ["display", "width", "height", "left", "top"]) {
+        const value = key === "top" ? geometry.top + elements.hostWorkspaceRegion.scrollTop : geometry[key];
+        panel.style.setProperty(`--host-tool-exit-${key}`, key === "display" ? value : `${value}px`);
+      }
+    }
   } else if (role === "resume") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.incomingOpacity ?? 0));
   }
@@ -4417,6 +4509,7 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
     direction: toIndex > fromIndex ? "forward" : "backward",
     resume,
     outgoingOpacity: visualSource.opacity,
+    outgoingGeometry: visualSource.geometry,
     incomingOpacity: resume ? visualSource.opacity : 0,
     token: Number(state.hostWorkspaceTransition?.token || 0) + 1,
   };
@@ -4656,6 +4749,11 @@ function restoreHostWorkspaceScrollPosition(workspace = state.activeHostWorkspac
     Number(state.hostWorkspaceScrollPositions?.[normalized] || 0),
   );
   elements.hostWorkspaceRegion.scrollTop = scrollTop;
+  const transition = state.hostWorkspaceTransition;
+  if (transition?.outgoingGeometry) {
+    const panel = [...elements.hostWorkspacePanels].find(node => node.dataset.hostWorkspacePanel === transition.from);
+    panel?.style.setProperty("--host-tool-exit-top", `${transition.outgoingGeometry.top + elements.hostWorkspaceRegion.scrollTop}px`);
+  }
 }
 
 function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
@@ -5120,6 +5218,7 @@ function measurePersistentStage() {
     return "compact";
   }
   if (globalThis.BilikaraHostLayout?.isPortrait()) {
+    globalThis.BilikaraTextMarquee?.reset(elements.currentTitle, elements.currentTitleText);
     const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
     elements.appShell.dataset.stageMode = "portrait";
     elements.appShell.dataset.stageControlsLayout = "inline";
@@ -5253,6 +5352,9 @@ function measurePersistentStage() {
     titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
     titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
     titleNode.classList.add("is-scrolling");
+    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
   }
   if (titleCanUseTwoLines) {
     headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
@@ -9753,6 +9855,7 @@ function render() {
   if (!data) {
     return;
   }
+  if (window.BilikaraPresentationFeedback) renderPresentationFeedback();
 
   const currentItem = data.current_item;
   const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");
@@ -9865,6 +9968,7 @@ function renderSessionUsers() {
         await apiPostStateSnapshot(url, payload);
         render();
       }, message: setAppMessage,
+      bindHelp: info => bindHostContextualInfo(info, { actionHelp: false }),
     });
     elements.sessionUserTrash = state.sessionUserEditor.trash;
   }
@@ -9963,7 +10067,7 @@ let cacheAdvancedInfoHoverTimer = null;
 let cacheAdvancedInfoLeaveTimer = null;
 
 function positionContextualTooltip(info) {
-  const button = info?.querySelector?.(".cache-advanced-info-button");
+  const button = info?.querySelector?.(".cache-advanced-info-button, [data-contextual-info-anchor]");
   const tooltip = info?.querySelector?.(".cache-advanced-tooltip");
   if (!button || !tooltip || !info.classList.contains("is-visible")) {
     return false;
@@ -9985,11 +10089,11 @@ function positionContextualTooltip(info) {
   const buttonRect = button.getBoundingClientRect();
   tooltip.style.width = "max-content";
   tooltip.style.maxWidth = `${Math.round(Math.min(320, Math.max(0, boundaryRight - boundaryLeft)))}px`;
-  const width = tooltip.getBoundingClientRect().width;
+  const width = tooltip.offsetWidth;
   tooltip.style.left = "0px";
   tooltip.style.top = "0px";
   tooltip.style.bottom = "auto";
-  const height = tooltip.getBoundingClientRect().height;
+  const height = tooltip.offsetHeight;
   const buttonCenter = buttonRect.left + (buttonRect.width / 2);
   const preferredLeft = buttonCenter - (width / 2);
   const left = Math.max(
@@ -10010,14 +10114,19 @@ function positionContextualTooltip(info) {
   tooltip.dataset.tooltipDirection = direction;
   tooltip.style.left = `${Math.round(left)}px`;
   tooltip.style.top = `${Math.round(clampedTop)}px`;
-  const positionedRect = tooltip.getBoundingClientRect();
-  const leftCorrection = left - positionedRect.left;
-  const topCorrection = clampedTop - positionedRect.top;
-  if (Math.abs(leftCorrection) > 0.5) {
-    tooltip.style.left = `${Math.round(left + leftCorrection)}px`;
-  }
-  if (Math.abs(topCorrection) > 0.5) {
-    tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
+  // Top-layer coordinates are viewport coordinates. The bubble's 3px entry
+  // translation belongs to motion, not to its settled anchor position.
+  if (!tooltip.hasAttribute("popover")) {
+    const positionedRect = tooltip.getBoundingClientRect();
+    const transform = new DOMMatrixReadOnly(getComputedStyle(tooltip).transform);
+    const leftCorrection = left - (positionedRect.left - transform.m41);
+    const topCorrection = clampedTop - (positionedRect.top - transform.m42);
+    if (Math.abs(leftCorrection) > 0.5) {
+      tooltip.style.left = `${Math.round(left + leftCorrection)}px`;
+    }
+    if (Math.abs(topCorrection) > 0.5) {
+      tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
+    }
   }
   tooltip.style.setProperty("--contextual-tooltip-arrow-left", `${arrowCenter - 6}px`);
   return true;
@@ -12009,6 +12118,7 @@ function takeLocalPlayerSeekCompletion(session) {
   }
   const completion = session.seekSettleCallback;
   session.seekSettleCallback = null;
+  session.presentationFeedbackSeekTarget = null;
   session.seekSettling = false;
   session.seekResumeAfterSettle = false;
   session.seekSettleStartedAt = 0;
@@ -12641,6 +12751,8 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   session.seekSettleStartedAt = Date.now();
   session.seekResumePending = resumeAfterSeek;
   session.seekUpdatesLogicalIntent = options.updateIntent !== false;
+  session.presentationFeedbackSeekTarget = session.seekUpdatesLogicalIntent && Number.isFinite(options.targetTime)
+    ? options.targetTime : null;
   if (session.seekUpdatesLogicalIntent) {
     session.logicalPlayIntent = resumeAfterSeek;
     state.localShouldBePlaying = resumeAfterSeek;
@@ -12704,6 +12816,7 @@ function settleSplitPlayerSeek(video, audio, force = false) {
   }
   const resumeAfterSettle = session.seekResumeAfterSettle;
   const updateIntent = session.seekUpdatesLogicalIntent;
+  const feedbackTarget = session.presentationFeedbackSeekTarget;
   const onSettled = takeLocalPlayerSeekCompletion(session);
 
   if (
@@ -12729,6 +12842,9 @@ function settleSplitPlayerSeek(video, audio, force = false) {
 
   if (typeof onSettled === "function") {
     onSettled(true);
+  }
+  if (Number.isFinite(feedbackTarget)) {
+    showPresentationOperationFeedback({ kind: "seek", value: feedbackTarget === 0 ? "0:00" : formatDurationSeconds(feedbackTarget) });
   }
   return true;
 }
@@ -13215,6 +13331,7 @@ function requestSplitPlaybackStart(
   }
 
   state.hostPlaybackSession.logicalPlayIntent = true;
+  if (userGesture) state.hostPlaybackSession.presentationFeedbackPlayPending = true;
   state.localShouldBePlaying = true;
   if (state.localPlaybackStartState === "starting" && !userGesture) {
     syncTauriMediaSessionState(video, { forcePosition: true });
@@ -13287,8 +13404,10 @@ function setSplitPlaybackIntent(
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
+  const changedIntent = session.logicalPlayIntent !== nextIntent;
   session.logicalPlayIntent = nextIntent;
   if (!nextIntent) {
+    session.presentationFeedbackPlayPending = false;
     audio.bilikaraPitch?.reset();
     clearAndroidAudioClockRecovery(session);
   }
@@ -13329,6 +13448,7 @@ function setSplitPlaybackIntent(
   }
 
   state.localShouldBePlaying = nextIntent;
+  if (changedIntent) session.presentationFeedbackPlayPending = nextIntent;
   if (source) {
     reportSplitStartupDiagnostic(itemId, video, audio, source);
   }
@@ -13346,6 +13466,7 @@ function setSplitPlaybackIntent(
     setHostPlaybackSessionPhase(session, "paused");
     clearSplitPlaybackStartupWatchdog(session);
     syncTauriMediaSessionState(video, { forcePosition: true });
+    if (changedIntent) showPresentationOperationFeedback({ kind: "pause", value: "" });
     return true;
   }
 
@@ -14456,9 +14577,10 @@ async function setLocalPlayerKeyShift(keyShift) {
     // Once this write is acknowledged, newer Remote volume/mute settings
     // must no longer be hidden by the optimistic-update suppression window.
     state.playerSettingsEchoSuppressUntil = 0;
-    if (accepted) {
+  if (accepted) {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
+    if (accepted) renderPresentationFeedback();
     renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
   } catch (error) {
     // Ignore or handle errors gracefully
@@ -15761,6 +15883,7 @@ function renderPlayer(currentItem, playbackMode) {
     state.localVideoPlaybackBlocked = false;
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
+      confirmPresentationPlaybackFeedback(session);
     }
     if (!synchronizeStartupPlayer()) {
       syncSplitPlayer(
@@ -15854,6 +15977,7 @@ function renderPlayer(currentItem, playbackMode) {
     state.localAudioPlaybackBlocked = false;
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
+      confirmPresentationPlaybackFeedback(session);
     }
   });
 
@@ -18866,11 +18990,13 @@ async function requestNextTrack(expectedPlaybackGeneration = null) {
     session?.video,
     session?.audio,
   ) ? session : null;
-  return handleLocalPlaybackEnded(
+  const advanced = await handleLocalPlaybackEnded(
     "manual-next",
     capturedSession,
     expectedPlaybackGeneration,
   );
+  if (advanced) showPresentationOperationFeedback({ kind: "next", value: "" });
+  return advanced;
 }
 
 async function handleLocalPlaybackEnded(
@@ -19819,10 +19945,10 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
   syncCachePanelVisibility({ reopen: state.cacheSettingsOpen });
 });
 
-document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
-  const info = region.querySelector(".cache-advanced-info");
+function bindHostContextualInfo(region, { actionHelp = true } = {}) {
+  const info = region.matches(".cache-advanced-info") ? region : region.querySelector(".cache-advanced-info");
   const hoverTarget = region.closest("#remote-mini-popover") ? info : region;
-  region.addEventListener("click", (event) => {
+  if (actionHelp) region.addEventListener("click", (event) => {
     const button = event.target.closest(".cache-advanced-info-button");
     if (!button) {
       return;
@@ -19871,11 +19997,12 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
       ) {
         info?.classList.remove("is-visible");
         info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+        resetContextualTooltipPosition(info);
       }
     }, cacheAdvancedInfoLeaveDelayMs);
   });
   region.addEventListener("focusin", (event) => {
-    if (!event.target.closest(".cache-advanced-info-button")) {
+    if (actionHelp && !event.target.closest(".cache-advanced-info-button")) {
       return;
     }
     showCacheAdvancedInfoTransient(info, "keyboard");
@@ -19889,10 +20016,12 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
       ) {
         info?.classList.remove("is-visible");
         info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+        resetContextualTooltipPosition(info);
       }
     }, 0);
   });
-});
+}
+document.querySelectorAll(".cache-contextual-info-region").forEach(region => bindHostContextualInfo(region));
 
 elements.hostWorkspaceButtons?.forEach((button) => {
   button.addEventListener("click", () => {
@@ -21227,6 +21356,8 @@ function handleFullscreenChange() {
   if (!isFullscreen) {
     setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();
+    state.presentationFeedbackView?.hide();
+    state.presentationActionFeedback = null;
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
     } else {

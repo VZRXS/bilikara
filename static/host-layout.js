@@ -86,10 +86,8 @@
   let portrait = false;
   let preferences = {layout: "auto", orientation: "system"};
   let preferencesReady = false;
-  let preferenceBusy = false;
   let preferenceError = false;
   const layoutApi = window.BilikaraHostWindowPreferences;
-  const orientationSwitch = byId("android-orientation-switch");
   let page = "playback";
   let settings = false;
   let queueView = "queue";
@@ -302,53 +300,13 @@
     schedulePersistentStageMeasurement();
   }
 
-  function syncWindowPreferences() {
-    for (const [group, attribute, value] of [
-      [orientationSwitch, "androidOrientationMode", preferences.orientation],
-    ]) {
-      for (const button of group.querySelectorAll("button")) {
-        const selected = button.dataset[attribute] === value;
-        button.classList.toggle("active", selected);
-        button.setAttribute("aria-pressed", String(selected));
-        button.disabled = !preferencesReady || preferenceBusy;
-      }
-    }
-  }
-
-  async function changeWindowPreference(event) {
-    const group = orientationSwitch;
-    const button = event.target.closest("button");
-    if (!button || !group.contains(button) || button.disabled || preferenceBusy) return;
-    const mode = button.dataset.androidOrientationMode;
-    if (mode === preferences.orientation) return;
-    preferenceBusy = true;
-    button.setAttribute("aria-busy", "true");
-    syncWindowPreferences();
-    try {
-      preferences = {...await layoutApi.client.saveOrientation(mode), layout: "auto"};
-      preferenceError = false;
-      updateOrientation();
-    } catch {
-      preferenceError = true;
-      setAppMessage(t("mobile.windowPreferenceFailed"), true);
-    } finally {
-      preferenceBusy = false;
-      button.removeAttribute("aria-busy");
-      syncWindowPreferences();
-    }
-  }
-
-  byId("android-orientation-settings").hidden = !layoutApi?.orientation;
-  orientationSwitch.addEventListener("click", changeWindowPreference);
-  syncWindowPreferences();
   if (layoutApi?.client) {
-    layoutApi.client.load().then(saved => {
-      // Preview 2 exposes responsive layout only. Retain saved platform data,
-      // but do not let an earlier hidden manual selection pin the interface.
-      preferences = {...saved, layout: "auto"};
+    layoutApi.client.load().then(() => {
+      // Normal windows follow system rotation and available width. Former
+      // manual preferences must not pin the shared responsive interface.
+      preferences = {layout: "auto", orientation: "system"};
       preferencesReady = true;
       updateOrientation();
-      syncWindowPreferences();
     }).catch(() => {
       preferenceError = true;
       setAppMessage(t("mobile.windowPreferenceFailed"), true);

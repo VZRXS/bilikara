@@ -1,14 +1,13 @@
-import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
+import { readSourceText as readFileSync, runNodeScript } from './frontend_contract_support.mjs';
 // Existing frontend checks transferred to node:test; no Python execution.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { root, runNative } from './desktop_construction_support.mjs';
+import { root } from './desktop_construction_support.mjs';
 const ROOT = root;
 const __file__ = fileURLToPath(import.meta.url);
 import { contains, hasContent, splitOnce, sourceIndex, iterableValues } from './frontend_contract_support.mjs';
-async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const SongTransitionFrontendTest = {
 async setUpClass() {
 this.source = readFileSync(path.join(path.join(path.resolve(path.resolve(__file__), "..", ".."), "static"), "app.js"), "utf8");
@@ -24,12 +23,15 @@ return this.source.slice(start_index, end_index);
 },
 async run_node(script) {
 let completed;
-completed = (await runNative("node", ["-e", (`(async () => {
+const feedback = await this.source_slice("function showPresentationOperationFeedback", "function requesterBadgeText");
+completed = (await runNodeScript(`(async () => {
+globalThis.window ||= globalThis;
+${feedback}
 function applyFreshStateSnapshot(snapshot) { state.data = snapshot; return true; }
 async function apiPostStateSnapshot(url, payload) { return applyFreshStateSnapshot(await apiPost(url, payload)); }
 async function apiPostExactStateCommand(url, payload) { const snapshot = await apiPost(url, payload); return { snapshotAccepted: applyFreshStateSnapshot(snapshot), commandApplied: true }; }
 ` + String(script) + `
-})().catch((error) => { console.error(error); process.exit(1); });`)], process.env, 120000, root));
+})().catch((error) => { console.error(error); process.exit(1); });`, 120000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 return JSON.parse(completed.stdout.trim().trimEnd().split(/\r?\n/).at((-1)));
 },
@@ -628,7 +630,7 @@ function maybeShowIncomingRequestToast() {}
   }));
 })().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
 `);
-completed = (await runNative("node", ["-e", script], process.env, 10 * 1000, root));
+completed = (await runNodeScript(script, 10 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 result = JSON.parse(completed.stdout);
 assert.deepEqual(result, {["applied"]: false, ["responseSnapshotAccepted"]: true, ["reconciledGeneration"]: 10, ["reconciledItem"]: "A", ["playable"]: true, ["heldBeforeResponse"]: true, ["holdItem"]: "", ["holdGeneration"]: 0, ["pendingItem"]: "", ["pendingGeneration"]: 0, ["delayItem"]: "", ["deadline"]: 0, ["delayTimer"]: null, ["countdownTimer"]: null, ["inFlight"]: false, ["shouldPlay"]: true, ["reconciliationCount"]: 1, ["nextRequests"]: 1, ["renderCount"]: 0, ["syncCalls"]: 0});

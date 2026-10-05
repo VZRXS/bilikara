@@ -24,6 +24,7 @@ const FIRST_LAUNCH_MIN_WIDTH: f64 = 1120.0;
 const FIRST_LAUNCH_MIN_HEIGHT: f64 = 680.0;
 const FIRST_LAUNCH_MAX_WIDTH: f64 = 1680.0;
 const FIRST_LAUNCH_MAX_HEIGHT: f64 = 1050.0;
+const HOST_MIN_INNER_HEIGHT: f64 = 600.0;
 const SAVED_MIN_WIDTH: f64 = 640.0;
 const SAVED_MIN_HEIGHT: f64 = 480.0;
 const SAVED_MAX_WIDTH: f64 = 3200.0;
@@ -107,6 +108,7 @@ struct ResolvedMainWindowGeometry {
     offset_y: f64,
     inner_width: f64,
     inner_height: f64,
+    minimum_inner_height: f64,
     physical_x: i32,
     physical_y: i32,
     physical_inner_width: u32,
@@ -129,6 +131,7 @@ struct MainWindowGeometryState {
     native_directory: Option<PathBuf>,
     cached: Mutex<Option<StoredMainWindowGeometry>>,
     restoring: AtomicBool,
+    minimum_height_bits: AtomicU64,
     #[cfg(target_os = "windows")]
     fullscreen: Mutex<crate::windows_fullscreen::FullscreenState>,
 }
@@ -191,6 +194,7 @@ impl MainWindowGeometryState {
             native_directory: None,
             cached: Mutex::new(cached),
             restoring: AtomicBool::new(false),
+            minimum_height_bits: AtomicU64::new(0),
             #[cfg(target_os = "windows")]
             fullscreen: Mutex::new(crate::windows_fullscreen::FullscreenState::default()),
         }
@@ -423,6 +427,14 @@ fn clamp_or_center_saved_offset(
     )
 }
 
+fn minimum_host_height(monitor: &MonitorWorkArea, frame: LogicalFrameSize) -> f64 {
+    let available = (f64::from(monitor.height) / monitor.scale_factor
+        - frame.height
+        - 2.0 * WORK_AREA_EDGE_MARGIN)
+        .max(1.0);
+    HOST_MIN_INNER_HEIGHT.min(available)
+}
+
 fn resolved_geometry(
     monitor_index: usize,
     monitor: &MonitorWorkArea,
@@ -435,7 +447,10 @@ fn resolved_geometry(
     let available_inner_height =
         (work_height - frame.height - (2.0 * WORK_AREA_EDGE_MARGIN)).max(1.0);
     let inner_width = requested.inner_width.min(available_inner_width).max(1.0);
-    let inner_height = requested.inner_height.min(available_inner_height).max(1.0);
+    let minimum_inner_height = minimum_host_height(monitor, frame);
+    let inner_height = requested
+        .inner_height
+        .clamp(minimum_inner_height, available_inner_height);
     let outer_width = inner_width + frame.width;
     let outer_height = inner_height + frame.height;
     let (offset_x, offset_y) = requested
@@ -469,6 +484,7 @@ fn resolved_geometry(
         offset_y,
         inner_width,
         inner_height,
+        minimum_inner_height,
         physical_x,
         physical_y,
         physical_inner_width,
@@ -798,6 +814,27 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         return;
     };
 
+    // Old saved heights remain readable, but restore at the current Host floor.
+    // A short/high-DPI work area takes precedence over that logical floor.
+    let minimum_width = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW_LABEL)
+        .and_then(|config| config.min_width)
+        .unwrap_or(700.0);
+    let minimum_result = window.set_min_size(Some(tauri::LogicalSize::new(
+        minimum_width,
+        resolved.minimum_inner_height,
+    )));
+    if minimum_result.is_ok()
+        && let Some(state) = app.try_state::<MainWindowGeometryState>()
+    {
+        state
+            .minimum_height_bits
+            .store(resolved.minimum_inner_height.to_bits(), Ordering::Release);
+    }
     let size_result = window.set_size(tauri::PhysicalSize::new(
         resolved.physical_inner_width,
         resolved.physical_inner_height,
@@ -814,12 +851,60 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
     if let Some(state) = app.try_state::<MainWindowGeometryState>() {
         state.restoring.store(false, Ordering::Release);
     }
-    if size_result.is_err() || position_result.is_err() || maximize_result.is_err() {
+    if minimum_result.is_err()
+        || size_result.is_err()
+        || position_result.is_err()
+        || maximize_result.is_err()
+    {
         geometry_diagnostic("apply", "error_ignored");
     } else if resolved.used_saved_geometry {
         geometry_diagnostic("apply", "restored");
     } else {
         geometry_diagnostic("apply", "adaptive_default");
+    }
+}
+
+fn refresh_main_window_minimum_height(window: &tauri::Window) {
+    let Some(state) = window.try_state::<MainWindowGeometryState>() else {
+        return;
+    };
+    if state.restoring.load(Ordering::Acquire) || window.is_fullscreen().unwrap_or(true) {
+        return;
+    }
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let monitor = monitor_work_area(&monitor);
+    if !monitor_is_valid(&monitor) {
+        return;
+    }
+    let (Ok(inner), Ok(outer)) = (window.inner_size(), window.outer_size()) else {
+        return;
+    };
+    let frame = logical_frame_size(inner, outer, monitor.scale_factor);
+    let height = minimum_host_height(&monitor, frame);
+    // Moving within one monitor must not produce repeated native size changes.
+    if state.minimum_height_bits.load(Ordering::Acquire) == height.to_bits() {
+        return;
+    }
+    let width = window
+        .app_handle()
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW_LABEL)
+        .and_then(|config| config.min_width)
+        .unwrap_or(700.0);
+    if window
+        .set_min_size(Some(tauri::LogicalSize::new(width, height)))
+        .is_ok()
+    {
+        state
+            .minimum_height_bits
+            .store(height.to_bits(), Ordering::Release);
+    } else {
+        geometry_diagnostic("minimum_height", "error_ignored");
     }
 }
 
@@ -1189,6 +1274,12 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             tauri::WindowEvent::Moved(_)
             | tauri::WindowEvent::Resized(_)
             | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                ) {
+                    refresh_main_window_minimum_height(window);
+                }
                 #[cfg(target_os = "windows")]
                 if matches!(event, tauri::WindowEvent::Resized(_))
                     && !window
@@ -1495,6 +1586,52 @@ mod tests {
         assert_eq!(decision.offset_y, 80.0);
         assert_eq!(decision.inner_width, 1300.0);
         assert_eq!(decision.inner_height, 800.0);
+    }
+
+    #[test]
+    fn short_saved_host_heights_restore_at_the_logical_floor_without_discarding_preferences() {
+        let work_area = monitor("desktop", 0, 0, 1920, 1040, 1.0);
+        let mut saved = saved_geometry(&work_area, 100.0, 80.0, 1000.0, 480.0, true);
+        saved.layout = HostLayout::Desktop;
+        let decision = resolved(std::slice::from_ref(&work_area), 0, 0, Some(&saved));
+        assert!(decision.used_saved_geometry);
+        assert!(decision.maximized);
+        assert_eq!(decision.inner_width, 1000.0);
+        assert_eq!(decision.inner_height, 600.0);
+        assert_eq!(decision.minimum_inner_height, 600.0);
+        assert_eq!(decision.offset_x, 100.0);
+        assert_eq!(decision.offset_y, 80.0);
+        assert_fully_inside(decision, &work_area);
+    }
+
+    #[test]
+    fn host_height_floor_yields_to_short_and_high_dpi_work_areas() {
+        for (height, scale) in [(560, 1.0), (1040, 2.0)] {
+            let work_area = monitor("small", 0, 0, 1920, height, scale);
+            let frame = LogicalFrameSize {
+                width: 16.0,
+                height: 40.0,
+            };
+            let saved = saved_geometry(&work_area, 20.0, 20.0, 800.0, 700.0, false);
+            let decision = resolve_main_window_geometry(
+                std::slice::from_ref(&work_area),
+                0,
+                0,
+                frame,
+                Some(&saved),
+            )
+            .expect("short work area is supported");
+            let available = f64::from(height) / scale - 40.0 - 24.0;
+            assert_eq!(decision.inner_height, available);
+            assert_eq!(decision.minimum_inner_height, available);
+            assert!(decision.minimum_inner_height < 600.0);
+            assert!(
+                f64::from(decision.physical_y)
+                    + f64::from(decision.physical_inner_height)
+                    + 40.0 * scale
+                    <= f64::from(height)
+            );
+        }
     }
 
     #[test]

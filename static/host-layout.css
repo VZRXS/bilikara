@@ -2,11 +2,7 @@
    Existing android-* DOM hooks remain stable for native adapters and fixtures. */
 .android-host-only { display: none; }
 .android-fullscreen-remote-button { display: none; }
-.android-window-preferences[hidden], .android-display-settings[hidden] { display: none !important; }
-.android-window-preferences { flex-wrap: wrap; gap: 10px; }
-.android-window-preferences .mode-switch { flex-wrap: wrap; max-width: 100%; }
-.android-window-preferences .mode-button { min-height: 44px; padding: 8px 12px; }
-.android-window-preferences .cache-panel-hint { flex-basis: 100%; margin: 0; line-height: 1.6; }
+.android-display-settings[hidden] { display: none !important; }
 
 html[data-native-host="true"] .android-display-settings #presentation-settings {
   display: block;

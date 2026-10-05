@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { asciiString, companionName, json, ownedDirectory, root, runNative } from './libav_prerequisite_support.mjs';
 import { executableOnPath } from './desktop_construction_support.mjs';
@@ -73,4 +73,40 @@ test('actual required CI run block propagates failing npm and cannot hide it wit
   const result = await runNative(bash, ['--noprofile', '--norc', '-c', `npm() { printf '%s\\n' "$@" >&2; return 23; }\n${script}\nprintf 'unexpected later success'`], process.env, 20_000);
   assert.equal(result.status, 23, result.stderr);
   assert.equal(result.stderr, 'run\ntest:libav-prerequisites\n'); assert.equal(result.stdout, '');
+});
+
+test('actual timestamp gate passes the existing native companion path and preserves Cargo failures', async t => {
+  const directory = ownedDirectory('timestamp gate'); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const prefix = path.join(directory, 'prefix'); mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const block = workflow.split(/^      - name:/m).find(step => step.includes('reordered_video_preserves_nonzero_start'));
+  const script = block.split('run: |\n')[1].split('\n\n')[0].replace(/^          /gm, '');
+  const gitBash = process.platform === 'win32' && process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git/bin/bash.exe') : undefined;
+  const bash = gitBash && existsSync(gitBash) ? gitBash : executableOnPath(process.platform === 'win32' ? 'bash.exe' : 'bash');
+  assert.ok(bash, 'native Bash is required for the actual timestamp gate');
+  const stub = `cargo() {
+    node -e 'process.stdout.write(JSON.stringify({ companion: process.env.BILIKARA_LIBAV_COMPANION, args: process.argv.slice(1) }))' "$@"
+    return "\${CARGO_STATUS:-0}"
+  }\n`;
+  const invoke = (os, status = 0) => runNative(bash, ['--noprofile', '--norc', '-c', stub + script + '\nprintf "unexpected later success"'],
+    { ...process.env, RUNNER_OS: os, BILIKARA_LIBAV_PREFIX: prefix + path.sep + '.', CARGO_STATUS: String(status) }, 20_000, directory);
+  const expectedArgs = ['test', '--manifest-path', 'rust-runtime/Cargo.toml', '--locked', '--target', 'host-tuple', '--lib',
+    'experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start', '--', '--exact', '--ignored'];
+  for (const [os, filename] of [['Windows', 'bilikara_media_libav.dll'], ['macOS', 'libbilikara_media_libav.dylib']]) {
+    const companion = path.join(prefix, 'bin', filename); writeFileSync(companion, 'path fixture, not a native library');
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const result = await invoke(os, 29);
+      assert.equal(result.status, 29, result.stdout + result.stderr);
+      const record = JSON.parse(result.stdout);
+      assert.equal(record.companion, realpathSync.native(companion));
+      assert.deepEqual(record.args, expectedArgs);
+      if (process.platform === 'win32') assert.ok(!record.companion.includes('/'), 'Win32 library paths must have native separators');
+    }
+    rmSync(companion);
+    const missing = await invoke(os);
+    assert.notEqual(missing.status, 0, missing.stdout + missing.stderr);
+    assert.equal(missing.stdout, '', 'a missing companion must fail before Cargo and any later command');
+  }
+  const unsupported = await invoke('Linux');
+  assert.equal(unsupported.status, 1); assert.equal(unsupported.stdout, '');
 });

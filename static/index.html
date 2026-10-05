@@ -641,6 +641,7 @@
               aria-hidden="true"></div>
           </div>
           <div class="fullscreen-request-toast hidden" id="fullscreen-request-toast" aria-live="polite"></div>
+          <div class="presentation-feedback hidden" id="presentation-feedback" role="status" aria-live="polite"></div>
           <div class="audio-variant-anchor" id="audio-variant-anchor" hidden>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <button type="button" class="audio-variant-toggle hidden" id="audio-variant-toggle"
@@ -848,15 +849,6 @@
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
               </div>
               <div class="settings-section-card">
-                <div class="cache-panel-row settings-control-row android-window-preferences" id="android-orientation-settings" hidden>
-                  <p class="cache-panel-label" id="android-orientation-label" data-i18n="mobile.orientation">屏幕方向</p>
-                  <div class="mode-switch" id="android-orientation-switch" role="group" aria-labelledby="android-orientation-label">
-                    <button type="button" class="mode-button" data-android-orientation-mode="system" data-i18n="mobile.orientationSystem" disabled>跟随系统</button>
-                    <button type="button" class="mode-button" data-android-orientation-mode="landscape" data-i18n="mobile.orientationLandscape" disabled>横屏</button>
-                    <button type="button" class="mode-button" data-android-orientation-mode="portrait" data-i18n="mobile.orientationPortrait" disabled>竖屏</button>
-                  </div>
-                  <p class="cache-panel-hint" data-i18n="mobile.orientationHint">方向与布局独立；部分平板或分屏模式可能忽略方向请求。全屏播放退出后恢复此设置。</p>
-                </div>
                 <div class="cache-panel-row settings-control-row">
                   <div>
                     <p class="cache-panel-label" data-i18n="top.language">语言</p>
@@ -1915,6 +1907,7 @@
   <script src="/host-language.js" defer></script>
   <script src="/volume-control.js" defer></script>
   <script src="/incoming-request.js"></script>
+  <script src="/presentation-feedback.js"></script>
   <script src="/fullscreen-controls.js"></script>
   <script src="/session-user-editor.js" defer></script>
   <script src="/app.js" defer></script>

@@ -21,7 +21,7 @@ let parser, rejected_id;
 parser = markupSummary();
 Object.assign(parser, markupSummary(this.html));
 assert.ok(!hasContent(new Set(Array.from(new Set(["video", "audio", "iframe", "canvas"])).filter(value => contains(value, new Set((Symbol.iterator in Object(parser.tags) ? parser.tags : Object.keys(parser.tags))))))));
-assert.deepEqual(parser.scripts, ["/presentation-scene.js", "/presentation-renderer.js", "/presentation-sync.js", "/android-presentation.js", "/incoming-request.js", "/fullscreen-controls.js", "/controller.js"]);
+assert.deepEqual(parser.scripts, ["/presentation-scene.js", "/presentation-renderer.js", "/presentation-sync.js", "/android-presentation.js", "/incoming-request.js", "/presentation-feedback.js", "/fullscreen-controls.js", "/controller.js"]);
 assert.ok(hasContent(Array.from(new Set(["controller-shell", "controller-stage-frame", "controller-empty", "controller-status", "controller-output-control", "controller-exit", "controller-remote-popover", "controller-remote-qr-image", "controller-remote-url-link", "controller-internet-remote-meta", "controller-internet-remote-connection-count", "controller-internet-remote-room", "controller-internet-remote-qr-image", "controller-internet-remote-qr-placeholder", "controller-internet-remote-password", "controller-error", "controller-unavailable"])).every(value => contains(value, parser.ids))));
 assert.ok(contains("candidate?.qr_image", this.source));
 assert.ok(contains("candidate?.password", this.source));

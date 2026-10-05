@@ -2222,6 +2222,8 @@ function setPlaybackDockMarqueeText(container, textNode, value) {
     return;
   }
   const text = String(value || "");
+  if (textNode.textContent === text) return;
+  globalThis.BilikaraTextMarquee?.reset(container, textNode);
   if (textNode.textContent !== text) {
     textNode.textContent = text;
   }
@@ -2251,7 +2253,9 @@ function syncPlaybackDockMarquees() {
       container.style.setProperty("--playback-dock-marquee-offset", `${-distance}px`);
       container.style.setProperty("--playback-dock-marquee-duration", `${durationSeconds}s`);
       container.classList.add("is-scrolling");
+      globalThis.BilikaraTextMarquee?.configure(container, textNode, availableWidth, naturalWidth);
     } else {
+      globalThis.BilikaraTextMarquee?.reset(container, textNode);
       container.style.removeProperty("--playback-dock-marquee-offset");
       container.style.removeProperty("--playback-dock-marquee-duration");
     }
@@ -5775,6 +5779,7 @@ function clearPlaybackMetadataPopoverPosition() {
     popover.style.removeProperty(property);
   }
   delete popover.dataset.tooltipDirection;
+  elements.playbackMetadataPopoverText?.style.removeProperty("max-height");
 }
 
 function closePlaybackMetadataPopover({ restoreFocus = false } = {}) {
@@ -5782,17 +5787,24 @@ function closePlaybackMetadataPopover({ restoreFocus = false } = {}) {
   const anchor = state.playbackMetadataPopoverAnchor;
   const wasOpen = Boolean(state.playbackMetadataPopoverField);
   state.playbackMetadataPopoverField = "";
-  state.playbackMetadataPopoverAnchor = null;
   elements.playbackMetadataFields.forEach((wrapper) => {
     if (wrapper.classList.contains("is-disclosable")) {
       wrapper.setAttribute("aria-expanded", "false");
     }
   });
   if (popover) {
+    popover.classList.add("is-closing");
     popover.classList.remove("is-visible");
-    popover.hidden = true;
     popover.setAttribute("aria-hidden", "true");
-    clearPlaybackMetadataPopoverPosition();
+    const closing = popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
+    Promise.allSettled((popover.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+      if (popover.__bilikaraCloseSequence !== closing || state.playbackMetadataPopoverField) return;
+      if (typeof popover.hidePopover === "function" && popover.matches(":popover-open")) popover.hidePopover();
+      popover.hidden = true;
+      popover.classList.remove("is-closing");
+      state.playbackMetadataPopoverAnchor = null;
+      clearPlaybackMetadataPopoverPosition();
+    });
   }
   if (
     restoreFocus
@@ -5808,7 +5820,7 @@ function positionPlaybackMetadataPopover() {
   const popover = elements.playbackMetadataPopover;
   const anchor = state.playbackMetadataPopoverAnchor;
   const panel = elements.playbackSheetPanel;
-  if (!popover || popover.hidden || !anchor || !panel) {
+  if (!popover || popover.hidden || !state.playbackMetadataPopoverField || !anchor || !panel) {
     return false;
   }
 
@@ -5835,6 +5847,10 @@ function positionPlaybackMetadataPopover() {
   popover.style.right = "auto";
   popover.style.top = "0px";
   popover.style.bottom = "auto";
+  const style = getComputedStyle(popover);
+  const verticalInset = playbackCssPixels(style.paddingTop) + playbackCssPixels(style.paddingBottom)
+    + playbackCssPixels(style.borderTopWidth) + playbackCssPixels(style.borderBottomWidth);
+  elements.playbackMetadataPopoverText.style.maxHeight = `${Math.max(0, heightLimit - verticalInset)}px`;
 
   const width = Math.min(popover.offsetWidth, widthLimit);
   const height = Math.min(popover.offsetHeight, heightLimit);
@@ -5856,8 +5872,8 @@ function positionPlaybackMetadataPopover() {
     : anchorRect.bottom + gap;
   const top = Math.max(boundaryTop, Math.min(preferredTop, boundaryBottom - height));
   const arrowCenter = Math.max(10, Math.min(width - 10, anchorCenter - left));
-  const offsetLeft = panelRect.left + panel.clientLeft;
-  const offsetTop = panelRect.top + panel.clientTop;
+  const offsetLeft = popover.hasAttribute("popover") ? 0 : panelRect.left + panel.clientLeft;
+  const offsetTop = popover.hasAttribute("popover") ? 0 : panelRect.top + panel.clientTop;
 
   popover.dataset.tooltipDirection = direction;
   popover.style.left = String(Math.round(left - offsetLeft)) + "px";
@@ -5889,11 +5905,21 @@ function openPlaybackMetadataPopover(wrapper) {
   state.playbackMetadataPopoverField = field;
   state.playbackMetadataPopoverAnchor = wrapper;
   elements.playbackMetadataPopoverText.textContent = fullText;
+  const popover = elements.playbackMetadataPopover;
+  popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
+  // Keep a hidden painted frame for both top-layer and older WebView paths.
+  popover.classList.add("is-closing");
   elements.playbackMetadataPopover.hidden = false;
   elements.playbackMetadataPopover.setAttribute("aria-hidden", "false");
-  elements.playbackMetadataPopover.classList.add("is-visible");
+  if (typeof popover.showPopover === "function") {
+    popover.setAttribute("popover", "manual");
+    if (!popover.matches(":popover-open")) popover.showPopover();
+  }
+  getComputedStyle(popover).opacity;
   wrapper.setAttribute("aria-expanded", "true");
   positionPlaybackMetadataPopover();
+  popover.classList.remove("is-closing");
+  popover.classList.add("is-visible");
   return true;
 }
 
@@ -5962,6 +5988,9 @@ function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
     const distance = Math.max(0, element.scrollWidth - wrapper.clientWidth);
     wrapper.style.setProperty("--playback-marquee-distance", `${distance}px`);
     wrapper.style.setProperty("--playback-marquee-duration", `${Math.max(10, distance / 24 + 4)}s`);
+    globalThis.BilikaraTextMarquee?.configure(wrapper, element, wrapper.clientWidth, element.scrollWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(wrapper, element);
   }
   wrapper.dataset.naturalLines = String(naturalLines);
   wrapper.dataset.visibleLines = String(truncated ? lines : naturalLines);
@@ -9436,7 +9465,9 @@ function mountRemoteContextualTooltip(wrap) {
   const tooltip = remoteContextualTooltipForWrap(wrap);
   if (!tooltip) return null;
   tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
-  tooltip.classList.remove("is-closing");
+  // Keep the hidden entry frame laid out even without the Popover API.
+  // Otherwise display:none skips the shared opacity/slide transition.
+  tooltip.classList.add("is-closing");
   const playbackPanel = wrap?.closest?.(".playback-sheet-panel");
   if (playbackPanel && tooltip.parentElement !== playbackPanel) {
     playbackPanel.append(tooltip);
@@ -9448,6 +9479,7 @@ function mountRemoteContextualTooltip(wrap) {
   }
   // Establish the hidden frame before toggling visibility, as on Host.
   getComputedStyle(tooltip).opacity;
+  tooltip.classList.remove("is-closing");
   tooltip.classList.add("is-visible");
   return tooltip;
 }

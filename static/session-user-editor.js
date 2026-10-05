@@ -7,7 +7,7 @@
   const trash = icon('<path d="M3 6h18M19 6v14H5V6m4 0V3h6v3M10 10v7M14 10v7"/>');
 
   class SessionUserEditor {
-    constructor({ stage, list, t, post, message }) {
+    constructor({ stage, list, t, post, message, bindHelp }) {
       this.stage = stage;
       this.list = list;
       this.t = t;
@@ -27,11 +27,12 @@
         <span class="session-user-selection-count" role="status"></span>
         <button type="button" class="session-user-mode-button" data-mode="rename" aria-pressed="false">${pencil}</button>
         <button type="button" class="session-user-mode-button" data-mode="select" aria-pressed="false">${checklist}</button>
-        <span class="session-user-trash-slot"><button type="button" id="session-user-trash" class="session-user-trash">${trash}</button></span>`;
+        <span class="session-user-trash-slot cache-advanced-info" tabindex="0" aria-describedby="session-user-trash-help"><button type="button" id="session-user-trash" class="session-user-trash" data-contextual-info-anchor>${trash}</button><span id="session-user-trash-help" class="cache-advanced-tooltip" role="tooltip"></span></span>`;
       stage.querySelector("#session-user-trash")?.remove();
       stage.append(this.footer);
       this.trash = this.footer.querySelector(".session-user-trash");
       this.trashSlot = this.trash.parentElement;
+      bindHelp?.(this.trashSlot);
       this.all = this.footer.querySelector(".session-user-select-all");
       this.count = this.footer.querySelector(".session-user-selection-count");
       this.footer.addEventListener("click", event => {
@@ -174,7 +175,7 @@
       }
       this.trash.disabled = this.busy || (!this.drag && (this.mode !== "select" || !this.selected.size));
       this.trash.setAttribute("aria-label", this.t("session.deleteSelected"));
-      this.trash.title = this.mode === "select" ? this.t("session.deleteSelected") : this.t("session.dragToDelete");
+      this.trashSlot.querySelector('.cache-advanced-tooltip').textContent = this.t("session.dragToDelete");
       if (this.busy) this.footer.setAttribute("aria-busy", "true"); else this.footer.removeAttribute("aria-busy");
       if (this.editor) {
         this.editor.node.setAttribute("aria-label", this.t("remoteIdentity.renameTitle"));
@@ -339,12 +340,17 @@
       const dragImage = document.createElement("div");
       dragImage.className = "session-user-drag-image";
       dragImage.setAttribute("aria-hidden", "true");
+      dragImage.dataset.editMode = this.mode;
+      dragImage.style.setProperty("--session-user-row-height", getComputedStyle(this.stage).getPropertyValue("--session-user-row-height"));
       const clone = badge.cloneNode(true);
       clone.classList.remove("dragging"); clone.draggable = false;
+      const box = badge.getBoundingClientRect();
+      clone.style.width = `${box.width}px`;
+      clone.style.height = `${box.height}px`;
       dragImage.append(clone);
       document.body.append(dragImage);
-      const box = badge.getBoundingClientRect();
-      event.dataTransfer.setDragImage(dragImage, box.width / 2, box.height / 2);
+      // The 2px inset preserves the selected outline in the native snapshot.
+      event.dataTransfer.setDragImage(dragImage, box.width / 2 + 2, box.height / 2 + 2);
       this.drag.image = dragImage;
     }
 

@@ -61,6 +61,8 @@ test('actual shared Android layout releases desktop popup coordinates and keeps 
     assert.deepEqual(geometry, { position: 'static', contained: true, reachable: true, same: true, overflow: false });
     await page.locator('#android-open-settings').click();
     await page.locator('#host-workspace-settings').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('[data-android-orientation-mode]').count(), 0,
+      'Phone settings follow system rotation instead of exposing a direction override');
   }
   assert.deepEqual(errors, []);
 });

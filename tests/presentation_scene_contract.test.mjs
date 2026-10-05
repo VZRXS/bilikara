@@ -21,7 +21,23 @@ test('Audience progress metadata is bounded and does not change scene identity',
     assert.equal(scene.displayMetadata.cacheStatus, 'downloading');
   }
   assert.equal(normalizePresentationScene({ displayMetadata: { cacheStatus: 'unknown' } }).displayMetadata.cacheStatus, '');
+  assert.equal(normalizePresentationScene({ displayMetadata: { cacheStatus: 'queued' } }).displayMetadata.cacheStatus, 'pending');
   assert.equal(normalizePresentationScene({}).displayMetadata.cacheProgress, null);
+});
+
+test('Transition song cards carry only their own bounded cache state', () => {
+  const statuses = ['queued', 'downloading', 'failed', 'ready', 'unknown'];
+  const scene = normalizePresentationScene({ displayMetadata: { cacheStatus: 'failed' }, overlay: {
+    visible: true, cacheStatus: 'queued', rows: statuses.map(cacheStatus => ({
+      title: 'Song', requester: 'Alice', duration: '2:00', cacheStatus, mediaUrl: 'forbidden', cacheProgress: 50,
+    })),
+  } });
+  assert.equal(scene.displayMetadata.cacheStatus, 'failed');
+  assert.equal(scene.overlay.cacheStatus, 'pending');
+  assert.deepEqual(scene.overlay.rows.map(row => row.cacheStatus), ['pending', 'downloading', 'failed', 'ready', '']);
+  assert.deepEqual(Object.keys(scene.overlay.rows[0]).sort(), ['cacheStatus', 'duration', 'requester', 'title']);
+  assert.equal(normalizePresentationScene({ overlay: { cacheStatus: 'unknown' } }).overlay.cacheStatus, '');
+  assert.equal(normalizePresentationScene({ overlay: {} }).overlay.cacheStatus, '');
 });
 async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const PresentationSceneTest = {
@@ -96,7 +112,7 @@ assert.deepEqual(result["deadline"], 0);
 assert.deepEqual(result["durationMs"], 2500);
 assert.deepEqual(result["rows"].length, 5);
 assert.deepEqual(result["rows"][4]["title"], "Song 4");
-assert.deepEqual(new Set((Symbol.iterator in Object(result["rows"][0]) ? result["rows"][0] : Object.keys(result["rows"][0]))), new Set(["title", "requester", "duration"]));
+assert.deepEqual(new Set((Symbol.iterator in Object(result["rows"][0]) ? result["rows"][0] : Object.keys(result["rows"][0]))), new Set(["title", "requester", "duration", "cacheStatus"]));
 },
 async test_module_contains_no_playback_transport_or_follower_clock() {
 let forbidden;

@@ -7,7 +7,7 @@ const path=require("node:path");
 const fs=require("node:fs/promises");
 const {chromium}=require("playwright");
 const directory=path.resolve(process.argv[2]);
-const adbPath=path.join(process.env.ANDROID_HOME,"platform-tools","adb.exe");
+const adbPath=path.join(process.env.ANDROID_HOME,"platform-tools",process.platform==="win32"?"adb.exe":"adb");
 const device="emulator-5562",app="com.bilikara.app.alpha";
 const adb=(...args)=>execFileSync(adbPath,["-s",device,...args],{encoding:"utf8",timeout:20000}).trim();
 const delay=()=>new Promise(resolve=>setTimeout(resolve,300));
@@ -76,13 +76,15 @@ async function connect() {
 }
 (async()=>{
   await fs.mkdir(directory,{recursive:true});
+  const rotationKeys=["accelerometer_rotation","user_rotation"];
+  const originalRotation=rotationKeys.map(key=>adb("shell","settings","get","system",key));
   adb("shell","am","start","-W","-n",`${app}/com.bilikara.app.MainActivity`);
   let {browser,page}=await connect();const errors=[];
   let phase="startup";
   const pageError=error=>errors.push({message:error.message,stack:error.stack,phase});
   try {
     page.on("pageerror",pageError);
-    await page.waitForFunction(()=>window.BilikaraAndroidLayout?.client && !document.querySelector('button[data-android-layout-mode="auto"]').disabled && state.data);
+    await page.waitForFunction(()=>window.BilikaraHostWindowPreferences?.client && state.data);
     phase="layout-and-direction";
     assert.equal(await page.evaluate(()=>Boolean(state.data?.current_item) || (state.data?.playlist?.length || 0)>0),false,"Use an empty disposable emulator; never mutate a user's session");
     await page.evaluate(()=>{window.layoutDeviceSentinel={video:document.querySelector("video"),token:Math.random()};});
@@ -93,33 +95,34 @@ async function connect() {
       if(await page.locator("#android-host-dock").isVisible()) {
         await page.locator('[data-android-page="my"]').click();
         await page.locator("#android-open-settings").click();
-      } else if(!await page.locator("#android-layout-switch").isVisible()) await page.locator("#work-rail-settings").click();
+      } else if(!await page.locator("#host-workspace-settings").isVisible()) await page.locator("#work-rail-settings").click();
     };
     await settings();
-    const choose=async(field,value)=>{
-      await page.locator(`button[data-android-${field}-mode="${value}"]`).click();
-      await page.waitForFunction(({field,value})=>document.querySelector(`button[data-android-${field}-mode="${value}"]`).getAttribute("aria-pressed")==="true",{field,value});
+    assert.equal(await page.locator('[data-android-layout-mode], [data-android-orientation-mode]').count(),0);
+    const rotate=async rotation=>{
+      // Rotate only the disposable emulator through OS window settings. The
+      // app must follow the system; never call its retired manual UI controls.
+      adb("shell","settings","put","system","accelerometer_rotation","0");
+      adb("shell","settings","put","system","user_rotation",String(rotation));
+      await page.waitForFunction(landscape=>(innerWidth>innerHeight)===landscape,rotation===1);
     };
-    await choose("orientation","landscape");
-    await page.waitForFunction(()=>innerWidth>innerHeight && document.documentElement.dataset.hostLayout==="landscape");
+    await rotate(1);
+    await page.waitForFunction(()=>document.documentElement.dataset.hostLayout==="landscape");
     await verifySame();
     assert.equal(await page.locator("#presentation-settings").evaluate(el=>!!el.closest(".topbar")),true);
-    await settings();await choose("layout","phone");
-    assert.equal(await page.locator("#android-host-dock").isVisible(),true);
-    await verifySame();
-    await page.screenshot({path:path.join(directory,"native-manual-phone-landscape.png")});
-    const persisted=await page.evaluate(()=>BilikaraAndroidLayout.client.load());
-    assert.deepEqual(persisted,{layout:"phone",orientation:"landscape"});
+    await settings();
+    await page.screenshot({path:path.join(directory,"native-system-landscape.png")});
+    const persisted=await page.evaluate(()=>BilikaraHostWindowPreferences.client.load());
     await browser.close();
     adb("shell","am","force-stop",app);
     adb("shell","am","start","-W","-n",`${app}/com.bilikara.app.MainActivity`);
     phase="restart";
     ({browser,page}=await connect());page.on("pageerror",pageError);
-    await page.waitForFunction(()=>window.BilikaraAndroidLayout?.client && document.documentElement.dataset.hostLayoutMode==="phone");
-    assert.deepEqual(await page.evaluate(()=>BilikaraAndroidLayout.client.load()),persisted);
+    await page.waitForFunction(()=>window.BilikaraHostWindowPreferences?.client && document.documentElement.dataset.hostLayoutMode==="auto");
+    assert.deepEqual(await page.evaluate(()=>BilikaraHostWindowPreferences.client.load()),persisted);
     assert.equal(await page.evaluate(()=>innerWidth>innerHeight),true);
-    await settings();await choose("layout","auto");await settings();await choose("orientation","portrait");
-    await page.waitForFunction(()=>innerWidth<innerHeight && document.documentElement.dataset.hostLayout==="portrait");
+    await rotate(0);
+    await page.waitForFunction(()=>document.documentElement.dataset.hostLayout==="portrait");
     await page.locator('[data-android-page="playback"]').click();
     phase="fullscreen-playback";
     await installMedia(browser.contexts()[0],page);
@@ -142,12 +145,12 @@ async function connect() {
       if(exit==="button") await tapFullscreen();
       else adb("shell","input","keyevent","4");
       await page.waitForFunction(()=>!document.fullscreenElement && innerWidth<innerHeight);
-      assert.equal((await page.evaluate(()=>BilikaraAndroidLayout.client.load())).orientation,"portrait");
+      assert.equal((await page.evaluate(()=>BilikaraHostWindowPreferences.client.load())).orientation,persisted.orientation,"System rotation does not rewrite private preferences");
       await page.waitForFunction(()=>!document.querySelector("video").paused && !document.querySelector("audio").paused);
     }
-    await settings();await choose("orientation","system");
+    await settings();
     await page.screenshot({path:path.join(directory,"native-settings.png")});
-    const result={passed:errors.length===0,functionalChecksPassed:true,pageErrors:errors,actualRotation:true,sharedNodes:true,noReloadWhileSwitching:true,persistedAcrossProcess:true,originChangedAfterRestart:new URL(originalUrl).origin!==new URL(page.url()).origin,fullscreenRestoration:["button","Android Back"],preferences:await page.evaluate(()=>BilikaraAndroidLayout.client.load())};
+    const result={passed:errors.length===0,functionalChecksPassed:true,pageErrors:errors,actualRotation:true,sharedNodes:true,noReloadWhileSwitching:true,persistedAcrossProcess:true,originChangedAfterRestart:new URL(originalUrl).origin!==new URL(page.url()).origin,fullscreenRestoration:["button","Android Back"],preferences:await page.evaluate(()=>BilikaraHostWindowPreferences.client.load())};
     await fs.writeFile(path.join(directory,"result.json"),JSON.stringify(result,null,2));
     console.log(JSON.stringify(result));
     assert.deepEqual(errors,[],"Record, do not hide, any injection/application errors");
@@ -155,5 +158,17 @@ async function connect() {
     await page.screenshot({path:path.join(directory,"failed.png")}).catch(()=>{});
     console.log(await page.evaluate(()=>({width:innerWidth,height:innerHeight,root:{...document.documentElement.dataset},fullscreen:!!document.fullscreenElement,media:Array.from(document.querySelectorAll("video,audio")).map(el=>({tag:el.tagName,time:el.currentTime,paused:el.paused,ready:el.readyState,error:el.error?.code}))})).catch(()=>({})));
     throw error;
-  } finally {await browser.close();adb("forward","--remove","tcp:9238");}
+  } finally {
+    try { await browser.close(); }
+    finally {
+      try { adb("forward","--remove","tcp:9238"); }
+      finally {
+        rotationKeys.forEach((key,index)=>{
+          const value=originalRotation[index];
+          if(value==="null")adb("shell","settings","delete","system",key);
+          else adb("shell","settings","put","system",key,value);
+        });
+      }
+    }
+  }
 })().catch(error=>{console.error(error);process.exitCode=1;});

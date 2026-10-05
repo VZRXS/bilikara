@@ -279,7 +279,8 @@ const token="shared-ui-private-fixture";
     assert.equal(await page.locator('html').getAttribute('data-host-layout-mode'),platform==="android"?'auto':null);
     await go("settings");
    }
-   assert.equal(await page.locator("#android-orientation-settings").isVisible(),platform==="android");
+   assert.equal(await page.locator('[data-android-orientation-mode]').count(),0,
+    'Neither native desktop nor phone settings expose a manual direction selector');
    // Existing common settings action, exactly once after repeated reparenting.
    const languageBefore=counts["/api/ui-language"]||0;
    await page.locator('[data-language="en"]').click();await page.waitForFunction(()=>state.language==="en");

@@ -41,6 +41,8 @@ this.diagnostic_source = (await this._slice("function mediaUrlBasename", "async 
 this.program_equality_source = (await this._slice("function playbackProgramDescriptorsEqual", "function isValidHostMediaLocator"));
 this.webkit_helpers_source = (await this._slice("function isWebKitPlaybackRuntime", "function canTogglePlayerFullscreen"));
 this.webkit_timer_source = (await this._slice("function clearWebKitAudioStarvationTimer", "function isPlayerPanelFullscreen"));
+this.feedback_source = (await this._slice("function showPresentationOperationFeedback", "function requesterBadgeText"));
+this.feedback_time_source = (await this._slice("function formatDurationSeconds", "function escapeRegExpText"));
 },
 async _slice(start, end) {
 let end_index, start_index;
@@ -261,7 +263,7 @@ function addMountedPlayerListener(media, eventName, listener) {
 }
 ` + String(this.webkit_helpers_source) + `
 ` + String(this.observed_playback_source) + `
-` + String(sources.join("")) + `
+` + this.feedback_source + this.feedback_time_source + String(sources.join("")) + `
 (async () => {
 ` + String(body) + `
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -4899,6 +4901,40 @@ assert.ok(!hasContent(result["isWebKit"]));
 assert.ok(!hasContent(result["isTauriWK"]));
 }
 };
+test('playback feedback waits for the current observed pair, ignores retries/stale sessions and clears cancelled intent', async () => {
+  const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass();
+  const result = await instance.run_node(`
+const notices = [];
+elements.presentationFeedback = {};
+window.BilikaraPresentationFeedback = {
+  durationMs: 2000, recent(_previous, next) { return next.at(-1); },
+  create() { return { show(notice) { notices.push(notice.kind); } }; },
+};
+isAudiencePlayerSurface = () => true;
+global.publishPresentationOutputState = () => {};
+const video = new FakeMedia(10), audio = new FakeMedia(9.8);
+mountedVideo = video; mountedAudio = audio;
+const session = state.hostPlaybackSession;
+Object.assign(session, { video, audio, playbackProgram: null, phase: 'needs-user-gesture', logicalPlayIntent: true });
+requestSplitPlaybackStartFromUserGesture(video, audio);
+const beforeObserved = [...notices];
+video.paused = true; audio.paused = false; session.phase = 'playing';
+confirmPresentationPlaybackFeedback(session);
+const incomplete = [...notices];
+video.paused = false;
+confirmPresentationPlaybackFeedback({ ...session });
+const stale = [...notices];
+confirmPresentationPlaybackFeedback(session); confirmPresentationPlaybackFeedback(session);
+const played = [...notices];
+setSplitPlaybackIntent(video, audio, false);
+const paused = [...notices];
+session.presentationFeedbackPlayPending = true; session.readyCommitted = false;
+setSplitPlaybackIntent(video, audio, false);
+const cancelledPending = session.presentationFeedbackPlayPending;
+console.log(JSON.stringify({ beforeObserved, incomplete, stale, played, paused, cancelledPending }));
+`, instance.program_equality_source, instance.sync_source, instance.startup_source);
+  assert.deepEqual(result, { beforeObserved: [], incomplete: [], stale: [], played: ['play'], paused: ['play', 'pause'], cancelledPending: false });
+});
 test("SplitPlayerSyncTest.test_video_starvation_pauses_audio_without_seeking_video", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_video_starvation_pauses_audio_without_seeking_video(); });
 test("SplitPlayerSyncTest.test_video_recovery_realigns_audio_to_video_clock", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_video_recovery_realigns_audio_to_video_clock(); });
 test("SplitPlayerSyncTest.test_normal_sync_source_cannot_seek_video", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_normal_sync_source_cannot_seek_video(); });

@@ -11,11 +11,13 @@ const path=require("node:path");
 const {chromium}=require("playwright");
 const [exe,directory,video,audio,executablePath]=process.argv.slice(2);
 (async()=>{
-  const server=spawn(exe,[path.resolve(directory),path.resolve("static"),path.resolve(video),path.resolve(audio)],{stdio:["pipe","pipe","pipe"]});
-  const lines=createInterface({input:server.stdout});server.stderr.on("data",()=>{});
+  const {isolatedEnvironment}=await import("./native_host_support.mjs");
+  const server=spawn(exe,[path.resolve(directory),path.resolve("static"),path.resolve(video),path.resolve(audio)],{env:isolatedEnvironment(path.resolve(directory)),stdio:["pipe","pipe","pipe"]});
+  let diagnostics="";
+  const lines=createInterface({input:server.stdout});server.stderr.on("data",data=>{diagnostics=(diagnostics+data).slice(-16384);});
   let browser,page;
   try {
-    const bootstrap=JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(server,"exit").then(()=>{throw Error("Host exited");})])).bootstrap_url;
+    const bootstrap=JSON.parse(await Promise.race([once(lines,"line").then(v=>v[0]),once(server,"exit").then(()=>{throw Error(diagnostics || "Host exited");})])).bootstrap_url;
     browser=await chromium.launch({headless:true,executablePath,args:["--autoplay-policy=no-user-gesture-required"]});
     const context=await browser.newContext({viewport:{width:412,height:850},isMobile:true,hasTouch:true,locale:"zh-CN"});
     await context.addInitScript(()=>{
@@ -68,35 +70,33 @@ const [exe,directory,video,audio,executablePath]=process.argv.slice(2);
       await page.screenshot({path:path.join(directory,`auto-${width}-${height}.png`)});
     }
     await dock.locator('[data-android-page="my"]').click();await page.locator("#android-open-settings").click();
-    const choose=async mode=>{
-      const button=page.locator(`button[data-android-layout-mode="${mode}"]`);
-      await button.click();await page.waitForFunction(mode=>document.documentElement.dataset.hostLayoutMode===mode,mode);
-      assert.equal(await button.getAttribute("aria-pressed"),"true");await assertMedia();
-    };
-    await choose("desktop");assert.equal(await dock.isVisible(),false);
+    assert.equal(await page.locator('[data-android-orientation-mode], [data-android-layout-mode]').count(),0);
     await page.setViewportSize({width:1280,height:800});
     await page.locator("#work-rail-settings").click();
     for(const locale of ["en","ja","zh"]) {
       await page.locator(`[data-language="${locale}"]`).click();
-      await page.locator("#android-layout-switch").scrollIntoViewIfNeeded();
-      for(const button of await page.locator(".android-window-preferences button").all()) await button.click({trial:true});
+      assert.equal(await page.locator('[data-android-orientation-mode]').count(),0);
+      await assertMedia();
       await page.screenshot({path:path.join(directory,`desktop-settings-${locale}.png`)});
     }
-    await choose("phone");assert.equal(await dock.isVisible(),true);
-    await page.screenshot({path:path.join(directory,"manual-phone-tablet.png")});
-    await page.locator('[data-android-orientation-mode="portrait"]').click();
-    assert.equal(await dock.isVisible(),true,"Direction is separate from layout");
-    await choose("auto");assert.equal(await dock.isVisible(),false);
     await page.locator("#work-rail-users").click();
     await page.setViewportSize({width:412,height:850});
     await page.waitForFunction(()=>document.documentElement.dataset.hostPage==="users");
     await assertMedia();
     assert.deepEqual(errors,[]);
-    const result={passed:true,metrics,manualModes:true,translations:3,persistentMedia:true,persistentDraft:true,workspaceRestored:true};
+    const result={passed:true,metrics,automaticLayout:true,manualSelectors:false,translations:3,persistentMedia:true,persistentDraft:true,workspaceRestored:true};
     await fs.writeFile(path.join(directory,"result.json"),JSON.stringify(result,null,2));
     console.log(JSON.stringify(result));
   } catch(error) {
-    if(page) await page.screenshot({path:path.join(directory,"failed.png")}).catch(()=>{});
+    if(page) {
+      await page.screenshot({path:path.join(directory,"failed.png")}).catch(()=>{});
+      console.error(await page.evaluate(async()=>({platform:document.documentElement.dataset.hostPlatform,
+        current:typeof state!=="undefined"?state.data?.current_item?.id:null,
+        media:await Promise.all([...document.querySelectorAll('video,audio')].map(async node=>({tag:node.tagName,
+          ready:node.readyState,time:node.currentTime,paused:node.paused,error:node.error?.code,
+          codec:node.canPlayType(node.tagName==='VIDEO'?'video/mp4; codecs="avc1.42E01E"':'audio/mp4; codecs="mp4a.40.2"'),
+          status:node.currentSrc?(await fetch(node.currentSrc,{method:'HEAD'})).status:null})))})).catch(()=>({})));
+    }
     throw error;
   } finally {
     if(browser) await browser.close();server.stdin.end("stop\n");lines.close();

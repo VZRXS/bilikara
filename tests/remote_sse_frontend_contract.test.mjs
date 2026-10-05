@@ -1428,7 +1428,7 @@ end = sourceIndex(this.queue_source, "async function finishDrag", start);
 script = concatenate(concatenate(concatenate(`
 const assert = require('node:assert/strict');
 const state = {listView:'queue',dragItemId:''};
-let nextTimer=0, dragStartX=0, dragStartY=0, suppressDragClick=false;
+let nextTimer=0, dragStartX=0, dragStartY=0, suppressDragClick=false, prevented=0;
 const timers=new Map(), closed=[];
 const window={setTimeout(callback,delay){assert.equal(delay,5000);timers.set(++nextTimer,callback);return nextTimer;},clearTimeout(id){timers.delete(id);}};
 function handle(id){
@@ -1450,11 +1450,17 @@ handles[1].expanded='true';expire();assert.deepEqual(active(),[]);assert.deepEqu
 activateQueueDragHandle('a');
 handles=[handle('a'),handle('b')];syncQueueDragHandles();
 assert.deepEqual(active(),['a'],'a rerender preserves the chosen handle');
-beginDrag(handles[0],{pointerType:'touch',button:0,pointerId:7,clientX:20,clientY:30,preventDefault(){}});
+beginDrag(handles[0],{pointerType:'touch',button:0,pointerId:7,clientX:20,clientY:30,preventDefault(){prevented++;}});
+assert.equal(prevented,0,'touch must retain WebKit compatibility clicks for help');
 assert.equal(state.dragItemId,'a');assert.equal(timers.size,0);
 scheduleDragHandleRestore();assert.equal(timers.size,0,'holding a drag must not start the expiry timer');
 state.dragItemId='';scheduleDragHandleRestore();expire();
 assert.deepEqual(active(),[]);assert.deepEqual(closed,['b'],'an expired handle must not close unrelated help');
+for(const pointerType of ['mouse','pen']){
+  beginDrag(handles[0],{pointerType,button:0,pointerId:8,clientX:20,clientY:30,preventDefault(){prevented++;}});
+  state.dragItemId='';
+}
+assert.equal(prevented,2,'mouse and pen keep their existing prevention');
 console.log(JSON.stringify({ok:true}));
 `);
 assert.deepEqual((await this.run_node(script)), {["ok"]: true});

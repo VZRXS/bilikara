@@ -14,7 +14,6 @@ fn execute(value: Value) -> bilikara_runtime::AppStateResponse {
 }
 
 fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
-    execute(json!({"schema_version":1,"command":"add_session_user","name":"Alice","now":2.0}));
     for (index, id) in ["fixture-first", "fixture-second", "fixture-third"]
         .iter()
         .take(count)
@@ -23,7 +22,8 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
         let mut item = json!({"id":id,"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"video_page":1,
             "title":format!("Native Alpha fixture {}",index+1),"part_title":"Original","display_title":format!("Native Alpha fixture {}",index+1),"cover_url":"","embed_url":"",
             "selected_pages":[1,2],"selected_cids":[2,3],"selected_durations":[90,90],"selected_parts":["Original","Instrumental"],
-            "available_pages":[1,2],"available_cids":[2,3],"available_durations":[90,90],"available_parts":["Original","Instrumental"]});
+            "available_pages":[1,2],"available_cids":[2,3],"available_durations":[90,90],"available_parts":["Original","Instrumental"],
+            "cache_status":"pending","cache_message":"Offline layout fixture preparation"});
         // Layout tests must use the same metadata as subsequent SSE snapshots.
         // The third part is available but deliberately not bound/cached.
         if std::env::var_os("BILIKARA_NATIVE_FIXTURE_THREE_PARTS").is_some() {
@@ -49,6 +49,13 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
         let relative = reserved["artifact_relative_directory"].as_str().unwrap();
         let artifact = directory.join("media").join(relative);
         std::fs::create_dir_all(&artifact).unwrap();
+        // Test-only fault window: exercise fixture publication when a cache
+        // pump tick can occur between reservation and the completed files.
+        if let Some(delay) = std::env::var_os("BILIKARA_NATIVE_FIXTURE_COPY_PAUSE_MS") {
+            let delay = delay.to_str().unwrap().parse::<u64>().unwrap();
+            assert!(delay <= 1000, "fixture copy pause exceeds its test bound");
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+        }
         std::fs::copy(video, artifact.join("video.mp4")).unwrap();
         std::fs::copy(audio, artifact.join("original.m4a")).unwrap();
         std::fs::copy(audio, artifact.join("instrumental.m4a")).unwrap();
@@ -74,17 +81,20 @@ fn main() {
         json!({"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0}),
     )
     .unwrap();
-    assert!(initialize_native_host(directory, seed).error().is_none());
-    if arguments.len() >= 4 {
-        fixture(
-            directory,
-            Path::new(&arguments[2]),
-            Path::new(&arguments[3]),
-            arguments
-                .get(4)
-                .map(|value| value.parse::<usize>().unwrap().clamp(2, 3))
-                .unwrap_or(2),
-        );
+    assert!(
+        initialize_native_host(directory, seed.clone())
+            .error()
+            .is_none()
+    );
+    let has_fixture = arguments.len() >= 4;
+    if has_fixture {
+        // AddItem deliberately resets incoming cache status to pending. Reopen
+        // a real checkpoint so the existing session-choice gate holds the pump
+        // while offline fixtures are published; a failed input status cannot
+        // stop the scheduler from reserving a newer attempt.
+        execute(json!({"schema_version":1,"command":"add_session_user","name":"Alice","now":2.0}));
+        execute(json!({"schema_version":1,"command":"shutdown"}));
+        assert!(initialize_native_host(directory, seed).error().is_none());
     }
     let host = NativeHost::start(
         directory,
@@ -112,6 +122,25 @@ fn main() {
         }),
     )
     .unwrap();
+    // Startup recovers the artifact-lifetime registry and collects older
+    // generations. Produce fixtures afterward so their ready events register
+    // with this Host's live registry, just like current cache publication.
+    if has_fixture {
+        fixture(
+            directory,
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            arguments
+                .get(4)
+                .map(|value| value.parse::<usize>().unwrap().clamp(2, 3))
+                .unwrap_or(2),
+        );
+        let resumed = execute(
+            json!({"schema_version":1,"command":"resolve_native_session","continue_previous":true,
+            "new_session":{"file_name":"fixture-resume.json","session_started_at":5.0,"items":[]},"now":5.0}),
+        );
+        assert_eq!(resumed.result().unwrap()["changed"], true);
+    }
     // The test runner captures this locally; never publish it in a report/log.
     println!("{}", json!({"bootstrap_url":host.bootstrap_url()}));
     std::io::stdout().flush().unwrap();

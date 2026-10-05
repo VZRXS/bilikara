@@ -88,7 +88,7 @@ async test_remote_omits_bvid() {
 (await this.assert_metadata_order("static/remote.js", {remote: true}));
 },
 async test_all_visual_owner_labels_use_the_shared_badge() {
-let badge_rule, css, css_path, host_badge_rule, host_css, host_js, remote_badge_rule, remote_css, remote_html, remote_js, selector, source;
+let badge_rule, css, css_path, host_css, host_js, remote_css, remote_html, remote_js, selector, source;
 host_js = readFileSync(path.join(path.join(ROOT, "static"), "app.js"), "utf8");
 remote_js = readFileSync(path.join(path.join(ROOT, "static"), "remote.js"), "utf8");
 remote_html = readFileSync(path.join(path.join(ROOT, "static"), "remote.html"), "utf8");
@@ -102,7 +102,7 @@ assert.ok(contains("link.textContent = t(\"search.openOnBilibili\");", source));
 assert.ok(contains("renderOwnerBadgeLabel(elements.currentOwner, ownerText);", remote_js));
 assert.ok(contains("id=\"current-owner\" class=\"current-owner-line owner-badge-label playback-metadata-text hidden\"", remote_html));
 assert.ok(contains("data-playback-metadata-field=\"owner\"", remote_html));
-for (const css_path of iterableValues(["static/styles.css", "static/remote.css"])) {
+for (const css_path of iterableValues(["static/song-detail.css"])) {
 css = readFileSync(path.join(ROOT, css_path), "utf8");
 for (const selector of iterableValues([".owner-badge-label", ".owner-badge", ".owner-badge-name"])) {
 assert.ok(contains(selector, css));
@@ -119,10 +119,12 @@ assert.ok(contains("letter-spacing: normal;", badge_rule));
 }
 host_css = readFileSync(path.join(path.join(ROOT, "static"), "styles.css"), "utf8");
 remote_css = readFileSync(path.join(path.join(ROOT, "static"), "remote.css"), "utf8");
-host_badge_rule = splitOnce(splitOnce(host_css, ".owner-badge {")[1], "}")[0];
-remote_badge_rule = splitOnce(splitOnce(remote_css, ".owner-badge {")[1], "}")[0];
-assert.ok(contains("transform: translateY(0.08em);", host_badge_rule));
-assert.ok(contains("transform: translateY(0);", remote_badge_rule));
+assert.equal(countOccurrences(host_css, ".owner-badge {"), 0);
+assert.equal(countOccurrences(remote_css, ".owner-badge {"), 0);
+assert.ok(!contains("transform:", badge_rule));
+assert.ok(contains("padding-block: 0.12em;", badge_rule));
+assert.ok(contains('href="/song-detail.css"', readFileSync(path.join(ROOT, "static/index.html"), "utf8")));
+assert.ok(contains('href="/song-detail.css"', remote_html));
 },
 async test_up_owner_text_uses_consistent_spacing_and_colons() {
 let i18n;

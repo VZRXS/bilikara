@@ -21,6 +21,7 @@
         "fullscreen": false,
         "height": 700,
         "minWidth": 700,
+        "minHeight": 600,
         "resizable": true,
         "title": "bilikara",
         "width": 1024,

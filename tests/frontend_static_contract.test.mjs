@@ -25,11 +25,13 @@ test('Android display bridge keeps origin, role/generation, local rendering and 
   for (const text of [host, read('static/controller.html')]) assert.ok(text.indexOf('/android-presentation.js') < text.indexOf(text === host ? '/app.js' : '/controller.js')); excludes(remote, ['/android-presentation.js']);
 });
 
-test('shared desktop layout and Android preferences are narrow, translated and preserve orientation', () => {
-  assert.ok(host.indexOf('/android-layout.js') < host.indexOf('/host-layout.js')); includes(host, ['/host-layout-preferences.js', 'id="android-orientation-settings" hidden']); excludes(remote, ['/android-layout.js', '/host-layout.js']); excludes(host, ['id="android-layout-settings"', 'data-android-layout-mode=']);
-  for (const locale of ['zh', 'ja', 'en']) for (const key of ['layout', 'layoutAuto', 'layoutDesktop', 'layoutPhone', 'layoutHint', 'orientation', 'orientationSystem', 'orientationLandscape', 'orientationPortrait', 'orientationHint', 'windowPreferenceFailed']) assert.ok(translations[locale][`mobile.${key}`]);
+test('shared desktop layout stays responsive and Android follows system rotation without manual selectors', () => {
+  assert.ok(host.indexOf('/android-layout.js') < host.indexOf('/host-layout.js')); includes(host, ['/host-layout-preferences.js']); excludes(remote, ['/android-layout.js', '/host-layout.js']); excludes(host, ['id="android-layout-settings"', 'data-android-layout-mode=', 'id="android-orientation-settings"', 'data-android-orientation-mode=']);
+  for (const locale of ['zh', 'ja', 'en']) for (const key of ['layout', 'layoutAuto', 'layoutDesktop', 'layoutPhone', 'layoutHint', 'windowPreferenceFailed']) assert.ok(translations[locale][`mobile.${key}`]);
   const native = read('src-tauri/gen/android/app/src/main/java/com/bilikara/app/HostWindowControls.kt');
   includes(native, ['private val preferences by lazy', 'getSharedPreferences("host-window", Context.MODE_PRIVATE)', 'setOf(origin)', '!isMainFrame', 'sourceOrigin != expected', 'listOf("/", "/index.html")', 'raw.length > 1024', 'require(mode in layoutModes)', 'require(mode in orientationModes)', 'previousOrientation = activity.requestedOrientation', 'activity.requestedOrientation = previousOrientation']); excludes(native, ['addJavascriptInterface', 'setOf("*")', 'webView.reload(', 'loadUrl(']);
+  includes(native, ['activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED']);
+  excludes(native, ['requestedDirection(snapshot().getString("orientation"))']);
 });
 
 test('Android pages/languages/visibility reuse native desktop source defaults and keep Remote separate', () => {

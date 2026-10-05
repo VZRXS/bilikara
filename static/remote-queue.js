@@ -393,7 +393,9 @@
     }
 
     clearDragHandleRestoreTimer();
-    event.preventDefault();
+    // Touch already has touch-action:none and selection/callout suppression.
+    // Cancelling its pointerdown also suppresses the tap's click on WebKit.
+    if (event.pointerType !== "touch") event.preventDefault();
     state.dragItemId = item.dataset.id || "";
     dragQueue = { playlist: renderedQueue, version: renderedQueueVersion };
     state.dragTargetId = "";

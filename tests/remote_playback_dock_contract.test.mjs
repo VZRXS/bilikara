@@ -530,9 +530,16 @@ assert.ok(contains("closePlaybackMetadataPopover({ restoreFocus: true })", event
 escape_source = this.script.slice(sourceIndex(this.script, "document.addEventListener(\"keydown\"", sourceIndex(this.script, "elements.playbackSheetSummaryCopy?.addEventListener(\"click\"")), sourceIndex(this.script, "window.addEventListener(\"resize\", scheduleRemoteContextualTooltipPositionSync)"));
 assert.ok(sourceIndex(escape_source, "closePlaybackMetadataPopover({ restoreFocus: true })") < sourceIndex(escape_source, "closeRemoteContextualInfo()"));
 popover_rule = this.styles.match(new RegExp("\\.playback-metadata-popover\\s*\\{([^}]*)\\}",""))[1];
-for (const declaration of iterableValues(["z-index: 45", "overflow: auto", "user-select: text", "overscroll-behavior: contain"])) {
+for (const declaration of iterableValues(["z-index: 45", "overflow: visible", "user-select: text", "overscroll-behavior: contain"])) {
 assert.ok(contains(declaration, popover_rule));
 }
+const text_rule = this.styles.match(new RegExp("\\.playback-metadata-popover p\\s*\\{([^}]*)\\}",""))[1];
+assert.ok(contains("overflow: auto", text_rule));
+assert.ok(contains("overscroll-behavior: contain", text_rule));
+assert.ok(contains("playbackMetadataPopoverText.style.maxHeight", source));
+assert.ok(contains("popover.showPopover()", source));
+assert.ok(contains("popover.hidePopover()", source));
+assert.ok(contains("popover.__bilikaraCloseSequence !== closing", source));
 assert.ok(!contains("color:", popover_rule));
 assert.ok(!contains("max-width:", popover_rule));
 },

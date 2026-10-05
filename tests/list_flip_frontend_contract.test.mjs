@@ -27,6 +27,7 @@ script = concatenate(concatenate(concatenate(`
 class FakeClassList {
   constructor() { this.values = new Set(); }
   contains(name) { return this.values.has(name); }
+  remove(...names) { names.forEach(name => this.values.delete(name)); }
   toggle(name, enabled) {
     if (enabled) this.values.add(name); else this.values.delete(name);
   }
@@ -38,6 +39,9 @@ class FakeElement {
       : {};
     this.attributes = new Map();
     this.classList = new FakeClassList();
+    this.style = { values: new Map(), setProperty(name, value) { this.values.set(name, String(value)); },
+      removeProperty(name) { this.values.delete(name); }, getPropertyValue(name) { return this.values.get(name) || ""; } };
+    this.clientLeft = this.clientTop = 0;
     this.hidden = false;
     this.inert = false;
     this.tabIndex = -1;
@@ -49,7 +53,9 @@ class FakeElement {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   focus() { this.focused = true; }
   querySelector() { return this.heading; }
+  getBoundingClientRect() { return { left: 640, top: 100, width: 360, height: 600 }; }
 }
+function getComputedStyle(node) { return { opacity: "1", display: node.hidden ? "none" : "grid" }; }
 const workspaces = ["queue", "history", "request", "random", "users", "settings"];
 const buttons = workspaces.map((workspace) => new FakeElement(workspace));
 const panels = workspaces.map((workspace) => new FakeElement(workspace, true));

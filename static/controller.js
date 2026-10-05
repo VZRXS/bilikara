@@ -65,6 +65,9 @@
   const requestNotice = window.BilikaraIncomingRequest.create(
     document.getElementById("controller-request-toast"), t,
   );
+  const actionFeedback = window.BilikaraPresentationFeedback.create(
+    document.getElementById("controller-feedback"), t,
+  );
 
   function t(key) {
     return String(state.translations[key] || key);
@@ -300,6 +303,7 @@
 
   function failClosed(message = "", key = "") {
     requestNotice.hide();
+    actionFeedback.hide();
     state.video?.pause();
     state.failedClosed = true;
     state.session = null;
@@ -633,6 +637,7 @@
     state.scene = nextScene;
     state.clock = nextClock;
     requestNotice.show(candidate.payload?.incomingRequest);
+    actionFeedback.show(candidate.payload?.actionFeedback);
     setError("");
     if (shouldMount) {
       mountScene(nextScene);

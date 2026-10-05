@@ -59,6 +59,7 @@ class Node {
       this.dataset[key] = String(value);
     }
   }
+  removeAttribute(name) { delete this.attributes[name]; }
   append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
   replaceChildren(...nodes) {
@@ -100,6 +101,7 @@ const scene = {
   revision: 8,
   currentItemIdentity: "item-1",
   title: "<img src=x onerror=alert(1)>",
+  displayMetadata: { cacheStatus: "failed" },
   overlay: {
     visible: true,
     heading: "Next",
@@ -108,13 +110,40 @@ const scene = {
     title: "<script>bad()</script>",
     requester: "Alice & Bob",
     duration: "3:00",
+    cacheStatus: "queued",
     queueHeading: "Queue",
-    rows: [{ title: "Song", requester: "Carol", duration: "2:00" }],
+    rows: [
+      { title: "Song", requester: "Carol", duration: "2:00", cacheStatus: "failed" },
+      { title: "Ready song", requester: "Dave", duration: "1:00", cacheStatus: "ready" },
+    ],
     totalText: "2 songs",
   },
 };
 const first = renderer.renderScene(root, scene, { now: 1000 });
-const second = renderer.renderScene(root, { ...scene, revision: 9 }, { now: 1500 });
+const primaryCard = first.querySelector(".player-delay-now-row");
+const queueCards = [...first.querySelector("[data-delay-list]").children];
+const initialCacheStates = [primaryCard, ...queueCards].map(node => node.dataset.cacheState);
+const badge = primaryCard.querySelector(".queue-order");
+const play = badge.querySelector(".queue-badge-play");
+const playGlyph = { viewBox: play.attributes.viewBox, path: play.children[0].attributes.d, hidden: Object.hasOwn(play.attributes, "hidden") };
+const errorGlyph = badge.querySelector(".queue-badge-error").children[0].attributes.d;
+const second = renderer.renderScene(root, { ...scene, revision: 9, overlay: { ...scene.overlay,
+  cacheStatus: "failed", rows: scene.overlay.rows.map((row, index) => ({ ...row, cacheStatus: index ? "ready" : "downloading" })),
+} }, { now: 1500 });
+const updatedCacheStates = [primaryCard, ...second.querySelector("[data-delay-list]").children].map(node => node.dataset.cacheState);
+const cardsPreserved = primaryCard === second.querySelector(".player-delay-now-row")
+  && second.querySelector("[data-delay-list]").children.every((node, index) => node === queueCards[index]);
+renderer.renderOverlay(second, { ...scene.overlay, cacheStatus: "unknown", rows: scene.overlay.rows.map(row => ({ ...row, cacheStatus: "unknown" })) });
+const clearedCacheStates = [primaryCard, ...queueCards].map(node => node.dataset.cacheState);
+const badgeCacheStates = [primaryCard, ...queueCards].map(node => node.querySelector(".queue-order").dataset.cacheState);
+renderer.renderOverlay(second, { ...scene.overlay, queueHeading: "" }, { primaryIndex: 1 });
+const consoleNumbers = [primaryCard, ...queueCards].map(node => node.querySelector(".queue-badge-label").textContent);
+const consolePlayHidden = Object.hasOwn(play.attributes, "hidden");
+const subtitleHidden = second.querySelector("[data-delay-queue-heading]").hidden;
+renderer.renderOverlay(second, { ...scene.overlay, rows: [] }, { primaryIndex: null });
+const emptyBadgeHidden = badge.classList.contains("is-empty");
+renderer.renderOverlay(second, scene.overlay);
+const audienceNumbers = [...second.querySelector("[data-delay-list]").children].map(node => node.querySelector(".queue-badge-label").textContent);
 process.stdout.write(JSON.stringify({
   videoPreserved: root.children[0] === video && video.src === "media/video.mp4",
   audioPreserved: root.children[1] === audio && audio.src === "media/audio.m4a",
@@ -124,6 +153,12 @@ process.stdout.write(JSON.stringify({
   childTags: root.children.map((node) => node.tagName),
   generation: root.dataset.presentationGeneration,
   revision: root.dataset.presentationRevision,
+  frameHasCacheState: Object.hasOwn(root.dataset, "cacheState"),
+  initialCacheStates,
+  updatedCacheStates,
+  cardsPreserved,
+  clearedCacheStates, badgeCacheStates, consoleNumbers, consolePlayHidden, subtitleHidden, emptyBadgeHidden,
+  playGlyph, errorGlyph, audienceNumbers, audiencePlayRestored: !Object.hasOwn(play.attributes, "hidden") && !badge.classList.contains("is-empty"),
 }));
 `);
 completed = (await runNative(this.node, ["-e", script], process.env, 5 * 1000, root));
@@ -141,6 +176,26 @@ assert.deepEqual(result["childTags"].slice(0, 2), ["VIDEO", "AUDIO"]);
 assert.deepEqual(result["generation"], "3");
 assert.deepEqual(result["revision"], "9");
 },
+async test_song_cache_states_are_independent_and_preserve_card_nodes() {
+const result = await this.run_renderer();
+assert.equal(result.frameHasCacheState, false);
+assert.deepEqual(result.initialCacheStates, ["pending", "failed", "ready"]);
+assert.deepEqual(result.updatedCacheStates, ["failed", "downloading", "ready"]);
+assert.equal(result.cardsPreserved, true);
+assert.deepEqual(result.clearedCacheStates, ["", "", ""]);
+assert.deepEqual(result.badgeCacheStates, ["", "", ""]);
+},
+async test_shared_badges_preserve_play_glyph_and_console_queue_numbering() {
+const result = await this.run_renderer();
+assert.deepEqual(result.playGlyph, { viewBox: "0 0 24 24", path: "M8 5v14l11-7z", hidden: false });
+assert.equal(result.errorGlyph, "M18 6L6 18M6 6l12 12");
+assert.deepEqual(result.consoleNumbers, ["1", "2", "3"]);
+assert.equal(result.consolePlayHidden, true);
+assert.equal(result.subtitleHidden, true);
+assert.equal(result.emptyBadgeHidden, true);
+assert.deepEqual(result.audienceNumbers, ["1", "2"]);
+assert.equal(result.audiencePlayRestored, true);
+},
 async test_user_content_is_assigned_as_text() {
 let result;
 result = (await this.run_renderer());
@@ -155,5 +210,7 @@ assert.ok(!contains(forbidden, this.source));
 }
 };
 test("PresentationRendererTest.test_rendering_reuses_overlay_and_preserves_host_media_identity", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_rendering_reuses_overlay_and_preserves_host_media_identity(); });
+test("PresentationRendererTest.test_song_cache_states_are_independent_and_preserve_card_nodes", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_song_cache_states_are_independent_and_preserve_card_nodes(); });
+test("PresentationRendererTest.test_shared_badges_preserve_play_glyph_and_console_queue_numbering", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_shared_badges_preserve_play_glyph_and_console_queue_numbering(); });
 test("PresentationRendererTest.test_user_content_is_assigned_as_text", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_user_content_is_assigned_as_text(); });
 test("PresentationRendererTest.test_renderer_never_constructs_or_synchronizes_media", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_renderer_never_constructs_or_synchronizes_media(); });
