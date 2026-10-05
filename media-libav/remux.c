@@ -190,7 +190,12 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (flac) {
         if ((ret = av_dict_set(&options, "write_header", "1", 0)) < 0) goto write_error;
     } else {
-        if ((ret = av_dict_set(&options, "movflags", "+faststart", 0)) < 0 ||
+        /* With reordered AVC and a positive presentation start, unsigned
+         * CTTS/edit-list synthesis can shift the reopened PTS/DTS to zero.
+         * Signed composition offsets preserve the packet timeline instead.
+         * The Rust reopen check still requires exact input/output bounds. */
+        const char *flags = q->media_type == 1 ? "+faststart+negative_cts_offsets" : "+faststart";
+        if ((ret = av_dict_set(&options, "movflags", flags, 0)) < 0 ||
             (ret = av_dict_set(&options, "use_editlist", "1", 0)) < 0) goto write_error;
     }
     ret = avformat_write_header(out, &options);

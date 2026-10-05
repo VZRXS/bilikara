@@ -90,6 +90,9 @@ layout/configuration checks 和输出大小；不携带内部路径。
 PTS < DTS 或超出本 profile 支持的 mux timing 范围，返回 `UnsupportedContainerLayout`。
 不将未知值补零，不使用 `genpts`，不独立归零每个 timestamp。输出固定
 `avoid_negative_ts=disabled`、`use_editlist=1`、`movflags=+faststart`，关闭自动 BSF。
+AVC 视频另启用 `negative_cts_offsets`，避免重排帧与正起始时间组合导致
+封装后的 PTS/DTS 被 edit list 移到零。仍要求重读后的时间戳边界完全一致；
+AAC、FLAC 的封装选项不变。该选项只改变 MP4 的时间表表示，不重编码。
 读取直接延续 find-stream-info 的缓冲前缀，无 seek/flush/reopen，也不保留整份输入。
 `av_interleaved_write_frame` 在 9.0.1 中即使失败也消费/清空 packet；所有退出路径释放
 末包和 contexts。取消在读包、写包前后及发布前观察；不声称 native trailer 每段都能立即中断。

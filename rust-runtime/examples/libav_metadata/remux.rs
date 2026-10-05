@@ -162,7 +162,15 @@ pub(super) fn run(
     };
     let same_build = matches(reference) && matches(&ffmpeg);
     let flac = args.profile == CopyProfile::Flac;
-    let output_options = if flac { FLAC_OUTPUT } else { COPY_OUTPUT };
+    let mut output_options = if flac { FLAC_OUTPUT } else { COPY_OUTPUT }.to_vec();
+    if !flac && args.remux == Some(ExpectedMediaKind::Video) {
+        let flags = output_options
+            .iter()
+            .position(|v| *v == "-movflags")
+            .unwrap()
+            + 1;
+        output_options[flags] = "+faststart+negative_cts_offsets";
+    }
     let mut failed = false;
     for iteration in 1..=args.repeat {
         let started = Instant::now();
@@ -170,7 +178,7 @@ pub(super) fn run(
             &["-nostdin", "-v", "error", "-xerror", "-copyts"][..],
             DISCOVERY,
             &["-fd", "0", "-i", "fd:"],
-            output_options,
+            &output_options,
             &["OWNED_REFERENCE_OUTPUT"],
         ]
         .concat();
@@ -251,7 +259,7 @@ pub(super) fn run(
                     .args(["-nostdin", "-v", "error", "-xerror", "-copyts"])
                     .args(DISCOVERY)
                     .args(["-fd", "0", "-i", "fd:"])
-                    .args(output_options)
+                    .args(&output_options)
                     .arg(&cli_path)
                     .stdin(Stdio::from(file(&args.source)?)),
                 &CANCELLED,

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { buildMediaTests } from './native_runtime_artifacts.mjs';
 import { asciiString, companionName, copyFile, copyTree, inventory, invoke, json, libraryVersions,
   nativeTarget, prepareRealInputs, runNative, runtimeNames, suffix, systemImports, testCompanionName } from './libav_prerequisite_support.mjs';
 
@@ -15,6 +16,14 @@ after(() => {
   finally { rmSync(inputs.directory, { recursive: true, force: true }); }
 });
 const shimSuccess = 'shim: 4 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial)';
+
+test('actual AVC remux preserves a positive presentation start and negative decode timestamps', { timeout: 400_000 }, async () => {
+  const binary = await buildMediaTests();
+  const result = await runNative(binary, ['--exact', 'experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start', '--ignored'],
+    { ...inputs.environment, BILIKARA_LIBAV_COMPANION: inputs.companion }, 120_000, inputs.directory);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /1 passed; 0 failed; 0 ignored/);
+});
 
 test('actual companion/shim rebuild twice with pinned loaded facts and exact configuration header', { timeout: 400_000 }, async () => {
   const out = path.join(inputs.directory, 'Rust 产物');

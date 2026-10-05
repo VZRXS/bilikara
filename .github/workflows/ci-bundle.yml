@@ -366,6 +366,17 @@ jobs:
         if: runner.os == 'macOS'
         run: bash media-libav/build-posix.sh
 
+      - name: Verify native AVC timestamp preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) companion="$BILIKARA_LIBAV_PREFIX/bin/bilikara_media_libav.dll" ;;
+            macOS) companion="$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.dylib" ;;
+            *) exit 1 ;;
+          esac
+          BILIKARA_LIBAV_COMPANION="$companion" cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start -- --exact --ignored
+
       - name: Save verified libav libraries
         if: steps.libav-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5

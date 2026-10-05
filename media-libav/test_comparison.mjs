@@ -225,6 +225,7 @@ if (options['copy-remux']) {
       const extended = path.join(directory, 'extended-aac.m4a'), positive = path.join(directory, 'positive-start.m4a');
       await rustTest('media_backend::tests::export_extended_aac_fixture_for_m5', { BILIKARA_M5_EXTENDED_FIXTURE: extended }, true);
       await cli(['-copyts', '-itsoffset', '1.234567', '-i', fixture('aac.m4a'), '-map', '0:0', '-c', 'copy', '-avoid_negative_ts', 'disabled', '-use_editlist', '1', '-n', positive]);
+      await rustTest('experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start', { BILIKARA_LIBAV_COMPANION: options.companion }, true);
       for (const [label, source, kind, count, configSize] of [['h264', fixture('video.mp4'), 'video', 60, 39], ['aac', fixture('aac.m4a'), 'audio', 48, 5], ['extended-aac', extended, 'audio', 4, 4], ['fragmented', options['fragmented-fixture'], 'audio', 88, 5], ['positive-start', positive, 'audio', 48, 5]]) {
         const original = readFileSync(source), [code, row] = await remux(`remux-${label}`, source, { kind }); assert.equal(code, 0, row.outcome); assert.equal(row.outcome, 'success'); assert.equal(row.same_build, true);
         const native = row.companion.result; assert.ok(native.finalized_and_published && native.leading_moov); assert.deepEqual(row.reference.layout, { leading_moov: true, fragmented: false }); assert.equal(native.input.selected.packet_count, count);

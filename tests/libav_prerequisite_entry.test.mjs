@@ -49,6 +49,18 @@ test('real local and CI entries keep required native validation after the prefix
   assert.doesNotMatch(block, /\|\|\s*true|continue-on-error|python/);
   for (const command of ['npm run test:libav-wrapper', 'npm run test:libav-prerequisites']) assert.equal(job.split(command).length, 2, `run ${command} once`);
   for (const file of ['tests/test_libav_prerequisite_contract.py', 'tests/test_libav_xtask_wrapper.py']) assert.equal(existsSync(path.join(root, file)), false, `retire ${file}`);
+
+  const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.indexOf('\n  android:'));
+  const regression = bundle.indexOf('BILIKARA_LIBAV_COMPANION="$companion" cargo test');
+  assert.ok(regression > bundle.indexOf('bash media-libav/build-posix.sh'));
+  assert.ok(regression > bundle.indexOf('./media-libav/prepare-windows.ps1'));
+  assert.ok(regression < bundle.indexOf('-- build-backend'), 'check the freshly prepared native companion before construction');
+  const native = bundle.split(/^      - name:/m).find(step => step.includes('reordered_video_preserves_nonzero_start'));
+  assert.match(native, /set -euo pipefail/);
+  assert.match(native, /--locked --target host-tuple --lib .* -- --exact --ignored/);
+  assert.ok(native.includes('Windows) companion="$BILIKARA_LIBAV_PREFIX/bin/bilikara_media_libav.dll"'));
+  assert.ok(native.includes('macOS) companion="$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.dylib"'));
+  assert.doesNotMatch(native, /continue-on-error|\|\|\s*true|python/);
 });
 
 test('actual required CI run block propagates failing npm and cannot hide it with a later success', async () => {
