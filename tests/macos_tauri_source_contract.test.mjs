@@ -34,7 +34,7 @@ assert.deepEqual(macos_window["titleBarStyle"], "Overlay");
 assert.deepEqual(capability["windows"], ["main"]);
 },
 async test_macos_main_webview_uses_creation_time_autoplay_policy() {
-let backend_start, configuration, configuration_start, creation, creation_start, main_source, platform_source, setup, setup_start;
+let startup_gate, configuration, configuration_start, creation, creation_start, main_source, platform_source, setup, setup_start;
 main_source = readFileSync(path.join(path.join(path.join(ROOT_DIR, "src-tauri"), "src"), "desktop.rs"), "utf8");
 platform_source = readFileSync(path.join(path.join(path.join(ROOT_DIR, "src-tauri"), "src"), "platform.rs"), "utf8");
 configuration_start = sourceIndex(platform_source, "fn macos_autoplay_webview_configuration");
@@ -42,8 +42,8 @@ creation_start = sourceIndex(platform_source, "fn create_macos_main_webview_wind
 configuration = platform_source.slice(configuration_start, creation_start);
 creation = platform_source.slice(creation_start, undefined);
 setup_start = sourceIndex(main_source, ".setup(move |app| {");
-backend_start = sourceIndex(main_source, "backend_process::launch", setup_start);
-setup = main_source.slice(setup_start, backend_start);
+startup_gate = sourceIndex(main_source, "crate::desktop_import::gate_startup(app, window, startup_log);", setup_start);
+setup = main_source.slice(setup_start, startup_gate);
 assert.ok(contains("#[cfg(target_os = \"macos\")]", platform_source.slice(0, configuration_start).slice((-80), undefined)));
 assert.ok(contains("WKWebViewConfiguration::new(main_thread)", configuration));
 assert.ok(contains(".setMediaTypesRequiringUserActionForPlayback(", configuration));
@@ -56,6 +56,13 @@ assert.ok(contains(".with_webview_configuration(", creation));
 assert.deepEqual(countOccurrences(creation, ".build()?;"), 1);
 assert.ok(contains("#[cfg(target_os = \"macos\")]", setup));
 assert.ok(sourceIndex(setup, "create_macos_main_webview_window(app)?;") < sourceIndex(setup, "app.get_webview_window(\"main\")"));
+// Both the initialized-data fast path and first-start consent launch only
+// after this creation-time WebView configuration, via the shared gate.
+const import_source = readFileSync(path.join(ROOT_DIR, "src-tauri/src/desktop_import.rs"), "utf8");
+const gate = import_source.slice(sourceIndex(import_source, "pub(crate) fn gate_startup("), sourceIndex(import_source, "fn workflow("));
+assert.ok(contains("workflow(&app, true)", gate));
+assert.ok(contains("backend_process::launch(app.handle(), window, startup_log);", gate));
+assert.ok(contains("backend_process::launch(&app, window, startup_log);", gate));
 },
 async test_native_dependencies_remain_pinned_to_the_locked_graph() {
 let cargo_lock, cargo_toml, lockedPackage, locked_versions, macos_dependencies;

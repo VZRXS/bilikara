@@ -334,6 +334,100 @@ fn native_host_and_import_tool_locks_exclude_concurrent_operations() {
     assert!(NativeHostStorage::open(&target).is_ok());
 }
 
+#[test]
+fn first_start_only_discovers_legacy_when_destination_has_no_native_checkpoint() {
+    let f = Fixture::new();
+    let known = f.0.join("Library/Application Support/bilikara");
+    f.populate(&known);
+    let target = f.target();
+    let report = || {
+        inspect_first_start(&target, &f.0.join("new/host"), "macos", |key| {
+            (key == "HOME").then(|| f.0.clone().into_os_string())
+        })
+        .unwrap()
+    };
+    assert_eq!(report()["candidates"], json!([known]));
+    assert!(!target.exists());
+    assert!(!import_guard_path(&target, "lock").unwrap().exists());
+    install(Some(&known), &target).unwrap();
+    assert_eq!(report()["destination_status"], "native");
+    assert_eq!(report()["candidates"], json!([]));
+    fs::write(target.join("host-state.json"), b"broken checkpoint").unwrap();
+    assert_eq!(
+        report()["candidates"],
+        json!([]),
+        "Malformed native data must never become an automatic import target"
+    );
+}
+
+#[test]
+fn explicit_native_replacement_preserves_complete_backup_and_rejects_active_or_corrupt_storage() {
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    let target = f.target();
+    install(Some(&source), &target).unwrap();
+    let original = fs::read(target.join("host-state.json")).unwrap();
+    fs::write(
+        target.join("keep-user-file"),
+        b"complete current native backup",
+    )
+    .unwrap();
+    let (storage, _) = NativeHostStorage::open(&target).unwrap();
+    assert!(install_with_options(Some(&source), &target, true).is_err());
+    drop(storage);
+    let report = install_with_options(Some(&source), &target, true).unwrap();
+    assert_eq!(report["completed"], true);
+    let backup = Path::new(report["backup"].as_str().unwrap());
+    assert_eq!(fs::read(backup.join("host-state.json")).unwrap(), original);
+    assert_eq!(
+        fs::read(backup.join("keep-user-file")).unwrap(),
+        b"complete current native backup"
+    );
+    fs::write(target.join("host-state.json"), b"broken native data").unwrap();
+    assert!(install_with_options(Some(&source), &target, true).is_err());
+    assert_eq!(
+        fs::read(target.join("host-state.json")).unwrap(),
+        b"broken native data"
+    );
+}
+
+#[test]
+fn native_replacement_interrupted_at_each_phase_rolls_back_or_finishes() {
+    for phase in ["prepared", "backed_up", "installed"] {
+        let f = Fixture::new();
+        let source = f.source();
+        f.populate(&source);
+        let target = f.target();
+        install(Some(&source), &target).unwrap();
+        let original = fs::read(target.join("host-state.json")).unwrap();
+        fs::write(target.join("current-library-file"), b"current library").unwrap();
+        INTERRUPT.with(|point| point.set(Some(phase)));
+        let crashed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            install_with_options(Some(&source), &target, true)
+        }));
+        INTERRUPT.with(|point| point.set(None));
+        assert!(crashed.is_err());
+        assert!(NativeHostStorage::open(&target).is_err());
+        let recovered = install(None, &target).unwrap();
+        assert_eq!(recovered["completed"], phase == "installed");
+        if phase != "installed" {
+            assert_eq!(fs::read(target.join("host-state.json")).unwrap(), original);
+            assert_eq!(
+                fs::read(target.join("current-library-file")).unwrap(),
+                b"current library"
+            );
+        } else {
+            let backup = Path::new(recovered["backup"].as_str().unwrap());
+            assert_eq!(
+                fs::read(backup.join("current-library-file")).unwrap(),
+                b"current library"
+            );
+        }
+        assert!(!import_guard_path(&target, "json").unwrap().exists());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn import_guard_paths_preserve_native_non_utf8_components() {

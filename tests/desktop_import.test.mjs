@@ -59,6 +59,45 @@ test('native inspection detects only known current-OS roots and is read-only', a
   }
 });
 
+test('first-start inspection is silent for absent legacy records and skips discovery for native data', async t => {
+  const { home, env } = fixture(t), target = path.join(home, 'new/runtime/data');
+  const first = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.deepEqual(first.candidates, []); assert.equal(first.destination_status, 'missing');
+  assert.equal(existsSync(path.dirname(target)), false, 'Detection must not initialize a checkpoint');
+  const known = process.platform === 'win32' ? path.join(env.LOCALAPPDATA, 'bilikara')
+    : path.join(home, process.platform === 'darwin' ? 'Library/Application Support/bilikara' : 'share/bilikara');
+  oldData(known);
+  assert.equal((await offline(['--inspect-first-start', '--data-dir', target], home, env)).candidates.length, 1);
+  await offline(['--import-only', '--data-dir', target, '--import-from', known], home, env);
+  const before = readFileSync(path.join(target, 'host-state.json'));
+  const reopened = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.equal(reopened.destination_status, 'native'); assert.deepEqual(reopened.candidates, []);
+  assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before);
+  const wrongSource = await offline(['--inspect-legacy-import', '--data-dir', path.join(home, 'another/data'), '--import-from', path.dirname(target)], home, env, false);
+  assert.match(wrongSource, /native-format records/);
+  assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before, 'Native-format selection is a diagnostic, never a conversion');
+});
+
+test('explicit tool imports after actual startup with a complete native backup and rejects a running Host', async t => {
+  const { home, env } = fixture(t), source = path.join(home, 'old runtime'), target = path.join(home, 'new/runtime/data');
+  oldData(source); const hostEnv = { ...env }; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const host = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', target, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try {
+    await host.api('/api/session-users/add', { name: 'New user preserved in backup' });
+    const failure = await offline(['--import-only', '--replace-native', '--data-dir', target, '--import-from', source], home, env, false);
+    assert.match(failure, /owns|lock/i);
+  } finally { await host.close(); }
+  const checkpoint = readFileSync(path.join(target, 'host-state.json'));
+  writeFileSync(path.join(target, 'keep-user-file'), 'preserve this too');
+  const report = await offline(['--import-only', '--replace-native', '--data-dir', target, '--import-from', source], home, env);
+  assert.equal(report.completed, true); assert.ok(report.backup);
+  assert.deepEqual(readFileSync(path.join(report.backup, 'host-state.json')), checkpoint);
+  assert.equal(readFileSync(path.join(report.backup, 'keep-user-file'), 'utf8'), 'preserve this too');
+  const restored = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', target, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try { assert.deepEqual((await restored.api('/api/state')).session_users, ['小林', 'Alice']); }
+  finally { await restored.close(); }
+});
+
 test('one-shot conversion keeps source bytes and existing native records, without tool/media prerequisites', async t => {
   const { home, env } = fixture(t), source = path.join(home, 'old runtime 中文 & $()'), data = oldData(source);
   const target = path.join(home, 'new/runtime/data'), original = readFileSync(path.join(data, 'history.json'));
@@ -102,7 +141,7 @@ test('in-place conversion retains exact backup and malformed data never reports 
 
 test('offline mode rejects startup/network flags and unknown targets without overwriting files', async t => {
   const { home, env } = fixture(t), source = path.join(home, 'source'), target = path.join(home, 'data'); oldData(source);
-  for (const args of [['--inspect-legacy-import', '--import-only'], ['--import-only', '--port', '0'], ['--inspect-legacy-import', '--import-from'], ['--import-only', '--data-dir', 'relative', '--import-from', source]]) {
+  for (const args of [['--inspect-legacy-import', '--import-only'], ['--inspect-first-start', '--replace-native'], ['--inspect-first-start', '--import-from', source], ['--import-only', '--port', '0'], ['--inspect-legacy-import', '--import-from'], ['--import-only', '--data-dir', 'relative', '--import-from', source]]) {
     await offline(args, home, env, false);
   }
   mkdirSync(target); writeFileSync(path.join(target, 'unrelated.txt'), 'keep');

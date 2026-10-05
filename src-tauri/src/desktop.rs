@@ -132,7 +132,7 @@ pub(crate) fn run() {
                 }
                 eprintln!("Windows native rounded corners unavailable: {error}");
             }
-            backend_process::launch(app, window, startup_log);
+            crate::desktop_import::gate_startup(app, window, startup_log);
             Ok(())
         })
         .on_window_event(window_lifecycle::handle_window_event)

@@ -1,6 +1,6 @@
 // Real Linux Tauri/WebKit/WM acceptance, on a relocated test-owned product.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -58,16 +58,51 @@ export async function verifyLauncher(output) {
     writeFileSync(legacyFile, JSON.stringify({ playback_mode: 'local', player_settings: { volume_percent: 43 } }));
     const legacyBytes = readFileSync(legacyFile), results = [];
     const command = async args => { const result = await runNative(tools.xdotool, args, env, 10000, temporary); assert.equal(result.status, 0, result.stderr); return result.stdout; };
-    for (const name of ['default', 'override', 'import', 'restart']) {
+    const importDialog = () => waitFor(async () => {
+      assert.equal(app.exited, false, app.output.stderr || 'import tool exited before its dialog');
+      const found = await runNative(tools.xdotool, ['search', '--onlyvisible', '--name', 'bilikara.*导入'], env, 10000, temporary);
+      assert.ok([0, 1].includes(found.status), found.stderr);
+      return found.stdout.trim().split('\n').filter(Boolean).at(-1);
+    }, 'actual native import dialog', 30000);
+    const acceptDialog = async () => {
+      const dialog = await importDialog();
+      await command(['windowactivate', '--sync', dialog]); await command(['key', 'Return']);
+      await waitFor(async () => {
+        const old = await runNative(tools.xdotool, ['getwindowname', dialog], env, 10000, temporary);
+        return old.status !== 0;
+      }, 'accepted dialog must close', 30000);
+    };
+    for (const name of ['default', 'override', 'import', 'restart', 'first-start']) {
       const home = path.join(temporary, name === 'restart' ? 'import' : name); mkdirSync(home, { recursive: true });
       const log = path.join(output, `${name}-startup.log`); rmSync(log, { force: true });
       const appEnv = { ...isolatedEnvironment(home), ...Object.fromEntries(Object.entries(env).filter(([key]) => /proxy/i.test(key))), DISPLAY: env.DISPLAY,
         WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1', BILIKARA_DESKTOP_STARTUP_LOG: log, BILIKARA_DISABLE_MEDIA_CLI: '1', BILIKARA_BILIBILI_COOKIE: '' };
-      if (name !== 'default') appEnv.BILIKARA_NATIVE_DATA_DIR = path.join(home, 'preview');
+      if (!['default', 'first-start'].includes(name)) appEnv.BILIKARA_NATIVE_DATA_DIR = path.join(home, 'preview');
       if (['import', 'restart'].includes(name)) appEnv.BILIKARA_DESKTOP_RUST_IMPORT_FROM = legacy;
+      const firstData = path.join(home, 'share/bilikara/data');
+      if (name === 'first-start') {
+        mkdirSync(firstData, { recursive: true });
+        writeFileSync(path.join(firstData, 'player_state.json'), legacyBytes);
+      }
       app = new CapturedProcess([executable], temporary, appEnv);
       let child;
       try {
+        if (name === 'first-start') {
+          const dialog = await importDialog();
+          assert.equal(existsSync(path.join(firstData, 'host-state.json')), false, 'no checkpoint before consent');
+          assert.doesNotMatch(existsSync(log) ? readFileSync(log, 'utf8') : '', /child_pid=/, 'inspection must not start the Host');
+          await command(['windowactivate', '--sync', dialog]); await command(['key', 'Escape']);
+          assert.equal(await app.waitForExit(30), true, 'cancel closes the shell without initialization');
+          assert.equal(app.process.exitCode, 0); assert.equal(existsSync(path.join(firstData, 'host-state.json')), false);
+          assert.equal(await app.terminate(), true);
+          app = new CapturedProcess([executable], temporary, appEnv);
+          await acceptDialog();
+          await waitFor(() => existsSync(path.join(firstData, 'host-state.json')), 'consented conversion must commit', 30000);
+          await acceptDialog(); // Completion precedes normal Host startup.
+          assert.equal(JSON.parse(readFileSync(path.join(firstData, 'host-state.json'))).state.player_settings.volume_percent, 43);
+          const shot = await runNative(tools.scrot, [path.join(output, 'first-start-converted-webview.png')], env, 10000, temporary);
+          assert.equal(shot.status, 0, shot.stderr);
+        }
         const text = await waitFor(() => {
           assert.equal(app.exited, false, app.output.stderr || 'desktop exited before readiness');
           const content = existsSync(log) ? readFileSync(log, 'utf8') : '';
@@ -103,6 +138,32 @@ export async function verifyLauncher(output) {
           assert.equal(JSON.parse(readFileSync(path.join(home, 'preview/host-state.json'))).state.player_settings.volume_percent, 43);
           assert.deepEqual(readFileSync(legacyFile), legacyBytes);
         }
+        if (name === 'first-start') {
+          // The separate mode remains usable after ordinary startup. Select a
+          // known test-owned legacy root and require a second replacement consent.
+          assert.equal(await app.terminate(), true);
+          const checkpoint = readFileSync(path.join(firstData, 'host-state.json'));
+          writeFileSync(path.join(firstData, 'retained-private-file'), 'complete backup');
+          const oldData = path.join(installed, 'runtime/data'); mkdirSync(oldData, { recursive: true });
+          const sourceBytes = JSON.stringify({ playback_mode: 'local', player_settings: { volume_percent: 77 } });
+          writeFileSync(path.join(oldData, 'player_state.json'), sourceBytes);
+          app = new CapturedProcess([executable, '--import-legacy'], temporary, appEnv);
+          await acceptDialog();
+          const confirmation = await importDialog();
+          assert.match(await command(['getwindowname', confirmation]), /备份并导入/);
+          assert.deepEqual(readFileSync(path.join(firstData, 'host-state.json')), checkpoint, 'source selection does not replace data');
+          await acceptDialog();
+          await waitFor(() => existsSync(path.join(firstData, 'host-state.json'))
+            && JSON.parse(readFileSync(path.join(firstData, 'host-state.json'))).state.player_settings.volume_percent === 77,
+            'explicit replacement must complete', 30000);
+          await acceptDialog(); assert.equal(await app.waitForExit(30), true); assert.equal(app.process.exitCode, 0);
+          const parent = path.dirname(firstData);
+          const backups = readdirSync(parent).filter(n => n.startsWith('.bilikara-import-')).map(n => path.join(parent, n, 'legacy/data'));
+          const backup = backups.find(p => existsSync(path.join(p, 'retained-private-file')));
+          assert.ok(backup, 'complete native backup retained'); assert.deepEqual(readFileSync(path.join(backup, 'host-state.json')), checkpoint);
+          assert.equal(readFileSync(path.join(oldData, 'player_state.json'), 'utf8'), sourceBytes);
+          assert.equal(existsSync(`/proc/${child}`), false, 'manual tool must not reopen the Host');
+        }
         results.push({ backend: name, realTauri: true, ready: true, windowClose: true, childReaped: true, listenerClosed: true });
       } finally {
         writeFileSync(path.join(output, `${name}-stdout.log`), app.output.stdout); writeFileSync(path.join(output, `${name}-stderr.log`), app.output.stderr);
@@ -121,5 +182,5 @@ export async function verifyLauncher(output) {
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   assert.equal(process.argv.length, 3, 'usage: desktop_launcher_smoke.mjs EVIDENCE_DIRECTORY');
   await verifyLauncher(path.resolve(process.argv[2]));
-  console.log('Default native, isolated override and imported/restarted Tauri launcher checks passed.');
+  console.log('Native, override, import/restart, first-start consent/cancel and later explicit-import Tauri checks passed.');
 }

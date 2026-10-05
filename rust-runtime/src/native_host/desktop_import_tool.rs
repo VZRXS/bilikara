@@ -76,12 +76,18 @@ fn legacy_root(selected: &Path) -> Result<PathBuf, String> {
     {
         choices.insert(0, parent.to_owned());
     }
+    let mut native_source = false;
     for candidate in choices {
-        if format(&candidate.join("data")).ok() == Some(Format::Legacy) {
+        let kind = format(&candidate.join("data")).ok();
+        native_source |= kind == Some(Format::Native);
+        if kind == Some(Format::Legacy) {
             return candidate
                 .canonicalize()
                 .map_err(|_| "Cannot resolve legacy root".into());
         }
+    }
+    if native_source {
+        return Err("Selected folder contains native-format records; follow the native-data upgrade instructions instead of legacy conversion".into());
     }
     Err("No supported legacy records found; select the old runtime folder, its data folder, or the old application-data root".into())
 }
@@ -156,6 +162,26 @@ fn inspect(
         "candidates":candidates}))
 }
 
+fn inspect_first_start(
+    destination: &Path,
+    executable: &Path,
+    platform: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Result<Value, String> {
+    let kind = format(destination)?;
+    let pending = fs::symlink_metadata(import_guard_path(destination, "json")?).is_ok();
+    // Reopening a native library never scans other locations or offers to
+    // overwrite it. Malformed checkpoints remain native and protected.
+    let candidates = if !pending && matches!(kind, Format::Missing | Format::Empty | Format::Legacy)
+    {
+        discover(destination, executable, platform, env)
+    } else {
+        Vec::new()
+    };
+    Ok(json!({"schema_version":1,"destination":destination,
+        "destination_status":kind,"pending":pending,"candidates":candidates}))
+}
+
 fn private_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     #[cfg(unix)]
@@ -221,6 +247,8 @@ struct Plan {
     destination: String,
     work: String,
     had_data: bool,
+    #[serde(default)]
+    replaced_native: bool,
 }
 
 fn read_plan(destination: &Path) -> Result<Plan, String> {
@@ -275,6 +303,13 @@ fn recover_locked(destination: &Path) -> Result<Value, String> {
     real(&backup)?;
     let stage = work.join("new-data");
     real(&stage)?;
+    if plan.replaced_native && format(destination)? == Format::Native && !backup.exists() {
+        // Before the switch, the destination is still the original native
+        // library. An interrupted preparation must not report import success.
+        desktop_import::validate_for_tool(destination)?;
+        clear_guard(destination)?;
+        return Ok(result(destination, None, false));
+    }
     match format(destination)? {
         Format::Native if !stage.exists() => {
             desktop_import::validate_for_tool(destination)?;
@@ -311,6 +346,14 @@ fn recover_locked(destination: &Path) -> Result<Value, String> {
 }
 
 fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
+    install_with_options(source, requested, false)
+}
+
+fn install_with_options(
+    source: Option<&Path>,
+    requested: &Path,
+    replace_native: bool,
+) -> Result<Value, String> {
     let destination = destination(requested)?;
     let _lock = lock(&destination)?;
     let pending = import_guard_path(&destination, "json")?;
@@ -323,12 +366,24 @@ fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
     let source = legacy_root(source.ok_or("Select an old data folder to import")?)?;
     let kind = format(&destination)?;
     match kind {
-        Format::Native => return Err("Existing native data is protected; import will not overwrite or merge it".into()),
+        Format::Native if !replace_native => return Err("Existing native data is protected; import will not overwrite or merge it".into()),
         Format::Legacy if destination != source.join("data") =>
             return Err("Destination contains another legacy library; select that library rather than overwrite it".into()),
         Format::Unknown | Format::Incomplete => return Err("Destination contains unrecognized or incomplete data; preserve it and choose a fresh installation".into()),
         _ => {},
     }
+    let original_native = if kind == Format::Native {
+        // Validate the complete checkpoint and acquire its actual storage
+        // lock. This also rejects a Host that started before the import lock
+        // existed. The guard below prevents new Hosts throughout the switch.
+        desktop_import::validate_for_tool(&destination)?;
+        Some(
+            fs::read(destination.join("host-state.json"))
+                .map_err(|_| "Cannot read existing native records; data preserved")?,
+        )
+    } else {
+        None
+    };
     if source.starts_with(&destination) {
         return Err("Import destination must not contain the old source".into());
     }
@@ -350,6 +405,7 @@ fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
             .into(),
         work: format!(".bilikara-import-{nonce}"),
         had_data: kind != Format::Missing,
+        replaced_native: original_native.is_some(),
     };
     let work = destination.parent().unwrap().join(&plan.work);
     directory(&work)?;
@@ -366,6 +422,11 @@ fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
         .map_err(|_| "Cannot claim import destination; data preserved")?;
     sync(destination.parent().unwrap())?;
     let converted = (|| {
+        if original_native.is_some() {
+            // Also reject a Host whose initial lock lookup preceded creation
+            // of our parent lock. The durable guard now blocks any new opener.
+            desktop_import::validate_for_tool(&destination)?;
+        }
         directory(&stage)?;
         import.publish(&stage)?;
         desktop_import::validate_for_tool(&stage)?;
@@ -374,6 +435,11 @@ fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
         tests::interrupt("prepared");
         if stamp != desktop_import::source_stamp(&source)? || format(&destination)? != kind {
             return Err("Old data changed during import; close both versions and try again".into());
+        }
+        if let Some(original) = &original_native
+            && fs::read(destination.join("host-state.json")).ok().as_ref() != Some(original)
+        {
+            return Err("Native data changed during import; data preserved".into());
         }
         if plan.had_data {
             directory(&work.join("legacy"))?;
@@ -412,29 +478,44 @@ fn install(source: Option<&Path>, requested: &Path) -> Result<Value, String> {
 
 pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
     let inspect_mode = arguments.iter().any(|a| a == "--inspect-legacy-import");
+    let first_start = arguments.iter().any(|a| a == "--inspect-first-start");
     let import_mode = arguments.iter().any(|a| a == "--import-only");
-    if !inspect_mode && !import_mode {
+    if !inspect_mode && !first_start && !import_mode {
         return Ok(false);
     }
-    if inspect_mode && import_mode {
+    if [inspect_mode, first_start, import_mode]
+        .into_iter()
+        .filter(|value| *value)
+        .count()
+        != 1
+    {
         return Err("Choose inspection or import, not both".into());
     }
     let mut args = arguments.iter();
     let mut target = None;
     let mut source = None;
+    let mut replace_native = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--inspect-legacy-import" | "--import-only" => {},
+            "--inspect-legacy-import" | "--inspect-first-start" | "--import-only" => {},
+            "--replace-native" if import_mode => replace_native = true,
             "--data-dir" => target = Some(PathBuf::from(args.next().ok_or("Missing native data directory")?)),
             "--import-from" => source = Some(PathBuf::from(args.next().ok_or("Missing old data folder")?)),
-            _ => return Err("Offline import accepts --inspect-legacy-import or --import-only, --data-dir and --import-from only".into()),
+            _ => return Err("Offline import accepts an inspection or import mode, --data-dir, --import-from and explicit --replace-native for import only".into()),
         }
     }
     let executable = std::env::current_exe().map_err(|_| "Cannot resolve desktop executable")?;
     let target = desktop::paths::import_data_root(target, &executable, desktop::PLATFORM, |key| {
         std::env::var_os(key)
     })?;
-    let report = if inspect_mode {
+    if first_start && source.is_some() {
+        return Err("First-start inspection discovers known roots; use explicit inspection to select a folder".into());
+    }
+    let report = if first_start {
+        inspect_first_start(&target, &executable, desktop::PLATFORM, |key| {
+            std::env::var_os(key)
+        })?
+    } else if inspect_mode {
         inspect(
             &target,
             &executable,
@@ -443,7 +524,11 @@ pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
             |key| std::env::var_os(key),
         )?
     } else {
-        install(source.as_deref(), &target)?
+        if replace_native {
+            install_with_options(source.as_deref(), &target, true)?
+        } else {
+            install(source.as_deref(), &target)?
+        }
     };
     println!(
         "{}",

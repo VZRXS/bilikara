@@ -531,7 +531,7 @@ where
 }
 
 pub(crate) fn launch(
-    app: &tauri::App,
+    app: &tauri::AppHandle,
     window: tauri::WebviewWindow,
     startup_log: Option<DesktopStartupLog>,
 ) {
@@ -548,7 +548,7 @@ pub(crate) fn launch(
             if let Some(startup_log) = startup_log.as_ref() {
                 startup_log.append("packaged_backend_missing", &detail);
             }
-            desktop_diagnostics::fail_desktop_startup(app.handle(), startup_log.as_ref(), &detail);
+            desktop_diagnostics::fail_desktop_startup(app, startup_log.as_ref(), &detail);
             return;
         }
     };
@@ -608,7 +608,7 @@ pub(crate) fn launch(
             if let Some(startup_log) = startup_log.as_ref() {
                 startup_log.append("backend_spawn", &detail);
             }
-            desktop_diagnostics::fail_desktop_startup(app.handle(), startup_log.as_ref(), &detail);
+            desktop_diagnostics::fail_desktop_startup(app, startup_log.as_ref(), &detail);
             return;
         }
     };
@@ -623,7 +623,7 @@ pub(crate) fn launch(
         let _ = child.kill();
         let _ = child.wait();
         desktop_diagnostics::fail_desktop_startup(
-            app.handle(),
+            app,
             startup_log.as_ref(),
             "backend child started without a stdout pipe",
         );
@@ -776,7 +776,7 @@ pub(crate) fn launch(
         }
     });
 
-    let app_handle = app.handle().clone();
+    let app_handle = app.clone();
     let child_for_monitor = child_arc.clone();
     let ready_for_monitor = ready_received.clone();
     let stdout_tail_for_monitor = stdout_tail.clone();

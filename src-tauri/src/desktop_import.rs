@@ -10,6 +10,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tauri::Manager;
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
@@ -106,8 +107,16 @@ fn execute(program: &Path, arguments: &[OsString], deadline: Duration) -> Result
     outcome
 }
 
-fn inspection(backend: &Path, source: Option<&Path>) -> Result<Inspection, String> {
-    let mut args = vec![OsString::from("--inspect-legacy-import")];
+fn inspection(
+    backend: &Path,
+    source: Option<&Path>,
+    first_start: bool,
+) -> Result<Inspection, String> {
+    let mut args = vec![OsString::from(if first_start {
+        "--inspect-first-start"
+    } else {
+        "--inspect-legacy-import"
+    })];
     if let Some(source) = source {
         args.extend([
             OsString::from("--import-from"),
@@ -129,6 +138,7 @@ fn convert(
     backend: &Path,
     destination: &Path,
     source: Option<&Path>,
+    replace_native: bool,
 ) -> Result<Completion, String> {
     let mut args = vec![
         OsString::from("--import-only"),
@@ -140,6 +150,9 @@ fn convert(
             OsString::from("--import-from"),
             source.as_os_str().to_owned(),
         ]);
+    }
+    if replace_native {
+        args.push(OsString::from("--replace-native"));
     }
     let report: Completion = serde_json::from_slice(&execute(backend, &args, DEADLINE)?)
         .map_err(|_| "导入结果无效，请再次运行工具检查。")?;
@@ -169,7 +182,7 @@ fn success(app: &tauri::AppHandle, report: &Completion) {
     let backup = report
         .backup
         .as_ref()
-        .map(|p| format!("\n\n旧数据备份：\n{}", p.display()))
+        .map(|p| format!("\n\n原数据备份：\n{}", p.display()))
         .unwrap_or_default();
     information(
         app,
@@ -189,9 +202,93 @@ fn choose_folder(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
         .transpose()
 }
 
-fn workflow(app: &tauri::AppHandle) -> Result<(), String> {
+// Only known checkpoint/guard names are checked on an ordinary reopening.
+// The backend remains authoritative for directory validation and conversion.
+fn needs_startup_inspection(
+    executable: &Path,
+    platform: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Result<bool, String> {
+    if [
+        "BILIKARA_NATIVE_DATA_DIR",
+        "BILIKARA_DESKTOP_RUST_PREVIEW_DIR",
+        "BILIKARA_HOME",
+    ]
+    .into_iter()
+    .any(|key| env(key).is_some_and(|v| !v.is_empty()))
+    {
+        return Ok(false);
+    }
+    let home = || {
+        env("HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .ok_or("无法确定应用数据位置。".to_string())
+    };
+    let base = match platform {
+        "windows" => executable
+            .parent()
+            .ok_or("无法确定安装位置。")?
+            .join("runtime"),
+        "macos" => home()?.join("Library/Application Support/bilikara"),
+        _ => env("XDG_DATA_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(|| home().map(|p| p.join(".local/share")))?
+            .join("bilikara"),
+    };
+    let data = base.join("data");
+    let previous = base.join("native");
+    let data = if !data.join("host-state.json").exists() && previous.exists() {
+        previous
+    } else {
+        data
+    };
+    let mut pending = OsString::from(".");
+    pending.push(data.file_name().ok_or("无法确定数据位置。")?);
+    pending.push(".bilikara-import.json");
+    if std::fs::symlink_metadata(base.join(pending)).is_ok() {
+        return Ok(true);
+    }
+    Ok(!["host-state.json", ".bilikara-desktop-rust-preview"]
+        .into_iter()
+        .any(|name| std::fs::symlink_metadata(data.join(name)).is_ok()))
+}
+
+pub(crate) fn gate_startup(
+    app: &tauri::App,
+    window: tauri::WebviewWindow,
+    startup_log: Option<crate::desktop_diagnostics::DesktopStartupLog>,
+) {
+    let needed = std::env::current_exe()
+        .map_err(|_| "无法确定启动程序位置。".to_string())
+        .and_then(|path| {
+            needs_startup_inspection(&path, std::env::consts::OS, |key| std::env::var_os(key))
+        });
+    if matches!(needed, Ok(false)) {
+        crate::backend_process::launch(app.handle(), window, startup_log);
+        return;
+    }
+    let app = app.handle().clone();
+    thread::spawn(move || {
+        let result = needed.and_then(|_| workflow(&app, true));
+        match result {
+            Ok(true) if app.get_webview_window("main").is_some() => {
+                crate::backend_process::launch(&app, window, startup_log);
+            }
+            Ok(_) => app.exit(0),
+            Err(error) => {
+                information(&app, error);
+                app.exit(1);
+            }
+        }
+    });
+}
+
+fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
     let backend = crate::backend_process::import_tool_backend()?;
-    let mut report = inspection(&backend, None)?;
+    let mut report = inspection(&backend, None, first_start)?;
     if report.pending {
         let agreed = app
             .dialog()
@@ -205,24 +302,20 @@ fn workflow(app: &tauri::AppHandle) -> Result<(), String> {
             ))
             .blocking_show();
         if !agreed {
-            return Ok(());
+            return Ok(false);
         }
-        let recovered = convert(&backend, &report.destination, None)?;
+        let recovered = convert(&backend, &report.destination, None, false)?;
         if recovered.completed {
             success(app, &recovered);
-            return Ok(());
+            return Ok(true);
         }
-        information(app, "已恢复旧数据。接下来可以重新选择导入来源。");
-        report = inspection(&backend, None)?;
+        information(app, "已恢复原数据。接下来可以重新选择导入来源。");
+        report = inspection(&backend, None, first_start)?;
     }
-    if report.destination_status == "native" {
-        information(
-            app,
-            "目标已有新版原生数据文件。本工具不会覆盖或合并已有歌单和记录。",
-        );
-        return Ok(());
+    if first_start && (report.destination_status == "native" || report.candidates.is_empty()) {
+        return Ok(true);
     }
-    if !["missing", "empty", "legacy"].contains(&report.destination_status.as_str()) {
+    if !["missing", "empty", "legacy", "native"].contains(&report.destination_status.as_str()) {
         return Err("目标目录包含无法识别或未完成的数据。请保留这个目录，并在新解压的 bilikara 中运行导入工具。".into());
     }
     let mut index = 0;
@@ -231,21 +324,33 @@ fn workflow(app: &tauri::AppHandle) -> Result<(), String> {
             source.clone()
         } else {
             let Some(selected) = choose_folder(app)? else {
-                return Ok(());
+                return Ok(false);
             };
-            match inspection(&backend, Some(&selected)) {
+            match inspection(&backend, Some(&selected), false) {
                 Ok(selected) => selected
                     .candidates
                     .into_iter()
                     .next()
                     .ok_or("没有发现可导入的旧数据。")?,
                 Err(error) => {
-                    information(app, error);
+                    information(
+                        app,
+                        if error.contains("Selected folder contains native-format records") {
+                            "所选文件夹已有新版格式的记录，不适用于旧数据转换。请按升级说明保留这份数据：Windows 复制整个 runtime；macOS 保留 Application Support 中的 bilikara 文件夹。".into()
+                        } else {
+                            error
+                        },
+                    );
                     continue;
                 }
             }
         };
-        let result=app.dialog().message(format!("检测到旧版数据：\n{}\n\n导入位置：\n{}\n\n请先关闭旧版和新版 bilikara。导入会保留已保存的歌单、历史和分场记录，并保留旧数据备份。",source.display(),report.destination.display()))
+        let close_instruction = if first_start {
+            "请先关闭旧版 bilikara。"
+        } else {
+            "请先关闭其他 bilikara 窗口。"
+        };
+        let result=app.dialog().message(format!("检测到旧版数据：\n{}\n\n导入位置：\n{}\n\n{close_instruction}导入会保留已保存的歌单、历史和分场记录，并保留旧数据备份。",source.display(),report.destination.display()))
             .title("bilikara · 导入旧数据").buttons(MessageDialogButtons::YesNoCancelCustom(
                 "导入".into(),if index+1<report.candidates.len(){"下一处"}else{"选择其他位置"}.into(),"取消".into()))
             .blocking_show_with_result();
@@ -262,14 +367,22 @@ fn workflow(app: &tauri::AppHandle) -> Result<(), String> {
                 index += 1;
                 continue;
             }
-            _ => return Ok(()),
+            _ => return Ok(false),
         }
-        let converted = convert(&backend, &report.destination, Some(&source))?;
+        let replace_native = report.destination_status == "native";
+        if replace_native && !app.dialog()
+            .message("当前已存在新版数据。导入会先完整备份当前数据，再以旧版记录替换；不会合并两份歌单和历史。请关闭所有 bilikara 窗口后继续。")
+            .title("bilikara · 备份并导入")
+            .buttons(MessageDialogButtons::OkCancelCustom("备份并导入".into(), "取消".into()))
+            .blocking_show() {
+            return Ok(false);
+        }
+        let converted = convert(&backend, &report.destination, Some(&source), replace_native)?;
         if !converted.completed {
             return Err("旧数据已恢复，请重新运行工具导入。".into());
         }
         success(app, &converted);
-        return Ok(());
+        return Ok(true);
     }
 }
 
@@ -283,8 +396,8 @@ pub(crate) fn run(mut context: tauri::Context<tauri::Wry>) {
             thread::Builder::new()
                 .name("bilikara-legacy-import".into())
                 .spawn(move || {
-                    let status = match workflow(&app) {
-                        Ok(()) => 0,
+                    let status = match workflow(&app, false) {
+                        Ok(_) => 0,
                         Err(error) => {
                             app.dialog()
                                 .message(error)
@@ -305,6 +418,41 @@ pub(crate) fn run(mut context: tauri::Context<tauri::Wry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_start_uses_checkpoint_not_runtime_directory_and_preserves_overrides() {
+        let root =
+            std::env::temp_dir().join(format!("bilikara first start 中文 {}", std::process::id()));
+        std::fs::create_dir_all(root.join("runtime/webview")).unwrap();
+        let executable = root.join("bilikara-desktop.exe");
+        assert!(needs_startup_inspection(&executable, "windows", |_| None).unwrap());
+        std::fs::create_dir_all(root.join("runtime/data")).unwrap();
+        std::fs::write(
+            root.join("runtime/data/host-state.json"),
+            b"invalid protected native data",
+        )
+        .unwrap();
+        assert!(!needs_startup_inspection(&executable, "windows", |_| None).unwrap());
+        std::fs::write(root.join("runtime/.data.bilikara-import.json"), b"pending").unwrap();
+        assert!(needs_startup_inspection(&executable, "windows", |_| None).unwrap());
+        assert!(
+            !needs_startup_inspection(&executable, "windows", |key| (key
+                == "BILIKARA_NATIVE_DATA_DIR")
+                .then(|| root.clone().into_os_string()))
+            .unwrap()
+        );
+        for (platform, relative) in [
+            ("macos", "Library/Application Support/bilikara"),
+            ("linux", ".local/share/bilikara"),
+        ] {
+            let env = |key: &str| (key == "HOME").then(|| root.clone().into_os_string());
+            assert!(needs_startup_inspection(&executable, platform, env).unwrap());
+            let base = root.join(relative).join("native");
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::write(base.join("host-state.json"), b"native fixture").unwrap();
+            assert!(!needs_startup_inspection(&executable, platform, env).unwrap());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn native_converter_arguments_failures_output_bounds_and_deadline() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
