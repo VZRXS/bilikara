@@ -162,6 +162,49 @@
     });
   }
 
+  // Keep the initial, candidate-bearing SDP for released clients. Candidates
+  // found after that bounded wait still need signaling, especially on slow
+  // STUN paths. Incoming candidates may precede setRemoteDescription completion.
+  function createIceCandidateExchange(peer, { isCurrent, sendCandidate, onError }) {
+    let localDescriptionSent = false;
+    let remoteDescriptionReady = false;
+    let pending = [];
+    let received = 0;
+    let tail = Promise.resolve();
+    peer.addEventListener("icecandidate", (event) => {
+      if (!localDescriptionSent || !event.candidate || !isCurrent()) return;
+      try { sendCandidate(event.candidate.toJSON()); }
+      catch (error) { if (isCurrent()) onError(error); }
+    });
+    function apply(candidate) {
+      const operation = tail.then(() => {
+        if (isCurrent()) return peer.addIceCandidate(candidate);
+      });
+      tail = operation.catch(() => {});
+      return operation;
+    }
+    return {
+      descriptionSent() { localDescriptionSent = true; },
+      async setRemoteDescription(description) {
+        await peer.setRemoteDescription(description);
+        if (!isCurrent()) { pending = []; return; }
+        remoteDescriptionReady = true;
+        const operations = pending.map(apply);
+        pending = [];
+        await Promise.all(operations);
+      },
+      async addCandidate(candidate) {
+        if (!isCurrent()) return;
+        if (!candidate || typeof candidate.candidate !== "string"
+          || utf8Bytes(candidate.candidate) > 4 * 1024 || ++received > 128) {
+          throw new Error("Invalid or excessive Internet Remote ICE candidates");
+        }
+        if (!remoteDescriptionReady) pending.push(candidate);
+        else await apply(candidate);
+      },
+    };
+  }
+
   function waitForBufferedAmount(channel, timeoutMs = 10_000) {
     const highWaterMark = 128 * 1024;
     if (!channel || channel.readyState !== "open") return Promise.reject(new Error("DataChannel is not open"));
@@ -188,6 +231,7 @@
     randomBase64Url,
     send,
     sha256,
+    createIceCandidateExchange,
     waitForBufferedAmount,
     waitForIceGathering,
     iceConfiguration: {

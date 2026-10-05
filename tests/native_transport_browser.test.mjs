@@ -12,7 +12,8 @@ test('actual native HTTP/RTC browser consumes controls and preserves timeout/rec
   t.after(() => rmSync(evidence, {recursive: true, force: true}));
   const result = await runTransportBrowser(evidence);
   assert.deepEqual(result.checks.map(row => [row.name, row.passed]), [
-    ['real_webrtc_authenticated_two_ordered_lanes', true], ['browser_consumes_both_accepted_relative_seeks', true],
+    ['real_webrtc_authenticated_two_ordered_lanes', true],
+    ['real_webrtc_authenticates_with_candidates_trickled_after_empty_sdp', true], ['browser_consumes_both_accepted_relative_seeks', true],
     ['browser_ignores_old_generation_control', true], ['bulk_delay_does_not_block_control_datachannel', true],
     ['internet_relative_av_delay_preserves_concurrent_lan_increment', true],
     ['timeout_reconnect_late_response_does_not_resubmit_mutation', true],

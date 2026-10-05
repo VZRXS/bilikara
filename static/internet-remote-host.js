@@ -343,6 +343,11 @@
       stateSending: false,
     };
     peers.set(peerId, peer);
+    peer.ice = transport.createIceCandidateExchange(pc, {
+      isCurrent: () => peers.get(peerId) === peer,
+      sendCandidate: (candidate) => { if (!peer.authorized) sendSignal(peerId, "candidate", candidate); },
+      onError: () => closePeer(peerId, true, peer),
+    });
     peer.deadlineTimer = setTimeout(() => {
       if (!peer.authorized) {
         setStatus(tr("internetRemote.authTimeout", "Remote 连接或认证超时"), "bad");
@@ -361,6 +366,7 @@
       await transport.waitForIceGathering(pc);
       if (peers.get(peerId) !== peer) return;
       sendSignal(peerId, "offer", pc.localDescription);
+      peer.ice.descriptionSent();
       render();
     } catch (error) {
       if (peers.get(peerId) !== peer) return;
@@ -694,24 +700,30 @@
     ]);
     state.socket = socket;
     socket.addEventListener("open", () => {
+      if (state.socket !== socket) return;
       recordDiagnostic("signaling.connect", "connected");
       setStatus(tr("internetRemote.waiting", "等待 Remote 加入"), "good");
     });
     socket.addEventListener("message", (event) => {
+      if (state.socket !== socket) return;
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "peer.join" && typeof message.peer_id === "string") {
         createPeer(message.peer_id).catch((error) => setStatus(error.message, "bad"));
       } else if (message.type === "answer" && typeof message.from === "string") {
         const peer = peers.get(message.from);
-        if (peer) peer.pc.setRemoteDescription(message.payload).catch(() => closePeer(message.from));
+        if (peer) peer.ice.setRemoteDescription(message.payload).catch(() => closePeer(message.from, true, peer));
+      } else if (message.type === "candidate" && typeof message.from === "string") {
+        const peer = peers.get(message.from);
+        if (peer) peer.ice.addCandidate(message.payload).catch(() => closePeer(message.from, true, peer));
       }
     });
     socket.addEventListener("close", (event) => {
+      if (state.socket !== socket) return;
       recordDiagnostic("signaling.connect", "closed", {
         errorCode: event.code === 1000 ? null : `websocket_${event.code}`,
       });
-      if (state.socket === socket) state.socket = null;
+      state.socket = null;
       if (!state.stopped && event.code !== 4003) {
         clearTimeout(state.reconnectTimer);
         state.reconnectTimer = setTimeout(connectSignaling, 1500);
@@ -720,6 +732,7 @@
       }
     });
     socket.addEventListener("error", () => {
+      if (state.socket !== socket) return;
       recordDiagnostic("signaling.connect", "error", { errorCode: "websocket_error" });
       setStatus(tr("internetRemote.signalingRetry", "信令暂时不可用，正在重连"), "bad");
     });

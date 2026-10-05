@@ -42,6 +42,7 @@
   const state = {
     socket: null,
     peer: null,
+    ice: null,
     control: null,
     bulk: null,
     decoders: null,
@@ -214,6 +215,7 @@
     state.bulk?.close();
     state.peer?.close();
     state.peer = null;
+    state.ice = null;
     state.control = null;
     state.bulk = null;
     state.epoch = lowLevel.randomBase64Url(16);
@@ -246,11 +248,18 @@
     setConnectionStatus(state.reconnectAttempts ? "正在重新连接…" : "正在连接…");
     const socket = new WebSocket(signalingUrl(), ["bilikara-v1", `remote.${joinToken}.${peerId}`]);
     state.socket = socket;
-    socket.addEventListener("open", () => setConnectionStatus("等待 Host…"));
+    socket.addEventListener("open", () => {
+      if (state.socket === socket) setConnectionStatus("等待 Host…");
+    });
     socket.addEventListener("message", (event) => {
+      if (state.socket !== socket) return;
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "offer" && message.from) acceptOffer(message.payload).catch(fail);
+      else if (message.type === "candidate" && message.from && state.ice) {
+        const ice = state.ice;
+        ice.addCandidate(message.payload).catch((error) => { if (state.ice === ice) fail(error); });
+      }
       else if (message.type === "host.leave" && !state.authorized) setConnectionStatus("Host 不在线。", true);
     });
     socket.addEventListener("close", () => {
@@ -258,13 +267,21 @@
       state.socket = null;
       if (!state.authorized && state.password) scheduleReconnect();
     });
-    socket.addEventListener("error", () => setConnectionStatus("信令暂时不可用。", true));
+    socket.addEventListener("error", () => {
+      if (state.socket === socket) setConnectionStatus("信令暂时不可用。", true);
+    });
   }
 
   async function acceptOffer(description) {
     resetPeer();
     const peer = new RTCPeerConnection(lowLevel.iceConfiguration);
     state.peer = peer;
+    const ice = lowLevel.createIceCandidateExchange(peer, {
+      isCurrent: () => state.peer === peer,
+      sendCandidate: (candidate) => { if (!state.authorized) sendSignal("candidate", candidate); },
+      onError: fail,
+    });
+    state.ice = ice;
     peer.addEventListener("datachannel", (event) => wireChannel(event.channel));
     peer.addEventListener("connectionstatechange", () => {
       if (state.peer !== peer) return;
@@ -278,10 +295,14 @@
         state.disconnectedTimer = setTimeout(scheduleReconnect, 5_000);
       }
     });
-    await peer.setRemoteDescription(description);
+    await ice.setRemoteDescription(description);
+    if (state.peer !== peer) return;
     await peer.setLocalDescription(await peer.createAnswer());
     await lowLevel.waitForIceGathering(peer);
-    if (state.peer === peer) sendSignal("answer", peer.localDescription);
+    if (state.peer === peer) {
+      sendSignal("answer", peer.localDescription);
+      ice.descriptionSent();
+    }
   }
 
   function wireChannel(channel) {

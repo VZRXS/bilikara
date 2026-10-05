@@ -25,7 +25,7 @@ export async function runTransportBrowser(evidence) {
     writeFileSync(path.join(evidence, 'browser.stdout.log'), checked.stdout); writeFileSync(path.join(evidence, 'browser.stderr.log'), checked.stderr);
     assert.equal(checked.status, 0, checked.stdout + checked.stderr);
     const summary = JSON.parse(readFileSync(path.join(evidence, 'browser-results.json')));
-    assert.equal(summary.passed, true); assert.equal(summary.checks.length, 8); assert.deepEqual(summary.errors, []);
+    assert.equal(summary.passed, true); assert.equal(summary.checks.length, 9); assert.deepEqual(summary.errors, []);
     // Every provider request is served locally; no proxy forwarding exists.
     writeFileSync(path.join(evidence, 'fixture-summary.json'), JSON.stringify({requests: fixture.provider.requests, forwarded_external_requests: 0}, null, 2));
     return summary;

@@ -67,11 +67,20 @@ async function main() {
       "window.__host = {state, peers, createPeer, stopRoom, publishState}; })();") });
     await remote.addScriptTag({ content: read("remote-transport-client.js").replace(/\}\)\(globalThis\);\s*$/u,
       "global.__remote = {state, acceptOffer, request, handleDataMessage, resetPeer, scheduleReconnect, ensureJoinOverlay}; })(globalThis);") });
+    let trickled = false;
+    const signals = [];
+    const description = payload => trickled ? { ...payload, sdp: payload.sdp.replace(/^a=(?:candidate:.*|end-of-candidates)\r?\n/gmu, "") } : payload;
     await host.exposeFunction("fixtureSignal", async (message) => {
-      if (message.type === "offer") await remote.evaluate((description) => __remote.acceptOffer(description), message.payload);
+      const forwarded = message.type === "offer" ? description(message.payload) : message.payload;
+      signals.push({ sender: "host", type: message.type, candidatesInSdp: /^a=candidate:/mu.test(forwarded?.sdp || "") });
+      if (message.type === "offer") await remote.evaluate((description) => __remote.acceptOffer(description), forwarded);
+      if (message.type === "candidate") await remote.evaluate((candidate) => __remote.state.ice.addCandidate(candidate), message.payload);
     });
     await remote.exposeFunction("fixtureSignal", async (message) => {
-      if (message.type === "answer") await host.evaluate((description) => __host.peers.get("browser-peer").pc.setRemoteDescription(description), message.payload);
+      const forwarded = message.type === "answer" ? description(message.payload) : message.payload;
+      signals.push({ sender: "remote", type: message.type, candidatesInSdp: /^a=candidate:/mu.test(forwarded?.sdp || "") });
+      if (message.type === "answer") await host.evaluate((description) => __host.peers.get("browser-peer").ice.setRemoteDescription(description), forwarded);
+      if (message.type === "candidate") await host.evaluate((candidate) => __host.peers.get("browser-peer").ice.addCandidate(candidate), message.payload);
     });
     async function connect() {
       await remote.evaluate(() => {
@@ -142,6 +151,33 @@ async function main() {
       assert.equal(result.connection, "connected"); assert.equal(result.real, true);
       assert.equal(result.control.ordered && result.bulk.ordered && result.overlayHidden, true);
       return result;
+    });
+    await check("real_webrtc_authenticates_with_candidates_trickled_after_empty_sdp", async () => {
+      trickled = true;
+      signals.length = 0;
+      for (const page of [host, remote]) await page.evaluate(() => {
+        window.__gatherWait = BilikaraInternetTransport.waitForIceGathering;
+        // Emulate reaching the gathering deadline before any usable candidate.
+        BilikaraInternetTransport.waitForIceGathering = async () => {};
+      });
+      try {
+        await connect();
+        const result = await remote.evaluate(() => ({
+          connection: __remote.state.peer.connectionState,
+          authorized: __remote.state.authorized,
+          overlayHidden: __remote.state.overlay.classList.contains("hidden"),
+        }));
+        assert.equal(result.connection, "connected");
+        assert.equal(result.authorized && result.overlayHidden, true);
+        for (const sender of ["host", "remote"]) assert.ok(signals.some(row => row.sender === sender && row.type === "candidate"), sender);
+        const descriptions = signals.filter(row => ["offer", "answer"].includes(row.type));
+        assert.deepEqual(descriptions.map(row => row.type), ["offer", "answer"]);
+        assert.ok(descriptions.every(row => !row.candidatesInSdp));
+        return { ...result, candidates: signals.filter(row => row.type === "candidate").map(row => row.sender), candidateFreeSdp: descriptions.every(row => !row.candidatesInSdp) };
+      } finally {
+        trickled = false;
+        for (const page of [host, remote]) await page.evaluate(() => { BilikaraInternetTransport.waitForIceGathering = __gatherWait; });
+      }
     });
     await check("browser_consumes_both_accepted_relative_seeks", async () => {
       const accepted = await Promise.all([

@@ -201,8 +201,18 @@ is available.
 After both ordered reliable DataChannels open, signaling detaches on the Remote
 while the Host signaling socket stays hibernatable so additional Remotes and
 network recovery can join. Control and bulk traffic use separate channels.
+Initial offer/answer SDP includes the candidates gathered within the existing
+eight-second bound, preserving released-client negotiation. Later candidates
+use the Worker's existing `candidate` signal; receivers queue them until the
+remote description is applied and discard retired-peer callbacks. Each peer
+accepts at most 128 such candidates, with a 4 KiB candidate-string bound.
+The current ICE configuration uses Cloudflare STUN without a TURN relay. Room
+creation and successful signaling therefore do not guarantee connectivity
+through every NAT or UDP-blocking firewall; local browser tests do not qualify
+those networks. See [the WebRTC TURN explanation](https://webrtc.org/getting-started/turn-server).
 Search and state payloads use bulk; playback controls use control. Logical
-messages are capped at 512 KiB and split into 12 KiB frames. The Host serializes
+messages are capped at 32 MiB and split into 12 KiB frames; incomplete transfers
+share a 64 MiB budget and an eight-transfer limit. The Host serializes
 outbound frames per lane, coalesces superseded state updates, and waits for the
 DataChannel buffer to drain. Each peer also has bounded pending work and
 per-minute message/request/search/add admission limits before an external Host
