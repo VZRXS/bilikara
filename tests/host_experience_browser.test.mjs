@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import test, { before } from 'node:test';
@@ -173,4 +173,110 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /audience download progress: PASS/);
   });
+
+  test(`${name} Host titles reserve glyph paint room in single-line, two-line and scrolling layouts`, {
+    skip: nativeLimit, timeout: 60000,
+  }, async t => {
+    const { page } = await open(t, engine);
+    for (const width of [1920, 700]) {
+      await page.setViewportSize({ width, height: 1080 });
+      for (const family of ['', 'Arial, sans-serif']) {
+        const paint = await page.evaluate(family => {
+          elements.currentTitle.style.fontFamily = family;
+          elements.currentTitleText.textContent = 'gypqj'; measurePersistentStage();
+          const range = document.createRange(); range.selectNodeContents(elements.currentTitleText);
+          const glyph = range.getBoundingClientRect(), text = elements.currentTitleText.getBoundingClientRect();
+          return { top: glyph.top - text.top, bottom: text.bottom - glyph.bottom };
+        }, family);
+        assert.ok(paint.top >= 2 && paint.bottom >= 2, `Glyph bounds need paint room: ${JSON.stringify(paint)}`);
+      }
+    }
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.evaluate(() => {
+      elements.currentTitle.style.fontFamily = '';
+      elements.currentTitle.style.maxWidth = '300px';
+      elements.currentTitleText.textContent = 'gypqj 演唱版本 gypqj ending'; measurePersistentStage();
+    });
+    await page.waitForFunction(() => elements.currentTitle.dataset.visibleLines === '2');
+    assert.equal(await page.locator('#current-title').evaluate(node => node.classList.contains('is-scrolling')), false);
+    await page.evaluate(() => {
+      elements.currentTitleText.textContent = 'gypqj 很长的歌曲标题 '.repeat(30); measurePersistentStage();
+    });
+    await page.waitForFunction(() => elements.currentTitle.classList.contains('is-scrolling'));
+    assert.equal(await page.locator('#current-title-text').evaluate(node => getComputedStyle(node).animationName), 'host-current-title-marquee');
+  });
+
+  test(`${name} ordinary user guidance stays neutral and drag deletion retains a stable target through snapshots`, {
+    skip: nativeLimit, timeout: 60000,
+  }, async t => {
+    const { page, host } = await open(t, engine);
+    await page.locator('#work-rail-users').click();
+    await page.evaluate(() => { fetchState = async () => {}; state.eventSource?.close(); });
+    for (const theme of ['light', 'dark', 'blue']) {
+      const colors = await page.evaluate(theme => {
+        applyTheme(theme); state.sessionUserEditor.render({ ...state.data, session_user_entries: [] });
+        const guidance = getComputedStyle(document.querySelector('.session-user-empty'));
+        const queue = getComputedStyle(document.querySelector('.queue-empty'));
+        return { guidance: guidance.color, queue: queue.color, weight: guidance.fontWeight };
+      }, theme);
+      assert.equal(colors.guidance, colors.queue, theme);
+      assert.equal(colors.weight, '400');
+    }
+    await page.evaluate(() => state.sessionUserEditor.render(state.data));
+    const drag = await page.evaluate(() => {
+      const editor = state.sessionUserEditor;
+      editor.beginDrag(editor.list.querySelector('.session-user-badge'));
+      editor.render(state.data);
+      const enabled = !editor.trash.disabled;
+      const slot = editor.trash.closest('.session-user-trash-slot'), box = slot.getBoundingClientRect();
+      const event = type => new DragEvent(type, { bubbles: true, dataTransfer: new DataTransfer(),
+        clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
+      editor.trash.dispatchEvent(event('dragover'));
+      const highlighted = editor.trash.classList.contains('drag-over');
+      editor.trash.dispatchEvent(new DragEvent('dragleave', { bubbles: true,
+        relatedTarget: editor.trash.querySelector('path'), clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 }));
+      const staysHighlighted = editor.trash.classList.contains('drag-over');
+      slot.dispatchEvent(new DragEvent('dragleave', { bubbles: true, clientX: box.right + 20, clientY: box.bottom + 20 }));
+      const clearsOutside = !editor.trash.classList.contains('drag-over');
+      editor.finishDrag();
+      return { enabled, highlighted, staysHighlighted, clearsOutside, released: editor.trash.disabled };
+    });
+    assert.deepEqual(drag, { enabled: true, highlighted: true, staysHighlighted: true, clearsOutside: true, released: true });
+    await page.locator('.session-user-badge').dragTo(page.locator('.session-user-trash-slot'));
+    await page.waitForFunction(() => !state.sessionUserEditor.busy);
+    assert.deepEqual((await host.api('/api/state')).session_users, [], 'Actual native drag/drop deletes only on drop');
+    assert.equal(await page.evaluate(() => Boolean(state.sessionUserEditor.drag)), false);
+  });
 }
+
+test('actual local-library HTTP search counts and renders unique videos across overlapping sources', {
+  skip: nativeLimit, timeout: 60000,
+}, async t => {
+  const { page, home, host } = await open(t, chromium);
+  const files = {
+    'gatcha_uids.json': { schema_version: 2, uids: ['42'], profiles: {} },
+    'gatcha_cache.json': { schema_version: 3, uids: { '42': [
+      { bvid: 'BV1xx411c7mD', title: 'Song original' },
+      { bvid: 'BV1z84y1p7oS', title: 'Song second' },
+    ] }, profiles: {} },
+    'gatcha_favlist.json': { schema_version: 2, items: [
+      { bvid: 'BV1xx411c7mD', title: 'Song original', fav_uid: '42', fav_folder_id: '10' },
+      { bvid: 'BV1xx411c7mD', title: 'Song original', fav_uid: '42', fav_folder_id: '20' },
+      { bvid: 'BV0000000001', title: 'Song favorite' },
+    ], folders: [] },
+  };
+  for (const [name, value] of Object.entries(files)) writeFileSync(path.join(home, name), JSON.stringify(value), 'utf8');
+  const first = await host.api('/api/gatcha/search?q=Song&limit=2'), second = await host.api('/api/gatcha/search?q=Song&limit=2&offset=2');
+  assert.equal(first.matched_count, 3);
+  assert.deepEqual(first.items.map(item => item.bvid), ['BV1xx411c7mD', 'BV1z84y1p7oS']);
+  assert.deepEqual(second.items.map(item => item.bvid), ['BV0000000001']);
+  assert.equal(second.has_more, false);
+  await page.locator('#work-rail-request').click();
+  await page.locator('[data-request-view="search"]').click();
+  await page.locator('[data-search-mode="local"]').click();
+  await page.locator('#search-query').fill('Song');
+  await page.locator('#search-button').click();
+  await page.waitForFunction(() => state.searchModeState.local.items.length === 3 && !state.searchModeState.local.loading);
+  assert.deepEqual(await page.evaluate(() => state.searchModeState.local.items.map(item => item.bvid)), ['BV1xx411c7mD', 'BV1z84y1p7oS', 'BV0000000001']);
+  assert.equal(await page.locator('#search-results .search-result-item').count(), 3);
+});

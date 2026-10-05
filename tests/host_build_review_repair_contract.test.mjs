@@ -739,7 +739,8 @@ assert.ok(contains('empty.className = "request-session-user-notice session-user-
 assert.ok(contains('empty.setAttribute("role", "status")', readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8')));
 assert.ok(!contains("class=\"queue-empty session-user-empty\"", readFileSync(path.join(ROOT, 'static/session-user-editor.js'), 'utf8')));
 assert.ok(!contains("background:", session_empty[0]));
-assert.ok(!contains("color:", session_empty[0]));
+assert.ok(contains("color: var(--muted)", session_empty[0]));
+assert.ok(contains("font-weight: 400", session_empty[0]));
 assert.deepEqual(this.translations["languages"]["zh"]["list.emptyHint"], "请前往“点歌”界面点歌。");
 assert.deepEqual(this.translations["languages"]["zh"]["list.emptyWithCurrentHint"], "可以继续前往“点歌”界面点下一首。");
 assert.deepEqual(this.translations["languages"]["en"]["list.emptyHint"], "Request songs from the Request workspace.");

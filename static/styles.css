@@ -923,6 +923,10 @@ h2 {
   white-space: nowrap;
 }
 
+html:not([data-host-layout="portrait"]) .current-title-text {
+  padding-block: 0.15em;
+}
+
 #current-title.is-two-line {
   white-space: normal;
 }
@@ -3596,6 +3600,13 @@ select:disabled {
   box-sizing: border-box;
   width: 100%;
   min-height: var(--session-user-row-height);
+  color: var(--muted);
+  font-weight: 400;
+  text-align: center;
+}
+
+:root:is([data-theme="dark"], [data-theme="blue"]) .session-user-list .session-user-empty {
+  color: var(--ink);
 }
 
 .session-user-badge {

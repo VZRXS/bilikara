@@ -5211,6 +5211,9 @@ function measurePersistentStage() {
           : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
   const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
+  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
+  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
+    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
   const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
   const titleAvailableWidth = titleNode?.clientWidth || 0;
   const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
@@ -5219,7 +5222,7 @@ function measurePersistentStage() {
   let titleNaturalWrappedHeight = titleLineHeight;
   if (!narrowShell && titleOverflowsSingleLine && titleNode && titleTextNode) {
     titleNode.classList.add("is-measuring-two-line");
-    titleNaturalWrappedHeight = titleTextNode.scrollHeight;
+    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
     titleNode.classList.remove("is-measuring-two-line");
   }
   const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;

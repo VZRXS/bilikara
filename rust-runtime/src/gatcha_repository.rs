@@ -1947,6 +1947,7 @@ fn search(
         .flat_map(|uid| array(&cache["uids"], uid).iter().cloned())
         .collect();
     values.extend(array(&favlist, "items").iter().cloned());
+    let mut seen = HashSet::new();
     let matches: Vec<_> = values
         .iter()
         .filter_map(Value::as_object)
@@ -1956,6 +1957,7 @@ fn search(
                 .to_lowercase()
                 .contains(&needle)
         })
+        .filter(|entry| first_text(entry, &["bvid"]).is_some_and(|bvid| seen.insert(bvid)))
         .collect();
     let matched_count = matches.len();
     let items: Vec<_> = matches
@@ -2810,6 +2812,62 @@ mod tests {
             request.operation,
             GatchaOperation::Candidate { .. }
         ));
+    }
+
+    #[test]
+    fn local_search_deduplicates_video_matches_before_counting_and_paging() {
+        let root = temp_root("search-overlapping-sources");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).unwrap();
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version":2,"uids":["42","43"],"profiles":{}}),
+        )
+        .unwrap();
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({"schema_version":3,"uids":{
+            "42":[{"bvid":"BV1xx411c7mD","title":"Song original","owner_name":"Original UP"},
+                {"bvid":"BV1xx411c7mD","title":"Song duplicate"},
+                {"bvid":"BV1z84y1p7oS","title":"Song second"}],
+            "43":[{"bvid":"BV1xx411c7mD","title":"Song overlap"}],
+            "999":[{"bvid":"BV0000000002","title":"Song unconfigured"}]},"profiles":{}}),
+        )
+        .unwrap();
+        atomic_write_json(
+            &paths.favlist_file,
+            &json!({"schema_version":2,"items":[
+            {"bvid":"BV1xx411c7mD","title":"Song renamed","fav_uid":"42","fav_folder_id":"10"},
+            {"bvid":"BV1xx411c7mD","title":"Song renamed","fav_uid":"42","fav_folder_id":"20"},
+            {"bvid":"BV0000000001","title":"Song favorite"},
+            {"bvid":"BV0000000002","title":"Unrelated"}],"folders":[]}),
+        )
+        .unwrap();
+        let before = [&paths.uid_file, &paths.cache_file, &paths.favlist_file]
+            .map(|path| fs::read(path).unwrap());
+        let first = search(&paths, "SONG", 0, 2).unwrap();
+        assert_eq!(first["matched_count"], 3);
+        assert_eq!(first["items"][0]["bvid"], "BV1xx411c7mD");
+        assert_eq!(first["items"][0]["owner_name"], "Original UP");
+        assert_eq!(first["items"][1]["bvid"], "BV1z84y1p7oS");
+        assert_eq!(first["next_offset"], 2);
+        assert_eq!(first["has_more"], true);
+        let second = search(&paths, "Song", 2, 2).unwrap();
+        assert_eq!(second["matched_count"], 3);
+        assert_eq!(second["items"].as_array().unwrap().len(), 1);
+        assert_eq!(second["items"][0]["bvid"], "BV0000000001");
+        assert_eq!(second["next_offset"], 3);
+        assert_eq!(second["has_more"], false);
+        let renamed = search(&paths, "renamed", 0, 80).unwrap();
+        assert_eq!(renamed["matched_count"], 1);
+        assert_eq!(renamed["items"][0]["fav_folder_id"], "10");
+        let after = [&paths.uid_file, &paths.cache_file, &paths.favlist_file]
+            .map(|path| fs::read(path).unwrap());
+        assert_eq!(
+            before, after,
+            "Search must not remove source/folder memberships"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

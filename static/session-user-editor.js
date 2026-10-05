@@ -31,6 +31,7 @@
       stage.querySelector("#session-user-trash")?.remove();
       stage.append(this.footer);
       this.trash = this.footer.querySelector(".session-user-trash");
+      this.trashSlot = this.trash.parentElement;
       this.all = this.footer.querySelector(".session-user-select-all");
       this.count = this.footer.querySelector(".session-user-selection-count");
       this.footer.addEventListener("click", event => {
@@ -57,12 +58,17 @@
       list.addEventListener("dragover", event => this.dragOver(event));
       list.addEventListener("drop", event => this.drop(event));
       list.addEventListener("dragend", () => this.finishDrag());
-      this.trash.addEventListener("dragover", event => {
+      this.trashSlot.addEventListener("dragover", event => {
         if (!this.drag || this.busy) return;
         event.preventDefault(); event.dataTransfer.dropEffect = "move"; this.trash.classList.add("drag-over");
       });
-      this.trash.addEventListener("dragleave", () => this.trash.classList.remove("drag-over"));
-      this.trash.addEventListener("drop", event => {
+      this.trashSlot.addEventListener("dragleave", event => {
+        // The fixed slot is the target; moving through the enlarged button or
+        // its SVG must not toggle feedback while the pointer remains inside.
+        if (this.trashSlot.contains(event.relatedTarget) || this.isOverTrash(event.clientX, event.clientY)) return;
+        this.trash.classList.remove("drag-over");
+      });
+      this.trashSlot.addEventListener("drop", event => {
         if (!this.drag) return;
         event.preventDefault(); event.stopPropagation();
         const drag = this.drag; this.finishDrag();
@@ -166,7 +172,7 @@
         button.setAttribute("aria-label", this.t(button.dataset.mode === "rename" ? "session.renameMode" : "session.selectMode"));
         button.title = button.getAttribute("aria-label");
       }
-      this.trash.disabled = this.busy || this.mode !== "select" || !this.selected.size;
+      this.trash.disabled = this.busy || (!this.drag && (this.mode !== "select" || !this.selected.size));
       this.trash.setAttribute("aria-label", this.t("session.deleteSelected"));
       this.trash.title = this.mode === "select" ? this.t("session.deleteSelected") : this.t("session.dragToDelete");
       if (this.busy) this.footer.setAttribute("aria-busy", "true"); else this.footer.removeAttribute("aria-busy");
@@ -397,8 +403,7 @@
       if (!this.drag && Math.hypot(event.clientX - this.pointer.x, event.clientY - this.pointer.y) < 6) return;
       if (!this.drag) this.beginDrag(this.pointer.badge);
       event.preventDefault();
-      const trashBox = this.trash.getBoundingClientRect();
-      this.pointer.overTrash = event.clientX >= trashBox.left && event.clientX <= trashBox.right && event.clientY >= trashBox.top && event.clientY <= trashBox.bottom;
+      this.pointer.overTrash = this.isOverTrash(event.clientX, event.clientY);
       this.trash.classList.toggle("drag-over", this.pointer.overTrash);
       const listBox = this.list.getBoundingClientRect();
       this.drag.overList = event.clientX >= listBox.left && event.clientX <= listBox.right && event.clientY >= listBox.top && event.clientY <= listBox.bottom;
@@ -406,6 +411,11 @@
       else this.clearIndicators();
       if (event.clientY < listBox.top + 24) this.list.scrollTop -= 12;
       else if (event.clientY > listBox.bottom - 24) this.list.scrollTop += 12;
+    }
+
+    isOverTrash(x, y) {
+      const box = this.trashSlot.getBoundingClientRect();
+      return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
     }
 
     pointerUp(event) {

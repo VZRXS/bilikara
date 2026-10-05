@@ -220,6 +220,13 @@ request can occur. Bilibili-backed Gatcha operations have a separate room-wide
 ten-minute budget, while control and bulk messages retain independent ordered
 queues so a long browse operation cannot block playback heartbeats.
 
+The DataChannel transfer limit is separate from the signaling Worker's 32 KiB
+signal limit. Queue, search and playback messages travel directly between Host
+and Remote; they are not relayed through that Worker. Chunking bounds individual
+frames and buffering, but does not reduce the total transferred bytes. Worker
+resource controls belong at room creation, connection and signaling admission;
+reducing the peer transfer limit is not a Worker traffic budget.
+
 Cover images are restricted to HTTPS Bilibili CDN URLs and rendered with
 `referrerpolicy="no-referrer"`. Authentication relies on WebRTC's encrypted
 channel and does not parse browser-specific certificate fingerprints, avoiding
