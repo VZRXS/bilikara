@@ -7,6 +7,7 @@ mod catalog;
 mod catalog_append;
 pub mod desktop;
 mod desktop_import;
+mod desktop_import_tool;
 #[cfg(windows)]
 pub(crate) mod desktop_process;
 mod diagnostics;

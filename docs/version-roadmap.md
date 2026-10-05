@@ -19,6 +19,7 @@ This roadmap records current product direction and ownership. It is not a build 
 - Current additions include native YouTube single-video quick requests and stable-ID session-user editing, with synchronized device names and immutable historical request labels. Shared components serve Host, local Remote and public Remote.
 - Preserve queue rotation, priority/manual placement, stale command rejection, archived-session export, authentication and data recovery. Stabilize playback recovery, fullscreen and audience-video geometry against the released desktop baseline; shared user editors retain keyboard focus, bounded geometry and entry/exit motion across navigation and window resizing.
 - Updates include the external updater's readiness acknowledgement, recovery and restart-failure reporting. Validate actual installed packages; describe the one-time full-package transition from published older versions honestly.
+- A separate desktop old-data importer reuses the Rust converter, detects known bilikara locations only on explicit invocation, protects existing native records and retains backups/recovery. Normal startup and storage defaults remain unchanged; native platform/package acceptance still applies.
 - Preview 3 remains unpublished until the development artifacts are tested and release is explicitly approved. Passing CI does not establish venue audio/video, physical dual-screen behavior or every network/provider condition.
 
 ### Remaining Python and retirement

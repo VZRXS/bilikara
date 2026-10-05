@@ -521,7 +521,8 @@ New installations do not create `.bilikara-desktop-rust-preview`. The versioned
 before startup; old preview markers are accepted only for compatibility.
 `desktop-import.pending` exists only during explicit import. An interrupted
 import is rejected, and successful import removes it. Legacy split-file records
-still require explicit read-only import into a new destination.
+require explicit conversion; neither the ordinary launcher nor updater silently
+imports them.
 
 Keep the installation in a writable directory and move its complete `runtime`
 directory with it. Read-only installations fail rather than falling back to
@@ -552,6 +553,49 @@ known legacy data without native records produces an explicit import instruction
 Windows starts independently in its portable directory; importing older records
 is optional. The installer does not silently merge, overwrite or delete legacy files.
 
+### Separate desktop import tool
+
+Release assembly adds `导入旧数据.cmd` beside the Windows launcher,
+`导入旧数据.command` beside the macOS app in the archive wrapper, and
+`导入旧数据.sh` beside the local Linux launcher. Each invokes the existing shell
+with `--import-legacy`. Keep the macOS command beside the app while using it;
+it does not mutate the signed app. The mode uses native dialogs without a
+WebView, normal Host, updater, tool acquisition or media initialization.
+
+Only this explicitly opened mode detects the current installation's `runtime`,
+Windows Local/Roaming AppData `bilikara` roots, macOS Application Support and
+known legacy apps in `/Applications` or `~/Applications`, and Linux's existing
+XDG/application-home root. It does not search unrelated directories or choose
+the newest library silently. Multiple candidates require source confirmation;
+the folder picker also accepts an old application home, `runtime`, its `data`
+child or a legacy macOS app. Native-format sources need no old-format conversion.
+
+The packaged Host exposes two offline, one-shot entries:
+`--inspect-legacy-import` reports paths/status without writing; `--import-only`
+converts the confirmed `--import-from` source into `--data-dir` (otherwise the
+normal native root). Both exit before networking, media configuration or AppState
+startup. The shell supervises each process with bounded output and a 120-second
+deadline. `npm run test:native-import` executes current host-native Cargo output;
+CI also runs native-feature reader, locking and interruption regressions.
+
+Conversion stages and validates a complete checkpoint before switching the
+directory. An in-place conversion moves the old `data` into a private sibling
+`.bilikara-import-<id>/legacy/data` backup; an external source stays untouched.
+Existing native checkpoints (including malformed ones), unknown nonempty data
+and a different legacy destination are protected from overwrite/merge.
+Relevant legacy files are checked again for concurrent changes before switching.
+A sibling `.<data-name>.bilikara-import.json` guard and lock serialize explicit
+imports and block normal startup during an unfinished switch. Reopening the tool
+recovers a validated completed checkpoint or rolls back an unambiguous backup;
+conflicting/malformed recovery records preserve all files and fail explicitly.
+POSIX directory changes are flushed using the existing storage helper. Backups
+and unsuccessful private staging are retained for recovery, not recursively
+deleted. These are process-interruption guarantees, not foreign-platform or
+power-loss qualification. User records/settings and archived sessions reuse the
+existing converter; device authorization is renewed and media is re-cached.
+
+### Advanced explicit import into a separate root
+
 Choose a **new, nonexisting** destination with an existing parent. It cannot
 overlap the legacy source. From the installed backend's directory:
 
@@ -569,12 +613,14 @@ only, preserves supported records/settings and uses the existing continue/new
 session choice. Media is re-cached through fresh native identities. Subsequent
 launches reopen native records without reimporting, even if the old source has
 changed or disappeared. No login, catalog upload or automatic refresh is caused
-by import. More elaborate automatic upgrade selection remains separate work.
+by import. This existing entry still imports read-only into a separate root and
+then starts the Host; it does not perform the import tool's in-place switch.
 
 ### Optional Windows import from an earlier installation
 
-Normal startup does not require importing AppData. If older records should be
-retained, choose their location explicitly. For an old
+Normal startup does not require importing AppData. Prefer the separate import
+tool for automatic detection and confirmation. The existing advanced override
+workflow remains available. For an old
 `%LOCALAPPDATA%\bilikara` root, open PowerShell in a **new extracted installation**
 whose `runtime/data` does not yet exist:
 

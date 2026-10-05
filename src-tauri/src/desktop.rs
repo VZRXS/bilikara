@@ -6,7 +6,16 @@ use crate::{
 use std::path::PathBuf;
 use tauri::Manager;
 
+// Embed the shared assets/configuration once for both ordinary and tool modes.
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 pub(crate) fn run() {
+    if std::env::args().skip(1).any(|arg| arg == "--import-legacy") {
+        crate::desktop_import::run(context());
+        return;
+    }
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -25,7 +34,7 @@ pub(crate) fn run() {
     desktop_diagnostics::install_desktop_panic_hook(startup_log.as_ref());
     desktop_diagnostics::install_runtime_desktop_diagnostics(startup_log.as_ref());
 
-    let context = tauri::generate_context!();
+    let context = context();
     #[cfg(windows)]
     let context = {
         let mut context = context;

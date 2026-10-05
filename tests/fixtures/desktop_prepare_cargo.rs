@@ -58,6 +58,10 @@ fn main() {
         return;
     }
     let args: Vec<String> = env::args().skip(1).collect();
+    if args == ["--import-legacy"] {
+        log(&args);
+        return;
+    }
     if args.first().is_some_and(|a| a == "exec") {
         log(&args);
         assert_eq!(&args[..4], ["exec", "--", "tauri", "build"]);

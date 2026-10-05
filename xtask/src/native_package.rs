@@ -163,6 +163,24 @@ pub(super) fn inspect(executable: &Path, expected: &str, platform: Platform) -> 
         if platform.os == Os::Windows && package.join("runtime").is_dir() {
             names.remove(std::ffi::OsStr::new("runtime"));
         }
+        // Published earlier native packages remain valid. New packages may
+        // include only the exact offline import launcher, not arbitrary code.
+        let (launcher, content) = crate::release::import_launcher(platform.os);
+        if names.remove(std::ffi::OsStr::new(launcher)) {
+            let path = package.join(launcher);
+            require(
+                fs::symlink_metadata(&path)?.is_file() && fs::read(&path)? == content.as_bytes(),
+                "Invalid desktop import launcher",
+            )?;
+            #[cfg(unix)]
+            if platform.os != Os::Windows {
+                use std::os::unix::fs::PermissionsExt;
+                require(
+                    fs::metadata(path)?.permissions().mode() & 0o111 != 0,
+                    "Desktop import launcher is not executable",
+                )?;
+            }
+        }
         let allowed = [
             "_internal".into(),
             "license".into(),

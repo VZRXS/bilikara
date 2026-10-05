@@ -68,7 +68,7 @@ fn object(root: &Path, relative: &str) -> Result<Option<Value>, String> {
         .transpose()
 }
 
-struct Import {
+pub(super) struct Import {
     seed: AppStateSeed,
     cache: preferences::CachePolicy,
     cookie: Option<String>,
@@ -77,7 +77,7 @@ struct Import {
 }
 
 impl Import {
-    fn read(source: &Path, configured_cookie: &str) -> Result<Self, String> {
+    pub(super) fn read(source: &Path, configured_cookie: &str) -> Result<Self, String> {
         let data = source.join("data");
         if !fs::symlink_metadata(&data).is_ok_and(|m| m.is_dir()) {
             return Err(failure("data directory"));
@@ -331,7 +331,7 @@ impl Import {
         })
     }
 
-    fn publish(self, directory: &Path) -> Result<(), String> {
+    pub(super) fn publish(self, directory: &Path) -> Result<(), String> {
         let (mut storage, loaded) = NativeHostStorage::open(directory).map_err(|e| e.message)?;
         if loaded.is_some() {
             return Err(failure("destination already initialized"));
@@ -448,12 +448,7 @@ pub(super) fn restore(
             );
         }
         let directory = desktop::preview_root(destination)?;
-        let (_storage, seed) = NativeHostStorage::open(&directory).map_err(|e| e.message)?;
-        app_state::prepare_import(seed.ok_or_else(|| failure("existing destination checkpoint"))?)?;
-        preferences::load(&directory, true)
-            .map_err(|_| failure("existing destination preferences"))?;
-        super::login::load_desktop(&directory)
-            .map_err(|_| failure("existing destination credentials"))?;
+        validate_native(&directory)?;
         return Ok(());
     }
     if !fs::symlink_metadata(source).is_ok_and(|m| m.is_dir()) {
@@ -489,6 +484,78 @@ pub(super) fn restore(
         .create(&directory)
         .map_err(|_| failure("new destination"))?;
     import.publish(&directory)
+}
+
+pub(super) fn validate_native(directory: &Path) -> Result<(), String> {
+    validate_native_inner(directory, false)
+}
+
+pub(super) fn validate_for_tool(directory: &Path) -> Result<(), String> {
+    validate_native_inner(directory, true)
+}
+
+fn validate_native_inner(directory: &Path, offline_import: bool) -> Result<(), String> {
+    if !fs::symlink_metadata(directory).is_ok_and(|m| m.is_dir())
+        || directory.join("desktop-import.pending").exists()
+    {
+        return Err(failure("incomplete native destination"));
+    }
+    let (_storage, seed) = if offline_import {
+        NativeHostStorage::open_for_import(directory)
+    } else {
+        NativeHostStorage::open(directory)
+    }
+    .map_err(|e| e.message)?;
+    app_state::prepare_import(seed.ok_or_else(|| failure("existing destination checkpoint"))?)?;
+    preferences::load(directory, true).map_err(|_| failure("existing destination preferences"))?;
+    super::login::load_desktop(directory)
+        .map_err(|_| failure("existing destination credentials"))?;
+    Ok(())
+}
+
+// Detect a changing old Host without reading media caches or unrelated files.
+pub(super) fn source_stamp(source: &Path) -> Result<Vec<u8>, String> {
+    use sha2::{Digest, Sha256};
+    let mut names = vec![
+        "data/player_state.json".to_owned(),
+        "data/history.json".into(),
+        "data/session_users.json".into(),
+        "data/playlist_backup.json".into(),
+        "data/state.json".into(),
+        "data/cache_policy.json".into(),
+        "tools/bbdown/BBDown.data".into(),
+    ];
+    names.extend(LIBRARY_FILES.iter().map(|name| format!("data/{name}")));
+    let archives = source.join("data/played_sessions");
+    if archives.exists() {
+        if !fs::symlink_metadata(&archives).is_ok_and(|m| m.is_dir()) {
+            return Err(failure("played_sessions"));
+        }
+        for entry in fs::read_dir(archives).map_err(|_| failure("played_sessions"))? {
+            let name = entry
+                .map_err(|_| failure("played_sessions"))?
+                .file_name()
+                .into_string()
+                .map_err(|_| failure("archive filename"))?;
+            if name.starts_with("played-") && name.ends_with(".json") {
+                names.push(format!("data/played_sessions/{name}"));
+            }
+        }
+    }
+    names.sort();
+    let mut hash = Sha256::new();
+    for name in names {
+        hash.update(name.as_bytes());
+        match read(source, Path::new(&name), None)? {
+            Some(bytes) => {
+                hash.update([1]);
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+            None => hash.update([0]),
+        }
+    }
+    Ok(hash.finalize().to_vec())
 }
 
 #[cfg(test)]

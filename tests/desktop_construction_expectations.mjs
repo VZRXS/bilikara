@@ -162,7 +162,13 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
     }
     text(`${licenses}/bbdown-source.txt`, `${notice}- Upstream repository: https://github.com/nilaoda/BBDown\n- License: MIT; see BBDown-LICENSE.txt\n`);
   }
-  if (shell && !macosApp) copy(fixture, `bilikara-desktop${suffix}`);
+  if (shell && !macosApp) {
+    copy(fixture, `bilikara-desktop${suffix}`);
+    const launcher = process.platform === 'win32' ? '导入旧数据.cmd' : '导入旧数据.sh';
+    text(launcher, process.platform === 'win32' ? '@echo off\r\n"%~dp0bilikara-desktop.exe" --import-legacy\r\n'
+      : '#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$here/bilikara-desktop" --import-legacy\n');
+    records.get(launcher).mode = process.platform === 'win32' ? fileMode : 0o755;
+  }
   if (macosApp) put('Contents/_CodeSignature/CodeResources', { kind: 'file', mode: fileMode, signature: true });
   if (!macosApp) return compliance ? { backend: records } : records;
   const desktop = new Map([

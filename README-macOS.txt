@@ -13,7 +13,12 @@ bilikara-desktop.app
 
 从 Preview 2 升级时，替换完整 App，保留 ~/Library/Application Support/bilikara/。
 这个文件夹包含歌单和设置，不只是 WebView 缓存。
-Preview 1 及更早版本的旧格式导入另行完善，请先保留旧软件和数据备份。
+从 Preview 1 及更早版本升级时，先关闭旧软件和新版，保留备份。
+在完整解压目录中双击“导入旧数据.command”（与 bilikara-desktop.app 放在一起），
+工具会弹出窗口，确认自动找到的旧数据位置后点击“导入”。
+没有找到时，在弹出的系统文件夹选择窗口中选择旧版 runtime 或 data 文件夹；
+需要换位置时点击“选择其他位置”。无需编辑脚本或在终端输入、拖拽路径。
+导入完成后再正常打开新版；已有新版记录不会被覆盖或合并。
 下载完整包：
 https://github.com/VZRXS/bilikara/releases
 

@@ -127,6 +127,13 @@ jobs:
           cargo build --release --locked
           cd ..
 
+      - name: Verify offline desktop data import
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked --target host-tuple --lib native_host::desktop_import
+          npm run test:native-import
+
       - name: Verify frontend and native shell test tooling
         shell: bash
         run: |
@@ -440,6 +447,8 @@ jobs:
           test ! -e dist_release/bilikara.app
           test -s dist_release/license/LICENSE
           cp README-macOS.txt dist_release/README-macOS.txt
+          cp 'dist/导入旧数据.command' 'dist_release/导入旧数据.command'
+          test -x 'dist_release/导入旧数据.command'
           test -s dist_release/README-macOS.txt
           node scripts/check_macos_bundle_readme.mjs dist_release/README-macOS.txt
 
@@ -490,7 +499,8 @@ jobs:
             }
           }
           $entries = @(Get-ChildItem -LiteralPath $package | ForEach-Object { $_.Name } | Sort-Object)
-          if (($entries -join ',') -ne '_internal,bilikara-desktop.exe,license') {
+          $expectedEntries = @('_internal', 'bilikara-desktop.exe', 'license', '导入旧数据.cmd')
+          if ($entries.Count -ne $expectedEntries.Count -or @($expectedEntries | Where-Object { $_ -notin $entries }).Count -ne 0) {
             throw "Unexpected outer package entries: $entries"
           }
           foreach ($buildOnly in @('_internal/preview', '_internal/libav-smoke.ps1', '_internal/libav-smoke-result.json', '_internal/vendor/bilikara_media_libav_test.dll')) {
@@ -507,6 +517,8 @@ jobs:
           mkdir -p test_extract
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
           test -s test_extract/dist_release/README-macOS.txt
+          test -x 'test_extract/dist_release/导入旧数据.command'
+          cmp 'dist/导入旧数据.command' 'test_extract/dist_release/导入旧数据.command'
           test ! -e test_extract/dist_release/bilikara.app
           test -L test_extract/dist_release/license
           test "$(readlink test_extract/dist_release/license)" = bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license

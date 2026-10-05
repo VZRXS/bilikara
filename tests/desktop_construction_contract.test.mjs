@@ -160,6 +160,27 @@ release('split CI assembly reuses the shell without a hidden Cargo or npm invoca
   assert.equal(commands.filter(a => a[0] === 'exec').length, 1); assertInventory(expected, inventory(final));
 });
 
+release('import launcher uses the assembled shell beside it from an unrelated cwd', async c => {
+  const { env } = await c.checkRelease();
+  const filename = process.platform === 'win32' ? '导入旧数据.cmd' : process.platform === 'darwin' ? '导入旧数据.command' : '导入旧数据.sh';
+  const directory = process.platform === 'darwin' ? c.dist : c.product;
+  const launcher = path.join(directory, filename);
+  const target = process.platform === 'win32' ? 'bilikara-desktop.exe' : process.platform === 'darwin' ? 'bilikara-desktop.app/Contents/MacOS/bilikara' : 'bilikara-desktop';
+  const expected = process.platform === 'win32' ? '@echo off\r\n"%~dp0bilikara-desktop.exe" --import-legacy\r\n'
+    : `#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$here/${target}" --import-legacy\n`;
+  assert.equal(readFileSync(launcher, 'utf8'), expected);
+  if (process.platform !== 'win32') assert.equal(inventory(directory).get(filename).mode, 0o755);
+  writeFileSync(env.XTASK_FIXTURE_LOG, '');
+  // cmd.exe parses its own command line, not CRT backslash-escaped quotes.
+  // Keep this opt-in confined to the native batch launcher; ordinary program
+  // argument vectors retain Node's default quoting and process-tree cleanup.
+  const result = process.platform === 'win32'
+    ? await runNative(process.env.ComSpec, ['/d', '/c', `call "${launcher}"`], env, 30_000, c.directory, 'utf8', undefined, true)
+    : await runNative('/bin/sh', [launcher], env, 30_000, c.directory);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(env.XTASK_FIXTURE_LOG, 'utf8').trim().split('\n').map(JSON.parse), [['--import-legacy']]);
+});
+
 release('complete command succeeds on a controlled PATH without any Python executable', async c => {
   const { commands } = await c.checkRelease({ PATH: c.nativeOnlyPath() });
   assert.equal(commands.filter(a => a[0] === 'build').length, 1);

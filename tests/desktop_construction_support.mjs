@@ -19,9 +19,9 @@ function assertCommands(actual, expected) {
   assert.deepEqual(normalize(actual), normalize(expected));
 }
 
-export function runNative(program, args, env = process.env, timeout = 120_000, cwd = root, encoding = 'utf8', input) {
+export function runNative(program, args, env = process.env, timeout = 120_000, cwd = root, encoding = 'utf8', input, windowsVerbatimArguments = false) {
   return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true });
+    const child = spawn(program, args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true, windowsVerbatimArguments });
     const stdout = [], stderr = []; let size = 0, failure, cleanupTimer;
     function terminate(error) {
       if (failure) return;

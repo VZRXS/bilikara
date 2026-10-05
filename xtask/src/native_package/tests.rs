@@ -279,6 +279,40 @@ fn missing_resources_notices_updater_and_top_level_fail() {
         assert!(fixture.inspect().is_err());
     }
 }
+
+#[test]
+fn earlier_native_layout_and_exact_optional_import_launcher_are_accepted() {
+    for (os, magic, name, content) in [
+        (
+            "windows",
+            b"MZxx".as_slice(),
+            "导入旧数据.cmd",
+            "@echo off\r\n\"%~dp0bilikara-desktop.exe\" --import-legacy\r\n",
+        ),
+        (
+            "linux",
+            b"\x7fELF".as_slice(),
+            "导入旧数据.sh",
+            "#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$here/bilikara-desktop\" --import-legacy\n",
+        ),
+    ] {
+        let platform = Platform::new(os, "x86_64").unwrap();
+        let fixture = Fixture::layout(platform, false, magic, "valid");
+        fixture.inspect().unwrap();
+        let file = package_root(&fixture.executable).join(name);
+        fs::write(&file, content).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fixture.inspect().unwrap();
+        fs::write(&file, format!("{content}\necho unexpected mutation\n")).unwrap();
+        assert!(fixture.inspect().is_err());
+        fs::remove_file(&file).unwrap();
+        fixture.inspect().unwrap();
+    }
+}
 #[test]
 fn forbidden_payloads_multiple_vendor_and_user_data_exemption() {
     let fixture = Fixture::new("valid");

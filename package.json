@@ -23,6 +23,7 @@
     "test:media": "node media-libav/test_comparison.mjs",
     "test:native-host": "node --test tests/native_host_business.test.mjs tests/native_host_sources.test.mjs tests/native_host_recheck.test.mjs",
     "test:native-host-entry": "node --test tests/native_host_entry.test.mjs",
+    "test:native-import": "node --test tests/desktop_import.test.mjs",
     "test:playlist-stress": "node tests/run_playlist_stress.mjs",
     "test:playlist-entry": "node --test tests/native_playlist_entry.test.mjs",
     "test:native-http": "node --test tests/native_host_http.test.mjs",

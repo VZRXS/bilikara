@@ -216,6 +216,7 @@ pub fn assemble(config: &Config, dist: &Path, shell: &Path) -> Result<PathBuf> {
         let desktop = clean_product(config, dist, "bilikara-desktop.app", &[&backend, &shell])?;
         macos::copy_app(&shell, &desktop)?;
         macos::embed_backend(&backend, &desktop)?;
+        write_import_launcher(config, dist)?;
         Ok(desktop)
     } else {
         libav::binary_imports(&shell, config.platform)?;
@@ -225,6 +226,45 @@ pub fn assemble(config: &Config, dist: &Path, shell: &Path) -> Result<PathBuf> {
         let launcher = backend.join(config.platform.executable("bilikara-desktop"));
         reject_links(&launcher, &config.root)?;
         files::copy(&shell, &launcher)?;
+        write_import_launcher(config, &backend)?;
         Ok(backend)
+    }
+}
+
+// A small user entry to the same signed/packaged shell; no duplicate importer.
+fn write_import_launcher(config: &Config, directory: &Path) -> Result<()> {
+    let (name, bytes) = import_launcher(config.platform.os);
+    let path = directory.join(name);
+    reject_links(&path, &config.root)?;
+    fs::write(&path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            &path,
+            fs::Permissions::from_mode(if config.platform.os == Os::Windows {
+                0o644
+            } else {
+                0o755
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn import_launcher(os: Os) -> (&'static str, &'static str) {
+    match os {
+        Os::Windows => (
+            "导入旧数据.cmd",
+            "@echo off\r\n\"%~dp0bilikara-desktop.exe\" --import-legacy\r\n",
+        ),
+        Os::Macos => (
+            "导入旧数据.command",
+            "#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$here/bilikara-desktop.app/Contents/MacOS/bilikara\" --import-legacy\n",
+        ),
+        Os::Linux => (
+            "导入旧数据.sh",
+            "#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$here/bilikara-desktop\" --import-legacy\n",
+        ),
     }
 }

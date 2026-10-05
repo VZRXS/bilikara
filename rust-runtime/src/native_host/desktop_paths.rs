@@ -102,6 +102,39 @@ pub(super) fn data_root(
     platform: &str,
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Result<PathBuf, String> {
+    let implicit = explicit.is_none()
+        && [
+            "BILIKARA_NATIVE_DATA_DIR",
+            "BILIKARA_DESKTOP_RUST_PREVIEW_DIR",
+            "BILIKARA_HOME",
+        ]
+        .iter()
+        .all(|key| env(key).is_none_or(|v| v.is_empty()));
+    let data = import_data_root(explicit, executable, platform, &env)?;
+    let base = data.parent().ok_or("Missing data parent")?;
+    if implicit
+        && platform != "windows"
+        && !data.join("host-state.json").is_file()
+        && !data.join(MARKER).is_file()
+        && (base.join("data").exists() || base.join("state.json").exists())
+    {
+        return Err(format!(
+            "Legacy desktop records found at {}. Use the desktop import tool (--import-legacy), or choose an explicit import: bilikara-desktop-host --import-from \"{}\" --data-dir ABSOLUTE_NEW_DIRECTORY. The destination must be outside the source; the source will remain unchanged.",
+            base.display(),
+            base.display(),
+        ));
+    }
+    Ok(data)
+}
+
+// Path selection is shared by ordinary startup and the explicit offline tool.
+// Only the latter may inspect known external roots, never silently reopen them.
+pub(in crate::native_host) fn import_data_root(
+    explicit: Option<PathBuf>,
+    executable: &Path,
+    platform: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, String> {
     let selected = explicit.or_else(|| {
         [
             "BILIKARA_NATIVE_DATA_DIR",
@@ -144,19 +177,7 @@ pub(super) fn data_root(
     if !base.is_absolute() {
         return Err("Platform application data directory must be absolute".into());
     }
-    let data = compatible_data_root(&base);
-    // macOS/Linux retain their system data roots and explicit legacy import.
-    if !data.join("host-state.json").is_file()
-        && !data.join(MARKER).is_file()
-        && (base.join("data").exists() || base.join("state.json").exists())
-    {
-        return Err(format!(
-            "Legacy desktop records found at {}. Choose an explicit import: bilikara-desktop-host --import-from \"{}\" --data-dir ABSOLUTE_NEW_DIRECTORY. The destination must be outside the source; the source will remain unchanged.",
-            base.display(),
-            base.display(),
-        ));
-    }
-    Ok(data)
+    Ok(compatible_data_root(&base))
 }
 
 // Existing native previews remain reopenable without moving or merging user

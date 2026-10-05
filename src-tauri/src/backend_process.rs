@@ -131,6 +131,12 @@ fn resolve_backend_command() -> Result<BackendCommandResolution, PackagedBackend
     resolve_backend_command_from(&current_exe, current_dir, packaged_macos)
 }
 
+pub(crate) fn import_tool_backend() -> Result<PathBuf, String> {
+    resolve_backend_command()
+        .map(|resolved| PathBuf::from(resolved.command))
+        .map_err(|_| "找不到随包的 Rust 后端，请完整解压 bilikara 后再运行导入工具。".into())
+}
+
 // Require the native capability handoff without logging its contents.
 fn ready_navigation(ready: &ReadyEvent) -> Option<(String, Option<String>)> {
     let address = parse_local_http_url(&ready.base_url)?;

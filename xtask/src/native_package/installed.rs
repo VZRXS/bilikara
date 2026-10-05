@@ -81,6 +81,76 @@ fn installed_explicit_import_preserves_source_and_does_not_reimport() {
         "malformed old records must not be read again"
     );
 }
+
+#[test]
+#[ignore = "requires an actual release Host: set BILIKARA_TEST_NATIVE_PACKAGE and run --ignored"]
+fn installed_offline_detection_conversion_and_native_protection() {
+    let install = installation();
+    let home = install.home.path();
+    let environment = isolated_environment(home).unwrap();
+    let source = match Platform::current().unwrap().os {
+        Os::Windows => {
+            PathBuf::from(&environment[&OsString::from("LOCALAPPDATA")]).join("bilikara")
+        }
+        Os::Macos => home.join("Library/Application Support/bilikara"),
+        Os::Linux => PathBuf::from(&environment[&OsString::from("XDG_DATA_HOME")]).join("bilikara"),
+    };
+    let record = legacy(&source);
+    let original = fs::read(&record).unwrap();
+    let offline = |arguments: &[OsString]| {
+        let (mut child, _) = Process::spawn(&install.executable, home, arguments).unwrap();
+        let output = child.output(Duration::from_secs(30)).unwrap();
+        assert!(
+            output.status.success(),
+            "Offline installed import failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let detected = offline(&["--inspect-legacy-import".into()]);
+    assert_eq!(detected["schema_version"], 1);
+    assert_eq!(detected["pending"], false);
+    assert!(
+        detected["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| Path::new(p.as_str().unwrap()).canonicalize().unwrap()
+                == source.canonicalize().unwrap())
+    );
+    assert_eq!(fs::read(&record).unwrap(), original);
+    let destination = PathBuf::from(detected["destination"].as_str().unwrap());
+    let mut arguments = vec!["--import-only".into()];
+    arguments.extend(args(&destination, Some(&source)));
+    let imported = offline(&arguments);
+    assert_eq!(imported["completed"], true);
+    let bytes = fs::read(destination.join("host-state.json")).unwrap();
+    if let Some(backup) = imported["backup"].as_str() {
+        assert_eq!(
+            fs::read(Path::new(backup).join("player_state.json")).unwrap(),
+            original
+        );
+    } else {
+        assert_eq!(fs::read(&record).unwrap(), original);
+    }
+    let other = home.join("other old library 空");
+    legacy(&other);
+    let mut retry = vec!["--import-only".into()];
+    retry.extend(args(&destination, Some(&other)));
+    fail(&install, &retry, "protected");
+    assert_eq!(
+        fs::read(destination.join("host-state.json")).unwrap(),
+        bytes
+    );
+    let mut host =
+        RunningHost::start(&install.executable, home, &args(&destination, None)).unwrap();
+    assert_eq!(
+        host.api("/api/state", None).unwrap()["player_settings"]["volume_percent"],
+        43
+    );
+    host.close().unwrap();
+}
 #[test]
 #[ignore = "requires an actual release Host: set BILIKARA_TEST_NATIVE_PACKAGE and run --ignored"]
 fn installed_platform_legacy_policy_and_explicit_import() {
