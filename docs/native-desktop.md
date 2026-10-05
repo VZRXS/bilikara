@@ -439,6 +439,16 @@ in `runtime/logs/`, WebView browser storage in `runtime/webview/`, and window
 preferences in `runtime/main-window-geometry-v1.json`. This directory is created on use, never shipped in an update
 archive. macOS retains the system user-data directory outside the signed app.
 
+The ordinary Host window has a 700 × 600 logical-pixel minimum. Shorter saved
+heights restore at the current minimum without discarding other preferences;
+the height floor yields to a smaller monitor work area after frame/DPI conversion.
+Fullscreen and audience screens use their existing display geometry. Passive
+right-center feedback briefly shows acknowledged playback, seeking, volume/mute,
+effective audio/video delay, delay locking and pitch changes, using the existing
+presentation relay for the audience window. It retains at most two recent
+categories, coalesces repeated adjustments, expires after two seconds and never
+becomes an interactive control. User operations keep the Host's ordinary toasts.
+
 Desktop audience video geometry is recorded as `presentation_video_geometry` in
 the shell's `desktop-startup.log` (Windows: `runtime/logs/desktop-startup.log`).
 Records contain the presentation generation and per-window video sequence,
@@ -526,8 +536,11 @@ New installations do not create `.bilikara-desktop-rust-preview`. The versioned
 before startup; old preview markers are accepted only for compatibility.
 `desktop-import.pending` exists only during explicit import. An interrupted
 import is rejected, and successful import removes it. Legacy split-file records
-require explicit conversion; neither the ordinary launcher nor updater silently
-imports them.
+require confirmed conversion. On first initialization the desktop shell checks
+known locations before launching the Host and asks if a legacy candidate exists;
+neither startup nor the updater silently imports them. Existing native checkpoints
+bypass external discovery, and no candidate produces no dialog. Shell logs and
+WebView directories do not count as initialized application data.
 
 Keep the installation in a writable directory and move its complete `runtime`
 directory with it. Read-only installations fail rather than falling back to
@@ -558,7 +571,7 @@ known legacy data without native records produces an explicit import instruction
 Windows starts independently in its portable directory; importing older records
 is optional. The installer does not silently merge, overwrite or delete legacy files.
 
-### Separate desktop import tool
+### First-start detection and separate desktop import tool
 
 Release assembly adds `导入旧数据.cmd` beside the Windows launcher,
 `导入旧数据.command` beside the macOS app in the archive wrapper, and
@@ -567,18 +580,25 @@ with `--import-legacy`. Keep the macOS command beside the app while using it;
 it does not mutate the signed app. The mode uses native dialogs without a
 WebView, normal Host, updater, tool acquisition or media initialization.
 
-Only this explicitly opened mode detects the current installation's `runtime`,
+First-start inspection and the explicitly opened tool detect the current installation's `runtime`,
 Windows Local/Roaming AppData `bilikara` roots, macOS Application Support and
 known legacy apps in `/Applications` or `~/Applications`, and Linux's existing
 XDG/application-home root. It does not search unrelated directories or choose
 the newest library silently. Multiple candidates require source confirmation;
 the folder picker also accepts an old application home, `runtime`, its `data`
-child or a legacy macOS app. Native-format sources need no old-format conversion.
+child or a legacy macOS app. Native-format sources need no old-format conversion;
+published Preview 2 follows the platform preservation instructions below.
+First-start discovery checks fixed record names in known roots, without recursive
+searches, media initialization or cache enumeration. Explicit data overrides keep
+their isolated startup behavior. Cancellation leaves data uninitialized so the
+next launch can offer import again.
 
-The packaged Host exposes two offline, one-shot entries:
-`--inspect-legacy-import` reports paths/status without writing; `--import-only`
+The packaged Host exposes offline, one-shot entries:
+`--inspect-legacy-import` reports paths/status without writing;
+`--inspect-first-start` additionally bypasses candidate discovery for native,
+unknown or interrupted destinations. `--import-only`
 converts the confirmed `--import-from` source into `--data-dir` (otherwise the
-normal native root). Both exit before networking, media configuration or AppState
+normal native root). All exit before networking, media configuration or AppState
 startup. The shell supervises each process with bounded output and a 120-second
 deadline. `npm run test:native-import` executes current host-native Cargo output;
 CI also runs native-feature reader, locking and interruption regressions.
@@ -586,8 +606,13 @@ CI also runs native-feature reader, locking and interruption regressions.
 Conversion stages and validates a complete checkpoint before switching the
 directory. An in-place conversion moves the old `data` into a private sibling
 `.bilikara-import-<id>/legacy/data` backup; an external source stays untouched.
-Existing native checkpoints (including malformed ones), unknown nonempty data
-and a different legacy destination are protected from overwrite/merge.
+Existing native checkpoints, unknown nonempty data and a different legacy
+destination are protected by default. The separate tool can import after first
+launch: a second explicit confirmation permits `--replace-native`, which strictly
+validates and locks current native data, backs up the complete directory, then
+replaces it with converted legacy records without merging. A running Host or
+malformed native checkpoint still rejects replacement. The automatic first-start
+flow never requests this permission.
 Relevant legacy files are checked again for concurrent changes before switching.
 A sibling `.<data-name>.bilikara-import.json` guard and lock serialize explicit
 imports and block normal startup during an unfinished switch. Reopening the tool
