@@ -231,8 +231,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Explicit form geometry avoids Safari's compact native select rendering. */
-:root :is(.confirm-source, .confirm-page-size, .history-export-source, .history-export-page-size,
-  .cache-quality-select) {
+:root :is(.confirm-source, .confirm-page-size, .history-export-source, .history-export-page-size) {
   appearance: none;
   -webkit-appearance: none;
   width: 100%;
@@ -250,7 +249,6 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   font-weight: 400;
   line-height: normal;
 }
-:root .cache-quality-select { border-radius: 999px; }
 :root .session-user-rename-panel input {
   height: 44px;
   min-height: 44px;

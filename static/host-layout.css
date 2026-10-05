@@ -524,7 +524,7 @@ html[data-host-layout="portrait"] .android-my-page {
 .android-my-page h2 { margin: 0 0 16px; font-size: 24px; }
 
 /* Single random pick, with the same metadata as the search feed. */
-html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card { width: min(100%, 360px); text-align: left; }
+html[data-native-host="true"] #gatcha-candidate-card { width: min(100%, 360px); min-width: 0; text-align: left; }
 html[data-native-host="true"][data-host-layout="portrait"] #gatcha-candidate-card { width: min(100%, 280px); }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-item { padding: 0 0 8px; gap: 6px; }
 html[data-native-host="true"]:not([data-host-platform="desktop"]) #gatcha-candidate-card .search-result-cover { height: auto; min-height: 0; aspect-ratio: 16 / 9; }

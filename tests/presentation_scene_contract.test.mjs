@@ -6,6 +6,23 @@ import path from 'node:path';
 import { root, runNative } from './desktop_construction_support.mjs';
 const ROOT = root;
 import { contains, hasContent, iterableValues } from './frontend_contract_support.mjs';
+import { createRequire } from 'node:module';
+const { normalizePresentationScene } = createRequire(import.meta.url)('../static/presentation-scene.js');
+
+test('Audience progress metadata is bounded and does not change scene identity', () => {
+  for (const [raw, expected] of [[42, 42], [-1, 0], [120, 100], [null, null], [undefined, null], ['bad', null], [Infinity, null]]) {
+    const scene = normalizePresentationScene({ revision: 8, currentItemIdentity: 'song-1', displayMetadata: {
+      cacheStatus: 'downloading', cacheDetail: '<b>plain text</b>', cacheProgress: raw,
+    } });
+    assert.equal(scene.revision, 8);
+    assert.equal(scene.currentItemIdentity, 'song-1');
+    assert.equal(scene.displayMetadata.cacheProgress, expected);
+    assert.equal(scene.displayMetadata.cacheDetail, '<b>plain text</b>');
+    assert.equal(scene.displayMetadata.cacheStatus, 'downloading');
+  }
+  assert.equal(normalizePresentationScene({ displayMetadata: { cacheStatus: 'unknown' } }).displayMetadata.cacheStatus, '');
+  assert.equal(normalizePresentationScene({}).displayMetadata.cacheProgress, null);
+});
 async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const PresentationSceneTest = {
 async setUpClass() {

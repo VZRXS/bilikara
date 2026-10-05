@@ -164,6 +164,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 | Dialog icon close | 32px; shared SVG mark | Circle; ordinary secondary fill |
 | Compact settings tools | 30px; 12px, weight 700; 12px inline padding | Pill |
 | Stacked export selects, both clients | 44px; 16px | 14px corners; visible theme-aware outline |
+| Runtime settings selects | 34px; 13px, weight 700 | Pill; Preview 2 native dropdown treatment |
 | Request segmented navigation, both clients | 48px track, including 4px vertical space at each edge; 16px | Shared segmented surface and active fill |
 | Pagination editor, both clients | 44px track; 32px input centered inside it | Input 8px corners; retain compact pagination geometry |
 | Initial-letter buttons, both clients | 40px; 16px, weight 700; 6px gaps | 12px corners; lightly accented selection |
@@ -237,6 +238,7 @@ Choose a component by role, then reuse its shared definition. This table describ
 
 - Host/Remote request navigation shares `static/request-tabs.css` typography, states, spacing and colors. Wide Host can keep primary/secondary rows; portrait uses the approved compact contextual row and back action.
 - Host Quick, Search, Discover and Sources share Quick's responsive panel axis throughout landscape widths. Align the first control below equally sized title/tab tracks; do not stack header bottom padding and content top padding.
+- Host rail hover uses the selected icon's theme color. Random-song covers keep a stable 16:9 geometry independent of title length and artwork dimensions.
 - Primary searches use the shared magnifier, busy spinner and translated accessible label. Host submits use the Host control height.
 - Contextual search keeps its right-hand toggle stationary: magnifier collapsed, X expanded. Keep a separate submit magnifier inside the input's right edge and support Enter. The input clear action edits the draft; close exits contextual search and restores unfiltered results when necessary. Preserve focus-on-open, guards and accessible labels across Host/local/public Remote.
 - A search action beside a horizontal card strip centers on the card track, excluding padding and scrollbar from the center calculation.
@@ -267,6 +269,8 @@ Choose a component by role, then reuse its shared definition. This table describ
 - Remote retains preview.1's 44px seek/next and 48px play/pause circles on one center line. Part/setting controls are 44px; header actions are 32px.
 - Playback-sheet collapse is an unfilled icon, centered when space permits and moving left only to avoid adjacent actions.
 - Rating entry remains openable without pending/submitted labels so users can revisit drafts; enforce eligibility and async submission guards inside the dialog.
+- Saving a rating before its submission trigger updates the waiting score; Host and Remote keep it editable until sending/acceptance. Preserve unsaved edits across unrelated snapshots, bind them to the stable user/session/play identity, and show the saved score when submission becomes read-only.
+- Remote progress thumbs appear on interaction or keyboard focus, keep their 44px input target, and restore range focus after a seek only while the user is still interacting there. Cancellation and closing must release scrubbing.
 - Part pills keep their existing shapes. Overflow adds an expand action; expanded lists wrap natural-width pills, never force two columns. Labels wider than a row scroll, manually under reduced motion. Preserve expand nodes across progress-only updates and popup geometry through exit.
 - Song titles fit fully within two lines; longer titles use one scrolling line (manual under reduced motion). Cache progress replaces the uploader in its 20px line and restores it when ready; failure/retry affordances must not grow that line.
 - Selection dialogs use “选择分 P”, “视频画面（选一个）” and “音频轨道（至少选一个）”. Verify Chinese, English and Japanese at 360px; shorten/remove parentheses only if needed, retaining the full constraint in accessible help.
@@ -351,6 +355,8 @@ npm run test:libav-wrapper
 # Required real native prefix; Linux CI invokes this after its prerequisite
 BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:libav-prerequisites
 npm run test:frontend
+# Rendered Host/Remote interactions, including shared layout and audience relay
+npm run test:host-experience
 npm run test:remote-sync
 npm run test:auxiliary
 npm run test:native-qr

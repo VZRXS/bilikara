@@ -176,7 +176,44 @@
     root.dataset.presentationTitle = String(scene.title || "");
     const overlay = ensureOverlay(root);
     renderOverlay(overlay, scene.overlay || { visible: false }, options);
+    if (options.showDownloadProgress) renderDownloadProgress(root, scene);
     return overlay;
+  }
+
+  function renderDownloadProgress(root, scene) {
+    let panel = root.querySelector(".presentation-download-status");
+    if (!panel) {
+      panel = createElement("section", "presentation-download-status");
+      panel.setAttribute("role", "status");
+      panel.setAttribute("aria-live", "polite");
+      panel.append(
+        createDataElement("p", "presentation-download-title", "download-title"),
+        createDataElement("p", "presentation-download-detail", "download-detail"),
+        createElement("progress"),
+      );
+      root.appendChild(panel);
+    }
+    const metadata = scene.displayMetadata || {};
+    const hidden = !scene.currentItemIdentity || !metadata.cacheDetail
+      || !["pending", "downloading", "failed"].includes(metadata.cacheStatus);
+    if (panel.hidden !== hidden) panel.hidden = hidden;
+    for (const [selector, value] of [["[data-download-title]", scene.title],
+      ["[data-download-detail]", metadata.cacheDetail]]) {
+      const node = panel.querySelector(selector);
+      if (node.textContent !== value) setText(node, value);
+    }
+    const progress = panel.querySelector("progress");
+    if (progress.max !== 100) progress.max = 100;
+    const hideProgress = metadata.cacheStatus !== "downloading";
+    if (progress.hidden !== hideProgress) progress.hidden = hideProgress;
+    if (metadata.cacheProgress === null || metadata.cacheProgress === undefined) {
+      if (progress.hasAttribute("value")) progress.removeAttribute("value");
+    } else if (!progress.hasAttribute("value") || progress.value !== metadata.cacheProgress) {
+      progress.value = metadata.cacheProgress;
+    }
+    if (progress.getAttribute("aria-label") !== metadata.cacheDetail) {
+      progress.setAttribute("aria-label", metadata.cacheDetail);
+    }
   }
 
   return {

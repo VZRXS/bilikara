@@ -35,7 +35,7 @@
    * @property {string} currentItemIdentity
    * @property {string} title
    * @property {string} videoUrl
-   * @property {{requester: string, duration: string, detail: string}} displayMetadata
+   * @property {{requester: string, duration: string, detail: string, cacheStatus: string, cacheDetail: string, cacheProgress: number|null}} displayMetadata
    * @property {"light"|"dark"|"blue"} theme
    * @property {"zh"|"en"|"ja"} language
    * @property {Object|null} overlay
@@ -85,6 +85,12 @@
         requester: text(metadata.requester),
         duration: text(metadata.duration),
         detail: text(metadata.detail),
+        cacheStatus: ["pending", "downloading", "failed", "ready"].includes(metadata.cacheStatus)
+          ? metadata.cacheStatus : "",
+        cacheDetail: text(metadata.cacheDetail),
+        cacheProgress: metadata.cacheProgress !== null && metadata.cacheProgress !== undefined
+          && Number.isFinite(Number(metadata.cacheProgress))
+          ? Math.max(0, Math.min(100, Number(metadata.cacheProgress))) : null,
       },
       theme: supportedThemes.has(scene.theme) ? scene.theme : "light",
       language: ["zh", "en", "ja"].includes(scene.language) ? scene.language : "zh",

@@ -1750,6 +1750,7 @@ h1 {
   -webkit-appearance: none;
   background: var(--accent);
   box-shadow: var(--playback-thumb-shadow);
+  opacity: 0;
 }
 
 .player-progress-range::-moz-range-track {
@@ -1781,7 +1782,11 @@ h1 {
   -webkit-appearance: none;
   background: var(--accent);
   box-shadow: var(--playback-thumb-shadow);
+  opacity: 0;
 }
+
+.player-progress-range:is(:focus, :active, .is-engaged):not(:disabled)::-webkit-slider-thumb { opacity: 1; }
+.player-progress-range:is(:focus, :active, .is-engaged):not(:disabled)::-moz-range-thumb { opacity: 1; }
 
 .player-progress-range:focus-visible {
   outline: 2px solid var(--accent);

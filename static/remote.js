@@ -10112,6 +10112,29 @@ elements.playerControlPanel.addEventListener("input", (event) => {
   paintPlaybackSheetSeekPreview(Number(seek.value || 0));
 });
 
+elements.playbackSheetSeek?.addEventListener("pointerdown", () => {
+  elements.playbackSheetSeek.classList.add("is-engaged");
+});
+elements.playbackSheetSeek?.addEventListener("keydown", event => {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+    elements.playbackSheetSeek.classList.add("is-engaged");
+  }
+});
+elements.playbackSheet?.addEventListener("pointerdown", event => {
+  if (event.target !== elements.playbackSheetSeek) elements.playbackSheetSeek?.classList.remove("is-engaged");
+});
+for (const name of ["pointercancel", "blur"]) {
+  elements.playbackSheetSeek?.addEventListener(name, () => {
+    if (name === "pointercancel" || !state.playerControlPendingAction) {
+      elements.playbackSheetSeek.classList.remove("is-engaged");
+    }
+    if (!state.playbackSheetSeekScrubbing) return;
+    state.playbackSheetSeekScrubbing = false;
+    paintPlaybackClockSurfaces();
+    schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
+  });
+}
+
 elements.playerControlPanel.addEventListener("change", async (event) => {
   const seek = event.target.closest('input[data-control-action="seek-absolute"]');
   if (!seek || seek.disabled || state.playerControlPendingAction) {
@@ -10124,6 +10147,11 @@ elements.playerControlPanel.addEventListener("change", async (event) => {
   } finally {
     paintCurrentPlaybackClock();
     schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
+    // Disabling while the command is pending drops native range focus. Restore
+    // it only if the user is still working here, not after another interaction.
+    if (state.playbackSheetOpen && seek.classList.contains("is-engaged") && !seek.disabled) {
+      seek.focus({ preventScroll: true });
+    }
   }
 });
 
@@ -10468,6 +10496,7 @@ function openPlaybackSheet() {
 }
 
 function closePlaybackSheet({ immediate = false, restoreFocus = true } = {}) {
+  elements.playbackSheetSeek?.classList.remove("is-engaged");
   if (!elements.playbackSheet) {
     return;
   }

@@ -77,6 +77,30 @@ body.is-cursor-hidden * {
   font-weight: 650;
 }
 
+.presentation-download-status {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 28px;
+  background: radial-gradient(circle at center, #25201d, #050505 72%);
+  color: rgba(255, 255, 255, 0.86);
+  text-align: center;
+  pointer-events: none;
+}
+.presentation-download-status[hidden] { display: none; }
+.presentation-download-title { max-width: 900px; font-size: clamp(18px, 2.4vw, 30px); font-weight: 650; }
+.presentation-download-detail { font-size: clamp(14px, 1.6vw, 20px); line-height: 1.5; white-space: pre-line; }
+.presentation-download-status progress { width: min(360px, 100%); height: 8px; border: 0; border-radius: 999px; accent-color: var(--accent); }
+.presentation-download-status progress[hidden] { display: none; }
+.presentation-download-status progress::-webkit-progress-bar { background: rgba(255, 255, 255, 0.18); border-radius: 999px; }
+.presentation-download-status progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+.presentation-download-status progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+
 .presentation-output-control {
   --presentation-action-collapsed-width: 84px;
   --presentation-action-expanded-width: 112px;

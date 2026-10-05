@@ -334,6 +334,65 @@ const commandsByRole = {
     await controller.waitForTimeout(200);
     assert.equal(await controller.locator("#controller-request-toast").isVisible(), false);
 
+    // Progress uses the existing role-scoped relay, including isolated reloads.
+    // These are display fixtures, not evidence of a real media download.
+    const savedCurrent = await host.evaluate(() => structuredClone(state.data.current_item));
+    await host.evaluate(() => {
+      state.data.current_item = { id: "audience-cache", display_title: "正在准备的歌曲", cache_status: "downloading",
+        cache_message: "视频下载中", cache_download_current_bytes: 20, cache_download_total_bytes: 100 };
+      publishPresentationOutputState();
+    });
+    const download = controller.locator(".presentation-download-status");
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status progress")?.value === 20);
+    assert.equal(await download.isVisible(), true);
+    assert.equal(await download.locator("[data-download-title]").innerText(), "正在准备的歌曲");
+    await controller.evaluate(() => {
+      window.savedDownloadPanel = document.querySelector(".presentation-download-status");
+      window.savedDownloadMedia = document.createElement("video");
+      document.querySelector("#controller-stage-frame").appendChild(window.savedDownloadMedia);
+    });
+    const progressRevision = await host.evaluate(() => currentPresentationScene().revision);
+    await host.evaluate(() => { state.data.current_item.cache_download_current_bytes = 40; publishPresentationOutputState(); });
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status progress")?.value === 40);
+    assert.deepEqual(await controller.evaluate(() => ({
+      panel: window.savedDownloadPanel === document.querySelector(".presentation-download-status"),
+      media: window.savedDownloadMedia.isConnected,
+    })), { panel: true, media: true }, "Progress must not remount existing media");
+    assert.equal(await host.evaluate(() => currentPresentationScene().revision), progressRevision);
+    await controller.mouse.move(20, 300);
+    await controller.waitForFunction(() => getComputedStyle(document.querySelector(".presentation-output-remote-popover")).visibility === "hidden");
+    await controller.screenshot({ path: path.join(evidence, `${engine}-audience-download-progress.png`) });
+    await host.evaluate(() => {
+      state.data.current_item.cache_download_total_bytes = 0;
+      state.data.current_item.cache_download_current_bytes = 0;
+      state.data.current_item.cache_message = "<unsafe>正在连接</unsafe>";
+      publishPresentationOutputState();
+    });
+    await controller.waitForFunction(() => {
+      const panel = document.querySelector(".presentation-download-status");
+      return panel && !panel.querySelector("progress").hasAttribute("value") && panel.textContent.includes("<unsafe>");
+    });
+    assert.equal(await download.locator("unsafe").count(), 0, "Details are plain text");
+    await controller.reload();
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status")?.textContent.includes("<unsafe>"));
+    assert.equal(await download.isVisible(), true, "Reloaded audience receives the current progress");
+    for (const status of ["pending", "failed", "ready"]) {
+      await host.evaluate(status => {
+        state.data.current_item.cache_status = status;
+        state.data.current_item.cache_message = status;
+        publishPresentationOutputState();
+      }, status);
+      await controller.waitForFunction(status => {
+        const panel = document.querySelector(".presentation-download-status");
+        return panel && (status === "ready" ? panel.hidden : !panel.hidden && panel.textContent.includes(status));
+      }, status);
+      assert.equal(await download.isVisible(), status !== "ready", status);
+      assert.equal(await download.locator("progress").isVisible(), false, status);
+    }
+    await host.evaluate(current => { state.data.current_item = current; publishPresentationOutputState(); }, savedCurrent);
+    await download.waitFor({ state: "hidden" });
+    console.log("audience download progress: PASS");
+
     // Theme, language and the public room each follow the idle Host through the relay.
     await host.evaluate(() => applyTheme("dark"));
     await controller.waitForFunction(() => document.documentElement.dataset.theme === "dark", null, { timeout: 15000 });

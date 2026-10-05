@@ -8100,8 +8100,8 @@ body {
 }
 
 .work-rail-button:hover:not([aria-selected="true"]) {
-  color: var(--ink);
-  background: rgba(208, 90, 63, 0.08);
+  color: var(--accent-deep);
+  background: var(--accent-soft-hover);
 }
 
 .work-rail-button:focus-visible {
@@ -9644,7 +9644,7 @@ body[data-tauri-platform="linux"] .app-shell {
 .work-rail-button:is(#work-rail-request, #work-rail-random, #work-rail-settings)[aria-selected="true"] .work-rail-icon-outline > :not(:first-child) { display: none; }
 
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .work-rail-button[aria-selected="true"] {
+:root:is([data-theme="dark"], [data-theme="blue"]) .work-rail-button:is([aria-selected="true"], :hover) {
   color: var(--accent);
 }
 

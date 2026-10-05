@@ -222,6 +222,7 @@ jobs:
           npm exec -- playwright install --with-deps chromium webkit
           npm run test:native-users
           npm run test:native-ratings
+          npm run test:host-experience
           npm run test:native-transport
           npm run test:native-media
 

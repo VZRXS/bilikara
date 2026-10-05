@@ -262,6 +262,11 @@ eligibility, retries, duplicate guards, bounded Catalog contributions and late
 completion after reset/shutdown. Synthetic played records qualify these
 contracts, not media playback or foreign native window/signature behavior.
 
+`npm run test:host-experience` checks rendered Host/Remote interactions with
+Chromium and WebKit, including editable waiting ratings, shared control geometry,
+seek gestures and download status across isolated audience storage. Its shell
+relay fixture does not qualify native monitor/fullscreen or device behavior.
+
 Playwright is locked to 1.63.0 with its matching browsers. The older 1.55.1
 test client could hang Chromium AudioWorklet loading; upgrading the test client
 does not change the packaged WebView or Signalsmith assets. After a test-client
@@ -803,9 +808,11 @@ response acknowledges a score held by the Host until playback eligibility;
 only Catalog acceptance completes delivery. While an entry is `waiting`, the
 same user may replace its score under the AppState lock. Once sending starts,
 replacement is rejected; failures release the reservation for an explicit retry.
-The `song_ratings` snapshot includes `score` alongside `status` so Remote can
-reopen the saved value. Remote always labels its entry “评价” and permits viewing
-the dialog; eligibility disables its confirmation button rather than the entry.
+The `song_ratings` snapshot includes `score` alongside `status` so Host and Remote
+can reopen the saved value. Both keep the rating entry openable; eligibility
+disables saving rather than viewing. Saving a waiting score remains editable,
+and unrelated snapshots preserve unsaved edits. Sending or accepted entries show
+their actual saved score without permitting replacement.
 This is session-local duplicate protection, not durable
 exactly-once delivery across crashes or ambiguous network failures.
 

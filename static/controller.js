@@ -433,8 +433,10 @@
 
   function preserveOverlayAndReplace(...nodes) {
     const overlay = elements.frame.querySelector(".player-delay-overlay");
+    const download = elements.frame.querySelector(".presentation-download-status");
     elements.frame.replaceChildren(...nodes);
     if (overlay) elements.frame.appendChild(overlay);
+    if (download) elements.frame.appendChild(download);
   }
 
   function showEmpty(key) {
@@ -465,6 +467,7 @@
     renderer.renderScene(elements.frame, state.scene, {
       compact: false,
       manageVisibility: true,
+      showDownloadProgress: true,
       now: Date.now(),
     });
   }

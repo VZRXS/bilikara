@@ -168,7 +168,7 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
         const style = getComputedStyle(select);
         return { height: select.getBoundingClientRect().height, font: style.fontSize,
           weight: style.fontWeight, radius: style.borderRadius, appearance: style.appearance };
-      }), { height: 44, font: '16px', weight: '400', radius: '999px', appearance: 'none' });
+      }), { height: 34, font: '13px', weight: '700', radius: '999px', appearance: 'auto' });
     }
   });
 
