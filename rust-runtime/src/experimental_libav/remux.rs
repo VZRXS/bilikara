@@ -416,18 +416,36 @@ fn contract(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const MP4_TIMESTAMP_TOLERANCE_MS: i128 = 200;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn same_bounds(a: &super::PacketSummary, b: &super::PacketSummary) -> bool {
     let (Some(ab), Some(bb)) = (a.time_base, b.time_base) else {
         return false;
     };
-    let rescale = |v: i64| {
-        let n = i128::from(v) * i128::from(ab.numerator) * i128::from(bb.denominator);
-        let d = i128::from(ab.denominator) * i128::from(bb.numerator);
-        (n + if n < 0 { -d / 2 } else { d / 2 }) / d
+    if [ab.numerator, ab.denominator, bb.numerator, bb.denominator]
+        .iter()
+        .any(|v| *v <= 0)
+    {
+        return false;
+    }
+    // Compare exact rational seconds: at most 200 ms per PTS/DTS endpoint.
+    // Positive i32 time bases and i64 ticks fit these i128 products/differences.
+    // Divide the tolerance, rather than rounding timestamps or multiplying a
+    // possibly distant timestamp difference. Unknown timing never passes.
+    let tolerance =
+        i128::from(ab.denominator) * i128::from(bb.denominator) * MP4_TIMESTAMP_TOLERANCE_MS / 1000;
+    let within_tolerance = |a: i64, b: i64| {
+        let a = i128::from(a) * i128::from(ab.numerator) * i128::from(bb.denominator);
+        let b = i128::from(b) * i128::from(bb.numerator) * i128::from(ab.denominator);
+        (a - b).abs() <= tolerance
     };
-    [(a.pts_ticks, b.pts_ticks), (a.dts_ticks, b.dts_ticks)].iter().all(|(a, b)| {
-        matches!((a, b), (Some(a), Some(b)) if rescale(a.min) == i128::from(b.min) && rescale(a.max) == i128::from(b.max))
-    })
+    [(a.pts_ticks, b.pts_ticks), (a.dts_ticks, b.dts_ticks)]
+        .iter()
+        .all(|(a, b)| {
+            matches!((a, b), (Some(a), Some(b)) if a.min <= a.max && b.min <= b.max
+            && within_tolerance(a.min, b.min) && within_tolerance(a.max, b.max))
+        })
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -608,7 +626,7 @@ impl LibavMetadataProbe {
             operation: "copy_remux",
             profile: profile.name(),
             checking_depth: if profile == CopyProfile::Mp4 {
-                "streamcopy; exact decoder config, packet traversal, single-stream reopen, moov/mdat envelope; no full decode, playback certificate or cache-ready authority"
+                "streamcopy; exact decoder config, packet traversal, PTS/DTS bounds within 200 ms, single-stream reopen, moov/mdat envelope; no full decode, playback certificate or cache-ready authority"
             } else {
                 "streamcopy; decoder parameters preserved, known STREAMINFO count corrected within 200 ms; demux-visible continuous untrimmed sequence; packet traversal/payload length/reopen/header; no full decode, exhaustive edit-list or codec-corruption validation, playback certificate or cache-ready authority"
             },

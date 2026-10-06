@@ -1,5 +1,117 @@
-//! Executed only from the extracted package's Runtime test binary.
+//! Portable timing checks and explicitly required real-companion package checks.
 use super::*;
+
+fn summary(base: super::super::TimeBase) -> super::super::PacketSummary {
+    use super::super::{PacketSummary, StreamType, TimestampBounds};
+    PacketSummary {
+        index: 0,
+        media_type: StreamType::Video,
+        codec_name: Some("h264".into()),
+        time_base: Some(base),
+        packet_count: 24,
+        payload_bytes: 1083,
+        corrupt_packets: 0,
+        pts_ticks: Some(TimestampBounds {
+            min: 21000,
+            max: 1000000,
+        }),
+        dts_ticks: Some(TimestampBounds {
+            min: -145875,
+            max: 800000,
+        }),
+    }
+}
+
+#[test]
+fn timestamp_bounds_allow_at_most_200_ms_at_each_endpoint() {
+    use super::super::{TimeBase, TimestampBounds};
+    let a = summary(TimeBase {
+        numerator: 1,
+        denominator: 1_000_000,
+    });
+    for shift in [0, -21000, 21000, -200000, 200000] {
+        let mut b = a.clone();
+        for bounds in [&mut b.pts_ticks, &mut b.dts_ticks].into_iter().flatten() {
+            bounds.min += shift;
+            bounds.max += shift;
+        }
+        assert!(same_bounds(&a, &b), "shift {shift}");
+    }
+    for endpoint in 0..4 {
+        for shift in [-200001, 200001] {
+            let mut b = a.clone();
+            let pts = b.pts_ticks.as_mut().unwrap();
+            if endpoint == 0 {
+                pts.min += shift;
+            }
+            if endpoint == 1 {
+                pts.max += shift;
+            }
+            let dts = b.dts_ticks.as_mut().unwrap();
+            if endpoint == 2 {
+                dts.min += shift;
+            }
+            if endpoint == 3 {
+                dts.max += shift;
+            }
+            assert!(!same_bounds(&a, &b), "endpoint {endpoint}, shift {shift}");
+        }
+    }
+    let mut b = a.clone();
+    b.time_base = Some(TimeBase {
+        numerator: 2,
+        denominator: 1000,
+    });
+    b.pts_ticks = Some(TimestampBounds { min: 110, max: 600 });
+    b.dts_ticks = Some(TimestampBounds {
+        min: -172,
+        max: 500,
+    });
+    assert!(same_bounds(&a, &b)); // Distinct time bases; +199/+200/-198.125/+200 ms.
+    b.pts_ticks.as_mut().unwrap().max += 1;
+    assert!(!same_bounds(&a, &b)); // +202 ms, regardless of tick units.
+}
+
+#[test]
+fn timestamp_bounds_reject_unknown_invalid_and_extreme_mismatches() {
+    use super::super::{TimeBase, TimestampBounds};
+    let a = summary(TimeBase {
+        numerator: 1,
+        denominator: 1_000_000,
+    });
+    for mutate in [
+        |b: &mut super::super::PacketSummary| b.pts_ticks = None,
+        |b: &mut super::super::PacketSummary| b.dts_ticks = None,
+        |b: &mut super::super::PacketSummary| b.time_base = None,
+        |b: &mut super::super::PacketSummary| b.time_base.as_mut().unwrap().numerator = 0,
+        |b: &mut super::super::PacketSummary| b.time_base.as_mut().unwrap().denominator = -1,
+        |b: &mut super::super::PacketSummary| {
+            b.pts_ticks = Some(TimestampBounds { min: 1, max: 0 })
+        },
+    ] {
+        let mut b = a.clone();
+        mutate(&mut b);
+        assert!(!same_bounds(&a, &b));
+        assert!(!same_bounds(&b, &a));
+    }
+    let mut a = a;
+    a.time_base = Some(TimeBase {
+        numerator: i32::MAX,
+        denominator: i32::MAX,
+    });
+    a.pts_ticks = Some(TimestampBounds {
+        min: i64::MIN,
+        max: i64::MIN,
+    });
+    a.dts_ticks = a.pts_ticks;
+    assert!(same_bounds(&a, &a));
+    let mut b = a.clone();
+    b.pts_ticks = Some(TimestampBounds {
+        min: i64::MAX,
+        max: i64::MAX,
+    });
+    assert!(!same_bounds(&a, &b));
+}
 
 #[test]
 #[ignore = "requires an actual same-build libav companion"]
