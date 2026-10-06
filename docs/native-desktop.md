@@ -1090,11 +1090,19 @@ Concurrency boundaries to keep in mind when interpreting feedback:
 - Top, positional moves and Play now reject a no-longer-waiting ID with
   `queue_item_missing`; removing an absent ID also fails. A valid move to the
   existing index remains a successful no-op and preserves its slot type.
-- Internet Remote projects the full queue and history, without the former 1,000
-  item truncation. Positions cover the full 10,000-item core capacity. The shared
-  transport splits messages into bounded frames, supports up to 32 MiB per
-  transfer and bounds pending receive buffers to 64 MiB. Oversized messages fail
-  explicitly; they do not silently hide tail items.
+- Internet Remote retains the 10,000-item core capacity and original queue
+  versions/indices. Its public display may show a byte-limited queue/history
+  prefix, with original/displayed totals and a localized notice; Host/LAN data
+  stays complete. Oversized dense catalog/source pages continue from the first
+  omitted row, preserving totals. Incomplete editable source selections are
+  refused rather than saved with hidden entries missing. The transport supports
+  up to 512 KiB per UTF-8 logical message, bounded frames and 4 MiB of pending
+  receive buffers. Playback/identity information stays complete; a message that
+  still cannot fit is refused before sending any frame. An unusable state keeps
+  the last usable snapshot and refuses public mutations until recovery.
+  A result that grew after a committed action
+  explicitly reports completion so the user does not repeat it. Host/LAN HTTP
+  limits and archive/session exports are unchanged.
 - Finished programs have session-play ledger entries. A program that never
   started can be absent from the eligible history list after Next/Play now, even
   though sorting itself never removed it. Duplicate-request checks cover active

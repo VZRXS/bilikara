@@ -49,6 +49,7 @@
     epoch: "",
     sequences: { control: 0, bulk: 0 },
     pending: new Map(),
+    limitedNotices: new Map(),
     revisionMutationTail: Promise.resolve(),
     remoteState: null,
     identity: localStorage.getItem(identityStorageKey) || "",
@@ -115,6 +116,54 @@
   function translatedCopy(key, fallback) {
     const translated = state.translate?.(key);
     return translated && translated !== key ? translated : fallback;
+  }
+
+  function operationFailure(code, { completed = false, limitBytes = lowLevel.maxMessageBytes } = {}) {
+    const key = code === "internet_remote_unavailable" ? "internetRemote.operationUnavailable"
+      : code === "internet_remote_source_list_incomplete"
+        ? completed ? "internetRemote.sourceResultIncomplete" : "internetRemote.sourceListIncomplete"
+      : completed ? "internetRemote.resultTooLarge" : "internetRemote.messageTooLarge";
+    const fallback = code === "internet_remote_unavailable" ? "公网版不支持此功能，请在 Host 或本地 Remote 操作。"
+      : code === "internet_remote_source_list_incomplete"
+        ? completed ? "操作已执行，但公网版无法完整显示来源配置。请在 Host 或本地 Remote 确认，不要重复提交。"
+          : "来源目录过长，公网版无法完整编辑。请在 Host 或本地 Remote 操作。"
+      : completed ? "操作已执行，但返回数据超过公网版 {limit}KiB 上限。请在 Host 或本地 Remote 确认结果，不要重复提交。"
+        : "公网版不支持传输超过 {limit}KiB 的数据，请在 Host 或本地 Remote 操作。";
+    return translatedCopy(key, fallback).replaceAll("{limit}", String(limitBytes / 1024));
+  }
+
+  function notifyOperation(message, isError = true) {
+    global.dispatchEvent(new CustomEvent("remote-operation-message", {
+      detail: { message, isError },
+    }));
+  }
+
+  function notifyListLimits(data, scope, context = "") {
+    const labels = {playlist:["internetRemote.queueList", "待播列表"], history:["internetRemote.historyList", "播放历史"],
+      items:["internetRemote.resultsList", "浏览结果"]};
+    const known = new Set([...Object.keys(labels), "owners", "folders", "uid_options", "favlist_folder_options",
+      "tags", "tag45s", "excluded_uids", "excluded_favlist_folders", "selected_folder_ids", "uids"]);
+    const rows = Object.entries(data?.public_list_limits || {}).filter(([key, value]) => known.has(key)
+      && Number.isSafeInteger(value?.total) && Number.isSafeInteger(value?.shown)
+      && value.shown >= 0 && value.shown < value.total && Array.isArray(data[key])
+      && data[key].length === value.shown);
+    const signature = rows.map(([key]) => key).sort().join(",");
+    // Counts/progress change often; notify once for the same incomplete view.
+    // Read scopes are bounded by RPC kind, and offsets do not create new toasts.
+    const previous = state.limitedNotices.get(scope);
+    if (!signature) { state.limitedNotices.delete(scope); return; }
+    if (previous?.signature === signature && previous.context === context) return;
+    state.limitedNotices.set(scope, {signature,context});
+    const page = rows.length === 1 && rows[0][0] === "items" && rows[0][1].paged === true;
+    const key = page ? "internetRemote.pageLimited" : "internetRemote.listsLimited";
+    const fallback = page ? "本页内容较多，公网版显示 {shown}/{total} 条，可继续翻页。"
+      : "公网长列表仅显示部分内容（{lists}）。完整列表请在 Host 或本地 Remote 查看。";
+    const lists = rows.map(([name, value]) => {
+      const [label, text] = labels[name] || ["internetRemote.sourceList", "来源目录"];
+      return `${translatedCopy(label, text)} ${value.shown}/${value.total}`;
+    }).join("、");
+    notifyOperation(translatedCopy(key, fallback).replaceAll("{lists}", lists)
+      .replaceAll("{shown}", String(rows[0][1].shown)).replaceAll("{total}", String(rows[0][1].total)), false);
   }
 
   function renderConnectionCopy() {
@@ -204,9 +253,11 @@
     stopHeartbeat();
     state.authorized = false;
     global.dispatchEvent(new Event("remote-invitation-changed"));
-    if (wasAuthorized) {
+    // A first join can fail while fetching an oversized initial snapshot. Keep
+    // its unresolved page-startup waiter across retries; retire only fulfilled
+    // readiness so ordinary reconnects can wait for their replacement peer.
+    if (wasAuthorized && !state.readyResolve) {
       state.readyPromise = null;
-      state.readyResolve = null;
     }
     if (wasAuthorized) {
       for (const listener of [...listeners]) listener({ type: "error" });
@@ -373,6 +424,7 @@
         state.connectionMessage = "";
         renderConnectionCopy();
         state.readyResolve?.();
+        state.readyResolve = null;
       })().catch(fail);
       startHeartbeat();
       setTimeout(() => state.socket?.close(1000, "WebRTC connected"), 1_000);
@@ -384,20 +436,35 @@
     }
     if (message.type === "response") {
       if (!state.authorized) return;
+      const sizeError = ["internet_remote_message_too_large", "internet_remote_source_list_incomplete"].includes(message.code);
+      const errorMessage = sizeError ? operationFailure(message.code, {
+        completed: message.completed === true,
+        limitBytes: lowLevel.maxMessageBytes,
+      }) : String(message.error || message.message || message.code || "Host 拒绝了请求");
+      if (sizeError) notifyOperation(errorMessage);
       const pending = state.pending.get(message.request_id);
       if (pending) {
         state.pending.delete(message.request_id);
         clearTimeout(pending.timeout);
         if (message.accepted === false) {
-          const error = new Error(String(message.error || message.message || message.code || "Host 拒绝了请求"));
+          const error = new Error(errorMessage);
           error.code = String(message.code || "internet_remote_request_rejected");
+          if (sizeError) error.completed = message.completed === true;
           if (message.binding) error.payload = { binding: message.binding };
           pending.reject(error);
         } else {
+          // Record limits after snapshot-order validation. The HTTP/auth owner
+          // still publishes to UI listeners, without an extra paint per reply.
+          if (message.data?.state) publishState(message.data.state, false);
+          else if (Array.isArray(message.data?.playlist)) publishState(message.data, false);
+          else {
+            notifyListLimits(message.data, pending.kind, pending.listContext);
+            if (message.data?.cache) notifyListLimits(message.data.cache, `${pending.kind}.cache`, pending.listContext);
+          }
           pending.resolve(message);
         }
       }
-      if (message.stale && message.data) publishState(message.data);
+      if (message.stale && message.data) publishState(message.data.state || message.data);
     }
   }
 
@@ -459,12 +526,19 @@
       kind,
       body,
     };
+    try { lowLevel.checkMessageSize(envelope, lowLevel.maxRequestBytes); }
+    catch (error) {
+      error.message = operationFailure(error.code, { limitBytes: error.limitBytes });
+      notifyOperation(error.message);
+      return Promise.reject(error);
+    }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         state.pending.delete(id);
         reject(new Error("Host 响应超时"));
       }, timeoutMs);
-      state.pending.set(id, { resolve, reject, timeout });
+      const {offset, ...listContext} = body || {};
+      state.pending.set(id, { resolve, reject, timeout, kind, listContext: JSON.stringify(listContext) });
       try {
         lowLevel.send(state[lane], { type: "request", lane, envelope });
       } catch (error) {
@@ -583,6 +657,7 @@
       current_item: current,
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
       history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
+      public_list_limits: remoteState.public_list_limits || {},
       session_history: [],
       session_played: (remoteState.session_played || []).map(localHistoryItem).filter(Boolean),
       song_ratings: remoteState.song_ratings || [],
@@ -629,7 +704,7 @@
     else localStorage.removeItem(identityUserStorageKey);
   }
 
-  function publishState(next) {
+  function publishState(next, notifyListeners = true) {
     if (!state.authorized || !next || typeof next !== "object") return;
     const nextEpoch = typeof next.state_epoch === "string" ? next.state_epoch : "";
     const currentEpoch = state.remoteState?.state_epoch || "";
@@ -650,10 +725,13 @@
       state.retiredStateEpochs ||= new Set();
       if (currentEpoch) state.retiredStateEpochs.add(currentEpoch);
       state.remoteState = null;
+      state.limitedNotices.clear();
     }
+    notifyListLimits(next, "state");
     state.remoteState = {
       ...state.remoteState,
       ...next,
+      public_list_limits: next.public_list_limits || {},
       gatcha: next.gatcha || state.remoteState?.gatcha,
       gatcha_pool_config: next.gatcha_pool_config || state.remoteState?.gatcha_pool_config,
     };
@@ -666,6 +744,7 @@
       }
       localStorage.setItem(identityStorageKey, state.identity);
     }
+    if (!notifyListeners) return;
     const data = JSON.stringify(localState(state.remoteState));
     for (const listener of listeners) listener({ type: "state", data });
   }
@@ -948,15 +1027,20 @@
       } else if (method === "POST" && ["/api/rating/log", "/api/client/disconnect"].includes(url.pathname)) {
         return jsonResponse({ ok: true, data: {} });
       } else {
-        return jsonResponse({ ok: false, code: "internet_remote_unavailable", error: "此功能暂不通过公网 Remote 开放" }, 501);
+        const error = operationFailure("internet_remote_unavailable");
+        notifyOperation(error);
+        return jsonResponse({ ok: false, code: "internet_remote_unavailable", error }, 501);
       }
       const next = response?.data?.state || response?.data;
       if (next?.revision !== undefined) publishState(next);
       return jsonResponse({ ok: true, stale: Boolean(response?.stale), data: localState(next) });
     } catch (error) {
       const code = String(error?.code || "internet_remote_request_failed");
-      const status = code === "internet_remote_rate_limited" ? 429 : 502;
+      const status = code === "internet_remote_rate_limited" ? 429
+        : code === "internet_remote_message_too_large" ? 413
+          : code === "internet_remote_source_list_incomplete" ? 409 : 502;
       const failure = { ok: false, code, error: String(error?.message || error || "请求失败") };
+      if (error?.completed === true) failure.completed = true;
       if (code === "manual_binding_required" && error?.payload?.binding) {
         failure.binding = error.payload.binding;
       }
@@ -1022,8 +1106,7 @@
     if (state.authorized) {
       state.authorized = false;
       global.dispatchEvent(new Event("remote-invitation-changed"));
-      state.readyPromise = null;
-      state.readyResolve = null;
+      if (!state.readyResolve) state.readyPromise = null;
     }
     if (wasAuthorized) {
       for (const listener of [...listeners]) listener({ type: "error" });

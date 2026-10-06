@@ -341,6 +341,7 @@
       outbound: { control: Promise.resolve(), bulk: Promise.resolve() },
       pendingState: null,
       stateSending: false,
+      stateTooLarge: false,
     };
     peers.set(peerId, peer);
     peer.ice = transport.createIceCandidateExchange(pc, {
@@ -435,7 +436,10 @@
     return values.filter((value) => now - value < 60_000);
   }
 
-  function sendPeer(peer, lane, message) {
+  function sendPeer(peer, lane, message, request) {
+    // Bound the public display view before queueing or sending any frame.
+    try { message = transport.prepareDisplayMessage(message, request); }
+    catch (error) { return Promise.reject(error); }
     const operation = peer.outbound[lane].then(async () => {
       if (peers.get(peer.id) !== peer || peer[lane]?.readyState !== "open") return;
       await transport.waitForBufferedAmount(peer[lane]);
@@ -445,6 +449,32 @@
     });
     peer.outbound[lane] = operation.catch(() => {});
     return operation;
+  }
+
+  function sizeFailure(envelope = {}, completed = false, code = "internet_remote_message_too_large") {
+    return {
+      type: "response",
+      request_id: String(envelope.id || "").slice(0, 96),
+      sequence: Number(envelope.seq || 0),
+      accepted: false,
+      stale: false,
+      code,
+      limit_bytes: transport.maxMessageBytes,
+      completed,
+      error: code === "internet_remote_source_list_incomplete"
+        ? "来源目录过长，公网版无法完整编辑。请在 Host 或本地 Remote 操作。"
+        : completed
+        ? "操作已执行，但返回数据超过公网版 512KiB 上限。请在 Host 或本地 Remote 确认结果，不要重复提交。"
+        : "公网版不支持传输超过 512KiB 的数据，请在 Host 或本地 Remote 操作。",
+    };
+  }
+
+  function readOnlyRequest(kind) {
+    return kind.startsWith("catalog.") || [
+      "state.get", "connection.health", "gatcha.search", "gatcha.browse",
+      "gatcha.favlist_browse", "gatcha.pool_config_get", "gatcha.candidate",
+      "gatcha.uid_preview", "gatcha.favlist_preview",
+    ].includes(kind);
   }
 
   function admitRequest(peer, kind, now = Date.now()) {
@@ -501,7 +531,16 @@
         while (peer.pendingState && peers.get(peer.id) === peer && peer.authorized) {
           const next = peer.pendingState;
           peer.pendingState = null;
-          await sendPeer(peer, "bulk", { type: "state", data: next });
+          try {
+            await sendPeer(peer, "bulk", { type: "state", data: next });
+            peer.stateTooLarge = false;
+          } catch (error) {
+            if (error.code !== "internet_remote_message_too_large") throw error;
+            // Mandatory playback/identity data cannot be clipped. Keep the
+            // last usable snapshot and avoid a warning on every progress tick.
+            if (!peer.stateTooLarge) await sendPeer(peer, "bulk", sizeFailure());
+            peer.stateTooLarge = true;
+          }
         }
       } catch (error) {
         setStatus(`Remote 发送失败：${error.message}`, "bad");
@@ -558,6 +597,15 @@
     const operation = String(message.envelope?.kind || "unknown");
     const dispatchStartedAt = performance.now();
     recordDiagnostic("request.dispatch", "started", { operation });
+    if (peer.stateTooLarge && !readOnlyRequest(operation)) {
+      await sendPeer(peer, lane, sizeFailure(message.envelope));
+      recordDiagnostic("request.dispatch", "completed", {
+        operation, accepted: false, stale: false,
+        errorCode: "internet_remote_message_too_large",
+        elapsedMs: performance.now() - dispatchStartedAt,
+      });
+      return;
+    }
     try {
       admitRequest(peer, operation);
     } catch (error) {
@@ -622,7 +670,19 @@
       stale: Boolean(result?.stale),
       elapsedMs: performance.now() - dispatchStartedAt,
     });
-    await sendPeer(peer, lane, { type: "response", ...result });
+    try {
+      await sendPeer(peer, lane, { type: "response", ...result }, message.envelope);
+    } catch (error) {
+      if (!["internet_remote_message_too_large", "internet_remote_source_list_incomplete"].includes(error.code)) throw error;
+      // A mutation may have committed before its result size is known. Do not
+      // report it as unexecuted or retry it; return only a bounded explanation.
+      await sendPeer(peer, lane, sizeFailure(message.envelope,
+        result?.accepted !== false && !readOnlyRequest(operation), error.code));
+      recordDiagnostic("request.dispatch", "completed", {
+        operation, accepted: result?.accepted !== false, stale: Boolean(result?.stale),
+        errorCode: error.code, elapsedMs: performance.now() - dispatchStartedAt,
+      });
+    }
     if (result?.data?.revision || result?.data?.state?.revision) void publishState();
   }
 

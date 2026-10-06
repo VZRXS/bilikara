@@ -1637,6 +1637,10 @@ window.addEventListener("remote-connection-message", (event) => {
   setAppMessage(event.detail?.message, event.detail?.isError);
 });
 
+window.addEventListener("remote-operation-message", (event) => {
+  setAppMessage(event.detail?.message, event.detail?.isError);
+});
+
 function setFormMessage(message, isError = false) {
   setAppMessage(message, isError);
 }
@@ -2909,16 +2913,19 @@ function setHistoryExportMessage(message, isError = false) {
 function openHistoryExportDialog() {
   const dialog = elements.historyExportDialog;
   if (!dialog || dialog.open) return;
+  if (window.BilikaraRemoteTransport?.mode === "internet") {
+    setHistoryExportMessage(t("history.exportLanOnly"), true);
+    return;
+  }
   retireTransientPlaybackModalForModal();
   setRemoteMenuOpen(false);
-  const unavailable = window.BilikaraRemoteTransport?.mode === "internet";
-  elements.historyExportRow.hidden = unavailable;
-  elements.historyExportStatus.textContent = unavailable ? t("history.exportLanOnly") : "";
+  elements.historyExportRow.hidden = false;
+  elements.historyExportStatus.textContent = "";
   historyExportRestoreFocus = true;
   dialog.showModal();
   lockPlaybackSheetDocumentScroll();
   elements.historyExportClose.focus({ preventScroll: true });
-  if (!unavailable) void loadHistoryExportSessions();
+  void loadHistoryExportSessions();
 }
 
 let historyExportSessionsRequest = 0;
@@ -8006,11 +8013,18 @@ function renderPlayerControls(currentItem, playbackMode) {
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
+  const displayCount = (key, shown) => {
+    const limit = state.data?.public_list_limits?.[key];
+    return Number.isSafeInteger(limit?.total) && limit.total > shown && limit.shown === shown
+      ? `${shown}/${limit.total}` : shown;
+  };
+  const playlistCount = displayCount("playlist", playlist.length);
+  const historyCount = displayCount("history", history.length);
   const signature = JSON.stringify({
     language: state.language,
     view: state.listView,
-    playlistLength: playlist.length,
-    historyLength: history.length,
+    playlistLength: playlistCount,
+    historyLength: historyCount,
   });
   if (signature === state.listHeaderRenderSignature) {
     return;
@@ -8022,7 +8036,7 @@ function renderListHeader(playlist, history) {
   setTextContent(
     elements.listCount,
     isHistoryView ? "history.count" : "list.count",
-    { count: isHistoryView ? history.length : playlist.length },
+    { count: isHistoryView ? historyCount : playlistCount },
   );
 
   elements.queueViewButton.classList.toggle("active", !isHistoryView);

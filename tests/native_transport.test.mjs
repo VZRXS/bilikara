@@ -8,6 +8,23 @@ import { waitFor } from './native_host_support.mjs';
 
 const executable = await buildNativeHost();
 const options = {skip: process.platform !== 'linux' ? 'actual Linux local TLS fixture' : false, timeout: 60000};
+
+test('actual catalog replies can exceed 512KiB while local HTTP keeps the full data', options, async () => {
+  const fixture = await TransportFixture.start(executable);
+  try {
+    const local = await fixture.host.api('/api/catalog/search?q=oversized-public-contract&limit=80');
+    const remote = await fixture.remote('catalog.search', {query:'oversized-public-contract',limit:80}, 'bulk');
+    assert.equal(remote.status,200); assert.equal(remote.json.data.accepted,true);
+    assert.equal(local.items.length,80); assert.equal(remote.json.data.data.items.length,80);
+    const localBytes = Buffer.byteLength(JSON.stringify(local));
+    const publicBytes = Buffer.byteLength(JSON.stringify({type:'response',...remote.json.data}));
+    assert.ok(localBytes>524288 && publicBytes>524288, JSON.stringify({localBytes,publicBytes}));
+    assert.deepEqual(remote.json.data.data.items.map(row=>row.bvid),local.items.map(row=>row.bvid));
+    assert.equal(remote.json.data.data.items[0].title,'界'.repeat(512));
+    assert.equal(remote.json.data.data.items[0].tag_5,'曲'.repeat(400));
+    assert.equal((await fixture.remote('connection.health',{})).json.data.accepted,true);
+  } finally { await fixture.close(); }
+});
 function accepted(response) { assert.equal(response.status,200,response.body.toString()); assert.equal(response.json.ok,true); assert.equal(response.json.data.accepted,true); }
 function decoded(response) { return JSON.parse(response.body); }
 

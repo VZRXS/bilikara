@@ -211,8 +211,32 @@ creation and successful signaling therefore do not guarantee connectivity
 through every NAT or UDP-blocking firewall; local browser tests do not qualify
 those networks. See [the WebRTC TURN explanation](https://webrtc.org/getting-started/turn-server).
 Search and state payloads use bulk; playback controls use control. Logical
-messages are capped at 32 MiB and split into 12 KiB frames; incomplete transfers
-share a 64 MiB budget and an eight-transfer limit. The Host serializes
+messages are capped at 512 KiB (UTF-8 serialized envelope included) and split
+into 12 KiB frames. Chunk sizing accounts for JSON-escaped quotes/backslashes;
+the bounded chunk count covers that worst case without raising the logical
+message limit. Incomplete transfers share a 4 MiB budget and an
+eight-transfer limit. Requests retain the existing 16 KiB envelope limit and
+are checked on the Remote before sending. Before queueing frames, the Host may
+shorten the public queue/history prefixes or a known read-result page to fit.
+`public_list_limits` reports each limited array's original `total` and `shown`
+count; the Remote displays a localized notice without repeating it on progress
+updates. Host/LAN data, stable IDs, queue versions and visible queue indices stay
+unchanged. Dense offset pages set `next_offset` to the first omitted row and
+keep `has_more` true, preserving `matched_count`; `paged: true` distinguishes
+these recoverable pages from partial directories. Sparse/opaque continuations
+cannot be invented from row counts and remain subject to refusal. Existing
+public directory count limits also report their totals. Incomplete editable
+source/favorites selections fail with `internet_remote_source_list_incomplete`
+instead of becoming a draft that could discard hidden selections.
+
+Mandatory playback/identity data remains complete. If the resulting message
+still cannot fit, the Host sends a small, recoverable
+`internet_remote_message_too_large` reply without sending any payload frames.
+An unusable state keeps the last usable snapshot and blocks subsequent public
+mutations until a usable state fits; it does not close the connection.
+If a mutation already committed before its
+reply size was known, the rejection carries `completed: true`: the toast says
+to confirm the result on Host/LAN Remote rather than submit again. The Host serializes
 outbound frames per lane, coalesces superseded state updates, and waits for the
 DataChannel buffer to drain. Each peer also has bounded pending work and
 per-minute message/request/search/add admission limits before an external Host

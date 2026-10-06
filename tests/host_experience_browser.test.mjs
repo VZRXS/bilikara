@@ -78,6 +78,69 @@ test('native layout fixture publishes readable media after Host artifact recover
 });
 
 for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
+  test(`${name} public Remote refuses export before requests and renders localized transfer/list toasts`, {
+    skip: nativeLimit, timeout: 60000,
+  }, async t => {
+    const {page,home} = await open(t,engine,'remote');
+    await page.evaluate(() => {
+      fetchState = async () => {}; state.eventSource?.close();
+      window.BilikaraRemoteTransport = {mode:'internet'};
+      state.listView = 'history'; render();
+    });
+    let requests = 0;
+    page.on('request', request => { if (/\/api\/(played-sessions|playlist\/export)/u.test(request.url())) requests++; });
+    await page.locator('#history-export-button').click();
+    const toast = page.locator('#app-toast');
+    await toast.waitFor({state:'visible'});
+    assert.match(await toast.innerText(),/公网 Remote.*不支持导出/u);
+    assert.equal(await page.locator('#history-export-dialog').isVisible(),false);
+    assert.equal(requests,0);
+    const counts=await page.evaluate(()=>{
+      const shown=state.data.playlist.length;
+      state.data.public_list_limits={playlist:{total:10000,shown},history:{total:1200,shown:state.data.history.length}};
+      state.listView='queue';render();
+      return {shown,history:state.data.history.length};
+    });
+    assert.match(await page.locator('#list-count').innerText(),new RegExp(`${counts.shown}/10000`));
+    await page.locator('#history-view-button').click();
+    assert.match(await page.locator('#list-count').innerText(),new RegExp(`${counts.history}/1200`));
+    await page.evaluate(()=>{delete state.data.public_list_limits;render();});
+    assert.doesNotMatch(await page.locator('#list-count').innerText(),/1200/u);
+    for (const viewport of [{width:440,height:956},{width:1100,height:800}]) {
+      await page.setViewportSize(viewport);
+      for (const language of ['zh','en','ja']) {
+        for (const key of ['internetRemote.messageTooLarge','internetRemote.resultTooLarge',
+          'internetRemote.listsLimited','internetRemote.pageLimited','internetRemote.sourceListIncomplete','internetRemote.sourceResultIncomplete']) {
+          await page.evaluate(({language,key}) => {
+            setLanguage(language);
+            // Transport formatting is executed separately against all three
+            // dictionaries; this checks its shared event's actual rendered owner.
+            window.dispatchEvent(new CustomEvent('remote-operation-message',{detail:{isError:!['internetRemote.listsLimited','internetRemote.pageLimited'].includes(key),
+              message:t(key,{limit:512,shown:58,total:80,lists:`${t('internetRemote.queueList')} 540/10000`})}}));
+          },{language,key});
+          assert.equal(await toast.innerText(),await page.evaluate(key => t(key,{limit:512,shown:58,total:80,lists:`${t('internetRemote.queueList')} 540/10000`}),key));
+          assert.equal(await toast.evaluate(node=>node.classList.contains('is-error')),!['internetRemote.listsLimited','internetRemote.pageLimited'].includes(key));
+          const box = await toast.boundingBox();
+          assert.ok(box.x>=0 && box.x+box.width<=viewport.width && box.y>=0 && box.y+box.height<=viewport.height,JSON.stringify(box));
+        }
+      }
+      await page.evaluate(() => setLanguage('zh'));
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('remote-operation-message',{detail:{isError:false,
+        message:t('internetRemote.listsLimited',{lists:`${t('internetRemote.queueList')} 540/10000`})}})));
+      await page.screenshot({path:path.join(home,`${name}-${viewport.width}-public-size.png`)});
+    }
+    assert.equal(await page.title(),'bilikara remote');
+    assert.equal(new URL(page.url()).pathname,'/remote');
+    assert.equal(requests,0);
+    // Returning to the local profile keeps the existing export dialog/input.
+    const sessions = page.waitForRequest(request => new URL(request.url()).pathname === '/api/played-sessions');
+    await page.evaluate(() => { window.BilikaraRemoteTransport={mode:'local'};openHistoryExportDialog(); });
+    await sessions;
+    await page.locator('#history-export-dialog').waitFor({state:'visible'});
+    await page.waitForFunction(() => !!document.querySelector('#history-export-source'));
+    assert.equal(requests,1);
+  });
+
   test(`${name} fullscreen feedback follows acknowledged operations without controls, focus theft or replay`, {
     skip: nativeLimit, timeout: 90000,
   }, async t => {

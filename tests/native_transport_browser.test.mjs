@@ -17,6 +17,7 @@ test('actual native HTTP/RTC browser consumes controls and preserves timeout/rec
     ['browser_ignores_old_generation_control', true], ['bulk_delay_does_not_block_control_datachannel', true],
     ['internet_relative_av_delay_preserves_concurrent_lan_increment', true],
     ['timeout_reconnect_late_response_does_not_resubmit_mutation', true],
+    ['byte_limited_public_reply_preserves_pagination_and_keeps_rtc_usable', true],
     ['close_rebuild_room_with_real_webrtc_keeps_lan_usable', true], ['browser_identity_render_and_console', true],
   ]);
   const evidenceFor = name => result.checks.find(row => row.name === name).evidence;
@@ -25,5 +26,8 @@ test('actual native HTTP/RTC browser consumes controls and preserves timeout/rec
   assert.equal(evidenceFor('internet_relative_av_delay_preserves_concurrent_lan_increment').actual, 100);
   assert.equal(evidenceFor('timeout_reconnect_late_response_does_not_resubmit_mutation').mutationSends, 1);
   assert.equal(evidenceFor('timeout_reconnect_late_response_does_not_resubmit_mutation').pending, 0);
+  const limited = evidenceFor('byte_limited_public_reply_preserves_pagination_and_keeps_rtc_usable');
+  assert.ok(limited.localBytes > 524288); assert.ok(limited.maxLogicalBytes <= 524288);
+  assert.equal(limited.visibleItems,117); assert.equal(limited.notices,1);
   assert.equal(JSON.parse(readFileSync(path.join(evidence,'fixture-summary.json'))).forwarded_external_requests, 0);
 });

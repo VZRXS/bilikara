@@ -99,8 +99,17 @@ async function main() {
         __host.state.socket = { readyState: 1, close() {}, send: (wire) => void fixtureSignal(JSON.parse(wire)) };
         await __host.createPeer("browser-peer");
       });
-      await remote.waitForFunction(() => __remote.state.authorized && __remote.state.pending.size === 0 && __remote.state.remoteState?.current_item &&
-        __remote.state.overlay.classList.contains("hidden"));
+      try {
+        await remote.waitForFunction(() => __remote.state.authorized && __remote.state.pending.size === 0 && __remote.state.remoteState?.current_item &&
+          __remote.state.overlay.classList.contains("hidden"));
+      } catch (error) {
+        throw new Error(JSON.stringify({
+          remote:await remote.evaluate(()=>({authorized:__remote.state.authorized,pending:__remote.state.pending.size,
+            connection:__remote.state.peer?.connectionState,status:__remote.state.connectionMessage,
+            hasCurrent:Boolean(__remote.state.remoteState?.current_item)})),
+          host:await host.evaluate(()=>[...__host.peers.values()].map(peer=>({authorized:peer.authorized,connection:peer.pc.connectionState}))),
+        }),{cause:error});
+      }
     }
     await connect();
     const nativeFetch = async (route, body) => {
@@ -309,6 +318,59 @@ async function main() {
       assert.equal((await nativeFetch("/api/state")).data.player_settings.key_shift, 4);
       return { mutationSends, committedDespiteClientTimeout: true, reauthenticatedBeforeLateResponse: true,
         pending: await remote.evaluate(() => __remote.state.pending.size) };
+    });
+    await check("byte_limited_public_reply_preserves_pagination_and_keeps_rtc_usable", async () => {
+      const local = await nativeFetch('/api/catalog/search?q=oversized-public-paged-contract&limit=80');
+      assert.equal(local.ok, true); assert.equal(local.data.items.length, 80);
+      const localBytes = Buffer.byteLength(JSON.stringify(local.data));
+      assert.ok(localBytes > 524288);
+      await host.evaluate(() => {
+        const channel = __host.peers.get('browser-peer').bulk;
+        const send = channel.send.bind(channel);
+        window.__bulkFrames = [];
+        channel.send = frame => { __bulkFrames.push(JSON.parse(frame)); send(frame); };
+      });
+      await remote.evaluate(() => {
+        window.__listNotices=[];
+        window.addEventListener('remote-operation-message',event=>__listNotices.push(event.detail));
+      });
+      let offset=0, seen=[], pages=[];
+      while(offset<117) {
+        const response=await remote.evaluate(async offset=>{
+          const reply=await fetch(`/api/catalog/search?q=oversized-public-paged-contract&limit=80&offset=${offset}`);
+          return {status:reply.status,body:await reply.json()};
+        },offset);
+        assert.equal(response.status,200,JSON.stringify(response.body));
+        const data=response.body.data;
+        assert.equal(data.matched_count,117); assert.ok(data.items.length>0);
+        assert.equal(data.offset,offset); assert.equal(data.next_offset,offset+data.items.length);
+        assert.equal(data.has_more,data.next_offset<117);
+        if(!offset) {
+          assert.ok(data.items.length<80);
+          assert.deepEqual(data.items.map(row=>row.bvid),local.data.items.slice(0,data.items.length).map(row=>row.bvid));
+          assert.equal(data.public_list_limits.items.total,80);
+          assert.equal(data.public_list_limits.items.shown,data.items.length);
+        }
+        seen.push(...data.items.map(row=>row.bvid)); pages.push(data.items.length); offset=data.next_offset;
+      }
+      assert.deepEqual(seen,Array.from({length:117},(_,i)=>`BV${String(i+1).padStart(10,'0')}`));
+      const decoded=await host.evaluate(()=>{
+        const decoder=new BilikaraInternetTransport.Decoder();
+        return __bulkFrames.flatMap(frame=>decoder.consume(JSON.stringify(frame)));
+      });
+      const logicalBytes=decoded.map(message=>Buffer.byteLength(JSON.stringify(message)));
+      assert.ok(logicalBytes.length>=pages.length);
+      assert.ok(logicalBytes.every(bytes=>bytes<=524288));
+      assert.ok(decoded.every(message=>message.code!=='internet_remote_message_too_large'));
+      const notices=await remote.evaluate(()=>__listNotices);
+      assert.equal(notices.length,1,'Successive clipped pages must not flood the toast');
+      assert.equal(notices[0].isError,false); assert.match(notices[0].message,/可继续翻页/u);
+      assert.equal((await nativeFetch('/api/catalog/search?q=oversized-public-paged-contract&limit=80')).data.items.length,80);
+      assert.equal((await send('/api/player/key-shift',{key_shift:2})).ok,true);
+      const connection = await remote.evaluate(() => ({connection:__remote.state.peer.connectionState,
+        authorized:__remote.state.authorized,pending:__remote.state.pending.size}));
+      assert.equal(connection.connection,'connected'); assert.equal(connection.authorized,true); assert.equal(connection.pending,0);
+      return {localBytes,localItems:80,pages,visibleItems:seen.length,maxLogicalBytes:Math.max(...logicalBytes),notices:notices.length,...connection};
     });
     await check("close_rebuild_room_with_real_webrtc_keeps_lan_usable", async () => {
       await host.evaluate(() => __host.stopRoom(true));

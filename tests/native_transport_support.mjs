@@ -35,6 +35,20 @@ export class TransportFixture {
       }
       if (['/api/catalog/search', '/api/search', '/search'].includes(url.pathname)) {
         await fixture.hold('search');
+        if (['oversized-public-contract','oversized-public-paged-contract'].includes(url.searchParams.get('keyword'))) {
+          // A real normalized/sanitized reply: 80 unique public catalog rows,
+          // with long UTF-8 fields still within each public field's own bound.
+          const paged = url.searchParams.get('keyword') === 'oversized-public-paged-contract';
+          const all = Array.from({length:paged ? 117 : 80}, (_,index) => ({
+            bvid:`BV${String(index + 1).padStart(10,'0')}`,title:'界'.repeat(512),
+            owner_name:'歌'.repeat(400),
+            ...Object.fromEntries(Array.from({length:5}, (_,tag) => [`tag_${tag+1}`,'曲'.repeat(400)])),
+          }));
+          if (!paged) return all;
+          const offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit') || 80);
+          const items = all.slice(offset,offset+limit);
+          return {items,offset,limit,matched_count:117,next_offset:offset+items.length,has_more:offset+items.length<117};
+        }
         return transportVideos.map(bvid => ({bvid, title: bvid, url: `https://www.bilibili.com/video/${bvid}`}));
       }
       return {fixtureResponse: {status: 503, data: {error: 'restricted local test provider'}}};
