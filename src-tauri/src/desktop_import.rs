@@ -177,6 +177,15 @@ fn start_without_import(
     destination: Option<&Path>,
     failed_source: Option<&Path>,
 ) -> Result<Completion, String> {
+    start_without_import_deadline(backend, destination, failed_source, DEADLINE)
+}
+
+fn start_without_import_deadline(
+    backend: &Path,
+    destination: Option<&Path>,
+    failed_source: Option<&Path>,
+    deadline: Duration,
+) -> Result<Completion, String> {
     let mut args = vec![OsString::from("--start-without-import")];
     if let Some(destination) = destination {
         args.extend(["--data-dir".into(), destination.as_os_str().to_owned()]);
@@ -184,7 +193,27 @@ fn start_without_import(
     if let Some(source) = failed_source {
         args.extend(["--import-from".into(), source.as_os_str().to_owned()]);
     }
-    completion(backend, &args, destination)
+    let report = match completion_with_deadline(backend, &args, destination, deadline) {
+        Ok(report) => report,
+        Err(error) if failed_source.is_some() => {
+            // Fresh publication precedes raw-source isolation. Its process can
+            // time out while preserving a large cache, after committing valid
+            // native records. Reap it, then validate/finish normal startup
+            // without retrying the source move or bypassing native protection.
+            args.truncate(args.len() - 2);
+            let mut report = completion_with_deadline(backend, &args, destination, deadline)
+                .map_err(|validation| format!("{error}\n\n无法安全准备正常启动：{validation}"))?;
+            report.cleanup_warning = Some(format!(
+                "旧数据隔离未完全确认，请保留原件及已生成的备份。\n{error}"
+            ));
+            report
+        }
+        Err(error) => return Err(error),
+    };
+    if !report.completed {
+        return Err("未能安全准备正常启动，请保留数据。".into());
+    }
+    Ok(report)
 }
 
 fn preserved_data(report: &Completion) -> String {
@@ -214,7 +243,16 @@ fn completion(
     args: &[OsString],
     destination: Option<&Path>,
 ) -> Result<Completion, String> {
-    let report: Completion = serde_json::from_slice(&execute(backend, args, DEADLINE)?)
+    completion_with_deadline(backend, args, destination, DEADLINE)
+}
+
+fn completion_with_deadline(
+    backend: &Path,
+    args: &[OsString],
+    destination: Option<&Path>,
+    deadline: Duration,
+) -> Result<Completion, String> {
+    let report: Completion = serde_json::from_slice(&execute(backend, args, deadline)?)
         .map_err(|_| "导入结果无效，请再次运行工具检查。")?;
     if report.schema_version != 1
         || !report.destination.is_absolute()
@@ -651,6 +689,40 @@ mod tests {
                 .contains("超时")
         );
         assert!(start.elapsed() < Duration::from_secs(5));
+        std::fs::write(
+            directory.join("fresh-result.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version":1, "destination":directory, "backup":null, "completed":true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let fresh = start_without_import_deadline(
+            &binary,
+            Some(&directory),
+            Some(&directory.join("old runtime")),
+            Duration::from_secs(1),
+        )
+        .expect("backup timeout must not block validated normal startup");
+        assert!(fresh.completed);
+        assert!(fresh.cleanup_warning.unwrap().contains("超时"));
+        assert_eq!(
+            std::fs::read_to_string(directory.join("fresh-attempts.txt")).unwrap(),
+            "isolate\ninitialize\n"
+        );
+        std::fs::write(
+            directory.join("fresh-result.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version":1, "destination":directory, "backup":null, "completed":false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            start_without_import_deadline(&binary, Some(&directory), None, Duration::from_secs(1))
+                .is_err(),
+            "normal startup still requires a completed native result"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
