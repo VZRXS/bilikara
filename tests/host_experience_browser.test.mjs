@@ -179,7 +179,7 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
       const s = getComputedStyle(node), r = node.getBoundingClientRect(), parent = node.parentElement.parentElement.getBoundingClientRect();
       const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       return { focused: document.activeElement.id, controls: node.querySelectorAll('button,input,a,select').length,
-        pointer: s.pointerEvents, blur: s.backdropFilter || s.webkitBackdropFilter, radius: s.borderRadius,
+        pointer: s.pointerEvents, blur: s.backdropFilter || s.webkitBackdropFilter, radius: s.borderRadius, shadow: s.boxShadow,
         duration: s.transitionDuration, right: parent.right - r.right,
         center: (r.top + r.bottom) / 2 - (parent.top + parent.bottom) / 2,
         within: r.left >= parent.left && r.right <= parent.right && r.top >= parent.top && r.bottom <= parent.bottom,
@@ -188,12 +188,29 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     });
     assert.equal(bounds.focused, 'feedback-focus-probe'); assert.equal(bounds.controls, 0);
     assert.equal(bounds.pointer, 'none'); assert.equal(bounds.radius, '18px'); assert.match(bounds.blur, /blur\(/);
+    assert.equal(bounds.shadow, 'none', 'Passive cards must not cast a shadow onto their neighboring card');
     assert.ok(bounds.duration.split(',').every(duration => duration.trim() === '0.12s'));
-    assert.ok(Math.abs(bounds.right - 16) <= 1 && Math.abs(bounds.center) <= 1 && bounds.within, JSON.stringify(bounds));
+    assert.ok(Math.abs(bounds.right - 16) <= 1 && Math.abs(bounds.center + 76) <= 1 && bounds.within, JSON.stringify(bounds));
     assert.equal(bounds.intercepts, false); assert.equal(bounds.owned, true); assert.equal(bounds.media, true);
     await page.screenshot({ path: path.join(home, `${name}-fullscreen-feedback.png`) });
     await page.evaluate(() => dispatchAvDelayAction({ type: 'adjust', delta_ms: 150 }));
-    await page.waitForFunction(() => document.querySelector('#presentation-feedback [data-feedback-category=delay] .presentation-feedback-value')?.textContent === '+150ms');
+    await page.waitForFunction(() => {
+      const cards = [...document.querySelectorAll('#presentation-feedback .presentation-feedback-card.is-visible')];
+      return cards.length === 2 && cards.every(card => getComputedStyle(card).opacity === '1')
+        && cards.find(card => card.dataset.feedbackCategory === 'delay')?.querySelector('.presentation-feedback-value').textContent === '+150ms';
+    });
+    const stack = await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => nodes.map(node => {
+      const box = node.getBoundingClientRect();
+      return { category: node.dataset.feedbackCategory, top: box.top, bottom: box.bottom, shadow: getComputedStyle(node).boxShadow };
+    }).sort((a, b) => a.top - b.top));
+    assert.deepEqual(stack.map(card => card.category), ['volume', 'delay']);
+    assert.ok(stack[1].top - stack[0].bottom >= 7, JSON.stringify(stack));
+    assert.ok(stack.every(card => card.shadow === 'none'), JSON.stringify(stack));
+    await page.evaluate(() => setLocalPlayerVolumeAndMuted(.85, false));
+    assert.deepEqual(await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => nodes.map(node => ({
+      category: node.dataset.feedbackCategory, top: node.getBoundingClientRect().top,
+    })).sort((a, b) => a.top - b.top).map(card => card.category)), ['volume', 'delay'],
+    'Repeated volume changes update in place instead of swapping the cards');
     const key = await page.evaluate(() => state.presentationActionFeedback.key);
     await page.evaluate(() => dispatchAvDelayAction({ type: 'unsupported-action' }));
     assert.equal(await page.evaluate(() => state.presentationActionFeedback.key), key, 'Failed requests cannot announce success');
@@ -1127,6 +1144,28 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
       assert.equal(await page.locator('#presentation-host-announcement .player-delay-section-title').isVisible(), false);
       assert.deepEqual(await page.locator('#presentation-host-announcement .queue-badge-label').allTextContents(), ['1', '2', '3']);
     }
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.evaluate(() => {
+      state.presentationSession = { ...state.presentationSession, mode: 'singleScreen', phase: 'inactive' };
+      applyPresentationCompositionDom(state.presentationSession.generation, 'combined');
+      elements.playerPanel.classList.add('is-tauri-fullscreen');
+      document.body.classList.add('is-tauri-fullscreen-active'); handleFullscreenChange();
+      renderCurrentPresentationScene(); updateLocalAdvanceDelayOverlay(null);
+    });
+    await transition.waitFor({ state: 'visible' });
+    assert.equal(await page.locator('body').evaluate(node => node.classList.contains('is-presentation-control-host')), false);
+    assert.equal(await page.locator('#presentation-host-announcement').isVisible(), false,
+      'Leaving the dual-screen console must not overlay its numbered layout on fullscreen playback');
+    assert.equal(await transition.locator('.player-delay-countdown').isVisible(), true);
+    assert.equal(await transition.locator('.player-delay-section-title').isVisible(), true);
+    assert.equal(await transition.locator('.player-delay-heading').evaluate(node => parseFloat(getComputedStyle(node).fontSize)), 42,
+      'Fullscreen transitions retain the viewing-distance scale rather than the 24px console heading');
+    await page.evaluate(() => {
+      elements.playerPanel.classList.remove('is-tauri-fullscreen'); document.body.classList.remove('is-tauri-fullscreen-active');
+      handleFullscreenChange();
+      state.presentationSession = { ...state.presentationSession, mode: 'localDualScreen', phase: 'active' };
+      applyPresentationCompositionDom(state.presentationSession.generation, 'stageOnly');
+    });
     await page.evaluate(() => {
       state.localAdvanceDelayDeadline = 0;
       state.localAdvanceOverlayPrimaryItem = null;

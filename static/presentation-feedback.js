@@ -1,4 +1,4 @@
-/* Passive confirmed-operation feedback; two recent categories, no waiting queue. */
+/* Passive confirmed-operation feedback; two recent categories, stable slots, no waiting queue. */
 (function (root) {
   "use strict";
   const durationMs = 2000, exitMs = 120, maxVisible = 2;
@@ -48,19 +48,31 @@
   }
   function create(element, translate) {
     const cards = new Map(), seen = new Map();
-    let order = 0;
+    let order = 0, placementOrder = 0;
     const svgNS = "http://www.w3.org/2000/svg";
     function remove(card) {
       clearTimeout(card.timer); clearTimeout(card.exitTimer); cancelAnimationFrame(card.frame);
       card.node.remove();
       if (cards.get(card.category) === card) cards.delete(card.category);
       if (!cards.size) element.classList.add("hidden");
+      position();
     }
     function position() {
-      const visible = [...cards.values()].filter(card => card.active).sort((a, b) => b.order - a.order);
-      visible.forEach((card, index) => card.node.style.setProperty("--feedback-offset",
-        visible.length === 1 ? "-50%" : index === 0 ? "calc(-100% - 4px)" : "4px"));
+      const visible = [...cards.values()].filter(card => card.active).sort((a, b) => a.placementOrder - b.placementOrder);
       element.classList.toggle("is-visible", visible.length > 0);
+      // Retain exiting geometry. New content is bounded to the latest two
+      // categories, but waits for the old card's 120ms exit before taking a slot.
+      if ([...cards.values()].some(card => !card.active)) return;
+      visible.forEach((card, index) => {
+        card.node.style.setProperty("--feedback-offset", index === 0 ? "calc(-100% - 4px)" : "4px");
+        if (!card.node.classList.contains("is-visible")) {
+          cancelAnimationFrame(card.frame);
+          card.frame = requestAnimationFrame(() => {
+            card.frame = null;
+            if (card.active) card.node.classList.add("is-visible");
+          });
+        }
+      });
     }
     function dismiss(card) {
       if (!card.active) return;
@@ -68,7 +80,8 @@
       clearTimeout(card.timer); cancelAnimationFrame(card.frame);
       card.node.classList.remove("is-visible");
       card.exitTimer = setTimeout(() => remove(card), exitMs);
-      position();
+      // Hold the other card in its slot until this one has finished fading.
+      element.classList.toggle("is-visible", [...cards.values()].some(item => item.active));
     }
     function hide() { for (const card of cards.values()) dismiss(card); }
     function content(card, notice) {
@@ -106,7 +119,8 @@
       }
       seen.set(notice.key, now + remaining);
       if (seen.size > 64) seen.delete(seen.keys().next().value);
-      if (!card?.active) {
+      const wasActive = Boolean(card?.active);
+      if (!wasActive) {
         // Limit visible categories without keeping stale controls in a backlog.
         const active = [...cards.values()].filter(item => item.active);
         if (active.length >= maxVisible) dismiss(active.sort((a, b) => a.order - b.order)[0]);
@@ -124,8 +138,8 @@
       }
       clearTimeout(card.timer); clearTimeout(card.exitTimer); cancelAnimationFrame(card.frame);
       card.active = true; card.notice = notice; card.order = ++order;
+      if (!wasActive) card.placementOrder = ++placementOrder;
       content(card, notice); element.classList.remove("hidden"); position();
-      card.frame = requestAnimationFrame(() => { if (card.active) card.node.classList.add("is-visible"); });
       card.timer = setTimeout(() => dismiss(card), remaining);
       return true;
     }

@@ -446,8 +446,15 @@ Fullscreen and audience screens use their existing display geometry. Passive
 right-center feedback briefly shows acknowledged playback, seeking, volume/mute,
 effective audio/video delay, delay locking and pitch changes, using the existing
 presentation relay for the audience window. It retains at most two recent
-categories, coalesces repeated adjustments, expires after two seconds and never
-becomes an interactive control. User operations keep the Host's ordinary toasts.
+categories in entry order, with new categories below earlier ones. Same-category
+adjustments update in place and refresh that card's two-second expiry; exceeding
+the limit evicts the least recently updated category. Each card expires
+independently; after the upper card finishes fading, the lower card moves into
+its slot. Feedback never becomes an interactive control. User operations keep
+the Host's ordinary toasts.
+The passive cards keep the shared fill, outline and blur without external shadows
+that would darken a neighboring card. The Host console's numbered list remains
+separate from fullscreen/audience transitions with their play glyph and countdown.
 
 Desktop audience video geometry is recorded as `presentation_video_geometry` in
 the shell's `desktop-startup.log` (Windows: `runtime/logs/desktop-startup.log`).

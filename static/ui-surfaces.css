@@ -434,6 +434,11 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Passive feedback belongs inside the fullscreen/audience root, never a body portal. */
+:root .presentation-feedback-card {
+  /* These closely stacked annotations keep the shared border/fill/blur, but
+     must not cast the floating-panel shadow onto the neighboring card. */
+  --rating-card-shadow: none;
+}
 .presentation-feedback {
   position: absolute;
   top: 50%;

@@ -73,7 +73,7 @@ const commandsByRole = {
     };
     const outputGenerationIsCurrent = generation => generation === shell.session.generation
       && shell.session.mode === "localDualScreen" && ["activating", "active"].includes(shell.session.phase);
-    const audience = await browser.newContext({ viewport: { width: 1280, height: 720 }, locale: "zh-CN" });
+    const audience = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: "zh-CN" });
     const hostContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "zh-CN" });
     const install = async context => {
       await context.exposeBinding("__shellInvoke", async ({ page }, name, args) => {
@@ -336,6 +336,9 @@ const commandsByRole = {
     await controller.waitForFunction(() => document.querySelector('#controller-feedback [data-feedback-category=delay].is-visible .presentation-feedback-value')?.textContent === '+150ms');
     assert.equal(await controller.locator('#controller-feedback [data-feedback-category=delay] .presentation-feedback-label').textContent(), '音画延迟');
     assert.ok(await controller.locator('#controller-feedback .presentation-feedback-card.is-visible').count() <= 2);
+    assert.ok((await controller.locator('#controller-feedback .presentation-feedback-card.is-visible')
+      .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).boxShadow))).every(shadow => shadow === 'none'),
+    'Relayed passive cards must not cast a shadow onto their neighbors');
     const feedbackExpires = await host.evaluate(() => state.presentationActionFeedback.expiresAt);
     for (let replay = 0; replay < 3; replay++) await host.evaluate(() => publishPresentationOutputState());
     assert.equal(await controller.evaluate(() => window.feedbackMedia.isConnected), true);
@@ -474,6 +477,11 @@ const commandsByRole = {
       [cardBadges.colors.muted, cardBadges.colors.red, cardBadges.colors.green]);
     assert.deepEqual(cardBadges.badges.map(({ cross }) => cross), ['none', 'block', 'none']);
     assert.equal(cardBadges.badges[0].play, 'M8 5v14l11-7z');
+    assert.equal(await controller.locator('body').evaluate(node => node.classList.contains('is-presentation-control-host')), false);
+    assert.equal(await controller.locator('.player-delay-countdown').isVisible(), true);
+    assert.equal(await controller.locator('.player-delay-section-title').isVisible(), true);
+    assert.equal(await controller.locator('.player-delay-play-icon .queue-badge-label').isVisible(), false,
+      'The audience transition primary retains a play glyph rather than console numbering');
     await controller.screenshot({ path: path.join(evidence, `${engine}-audience-song-cache-states.png`) });
     await host.evaluate(() => {
       state.data.playlist = state.data.playlist.map((item, index) => ({ ...item, cache_status: index === 0 ? 'downloading' : 'ready' }));
