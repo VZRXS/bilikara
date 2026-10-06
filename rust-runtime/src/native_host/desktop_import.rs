@@ -77,6 +77,20 @@ pub(super) struct Import {
 }
 
 impl Import {
+    pub(super) fn fresh() -> Result<Self, String> {
+        let now = super::now();
+        let seed = serde_json::from_value(json!({"session_started_at":now,
+            "session_played_file":format!("played-native-{}.json", (now * 1000.0) as u64),
+            "updated_at":now}))
+        .map_err(|_| failure("fresh desktop state"))?;
+        Ok(Self {
+            seed: app_state::prepare_import(seed)?,
+            cache: preferences::CachePolicy::default(),
+            cookie: None,
+            library: Vec::new(),
+            report: json!({"schema_version":1,"mode":"fresh_after_declined_import"}),
+        })
+    }
     pub(super) fn read(source: &Path, configured_cookie: &str) -> Result<Self, String> {
         let data = source.join("data");
         if !fs::symlink_metadata(&data).is_ok_and(|m| m.is_dir()) {
@@ -84,14 +98,12 @@ impl Import {
         }
         let mut report = json!({"schema_version":1,"media":"Not copied; existing Rust restart invalidation requires re-cache", "users":"Names/order only; no device authentication imported", "warnings":["Settings outside the supported native fields are retained in native-preferences.json but are not applied", "Legacy split files do not persist session_history; pre-import duplicate-request history cannot be recovered. Played and global history records are retained without inferring playback"]});
         let mut retained = serde_json::Map::new();
-        let split_layout = [
-            "player_state.json",
-            "history.json",
-            "session_users.json",
-            "playlist_backup.json",
-        ]
-        .iter()
-        .any(|name| data.join(name).exists());
+        // Monolithic versions also wrote playlist_backup.json. Only actual
+        // split core files supersede state.json; the backup selects the queue
+        // below without discarding unified history, users or player settings.
+        let split_layout = ["player_state.json", "history.json", "session_users.json"]
+            .iter()
+            .any(|name| data.join(name).exists());
         let legacy = if split_layout {
             json!({})
         } else {
@@ -367,7 +379,14 @@ impl Import {
 
 fn strip_presentation(item: &mut Value) {
     if let Some(object) = item.as_object_mut() {
-        for key in ["is_cached", "local_media_url", "local_media_path"] {
+        // The old muxed-media fields are neither song identity nor authority
+        // to reopen cache files. Keep all other fields under strict validation.
+        for key in [
+            "is_cached",
+            "local_media_url",
+            "local_media_path",
+            "local_relative_path",
+        ] {
             object.remove(key);
         }
     }
@@ -487,20 +506,31 @@ pub(super) fn restore(
 }
 
 pub(super) fn validate_native(directory: &Path) -> Result<(), String> {
-    validate_native_inner(directory, false)
+    open_validated_native(directory).map(drop)
 }
 
 pub(super) fn validate_for_tool(directory: &Path) -> Result<(), String> {
+    open_validated_for_tool(directory).map(drop)
+}
+
+pub(super) fn open_validated_for_tool(directory: &Path) -> Result<NativeHostStorage, String> {
     validate_native_inner(directory, true)
 }
 
-fn validate_native_inner(directory: &Path, offline_import: bool) -> Result<(), String> {
+pub(super) fn open_validated_native(directory: &Path) -> Result<NativeHostStorage, String> {
+    validate_native_inner(directory, false)
+}
+
+fn validate_native_inner(
+    directory: &Path,
+    offline_import: bool,
+) -> Result<NativeHostStorage, String> {
     if !fs::symlink_metadata(directory).is_ok_and(|m| m.is_dir())
         || directory.join("desktop-import.pending").exists()
     {
         return Err(failure("incomplete native destination"));
     }
-    let (_storage, seed) = if offline_import {
+    let (storage, seed) = if offline_import {
         NativeHostStorage::open_for_import(directory)
     } else {
         NativeHostStorage::open(directory)
@@ -510,7 +540,7 @@ fn validate_native_inner(directory: &Path, offline_import: bool) -> Result<(), S
     preferences::load(directory, true).map_err(|_| failure("existing destination preferences"))?;
     super::login::load_desktop(directory)
         .map_err(|_| failure("existing destination credentials"))?;
-    Ok(())
+    Ok(storage)
 }
 
 // Detect a changing old Host without reading media caches or unrelated files.
@@ -777,6 +807,83 @@ mod tests {
         assert_eq!(imported.seed.session_users, vec!["Current"]);
         assert!(imported.seed.session_history.is_empty());
         assert!(imported.seed.history.is_empty());
+    }
+    #[test]
+    fn unified_state_and_backup_keep_history_settings_and_backup_queue() {
+        let f = Fixture::new();
+        let history = json!([{"key":"fixture","display_title":"Fixture","original_url":"https://www.bilibili.com/video/BV1xx411c7mD","resolved_url":"https://www.bilibili.com/video/BV1xx411c7mD","requested_at":102.0,"request_count":2}]);
+        f.put(
+            "data/state.json",
+            json!({"current_item":item("state-current"),"playlist":[item("state-queued")],"history":history,"session_users":["Alice"],"player_settings":{"av_offset_ms":320,"volume_percent":55},"updated_at":103.0}),
+        );
+        f.put(
+            "data/playlist_backup.json",
+            json!({"current_item":item("backup-current"),"playlist":[item("backup-queued")],"updated_at":104.0}),
+        );
+        let imported = Import::read(&f.source(), "").unwrap();
+        assert_eq!(imported.seed.history.len(), 1);
+        assert_eq!(imported.seed.history[0].request_count, 2);
+        assert_eq!(imported.seed.session_users, ["Alice"]);
+        assert_eq!(imported.seed.player_settings.global_av_delay_ms, 320);
+        assert_eq!(imported.seed.player_settings.volume_percent, 55);
+        assert_eq!(imported.seed.updated_at, 103.0);
+        assert_eq!(imported.seed.current_item.unwrap().id, "backup-current");
+        assert_eq!(imported.seed.playlist[0].id, "backup-queued");
+    }
+    #[test]
+    fn legacy_mux_paths_are_discarded_without_trusting_saved_media() {
+        let f = Fixture::new();
+        populate(&f);
+        let mut current = item("current");
+        current["local_relative_path"] = json!("../../untrusted/current.mp4");
+        current["local_media_url"] = json!("file:///untrusted/current.mp4");
+        let mut queued = current.clone();
+        queued["id"] = json!("queued");
+        f.put(
+            "data/playlist_backup.json",
+            json!({"current_item":current,"playlist":[queued],"updated_at":103.0}),
+        );
+        let imported = Import::read(&f.source(), "").unwrap();
+        for item in imported
+            .seed
+            .current_item
+            .iter()
+            .chain(imported.seed.playlist.iter())
+        {
+            assert_eq!(item.cache_status, "pending");
+            assert_eq!(item.cache_progress, 0.0);
+            assert!(item.video_relative_path.is_empty());
+            assert!(item.video_media_url.is_empty());
+            assert!(item.artifact_relative_directory.is_empty());
+            assert_eq!(item.display_title, "Fixture");
+        }
+        assert_eq!(imported.seed.current_item.unwrap().id, "current");
+        assert_eq!(imported.seed.playlist[0].id, "queued");
+    }
+    #[test]
+    fn unknown_or_malformed_song_fields_still_reject_before_publication() {
+        for (field, value) in [
+            (
+                "unsupported_saved_field",
+                json!("not a recognized legacy field"),
+            ),
+            ("cid", json!("not an integer")),
+        ] {
+            let f = Fixture::new();
+            let mut song = item("current");
+            song[field] = value;
+            f.put("data/state.json", json!({"current_item":song}));
+            let original = fs::read(f.source().join("data/state.json")).unwrap();
+            assert_eq!(
+                restore(&f.source(), &f.dest(), "").unwrap_err(),
+                failure("desktop state shape")
+            );
+            assert!(!f.dest().exists());
+            assert_eq!(
+                fs::read(f.source().join("data/state.json")).unwrap(),
+                original
+            );
+        }
     }
     #[test]
     fn corrupt_existing_destination_is_not_reimported_or_overwritten() {

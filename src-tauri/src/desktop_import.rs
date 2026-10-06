@@ -34,6 +34,18 @@ struct Completion {
     destination: PathBuf,
     backup: Option<PathBuf>,
     completed: bool,
+    #[serde(default)]
+    source_format: Option<String>,
+    #[serde(default)]
+    source_backup: Option<PathBuf>,
+    #[serde(default)]
+    cleanup_warning: Option<String>,
+}
+
+const FEEDBACK_URL: &str = "https://github.com/VZRXS/bilikara/issues";
+
+fn failure_message(error: &str) -> String {
+    format!("{error}\n\n请在 GitHub 项目反馈或联系开发者：\n{FEEDBACK_URL}")
 }
 
 fn execute(program: &Path, arguments: &[OsString], deadline: Duration) -> Result<Vec<u8>, String> {
@@ -154,17 +166,76 @@ fn convert(
     if replace_native {
         args.push(OsString::from("--replace-native"));
     }
-    let report: Completion = serde_json::from_slice(&execute(backend, &args, DEADLINE)?)
+    if source.is_some() {
+        args.push(OsString::from("--remove-source"));
+    }
+    completion(backend, &args, Some(destination))
+}
+
+fn start_without_import(
+    backend: &Path,
+    destination: Option<&Path>,
+    failed_source: Option<&Path>,
+) -> Result<Completion, String> {
+    let mut args = vec![OsString::from("--start-without-import")];
+    if let Some(destination) = destination {
+        args.extend(["--data-dir".into(), destination.as_os_str().to_owned()]);
+    }
+    if let Some(source) = failed_source {
+        args.extend(["--import-from".into(), source.as_os_str().to_owned()]);
+    }
+    completion(backend, &args, destination)
+}
+
+fn preserved_data(report: &Completion) -> String {
+    let mut message = report
+        .backup
+        .as_ref()
+        .map(|p| format!("\n\n原数据备份：\n{}", p.display()))
+        .unwrap_or_default();
+    if let Some(path) = &report.source_backup
+        && Some(path) != report.backup.as_ref()
+    {
+        message.push_str(&format!(
+            "\n\n失败来源已隔离到旧数据备份：\n{}",
+            path.display()
+        ));
+    }
+    if let Some(warning) = &report.cleanup_warning {
+        message.push_str(&format!(
+            "\n\n旧数据无法完全隔离，原文件或已生成的备份均已保留：\n{warning}"
+        ));
+    }
+    message
+}
+
+fn completion(
+    backend: &Path,
+    args: &[OsString],
+    destination: Option<&Path>,
+) -> Result<Completion, String> {
+    let report: Completion = serde_json::from_slice(&execute(backend, args, DEADLINE)?)
         .map_err(|_| "导入结果无效，请再次运行工具检查。")?;
     if report.schema_version != 1
-        || (report.destination != destination
-            && destination
-                .parent()
-                .and_then(|p| p.canonicalize().ok())
-                .and_then(|p| destination.file_name().map(|name| p.join(name)))
-                .as_ref()
-                != Some(&report.destination))
+        || !report.destination.is_absolute()
+        || destination.is_some_and(|destination| {
+            report.destination != destination
+                && destination
+                    .parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .and_then(|p| destination.file_name().map(|name| p.join(name)))
+                    .as_ref()
+                    != Some(&report.destination)
+        })
         || report.backup.as_ref().is_some_and(|p| !p.is_absolute())
+        || report
+            .source_backup
+            .as_ref()
+            .is_some_and(|p| !p.is_absolute())
+        || report
+            .source_format
+            .as_deref()
+            .is_some_and(|kind| !["legacy", "native", "fresh"].contains(&kind))
     {
         return Err("导入结果不兼容，请保留数据。".into());
     }
@@ -184,10 +255,35 @@ fn success(app: &tauri::AppHandle, report: &Completion) {
         .as_ref()
         .map(|p| format!("\n\n原数据备份：\n{}", p.display()))
         .unwrap_or_default();
+    let source_backup = report
+        .source_backup
+        .as_ref()
+        .map(|p| {
+            format!(
+                "\n\n来源数据已移到备份，旧位置不再保留记录：\n{}",
+                p.display()
+            )
+        })
+        .unwrap_or_default();
+    let note = match report.source_format.as_deref() {
+        Some("native") => "新版格式直接复制，保留已有媒体缓存和设备登记。",
+        Some("legacy") => "旧格式转换后媒体会重新缓存，Remote 设备需要重新登记。",
+        _ => "若来源为旧格式，媒体会重新缓存，Remote 设备需要重新登记。",
+    };
+    let warning = report
+        .cleanup_warning
+        .as_ref()
+        .map(|e| {
+            format!(
+                "\n\n来源清理未完全确认，请保留原数据及备份。\n{}",
+                failure_message(e)
+            )
+        })
+        .unwrap_or_default();
     information(
         app,
         format!(
-            "导入完成。现在可以正常打开 bilikara。\n\n数据位置：\n{}{backup}\n\n媒体将重新缓存，Remote 设备需要重新登记。",
+            "导入完成。现在可以正常打开 bilikara。\n\n数据位置：\n{}{backup}{source_backup}\n\n{note}{warning}",
             report.destination.display()
         ),
     );
@@ -196,7 +292,7 @@ fn success(app: &tauri::AppHandle, report: &Completion) {
 fn choose_folder(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
     app.dialog()
         .file()
-        .set_title("选择旧版 runtime、data 或 bilikara 数据文件夹")
+        .set_title("选择旧版 runtime 文件夹（也可选择 data 或 bilikara 应用数据文件夹）")
         .blocking_pick_folder()
         .map(|p| p.into_path().map_err(|_| "请选择本机的数据文件夹。".into()))
         .transpose()
@@ -288,7 +384,67 @@ pub(crate) fn gate_startup(
 
 fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
     let backend = crate::backend_process::import_tool_backend()?;
-    let mut report = inspection(&backend, None, first_start)?;
+    let mut confirmed_source = None;
+    match workflow_inner(app, &backend, first_start, &mut confirmed_source) {
+        Err(error) if first_start => {
+            // Handle failed legacy import once, before normal Host startup.
+            // The staged transaction also backs up in-place legacy records;
+            // native corruption and conflicting recovery remain protected.
+            let fresh = start_without_import(&backend, None, confirmed_source.as_deref()).map_err(
+                |fresh_error| {
+                    failure_message(&format!("{error}\n\n无法安全准备正常启动：{fresh_error}"))
+                },
+            )?;
+            let backup = preserved_data(&fresh);
+            information(
+                app,
+                failure_message(&format!(
+                    "{error}{backup}\n\n本次不再自动尝试导入，接下来正常启动。之后可关闭软件，运行「导入旧数据」工具重新选择 runtime 文件夹。"
+                )),
+            );
+            Ok(true)
+        }
+        Err(error) => {
+            // A manual attempt before the first launch must not leave an
+            // invalid legacy destination waiting to intercept the next launch.
+            // Existing native/recovery data still follows its protected path.
+            if let Ok(report) = inspection(&backend, None, true)
+                && !report.pending
+                && ["missing", "empty", "legacy"].contains(&report.destination_status.as_str())
+            {
+                let fresh = start_without_import(
+                    &backend,
+                    Some(&report.destination),
+                    confirmed_source.as_deref(),
+                )?;
+                let backup = preserved_data(&fresh);
+                return Err(format!(
+                    "{error}{backup}\n\n下次可正常启动，不再自动尝试导入；也可重新运行本工具选择正确的 runtime 文件夹。"
+                ));
+            }
+            Err(error)
+        }
+        other => other,
+    }
+}
+
+fn skip_import(backend: &Path, report: &Inspection, first_start: bool) -> Result<bool, String> {
+    if first_start {
+        let fresh = start_without_import(backend, Some(&report.destination), None)?;
+        if !fresh.completed {
+            return Err("未能安全准备正常启动，请保留数据。".into());
+        }
+    }
+    Ok(first_start)
+}
+
+fn workflow_inner(
+    app: &tauri::AppHandle,
+    backend: &Path,
+    first_start: bool,
+    confirmed_source: &mut Option<PathBuf>,
+) -> Result<bool, String> {
+    let mut report = inspection(backend, None, first_start)?;
     if report.pending {
         let agreed = app
             .dialog()
@@ -304,13 +460,13 @@ fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
         if !agreed {
             return Ok(false);
         }
-        let recovered = convert(&backend, &report.destination, None, false)?;
+        let recovered = convert(backend, &report.destination, None, false)?;
         if recovered.completed {
             success(app, &recovered);
             return Ok(true);
         }
         information(app, "已恢复原数据。接下来可以重新选择导入来源。");
-        report = inspection(&backend, None, first_start)?;
+        report = inspection(backend, None, first_start)?;
     }
     if first_start && (report.destination_status == "native" || report.candidates.is_empty()) {
         return Ok(true);
@@ -318,56 +474,39 @@ fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
     if !["missing", "empty", "legacy", "native"].contains(&report.destination_status.as_str()) {
         return Err("目标目录包含无法识别或未完成的数据。请保留这个目录，并在新解压的 bilikara 中运行导入工具。".into());
     }
-    let mut index = 0;
+    let mut selected = report.candidates.first().cloned();
     loop {
-        let source = if let Some(source) = report.candidates.get(index) {
-            source.clone()
+        let source = if let Some(source) = selected.take() {
+            source
         } else {
             let Some(selected) = choose_folder(app)? else {
-                return Ok(false);
+                return skip_import(backend, &report, first_start);
             };
-            match inspection(&backend, Some(&selected), false) {
-                Ok(selected) => selected
-                    .candidates
-                    .into_iter()
-                    .next()
-                    .ok_or("没有发现可导入的旧数据。")?,
-                Err(error) => {
-                    information(
-                        app,
-                        if error.contains("Selected folder contains native-format records") {
-                            "所选文件夹已有新版格式的记录，不适用于旧数据转换。请按升级说明保留这份数据：Windows 复制整个 runtime；macOS 保留 Application Support 中的 bilikara 文件夹。".into()
-                        } else {
-                            error
-                        },
-                    );
-                    continue;
-                }
-            }
+            inspection(backend, Some(&selected), false)?
+                .candidates
+                .into_iter()
+                .next()
+                .ok_or("没有发现可导入的数据，请选择旧版 runtime 文件夹。")?
         };
         let close_instruction = if first_start {
             "请先关闭旧版 bilikara。"
         } else {
             "请先关闭其他 bilikara 窗口。"
         };
-        let result=app.dialog().message(format!("检测到旧版数据：\n{}\n\n导入位置：\n{}\n\n{close_instruction}导入会保留已保存的歌单、历史和分场记录，并保留旧数据备份。",source.display(),report.destination.display()))
+        let result=app.dialog().message(format!("检测到可导入的数据：\n{}\n\n导入位置：\n{}\n\n{close_instruction}旧格式会转换，新版格式直接复制并校验。导入后，来源的 data 文件夹会移到备份，旧位置不再保留记录。\n\n来源不对？点击「选择其他路径」，选择旧版 runtime 文件夹（或 data、应用数据文件夹）。",source.display(),report.destination.display()))
             .title("bilikara · 导入旧数据").buttons(MessageDialogButtons::YesNoCancelCustom(
-                "导入".into(),if index+1<report.candidates.len(){"下一处"}else{"选择其他位置"}.into(),"取消".into()))
+                "导入".into(),"选择其他路径".into(),if first_start { "暂不导入" } else { "取消" }.into()))
             .blocking_show_with_result();
         match result {
             MessageDialogResult::Yes | MessageDialogResult::Ok => {}
             MessageDialogResult::Custom(ref label) if label == "导入" => {}
             MessageDialogResult::No => {
-                index += 1;
                 continue;
             }
-            MessageDialogResult::Custom(ref label)
-                if label == "下一处" || label == "选择其他位置" =>
-            {
-                index += 1;
+            MessageDialogResult::Custom(ref label) if label == "选择其他路径" => {
                 continue;
             }
-            _ => return Ok(false),
+            _ => return skip_import(backend, &report, first_start),
         }
         let replace_native = report.destination_status == "native";
         if replace_native && !app.dialog()
@@ -377,7 +516,8 @@ fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
             .blocking_show() {
             return Ok(false);
         }
-        let converted = convert(&backend, &report.destination, Some(&source), replace_native)?;
+        *confirmed_source = Some(source.clone());
+        let converted = convert(backend, &report.destination, Some(&source), replace_native)?;
         if !converted.completed {
             return Err("旧数据已恢复，请重新运行工具导入。".into());
         }
@@ -400,7 +540,7 @@ pub(crate) fn run(mut context: tauri::Context<tauri::Wry>) {
                         Ok(_) => 0,
                         Err(error) => {
                             app.dialog()
-                                .message(error)
+                                .message(failure_message(&error))
                                 .title("bilikara · 导入未完成")
                                 .kind(MessageDialogKind::Error)
                                 .blocking_show();

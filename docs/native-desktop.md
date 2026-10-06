@@ -593,31 +593,55 @@ known legacy apps in `/Applications` or `~/Applications`, and Linux's existing
 XDG/application-home root. It does not search unrelated directories or choose
 the newest library silently. Multiple candidates require source confirmation;
 the folder picker also accepts an old application home, `runtime`, its `data`
-child or a legacy macOS app. Native-format sources need no old-format conversion;
-published Preview 2 follows the platform preservation instructions below.
+child or a legacy macOS app. The confirmation always offers “选择其他路径” and
+explains selecting the old runtime folder. Native-format sources, including
+published Preview 2, are copied and validated rather than converted.
 First-start discovery checks fixed record names in known roots, without recursive
 searches, media initialization or cache enumeration. Explicit data overrides keep
-their isolated startup behavior. Cancellation leaves data uninitialized so the
-next launch can offer import again.
+their isolated startup behavior. Selecting “暂不导入”, cancelling the folder
+picker or failing legacy conversion prepares fresh native data and continues
+normal startup; the old records remain recoverable, and subsequent launches do
+not repeat the offer. A failed, confirmed external legacy source moves into the
+new application home's `legacy-backup/<id>/data`, outside discovery paths. An
+in-place source uses the existing transaction backup. Cross-volume relocation
+verifies the raw copy first and keeps an additional recovery copy beside the
+old source rather than recursively deleting user files. If safe relocation
+fails, the source stays protected, the warning explains it, and fresh native
+records still allow startup. No unconfirmed source is moved.
+Failures include the GitHub issues address. The separate
+tool remains available to choose the correct runtime/data folder later. This
+does not bypass malformed native checkpoints or conflicting recovery guards.
 
 The packaged Host exposes offline, one-shot entries:
 `--inspect-legacy-import` reports paths/status without writing;
 `--inspect-first-start` additionally bypasses candidate discovery for native,
 unknown or interrupted destinations. `--import-only`
 converts the confirmed `--import-from` source into `--data-dir` (otherwise the
-normal native root). All exit before networking, media configuration or AppState
-startup. The shell supervises each process with bounded output and a 120-second
+normal native root); native-format sources are copied and validated without
+conversion. `--start-without-import` uses the same staged transaction to preserve
+in-place legacy data and initialize empty native records after a declined/failed
+first-start offer. With a confirmed `--import-from`, fresh-start handling also isolates
+the failed raw legacy source; a backup problem is reported separately without
+discarding the fresh checkpoint. All operations exit before networking, media
+configuration or normal AppState startup. The shell supervises each process with bounded output and a 120-second
 deadline. `npm run test:native-import` executes current host-native Cargo output;
 CI also runs native-feature reader, locking and interruption regressions.
 
 Conversion stages and validates a complete checkpoint before switching the
 directory. An in-place conversion moves the old `data` into a private sibling
-`.bilikara-import-<id>/legacy/data` backup; an external source stays untouched.
+`.bilikara-import-<id>/legacy/data` backup; an external source stays untouched by
+default. The GUI explicitly requests `--remove-source` after source confirmation:
+once installation validates, the source data directory moves into a private
+same-volume `.bilikara-imported-<id>/data` backup beside its old location. Only
+the data directory moves, not the installation/AppData root. Cleanup failures
+are reported separately and preserve the installed data and remaining source.
 Existing native checkpoints, unknown nonempty data and a different legacy
 destination are protected by default. The separate tool can import after first
 launch: a second explicit confirmation permits `--replace-native`, which strictly
 validates and locks current native data, backs up the complete directory, then
-replaces it with converted legacy records without merging. A running Host or
+replaces it with imported records without merging. A native source is locked and
+copied with its checkpoint, record chunks, cache, device identities and file
+permissions intact; links and special files are rejected. A running Host or
 malformed native checkpoint still rejects replacement. The automatic first-start
 flow never requests this permission.
 Relevant legacy files are checked again for concurrent changes before switching.
@@ -629,7 +653,8 @@ POSIX directory changes are flushed using the existing storage helper. Backups
 and unsuccessful private staging are retained for recovery, not recursively
 deleted. These are process-interruption guarantees, not foreign-platform or
 power-loss qualification. User records/settings and archived sessions reuse the
-existing converter; device authorization is renewed and media is re-cached.
+existing converter; only legacy conversion renews device authorization and
+re-caches media. Native-format copying retains those records unchanged.
 
 ### Advanced explicit import into a separate root
 

@@ -59,9 +59,20 @@ fn format(data: &Path) -> Result<Format, String> {
     }
 }
 
-fn legacy_root(selected: &Path) -> Result<PathBuf, String> {
-    if !selected.is_absolute() || !fs::symlink_metadata(selected).is_ok_and(|m| m.is_dir()) {
-        return Err("Select an absolute real legacy data folder".into());
+struct Source {
+    selection: PathBuf,
+    data: PathBuf,
+    kind: Format,
+}
+
+fn source_root(selected: &Path) -> Result<Source, String> {
+    if !selected.is_absolute()
+        || selected
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        || !fs::symlink_metadata(selected).is_ok_and(|m| m.is_dir())
+    {
+        return Err("Select an absolute real runtime or data folder".into());
     }
     let root = selected
         .canonicalize()
@@ -71,25 +82,53 @@ fn legacy_root(selected: &Path) -> Result<PathBuf, String> {
         root.join("runtime"),
         root.join("Contents/MacOS/runtime"),
     ];
-    if root.file_name().is_some_and(|name| name == "data")
-        && let Some(parent) = root.parent()
+    if root
+        .file_name()
+        .is_some_and(|name| name == "data" || name == "native")
     {
-        choices.insert(0, parent.to_owned());
+        choices.insert(0, root.clone());
     }
-    let mut native_source = false;
     for candidate in choices {
-        let kind = format(&candidate.join("data")).ok();
-        native_source |= kind == Some(Format::Native);
-        if kind == Some(Format::Legacy) {
-            return candidate
+        let data = if candidate
+            .file_name()
+            .is_some_and(|n| n == "data" || n == "native")
+        {
+            candidate.clone()
+        } else if matches!(
+            format(&candidate.join("data")).ok(),
+            Some(Format::Native | Format::Legacy)
+        ) || !candidate.join("native").exists()
+        {
+            candidate.join("data")
+        } else {
+            candidate.join("native")
+        };
+        if let Ok(kind @ (Format::Legacy | Format::Native)) = format(&data) {
+            let data = data
                 .canonicalize()
-                .map_err(|_| "Cannot resolve legacy root".into());
+                .map_err(|_| "Cannot resolve source data")?;
+            let selection = if data.file_name().is_some_and(|n| n == "data") {
+                data.parent().ok_or("Missing source parent")?.to_owned()
+            } else {
+                data.clone()
+            };
+            return Ok(Source {
+                selection,
+                data,
+                kind,
+            });
         }
     }
-    if native_source {
-        return Err("Selected folder contains native-format records; follow the native-data upgrade instructions instead of legacy conversion".into());
+    Err("No supported desktop records found; select the old runtime folder, its data folder, or the old application-data root".into())
+}
+
+#[cfg(test)]
+fn legacy_root(selected: &Path) -> Result<PathBuf, String> {
+    let source = source_root(selected)?;
+    if source.kind != Format::Legacy {
+        return Err("Source is already native-format data".into());
     }
-    Err("No supported legacy records found; select the old runtime folder, its data folder, or the old application-data root".into())
+    Ok(source.selection)
 }
 
 fn discover(
@@ -137,9 +176,14 @@ fn discover(
         }
     }
     let mut seen = HashSet::new();
+    let current = destination.canonicalize().ok();
     roots
         .into_iter()
-        .filter_map(|root| legacy_root(&root).ok())
+        .filter_map(|root| source_root(&root).ok())
+        // Never offer to copy a native destination onto itself. Legacy
+        // in-place conversion remains a valid confirmed choice.
+        .filter(|source| source.kind != Format::Native || current.as_ref() != Some(&source.data))
+        .map(|source| source.selection)
         .filter(|root| seen.insert(root.clone()))
         .collect()
 }
@@ -152,7 +196,7 @@ fn inspect(
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Result<Value, String> {
     let candidates = if let Some(source) = source {
-        vec![legacy_root(source)?]
+        vec![source_root(source)?.selection]
     } else {
         discover(destination, executable, platform, env)
     };
@@ -354,20 +398,264 @@ fn install_with_options(
     requested: &Path,
     replace_native: bool,
 ) -> Result<Value, String> {
+    install_selected(
+        source,
+        requested,
+        Options {
+            replace_native,
+            ..Options::default()
+        },
+    )
+}
+
+#[derive(Default)]
+struct Options {
+    replace_native: bool,
+    remove_source: bool,
+    start_fresh: bool,
+}
+
+// Copy only a validated native data directory, retaining bytes and permissions.
+// Links/devices are never followed; runtime/WebView/application files are not
+// selected. The transient storage lock is acquired locally rather than copied.
+fn native_tree(data: &Path, copy_to: Option<&Path>) -> Result<Vec<u8>, String> {
+    data_tree(data, copy_to, true)
+}
+
+fn data_tree(
+    data: &Path,
+    copy_to: Option<&Path>,
+    skip_storage_lock: bool,
+) -> Result<Vec<u8>, String> {
+    use sha2::{Digest, Sha256};
+    fn visit(
+        root: &Path,
+        relative: &Path,
+        to: Option<&Path>,
+        depth: usize,
+        hash: &mut Sha256,
+        skip_storage_lock: bool,
+    ) -> Result<(), String> {
+        if depth > 64 {
+            return Err("Native data nesting exceeds the import limit; source unchanged".into());
+        }
+        let path = root.join(relative);
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|_| "Cannot inspect native source; source unchanged")?;
+        if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
+            return Err("Native source contains a link or special file; source unchanged".into());
+        }
+        hash.update((relative.as_os_str().as_encoded_bytes().len() as u64).to_le_bytes());
+        hash.update(relative.as_os_str().as_encoded_bytes());
+        hash.update([u8::from(meta.is_dir())]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            hash.update((meta.permissions().mode() & 0o777).to_le_bytes());
+        }
+        if meta.is_dir() {
+            if let Some(to) = to
+                && !relative.as_os_str().is_empty()
+            {
+                directory(&to.join(relative))?;
+            }
+            let mut children = fs::read_dir(&path)
+                .map_err(|_| "Cannot read native source")?
+                .map(|entry| entry.map(|e| e.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "Cannot enumerate native source")?;
+            children.sort();
+            for child in children {
+                if skip_storage_lock
+                    && relative.as_os_str().is_empty()
+                    && child == "host-state.lock"
+                {
+                    continue;
+                }
+                visit(
+                    root,
+                    &relative.join(child),
+                    to,
+                    depth + 1,
+                    hash,
+                    skip_storage_lock,
+                )?;
+            }
+        } else {
+            hash.update(meta.len().to_le_bytes());
+            let mut input = private_options()
+                .read(true)
+                .open(&path)
+                .map_err(|_| "Cannot read native source")?;
+            let mut output = to
+                .map(|to| {
+                    private_options()
+                        .write(true)
+                        .create_new(true)
+                        .open(to.join(relative))
+                })
+                .transpose()
+                .map_err(|_| "Cannot stage native data")?;
+            let mut buffer = [0_u8; 65536];
+            loop {
+                let length = input
+                    .read(&mut buffer)
+                    .map_err(|_| "Cannot read native source")?;
+                if length == 0 {
+                    break;
+                }
+                hash.update(&buffer[..length]);
+                if let Some(file) = &mut output {
+                    file.write_all(&buffer[..length])
+                        .map_err(|_| "Cannot copy native source")?;
+                }
+            }
+            if let Some(file) = output {
+                file.sync_all()
+                    .map_err(|_| "Cannot persist copied native data")?;
+            }
+        }
+        if let Some(to) = to {
+            fs::set_permissions(to.join(relative), meta.permissions())
+                .map_err(|_| "Cannot preserve native data permissions")?;
+            if meta.is_dir() {
+                sync(&to.join(relative))?;
+            }
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    visit(
+        data,
+        Path::new(""),
+        copy_to,
+        0,
+        &mut hash,
+        skip_storage_lock,
+    )?;
+    Ok(hash.finalize().to_vec())
+}
+
+// A confirmed legacy source that failed conversion is preserved as raw data,
+// outside every discovery root. This never parses, repairs or executes it.
+// Fresh native initialization has already succeeded, so a backup error must
+// report the retained source without preventing normal startup.
+fn quarantine_failed_source(selected: &Path, destination: &Path, report: &mut Value) {
+    let backup = (|| -> Result<Option<PathBuf>, String> {
+        let source = source_root(selected)?;
+        let destination = destination
+            .canonicalize()
+            .map_err(|_| "Cannot resolve initialized data")?;
+        if source.data == destination {
+            // In-place legacy records were already saved by the fresh-start
+            // transaction; never move the newly initialized native checkpoint.
+            return Ok(report["backup"].as_str().map(PathBuf::from));
+        }
+        if source.kind != Format::Legacy
+            || source.data.starts_with(&destination)
+            || destination.starts_with(&source.selection)
+        {
+            return Err(
+                "Only a separate confirmed legacy data directory can be isolated; source retained"
+                    .into(),
+            );
+        }
+        let _destination_lock = lock(&destination)?;
+        desktop_import::validate_for_tool(&destination)?;
+        let _source_lock = lock(&source.data)?;
+        let stamp = data_tree(&source.data, None, false)?;
+        let root = destination.parent().unwrap().join("legacy-backup");
+        real(&root)?;
+        if !root.exists() {
+            directory(&root)?;
+        }
+        if !root.is_dir() {
+            return Err("Legacy backup location is not a directory; source retained".into());
+        }
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).map_err(|_| "Cannot create legacy backup identity")?;
+        let nonce: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let work = root.join(&nonce);
+        directory(&work)?;
+        let saved = work.join("data");
+        if fs::rename(&source.data, &saved).is_err() {
+            // AppData and a portable installation may live on different
+            // volumes. Verify the complete copy before removing the old path.
+            // Keep an additional same-volume recovery copy rather than
+            // recursively deleting the user's original directory.
+            directory(&saved)?;
+            if data_tree(&source.data, Some(&saved), false)? != stamp
+                || data_tree(&saved, None, false)? != stamp
+                || data_tree(&source.data, None, false)? != stamp
+            {
+                return Err("Legacy source changed during backup; original data retained".into());
+            }
+            report["source_backup"] = json!(&saved);
+            let recovery = source
+                .data
+                .parent()
+                .unwrap()
+                .join(format!(".bilikara-imported-{nonce}"));
+            directory(&recovery)?;
+            fs::rename(&source.data, recovery.join("data"))
+                .map_err(|_| "Legacy backup copied, but old data is occupied or cannot be moved; original path retained")?;
+            sync(&recovery)?;
+        }
+        // The directory switch is the discovery boundary, not a marker in the
+        // untrusted old records. All bytes remain recoverable on interruption.
+        report["source_backup"] = json!(&saved);
+        sync(&work)?;
+        sync(&root)?;
+        sync(source.data.parent().unwrap())?;
+        Ok(Some(saved))
+    })();
+    match backup {
+        Ok(Some(path)) => report["source_backup"] = json!(path),
+        Ok(None) => {}
+        Err(error) => report["cleanup_warning"] = json!(error),
+    }
+}
+
+fn source_stamp(source: &Source) -> Result<Vec<u8>, String> {
+    if source.kind == Format::Native {
+        native_tree(&source.data, None)
+    } else {
+        desktop_import::source_stamp(&source.selection)
+    }
+}
+
+fn install_selected(
+    source: Option<&Path>,
+    requested: &Path,
+    options: Options,
+) -> Result<Value, String> {
     let destination = destination(requested)?;
     let _lock = lock(&destination)?;
     let pending = import_guard_path(&destination, "json")?;
     if fs::symlink_metadata(&pending).is_ok() {
         let recovered = recover_locked(&destination)?;
-        if recovered["completed"] == true || source.is_none() {
+        if recovered["completed"] == true || (source.is_none() && !options.start_fresh) {
             return Ok(recovered);
         }
     }
-    let source = legacy_root(source.ok_or("Select an old data folder to import")?)?;
+    let source = if options.start_fresh {
+        None
+    } else {
+        Some(source_root(
+            source.ok_or("Select an old runtime folder to import")?,
+        )?)
+    };
     let kind = format(&destination)?;
+    if options.start_fresh && kind == Format::Native {
+        // Publication may have completed before its process/report failed.
+        // Continue only with a validated, closed checkpoint; never replace it
+        // with empty state or bypass malformed native records.
+        desktop_import::validate_for_tool(&destination)?;
+        return Ok(result(&destination, None, true));
+    }
     match kind {
-        Format::Native if !replace_native => return Err("Existing native data is protected; import will not overwrite or merge it".into()),
-        Format::Legacy if destination != source.join("data") =>
+        Format::Native if !options.replace_native || options.start_fresh => return Err("Existing native data is protected; import will not overwrite or merge it".into()),
+        Format::Legacy if !options.start_fresh && source.as_ref().is_none_or(|s| destination != s.data) =>
             return Err("Destination contains another legacy library; select that library rather than overwrite it".into()),
         Format::Unknown | Format::Incomplete => return Err("Destination contains unrecognized or incomplete data; preserve it and choose a fresh installation".into()),
         _ => {},
@@ -384,14 +672,41 @@ fn install_with_options(
     } else {
         None
     };
-    if source.starts_with(&destination) {
+    if source
+        .as_ref()
+        .is_some_and(|s| s.data == destination || s.selection.starts_with(&destination))
+        && source
+            .as_ref()
+            .is_none_or(|s| s.kind != Format::Legacy || s.data != destination)
+    {
         return Err("Import destination must not contain the old source".into());
     }
-    if destination.starts_with(&source) && destination != source.join("data") {
+    if source
+        .as_ref()
+        .is_some_and(|s| destination.starts_with(&s.selection) && destination != s.data)
+    {
         return Err("Only the old root's data directory supports an in-place import".into());
     }
-    let stamp = desktop_import::source_stamp(&source)?;
-    let import = desktop_import::Import::read(&source, "")?;
+    let _source_lock = source
+        .as_ref()
+        .filter(|s| s.data != destination)
+        .map(|s| lock(&s.data))
+        .transpose()?;
+    let source_storage = source
+        .as_ref()
+        .filter(|s| s.kind == Format::Native)
+        .map(|s| desktop_import::open_validated_for_tool(&s.data))
+        .transpose()?;
+    let stamp = source.as_ref().map(source_stamp).transpose()?;
+    let import = if options.start_fresh {
+        Some(desktop_import::Import::fresh()?)
+    } else {
+        source
+            .as_ref()
+            .filter(|s| s.kind == Format::Legacy)
+            .map(|s| desktop_import::Import::read(&s.selection, ""))
+            .transpose()?
+    };
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(|_| "Cannot create private import identity")?;
     let nonce: String = random.iter().map(|b| format!("{b:02x}")).collect();
@@ -421,19 +736,27 @@ fn install_with_options(
         })
         .map_err(|_| "Cannot claim import destination; data preserved")?;
     sync(destination.parent().unwrap())?;
-    let converted = (|| {
+    let converted: Result<Value, String> = (|| {
         if original_native.is_some() {
             // Also reject a Host whose initial lock lookup preceded creation
             // of our parent lock. The durable guard now blocks any new opener.
             desktop_import::validate_for_tool(&destination)?;
         }
         directory(&stage)?;
-        import.publish(&stage)?;
+        if let Some(import) = import {
+            import.publish(&stage)?;
+        } else {
+            let copied = native_tree(&source.as_ref().unwrap().data, Some(&stage))?;
+            if Some(copied) != stamp {
+                return Err("Native data changed while copying; source unchanged".into());
+            }
+        }
         desktop_import::validate_for_tool(&stage)?;
         sync(&work)?;
         #[cfg(test)]
         tests::interrupt("prepared");
-        if stamp != desktop_import::source_stamp(&source)? || format(&destination)? != kind {
+        if source.as_ref().map(source_stamp).transpose()? != stamp || format(&destination)? != kind
+        {
             return Err("Old data changed during import; close both versions and try again".into());
         }
         if let Some(original) = &original_native
@@ -473,17 +796,65 @@ fn install_with_options(
             return Ok(recovered);
         }
     }
-    converted
+    let mut completed = converted?;
+    // The parent import lock remains held after releasing the file lock. New
+    // native Hosts cannot race source cleanup (Windows cannot move open files).
+    drop(source_storage);
+    completed["source_format"] =
+        json!(
+            source
+                .as_ref()
+                .map_or("fresh", |s| if s.kind == Format::Native {
+                    "native"
+                } else {
+                    "legacy"
+                })
+        );
+    if options.remove_source
+        && let Some(source) = source
+    {
+        if source.data == destination {
+            completed["source_backup"] = completed["backup"].clone();
+        } else {
+            // Remove data from its old location by an atomic same-volume move,
+            // retaining a private, recoverable backup. Never clean an entire
+            // installation/AppData root or follow cache links during cleanup.
+            let saved = source
+                .data
+                .parent()
+                .unwrap()
+                .join(format!(".bilikara-imported-{nonce}"));
+            let archived = saved.join("data");
+            let cleanup = (|| {
+                if source_stamp(&source)? != stamp.unwrap() {
+                    return Err("Source changed after import; original data retained".to_owned());
+                }
+                directory(&saved)?;
+                fs::rename(&source.data, &archived)
+                    .map_err(|_| "Cannot move old data into its backup; original data retained")?;
+                sync(&saved)?;
+                sync(source.data.parent().unwrap())
+            })();
+            if archived.is_dir() {
+                completed["source_backup"] = json!(archived);
+            }
+            if let Err(error) = cleanup {
+                completed["cleanup_warning"] = json!(error);
+            }
+        }
+    }
+    Ok(completed)
 }
 
 pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
     let inspect_mode = arguments.iter().any(|a| a == "--inspect-legacy-import");
     let first_start = arguments.iter().any(|a| a == "--inspect-first-start");
     let import_mode = arguments.iter().any(|a| a == "--import-only");
-    if !inspect_mode && !first_start && !import_mode {
+    let start_fresh = arguments.iter().any(|a| a == "--start-without-import");
+    if !inspect_mode && !first_start && !import_mode && !start_fresh {
         return Ok(false);
     }
-    if [inspect_mode, first_start, import_mode]
+    if [inspect_mode, first_start, import_mode, start_fresh]
         .into_iter()
         .filter(|value| *value)
         .count()
@@ -495,13 +866,15 @@ pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
     let mut target = None;
     let mut source = None;
     let mut replace_native = false;
+    let mut remove_source = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--inspect-legacy-import" | "--inspect-first-start" | "--import-only" => {},
+            "--inspect-legacy-import" | "--inspect-first-start" | "--import-only" | "--start-without-import" => {},
             "--replace-native" if import_mode => replace_native = true,
+            "--remove-source" if import_mode => remove_source = true,
             "--data-dir" => target = Some(PathBuf::from(args.next().ok_or("Missing native data directory")?)),
             "--import-from" => source = Some(PathBuf::from(args.next().ok_or("Missing old data folder")?)),
-            _ => return Err("Offline import accepts an inspection or import mode, --data-dir, --import-from and explicit --replace-native for import only".into()),
+            _ => return Err("Offline import accepts an inspection, import or fresh-start mode, --data-dir, --import-from and explicit --replace-native/--remove-source for import only".into()),
         }
     }
     let executable = std::env::current_exe().map_err(|_| "Cannot resolve desktop executable")?;
@@ -511,7 +884,7 @@ pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
     if first_start && source.is_some() {
         return Err("First-start inspection discovers known roots; use explicit inspection to select a folder".into());
     }
-    let report = if first_start {
+    let mut report = if first_start {
         inspect_first_start(&target, &executable, desktop::PLATFORM, |key| {
             std::env::var_os(key)
         })?
@@ -524,12 +897,25 @@ pub(super) fn run(arguments: &[String]) -> Result<bool, String> {
             |key| std::env::var_os(key),
         )?
     } else {
-        if replace_native {
+        if start_fresh || remove_source {
+            install_selected(
+                source.as_deref(),
+                &target,
+                Options {
+                    replace_native,
+                    remove_source,
+                    start_fresh,
+                },
+            )?
+        } else if replace_native {
             install_with_options(source.as_deref(), &target, true)?
         } else {
             install(source.as_deref(), &target)?
         }
     };
+    if start_fresh && let Some(source) = source {
+        quarantine_failed_source(&source, &target, &mut report);
+    }
     println!(
         "{}",
         serde_json::to_string(&report).map_err(|_| "Import paths must be valid UTF-8")?

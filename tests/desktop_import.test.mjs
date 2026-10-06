@@ -1,7 +1,7 @@
 // Actual current Host offline entry; all data and environment roots are owned
 // temporary fixtures. No media prefix, tool installation or live accounts.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { before, test } from 'node:test';
@@ -73,9 +73,92 @@ test('first-start inspection is silent for absent legacy records and skips disco
   const reopened = await offline(['--inspect-first-start', '--data-dir', target], home, env);
   assert.equal(reopened.destination_status, 'native'); assert.deepEqual(reopened.candidates, []);
   assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before);
-  const wrongSource = await offline(['--inspect-legacy-import', '--data-dir', path.join(home, 'another/data'), '--import-from', path.dirname(target)], home, env, false);
-  assert.match(wrongSource, /native-format records/);
-  assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before, 'Native-format selection is a diagnostic, never a conversion');
+  const nativeSource = await offline(['--inspect-legacy-import', '--data-dir', path.join(home, 'another/data'), '--import-from', path.dirname(target)], home, env);
+  assert.deepEqual(nativeSource.candidates.map(p => realpathSync.native(p)), [realpathSync.native(path.dirname(target))]);
+  assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before, 'Native-format inspection does not rewrite a checkpoint');
+});
+
+test('failed first-start conversion can proceed normally without rediscovery, with manual import available later', async t => {
+  const { home, env } = fixture(t), source = path.join(home, 'old runtime'), data = oldData(source);
+  writeFileSync(path.join(data, 'history.json'), '{bad saved record');
+  await offline(['--import-only', '--data-dir', data, '--import-from', source], home, env, false);
+  const fresh = await offline(['--start-without-import', '--data-dir', data], home, env);
+  assert.equal(fresh.completed, true); assert.ok(fresh.backup);
+  assert.equal(readFileSync(path.join(fresh.backup, 'history.json'), 'utf8'), '{bad saved record');
+  assert.deepEqual((await offline(['--inspect-first-start', '--data-dir', data], home, env)).candidates, []);
+  const hostEnv = {...env}; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const host = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', data, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try {
+    const state = await host.api('/api/state');
+    assert.deepEqual(state.history, []); assert.deepEqual(state.session_users, []);
+    // A fresh fallback must be usable, rather than merely printing success or
+    // entering the resume-session gate intended for a populated checkpoint.
+    await host.api('/api/session-users/add', {name: 'Normal startup works'});
+    assert.deepEqual((await host.api('/api/state')).session_users, ['Normal startup works']);
+  } finally { await host.close(); }
+  const correct = path.join(home, 'correct runtime'); oldData(correct);
+  const later = await offline(['--import-only', '--replace-native', '--remove-source', '--data-dir', data, '--import-from', correct], home, env);
+  assert.equal(later.completed, true); assert.equal(existsSync(path.join(correct, 'data')), false);
+  assert.ok(existsSync(path.join(later.source_backup, 'history.json')));
+  assert.equal(readFileSync(path.join(fresh.backup, 'history.json'), 'utf8'), '{bad saved record', 'failed old data remains recoverable');
+});
+
+function dataInventory(folder, relative = '') {
+  return readdirSync(path.join(folder, relative)).sort().flatMap(name => {
+    if (!relative && name === 'host-state.lock') return [];
+    const key = path.join(relative, name), file = path.join(folder, key), meta = lstatSync(file);
+    assert.equal(meta.isSymbolicLink(), false);
+    const row = {path: key, directory: meta.isDirectory(), mode: process.platform === 'win32' ? null : meta.mode & 0o777};
+    return meta.isDirectory() ? [row, ...dataInventory(folder, key)] : [{...row, bytes: readFileSync(file).toString('base64')}];
+  });
+}
+
+test('failed known AppData moves into the current legacy-backup and is absent even for another fresh installation', async t => {
+  const {home, env} = fixture(t);
+  const source = process.platform === 'win32' ? path.join(env.APPDATA, 'bilikara')
+    : path.join(home, process.platform === 'darwin' ? 'Library/Application Support/bilikara' : 'share/bilikara');
+  const data = oldData(source), target = path.join(home, 'new runtime 中文/data');
+  writeFileSync(path.join(data, 'history.json'), '{broken original');
+  mkdirSync(path.join(data, 'cache/nested'), {recursive: true});
+  writeFileSync(path.join(data, 'cache/nested/exact.bin'), Buffer.from([0, 128, 255]));
+  writeFileSync(path.join(source, 'unrelated-file'), 'untouched');
+  const expected = dataInventory(data);
+  await offline(['--import-only', '--data-dir', target, '--import-from', source], home, env, false);
+  const report = await offline(['--start-without-import', '--data-dir', target, '--import-from', source], home, env);
+  assert.equal(report.completed, true); assert.equal(report.cleanup_warning, undefined);
+  assert.equal(existsSync(data), false);
+  assert.ok(path.relative(realpathSync.native(path.dirname(target)), realpathSync.native(report.source_backup)).startsWith(`legacy-backup${path.sep}`));
+  assert.deepEqual(dataInventory(report.source_backup), expected);
+  assert.equal(readFileSync(path.join(source, 'unrelated-file'), 'utf8'), 'untouched');
+  const another = await offline(['--inspect-first-start', '--data-dir', path.join(home, 'another runtime/data')], home, env);
+  assert.equal(another.destination_status, 'missing'); assert.deepEqual(another.candidates, []);
+  const current = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.equal(current.destination_status, 'native'); assert.deepEqual(current.candidates, []);
+});
+
+test('new-format runtime is copied byte-for-byte with its cache and live identities, then moved from the old path', async t => {
+  const { home, env } = fixture(t), source = path.join(home, 'Preview 2 runtime 中文 & $()'), data = path.join(source, 'data');
+  const target = path.join(home, 'new runtime/data');
+  await offline(['--start-without-import', '--data-dir', data], home, env);
+  const hostEnv = {...env}; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const host = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', data, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try {
+    await host.api('/api/session-users/add', {name: 'Native identity 中文'});
+    const error = await offline(['--import-only', '--remove-source', '--data-dir', target, '--import-from', source], home, env, false);
+    assert.match(error, /owns|lock/i); assert.equal(existsSync(path.join(target, 'host-state.json')), false);
+  } finally { await host.close(); }
+  mkdirSync(path.join(data, 'cache/nested'), {recursive: true});
+  writeFileSync(path.join(data, 'cache/nested/keep.bin'), Buffer.from([0, 1, 127, 128, 255]));
+  writeFileSync(path.join(source, 'unrelated-installation-file'), 'untouched');
+  const expected = dataInventory(data), checkpoint = readFileSync(path.join(data, 'host-state.json'));
+  const report = await offline(['--import-only', '--remove-source', '--data-dir', target, '--import-from', source], home, env);
+  assert.equal(report.completed, true); assert.equal(report.source_format, 'native'); assert.equal(report.cleanup_warning, undefined);
+  assert.equal(existsSync(data), false); assert.deepEqual(dataInventory(target), expected);
+  assert.deepEqual(dataInventory(report.source_backup), expected); assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), checkpoint);
+  assert.equal(readFileSync(path.join(source, 'unrelated-installation-file'), 'utf8'), 'untouched');
+  const reopened = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', target, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try { assert.deepEqual((await reopened.api('/api/state')).session_users, ['Native identity 中文']); }
+  finally { await reopened.close(); }
 });
 
 test('explicit tool imports after actual startup with a complete native backup and rejects a running Host', async t => {
@@ -137,6 +220,53 @@ test('in-place conversion retains exact backup and malformed data never reports 
   assert.equal(readFileSync(path.join(brokenData, 'history.json'), 'utf8'), '{unfinished');
   assert.equal(existsSync(path.join(brokenData, 'host-state.json')), false);
   assert.equal(readdirSync(broken).some(n => n.endsWith('.bilikara-import.json')), false);
+});
+
+test('unified AppData records with mux paths and a backup retain history through native startup and export', async t => {
+  const { home, env } = fixture(t), source = path.join(home, 'old AppData 中文 & $()/bilikara');
+  const data = path.join(source, 'data'); mkdirSync(data, { recursive: true });
+  // The old monolithic writer saved both files. A backup alone is not a
+  // split-file layout; only recognized obsolete media fields may be discarded.
+  const song = { id: 'state-current', original_url: 'https://example.test/song', resolved_url: 'https://example.test/song',
+    bvid: 'BV1xx411c7mD', aid: 1, cid: 2, page: 1, title: 'Legacy song', part_title: 'P1', display_title: 'Legacy song',
+    cover_url: '', embed_url: '', cache_status: 'ready', cache_progress: 100, cache_message: 'Cached',
+    local_relative_path: '../../old-cache.mp4', local_media_url: 'file:///old-cache.mp4' };
+  const history = [{ key: 'history-current', display_title: 'Legacy song', original_url: song.original_url,
+    resolved_url: song.resolved_url, requested_at: 100, request_count: 3 },
+  { key: 'history-previous', display_title: 'Earlier song', original_url: 'https://example.test/earlier',
+    resolved_url: 'https://example.test/earlier', requested_at: 90, request_count: 2 }];
+  writeFileSync(path.join(data, 'state.json'), JSON.stringify({ playback_mode: 'local', current_item: song,
+    playlist: [], history, player_settings: { av_offset_ms: 150, volume_percent: 67 }, updated_at: 101 }));
+  writeFileSync(path.join(data, 'playlist_backup.json'), JSON.stringify({ playback_mode: 'local',
+    current_item: { ...song, id: 'backup-current' }, playlist: [{ ...song, id: 'backup-queued' }],
+    history: [], updated_at: 102 }));
+  const originals = ['state.json', 'playlist_backup.json'].map(name => [name, readFileSync(path.join(data, name))]);
+  const target = path.join(home, 'new/runtime/data');
+  const report = await offline(['--import-only', '--data-dir', target, '--import-from', source], home, env);
+  assert.equal(report.completed, true);
+  for (const [name, bytes] of originals) assert.deepEqual(readFileSync(path.join(data, name)), bytes);
+  const checkpoint = readFileSync(path.join(target, 'host-state.json'));
+  const saved = JSON.parse(checkpoint).state;
+  assert.equal(saved.current_item.id, 'backup-current'); assert.deepEqual(saved.playlist.map(i => i.id), ['backup-queued']);
+  for (const item of [saved.current_item, ...saved.playlist]) {
+    assert.equal(item.cache_status, 'pending'); assert.equal(item.video_relative_path, ''); assert.equal(item.video_media_url, '');
+    assert.equal('local_relative_path' in item, false); assert.equal('local_media_url' in item, false);
+  }
+  assert.match(await offline(['--import-only', '--data-dir', target, '--import-from', source], home, env, false), /protected/);
+  assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), checkpoint);
+  const hostEnv = { ...env }; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const host = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', target,
+    '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try {
+    const state = await host.api('/api/state');
+    assert.deepEqual(state.history.map(h => [h.key, h.request_count]), [['history-current', 3], ['history-previous', 2]]);
+    assert.equal(state.player_settings.volume_percent, 67);
+    assert.equal(state.player_settings.av_offset_ms, 150);
+    const response = await host.request('/api/playlist/export?format=csv&source=history');
+    assert.equal(response.status, 200); const rows = csvRows(response.body);
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.slice(1).map(row => [row[1], row[6]]), [['Earlier song', '2'], ['Legacy song', '3']]);
+  } finally { await host.close(); }
 });
 
 test('offline mode rejects startup/network flags and unknown targets without overwriting files', async t => {

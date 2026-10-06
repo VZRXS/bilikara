@@ -85,7 +85,17 @@ source confirmation. No candidate means no dialog. Use native checkpoints, not
 the existence of runtime/WebView/log directories, to identify initialized data.
 The explicit desktop import tool also works after first launch, with separate
 consent and a complete current-data backup before replacement; it never merges
-two libraries. Keep native validation, active-Host locking, interruption recovery
+two libraries. It converts legacy records or copies validated native data without
+rewriting their format. A failed/declined first-start legacy import must preserve
+old records and prepare usable fresh data without repeated import offers; never
+bypass corrupt native checkpoint protection. Offer manual runtime/data folder
+selection. Failed confirmed legacy sources are isolated as raw data in the new
+application home's `legacy-backup`; in-place data uses its transaction backup.
+If safe relocation fails, retain the source, report the limitation and continue
+with fresh native records. Successful GUI import moves only the source data directory into a
+recoverable backup after installation, never deletes an AppData/installation
+root. Direct offline CLI keeps sources unless cleanup is explicitly requested.
+Keep native validation, active-Host locking, interruption recovery
 and malformed-data protection; inspection/conversion must not launch the Host
 or download media. Explicit data overrides bypass automatic source discovery.
 Explicit data/import overrides remain

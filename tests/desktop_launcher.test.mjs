@@ -26,7 +26,7 @@ test('installed runtime data is rejected before copying or executing a candidate
   } finally { if (previous === undefined) delete process.env.BILIKARA_TEST_TAURI_EXE; else process.env.BILIKARA_TEST_TAURI_EXE = previous; }
 });
 
-test('real Tauri startup, first-start consent/cancel and later import preserve backups and reap their Host', {timeout: 650000}, async t => {
+test('real Tauri startup, first-start consent/picker/skip/failure and later legacy/native import preserve backups and reap their Host', {timeout: 650000}, async t => {
   const required = process.env.BILIKARA_REQUIRE_NATIVE_LAUNCHER === '1';
   if (process.platform !== 'linux') { assert.equal(required, false, 'required launcher gate must run on Linux'); t.skip('Linux native X11/WebKit unavailable'); return; }
   const executable = process.env.BILIKARA_TEST_TAURI_EXE;
@@ -36,6 +36,6 @@ test('real Tauri startup, first-start consent/cancel and later import preserve b
   t.after(() => rmSync(output, {recursive: true, force: true}));
   const checked = await runNative(process.execPath, ['tests/run_desktop_launcher.mjs', output], process.env, 620000);
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(path.join(output, 'launcher-summary.json'))), ['default', 'override', 'import', 'restart', 'first-start'].map(backend =>
+  assert.deepEqual(JSON.parse(readFileSync(path.join(output, 'launcher-summary.json'))), ['default', 'override', 'import', 'restart', 'first-start', 'first-start-skip', 'first-start-failure', 'first-start-external-failure', 'manual-first-failure'].map(backend =>
     ({backend, realTauri: true, ready: true, windowClose: true, childReaped: true, listenerClosed: true})));
 });

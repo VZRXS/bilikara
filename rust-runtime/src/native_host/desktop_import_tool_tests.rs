@@ -7,9 +7,17 @@ use std::{
 
 thread_local! { static INTERRUPT: Cell<Option<&'static str>> = const { Cell::new(None) }; }
 thread_local! { static EDIT_SOURCE: RefCell<Option<PathBuf>> = const { RefCell::new(None) }; }
+thread_local! { static EDIT_AFTER_INSTALL: RefCell<Option<PathBuf>> = const { RefCell::new(None) }; }
 pub(super) fn interrupt(phase: &'static str) {
     if phase == "prepared" {
         EDIT_SOURCE.with(|source| {
+            if let Some(path) = source.borrow_mut().take() {
+                fs::write(path, b"{\"history\":[]}").unwrap();
+            }
+        });
+    }
+    if phase == "installed" {
+        EDIT_AFTER_INSTALL.with(|source| {
             if let Some(path) = source.borrow_mut().take() {
                 fs::write(path, b"{\"history\":[]}").unwrap();
             }
@@ -390,6 +398,458 @@ fn explicit_native_replacement_preserves_complete_backup_and_rejects_active_or_c
         fs::read(target.join("host-state.json")).unwrap(),
         b"broken native data"
     );
+}
+
+#[test]
+fn declined_or_failed_first_start_preserves_bad_legacy_data_and_never_rediscovers_it() {
+    for in_place in [false, true] {
+        let f = Fixture::new();
+        let source = f.source();
+        f.populate(&source);
+        fs::write(source.join("data/history.json"), b"{broken old record").unwrap();
+        let target = if in_place {
+            source.join("data")
+        } else {
+            f.target()
+        };
+        assert!(install(Some(&source), &target).is_err());
+        let report = install_selected(
+            None,
+            &target,
+            Options {
+                start_fresh: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report["completed"], true);
+        let saved = if in_place {
+            PathBuf::from(report["backup"].as_str().unwrap())
+        } else {
+            source.join("data")
+        };
+        assert_eq!(
+            fs::read(saved.join("history.json")).unwrap(),
+            b"{broken old record"
+        );
+        let (storage, seed) = NativeHostStorage::open(&target).unwrap();
+        let seed = seed.unwrap();
+        assert!(
+            seed.history.is_empty() && seed.playlist.is_empty() && seed.session_users.is_empty()
+        );
+        drop(storage);
+        let inspection = inspect_first_start(&target, &f.0.join("new/host"), "windows", |_| {
+            Some(f.0.clone().into_os_string())
+        })
+        .unwrap();
+        assert_eq!(inspection["destination_status"], "native");
+        assert_eq!(inspection["candidates"], json!([]));
+        let checkpoint = fs::read(target.join("host-state.json")).unwrap();
+        assert_eq!(
+            install_selected(
+                None,
+                &target,
+                Options {
+                    start_fresh: true,
+                    ..Options::default()
+                }
+            )
+            .unwrap()["completed"],
+            true
+        );
+        assert_eq!(
+            fs::read(target.join("host-state.json")).unwrap(),
+            checkpoint,
+            "idempotent normal-start handling must not reset native records"
+        );
+        // The manual tool can still replace fresh data once the user repairs or
+        // chooses the correct old source. The old bad bytes remain in backup.
+        let correct = f.0.join("correct runtime");
+        f.populate(&correct);
+        assert_eq!(
+            install_with_options(Some(&correct), &target, true).unwrap()["completed"],
+            true
+        );
+    }
+}
+
+#[test]
+fn failed_external_appdata_is_preserved_in_current_backup_and_absent_from_new_install_discovery() {
+    let f = Fixture::new();
+    let appdata = f.0.join("AppData 中文 & spaces");
+    let source = appdata.join("bilikara");
+    f.populate(&source);
+    fs::write(source.join("data/history.json"), b"{malformed history").unwrap();
+    fs::write(source.join("unrelated-appdata-file"), b"untouched").unwrap();
+    let expected = data_tree(&source.join("data"), None, false).unwrap();
+    assert!(install(Some(&source), &f.target()).is_err());
+    let mut report = install_selected(
+        None,
+        &f.target(),
+        Options {
+            start_fresh: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    quarantine_failed_source(&source, &f.target(), &mut report);
+    assert!(report["cleanup_warning"].is_null());
+    let backup = Path::new(report["source_backup"].as_str().unwrap());
+    assert!(backup.starts_with(f.target().parent().unwrap().join("legacy-backup")));
+    assert_eq!(data_tree(backup, None, false).unwrap(), expected);
+    assert_eq!(
+        fs::read(backup.join("history.json")).unwrap(),
+        b"{malformed history"
+    );
+    assert!(!source.join("data").exists());
+    assert_eq!(
+        fs::read(source.join("unrelated-appdata-file")).unwrap(),
+        b"untouched"
+    );
+    desktop_import::validate_native(&f.target()).unwrap();
+    // A different newly extracted installation must not find the old AppData,
+    // even though it has no native checkpoint of its own yet.
+    let another = f.0.join("another installation/runtime/data");
+    let report = inspect_first_start(
+        &another,
+        &f.0.join("another installation/_internal/host.exe"),
+        "windows",
+        |key| (key == "APPDATA").then(|| appdata.clone().into_os_string()),
+    )
+    .unwrap();
+    assert_eq!(report["candidates"], json!([]));
+}
+
+#[test]
+fn failed_source_is_not_moved_while_another_import_or_host_owns_it() {
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    let original = data_tree(&source.join("data"), None, false).unwrap();
+    let held = lock(&source.join("data")).unwrap();
+    let mut report = install_selected(
+        None,
+        &f.target(),
+        Options {
+            start_fresh: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    quarantine_failed_source(&source, &f.target(), &mut report);
+    assert!(report["cleanup_warning"].as_str().unwrap().contains("owns"));
+    assert!(report["source_backup"].is_null());
+    assert_eq!(
+        data_tree(&source.join("data"), None, false).unwrap(),
+        original
+    );
+    desktop_import::validate_native(&f.target()).unwrap();
+    drop(held);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_source_or_backup_links_are_preserved_without_following_them() {
+    use std::os::unix::fs::symlink;
+    for unsafe_source in [true, false] {
+        let f = Fixture::new();
+        let source = f.source();
+        f.populate(&source);
+        let outside = f.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"never touched").unwrap();
+        let mut report = install_selected(
+            None,
+            &f.target(),
+            Options {
+                start_fresh: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        if unsafe_source {
+            symlink(&outside, source.join("data/cache/escape")).unwrap();
+        } else {
+            symlink(&outside, f.target().parent().unwrap().join("legacy-backup")).unwrap();
+        }
+        quarantine_failed_source(&source, &f.target(), &mut report);
+        assert!(report["cleanup_warning"].as_str().unwrap().contains("link"));
+        assert!(source.join("data/history.json").is_file());
+        assert_eq!(
+            fs::read(outside.join("sentinel")).unwrap(),
+            b"never touched"
+        );
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        desktop_import::validate_native(&f.target()).unwrap();
+    }
+}
+
+#[test]
+fn fresh_start_never_bypasses_native_unknown_incomplete_or_active_data() {
+    let f = Fixture::new();
+    for name in ["native", "unknown", "incomplete"] {
+        let target = f.0.join(name);
+        fs::create_dir(&target).unwrap();
+        let file = target.join(match name {
+            "native" => "host-state.json",
+            "incomplete" => "desktop-import.pending",
+            _ => "unrelated",
+        });
+        fs::write(&file, b"protected bytes").unwrap();
+        assert!(
+            install_selected(
+                None,
+                &target,
+                Options {
+                    start_fresh: true,
+                    ..Options::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&file).unwrap(), b"protected bytes");
+    }
+    let target = f.target();
+    let (storage, _) = NativeHostStorage::open(&target).unwrap();
+    assert!(
+        install_selected(
+            None,
+            &target,
+            Options {
+                start_fresh: true,
+                ..Options::default()
+            }
+        )
+        .is_err()
+    );
+    drop(storage);
+}
+
+#[test]
+fn native_source_is_copied_without_conversion_and_cleanup_keeps_complete_backups() {
+    for remove_source in [false, true] {
+        let f = Fixture::new();
+        let legacy = f.source();
+        f.populate(&legacy);
+        let native = f.0.join("Preview 2 runtime 中文/data");
+        install(Some(&legacy), &native).unwrap();
+        fs::create_dir_all(native.join("cache/nested")).unwrap();
+        fs::write(
+            native.join("cache/nested/audio.flac"),
+            b"exact native cache bytes",
+        )
+        .unwrap();
+        fs::write(native.join("extra-private-state"), b"complete data copy").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                native.join("cache/nested/audio.flac"),
+                fs::Permissions::from_mode(0o640),
+            )
+            .unwrap();
+        }
+        let original = fs::read(native.join("host-state.json")).unwrap();
+        let stamp = native_tree(&native, None).unwrap();
+        for selected in [&native, native.parent().unwrap()] {
+            assert_eq!(source_root(selected).unwrap().kind, Format::Native);
+            assert_eq!(source_root(selected).unwrap().data, native);
+        }
+        let result = install_selected(
+            Some(native.parent().unwrap()),
+            &f.target(),
+            Options {
+                remove_source,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result["source_format"], "native");
+        assert_eq!(
+            fs::read(f.target().join("host-state.json")).unwrap(),
+            original
+        );
+        assert_eq!(native_tree(&f.target(), None).unwrap(), stamp);
+        let retained = if remove_source {
+            assert!(!native.exists());
+            assert!(result["cleanup_warning"].is_null());
+            PathBuf::from(result["source_backup"].as_str().unwrap())
+        } else {
+            native.clone()
+        };
+        assert_eq!(native_tree(&retained, None).unwrap(), stamp);
+        assert_eq!(
+            fs::read(retained.join("cache/nested/audio.flac")).unwrap(),
+            b"exact native cache bytes"
+        );
+    }
+}
+
+#[test]
+fn native_source_lock_corruption_and_overlapping_targets_reject_without_publication() {
+    let f = Fixture::new();
+    let legacy = f.source();
+    f.populate(&legacy);
+    let source = f.0.join("native runtime/data");
+    install(Some(&legacy), &source).unwrap();
+    let original = fs::read(source.join("host-state.json")).unwrap();
+    let (storage, _) = NativeHostStorage::open(&source).unwrap();
+    assert!(install(Some(&source), &f.target()).is_err());
+    drop(storage);
+    for target in [
+        &source,
+        &source.join("nested/data"),
+        source.parent().unwrap(),
+    ] {
+        assert!(install_with_options(Some(&source), target, true).is_err());
+        assert_eq!(fs::read(source.join("host-state.json")).unwrap(), original);
+    }
+    fs::write(source.join("host-state.json"), b"corrupt native source").unwrap();
+    assert!(install(Some(&source), &f.target()).is_err());
+    assert!(!f.target().join("host-state.json").exists());
+    assert_eq!(
+        fs::read(source.join("host-state.json")).unwrap(),
+        b"corrupt native source"
+    );
+}
+
+#[test]
+fn older_native_checkpoint_is_copied_intact_with_its_storage_compatibility_backup() {
+    let f = Fixture::new();
+    let legacy = f.source();
+    f.populate(&legacy);
+    let source = f.0.join("Preview 2 runtime/data");
+    install(Some(&legacy), &source).unwrap();
+    let (storage, seed) = NativeHostStorage::open(&source).unwrap();
+    drop(storage);
+    let original = serde_json::to_vec(&json!({"schema_version":1,"state":seed.unwrap()})).unwrap();
+    fs::write(source.join("host-state.json"), &original).unwrap();
+    let result = install(Some(&source), &f.target()).unwrap();
+    assert_eq!(result["source_format"], "native");
+    for data in [&source, &f.target()] {
+        assert_eq!(fs::read(data.join("host-state.json")).unwrap(), original);
+        assert_eq!(
+            fs::read(data.join("host-state.v1.backup.json")).unwrap(),
+            original
+        );
+        desktop_import::validate_native(data).unwrap();
+    }
+}
+
+#[test]
+fn source_cleanup_moves_only_the_data_folder_after_verified_legacy_conversion() {
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    fs::write(source.join("unrelated-installation-file"), b"keep").unwrap();
+    let original = fs::read(source.join("data/history.json")).unwrap();
+    let result = install_selected(
+        Some(&source),
+        &f.target(),
+        Options {
+            remove_source: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(result["cleanup_warning"].is_null());
+    assert!(!source.join("data").exists());
+    assert_eq!(
+        fs::read(source.join("unrelated-installation-file")).unwrap(),
+        b"keep"
+    );
+    let backup = Path::new(result["source_backup"].as_str().unwrap());
+    assert_eq!(fs::read(backup.join("history.json")).unwrap(), original);
+    assert_eq!(
+        fs::read(backup.join("cache/old.mp4")).unwrap(),
+        b"old media bytes retained only in backup"
+    );
+    assert!(legacy_root(&source).is_err());
+    desktop_import::validate_native(&f.target()).unwrap();
+}
+
+#[test]
+fn source_change_after_publication_retains_source_and_reports_cleanup_separately() {
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    EDIT_AFTER_INSTALL.with(|path| *path.borrow_mut() = Some(source.join("data/history.json")));
+    let result = install_selected(
+        Some(&source),
+        &f.target(),
+        Options {
+            remove_source: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result["completed"], true);
+    assert!(
+        result["cleanup_warning"]
+            .as_str()
+            .unwrap()
+            .contains("changed")
+    );
+    assert!(result["source_backup"].is_null());
+    assert_eq!(
+        fs::read(source.join("data/history.json")).unwrap(),
+        b"{\"history\":[]}"
+    );
+    desktop_import::validate_native(&f.target()).unwrap();
+    assert!(!import_guard_path(&f.target(), "json").unwrap().exists());
+}
+
+#[test]
+fn native_known_root_discovery_supports_copying_preview_2_without_modifying_it() {
+    let f = Fixture::new();
+    let legacy = f.source();
+    f.populate(&legacy);
+    let known = f.0.join("Library/Application Support/bilikara");
+    install(Some(&legacy), &known.join("data")).unwrap();
+    let bytes = fs::read(known.join("data/host-state.json")).unwrap();
+    assert_eq!(
+        discover(&f.target(), &f.0.join("new/host"), "macos", |key| (key
+            == "HOME")
+            .then(|| f.0.clone().into_os_string())),
+        vec![known.clone()]
+    );
+    assert_eq!(fs::read(known.join("data/host-state.json")).unwrap(), bytes);
+    assert!(
+        discover(&known.join("data"), &f.0.join("new/host"), "macos", |key| {
+            (key == "HOME").then(|| f.0.clone().into_os_string())
+        })
+        .is_empty(),
+        "manual discovery must not offer its own native destination"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_copy_rejects_escaping_links_without_removing_the_source() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let legacy = f.source();
+    f.populate(&legacy);
+    let source = f.0.join("native runtime/data");
+    install(Some(&legacy), &source).unwrap();
+    let outside = f.0.join("outside");
+    fs::write(&outside, b"unrelated").unwrap();
+    symlink(&outside, source.join("unsafe-file")).unwrap();
+    assert!(
+        install_selected(
+            Some(&source),
+            &f.target(),
+            Options {
+                remove_source: true,
+                ..Options::default()
+            }
+        )
+        .unwrap_err()
+        .contains("link")
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"unrelated");
+    assert!(source.join("host-state.json").exists());
+    assert!(!f.target().join("host-state.json").exists());
 }
 
 #[test]
