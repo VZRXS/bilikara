@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
+pub(crate) mod automatic_volume;
 mod native_persistence;
+pub use automatic_volume::{AutomaticVolumePreference, AutomaticVolumeSnapshot};
 #[cfg(test)]
 mod session_user_tests;
 mod session_users;
@@ -294,6 +296,8 @@ impl Default for PlayerSettingsSeed {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppStateSeed {
+    #[serde(default, deserialize_with = "automatic_volume::read_preference")]
+    pub automatic_volume: AutomaticVolumePreference,
     #[serde(default = "default_playback_mode")]
     pub playback_mode: String,
     #[serde(default)]
@@ -926,6 +930,7 @@ pub struct PlaybackProgram {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppSnapshot {
+    pub automatic_volume: AutomaticVolumeSnapshot,
     pub schema_version: u32,
     pub revision: u64,
     pub queue_version: String,
@@ -951,6 +956,7 @@ pub struct AppSnapshot {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PersistenceSnapshot {
+    automatic_volume: AutomaticVolumePreference,
     playback_mode: String,
     player_settings: PlayerSettingsSeed,
     history: Vec<HistoryEntry>,
@@ -1034,6 +1040,8 @@ impl AppStateResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
+    automatic_volume: AutomaticVolumePreference,
+    automatic_playback: automatic_volume::AutomaticPlayback,
     revision: u64,
     native_session_choice_pending: bool,
     session_generation: u64,
@@ -1063,6 +1071,8 @@ struct AppStateData {
 
 #[derive(Debug)]
 pub struct AppState {
+    #[cfg(feature = "native-host")]
+    analysis_signal: Option<automatic_volume::AnalysisSignal>,
     data: Option<AppStateData>,
     native_storage: Option<NativeHostStorage>,
     next_cache_attempt_token: u64,
@@ -1113,6 +1123,8 @@ impl Default for AppState {
             });
         Self {
             data: None,
+            #[cfg(feature = "native-host")]
+            analysis_signal: None,
             native_storage: None,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
@@ -1918,6 +1930,11 @@ impl AppStateData {
         }
         validate_seed(&seed)?;
         let mut data = Self {
+            automatic_volume: seed.automatic_volume,
+            automatic_playback: automatic_volume::AutomaticPlayback {
+                manual_override: seed.current_item.is_some(),
+                ..Default::default()
+            },
             revision: 1,
             native_session_choice_pending: false,
             session_generation: 1,
@@ -2047,6 +2064,7 @@ impl AppStateData {
     ) -> AppSnapshot {
         let av_delay = self.av_snapshot();
         AppSnapshot {
+            automatic_volume: self.automatic_snapshot(),
             schema_version: SCHEMA_VERSION,
             revision: self.revision,
             queue_version: self.queue_version(),
@@ -2114,6 +2132,7 @@ impl AppStateData {
 
     fn persistence_snapshot(&self) -> PersistenceSnapshot {
         PersistenceSnapshot {
+            automatic_volume: self.automatic_volume.clone(),
             playback_mode: self.playback_mode.clone(),
             player_settings: self.player_settings.clone(),
             history: self.history.clone(),
@@ -3310,9 +3329,10 @@ fn apply_mutation(
                 }
             }
             let value = volume_percent.clamp(0, MAX_VOLUME_PERCENT);
-            if data.player_settings.volume_percent == value {
+            if value == data.player_settings.volume_percent && !data.automatic_volume.enabled {
                 return Ok(MutationResult::unchanged(json!({"value": value})));
             }
+            data.mark_manual_volume();
             data.player_settings.volume_percent = value;
             Ok(MutationResult::changed(json!({"value": value}), true))
         }
@@ -3320,6 +3340,8 @@ fn apply_mutation(
             if data.player_settings.is_muted == is_muted {
                 return Ok(MutationResult::unchanged(json!({"value": is_muted})));
             }
+            data.automatic_playback.intent_revision =
+                data.automatic_playback.intent_revision.saturating_add(1);
             data.player_settings.is_muted = is_muted;
             Ok(MutationResult::changed(json!({"value": is_muted}), true))
         }
@@ -3733,6 +3755,7 @@ fn apply_mutation(
             }
             data.playback_mode = "local".to_owned();
             data.player_settings = PlayerSettingsSeed::default();
+            data.mark_manual_volume();
             data.current_item_started = false;
             let mut result = MutationResult::changed(mutation_value(true), false);
             result.force_program_lifetime = force_program_lifetime;
@@ -5163,6 +5186,8 @@ impl AppState {
                 }))
             }
             AppStateRequest::Shutdown { .. } => {
+                #[cfg(feature = "native-host")]
+                self.notify_analysis(true);
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
                 self.internet_remote_peers.clear();
@@ -5272,6 +5297,7 @@ impl AppState {
                             .current_item
                             .as_ref()
                             .map(|item| &item.item_incarnation_id);
+                    next.automatic_transition(current, song_changed);
                     if song_changed && next.player_settings.volume_percent > 100 {
                         next.player_settings.volume_percent = 100;
                         effects.write_core = true;
@@ -5320,6 +5346,8 @@ impl AppState {
                         self.player_controls.clear();
                     }
                     self.data = Some(next);
+                    #[cfg(feature = "native-host")]
+                    self.notify_analysis(clears_controls);
                     self.next_item_incarnation_id = next_item_incarnation_id;
                     #[cfg(feature = "native-host")]
                     native_session::state_changes().notify_waiters();
@@ -5882,6 +5910,7 @@ mod tests {
 
     fn seed() -> AppStateSeed {
         AppStateSeed {
+            automatic_volume: Default::default(),
             session_user_ids: std::collections::HashMap::new(),
             requester_user_ids: std::collections::HashMap::new(),
 

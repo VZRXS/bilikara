@@ -4,6 +4,7 @@ mod asset_selection;
 mod asset_tokens;
 mod audio_binding;
 mod audio_stream_ranking;
+pub mod automatic_volume;
 mod av_delay;
 mod cache_planning;
 mod download_candidate_planning;
@@ -65,12 +66,12 @@ pub use ffi::{
 pub use internet_remote_protocol::{
     INTERNET_REMOTE_PROTOCOL_VERSION, MAX_BROWSE_RESULTS, MAX_CONTROL_MESSAGE_BYTES,
     MAX_REMOTE_STATE_ITEMS, MAX_SAFE_JSON_INTEGER, MAX_SEARCH_RESULTS, RemoteAudioVariantV1,
-    RemoteAvDelayActionV1, RemoteCacheDownloadTrackV1, RemoteCacheStatusV1, RemoteCapability,
-    RemoteCatalogBrowseKindV1, RemoteHistoryEntryV1, RemoteLane, RemoteOperation,
-    RemotePlaybackModeV1, RemotePlaybackStatusV1, RemotePlayerSettingsV1, RemotePlaylistItemV1,
-    RemotePlaylistPositionV1, RemoteProfile, RemoteProtocolError, RemoteRequestEnvelopeV1,
-    RemoteRequestV1, RemoteSessionUserV1, RemoteStateV1, RemoteValidationContext,
-    decode_remote_request_v1, profile_allows,
+    RemoteAutomaticVolumeV1, RemoteAvDelayActionV1, RemoteCacheDownloadTrackV1,
+    RemoteCacheStatusV1, RemoteCapability, RemoteCatalogBrowseKindV1, RemoteHistoryEntryV1,
+    RemoteLane, RemoteOperation, RemotePlaybackModeV1, RemotePlaybackStatusV1,
+    RemotePlayerSettingsV1, RemotePlaylistItemV1, RemotePlaylistPositionV1, RemoteProfile,
+    RemoteProtocolError, RemoteRequestEnvelopeV1, RemoteRequestV1, RemoteSessionUserV1,
+    RemoteStateV1, RemoteValidationContext, decode_remote_request_v1, profile_allows,
 };
 pub use media_download_candidate_planning::{
     MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,

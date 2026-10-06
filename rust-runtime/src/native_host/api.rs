@@ -101,6 +101,9 @@ pub(super) fn dispatch(
     if admin::handles(path) {
         return admin::route(context, identity, path, &body);
     }
+    if path == "/api/player/automatic-volume" {
+        return with_app(|app| app.native_automatic_volume(identity, &body));
+    }
     if path == "/api/session/startup-choice" {
         return with_app(|app| {
             app.native_authorize(identity, true)?;
@@ -454,20 +457,22 @@ pub(super) fn dispatch(
                     .unwrap_or(json!(settings.is_muted))
                     .as_bool()
                     .ok_or_else(|| ApiError::invalid("静音状态无效"))?;
-                app.native_execute(AppStateRequest::SetVolume {
-                    schema_version: 1,
-                    volume_percent: volume,
-                    expected_item_incarnation_id: body
-                        .get("expected_item_incarnation_id")
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_owned)
-                                .ok_or_else(|| ApiError::invalid("歌曲标识无效"))
-                        })
-                        .transpose()?,
-                    now,
-                })?;
+                if body.get("volume_percent").is_some() {
+                    app.native_execute(AppStateRequest::SetVolume {
+                        schema_version: 1,
+                        volume_percent: volume,
+                        expected_item_incarnation_id: body
+                            .get("expected_item_incarnation_id")
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .ok_or_else(|| ApiError::invalid("歌曲标识无效"))
+                            })
+                            .transpose()?,
+                        now,
+                    })?;
+                }
                 app.native_execute(AppStateRequest::SetMuted {
                     schema_version: 1,
                     is_muted: muted,

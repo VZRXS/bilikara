@@ -212,6 +212,7 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
     let response = initialize_native_host(
         &directory,
         AppStateSeed {
+            automatic_volume: Default::default(),
             session_user_ids: std::collections::HashMap::new(),
             requester_user_ids: std::collections::HashMap::new(),
 

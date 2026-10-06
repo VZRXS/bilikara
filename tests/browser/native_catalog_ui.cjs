@@ -387,7 +387,7 @@ const notes=path.resolve(output);
     await host.mouse.move(x,y);await host.mouse.down();await host.mouse.move(x+35,y,{steps:8});
     // No release in the control window is needed to enter boost editing.
     try {assert.equal(await editor.evaluate(e=>e.open),true,`Outward drag opens before release (dual=${dual})`);} finally {await host.mouse.up();}
-    await editor.locator('input').fill('250');await editor.locator('input').press('Enter');
+    await editor.locator('input[type=number]').fill('250');await editor.locator('input[type=number]').press('Enter');
     await host.waitForFunction(()=>state.data.player_settings.volume_percent===250);
     assert.equal(await host.locator('#volume-value').textContent(),'250%');
     await editor.locator('[data-volume-reset]').click();await host.waitForFunction(()=>state.data.player_settings.volume_percent===100);
@@ -1327,7 +1327,7 @@ const notes=path.resolve(output);
    });
    for(const [selector,expected] of [['[data-volume-step="10"]','110'],['[data-volume-reset]','100']]) {
     await panel.locator(selector).click();await remote.waitForFunction(()=>!document.querySelector('.volume-adjust-popover [aria-busy]'));
-    assert.equal(await panel.locator('input').inputValue(),expected,'Volume action committed');
+    assert.equal(await panel.locator('input[type=number]').inputValue(),expected,'Volume action committed');
     assert.equal(await remote.locator('#playback-sheet-body').evaluate(e=>e.scrollTop),sheetScroll,'Volume writes keep the sheet position');
     assert.equal(await remote.evaluate(()=>scrollY),before);
    }

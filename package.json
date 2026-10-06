@@ -46,7 +46,8 @@
     "test:remote-load": "node --test tests/remote_sse_load.test.mjs",
     "test:frontend": "node --test tests/frontend_tests.test.mjs",
     "test:auxiliary": "node --test tests/signalsmith_vendor.test.mjs tests/tool_asset_metadata.test.mjs tests/tool_asset_workflows.test.mjs",
-    "test:remote-sync": "node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_ice.test.mjs tests/internet_remote_deployment.test.mjs"
+    "test:remote-sync": "node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_ice.test.mjs tests/internet_remote_deployment.test.mjs",
+    "test:automatic-volume": "node --test tests/automatic_volume.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",

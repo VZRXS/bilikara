@@ -2,6 +2,7 @@
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
 mod announcements;
 mod api;
+mod automatic_volume;
 mod cache;
 mod catalog;
 mod catalog_append;
@@ -217,6 +218,10 @@ impl HostContext {
 impl Drop for NativeHost {
     fn drop(&mut self) {
         self.context.stop.store(true, Ordering::Release);
+        let _ = with_app(|app| {
+            app.notify_analysis(true);
+            Ok(())
+        });
         // Listener, async requests/SSE/media, and blocking HTTP work retire first.
         if let Some(server) = self.server.take() {
             let _ = server.join();
@@ -495,6 +500,8 @@ fn start(
     };
     library::start_coordinator(context.clone())?;
     cache::start_pump(context.clone())?;
+    automatic_volume::configure_capability();
+    automatic_volume::start(context.clone())?;
     network::start_monitor(&context)?;
     ratings::start_pump(context.clone())?;
     if let Err(error) = owner_enrichment::start(context.clone()) {
@@ -730,6 +737,10 @@ async fn handle_inner(
             return Ok(json_response(200, json!({"ok":true,"data":result})));
         }
         context.stop.store(true, Ordering::Release);
+        let _ = with_app(|app| {
+            app.notify_analysis(true);
+            Ok(())
+        });
         return Ok(json_response(200, json!({"ok":true})));
     }
     let host = with_app(|app| app.native_authorize(&identity, false))?;

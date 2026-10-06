@@ -1504,6 +1504,15 @@ pub struct RemotePlayerSettingsV1 {
     pub key_shift: i8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAutomaticVolumeV1 {
+    pub enabled: bool,
+    pub calibrated: bool,
+    pub scanner_available: bool,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemotePlaybackStatusV1 {
@@ -1522,6 +1531,8 @@ pub struct RemoteSessionUserV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_volume: Option<RemoteAutomaticVolumeV1>,
     pub v: u16,
     #[serde(default)]
     pub queue_version: String,
@@ -2335,6 +2346,7 @@ mod tests {
     #[test]
     fn remote_state_shape_has_no_local_paths_urls_or_maintenance_state() {
         let state = RemoteStateV1 {
+            automatic_volume: None,
             queue_version: "version".to_owned(),
             v: INTERNET_REMOTE_PROTOCOL_VERSION,
             revision: 4,

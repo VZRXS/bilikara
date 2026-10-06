@@ -57,8 +57,9 @@ pub(crate) fn prepare_import(mut seed: AppStateSeed) -> Result<AppStateSeed, Str
 }
 
 impl AppStateData {
-    fn native_checkpoint(&self) -> AppStateSeed {
+    pub(super) fn native_checkpoint(&self) -> AppStateSeed {
         let mut seed = AppStateSeed {
+            automatic_volume: self.automatic_volume.clone(),
             playback_mode: self.playback_mode.clone(),
             player_settings: self.player_settings.clone(),
             current_item: self.current_item.clone(),

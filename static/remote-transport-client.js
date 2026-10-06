@@ -666,6 +666,7 @@
       session_user_edit_version: Number(remoteState.session_user_edit_version || 0),
       session_users_version: String(remoteState.session_users_version || ""),
       remote_session_id: identitySessionId(),
+      automatic_volume: remoteState.automatic_volume || null,
       player_settings: {
         av_offset_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
         av_delay: {

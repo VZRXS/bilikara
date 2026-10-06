@@ -4,7 +4,25 @@
   const bounded = (value) => Math.max(0, Math.min(500, Math.round(Number(value) || 0)));
   const toPosition = (percent) => Math.min(100, bounded(percent));
   const toPercent = toPosition;
+  const statusKeys = {
+    off: 'automaticVolume.status.off', waiting_baseline: 'automaticVolume.status.waiting_baseline',
+    analyzing: 'automaticVolume.status.analyzing', automatic: 'automaticVolume.status.automatic',
+    manual: 'automaticVolume.status.manual', unavailable: 'automaticVolume.status.unavailable',
+  };
+  const compactStatusKeys = {
+    off: 'automaticVolume.compact.off', waiting_baseline: 'automaticVolume.compact.waiting_baseline',
+    analyzing: 'automaticVolume.compact.analyzing', automatic: 'automaticVolume.compact.automatic',
+    manual: 'automaticVolume.compact.manual', unavailable: 'automaticVolume.compact.unavailable',
+  };
+  const reasonKeys = {
+    off: 'automaticVolume.reason.off', scanner_unavailable: 'automaticVolume.reason.scanner_unavailable',
+    no_audio: 'automaticVolume.reason.no_audio', unavailable: 'automaticVolume.reason.unavailable',
+    analyzing: 'automaticVolume.reason.analyzing', muted: 'automaticVolume.reason.muted',
+    reference_volume: 'automaticVolume.reason.reference_volume', draft: 'automaticVolume.reason.draft',
+  };
   const songResetHandlers = new WeakMap();
+  const automaticRenderers = new WeakMap();
+  function refreshAutomatic(slider) { automaticRenderers.get(slider)?.(); }
 
   function resetForSong(slider, percent) {
     if (slider) songResetHandlers.get(slider)?.(bounded(percent));
@@ -21,7 +39,7 @@
     value.textContent = `${current}%`;
   }
 
-  function bind({ slider, value, t, getValue, onInput, onCommit }) {
+  function bind({ slider, value, t, getValue, onInput, onCommit, getAutomatic, onAutomatic, bindInfo, closeInfo }) {
     if (!slider || !value) return;
     const control = slider.parentElement;
     control.classList.add("volume-control");
@@ -112,6 +130,7 @@
     dialog.className = "volume-adjust-popover";
     dialog.tabIndex = -1;
     const isRemote = Boolean(slider.closest(".remote-setting-panel"));
+    dialog.classList.toggle('is-remote-volume', isRemote);
     const stepClass = isRemote ? "ghost-button remote-step-button" : "toolbar-button ghost av-sync-step-button";
     const resetClass = isRemote ? "ghost-button remote-reset-button" : "toolbar-button ghost av-sync-reset-button";
     const inputClass = isRemote ? "remote-input-wrap" : "av-sync-input-wrap";
@@ -123,6 +142,22 @@
         <button type="button" class="${stepClass}" data-volume-step="10">+10</button>
       </div>
       <button type="button" class="${resetClass}" data-volume-reset></button>
+      <section class="automatic-volume-section">
+        <div class="automatic-volume-row ${isRemote ? 'remote-contextual-info-region' : 'cache-contextual-info-region'}">
+          <span data-auto-label></span>
+          <span class="${isRemote ? 'info-trigger-wrap' : 'cache-advanced-info'}">
+            <button type="button" class="${isRemote ? 'remote-info-button' : 'playback-contextual-info-button cache-advanced-info-button'}" data-auto-info aria-expanded="false" aria-describedby="${isRemote ? 'remote' : 'host'}-automatic-volume-help"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+            <span class="${isRemote ? 'remote-tooltip-bubble' : 'cache-advanced-tooltip'}" id="${isRemote ? 'remote' : 'host'}-automatic-volume-help" role="tooltip"></span>
+          </span>
+          <label class="automatic-volume-toggle cache-hires-field" hidden>
+            <input type="checkbox" role="switch" data-auto-switch>
+            <span class="cache-hires-switch" aria-hidden="true"><span class="cache-hires-switch-thumb"></span></span>
+          </label>
+          <p class="automatic-volume-status" data-auto-status role="status"></p>
+        </div>
+        <button type="button" class="${resetClass}" data-auto-reference hidden></button>
+        <button type="button" class="${resetClass}" data-auto-resume hidden></button>
+      </section>
       <p class="volume-adjust-error" role="alert" hidden></p>
     </form>`;
     document.body.append(dialog);
@@ -138,14 +173,26 @@
     reset.dataset.i18n = "common.resetShort";
     if (isRemote) close.autofocus = true;
     const errorMessage = dialog.querySelector(".volume-adjust-error");
+    const autoSwitch = dialog.querySelector('[data-auto-switch]');
+    const autoToggle = dialog.querySelector('.automatic-volume-toggle');
+    const reference = dialog.querySelector('[data-auto-reference]');
+    const resume = dialog.querySelector('[data-auto-resume]');
+    const autoStatus = dialog.querySelector('[data-auto-status]');
+    const autoHelp = dialog.querySelector('[role="tooltip"]');
+    const autoInfo = dialog.querySelector('[data-auto-info]');
+    bindInfo?.(dialog.querySelector('.automatic-volume-row'));
+    let autoBusy = false;
     let busy = false;
+    let draftDirty = false;
     let closing = false;
     let songEpoch = 0;
     songResetHandlers.set(slider, (percent) => {
       songEpoch += 1;
       gesture = null;
       input.value = String(percent);
-      reset.disabled = busy || percent === 100;
+      draftDirty = false;
+      reset.disabled = busy || manualResetDisabled(percent);
+      refreshAutomatic(slider);
       errorMessage.hidden = true;
       render(slider, value, percent);
     });
@@ -168,7 +215,8 @@
       dialog.style.top = `${Math.max(top + 12, Math.min(y, top + height - box.height - 12))}px`;
     };
     function dismiss() {
-      if (busy || closing || !dialog.open) return;
+      if (busy || autoBusy || closing || !dialog.open) return;
+      closeInfo?.();
       closing = true;
       dialog.classList.add("closing");
       const animations = dialog.getAnimations();
@@ -187,7 +235,9 @@
       reset.textContent = t("common.resetShort");
       errorMessage.hidden = true;
       input.value = String(bounded(getValue()));
-      reset.disabled = bounded(getValue()) === 100;
+      draftDirty = false;
+      reset.disabled = manualResetDisabled(bounded(getValue()));
+      renderAutomatic();
       // showModal performs native autofocus before our anchored positioning.
       // Preserve the underlying sheet's scroll offset across that focus step.
       const scrollers = isRemote ? [...document.querySelectorAll('.playback-sheet-body')]
@@ -205,7 +255,7 @@
     }
     value.addEventListener("click", openDialog);
     close.addEventListener("click", async () => {
-      if (busy || closing) return;
+      if (busy || autoBusy || closing) return;
       if (input.validity.valid && bounded(input.value) !== bounded(getValue())) {
         await applyValue(bounded(input.value), close);
         if (!errorMessage.hidden) return;
@@ -217,6 +267,7 @@
       event.stopPropagation();
       if (event.key === "Escape") {
         event.preventDefault();
+        if (closeInfo?.()) return;
         dismiss();
       } else if (event.key === "Enter" && event.target === input) {
         event.preventDefault();
@@ -251,7 +302,9 @@
       if (!reset.disabled) applyValue(100, reset);
     });
     input.addEventListener("input", () => {
-      if (!busy) reset.disabled = input.validity.valid && Number(input.value) === 100 && bounded(getValue()) === 100;
+      draftDirty = true;
+      renderAutomatic();
+      if (!busy && !autoBusy) reset.disabled = input.validity.valid && Number(input.value) === 100 && manualResetDisabled(bounded(getValue()));
     });
     function applyInput() {
       if (!busy && !closing && form.reportValidity()) applyValue(bounded(input.value), input);
@@ -259,11 +312,11 @@
     input.addEventListener("change", applyInput);
     form.addEventListener("submit", (event) => { event.preventDefault(); applyInput(); });
     async function applyValue(percent, activeControl) {
-      if (busy || closing) return;
+      if (busy || autoBusy || closing) return;
       input.value = String(percent);
       errorMessage.hidden = true;
-      if (percent === bounded(getValue())) {
-        reset.disabled = percent === 100;
+      if (percent === bounded(getValue()) && !(getAutomatic?.()?.enabled && getAutomatic?.()?.calibrated)) {
+        reset.disabled = manualResetDisabled(percent);
         return;
       }
       busy = true;
@@ -292,13 +345,90 @@
         activeControl.removeAttribute("aria-busy");
         busy = false;
         input.value = String(bounded(getValue()));
-        reset.disabled = bounded(getValue()) === 100;
+        draftDirty = false;
+        renderAutomatic();
+        reset.disabled = manualResetDisabled(bounded(getValue()));
         if (dialog.open && (document.activeElement === dialog || !dialog.contains(document.activeElement))) {
           (activeControl.disabled ? close : activeControl).focus({ preventScroll: true });
         }
         position();
       }
     }
+    function manualResetDisabled(percent) {
+      const automatic = getAutomatic?.();
+      return percent === 100 && !(automatic?.enabled && automatic?.calibrated);
+    }
+    function renderAutomatic() {
+      if (dialog.open && !busy && !draftDirty) input.value = String(bounded(getValue()));
+      const automatic = getAutomatic?.() || { status: 'off', enabled: false, scanner_available: false };
+      const host = automatic.host_controls === true && typeof onAutomatic === 'function';
+      dialog.querySelector('[data-auto-label]').textContent = t('automaticVolume.title');
+      autoInfo.setAttribute('aria-label', t('automaticVolume.helpLabel'));
+      const helpKey = isRemote ? ({off:'automaticVolume.remoteHelpOff', waiting_baseline:'automaticVolume.remoteHelpWaiting', unavailable:'automaticVolume.remoteHelpUnavailable'}[automatic.status] || 'automaticVolume.remoteHelp') : (!automatic.scanner_available ? 'automaticVolume.hostHelpUnavailable' : automatic.enabled && !automatic.calibrated ? 'automaticVolume.hostHelpWaiting' : 'automaticVolume.hostHelp');
+      autoHelp.textContent = t(helpKey);
+      autoToggle.hidden = !host;
+      autoSwitch.checked = automatic.enabled === true;
+      autoSwitch.disabled = busy || autoBusy || (!automatic.scanner_available && !automatic.enabled);
+      autoSwitch.setAttribute('aria-label', t('automaticVolume.title'));
+      const status = automatic.status || 'off';
+      autoStatus.dataset.status = status;
+      autoStatus.hidden = !isRemote && !automatic.enabled;
+      reference.hidden = !host || !automatic.enabled;
+      reference.textContent = t(automatic.calibrated ? 'automaticVolume.update' : 'automaticVolume.reference');
+      const draft = dialog.open && draftDirty && input.value !== String(bounded(getValue()));
+      reference.disabled = busy || autoBusy || !automatic.can_reference || draft;
+      const reason = draft ? "draft" : automatic.reference_reason;
+      const explanation = reason ? t(reasonKeys[reason] || reasonKeys.unavailable) : '';
+      const waitingForReference = host && automatic.enabled && status === 'waiting_baseline' && !explanation;
+      autoStatus.hidden ||= waitingForReference;
+      const labels = isRemote ? compactStatusKeys : statusKeys;
+      autoStatus.textContent = t(labels[status] || labels.off);
+      reference.title = explanation || t(automatic.calibrated ? 'automaticVolume.updateHint' : 'automaticVolume.referenceHint');
+      reference.setAttribute('aria-label', `${reference.textContent} · ${reference.title}`);
+      autoStatus.id = `${isRemote ? 'remote' : 'host'}-automatic-volume-status`;
+      if (autoStatus.hidden) reference.removeAttribute('aria-describedby');
+      else reference.setAttribute('aria-describedby', autoStatus.id);
+      // The Host's existing row carries actionable state; no permanent
+      // message block below its actions. Remote retains only its one-line tag.
+      if (host && automatic.enabled && explanation) autoStatus.textContent = explanation;
+      resume.hidden = !host || !automatic.enabled || !automatic.manual_override || !automatic.calibrated;
+      resume.textContent = t('automaticVolume.resume');
+      resume.disabled = busy || autoBusy || !automatic.can_resume;
+      if (!busy && !autoBusy) reset.disabled = manualResetDisabled(bounded(getValue()));
+      if (dialog.open) position();
+    }
+    automaticRenderers.set(slider, renderAutomatic);
+    async function automaticAction(action, control) {
+      if (autoBusy || busy || closing || control.disabled) return;
+      const automatic = getAutomatic?.();
+      if (automatic?.host_controls !== true || !onAutomatic) return;
+      const payload = action === 'enable'
+        ? { action, enabled: autoSwitch.checked }
+        : { action, context: automatic.context };
+      autoBusy = true;
+      errorMessage.hidden = true;
+      const controls = [...form.querySelectorAll('button, input')];
+      const disabled = controls.map(element => element.disabled);
+      controls.forEach(element => { element.disabled = true; });
+      control.setAttribute('aria-busy', 'true');
+      dialog.focus({preventScroll:true});
+      try {
+        await onAutomatic(payload);
+      } catch (error) {
+        errorMessage.textContent = error?.message || t('player.volumeSaveFailed');
+        errorMessage.hidden = false;
+      } finally {
+        controls.forEach((element, i) => { element.disabled = disabled[i]; });
+        control.removeAttribute('aria-busy');
+        autoBusy = false;
+        renderAutomatic();
+        control.focus({preventScroll:true});
+      }
+    }
+    autoSwitch.addEventListener('change', () => automaticAction('enable', autoSwitch));
+    reference.addEventListener('click', () => automaticAction('reference', reference));
+    resume.addEventListener('click', () => automaticAction('resume', resume));
+    renderAutomatic();
     window.addEventListener("resize", position);
     document.addEventListener("scroll", position, true);
     window.visualViewport?.addEventListener("resize", position);
@@ -306,5 +436,5 @@
     render(slider, value, getValue());
   }
 
-  globalThis.BilikaraVolumeControl = { bind, render, resetForSong, toPosition, toPercent };
+  globalThis.BilikaraVolumeControl = { bind, render, resetForSong, refreshAutomatic, toPosition, toPercent };
 })();

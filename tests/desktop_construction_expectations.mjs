@@ -126,7 +126,7 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
       if (process.platform !== 'win32' || path.extname(name).toLowerCase() === '.asc') copy(path.join(prefix, 'source', name), `${docs}/THIRD_PARTY_SOURCES/${name}`);
     }
     const recipes = process.platform === 'win32' ? ['build-windows.sh', 'build-windows-libraries.sh', 'prepare-windows.ps1'] : ['build-posix.sh', 'build-posix-libraries.sh'];
-    for (const name of ['probe.h', 'probe.c', 'remux.c', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
+    for (const name of ['probe.h', 'probe.c', 'pcm.c', 'remux.c', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
       copy(path.join(root, 'media-libav', name), `${docs}/THIRD_PARTY_SOURCES/media-libav/${name}`);
     }
     for (const name of ['Cargo.toml', 'Cargo.lock']) copy(path.join(root, 'xtask', name), `${docs}/THIRD_PARTY_SOURCES/xtask/${name}`);
@@ -134,11 +134,13 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
     copy(path.join(root, 'LICENSE'), `${docs}/THIRD_PARTY_SOURCES/xtask/LICENSE`);
     copy(path.join(root, 'rust-toolchain.toml'), `${docs}/THIRD_PARTY_SOURCES/rust-toolchain.toml`);
     copy(path.join(root, 'third_party/BBDown-LICENSE.txt'), `${docs}/THIRD_PARTY_SOURCES/third_party/BBDown-LICENSE.txt`);
+    copy(path.join(root, 'third_party/ebur128-LICENSE.txt'), `${docs}/THIRD_PARTY_SOURCES/third_party/ebur128-LICENSE.txt`);
   }
   if (compliance) {
     for (const name of ['LICENSE', 'LEGAL.md', 'THIRD_PARTY_NOTICES.md']) copy(path.join(root, name), `${docs}/${name}`);
     const licenses = `${docs}/THIRD_PARTY_LICENSES`;
     copy(path.join(root, 'third_party/BBDown-LICENSE.txt'), `${licenses}/BBDown-LICENSE.txt`);
+    copy(path.join(root, 'third_party/ebur128-LICENSE.txt'), `${licenses}/ebur128-LICENSE.txt`);
     copy(environment.BILIKARA_FFMPEG_SOURCE_ARCHIVE, `${docs}/THIRD_PARTY_SOURCES/ffmpeg-9.0.1.tar.xz`);
     text(`${licenses}/bbdown-version.txt`, `${(environment.XTASK_FIXTURE_TOOL_VERSION || 'BBDown 1.6.3').replace(/\r\n|\r/g, '\n')}\n`);
     text(`${licenses}/libav-source.txt`, 'FFmpeg libraries (libav) redistribution notes\n\n'

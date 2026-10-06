@@ -199,6 +199,7 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         "probe.h",
         "probe.c",
         "remux.c",
+        "pcm.c",
         "test_shim.c",
         "windows_io.h",
         "xtask.sh",
@@ -234,10 +235,12 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         false,
     )?;
     files::copy(&config.root.join("LICENSE"), &sources.join("xtask/LICENSE"))?;
-    files::copy(
-        &config.root.join("third_party/BBDown-LICENSE.txt"),
-        &sources.join("third_party/BBDown-LICENSE.txt"),
-    )?;
+    for name in ["BBDown-LICENSE.txt", "ebur128-LICENSE.txt"] {
+        files::copy(
+            &config.root.join("third_party").join(name),
+            &sources.join("third_party").join(name),
+        )?;
+    }
     files::copy(
         &config.root.join("rust-toolchain.toml"),
         &sources.join("rust-toolchain.toml"),

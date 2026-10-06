@@ -112,6 +112,26 @@ BM_EXPORT uint32_t bm_scan_info_v1(uint32_t size, BmScanInfo *info);
 BM_EXPORT uint32_t bm_scan_packets_v1(const BmScanRequest *request, BmScanResult **result);
 BM_EXPORT void bm_scan_release_v1(BmScanResult *result);
 
+/* Optional full audio decode, independent of probe/scan/remux ABI. Only a
+ * single mono/stereo audible audio stream; no downmix/resample/video decoding.
+ * Borrowed interleaved float PCM, at most 4096 frames per synchronous visit.
+ * Nonzero visitor result cancels. No FFmpeg types or file paths cross the ABI. */
+#define BM_PCM_FRAMES 4096u
+typedef struct { uint32_t schema, request_size, result_size, max_frames; } BmPcmInfo;
+typedef struct {
+    BmRequest input;
+    int32_t (*visit)(void *opaque, const float *samples, uint32_t frames,
+                     uint32_t channels, uint32_t sample_rate);
+    void *opaque;
+} BmPcmRequest;
+typedef struct {
+    uint32_t status, complete, sample_rate, channels;
+    uint64_t frames;
+    BmText codec;
+} BmPcmResult;
+BM_EXPORT uint32_t bm_pcm_info_v1(uint32_t size, BmPcmInfo *info);
+BM_EXPORT uint32_t bm_decode_audio_v1(const BmPcmRequest *request, BmPcmResult *result);
+
 /* M5: independent optional schema, never an extension of an M1/M3 struct.
  * Rust owns a private, empty regular staging file in an exclusive directory.
  * Only this path may be written/reopened; the public destination is NOT passed.

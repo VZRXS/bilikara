@@ -74,7 +74,10 @@ fn bbdown_license(config: &Config) -> Result<PathBuf> {
 
 pub fn input_files(config: &Config) -> Result<Vec<PathBuf>> {
     let source = archive(config)?;
-    let mut inputs = vec![bbdown_license(config)?];
+    let mut inputs = vec![
+        bbdown_license(config)?,
+        config.root.join("third_party/ebur128-LICENSE.txt"),
+    ];
     inputs.extend(source);
     Ok(inputs)
 }
@@ -89,6 +92,10 @@ pub fn write(config: &Config, docs: &Path) -> Result<()> {
     }
     let licenses = docs.join("THIRD_PARTY_LICENSES");
     fs::create_dir_all(&licenses)?;
+    files::copy(
+        &config.root.join("third_party/ebur128-LICENSE.txt"),
+        &licenses.join("ebur128-LICENSE.txt"),
+    )?;
     let source_archive = config.env.text("BILIKARA_FFMPEG_SOURCE_ARCHIVE");
     let archive_name = if source_archive.is_empty() {
         "not recorded".into()

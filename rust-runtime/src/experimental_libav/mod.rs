@@ -10,7 +10,9 @@ mod wire;
 
 /// Pure developer comparison semantics; never consulted by normal media work.
 pub mod comparison;
+mod pcm;
 mod scan;
+pub use pcm::LoudnessMeasurement;
 pub use scan::{PacketScan, PacketSummary, ScanSelection, ScanTerminal, TimestampBounds};
 pub(crate) mod remux;
 pub use remux::{CopyProfile, CopyRemuxRequest, CopyRemuxResult, FlacStreamInfo};
@@ -122,6 +124,8 @@ pub struct LibavMetadataProbe {
     scan: Result<scan::Capability, ProbeError>,
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     remux: Result<remux::Capability, ProbeError>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pcm: Result<pcm::Capability, ProbeError>,
 }
 
 impl LibavMetadataProbe {
@@ -174,7 +178,9 @@ impl LibavMetadataProbe {
             };
             let scan = scan::Capability::load(&library);
             let remux = remux::Capability::load(&library);
+            let pcm = pcm::Capability::load(&library);
             Ok(Self {
+                pcm,
                 remux,
                 scan,
                 info,

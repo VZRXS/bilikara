@@ -561,6 +561,8 @@ fn release_compliance_enforces_configured_source_digest_and_license() {
     let license = temp.path().join("third_party/BBDown-LICENSE.txt");
     fs::create_dir_all(license.parent().unwrap()).unwrap();
     fs::write(&license, b"MIT").unwrap();
+    let loudness_license = temp.path().join("third_party/ebur128-LICENSE.txt");
+    fs::write(&loudness_license, b"MIT").unwrap();
     let mut c = config(
         temp.path(),
         &[
@@ -573,7 +575,7 @@ fn release_compliance_enforces_configured_source_digest_and_license() {
     );
     assert_eq!(
         compliance::input_files(&c).unwrap(),
-        [license.clone(), archive.clone()]
+        [license.clone(), loudness_license, archive.clone()]
     );
     c.env.0.insert(
         "BILIKARA_FFMPEG_SOURCE_SHA256".into(),

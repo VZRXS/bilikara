@@ -81,7 +81,7 @@ async function main() {
     assert.match(await hostPage.locator("#host-volume-info").textContent(), /100%.*500%/);
     await hostPage.locator('#volume-panel [aria-describedby="host-volume-info"]').click();
     await hostPage.locator("#volume-value").click();
-    await hostPage.locator(".volume-adjust-popover input").fill("500");
+    await hostPage.locator(".volume-adjust-popover input[type=number]").fill("500");
     const hostPeers = await hostPage.evaluate(() => {
       const css = (selector) => getComputedStyle(document.querySelector(selector));
       return {
@@ -100,10 +100,10 @@ async function main() {
     assert.equal(hostPeers.radius, hostPeers.peerRadius);
     await assertVolumeFieldsInRow(hostPage);
     await hostPage.locator(".volume-adjust-popover").screenshot({ path: path.join(directory, "host-volume-editor.png") });
-    await hostPage.locator(".volume-adjust-popover input").press("Enter");
+    await hostPage.locator(".volume-adjust-popover input[type=number]").press("Enter");
     await hostPage.waitForFunction(() => state.data.player_settings.volume_percent === 500);
     await hostPage.waitForFunction(() => state.hostPlaybackSession?.audio?.bilikaraVolumeGain?.gain.value === 5);
-    await hostPage.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await hostPage.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     await hostPage.screenshot({ path: path.join(directory, "host-volume-default.png") });
     await hostPage.keyboard.press("Escape");
     await hostPage.waitForFunction(() => !document.querySelector('.volume-adjust-popover').open);
@@ -167,11 +167,11 @@ async function main() {
         await Promise.allSettled(element.getAnimations({subtree: true}).map((animation) => animation.finished));
       });
     };
-    const input = remote.locator(".volume-adjust-popover input");
+    const input = remote.locator(".volume-adjust-popover input[type=number]");
     const plus = remote.locator('[data-volume-step="10"]');
     const reset = remote.locator('[data-volume-reset]');
     const closeEditor = async () => {
-      await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+      await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
       await remote.keyboard.press("Escape");
       await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover').open);
     };
@@ -224,12 +224,19 @@ async function main() {
       const geometry = await remote.locator(".volume-adjust-popover").evaluate((element) => {
         const box = element.getBoundingClientRect();
         const viewport = visualViewport;
+        const anchor = document.getElementById('remote-volume-slider').getBoundingClientRect();
         return { left: box.left, right: box.right, width: innerWidth, scroll: element.scrollWidth, client: element.clientWidth,
-          centerX: box.x + box.width / 2, centerY: box.y + box.height / 2,
-          viewportX: viewport.offsetLeft + viewport.width / 2, viewportY: viewport.offsetTop + viewport.height / 2 };
+          top: box.top, bottom: box.bottom, anchorTop: anchor.top, anchorBottom: anchor.bottom,
+          viewportTop: viewport.offsetTop, viewportBottom: viewport.offsetTop + viewport.height };
       });
-      assert(geometry.left >= 0 && geometry.right <= geometry.width && geometry.scroll <= geometry.client, JSON.stringify(geometry));
-      assert(Math.abs(geometry.centerX - geometry.viewportX) < 1 && Math.abs(geometry.centerY - geometry.viewportY) < 1, JSON.stringify(geometry));
+      assert(geometry.left >= 12 && geometry.right <= geometry.width - 12 && geometry.scroll <= geometry.client, JSON.stringify(geometry));
+      // The accepted editor is anchored near the slider. Its added read-only
+      // row must keep the 12px viewport inset and avoid covering that anchor,
+      // except when a viewport edge forces the whole panel to be clamped.
+      assert(geometry.top >= geometry.viewportTop + 12 && geometry.bottom <= geometry.viewportBottom - 12, JSON.stringify(geometry));
+      assert(geometry.bottom <= geometry.anchorTop - 7 || geometry.top >= geometry.anchorBottom + 7
+        || Math.abs(geometry.top - geometry.viewportTop - 12) < 1
+        || Math.abs(geometry.bottom - geometry.viewportBottom + 12) < 1, JSON.stringify(geometry));
       await input.fill("501");
       const count = requests.length;
       await input.press("Enter");
@@ -273,7 +280,7 @@ async function main() {
     await remote.waitForFunction(() => !document.querySelector('[data-volume-step="10"]').disabled);
     await reset.click();
     await hostPage.waitForFunction(() => state.localPlayerVolume === 1);
-    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     assert.equal(await reset.isDisabled(), true);
     assert.equal(await reset.textContent(), "复位");
     await input.fill("250");
@@ -316,12 +323,12 @@ async function main() {
     assert.equal(await remote.locator("[data-volume-info], .volume-adjust-hint").count(), 0);
     await remote.locator('[data-volume-step="10"]').click();
     await hostPage.waitForFunction(() => state.localPlayerVolume === 1.1);
-    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     assert.equal(await input.inputValue(), "110");
     assert.equal(await remote.locator("[data-volume-info], .volume-adjust-hint").count(), 0);
     await remote.locator('[data-volume-step="-10"]').click();
     await hostPage.waitForFunction(() => state.localPlayerVolume === 1);
-    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     assert.equal(await input.inputValue(), "100");
     await input.fill("65");
     await input.press("Enter");
@@ -355,7 +362,7 @@ async function main() {
     assert.equal(await hostPage.evaluate(() => window.previousVolumeAudio.bilikaraVolumeGain), null);
     await remote.locator("#remote-volume-mute-button").click();
     await hostPage.waitForFunction(() => state.localPlayerVolume === 5 && state.localPlayerMuted);
-    await hostPage.locator("#next-button").click();
+    await remote.locator('[data-control-action="next-track"]').click();
     await hostPage.waitForFunction(() => state.data.current_item?.id === "fixture-second" && state.localPlayerVolume === 1 && state.hostPlaybackSession.audio?.muted);
     await remote.waitForFunction(() => document.getElementById("remote-volume-value").textContent === "100%");
     await remote.locator("#remote-volume-mute-button").click();
@@ -367,11 +374,11 @@ async function main() {
     await input.fill("375");
     await input.press("Enter");
     await hostPage.waitForFunction(() => state.localPlayerVolume === 3.75);
-    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await remote.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     await input.fill("450");
     if (await trayToggle.isVisible() && await trayToggle.getAttribute("aria-expanded") !== "true") await trayToggle.click();
     await hostPage.locator("#volume-value").click();
-    const hostInput = hostPage.locator('.volume-adjust-popover input');
+    const hostInput = hostPage.locator('.volume-adjust-popover input[type=number]');
     await hostInput.fill("500");
     let releaseOldVolume;
     const delayedVolume = new Promise((resolve) => { releaseOldVolume = resolve; });
@@ -383,7 +390,7 @@ async function main() {
     });
     const oldIncarnation = await hostPage.evaluate(() => state.data.current_item.item_incarnation_id);
     await hostInput.press("Enter");
-    await hostPage.waitForFunction(() => document.querySelector('.volume-adjust-popover input').disabled);
+    await hostPage.waitForFunction(() => document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     await hostPage.evaluate(async () => {
       const next = await apiPost('/api/player/next', {playback_generation: state.data.playback_generation});
       acceptHostStateSnapshot(next);
@@ -396,7 +403,7 @@ async function main() {
     releaseOldVolume();
     assert.equal((await oldResponse).status(), 409, "late volume write must be rejected by Rust");
     assert.equal(oldVolumeBody.expected_item_incarnation_id, oldIncarnation);
-    await hostPage.waitForFunction(() => !document.querySelector('.volume-adjust-popover input').disabled);
+    await hostPage.waitForFunction(() => !document.querySelector('.volume-adjust-popover input[type=number]').disabled);
     await hostPage.unroute("**/api/player/volume");
     assert.equal(await hostInput.inputValue(), "100");
     assert.equal(await input.inputValue(), "100");

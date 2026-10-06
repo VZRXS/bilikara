@@ -1,19 +1,25 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import test from 'node:test';
+import test, { before } from 'node:test';
 import { chromium } from 'playwright';
 import { root } from './desktop_construction_support.mjs';
 import { TransportFixture } from './native_transport_support.mjs';
+import { buildNativeHost } from './native_runtime_artifacts.mjs';
 import { runDesktopBrowser } from './run_desktop_rust_host.mjs';
 import './shared_workspace_icon.test.mjs';
 import './shared_host_layout_browser.test.mjs';
+
+let nativeHost;
+before(async () => {
+  if (process.platform === 'linux') nativeHost = await buildNativeHost();
+}, { timeout: 300000 });
 
 test('actual Host serves a working Signalsmith AudioWorklet under pinned Chromium', {
   skip: process.platform !== 'linux' && 'Linux browser gate; no foreign audio-device qualification',
   timeout: 45000,
 }, async t => {
-  const fixture = await TransportFixture.start();
+  const fixture = await TransportFixture.start(nativeHost);
   t.after(() => fixture.close());
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
@@ -21,8 +27,13 @@ test('actual Host serves a working Signalsmith AudioWorklet under pinned Chromiu
   await context.route('**/*', route => new URL(route.request().url()).origin === fixture.host.base
     ? route.continue() : route.abort());
   const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto(fixture.host.bootstrapUrl);
-  await page.waitForFunction(() => state.hasValidStateResponse);
+  // The private entry is a separate document with a zero-delay meta refresh.
+  await page.waitForURL(fixture.host.base + '/');
+  await page.waitForFunction(() => typeof state !== 'undefined' && state.hasValidStateResponse);
+  assert.equal(await page.title(), 'bilikara host');
   await page.evaluate(() => { window.workletProbeContext = new AudioContext(); });
   await page.mouse.click(10, 10);
   await page.evaluate(() => {
@@ -57,6 +68,7 @@ test('actual Host serves a working Signalsmith AudioWorklet under pinned Chromiu
   assert.equal(result.inputs, 1);
   assert.equal(result.outputs, 1);
   assert.ok(Number.isFinite(result.latency) && result.latency > 0 && result.latency <= 1, JSON.stringify(result));
+  assert.deepEqual(pageErrors, []);
 });
 
 for (const [name, options, marker] of [

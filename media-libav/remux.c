@@ -339,7 +339,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (fd < 0) { r->status = BM_IO; goto done; }
     BmRequest check = {fd, q->input.cancelled, q->input.opaque};
     BmResult *metadata = NULL;
-    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par, 0);
+    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par, 0, NULL, NULL);
     if (!r->status) r->status = metadata ? metadata->status : BM_BACKEND_FAILURE;
     bm_release(metadata);
     if (close(fd) < 0 && !r->status) r->status = BM_IO;
@@ -384,7 +384,7 @@ static uint32_t copy_profile(const BmRemuxRequest *q, BmRemuxResult **out, int f
     if (!r) return BM_BACKEND_FAILURE;
     *out = r;
     BmResult *metadata = NULL;
-    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL, flac);
+    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL, flac, NULL, NULL);
     bm_release(metadata);
     if (status) r->status = status;
     return BM_OK;

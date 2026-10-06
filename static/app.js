@@ -14500,6 +14500,7 @@ function renderVolumeControls(playbackMode) {
   }
 
   const isLocalMode = playbackMode === "local";
+  globalThis.BilikaraVolumeControl?.refreshAutomatic(elements.volumeSlider);
   const volumePercent = Math.round(state.localPlayerVolume * 100);
   const label = volumePercentText();
   const muteLabel = state.localPlayerMuted ? t("player.unmute") : t("player.mute");
@@ -14803,7 +14804,7 @@ function persistLocalVolumePreferences() {
 async function setLocalPlayerVolumeAndMuted(
   nextVolume,
   nextMuted,
-  { reportError = true } = {},
+  { reportError = true, volumeIntent = true } = {},
 ) {
   const normalizedVolume = Math.max(0, Math.min(5, Number(nextVolume || 0)));
   const normalizedMuted = Boolean(nextMuted);
@@ -14817,7 +14818,7 @@ async function setLocalPlayerVolumeAndMuted(
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
     const nextData = await apiPost("/api/player/volume", {
-      volume_percent: Math.round(normalizedVolume * 100),
+      ...(volumeIntent ? { volume_percent: Math.round(normalizedVolume * 100) } : {}),
       is_muted: state.localPlayerMuted,
       expected_item_incarnation_id: state.data?.current_item?.item_incarnation_id || "",
     });
@@ -14859,7 +14860,7 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
 
 async function toggleLocalPlayerMute() {
   try {
-    await setLocalPlayerVolumeAndMuted(state.localPlayerVolume, !state.localPlayerMuted);
+    await setLocalPlayerVolumeAndMuted(state.localPlayerVolume, !state.localPlayerMuted, { volumeIntent: false });
   } catch {
     // The shared setter already restored the previous state and reported the error.
   }
@@ -15923,7 +15924,18 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "volumechange", () => {
+    const previousVolume = state.localPlayerVolume;
+    const previousMuted = state.localPlayerMuted;
     syncSplitPlayerVolumeFromVideo(video, audio);
+    const nextVolume = state.localPlayerVolume;
+    const nextMuted = state.localPlayerMuted;
+    const volumeChanged = Math.abs(nextVolume - previousVolume) > 0.001;
+    if (!volumeChanged && nextMuted === previousMuted) return;
+    // Only actual native-control changes reach the authoritative manual path.
+    // Programmatic applications already match bilikaraVolume/local intent.
+    state.localPlayerVolume = previousVolume;
+    state.localPlayerMuted = previousMuted;
+    void setLocalPlayerVolumeAndMuted(nextVolume, nextMuted, { volumeIntent: volumeChanged }).catch(() => {});
   });
 
   ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
@@ -20318,6 +20330,15 @@ globalThis.BilikaraVolumeControl?.bind({
   value: elements.volumeValue,
   t,
   getValue: () => Math.round(state.localPlayerVolume * 100),
+  getAutomatic: () => state.data?.automatic_volume,
+  bindInfo: (region) => bindHostContextualInfo(region),
+  closeInfo: () => closeCacheAdvancedInfo(),
+  onAutomatic: async (payload) => {
+    const next = await apiPost('/api/player/automatic-volume', payload);
+    acceptHostStateSnapshot(next);
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    render();
+  },
   onInput: (percent) => setLocalPlayerVolume(percent / 100),
   onCommit: (percent) => setLocalPlayerVolumeAndMuted(percent / 100, percent > 0 ? false : state.localPlayerMuted),
 });

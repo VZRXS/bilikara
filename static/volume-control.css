@@ -118,9 +118,21 @@
 }
 .volume-adjust-fields input::-webkit-inner-spin-button,
 .volume-adjust-fields input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-#host-volume-info, #remote-volume-info { white-space: pre-line; }
+#host-volume-info, #remote-volume-info,
+#host-automatic-volume-help, #remote-automatic-volume-help { white-space: pre-line; }
 .volume-adjust-popover [data-volume-reset] { width: 100%; min-width: 0; }
 .volume-adjust-error { margin: 0; font-size: 12px; line-height: 1.5; color: var(--red); }
 .volume-adjust-popover [aria-busy="true"] { cursor: wait; }
 
 .volume-adjust-popover [hidden] { display: none; }
+
+.automatic-volume-section { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.automatic-volume-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 6px; align-items: center; min-height: 32px; font-size: 13px; }
+.is-remote-volume .automatic-volume-row { min-height: 18px; align-items: end; }
+.automatic-volume-toggle { margin-left: auto; }
+.automatic-volume-status { grid-column: 1 / -1; }
+.is-remote-volume .automatic-volume-status { grid-column: 3; grid-row: 1; text-align: right; }
+.is-remote-volume .automatic-volume-status { line-height: 1.2; }
+.automatic-volume-status { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.automatic-volume-status:is([data-status="automatic"], [data-status="manual"], [data-status="analyzing"], [data-status="waiting_baseline"]) { color: var(--accent); }
+.automatic-volume-section :is([data-auto-reference], [data-auto-resume]) { width: 100%; min-width: 0; height: 44px; font-size: 16px; font-weight: 400; line-height: 1.2; padding: 0 8px; border-radius: 14px; white-space: normal; }

@@ -3375,6 +3375,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  globalThis.BilikaraVolumeControl?.refreshAutomatic(elements.remoteVolumeSlider);
   if (epochTransition === "restart" || previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     clearRemoteVolumeCommitTimer();
     state.remoteVolumeSaveSeq += 1;
@@ -9644,7 +9645,7 @@ function showRemoteContextualInfoTransient(wrap, source) {
 }
 
 // Remote help opens by tap/click or keyboard focus, never by hover.
-document.querySelectorAll(".remote-contextual-info-region").forEach((region) => {
+function bindRemoteContextualInfo(region) {
   const wrap = region.querySelector(".info-trigger-wrap");
   region.addEventListener("focusin", (event) => {
     if (!event.target.closest(".remote-info-button")) {
@@ -9662,7 +9663,8 @@ document.querySelectorAll(".remote-contextual-info-region").forEach((region) => 
       }
     }, 0);
   });
-});
+}
+document.querySelectorAll(".remote-contextual-info-region").forEach(bindRemoteContextualInfo);
 
 elements.playbackSheetSummaryCopy?.addEventListener("click", (event) => {
   const wrapper = event.target.closest("[data-playback-metadata-field].is-disclosable");
@@ -9808,6 +9810,9 @@ globalThis.BilikaraVolumeControl?.bind({
   value: elements.remoteVolumeValue,
   t,
   getValue: () => currentRemoteVolumePercent(),
+  getAutomatic: () => state.data?.automatic_volume,
+  bindInfo: (region) => bindRemoteContextualInfo(region),
+  closeInfo: () => closeRemoteContextualInfo(),
   onInput: (percent) => setRemoteVolumeSettings({
     volumePercent: percent,
     isMuted: currentRemoteMuted(),
@@ -9820,7 +9825,6 @@ globalThis.BilikaraVolumeControl?.bind({
 
 elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
   await setRemoteVolumeSettings({
-    volumePercent: currentRemoteVolumePercent(state.data?.player_settings),
     isMuted: !currentRemoteMuted(state.data?.player_settings),
   });
 });

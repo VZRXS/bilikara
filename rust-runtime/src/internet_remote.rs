@@ -429,6 +429,12 @@ fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
 
 pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
     RemoteStateV1 {
+        automatic_volume: Some(bilikara_rust::RemoteAutomaticVolumeV1 {
+            enabled: snapshot.automatic_volume.enabled,
+            calibrated: snapshot.automatic_volume.calibrated,
+            scanner_available: snapshot.automatic_volume.scanner_available,
+            status: snapshot.automatic_volume.status.to_owned(),
+        }),
         v: INTERNET_REMOTE_PROTOCOL_VERSION,
         queue_version: snapshot.queue_version.clone(),
         revision: snapshot.revision,
@@ -704,6 +710,7 @@ mod tests {
         let response = state.execute(AppStateRequest::Initialize {
             schema_version: 1,
             state: Box::new(AppStateSeed {
+                automatic_volume: Default::default(),
                 session_user_ids: std::collections::HashMap::new(),
                 requester_user_ids: std::collections::HashMap::new(),
 

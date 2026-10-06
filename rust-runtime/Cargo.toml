@@ -35,6 +35,7 @@ bilikara_rust = { path = "../rust" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cosmic-text = { version = "0.17", default-features = false, features = ["std", "swash", "fontconfig"] }
 csv = "1.4"
+ebur128 = { version = "=0.1.10", default-features = false }
 fs2 = "0.4"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }

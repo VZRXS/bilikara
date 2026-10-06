@@ -4,6 +4,15 @@ This project, **bilikara**, may use, invoke, download, bundle, or interact with 
 
 This file is intended to document known third-party components and legal notices. It is not a complete legal analysis. Redistributors and binary packagers must verify the exact components, versions, build options, and licenses included in their own distribution.
 
+## Experimental automatic volume
+
+The shared Rust runtime uses [ebur128 0.1.10](https://github.com/sdroege/ebur128)
+(MIT) to measure integrated loudness from the existing in-process libav decoder.
+Only integrated mode and its bounded histogram are used; no true-peak or LRA
+scan. Default Cargo features are disabled. The upstream license is retained in
+`third_party/ebur128-LICENSE.txt` and packaged in
+`license/THIRD_PARTY_LICENSES/ebur128-LICENSE.txt`.
+
 ## Native YouTube quick requests
 
 The shared Rust runtime uses `rquickjs` **0.14.0** and its bundled QuickJS-NG

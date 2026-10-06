@@ -663,6 +663,12 @@ impl AppState {
         }
         let mut value = serde_json::to_value(&snapshot)
             .map_err(|_| ApiError::invalid("无法序列化 Host 状态"))?;
+        value["automatic_volume"]["host_controls"] = json!(host);
+        if !host && let Some(v) = value["automatic_volume"].as_object_mut() {
+            v.remove("context");
+            v.remove("can_reference");
+            v.remove("can_resume");
+        }
         let session = &self.native_session;
         if host {
             value["startup_warning"] = json!(session.startup_warning);
@@ -1048,6 +1054,13 @@ impl AppState {
             "error_code",
             "error_message",
             "play_rejection_name",
+            "codec",
+            "sample_rate",
+            "channels",
+            "duration_seconds",
+            "elapsed_seconds",
+            "processing_ratio",
+            "reused",
         ];
         let mut safe = json!({"at":now});
         for key in fields {
