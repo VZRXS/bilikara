@@ -20,8 +20,9 @@
 v0.8.0-preview.2 is released. Its production desktop runtime is the native Rust
 HTTP/SSE Host with Rust AppState, supervised by the Tauri shell. Native products
 link the Rust crates directly and contain no Python runtime, PyInstaller payload
-or Python FFI dynamic libraries. Python remains build/package, test,
-compatibility and development tooling. Keep the legacy C ABI and its tests
+or Python FFI dynamic libraries. Python remains Source transport/compatibility,
+tests and independent publication or third-party tooling. Native construction
+and package verification use the independent Rust xtask. Keep the legacy C ABI and its tests
 while they have consumers; it is not a production desktop packaging requirement.
 
 Rust 1.97.0 is the current tested compiler baseline because it is an exact,

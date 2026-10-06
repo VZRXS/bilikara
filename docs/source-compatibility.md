@@ -1,6 +1,16 @@
 # Source 开发与兼容边界
 
-桌面产品从 Preview 2 起使用原生 Rust Host。`start_bilikara.py`、`server.py`、`python -m bilikara` 仍是受支持的 Source 入口：它们围绕 Rust AppState 提供 HTTP / SSE 与 FFI 传输，保留 yt-dlp 编排和显式媒体 CLI 兼容路径。它们不是原生桌面包、构建器或解压包验收的依赖。
+桌面产品从 Preview 2 起使用原生 Rust Host。Source 开发统一使用 `python -m bilikara`：它围绕 Rust AppState 提供 HTTP / SSE 与 FFI 传输，保留 yt-dlp 编排和显式媒体 CLI 兼容路径。它不是原生桌面包、构建器或解压包验收的依赖。
+
+在仓库根目录运行：
+
+```bash
+python -m bilikara
+# 保留不打开浏览器、后台运行、绑定地址和端口的启动选项
+python -m bilikara --no-browser --headless --host 127.0.0.1 --port 8080
+```
+
+`start_bilikara.sh` 继续作为 POSIX 便捷入口。需要记录启动日志时，在仓库根目录运行 `bash scripts/start_debug_log.sh`，Windows 使用 `scripts\start_debug_log.bat`；它们也调用同一个模块入口。根目录重复的 Python 启动脚本已删除，实际的 `bilikara/server.py` Source 后端继续保留。
 
 Rust AppState 初始化是启动条件，没有整场应用的 Python 状态回退。新的后端与业务功能仍由 Rust 实现；保留的旧纯工具回退不能扩展成新的 Python 业务副本。共享 Rust API、JNI 和媒体 C 接口也不能仅因 Python 调用减少而删除。
 

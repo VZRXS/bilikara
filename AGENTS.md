@@ -383,7 +383,6 @@ python -m unittest discover -s tests -v
 
 # 3. Python Compilation Checks
 python -m compileall -q bilikara
-python -m py_compile start_bilikara.py
 
 # 4. Tauri Shell Checks
 cd src-tauri
@@ -423,6 +422,11 @@ is not shipped or imported by the native desktop build. `ffmpeg_vendor.py`
 retains its legacy import surface by forwarding to `scripts/libav_manifest.py`;
 legacy diagnostics use that tooling verifier; native construction validates the
 same manifest contract in xtask.
+
+Source startup uses `python -m bilikara` from the repository root. The
+`start_bilikara.sh` convenience wrapper uses that same module entry. Root-level
+Python launcher aliases are retired; the `bilikara/server.py` transport remains
+active.
 
 | File | Purpose |
 | :--- | :--- |

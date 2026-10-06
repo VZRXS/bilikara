@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import runpy
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -12,6 +15,55 @@ from unittest.mock import patch
 
 from bilikara import launcher
 from bilikara.tool_smoke import packaged_tool_smoke_json
+
+
+class SourceEntrypointTest(unittest.TestCase):
+    def test_module_entry_preserves_source_startup_options(self):
+        cases = (
+            ([], {}),
+            (["--host", "localhost", "--port", "9123"], {"host": "localhost", "port": 9123}),
+            (
+                ["--no-browser", "--headless", "--host", "127.0.0.1", "--port", "0"],
+                {"open_browser": False, "shutdown_on_last_client": False,
+                 "host": "127.0.0.1", "port": 0, "auto_select_port": False},
+            ),
+        )
+        for args, expected in cases:
+            with self.subTest(args=args), patch.object(sys, "argv", ["bilikara", *args]), patch(
+                "bilikara.launcher.startup_logging_enabled", return_value=False
+            ), patch("bilikara.launcher._install_debug_log_streams"), patch(
+                "bilikara.https_trust.initialize_https_trust"
+            ) as trust, patch("bilikara.server.run") as server:
+                runpy.run_module("bilikara", run_name="__main__")
+                trust.assert_called_once_with()
+                server.assert_called_once_with(**expected)
+
+    def test_module_rejects_invalid_options_before_startup(self):
+        with patch.object(sys, "argv", ["bilikara", "--port", "invalid"]), patch(
+            "bilikara.launcher._ensure_std_streams"
+        ) as streams, patch("bilikara.https_trust.initialize_https_trust") as trust, patch(
+            "bilikara.server.run"
+        ) as server, redirect_stderr(io.StringIO()) as error:
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_module("bilikara", run_name="__main__")
+            self.assertEqual(result.exception.code, 2)
+            self.assertIn("invalid int value", error.getvalue())
+            streams.assert_not_called()
+            trust.assert_not_called()
+            server.assert_not_called()
+
+    def test_actual_module_help_needs_no_host_or_data_initialization(self):
+        with TemporaryDirectory(prefix="bilikara source 空 ") as home:
+            result = subprocess.run(
+                [sys.executable, "-m", "bilikara", "--help"],
+                cwd=Path(__file__).resolve().parents[1],
+                env={**os.environ, "BILIKARA_HOME": home},
+                capture_output=True, encoding="utf-8", timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for option in ("--no-browser", "--headless", "--host", "--port"):
+                self.assertIn(option, result.stdout)
+            self.assertEqual(list(Path(home).iterdir()), [])
 
 
 class PackagedToolSmokeTest(unittest.TestCase):

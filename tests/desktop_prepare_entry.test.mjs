@@ -45,14 +45,15 @@ test('actual npm release entry requires prepared inputs even in a Tauri debug/mo
   assert.doesNotMatch(result.stdout + result.stderr, /build_bundle\.py|embed_macos_backend\.py/);
 });
 
-test('retired construction references have no live Python producer or compile caller', () => {
+test('retired Python construction and duplicate Source entries have no live caller', () => {
   for (const name of ['build_bundle.py', 'scripts/native_desktop_bundle.py', 'scripts/embed_macos_backend.py',
-    'media-libav/build.py', 'scripts/libav_cache.py', 'scripts/libav_bundle.py', 'scripts/windows_libav_preview.py']) {
+    'media-libav/build.py', 'scripts/libav_cache.py', 'scripts/libav_bundle.py', 'scripts/windows_libav_preview.py',
+    'server.py', 'start_bilikara.py']) {
     assert.equal(existsSync(path.join(root, name)), false, name);
   }
   const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8');
-  assert.match(workflow, /python -m py_compile start_bilikara\.py\s*\n/);
-  assert.doesNotMatch(workflow, /py_compile[^\n]*build_bundle/);
+  assert.match(workflow, /python -m compileall -q bilikara\s*\n/);
+  assert.doesNotMatch(workflow, /py_compile[^\n]*(?:start_bilikara|server\.py|build_bundle)/);
   for (const [file, invocation] of [['build_windows.bat', /call npm run build/], ['build_macos.command', /npm run build/]]) {
     const wrapper = readFileSync(path.join(root, file), 'utf8');
     assert.match(wrapper, /npm ci/);

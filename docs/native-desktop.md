@@ -211,8 +211,8 @@ preserve their coverage. Remaining Python verification and publication
 entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
 Python requirements.
 
-`start_bilikara.py`, `server.py`, `python -m bilikara` and their source launch
-scripts still support Source development: Python HTTP/SSE transport around Rust
+`python -m bilikara` is the Source entry; `start_bilikara.sh` and the debug-log
+wrappers use the same module. They retain Python HTTP/SSE transport around Rust
 AppState, yt-dlp orchestration and explicit media-CLI compatibility routing.
 The native Host disables yt-dlp and ships no media CLI, so replacing those Source
 entries with the native launcher would change their supported behavior.

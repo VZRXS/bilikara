@@ -24,7 +24,7 @@ This roadmap records current product direction and ownership. It is not a build 
 
 ### Remaining Python and retirement
 
-Supported Source development still executes Python for HTTP/FFI transport, yt-dlp orchestration, explicit media-CLI compatibility, their smoke/failure tests and source launchers. These are concrete consumers, not native product dependencies; simply redirecting the launcher would lose supported Source behavior. Keep their dependencies and regression gates until a faithful replacement exists.
+Supported Source development uses the single `python -m bilikara` entry for HTTP/FFI transport, yt-dlp orchestration and explicit media-CLI compatibility; the duplicate root Python launchers are retired. Source smoke/failure tests remain active. These are concrete consumers, not native product dependencies; redirecting Source to the native Host would lose supported behavior. Keep their dependencies and regression gates until a faithful replacement exists.
 
 Third-party rebuild toolchains and AWS CLI publication may have Python dependencies. Do not hide them inside Actions/containers or claim all CI is Python-free. Continue retirement only when a concrete duplicate or obsolete maintenance path disappears without slower normal feedback, harder diagnosis or lost coverage. Simple Python adapters and tests may remain. Test-language/file counts alone do not establish completeness; a zero-Python test repository is **not** a stable v0.8 release gate.
 
@@ -39,6 +39,8 @@ Rust Native remains the default downloader; shared Rust services own scheduling,
 ## Shared UI, mobile and casting
 
 Host, local/public Remote and Android share components, actions and layout definitions, with narrow platform/role adapters. Compact desktop retains desktop navigation; Android phone navigation is platform-specific. Refine component roles, typography, geometry, surfaces, focus, motion and asynchronous guards while preserving media nodes and drafts. Reference Apple HIG, Microsoft Fluent, then Google Material where they fit the existing product; record approved component rules in `AGENTS.md`.
+
+The longer-term mobile direction remains standalone Android and iOS Hosts with GitHub-distributed APK/IPA artifacts; Remote remains a Host-served webpage. Mobile backends use shared Rust services in process, with Swift/Kotlin limited to platform adapters and no Python, sidecar or media-CLI requirement. This direction does not add a mobile release gate to stable v0.8.
 
 Continue Android lifecycle, background playback, local-network and external-display device validation. Future casting uses stable Rust-served HTTP media and shared session/target/controller abstractions, with actual receiver checks. DLNA playback, system mirroring and an independent audience display are separate capabilities; none is certified by an emulator or a desktop screenshot.
 

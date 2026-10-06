@@ -145,7 +145,6 @@ jobs:
       - name: Compile Python files
         run: |
           python -m compileall -q bilikara
-          python -m py_compile start_bilikara.py
 
       - name: Test release mirror verification
         run: node --test tests/release_mirror.test.mjs

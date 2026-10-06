@@ -29,8 +29,10 @@ Auto/Desktop/Phone selector: On Android, Phone applies below 700 CSS pixels, ind
 or physical orientation. Desktop keeps its workspace rail and compact tool sheets
 at narrow widths; it does not adopt phone navigation. The desktop shell retains
 its minimum window size. Earlier manual layout preferences remain stored but do
-not override this responsive behavior. Android's orientation control remains
-a separate device-local preference.
+not override this responsive behavior. Android follows the system's
+auto-rotation setting; player fullscreen temporarily requests landscape and
+restores system orientation on exit. Neither Host exposes a manual direction
+selector. See [Android layout](android-layout.md) for the native limitations.
 
 Layout changes move existing non-media controls, retaining their drafts,
 selection and applicable focus/scroll state. They do not reparent the player,
@@ -72,6 +74,9 @@ style, rather than a shared initial render followed by a separate phone render:
 
 Platform adapters stay narrow:
 
+- Android links the shared Rust application services in process, with no Python
+  backend, sidecar or media-CLI requirement. Pure domain logic stays independent
+  of Tauri, FFI transport and platform adapters.
 - Desktop Tauri owns window preferences, native dialogs, exports, validated
   external links and update activation. Shell commands verify the main window
   and its native Host origin; a frontend capability flag grants no permission.
