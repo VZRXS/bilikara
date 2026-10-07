@@ -915,9 +915,10 @@ credentials. `test:catalog-maintenance` checks the CLI against isolated services
 
 Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
 where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
-start with the song title. Logs are not merged or truncated at 1 MiB; orphaned
-song logs are removed after the item leaves the current song/playlist and its
-worker has drained. AppState snapshots and
+start with the song title. Logs are not merged or truncated at 1 MiB. Song logs
+remain for the whole Host run, including items that already left the current
+song/playlist, so failed or slow downloads stay diagnosable; Host shutdown
+removes them. AppState snapshots and
 typed Internet Remote projections include aggregate downloaded/total bytes and
 ordered per-track progress. An unknown total remains zero until all track sizes
 are known. These transient fields are reset with a new attempt, terminal event
