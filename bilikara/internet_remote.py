@@ -315,6 +315,12 @@ def _run_host_effect(
             preview_gatcha_uid(str(effect["uid"]))
         )
         return public_response
+    if kind == "gatcha_source_remove":
+        from .bilibili import remove_gatcha_source
+        public_response["data"] = remove_gatcha_source(
+            effect["source"], effect["id"], on_done=context._notify_state_changed,
+        )
+        return public_response
     if kind == "gatcha_uid_add":
         public_response["data"] = _public_uid_add_result(
             add_gatcha_uid(

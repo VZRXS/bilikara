@@ -940,6 +940,12 @@
         response = await request("gatcha.uid_add", { uid: String(body.uid || "") }, "bulk", 300_000);
         return jsonResponse({ ok: true, data: response.data || {} });
       }
+      if (method === "POST" && url.pathname === "/api/gatcha/source/remove") {
+        response = await request("gatcha.source_remove", {
+          source: String(body.source || ""), id: String(body.id || ""),
+        });
+        return jsonResponse({ ok: true, data: response.data || {} });
+      }
       if (method === "POST" && url.pathname === "/api/gatcha/refresh") {
         response = await request("gatcha.refresh", {}, "bulk", 30_000);
         return jsonResponse({ ok: true, data: response.data || {} });

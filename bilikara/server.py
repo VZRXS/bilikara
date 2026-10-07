@@ -2419,6 +2419,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT._notify_state_changed()
                 self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
                 return
+            if route == "/api/gatcha/source/remove":
+                from .bilibili import remove_gatcha_source
+                result = remove_gatcha_source(
+                    body.get("source"), body.get("id"), on_done=CONTEXT._notify_state_changed,
+                )
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/gatcha/uids/add":
                 result = add_gatcha_uid(
                     body.get("uid"),

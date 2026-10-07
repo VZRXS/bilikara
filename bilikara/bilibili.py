@@ -1474,6 +1474,20 @@ def preview_gatcha_uid(raw_mid: object) -> dict:
     return _rust_gatcha_network("preview_uid", uid=_normalize_gatcha_uid(raw_mid))
 
 
+def remove_gatcha_source(source: str, source_id: str, *, on_done: callable | None = None) -> dict:
+    """Transport only: shared Rust validates and removes local source records."""
+    if not rust_runtime.try_begin_gatcha_refresh(busy_message=GATCHA_TASK_BUSY_MESSAGE, exclusive=True):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    try:
+        result = _rust_gatcha_repository("remove_source", source=source, id=source_id)
+        _set_gatcha_task_status(status="success", result=result)
+        return result
+    finally:
+        rust_runtime.release_gatcha_refresh()
+        if on_done is not None:
+            on_done()
+
+
 def add_gatcha_uid(
     raw_mid: object,
     *,

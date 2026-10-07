@@ -4342,6 +4342,15 @@ impl AppState {
                     false,
                 );
             }
+            RemoteRequestV1::GatchaSourceRemove { source, id } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind":"gatcha_source_remove", "source":source, "id":id})),
+                    false,
+                );
+            }
             RemoteRequestV1::GatchaRefresh => {
                 return internet_remote_reply(
                     data,
@@ -7159,6 +7168,19 @@ mod tests {
         assert_eq!(
             gatcha.result["_host_effect"],
             json!({"kind": "gatcha_uid_add", "uid": "123456"})
+        );
+        let removal = remote_message(
+            &mut state,
+            peer_id,
+            epoch,
+            4,
+            "gatcha.source_remove",
+            json!({"source":"favlist","id":"42:10"}),
+            13.0,
+        );
+        assert_eq!(
+            removal.result["_host_effect"],
+            json!({"kind":"gatcha_source_remove","source":"favlist","id":"42:10"})
         );
     }
 

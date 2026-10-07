@@ -35,6 +35,24 @@ impl SourceQueue {
         self.pending.clear();
         self.failed.clear();
     }
+    pub(super) fn remove_source(&mut self, removed: &Value) {
+        for jobs in [&mut self.pending, &mut self.failed] {
+            jobs.retain_mut(|job| {
+                if removed["uid"] != job.uid {
+                    return true;
+                }
+                if removed["source"] == "uid" {
+                    return job.folder_ids.is_some();
+                }
+                let Some(ids) = &mut job.folder_ids else {
+                    return true;
+                };
+                ids.retain(|id| removed["folder_id"] != *id);
+                job.folder_titles.retain(|id, _| ids.contains(id));
+                !ids.is_empty()
+            });
+        }
+    }
     pub(super) fn remember_refresh_result(&mut self, value: &Value) {
         let summary = value.get("refresh_summary").unwrap_or(value);
         for source in summary["uids"].as_array().into_iter().flatten() {
@@ -305,6 +323,39 @@ mod tests {
         assert_eq!(q.pending.pop_front(), Some(second));
         q.clear();
         assert!(q.pending.is_empty());
+    }
+    #[test]
+    fn removal_cancels_only_the_matching_pending_and_failed_source() {
+        let mut q = SourceQueue::default();
+        let up = SourceJob {
+            uid: "42".into(),
+            folder_ids: None,
+            folder_titles: BTreeMap::new(),
+        };
+        let favorites = SourceJob {
+            uid: "42".into(),
+            folder_ids: Some(vec!["10".into(), "11".into()]),
+            folder_titles: BTreeMap::from([
+                ("10".into(), "Ten".into()),
+                ("11".into(), "Eleven".into()),
+            ]),
+        };
+        q.pending.extend([up.clone(), favorites.clone()]);
+        q.failed.extend([up, favorites]);
+        q.remove_source(&json!({"source":"uid","uid":"42"}));
+        assert_eq!(q.pending.len(), 1);
+        assert_eq!(q.failed.len(), 1);
+        q.remove_source(&json!({"source":"favlist","uid":"43","folder_id":"10"}));
+        assert_eq!(q.pending[0].folder_ids.as_ref().unwrap().len(), 2);
+        q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"10"}));
+        assert_eq!(q.pending[0].folder_ids, Some(vec!["11".into()]));
+        assert_eq!(
+            q.failed[0].folder_titles,
+            BTreeMap::from([("11".into(), "Eleven".into())])
+        );
+        q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"11"}));
+        assert!(q.pending.is_empty());
+        assert!(q.failed.is_empty());
     }
     #[test]
     fn queue_is_bounded_without_dropping_existing_work() {

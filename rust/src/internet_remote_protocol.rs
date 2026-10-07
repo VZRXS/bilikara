@@ -79,6 +79,7 @@ pub enum RemoteOperation {
     GatchaPoolConfigSet,
     GatchaUidPreview,
     GatchaUidAdd,
+    GatchaSourceRemove,
     GatchaRefresh,
     GatchaFavlistPreview,
     GatchaFavlistRefresh,
@@ -145,6 +146,7 @@ impl RemoteOperation {
             Self::GatchaPoolConfigSet
             | Self::GatchaUidPreview
             | Self::GatchaUidAdd
+            | Self::GatchaSourceRemove
             | Self::GatchaRefresh
             | Self::GatchaFavlistPreview
             | Self::GatchaFavlistRefresh => RemoteCapability::GatchaManage,
@@ -265,6 +267,8 @@ pub enum RemoteRequestV1 {
     GatchaUidPreview { uid: String },
     #[serde(rename = "gatcha.uid_add")]
     GatchaUidAdd { uid: String },
+    #[serde(rename = "gatcha.source_remove")]
+    GatchaSourceRemove { source: String, id: String },
     #[serde(rename = "gatcha.refresh")]
     GatchaRefresh,
     #[serde(rename = "gatcha.favlist_preview")]
@@ -399,6 +403,7 @@ impl RemoteRequestV1 {
             Self::GatchaPoolConfigSet { .. } => RemoteOperation::GatchaPoolConfigSet,
             Self::GatchaUidPreview { .. } => RemoteOperation::GatchaUidPreview,
             Self::GatchaUidAdd { .. } => RemoteOperation::GatchaUidAdd,
+            Self::GatchaSourceRemove { .. } => RemoteOperation::GatchaSourceRemove,
             Self::GatchaRefresh => RemoteOperation::GatchaRefresh,
             Self::GatchaFavlistPreview { .. } => RemoteOperation::GatchaFavlistPreview,
             Self::GatchaFavlistRefresh { .. } => RemoteOperation::GatchaFavlistRefresh,
@@ -557,6 +562,13 @@ struct GatchaPoolConfigBody {
 #[serde(deny_unknown_fields)]
 struct GatchaUidBody {
     uid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatchaSourceRemoveBody {
+    source: String,
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -878,6 +890,11 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::GatchaUidPreview { uid }
         | RemoteRequestV1::GatchaUidAdd { uid }
         | RemoteRequestV1::GatchaFavlistPreview { uid } => valid_numeric_id(uid),
+        RemoteRequestV1::GatchaSourceRemove { source, id } => match source.as_str() {
+            "uid" => valid_numeric_id(id),
+            "favlist" => valid_folder_selector(id),
+            _ => false,
+        },
         RemoteRequestV1::GatchaFavlistRefresh {
             uid,
             folder_ids,
@@ -1170,6 +1187,13 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
                 "gatcha.uid_preview" => RemoteRequestV1::GatchaUidPreview { uid: body.uid },
                 "gatcha.uid_add" => RemoteRequestV1::GatchaUidAdd { uid: body.uid },
                 _ => RemoteRequestV1::GatchaFavlistPreview { uid: body.uid },
+            }
+        }
+        "gatcha.source_remove" => {
+            let body: GatchaSourceRemoveBody = body(value)?;
+            RemoteRequestV1::GatchaSourceRemove {
+                source: body.source,
+                id: body.id,
             }
         }
         "gatcha.favlist_refresh" => {
@@ -1886,6 +1910,40 @@ mod tests {
             category.request.operation(),
             RemoteOperation::CatalogCategoryBrowse
         );
+    }
+
+    #[test]
+    fn local_source_removal_is_controller_only_and_strictly_scoped() {
+        for body in [
+            json!({"source":"uid","id":"42"}),
+            json!({"source":"favlist","id":"42:10"}),
+        ] {
+            let message = request("gatcha.source_remove", body);
+            let decoded =
+                decode_remote_request_v1(&message, context(RemoteProfile::Controller)).unwrap();
+            assert_eq!(
+                decoded.request.operation(),
+                RemoteOperation::GatchaSourceRemove
+            );
+            assert_eq!(
+                decode_remote_request_v1(&message, context(RemoteProfile::Viewer)),
+                Err(RemoteProtocolError::CapabilityDenied)
+            );
+        }
+        for body in [
+            json!({"source":"d1","id":"42"}),
+            json!({"source":"uid","id":"../42"}),
+            json!({"source":"favlist","id":"42:10:11"}),
+            json!({"source":"uid","id":"42","path":"other.json"}),
+        ] {
+            assert!(
+                decode_remote_request_v1(
+                    &request("gatcha.source_remove", body),
+                    context(RemoteProfile::Controller)
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

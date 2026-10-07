@@ -1,9 +1,11 @@
 mod configured_refresh;
+mod source_removal;
 use crate::bilibili_service::{BilibiliHttpClient, BilibiliServiceError};
 use crate::gatcha_refresh::RefreshControl;
 pub(crate) use configured_refresh::execute_configured_refresh;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+pub(crate) use source_removal::validate_source_removal;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +45,10 @@ pub struct GatchaPaths {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GatchaOperation {
     UidSnapshot,
+    RemoveSource {
+        source: String,
+        id: String,
+    },
     PoolConfigSnapshot,
     PoolConfigUpdate {
         #[serde(default)]
@@ -173,12 +179,19 @@ pub fn execute_gatcha(request: &GatchaRepositoryRequest) -> Result<Value, Gatcha
     if request.schema_version != 1 {
         return Err(error("invalid_request", "unsupported schema version"));
     }
+    if let GatchaOperation::RemoveSource { source, id } = &request.operation {
+        validate_source_removal(source, id)?;
+    }
     if !requires_mutation_lock(&request.operation) {
         uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
         return execute_gatcha_operation(request);
     }
     let _guard = repository_guard()?;
-    uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
+    // A destructive edit must read the existing file strictly, not seed a
+    // missing configuration as an incidental effect of deleting a favorite.
+    if !matches!(request.operation, GatchaOperation::RemoveSource { .. }) {
+        uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
+    }
     execute_gatcha_operation(request)
 }
 
@@ -188,6 +201,7 @@ fn requires_mutation_lock(operation: &GatchaOperation) -> bool {
         GatchaOperation::PoolConfigUpdate { .. }
             | GatchaOperation::AddUid { .. }
             | GatchaOperation::RefreshFavlist { .. }
+            | GatchaOperation::RemoveSource { .. }
     )
 }
 
@@ -202,6 +216,9 @@ fn execute_gatcha_operation(
     request: &GatchaRepositoryRequest,
 ) -> Result<Value, GatchaRepositoryError> {
     match &request.operation {
+        GatchaOperation::RemoveSource { source, id } => {
+            source_removal::remove_source(&request.paths, source, id)
+        }
         GatchaOperation::UidSnapshot => {
             uid_snapshot(&request.paths.uid_file, &request.default_uids)
         }
@@ -315,7 +332,7 @@ fn execute_gatcha_operation(
 /// One-time Native Alpha migration. Never reset source choices on each login.
 /// The marker is separate because ordinary UID/profile writes normalize their
 /// own schema. Commit UIDs first: an interrupted marker write is safe to retry.
-#[cfg(feature = "native-host")]
+#[cfg(any(feature = "native-host", test))]
 pub(crate) fn initialize_native_uids(
     paths: &GatchaPaths,
     defaults: &[String],

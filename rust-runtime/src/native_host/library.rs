@@ -584,7 +584,16 @@ impl TaskLease {
         automatic: bool,
         configured: bool,
     ) {
-        let mut task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+        let mut task = match result {
+            Ok(value) if value["operation"] == "remove_source" => GachaTaskUpdate {
+                status: GachaTaskStatus::Success,
+                message: "本地来源已删除".into(),
+                error: String::new(),
+                result: Some(value.clone()),
+                blocking: false,
+            },
+            _ => crate::gatcha_refresh::native_task(result.as_ref().ok()),
+        };
         if let Err(error) = result {
             task.error.clone_from(&error.message);
         }
@@ -781,6 +790,37 @@ pub(super) fn write(
         })?;
         return pool(&context.directory, &key);
     }
+    if path == "/api/gatcha/source/remove" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Removal {
+            source: String,
+            id: String,
+        }
+        let removal: Removal = serde_json::from_value(body.clone())
+            .map_err(|_| ApiError::invalid("Invalid local Gacha source"))?;
+        crate::gatcha_repository::validate_source_removal(&removal.source, &removal.id)
+            .map_err(|e| ApiError::invalid(e.message))?;
+        // This lease serializes against active network scans without requiring
+        // login, consuming a refresh cooldown, or appending anything to D1.
+        let (lease, _) = TaskLease::acquire(Some(identity), "remove_source", false, true)?;
+        let result = execute(
+            &context.directory,
+            GatchaOperation::RemoveSource {
+                source: removal.source,
+                id: removal.id,
+            },
+        );
+        if let Ok(value) = &result {
+            with_app(|app| {
+                app.native().library_queue.remove_source(value);
+                Ok(())
+            })?;
+            publish_favorites_timestamp(&context.directory);
+        }
+        lease.finish(&result)?;
+        return result;
+    }
     // Validate the route/body before acquiring a lease or beginning any I/O.
     network_operation(path, body, "")?;
     if path == "/api/gatcha/refresh" {
@@ -824,6 +864,39 @@ pub(super) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removal_lease_blocks_refresh_without_login_or_cooldown_cost() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let until = Instant::now() + Duration::from_secs(60);
+        with_app(|app| {
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            app.native().library_cooldown_until = Some(until);
+            Ok(())
+        })
+        .unwrap();
+        let (lease, cookie) = TaskLease::acquire(None, "remove_source", false, true).unwrap();
+        assert!(cookie.is_empty());
+        assert_eq!(
+            TaskLease::acquire(None, "remove_source", false, true)
+                .err()
+                .unwrap()
+                .code,
+            "library_busy"
+        );
+        let result = json!({"operation":"remove_source","source":"uid","id":"42"});
+        lease.finish(&Ok(result.clone())).unwrap();
+        with_app(|app| {
+            let session = app.native();
+            assert_eq!(session.library_cooldown_until, Some(until));
+            assert!(!session.library_refresh_active);
+            assert_eq!(session.login.gacha_snapshot().last_result, Some(result));
+            *session = crate::app_state::native_session::NativeSession::default();
+            Ok(())
+        })
+        .unwrap();
+    }
     #[test]
     fn configured_native_http_uses_shared_task_and_stopped_lease_cannot_publish() {
         let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK

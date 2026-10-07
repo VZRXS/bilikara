@@ -8945,10 +8945,31 @@ function followOwnerDisplayName(owner) {
   return stateOwnerName || ownerName || `UID ${uid}`;
 }
 
+const sourceRemovalEditors = new Map();
+function sourceRemovalEditor(source) {
+  if (!sourceRemovalEditors.has(source)) {
+    sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
+      source === "uid" ? elements.followUpGrid : elements.favlistGrid, {
+        source, translate: t, reportError: message => setAppMessage(message, true),
+        remove: async target => {
+          await apiPost("/api/gatcha/source/remove", target);
+          state.gatchaCandidate = null;
+          renderGatchaWorkspace();
+          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
+          else await loadFavlistBrowse({ folderId: "", query: "" });
+          setAppMessage(t("sources.removedLocal"));
+        },
+      },
+    ));
+  }
+  return sourceRemovalEditors.get(source);
+}
+
 function renderFollowBrowse() {
   if (!elements.followUpGrid || !elements.followSongResults) {
     return;
   }
+  sourceRemovalEditor("uid")?.sync();
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
@@ -9013,7 +9034,8 @@ function renderFollowBrowse() {
           button.append(avatar);
         }
 
-        elements.followUpGrid.appendChild(button);
+        elements.followUpGrid.appendChild(sourceRemovalEditor("uid")?.card(button,
+          { id: button.dataset.uid, title: button.title, placeholder: owner.placeholder }) || button);
       });
     }
     setFollowBrowseMessage("");
@@ -9063,7 +9085,7 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
       return;
     }
     state.followBrowseData = nextData;
-    state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
+    state.followBrowseSelectedUid = String(nextData.selected_uid ?? state.followBrowseSelectedUid ?? "");
     if (!keepQuery && elements.followSearchQuery) {
       elements.followSearchQuery.value = String(nextData.query || "");
     }
@@ -9099,6 +9121,7 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
+  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
@@ -9167,7 +9190,8 @@ function renderFavlistBrowse() {
           button.append(avatar);
         }
 
-        elements.favlistGrid.appendChild(button);
+        elements.favlistGrid.appendChild(sourceRemovalEditor("favlist")?.card(button,
+          { id: folderId, title, placeholder: folder.placeholder }) || button);
       });
     }
     setFavlistBrowseMessage("");
@@ -9223,7 +9247,7 @@ async function loadFavlistBrowse({
     }
     state.favlistBrowseData = nextData;
     state.favlistBrowseSelectedFolderId = String(
-      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+      nextData.selected_folder_id ?? state.favlistBrowseSelectedFolderId ?? "",
     );
     if (!keepQuery && elements.favlistSearchQuery) {
       elements.favlistSearchQuery.value = String(nextData.query || "");
@@ -9745,7 +9769,8 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const message = task.last_result?.operation === "remove_source"
+      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }

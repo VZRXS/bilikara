@@ -34,7 +34,7 @@
     "test:native-images": "node --test tests/native_images.test.mjs",
     "test:native-login": "node --test tests/desktop_login_native.test.mjs",
     "test:native-ratings": "node --test tests/native_ratings_browser.test.mjs",
-    "test:host-experience": "node --test tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs",
+    "test:host-experience": "node --test tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs tests/source_removal_browser.test.mjs",
     "test:native-users": "node --test tests/native_session_users_browser.test.mjs",
     "test:native-transport": "node --test tests/native_transport.test.mjs tests/native_transport_browser.test.mjs",
     "test:native-transport-entry": "node --test tests/native_transport_entry.test.mjs",
