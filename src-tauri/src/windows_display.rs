@@ -3,6 +3,34 @@
 //! while fullscreen hides the toolbar. Ordinary dragging never requests recovery.
 use super::*;
 
+#[cfg(test)]
+fn offscreen_fixture_position(
+    desktop: (i64, i64, i64, i64),
+    size: (u32, u32),
+) -> Option<(i32, i32)> {
+    let (width, height) = (i64::from(size.0), i64::from(size.1));
+    if width == 0 || height == 0 {
+        return None;
+    }
+    // Native Windows positioning can clamp very large coordinates to signed
+    // 16-bit values. Choose a whole test rectangle within that range, outside
+    // the actual virtual desktop, rather than assuming a million-pixel move.
+    [
+        (desktop.2 + 64, 0),
+        (desktop.0 - width - 64, 0),
+        (0, desktop.3 + 64),
+        (0, desktop.1 - height - 64),
+    ]
+    .into_iter()
+    .find(|(x, y)| {
+        *x >= i64::from(i16::MIN)
+            && *y >= i64::from(i16::MIN)
+            && *x + width <= i64::from(i16::MAX)
+            && *y + height <= i64::from(i16::MAX)
+    })
+    .map(|(x, y)| (x as i32, y as i32))
+}
+
 fn recovery_geometry(
     monitors: &[MonitorWorkArea],
     primary: usize,
@@ -471,6 +499,17 @@ mod native {
         fn native_display_notification_recovers_an_actually_offscreen_window() {
             let window = TestWindow::new();
             let hwnd = window.0;
+            let left = i64::from(unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) });
+            let top = i64::from(unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) });
+            let width = i64::from(unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) });
+            let height = i64::from(unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) });
+            assert!(
+                width > 0 && height > 0,
+                "fixture needs a real virtual desktop"
+            );
+            let (offscreen_x, offscreen_y) =
+                offscreen_fixture_position((left, top, left + width, top + height), (600, 400))
+                    .expect("virtual desktop must leave a representable offscreen test rectangle");
             let primary = monitor_info(&RECT {
                 left: 0,
                 top: 0,
@@ -534,8 +573,8 @@ mod native {
                     SetWindowPos(
                         hwnd,
                         std::ptr::null_mut(),
-                        1_000_000,
-                        1_000_000,
+                        offscreen_x,
+                        offscreen_y,
                         600,
                         400,
                         SWP_NOACTIVATE | SWP_NOZORDER
@@ -546,8 +585,19 @@ mod native {
             let mut before: RECT = unsafe { std::mem::zeroed() };
             assert_ne!(unsafe { GetWindowRect(hwnd, &mut before) }, 0);
             assert_eq!(
-                before.left, 1_000_000,
-                "fixture really left the visible desktop"
+                (before.left, before.top),
+                (offscreen_x, offscreen_y),
+                "native fixture must accept its bounded coordinates"
+            );
+            assert!(
+                unsafe {
+                    windows_sys::Win32::Graphics::Gdi::MonitorFromRect(
+                        &before,
+                        windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTONULL,
+                    )
+                }
+                .is_null(),
+                "fixture must be outside every real monitor before recovery"
             );
             unsafe {
                 SendMessageW(hwnd, WM_DISPLAYCHANGE, 32, 0);
@@ -575,6 +625,33 @@ mod native {
 mod tests {
     use super::super::tests::{FRAMELESS, monitor, saved_geometry};
     use super::*;
+
+    #[test]
+    fn offscreen_fixture_uses_desktop_bounds_and_windows_coordinate_range() {
+        for (desktop, expected) in [
+            ((0, 0, 1920, 1080), Some((1984, 0))),
+            ((-1920, -600, 1920, 1080), Some((1984, 0))),
+            ((0, 0, 32500, 1080), Some((-664, 0))),
+            ((-32700, -600, 32700, 1080), Some((0, 1144))),
+            ((-32700, -32700, 32700, 32700), None),
+        ] {
+            let actual = offscreen_fixture_position(desktop, (600, 400));
+            assert_eq!(actual, expected);
+            if let Some((x, y)) = actual {
+                assert_eq!(
+                    rectangle_intersection_area(
+                        desktop,
+                        (x.into(), y.into(), i64::from(x) + 600, i64::from(y) + 400)
+                    ),
+                    0
+                );
+                assert!(x >= i32::from(i16::MIN) && y >= i32::from(i16::MIN));
+                assert!(i64::from(x) + 600 <= i64::from(i16::MAX));
+                assert!(i64::from(y) + 400 <= i64::from(i16::MAX));
+            }
+        }
+        assert!(offscreen_fixture_position((0, 0, 1920, 1080), (0, 400)).is_none());
+    }
 
     #[test]
     fn removed_extended_display_and_mirror_collapse_recover_on_primary() {
