@@ -876,6 +876,7 @@ mod tests {
                 item: item(id),
                 position: "tail".into(),
                 requester_name: "Alice".into(),
+                requester_user_id: None,
                 reset_av_delay: false,
                 allow_repeat: true,
                 now: 11.0,

@@ -637,6 +637,7 @@ fn defer_current_keeps_ready_artifacts_but_revokes_old_playhead_and_controls() {
         item: second,
         position: "tail".into(),
         requester_name: "Alice".into(),
+        requester_user_id: None,
         reset_av_delay: false,
         allow_repeat: false,
         now: 4.0,
