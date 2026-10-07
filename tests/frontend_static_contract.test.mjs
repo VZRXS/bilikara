@@ -49,6 +49,19 @@ test('hidden main geometry precedes backend launch; accepted ready alone shows/f
   const desktop = read('src-tauri/src/desktop.rs'), lifecycle = read('src-tauri/src/window_lifecycle.rs'), backend = read('src-tauri/src/backend_process.rs'), cargo = read('src-tauri/Cargo.toml');
   const setup = between(desktop, '.setup(move |app| {', '.on_window_event'); includes(setup, ['window_lifecycle::initialize_main_window_geometry(app, &window)', 'create_macos_main_webview_window(app)?']); assert.ok(setup.indexOf('create_macos_main_webview_window') < setup.indexOf('initialize_main_window_geometry')); assert.ok(setup.indexOf('initialize_main_window_geometry') < setup.indexOf('desktop_import::gate_startup'));
   const gate = read('src-tauri/src/desktop_import.rs'); includes(gate, ['needs_startup_inspection', 'workflow(&app, true)', 'crate::backend_process::launch(&app, window, startup_log)']);
+  // Windows must consume imported preferences before the first hidden-window
+  // restore, while macOS/Linux retain their existing creation/restore order.
+  includes(setup, ['#[cfg(not(windows))]\n            window_lifecycle::initialize_main_window_geometry(app, &window);']);
+  const nativeGate = between(gate, 'pub(crate) fn gate_startup(', 'fn workflow(');
+  const fastPath = between(nativeGate, 'if matches!(needed, Ok(false)) {', 'let app = app.handle().clone();');
+  const firstStart = between(nativeGate, 'Ok(true) if app.get_webview_window("main").is_some() => {', 'Ok(_) => app.exit(0)');
+  for (const branch of [fastPath, firstStart]) {
+    includes(branch, ['#[cfg(windows)]', 'initialize_main_window_geometry', 'backend_process::launch']);
+    assert.ok(branch.indexOf('initialize_main_window_geometry') < branch.indexOf('backend_process::launch'));
+  }
+  const success = between(gate, 'fn success(app:', 'fn choose_folder(');
+  assert.ok(success.indexOf('import_old_window_settings(report)') < success.indexOf('success_message(report,'));
+  includes(success, ['cleanup_folders(report,', '"打开文件夹".into()', '"完成".into()', 'blocking_show_with_result()', 'cleanup_button_selected(&result)', 'open_cleanup_folders(&folders, crate::platform::open_existing_directory)']);
   const windows = JSON.parse(read('src-tauri/tauri.conf.json')).app.windows; assert.deepEqual(windows.map(v => v.label), ['main']); assert.equal(windows[0].visible, false); excludes(lifecycle, ['.show()', 'tauri_plugin_window_state']); excludes(cargo, ['tauri-plugin-window-state']); includes(lifecycle, ['const MAIN_WINDOW_LABEL: &str = "main";', 'if window.label() != MAIN_WINDOW_LABEL']); excludes(lifecycle.slice(0, lifecycle.indexOf('async fn prepare_application_restart_on_main_thread')), ['controller']);
   const accepted = between(backend.slice(backend.indexOf('let result = drain_backend_stdout(')), '|ready| {', '|line| {'); assert.equal(backend.split('window_clone.show()').length - 1, 1); assert.equal(accepted.split('window_clone.show()').length - 1, 1);
   for (const [a, b] of [['ready_for_reader.store(true', 'window_clone.show()'], ['window_clone.show()', 'window_clone.set_focus()'], ['window_clone.set_focus()', 'window.location.replace']]) assert.ok(accepted.indexOf(a) < accepted.indexOf(b));

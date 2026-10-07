@@ -120,6 +120,9 @@ pub(crate) fn run() {
                 );
                 return Ok(());
             };
+            // Windows imports the old portable window preferences in the data
+            // gate; restore them before Host launch, while main is still hidden.
+            #[cfg(not(windows))]
             window_lifecycle::initialize_main_window_geometry(app, &window);
             #[cfg(target_os = "linux")]
             if let Err(error) = platform::configure_linux_main_window(&window) {

@@ -12,7 +12,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const GEOMETRY_SCHEMA_VERSION: u8 = 1;
-const GEOMETRY_FILENAME: &str = "main-window-geometry-v1.json";
+pub(crate) const GEOMETRY_FILENAME: &str = "main-window-geometry-v1.json";
 const MAX_GEOMETRY_FILE_BYTES: u64 = 16 * 1024;
 
 // The current Host keeps its two-column layout at 1120 logical pixels. The adaptive
@@ -653,6 +653,42 @@ fn load_geometry(path: &Path) -> Result<Option<StoredMainWindowGeometry>, String
 }
 
 fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> std::io::Result<()> {
+    write_geometry(path, geometry, true)
+}
+
+// Optional old shell preferences use the same strict, bounded reader and writer
+// as ordinary restoration, without replacing any current preference file.
+pub(crate) fn import_window_geometry(source: &Path, destination: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    match fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_file() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        _ => return Err("旧版窗口配置不是可读取的普通文件。".into()),
+    }
+    let geometry = load_geometry(source)?
+        .filter(stored_geometry_is_valid)
+        .ok_or("旧版窗口配置无效，已跳过。")?;
+    match write_geometry(destination, &geometry, false) {
+        Ok(()) => Ok(true),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && fs::symlink_metadata(destination).is_ok() =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn write_geometry(
+    path: &Path,
+    geometry: &StoredMainWindowGeometry,
+    replace: bool,
+) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -674,7 +710,7 @@ fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> st
             .open(&temporary)?;
         file.write_all(&encoded)?;
         file.sync_all()?;
-        replace_geometry_file(&temporary, path)
+        replace_geometry_file(&temporary, path, replace)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -683,12 +719,17 @@ fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> st
 }
 
 #[cfg(not(windows))]
-fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
+fn replace_geometry_file(source: &Path, destination: &Path, replace: bool) -> std::io::Result<()> {
+    if replace {
+        fs::rename(source, destination)
+    } else {
+        fs::hard_link(source, destination)?;
+        fs::remove_file(source)
+    }
 }
 
 #[cfg(windows)]
-fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn replace_geometry_file(source: &Path, destination: &Path, replace: bool) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -705,7 +746,12 @@ fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<(
         MoveFileExW(
             source.as_ptr(),
             destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            MOVEFILE_WRITE_THROUGH
+                | if replace {
+                    MOVEFILE_REPLACE_EXISTING
+                } else {
+                    0
+                },
         )
     };
     if moved == 0 {
@@ -722,7 +768,10 @@ fn geometry_diagnostic(stage: &str, status: &str) {
     );
 }
 
-pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::WebviewWindow) {
+pub(crate) fn initialize_main_window_geometry(
+    app: &impl tauri::Manager<tauri::Wry>,
+    window: &tauri::WebviewWindow,
+) {
     if window.label() != MAIN_WINDOW_LABEL {
         geometry_diagnostic("initialize", "ignored_non_main");
         return;
@@ -1764,6 +1813,89 @@ mod tests {
             "bilikara-window-geometry-{test_name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn legacy_window_geometry_import_validates_and_keeps_source_and_current_preferences() {
+        let root = temporary_test_directory("legacy import 中文 &");
+        let source = root
+            .join("Roaming/com.bilikara.app")
+            .join(GEOMETRY_FILENAME);
+        let destination = root.join("runtime").join(GEOMETRY_FILENAME);
+        assert!(!import_window_geometry(&source, &destination).unwrap());
+        assert!(
+            !root.exists(),
+            "missing old preferences must not create files"
+        );
+        let original = br#"{"schema_version":1,"normal":{"offset_x":12.0,"offset_y":12.0,"width":1396.0,"height":880.5,"monitor":{"name":"\\\\.\\DISPLAY1","x":0,"y":0,"width":2880,"height":1824,"scale_factor":2.0}},"maximized":false}"#;
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, original).unwrap();
+        assert!(import_window_geometry(&source, &destination).unwrap());
+        let geometry = load_geometry(&destination).unwrap().unwrap();
+        assert_eq!(geometry.normal.offset_x, 12.0);
+        assert_eq!(geometry.normal.width, 1396.0);
+        assert_eq!(geometry.normal.height, 880.5);
+        assert_eq!(geometry.normal.monitor.scale_factor, 2.0);
+        assert_eq!(geometry.layout, HostLayout::Auto);
+        assert!(!geometry.maximized);
+        assert_eq!(fs::read(&source).unwrap(), original);
+
+        // Both the early existence check and atomic publication protect a
+        // previously saved current file, including one needing manual recovery.
+        fs::write(&destination, b"existing current preferences").unwrap();
+        assert!(!import_window_geometry(&source, &destination).unwrap());
+        let error = write_geometry(&destination, &geometry, false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"existing current preferences"
+        );
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(destination.parent().unwrap()).unwrap().count(),
+            1
+        );
+        fs::remove_file(&destination).unwrap();
+
+        let invalid = [
+            b"{broken JSON".to_vec(),
+            String::from_utf8(original.to_vec())
+                .unwrap()
+                .replace("\"schema_version\":1", "\"schema_version\":2")
+                .into_bytes(),
+            String::from_utf8(original.to_vec())
+                .unwrap()
+                .replace("1396.0", "1.0")
+                .into_bytes(),
+            vec![b' '; MAX_GEOMETRY_FILE_BYTES as usize + 1],
+        ];
+        for bytes in invalid {
+            fs::write(&source, &bytes).unwrap();
+            assert!(import_window_geometry(&source, &destination).is_err());
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert!(!destination.exists());
+            assert_eq!(
+                fs::read_dir(destination.parent().unwrap()).unwrap().count(),
+                0
+            );
+        }
+        fs::remove_file(&source).unwrap();
+        fs::create_dir(&source).unwrap();
+        assert!(import_window_geometry(&source, &destination).is_err());
+        fs::remove_dir(&source).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&destination, &source).unwrap();
+            assert!(import_window_geometry(&source, &destination).is_err());
+            fs::remove_file(&source).unwrap();
+        }
+        fs::write(&source, original).unwrap();
+        let blocked_parent = root.join("blocked");
+        fs::write(&blocked_parent, b"unrelated file").unwrap();
+        assert!(import_window_geometry(&source, &blocked_parent.join(GEOMETRY_FILENAME)).is_err());
+        assert_eq!(fs::read(&blocked_parent).unwrap(), b"unrelated file");
+        assert_eq!(fs::read(&source).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

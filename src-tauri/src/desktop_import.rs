@@ -287,21 +287,70 @@ fn information(app: &tauri::AppHandle, message: impl Into<String>) {
         .blocking_show();
 }
 
-fn success(app: &tauri::AppHandle, report: &Completion) {
+fn old_windows_window_settings(
+    platform: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    if platform != "windows"
+        || [
+            "BILIKARA_NATIVE_DATA_DIR",
+            "BILIKARA_DESKTOP_RUST_PREVIEW_DIR",
+            "BILIKARA_HOME",
+        ]
+        .into_iter()
+        .any(|key| env(key).is_some_and(|v| !v.is_empty()))
+    {
+        return None;
+    }
+    let root = PathBuf::from(env("APPDATA").filter(|v| !v.is_empty())?);
+    if !root.is_absolute() {
+        return None;
+    }
+    let path = root
+        .join("com.bilikara.app")
+        .join(crate::window_lifecycle::GEOMETRY_FILENAME);
+    // Report only the known old preference file after a successful import.
+    // Do not read its contents, scan the directory or alter other app files.
+    std::fs::symlink_metadata(&path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|_| path)
+}
+
+struct WindowSettingsImport {
+    source: PathBuf,
+    destination: PathBuf,
+    outcome: Result<bool, String>,
+}
+
+fn import_old_window_settings(report: &Completion) -> Option<WindowSettingsImport> {
+    let source = old_windows_window_settings(std::env::consts::OS, |key| std::env::var_os(key))?;
+    let destination = report
+        .destination
+        .parent()?
+        .join(crate::window_lifecycle::GEOMETRY_FILENAME);
+    let outcome = crate::window_lifecycle::import_window_geometry(&source, &destination);
+    Some(WindowSettingsImport {
+        source,
+        destination,
+        outcome,
+    })
+}
+
+fn success_message(
+    report: &Completion,
+    old_window_settings: Option<&WindowSettingsImport>,
+) -> String {
     let backup = report
         .backup
         .as_ref()
-        .map(|p| format!("\n\n原数据备份：\n{}", p.display()))
+        .map(|p| format!("\n\n导入前的数据已作为备份保存在：\n{}", p.display()))
         .unwrap_or_default();
     let source_backup = report
         .source_backup
         .as_ref()
-        .map(|p| {
-            format!(
-                "\n\n来源数据已移到备份，旧位置不再保留记录：\n{}",
-                p.display()
-            )
-        })
+        .filter(|path| Some(*path) != report.backup.as_ref())
+        .map(|p| format!("\n\n旧数据已按原文件形式作为备份保存在：\n{}", p.display()))
         .unwrap_or_default();
     let note = match report.source_format.as_deref() {
         Some("native") => "新版格式直接复制，保留已有媒体缓存和设备登记。",
@@ -318,13 +367,113 @@ fn success(app: &tauri::AppHandle, report: &Completion) {
             )
         })
         .unwrap_or_default();
-    information(
-        app,
-        format!(
-            "导入完成。现在可以正常打开 bilikara。\n\n数据位置：\n{}{backup}{source_backup}\n\n{note}{warning}",
-            report.destination.display()
-        ),
-    );
+    let cleanup = if report.cleanup_warning.is_none()
+        && (report.backup.is_some() || report.source_backup.is_some())
+    {
+        "\n\n确认导入后的记录完整后，可手动删除上述备份文件夹。"
+    } else {
+        ""
+    };
+    let old_settings = old_window_settings
+        .map(|settings| {
+            let status = match &settings.outcome {
+                Ok(true) => format!(
+                    "旧版窗口配置已导入到：\n{}",
+                    settings.destination.display()
+                ),
+                Ok(false) => "当前版本优先保留已有窗口配置，不重复覆盖。".into(),
+                Err(error) => format!("旧版窗口配置未导入，不影响歌单数据导入和启动：\n{error}"),
+            };
+            format!(
+                "\n\n{status}\n旧版窗口配置原件保留在：\n{}\n确认不再使用旧版后，可手动删除这份旧窗口配置文件。",
+                settings.source.display()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "导入完成。现在可以正常打开 bilikara。\n\n数据位置：\n{}{backup}{source_backup}{cleanup}\n\n{note}{warning}{old_settings}",
+        report.destination.display()
+    )
+}
+
+fn success(app: &tauri::AppHandle, report: &Completion) {
+    let old_settings = import_old_window_settings(report);
+    let folders = cleanup_folders(report, old_settings.as_ref());
+    let message = success_message(report, old_settings.as_ref());
+    if folders.is_empty() {
+        information(app, message);
+        return;
+    }
+    let result = app
+        .dialog()
+        .message(message)
+        .title("bilikara · 导入旧数据")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "打开文件夹".into(),
+            "完成".into(),
+        ))
+        .blocking_show_with_result();
+    if cleanup_button_selected(&result) {
+        let failures = open_cleanup_folders(&folders, crate::platform::open_existing_directory);
+        if !failures.is_empty() {
+            information(
+                app,
+                format!(
+                    "数据已导入，不影响正常启动。以下文件夹无法自动打开，请按路径手动查看：\n\n{}",
+                    failures.join("\n\n")
+                ),
+            );
+        }
+    }
+}
+
+fn cleanup_button_selected(result: &MessageDialogResult) -> bool {
+    // Escape/titlebar close use the cancel slot on some native dialog backends.
+    // That slot is always "完成", never the file-manager action.
+    matches!(result, MessageDialogResult::Ok | MessageDialogResult::Yes)
+        || matches!(result, MessageDialogResult::Custom(label) if label == "打开文件夹")
+}
+
+fn cleanup_folders(report: &Completion, settings: Option<&WindowSettingsImport>) -> Vec<PathBuf> {
+    let mut folders = Vec::<PathBuf>::new();
+    if !report.completed {
+        return folders;
+    }
+    // Match the manual-cleanup guidance exactly. A cleanup warning requires
+    // retaining the data backups, so it must not offer their removal shortcut.
+    if report.cleanup_warning.is_none() {
+        for folder in [&report.backup, &report.source_backup]
+            .into_iter()
+            .flatten()
+        {
+            if folder.is_absolute() && !folders.iter().any(|other| folder.starts_with(other)) {
+                folders.retain(|other| !other.starts_with(folder));
+                folders.push(folder.clone());
+            }
+        }
+    }
+    if let Some(folder) = settings.and_then(|s| s.source.parent())
+        && folder.is_absolute()
+        && !folders.iter().any(|other| folder.starts_with(other))
+    {
+        folders.retain(|other| !other.starts_with(folder));
+        folders.push(folder.to_owned());
+    }
+    folders
+}
+
+fn open_cleanup_folders(
+    folders: &[PathBuf],
+    open: impl Fn(&Path) -> Result<(), String>,
+) -> Vec<String> {
+    folders
+        .iter()
+        .filter_map(|folder| {
+            open(folder)
+                .err()
+                .map(|error| format!("{}\n{error}", folder.display()))
+        })
+        .collect()
 }
 
 fn choose_folder(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
@@ -401,6 +550,8 @@ pub(crate) fn gate_startup(
             needs_startup_inspection(&path, std::env::consts::OS, |key| std::env::var_os(key))
         });
     if matches!(needed, Ok(false)) {
+        #[cfg(windows)]
+        crate::window_lifecycle::initialize_main_window_geometry(app, &window);
         crate::backend_process::launch(app.handle(), window, startup_log);
         return;
     }
@@ -409,6 +560,8 @@ pub(crate) fn gate_startup(
         let result = needed.and_then(|_| workflow(&app, true));
         match result {
             Ok(true) if app.get_webview_window("main").is_some() => {
+                #[cfg(windows)]
+                crate::window_lifecycle::initialize_main_window_geometry(&app, &window);
                 crate::backend_process::launch(&app, window, startup_log);
             }
             Ok(_) => app.exit(0),
@@ -596,6 +749,247 @@ pub(crate) fn run(mut context: tauri::Context<tauri::Wry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_cancel_and_window_close_never_open_cleanup_folders() {
+        for result in [
+            MessageDialogResult::Cancel,
+            MessageDialogResult::No,
+            MessageDialogResult::Custom("完成".into()),
+            MessageDialogResult::Custom("unknown".into()),
+        ] {
+            assert!(!cleanup_button_selected(&result));
+        }
+        for result in [
+            MessageDialogResult::Ok,
+            MessageDialogResult::Yes,
+            MessageDialogResult::Custom("打开文件夹".into()),
+        ] {
+            assert!(cleanup_button_selected(&result));
+        }
+    }
+    #[test]
+    fn cleanup_shortcut_matches_notices_and_deduplicates_actual_locations() {
+        let root = std::env::temp_dir().join("bilikara cleanup 中文 & (old)");
+        let backup = root.join("old/.bilikara-imported-id/data");
+        let settings = WindowSettingsImport {
+            source: root.join("Roaming/com.bilikara.app/main-window-geometry-v1.json"),
+            destination: root.join("runtime/main-window-geometry-v1.json"),
+            outcome: Ok(true),
+        };
+        let mut report = Completion {
+            schema_version: 1,
+            destination: root.join("runtime/data"),
+            backup: None,
+            completed: true,
+            source_format: Some("legacy".into()),
+            source_backup: Some(backup.clone()),
+            cleanup_warning: None,
+        };
+        assert_eq!(
+            cleanup_folders(&report, Some(&settings)),
+            vec![backup.clone(), settings.source.parent().unwrap().to_owned()]
+        );
+        report.backup = Some(backup.clone());
+        assert_eq!(cleanup_folders(&report, None), vec![backup.clone()]);
+        report.backup = Some(backup.parent().unwrap().to_owned());
+        assert_eq!(
+            cleanup_folders(&report, None),
+            vec![backup.parent().unwrap().to_owned()]
+        );
+        report.backup = Some(root.join("runtime/.data.import-backup"));
+        assert_eq!(
+            cleanup_folders(&report, Some(&settings)).len(),
+            3,
+            "replacement can add a separate current-data backup; never drop it"
+        );
+        report.cleanup_warning = Some("source occupied; keep backups".into());
+        assert!(cleanup_folders(&report, None).is_empty());
+        assert_eq!(
+            cleanup_folders(&report, Some(&settings)),
+            vec![settings.source.parent().unwrap().to_owned()]
+        );
+        report.completed = false;
+        assert!(cleanup_folders(&report, Some(&settings)).is_empty());
+        report.completed = true;
+        report.cleanup_warning = None;
+        report.backup = None;
+        report.source_backup = None;
+        assert!(cleanup_folders(&report, None).is_empty());
+        report.backup = Some(PathBuf::from("relative"));
+        assert!(cleanup_folders(&report, None).is_empty());
+    }
+
+    #[test]
+    fn opening_cleanup_locations_attempts_all_and_preserves_imported_files_on_error() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara open folders 中文 {} {}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let folders = [
+            root.join("backup & (old)"),
+            root.join("Roaming/com.bilikara.app"),
+        ];
+        for folder in &folders {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("keep.json"), b"original bytes").unwrap();
+        }
+        let opened = std::cell::RefCell::new(Vec::new());
+        let failed = open_cleanup_folders(&folders, |path| {
+            opened.borrow_mut().push(path.to_owned());
+            if path == folders[0] {
+                Err("file manager unavailable".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(*opened.borrow(), folders);
+        assert_eq!(
+            failed,
+            vec![format!(
+                "{}\nfile manager unavailable",
+                folders[0].display()
+            )]
+        );
+        for folder in &folders {
+            assert_eq!(
+                std::fs::read(folder.join("keep.json")).unwrap(),
+                b"original bytes"
+            );
+        }
+        assert!(
+            open_cleanup_folders(&[], |_| panic!("empty list must not open anything")).is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completion_notice_names_backups_and_reserves_them_on_cleanup_warning() {
+        let root = std::env::temp_dir().join("bilikara import notice 中文 &");
+        let source_backup = root.join("old/.bilikara-imported-id/data");
+        let mut report = Completion {
+            schema_version: 1,
+            destination: root.join("runtime/data"),
+            backup: None,
+            completed: true,
+            source_format: Some("legacy".into()),
+            source_backup: Some(source_backup.clone()),
+            cleanup_warning: None,
+        };
+        let message = success_message(&report, None);
+        assert!(message.contains("旧数据已按原文件形式作为备份保存在："));
+        assert!(message.contains(&source_backup.display().to_string()));
+        assert!(message.contains("确认导入后的记录完整后，可手动删除上述备份文件夹。"));
+        assert!(message.contains("旧格式转换后媒体会重新缓存，Remote 设备需要重新登记。"));
+        assert!(!message.contains("旧版窗口配置"));
+
+        report.backup = Some(source_backup.clone());
+        report.source_format = Some("native".into());
+        let mut old_settings = WindowSettingsImport {
+            source: root.join("Roaming/com.bilikara.app/main-window-geometry-v1.json"),
+            destination: root.join("runtime/main-window-geometry-v1.json"),
+            outcome: Ok(true),
+        };
+        let message = success_message(&report, Some(&old_settings));
+        assert_eq!(
+            message
+                .matches(&source_backup.display().to_string())
+                .count(),
+            1
+        );
+        assert!(message.contains("新版格式直接复制，保留已有媒体缓存和设备登记。"));
+        assert!(message.contains(&old_settings.source.display().to_string()));
+        assert!(message.contains(&old_settings.destination.display().to_string()));
+        assert!(message.contains("旧版窗口配置已导入到："));
+        assert!(message.contains("确认不再使用旧版后，可手动删除这份旧窗口配置文件。"));
+        old_settings.outcome = Ok(false);
+        assert!(success_message(&report, Some(&old_settings)).contains("不重复覆盖"));
+        old_settings.outcome = Err("invalid old window settings".into());
+        let message = success_message(&report, Some(&old_settings));
+        assert!(message.starts_with("导入完成。"));
+        assert!(message.contains("不影响歌单数据导入和启动"));
+        assert!(message.contains("invalid old window settings"));
+
+        report.cleanup_warning = Some("source occupied".into());
+        let message = success_message(&report, None);
+        assert!(!message.contains("可手动删除"));
+        assert!(message.contains("来源清理未完全确认，请保留原数据及备份。"));
+        assert!(message.contains(FEEDBACK_URL));
+        assert!(!preserved_data(&report).contains("可手动删除"));
+
+        report.backup = None;
+        report.source_backup = None;
+        report.cleanup_warning = None;
+        assert!(!success_message(&report, None).contains("备份文件夹"));
+    }
+
+    #[test]
+    fn old_windows_settings_notice_checks_only_the_known_file_and_respects_isolation() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "bilikara Roaming 中文 & {} {nonce}",
+            std::process::id()
+        ));
+        let env = |key: &str| (key == "APPDATA").then(|| root.clone().into_os_string());
+        assert_eq!(old_windows_window_settings("windows", env), None);
+        assert!(!root.exists());
+        assert_eq!(old_windows_window_settings("windows", |_| None), None);
+        for invalid in [OsString::new(), OsString::from("relative Roaming")] {
+            assert_eq!(
+                old_windows_window_settings("windows", |key| (key == "APPDATA")
+                    .then(|| invalid.clone())),
+                None
+            );
+        }
+
+        let path = root.join("com.bilikara.app/main-window-geometry-v1.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"old preference bytes; do not parse or modify").unwrap();
+        assert_eq!(
+            old_windows_window_settings("windows", env),
+            Some(path.clone())
+        );
+        for platform in ["linux", "macos", "android"] {
+            assert_eq!(old_windows_window_settings(platform, env), None);
+        }
+        for override_name in [
+            "BILIKARA_NATIVE_DATA_DIR",
+            "BILIKARA_DESKTOP_RUST_PREVIEW_DIR",
+            "BILIKARA_HOME",
+        ] {
+            assert_eq!(
+                old_windows_window_settings("windows", |key| {
+                    if key == override_name {
+                        Some(root.join("isolated/data").into_os_string())
+                    } else {
+                        env(key)
+                    }
+                }),
+                None
+            );
+        }
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"old preference bytes; do not parse or modify"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(old_windows_window_settings("windows", env), None);
+        std::fs::remove_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("unrelated", &path).unwrap();
+            assert_eq!(old_windows_window_settings("windows", env), None);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn first_start_uses_checkpoint_not_runtime_directory_and_preserves_overrides() {
         let root =
