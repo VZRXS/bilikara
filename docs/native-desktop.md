@@ -3,8 +3,13 @@
 The desktop shell starts one `bilikara-desktop-host` process by default. The
 backend owns the Rust AppState and native HTTP/SSE/media services. No Python,
 Cargo, source checkout or preview environment variable is needed by an installed
-product. Python remains a build/test tool and the legacy source Host remains
-available for compatibility tests; it is not included in the native bundle.
+product. Python remains in supported Source/FFI development and its tests; the legacy source
+Host remains available for compatibility tests; neither is included in the native bundle.
+
+v0.8.0-preview.2 has been released with this architecture. Stabilization uses
+that desktop behavior baseline, including approved Preview 1 behavior and later
+changes. Remaining Python maintenance does not reopen the runtime migration or
+alter published Preview 2 tags/assets, storage paths or update contracts.
 
 LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
 an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
@@ -48,30 +53,354 @@ npm ci
 npm run dev
 ```
 
-Tauri's development hook runs `python build_bundle.py --dev`, builds the native
-backend with `native-host`, and stages it and its resources in `_internal/` beside the debug shell.
+Tauri's development hook and `npm run prepare:desktop` run the independent Rust
+build tool:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop
+```
+
+This builds both `bilikara-desktop-host` (with `native-host`) and
+`bilikara-updater`, then stages them with the existing resources in `_internal/`
+beside the shell output. The tool does not link the application Runtime or need
+libav to compile. The preparation path, including the hook used by `npm run dev`
+and `dev:rust`, invokes no Python. It consumes prepared tool/libav inputs; it
+does not rebuild or download them.
+The development hook explicitly waits for preparation to finish before starting
+the shell, including on a first build or with a shared Cargo output directory.
 For direct `cargo run --manifest-path src-tauri/Cargo.toml --locked`, run
 `npm run prepare:desktop` first. There is no runtime search through the checkout
 or fallback to Python. A development layout may report external tools/libav as
 unavailable until explicitly configured.
 
-For a product build, prepare the existing pinned BBDown vendor and a matching
-libav-only prefix using `scripts/prepare_bbdown_vendor.py` and the documented
-`media-libav` build scripts. Set `BILIKARA_LIBAV_PREFIX` to its absolute path and
-put the prepared BBDown on the **build** PATH, then run:
+`--target TRIPLE` (also `npm run prepare:desktop -- --target TRIPLE`) takes
+precedence over `CARGO_BUILD_TARGET`; foreign tool/libav targets are rejected.
+Cargo metadata resolves output directories, including `CARGO_TARGET_DIR`.
+The outer Cargo `--target host-tuple` builds the tool for the current machine,
+so a backend target override cannot cross-compile the tool itself; the tool's
+`--target` follows `prepare-desktop` and selects the backend/shell output.
+The Tauri target hint keeps its existing native-target behavior.
+`TAURI_ENV_DEBUG=false` or `0` selects release-profile adjacent preparation and
+requires the same complete prefix, BBDown execution/version check and macOS
+portability checks as before. Other values retain debug preparation. The
+Android/iOS development hook returns without building or staging desktop code.
+Source macOS development retains the adjacent `_internal` layout; final macOS
+bundle assembly/signing is a separate release step.
+
+For a product build, prepare the existing pinned BBDown vendor on a matching
+native runner with Rust and curl, then prepare a matching libav-only prefix with
+the documented `media-libav` scripts:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown /absolute/generated/bbdown-vendor
+```
+
+The optional `--platform` / `--arch` retain the existing target aliases. The tool
+verifies the unchanged six archive pins before selecting one safe executable,
+then checks `--help` in private staging with a 30-second bound. GitHub is tried
+before the existing mirror only on transport failure; an integrity mismatch
+fails immediately.
+`bin/BBDown[.exe]` and the six-field `metadata.env` retain their existing meanings.
+Metadata is published last; failed preparation preserves existing output where
+possible and never recursively clears the vendor tree. CI sets up the pinned
+Rust toolchain and native MSVC environment before this command. It requires no
+product build, libav prefix, Python or application Runtime.
+
+Set `BILIKARA_LIBAV_PREFIX` to its absolute path, consume `metadata.env` as build
+environment values, and put the prepared BBDown on the **build** PATH, then run:
 
 ```sh
 npm run build
 ```
 
-`build_bundle.py` is a staging tool, not a freezer. It builds a release Rust
-backend, copies static assets/fonts/Signalsmith and version metadata, stages
-the libav companion/dependencies and licenses, and builds the Tauri shell.
-macOS keeps nested-code signing and seals the outer app after embedding the
-backend. `python build_bundle.py` alone prepares the backend/resource layout
-used by the existing CI assembly steps. `--target TRIPLE` supports an explicit
-matching runner target; foreign tool/libav architectures fail closed.
-`CARGO_TARGET_DIR` and the selected debug/release profile are respected.
+`npm run build` invokes `xtask build-desktop`: release Host and updater, shared
+resource/libav staging, compliance materials, Tauri, then final assembly.
+macOS signs nested code and the backend, embeds it with `ditto`, preserves
+signature metadata and seals the outer app last. No project Python is executed
+in this construction path. Release commands always select the release profile
+and complete prepared inputs, independent of Tauri's debug/mobile environment.
+`--target TRIPLE` supports an explicit matching runner target; foreign tool/libav
+architectures fail closed. Cargo metadata resolves `CARGO_TARGET_DIR` and targets.
+
+CI preserves its split backend/tool checks and shell compilation:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
+# Existing npm/Tauri shell build and platform checks.
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
+```
+
+Assembly consumes the existing release shell output without recompiling it;
+`--shell PATH` can supply that compiled executable/app explicitly. All three
+release entries share the same rules. Generated outputs default to `dist/`;
+`--dist-dir PATH` is limited to repository `dist/` or an isolated subdirectory
+of ignored `.tmp/`. Cleanup replaces only the named generated product and
+rejects links, input overlap and user-data directories.
+
+The libav prerequisite chain is also Rust-owned. The retained
+`media-libav/build-{posix,windows}-libraries.sh` recipes verify the signed pinned
+FFmpeg 9.0.1 source, then run the existing configure/make/native compiler recipe.
+They use `xtask libav-cache key/snapshot/restore`; schema 3 rotates the former
+Python cache identity once. Keys cover the selected C recipe, native target,
+compiler/SDK, flags and prefix, without depending on Runtime/companion/UI edits
+or the entire xtask executable/lockfile. Only upstream C libraries/headers and
+source/license/recipe records enter that cache. Restore validates hashes, paths,
+relative links, permissions, provenance and actual library facts before use.
+
+`xtask libav-companion --prefix PATH --out PATH [--test] [--sanitize]` probes the
+selected libraries directly and compiles the existing C shim. Windows rejects
+sanitizers; POSIX retains ASan/UBSan. `libav-finish --prefix PATH` builds fresh
+release `libav_metadata` and Runtime test executables from Cargo compiler-artifact
+records, collects native dependencies and writes the prepared manifests. Windows
+also supplies the selected `--redist PATH --system PATH` and retains its installed
+MSVC licence collection in PowerShell. `libav-collect` shares that collector.
+The full POSIX/Windows wrappers compose these stages; Linux CI keeps its lighter
+library-plus-companion prerequisite. No project Python runs in either cold or
+warm-cache production path. A local `BILIKARA_LIBAV_SOURCE_DIR` may supply the
+three pinned archive/signature/key files; signature verification is still required.
+
+The Python BBDown vendor preparer and its dedicated Python tests are retired;
+independent pin, archive, HTTP failure and native executable coverage belongs to
+xtask, with CI bootstrap/caller coverage in Node. Python remains required by
+standalone verification/test drivers in CI, plus independent publication tooling
+and legacy/source-mode compatibility adapters.
+The replaced Python desktop construction, embedding, libav companion,
+cache and collector references and their dedicated tests are retired.
+`build_windows.bat` and `build_macos.command` install the locked npm tooling
+and invoke `npm run build`; they require the already prepared native inputs,
+repository Rust toolchain and native compiler/linker environment.
+`scripts/libav_manifest.py` retains the Python
+manifest/closure interface for legacy diagnostics and compatibility consumers;
+`bilikara.ffmpeg_vendor` forwards to it. Prepared same-build libav provenance,
+the pinned BBDown checks and native release artifact gates remain required.
+
+On Linux, the third-party Tauri CLI optionally probes the system's
+`lsb_release` before invoking the hook; some distributions implement that command
+in Python. This is separate from project-owned preparation. A complete Tauri
+development startup also works with Python and that optional utility excluded
+from PATH; the system utility and the upstream CLI remain unmodified.
+
+The Rust tool preserves the development preparation contract: version
+provenance, `native-desktop.json`, the single vendor tree, Signalsmith notices,
+prepared libav manifest/closure/provenance checks, binary import inspection and
+rebuild materials. Python source files included as compliance materials are
+copied, not executed. `npm run test:desktop-build` runs the Node entry and
+construction contracts, using the current Cargo compiler-artifact-selected xtask
+and compiled native command fixtures. Complete independent expected inventories
+check preparation/full and split release paths, resource bytes, metadata, modes,
+links, compliance, failure and preservation cases; the superseded Python drivers
+and construction-expectation module are retired. `xtask` also tests foreign
+descriptors and macOS tool/signature order. These fixtures do not constitute
+native Windows/macOS acceptance. Real Linux release construction and backend
+execution are locally exercised; Windows/macOS binary/signature/startup/archive
+qualification remains required on native runners.
+
+Real Linux cold source construction, warm restore, companion/shim sanitizers,
+reference output comparisons and release consumption cover this prerequisite
+slice. Process traces with Python excluded cover the producing chain. Foreign
+command/PE fixtures do not qualify Windows MSVC/DLL loading or macOS signing;
+their native CI gates remain required. The compliance source kit includes the
+locked independent xtask sources and [rebuild instructions](../media-libav/REBUILD.md)
+so migrated library/companion wrappers remain usable without the application Runtime.
+
+Replaced Python construction references and the native desktop package gate
+are retired, along with desktop construction and libav prerequisite test drivers.
+Media-operation and native business drivers now use Node and native artifacts;
+remaining Source Host/FFI consumers stay active until faithful replacements
+preserve their coverage. Remaining Python verification and publication
+entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
+Python requirements.
+
+`python -m bilikara` is the Source entry; `start_bilikara.sh` and the debug-log
+wrappers use the same module. They retain Python HTTP/SSE transport around Rust
+AppState, yt-dlp orchestration and explicit media-CLI compatibility routing.
+The native Host disables yt-dlp and ships no media CLI, so replacing those Source
+entries with the native launcher would change their supported behavior.
+`scripts/dev_smoke_test.py` exercises these Source routes;
+`scripts/libav_manifest.py` still serves `bilikara.ffmpeg_vendor`.
+Source HTTP/FFI, loader/result-validation and media-routing tests remain active
+Python consumers until their faithful replacements are covered. These are
+separate from desktop launch, construction and native package verification.
+The retained capability/failure contract is summarized in
+[Source compatibility](source-compatibility.md).
+The retired package gate is implemented independently in xtask. Native business
+regressions use `npm run test:native-host` and the test-only Node HTTP/startup
+transport, which performs no package inspection. It executes the current locked
+host-native Cargo artifact, or the explicitly supplied native Host, with private
+data and local providers. Source/queue/login-cancellation media checks require the
+real Linux prepared companion and restricted local TLS trust fixture; missing
+declared inputs fail. Foreign platform checks remain separate. Historical PyInstaller/Python-runtime
+construction helpers and tests solely for those retired interfaces are removed;
+native version metadata is unchanged.
+
+`requirements-packaging.txt` remains in the source/FFI test job:
+`certifi`/`truststore` serve retained Python HTTPS adapters/tests. The bundle job
+does not set up Python. The unused
+`pefile` dependency is removed with the Python collector; xtask reads PE imports.
+Their presence in the build environment does not put them in native products.
+
+`test:native-images`, `test:native-qr` and `test:native-login` run current Cargo
+test/Host artifacts through Node with isolated data and local TLS providers.
+The Rust test-only independent QR decoder verifies exact UTF-8/M-level payloads;
+full PNG/ZIP decoding, local time, copied fonts, archived-session isolation and
+login generations/credentials remain checked. The former Python image/login
+suites and Pillow/ZXing requirements are retired. A few live source-adapter
+failure guards remain in the source/FFI suites. Linux SSL_CERT_FILE fixtures do
+not qualify Windows/macOS trust or GUI behavior.
+
+Release selection, media-page ordering and audio-binding policy regressions run
+directly in the Rust Core test suite, with independent expected decisions and
+input-permutation checks. Their duplicate Python policy suites are retired;
+the still-used Source adapters retain separate validation/failure tests.
+
+`npm run test:native-ratings` runs the current native Host, typed Internet
+dispatch and rendered Host/Remote rating controls against a non-forwarding local
+TLS fixture. Install its pinned test-only Chromium with
+`npm exec -- playwright install chromium`; Linux CI installs the browser and
+its system prerequisites before this required gate. It checks authorization,
+eligibility, retries, duplicate guards, bounded Catalog contributions and late
+completion after reset/shutdown. Synthetic played records qualify these
+contracts, not media playback or foreign native window/signature behavior.
+
+`npm run test:host-experience` checks rendered Host/Remote interactions with
+Chromium and WebKit, including editable waiting ratings, shared control geometry,
+seek gestures and download status across isolated audience storage. Its shell
+relay fixture does not qualify native monitor/fullscreen or device behavior.
+
+Playwright is locked to 1.63.0 with its matching browsers. The older 1.55.1
+test client could hang Chromium AudioWorklet loading; upgrading the test client
+does not change the packaged WebView or Signalsmith assets. After a test-client
+upgrade, reinstall its browsers and run the affected native browser gates.
+
+`npm run test:native-transport` runs actual Host HTTP and Chromium/WebRTC with
+isolated data, verified local TLS and synthetic VP8 test media. It covers LAN/
+Internet control queues and ACKs, generation/revision races, slow metadata and
+catalog reads, AV adjustment, timeout/reconnect without mutation resubmission,
+and room rebuilding. CI runs it once after native inputs and Chromium setup.
+`node tests/run_native_transport.mjs --output /isolated/evidence` keeps the
+browser receipts. Local SDP signaling does not qualify public STUN/TURN/NAT or
+phones. The Python transport/browser drivers are retired; the frontend Node
+suite separately verifies failed ACK retry without replaying the seek.
+
+`npm run test:native-media` runs the current native Host and real libav companion
+with a restricted local TLS fixture, synthetic FFmpeg-generated test media and
+WebKit. Set `BILIKARA_TEST_LIBAV_COMPANION` to the actual native prepared library;
+missing, malformed or foreign inputs fail. Install the pinned test browser with
+`npm exec -- playwright install webkit`. Playback clocks, login/binding,
+LAN/Internet controls, PNG/CSV/ZIP, restart, cache policy/cancellation and a
+compiled BBDown command fixture remain exercised. FFmpeg is a test-only generator;
+the fixture does not qualify a real provider download. Linux CI runs this gate
+after preparing the prefix and installing browser/system prerequisites.
+
+`npm run test:native-shared -- /isolated/evidence --shared-ui` retains the full
+shared desktop/Android-profile browser regression, including media/DSP/node
+identity, drafts, asynchronous actions and session countdown/restart. A
+codec-capable browser and real audio service are required; Firefox is the default,
+and `BILIKARA_TEST_BROWSER` can select another installed browser.
+`BILIKARA_TEST_ACTIVE_PITCH=1` requires completed real Signalsmith DSP.
+This browser profile does not qualify Android devices or native windowing.
+An audio/engine failure is a failed validation, not a reason to stub DSP.
+`--bbdown-real` instead requires the explicitly supplied pinned
+`BILIKARA_TEST_BBDOWN_PATH`; synthetic provider responses alone do not establish
+real BBDown/provider compatibility. The Python desktop browser orchestrator is
+retired; source Host UI/FFI harnesses remain separate consumers.
+
+`BILIKARA_TEST_TAURI_EXE=/absolute/generated/bilikara/bilikara-desktop npm run
+test:native-launcher` executes the assembled Linux shell under test-only Xvfb,
+Openbox, xdotool and scrot. It relocates a clean candidate with links preserved,
+then checks default storage, an explicit data override, import/restart, real WM
+close, supervised Host reaping and listener closure. It rejects a candidate
+containing `runtime/` user data. `BILIKARA_REQUIRE_NATIVE_LAUNCHER=1` makes absent
+inputs an error; an optional local run explicitly skips without a candidate.
+The driver writes screenshots/logs with
+`node tests/run_desktop_launcher.mjs /isolated/evidence-directory` using the
+same declared executable. Linux execution does not qualify foreign windowing.
+
+`npm run test:desktop-build` exercises native construction with a controlled PATH
+without Python, including missing dependencies/provenance, BBDown version
+rejection and no application Runtime linkage. CI runs that same command once
+after pinned host-native xtask checks and Node setup. `npm run test:libav-wrapper`
+checks the actual Bash helper from external source directories and independent
+rebuild kits using a recording Cargo command. `npm run test:libav-prerequisites`
+requires `BILIKARA_TEST_LIBAV_COMPANION` pointing to a real native prepared
+prefix's `bin/` companion; missing, invalid or incompatible input fails. It builds
+the current host-native xtask from compiler-artifact output and independently
+loads actual libraries with a small C probe. Repeated companion/shim construction,
+POSIX sanitizers, Linux ELF collection and C-only cache failure/preservation checks
+run without Python. CI runs that required suite after preparing/exporting the
+Linux prefix, rather than in the earlier desktop fixture entry. Foreign native
+execution remains separate. The remaining
+`test_native_build_isolation.py` checks only the legacy manifest adapter.
+Explicit media-operation comparison uses `npm run test:media -- ...` with the
+same-build **test-only** FFmpeg/ffprobe prefix and documented finite corpus in
+`media-libav/COMPARISON.md`, `PACKET_SCAN.md`, `COPY_REMUX.md` and
+`FLAC_NORMALIZATION.md`. It selects current locked host-native Cargo artifacts,
+executes the real companion and Rust lifecycle tests, and fails on missing
+declared inputs. `node media-libav/generate_fixtures.mjs` retains the synthetic
+fixture formats; `test:media-fixtures` requires `BILIKARA_TEST_MEDIA_PREFIX`.
+These Node drivers replace the Python media comparison/generator. The ordinary
+prepared product prefix still disables programs and ships no media CLI.
+
+`npm run test:native-users` exercises actual Host HTTP/SSE and two rendered
+Remotes, including synchronized rename, stale editing, batch deletion, mouse
+and touch dragging, and 700/1024/1440 desktop layouts. CI runs it after installing
+its test-only Chromium; it does not qualify physical display/window behavior.
+
+`npm run test:frontend` runs the current Node VM/command fixtures and frontend
+source contracts, including split-player synchronization, SSE ordering, export,
+update actions, shared layouts and permissions. Their Python drivers are retired;
+these checks do not certify native window geometry or real-device rendering.
+`npm run test:remote-sync` checks the production Remote workflow and executes its
+PowerShell asset copy into a private destination when available. That workflow
+requires the real copy check and no longer sets up Python. Push/deployment filters
+and dispatch behavior are unchanged.
+`npm run test:auxiliary` covers Signalsmith vendoring, aria2 metadata and offline
+publication/workflow failures, including native matrices, prerequisite/assembly
+ordering and tag-only uploads. Signalsmith's pinned resource bytes are unchanged.
+The macOS aria2 recipe and bundle metadata/README gates use Node; native compiler,
+signature and public archive round-trip gates remain required on macOS. AWS CLI
+still uses third-party Python for the independent R2 publication jobs. The broader
+CI Python setup stays while source/FFI and other live verification consumers remain.
+
+`npm run test:native-http` runs the current Rust HTTP integration binary with
+diagnostic requests terminated by a local rejecting proxy. `test:remote-load`
+checks the read-only Node SSE load tool, its deadlines/reconnections and native
+authorization refusal. Invoke it as `node tools/load_test_remote_sse.mjs BASE_URL
+--clients 20 --duration 15`; it sends no credentials and cannot provision access.
+The former manual title-cleanup checks are independent Rust unit assertions.
+
+`test:native-catalog` exercises both native catalog adapters and shared caches
+with isolated HTTP fixtures. `test:native-smoke` uses compiled native process
+fixtures for pipe/deadline/group cleanup and checks the locked Tauri configuration.
+Its actual macOS GUI check requires a native app; a foreign runner explicitly
+skips it. CI runs `tests/macos_tauri_smoke.test.mjs` as a required gate against
+the extracted macOS shell, using private copies and test-owned HOME/data for
+both shell and Finder-like launches. Existing signature/architecture/archive
+and native backend checks remain separate. The obsolete Python packaged-FFmpeg/
+Python-FFI smoke expectations are retired; the native verifier rejects those
+payloads instead of requiring them.
+
+Validate an already-produced release package from the pinned repository root:
+
+```sh
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop PATH_TO_NATIVE_HOST
+BILIKARA_TEST_NATIVE_PACKAGE=/absolute/extracted/PATH_TO_NATIVE_HOST cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
+```
+
+The verifier never builds or repairs its input. `BILIKARA_EXPECT_RELEASE_VERSION`
+requires that exact release label. It copies the supplied installation, preserving
+relative links/modes and omitting portable user data, into owned temporary storage.
+The actual Host runs with private data locations, empty PATH and offline proxies;
+bootstrap cookies/tokens stay private. Its JSON success report follows layout,
+independent-window authentication, resource/HTTP/SSE, capability, successful
+shutdown/listener closure and reopening checks. Installed tests also cover legacy
+import preservation, platform discovery policy, checkpoint/cache recovery and
+invalid-input refusal. Installed tests are marked `ignored` with the actual-artifact prerequisite by
+default. Explicitly running them with `--ignored` requires the supplied artifact
+and fails if it is absent; omitted tests are not installed-package acceptance. The mandatory verifier fails on absent or
+unexecutable inputs. CI supplies the actual extracted Windows/macOS artifact to
+both entries, retaining native architecture/signature/archive gates. Linux actual
+execution and native fixtures do not replace target-platform bundle acceptance.
 
 The Windows archive keeps the `bilikara/` directory. Its only top-level executable
 is `bilikara-desktop.exe`; `_internal/` contains `bilikara-desktop-host.exe`, `static/`,
@@ -110,6 +439,28 @@ in `runtime/logs/`, WebView browser storage in `runtime/webview/`, and window
 preferences in `runtime/main-window-geometry-v1.json`. This directory is created on use, never shipped in an update
 archive. macOS retains the system user-data directory outside the signed app.
 
+The ordinary Host window has a 700 × 600 logical-pixel minimum. Shorter saved
+heights restore at the current minimum without discarding other preferences;
+the height floor yields to a smaller monitor work area after frame/DPI conversion.
+On Windows, display/work-area changes also recheck the main window's live placement.
+Switching from extended displays to mirroring or a single display returns an
+inaccessible window to an available work area. Reachable windows stay in place;
+minimized/maximized state is retained. Fullscreen defers normal-window recovery
+until exit, without changing playback or audience-window ownership.
+Fullscreen and audience screens use their existing display geometry. Passive
+right-center feedback briefly shows acknowledged playback, seeking, volume/mute,
+effective audio/video delay, delay locking and pitch changes, using the existing
+presentation relay for the audience window. It retains at most two recent
+categories in entry order, with new categories below earlier ones. Same-category
+adjustments update in place and refresh that card's two-second expiry; exceeding
+the limit evicts the least recently updated category. Each card expires
+independently; after the upper card finishes fading, the lower card moves into
+its slot. Feedback never becomes an interactive control. User operations keep
+the Host's ordinary toasts.
+The passive cards keep the shared fill, outline and blur without external shadows
+that would darken a neighboring card. The Host console's numbered list remains
+separate from fullscreen/audience transitions with their play glyph and countdown.
+
 Desktop audience video geometry is recorded as `presentation_video_geometry` in
 the shell's `desktop-startup.log` (Windows: `runtime/logs/desktop-startup.log`).
 Records contain the presentation generation and per-window video sequence,
@@ -130,32 +481,6 @@ DPR 1.5, source changes, geometry payloads and log failure isolation. The origin
 portrait failure expanded a 1280x720 stage's video element to about 1280x2276;
 the fixed element stays within the stage. Physical multi-display/WebView device
 acceptance remains separate from this browser regression.
-
-Fixture recording paints twelve changing frames over approximately 1.2 seconds
-and waits for the final recorder data before releasing its tracks. Each WebM
-must be nonempty and decode a frame at its expected intrinsic dimensions in a
-separate video element before entering the audience layout checks. The bounded
-preflight reports fixture dimensions, byte count and the decoder error directly;
-it never retries or skips the unchanged geometry assertions. This replaces the
-short single-frame recording that intermittently failed in Edge before any layout
-assertion. It adds no application dependency, bundled media or production change.
-
-Fixture follow-up validation (2026-10-02, Windows / Edge 154.0.4258.53):
-
-- `node --check tests/browser/presentation_video_geometry.cjs`: passed.
-- `node tests/browser/presentation_video_geometry.cjs`: ten consecutive complete
-  runs passed using the existing Playwright installation (`NODE_PATH` configured).
-- `python -m unittest tests.test_controller_frontend tests.test_presentation_tauri_source -v`:
-  27 passed.
-- `git diff --check`: passed.
-- Read-only, in-memory Node fault injection confirmed that empty WebM, corrupt
-  WebM and incorrect expected dimensions all fail explicitly before layout
-  assertions. A source comparison confirmed that all original geometry and
-  lifecycle assertions remain unchanged.
-
-This test/documentation-only follow-up changes no Python or Rust production
-logic. The full release gate, bundle builds and physical-display/device acceptance
-were not rerun; these checks do not establish a new application release result.
 
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
 FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
@@ -198,6 +523,10 @@ A complete release-profile build from `work/…` can therefore have
 
 ## Data and import
 
+For ordinary upgrades and platform-specific data preservation, see
+[the user upgrade guide](upgrading.md). Session startup, source-library usage and
+archived-session export are explained in [quick start and FAQ](quick-start.md).
+
 Default writable native roots are:
 
 | Platform | Native root |
@@ -219,7 +548,11 @@ New installations do not create `.bilikara-desktop-rust-preview`. The versioned
 before startup; old preview markers are accepted only for compatibility.
 `desktop-import.pending` exists only during explicit import. An interrupted
 import is rejected, and successful import removes it. Legacy split-file records
-still require explicit read-only import into a new destination.
+require confirmed conversion. On first initialization the desktop shell checks
+known locations before launching the Host and asks if a legacy candidate exists;
+neither startup nor the updater silently imports them. Existing native checkpoints
+bypass external discovery, and no candidate produces no dialog. Shell logs and
+WebView directories do not count as initialized application data.
 
 Keep the installation in a writable directory and move its complete `runtime`
 directory with it. Read-only installations fail rather than falling back to
@@ -250,6 +583,86 @@ known legacy data without native records produces an explicit import instruction
 Windows starts independently in its portable directory; importing older records
 is optional. The installer does not silently merge, overwrite or delete legacy files.
 
+### First-start detection and separate desktop import tool
+
+Release assembly adds `导入旧数据.cmd` beside the Windows launcher,
+`导入旧数据.command` beside the macOS app in the archive wrapper, and
+`导入旧数据.sh` beside the local Linux launcher. Each invokes the existing shell
+with `--import-legacy`. Keep the macOS command beside the app while using it;
+it does not mutate the signed app. The mode uses native dialogs without a
+WebView, normal Host, updater, tool acquisition or media initialization.
+
+First-start inspection and the explicitly opened tool detect the current installation's `runtime`,
+Windows Local/Roaming AppData `bilikara` roots, macOS Application Support and
+known legacy apps in `/Applications` or `~/Applications`, and Linux's existing
+XDG/application-home root. It does not search unrelated directories or choose
+the newest library silently. Multiple candidates require source confirmation;
+the folder picker also accepts an old application home, `runtime`, its `data`
+child or a legacy macOS app. The confirmation always offers “选择其他路径” and
+explains selecting the old runtime folder. Native-format sources, including
+published Preview 2, are copied and validated rather than converted.
+First-start discovery checks fixed record names in known roots, without recursive
+searches, media initialization or cache enumeration. Explicit data overrides keep
+their isolated startup behavior. Selecting “暂不导入”, cancelling the folder
+picker or failing legacy conversion prepares fresh native data and continues
+normal startup; the old records remain recoverable, and subsequent launches do
+not repeat the offer. A failed, confirmed external legacy source moves into the
+new application home's `legacy-backup/<id>/data`, outside discovery paths. An
+in-place source uses the existing transaction backup. Cross-volume relocation
+verifies the raw copy first and keeps an additional recovery copy beside the
+old source rather than recursively deleting user files. If safe relocation
+fails, the source stays protected, the warning explains it, and fresh native
+records still allow startup. No unconfirmed source is moved.
+Failures include the GitHub issues address. The separate
+tool remains available to choose the correct runtime/data folder later. This
+does not bypass malformed native checkpoints or conflicting recovery guards.
+
+The packaged Host exposes offline, one-shot entries:
+`--inspect-legacy-import` reports paths/status without writing;
+`--inspect-first-start` additionally bypasses candidate discovery for native,
+unknown or interrupted destinations. `--import-only`
+converts the confirmed `--import-from` source into `--data-dir` (otherwise the
+normal native root); native-format sources are copied and validated without
+conversion. `--start-without-import` uses the same staged transaction to preserve
+in-place legacy data and initialize empty native records after a declined/failed
+first-start offer. With a confirmed `--import-from`, fresh-start handling also isolates
+the failed raw legacy source; a backup problem is reported separately without
+discarding the fresh checkpoint. All operations exit before networking, media
+configuration or normal AppState startup. The shell supervises each process with bounded output and a 120-second
+deadline. `npm run test:native-import` executes current host-native Cargo output;
+CI also runs native-feature reader, locking and interruption regressions.
+
+Conversion stages and validates a complete checkpoint before switching the
+directory. An in-place conversion moves the old `data` into a private sibling
+`.bilikara-import-<id>/legacy/data` backup; an external source stays untouched by
+default. The GUI explicitly requests `--remove-source` after source confirmation:
+once installation validates, the source data directory moves into a private
+same-volume `.bilikara-imported-<id>/data` backup beside its old location. Only
+the data directory moves, not the installation/AppData root. Cleanup failures
+are reported separately and preserve the installed data and remaining source.
+Existing native checkpoints, unknown nonempty data and a different legacy
+destination are protected by default. The separate tool can import after first
+launch: a second explicit confirmation permits `--replace-native`, which strictly
+validates and locks current native data, backs up the complete directory, then
+replaces it with imported records without merging. A native source is locked and
+copied with its checkpoint, record chunks, cache, device identities and file
+permissions intact; links and special files are rejected. A running Host or
+malformed native checkpoint still rejects replacement. The automatic first-start
+flow never requests this permission.
+Relevant legacy files are checked again for concurrent changes before switching.
+A sibling `.<data-name>.bilikara-import.json` guard and lock serialize explicit
+imports and block normal startup during an unfinished switch. Reopening the tool
+recovers a validated completed checkpoint or rolls back an unambiguous backup;
+conflicting/malformed recovery records preserve all files and fail explicitly.
+POSIX directory changes are flushed using the existing storage helper. Backups
+and unsuccessful private staging are retained for recovery, not recursively
+deleted. These are process-interruption guarantees, not foreign-platform or
+power-loss qualification. User records/settings and archived sessions reuse the
+existing converter; only legacy conversion renews device authorization and
+re-caches media. Native-format copying retains those records unchanged.
+
+### Advanced explicit import into a separate root
+
 Choose a **new, nonexisting** destination with an existing parent. It cannot
 overlap the legacy source. From the installed backend's directory:
 
@@ -267,12 +680,14 @@ only, preserves supported records/settings and uses the existing continue/new
 session choice. Media is re-cached through fresh native identities. Subsequent
 launches reopen native records without reimporting, even if the old source has
 changed or disappeared. No login, catalog upload or automatic refresh is caused
-by import. More elaborate automatic upgrade selection remains separate work.
+by import. This existing entry still imports read-only into a separate root and
+then starts the Host; it does not perform the import tool's in-place switch.
 
 ### Optional Windows import from an earlier installation
 
-Normal startup does not require importing AppData. If older records should be
-retained, choose their location explicitly. For an old
+Normal startup does not require importing AppData. Prefer the separate import
+tool for automatic detection and confirmation. The existing advanced override
+workflow remains available. For an old
 `%LOCALAPPDATA%\bilikara` root, open PowerShell in a **new extracted installation**
 whose `runtime/data` does not yet exist:
 
@@ -313,11 +728,58 @@ launches offer checks and a release-page link for manual updates.
 
 Download and preparation can be cancelled. Once the main desktop window commits
 replacement through its private shell capability, cancellation is unavailable.
-The helper waits for the owned backend and shell to exit, stages a sibling
-installation, preserves the previous application as `.previous-update-*`, and
-launches the new Tauri entry. A copy/replacement failure retains or restores the
-old installation; this is not a general crash-rollback guarantee. After checking
-the new installation, the user may remove that previous application directory.
+Replacement is performed by the external updater, `bilikara-updater`, which
+every Windows/macOS package ships beside its backend
+(`_internal/bilikara-updater.exe`, or `Contents/MacOS/bilikara-updater` inside
+the embedded backend app). After validating the downloaded package, the Host
+copies the installed updater into the update workspace, writes `plan.json`
+there and starts it detached: on Windows it inherits no handles and leaves the
+Host's kill-on-close job; a denied breakaway fails the update instead of
+starting a helper that would die with the Host. On macOS it starts a new
+session. An installation
+without an updater offers manual updates only. Already installed releases
+predating the updater still execute their own generated CMD/shell helper;
+downloading a new package cannot repair that old executable's update logic.
+For published Preview 2, see the one-time replacement instructions below.
+
+Before the shell tears down presentation or exits, the updater reads and
+validates its plan, opens its workspace log and prepares to wait for the owned
+backend and shell (pinning their process handles on Windows). A private,
+attempt-bound readiness/acknowledgement exchange in that workspace is bounded
+to ten seconds at the Host. A launch error, early exit or readiness timeout
+keeps the application running and reports a retryable failure. The Host stops
+only the updater it just created on failure. An updater without the Host's
+acknowledgement cannot replace files, even if the user later closes the app.
+The shell's activation request allows thirty seconds for startup, failure
+cleanup and the Host response; other private requests retain their timeouts.
+These are private handoff files; the `--plan` entry, plan schema, public APIs,
+package layout and release metadata contracts remain unchanged.
+
+After acknowledgement, the updater waits for the owned backend and shell to
+exit (without ever terminating one), stages a sibling installation, moves the old one aside
+as `.previous-update-*`, moves the new one into place and opens it. A file or
+folder still held open is retried for about 30 seconds, including the final
+replacement and rollback renames. File changes run only after both owners
+exit. A failure before commit restores or retains the old installation and
+reopens it when restoration succeeds. If restoration itself fails, both the
+previous installation and staged package remain for manual recovery, with
+their paths in the log; the missing installation is not launched. Portable
+Windows recovery logs stay with the data in the previous installation, and
+the workspace remains available; logging does not recreate an empty install
+directory that would obstruct restoring the backup. An owner
+that never exits leaves everything
+unchanged and nothing is reopened. Before reopening, the updater keeps its
+timestamped log as `update-logs/<operation>.log` under the data root and writes
+`update-logs/last-result.txt` (`installed`, `failed` or `owners_running`).
+`installed` means that files were replaced, not that the new application became
+ready. If automatic reopening fails, the installed files and backup remain;
+the next manual launch reports that restart failure with the kept log path.
+The next Host consumes the result once and cleans an owned workspace only
+after the updater finishes; recovery workspaces and older workspaces without
+completion evidence remain available. The log stays. The relaunched application does not inherit the old
+shell's private Host variables. This is not a general crash-rollback guarantee.
+After checking the new installation, the user may remove that previous
+application directory.
 Data remains separate from immutable program resources. On Windows the helper
 preserves the existing `runtime/` only after both processes exit; its own
 workspace stays outside the installation being replaced. An archive containing
@@ -339,9 +801,45 @@ flat and `backend/` Windows native layouts. Earlier development candidates
 whose validator rejects `_internal/` as a Python directory require manual
 replacement to reach this layout; they cannot acquire new validation rules
 before installing it. Their existing native data can reopen
-without importing it again. Real package
-installation and platform acceptance remain necessary before a Preview 2 release;
-this launch/update contract does not establish full product parity.
+without importing it again. Preview 2 has been released. Subsequent updater
+changes still require real package installation and platform acceptance;
+Linux fault-injection tests do not verify Windows Job behavior or macOS signing
+and relaunch behavior.
+
+### One-time full-package replacement from published Preview 2
+
+The published `v0.8.0-preview.2` assets come from `3d5a8c6`, before the external
+updater. Its Windows helper passes canonical `\\?\C:\...` paths directly to
+CMD directory changes and relaunch commands. This old path can fail before
+replacement or reopening; a newer package does not retroactively fix it.
+Use a full-package replacement for this Windows transition. The macOS first
+transition also needs native platform verification; full-package replacement
+is available there without changing existing native data.
+
+1. Close bilikara's desktop windows and wait for its Host/updater to exit.
+   Keep a backup of the complete old installation and all configured external
+   data roots. If a previous attempt left `.previous-update-*` or
+   `.incoming-update-*` directories, retain them until the recovered session
+   has been checked; do not combine competing data copies.
+2. Download the complete package for the same OS and architecture from
+   [GitHub Releases](https://github.com/VZRXS/bilikara/releases), then extract
+   it into a **new sibling directory**, keeping its packaged directory structure.
+   Do not overlay immutable files onto the old installation.
+3. **Windows:** copy the entire old `runtime/` into the new installation beside
+   `bilikara-desktop.exe`, before the first launch. This includes `runtime/data/`,
+   caches, credentials, WebView storage, window preferences and logs. Also carry
+   over existing top-level `data/` and `updates/` if present. Keep custom data-root
+   overrides and any adjacent `<native-directory>.desktop` storage unchanged;
+   an override inside the old installation must point to the corresponding
+   preserved directory at its final location. Never delete `runtime/` to upgrade.
+4. **macOS:** retain the intact new `bilikara-desktop.app`, including nested
+   bundles and relative resource links. With the app closed, keep the old app
+   as a backup and put the complete new app in its place using Finder (or
+   `ditto`). Leave `~/Library/Application Support/bilikara/` and any configured
+   external data root intact. Native Preview 2 data needs no legacy import.
+5. Open the new desktop launcher, check its displayed version and confirm the
+   intended session, queue, settings and cached media. Keep the backup until
+   these checks pass. Update shortcuts to the new location if it changed.
 
 New native data roots default to 1080P high frame rate with Hi-Res preferred;
 saved or explicitly imported quality preferences remain unchanged. Settings
@@ -372,9 +870,11 @@ response acknowledges a score held by the Host until playback eligibility;
 only Catalog acceptance completes delivery. While an entry is `waiting`, the
 same user may replace its score under the AppState lock. Once sending starts,
 replacement is rejected; failures release the reservation for an explicit retry.
-The `song_ratings` snapshot includes `score` alongside `status` so Remote can
-reopen the saved value. Remote always labels its entry “评价” and permits viewing
-the dialog; eligibility disables its confirmation button rather than the entry.
+The `song_ratings` snapshot includes `score` alongside `status` so Host and Remote
+can reopen the saved value. Both keep the rating entry openable; eligibility
+disables saving rather than viewing. Saving a waiting score remains editable,
+and unrelated snapshots preserve unsaved edits. Sending or accepted entries show
+their actual saved score without permitting replacement.
 This is session-local duplicate protection, not durable
 exactly-once delivery across crashes or ambiguous network failures.
 
@@ -402,6 +902,17 @@ is never scheduled by startup, login or ordinary local-library refresh.
 Summary-only progress and outcomes are recorded in `logs/monthly-d1-refresh.log`;
 credentials and upstream bodies are excluded.
 
+The separate administrator CLI is `npm run catalog:refresh -- [options]`.
+It builds the current host-native `bilikara-catalog-refresh` with the locked
+repository toolchain. It preserves the source maintenance command's local/D1/
+union UID selection, latest/page-any probe, filtered-page traversal, bounded
+upload batches, dry-run and configurable retry limits (zero is unlimited).
+Set `BILIKARA_ADMIN_SECRET` in the environment; the secret is never a CLI argument.
+The retained Source Host transports this job to Rust, including its process-wide
+duplicate-start guard. The native Host's supervised job above keeps its existing
+fixed recipe and shutdown policy. Neither command runs automatically or acquires
+credentials. `test:catalog-maintenance` checks the CLI against isolated services.
+
 Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
 where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
 start with the song title. Logs are not merged or truncated at 1 MiB; orphaned
@@ -420,6 +931,10 @@ under the worker/AppState locks before reserving a replacement attempt. Normal
 manual retries enter the front of the normal queue. Only a forced retry of the
 current song while a different song occupies the primary worker uses the urgent
 lane; `force` does not bypass cache-window or backend capability checks.
+An explicit forced repair retires the old playback program immediately; a
+failed repair does not republish it. Automatic preference replacements keep
+the readable artifact until a validated replacement is published, including
+when the replacement attempt fails. The native package tests cover both paths.
 
 ### Audit compatibility decisions
 
@@ -536,6 +1051,134 @@ Registered LAN Remote actions include remove/play-now/move-next in the
 queue, recent-session listing, and exporting current or archived sessions. Raw
 export-data projections and queue-wide clearing remain Host-only; Internet
 Remote still does not expose file export.
+
+### YouTube quick-request input
+
+Host, local Remote and public Remote accept YouTube `watch?v=…`, `youtu.be/…`,
+`shorts/…`, `live/…`, `embed/…` and legacy `v/…` video URLs, including mobile,
+music and privacy-enhanced embed hosts. Scheme-less YouTube links and pasted
+share text are accepted. Timestamps, tracking and playlist parameters are
+removed when creating the canonical single-video URL.
+
+Share text may contain one distinct YouTube video; repeated links to the same
+video are harmless. Multiple different video links prompt the user to keep one.
+Playlist/channel-only links and invalid video IDs are rejected. The `live/`
+URL form accepts completed recordings; active live streams retain the existing
+unsupported status. URL recognition does not bypass video availability or
+playback compatibility checks.
+
+Rust owns input normalization; the public Remote transport extracts the same
+catalog identity. Both parsers run `tests/fixtures/youtube_inputs.json`.
+
+Native YouTube signature solving uses the pinned in-process QuickJS/EJS assets;
+the product launches no yt-dlp, Node or Python helper. Building the runtime
+requires libclang for rquickjs bindings (set `LIBCLANG_PATH` when it is not
+discoverable). Compatible independent H.264/AAC tracks use the existing media
+normalizer and player; input and service limitations are in the
+[quick guide](quick-start.md#youtube-可以怎样点歌).
+
+### Queue ordering rules
+
+The current program is separate from the waiting queue. Queue ordering is owned
+by Rust AppState and serialized with admissions and playback transitions; a
+successful sort moves existing item IDs and their complete payloads, rather than
+reconstructing or removing requests.
+
+| Action | Waiting-queue behavior | Current program |
+| --- | --- | --- |
+| Ordinary request (`点歌`) | Insert a `cycle` item into the singer rotation, leaving existing items in relative order. | Starts the item only when there is no current program. |
+| Queue next (`顶歌`) | Move the selected ID to index 0 as `priority`. Multiple queue-next actions put the most recently committed action first. Repeating an action on the same ID does not duplicate it. | Unchanged. |
+| Drag / move to position | Move the selected ID to the requested final zero-based index (clamped to the current queue bounds), mark it `manual`, then rebuild the remaining cycle slots. Moving to its existing index leaves its slot type unchanged. | Unchanged. |
+| Default sort (`重新排序`) | Clear every `priority` / `manual` marker, including a queue with just one waiting song, and rebuild singer rotation. Within each singer, preserve the songs' **current** relative order, not their original request order. | Unchanged. |
+| Next song | Take waiting index 0 as the new current program, then rotate the remaining cycle slots from that singer. Stale or repeated playback-generation commands are rejected. | Finishes the previous program. |
+| Play now (`立即播放`) | Remove the selected waiting ID and make it the current program immediately. | Finishes and replaces the previous program. This is a different action from queue next. |
+
+Singer rotation follows the session seating order, starting after the current
+program's singer and wrapping around. For singers A/B/C with A currently singing,
+ordinary waiting songs alternate B/C/A, skipping singers with no waiting song.
+Only registered singers' `cycle` items participate. During a cycle rebuild,
+`priority`, `manual`, and unregistered-singer items keep their occupied slots;
+explicit moves, insertions ahead of them, and playback can still shift their
+numeric positions. A new ordinary request is inserted after all existing fixed
+slots, so a manually moved song near the end can delay an otherwise earlier
+singer turn until default sort clears that marker. Removing a singer does not
+remove that singer's queued songs.
+
+Cycle counts use currently waiting cycle songs, not historical plays. A singer
+with no waiting songs can return after several empty rounds without accumulating
+an old turn count. Readding a deleted name creates a new stable identity: retained songs keep their
+old owner and do not silently join the new singer's rotation. Renaming preserves
+the identity, bound devices and queue ownership; existing request/history labels
+remain the names recorded at request time. Changing seating rebuilds cycle slots
+without releasing existing priority/manual markers.
+
+For example, with A singing and A1/A2/B1/B2 waiting, topping A2 and then default
+sorting yields B1/A2/B2/A1. Default sort restores alternating singers, but keeps
+A2 ahead of A1. Repeated priority actions can postpone ordinary requests; there
+is no priority quota or automatic timeout.
+
+Concurrency boundaries to keep in mind when interpreting feedback:
+
+- Host, LAN and public Remote bind a drag confirmation to the displayed queue's
+  `queue_version`, including item incarnations, singer seats and slot types. Rust
+  checks it under the mutation lock. A changed queue rejects the old destination;
+  cache progress, metadata and player settings do not invalidate it. Identical
+  ordering policy and item incarnations have the same content token.
+- Top, positional moves and Play now reject a no-longer-waiting ID with
+  `queue_item_missing`; removing an absent ID also fails. A valid move to the
+  existing index remains a successful no-op and preserves its slot type.
+- Internet Remote retains the 10,000-item core capacity and original queue
+  versions/indices. Its public display may show a byte-limited queue/history
+  prefix, with original/displayed totals and a localized notice; Host/LAN data
+  stays complete. Oversized dense catalog/source pages continue from the first
+  omitted row, preserving totals. Incomplete editable source selections are
+  refused rather than saved with hidden entries missing. The transport supports
+  up to 512 KiB per UTF-8 logical message, bounded frames and 4 MiB of pending
+  receive buffers. Playback/identity information stays complete; a message that
+  still cannot fit is refused before sending any frame. An unusable state keeps
+  the last usable snapshot and refuses public mutations until recovery.
+  A result that grew after a committed action
+  explicitly reports completion so the user does not repeat it. Host/LAN HTTP
+  limits and archive/session exports are unchanged.
+- Finished programs have session-play ledger entries. A program that never
+  started can be absent from the eligible history list after Next/Play now, even
+  though sorting itself never removed it. Duplicate-request checks cover active
+  songs and started songs in this session's history, across all singers. An
+  unstarted skipped song can be requested again; repeating an active/recorded
+  song requires the explicit repeat confirmation.
+
+Regression coverage in `rust-runtime/tests/native_playlist_stress.rs` checks singleton
+marker resets, repeated priority actions, per-singer relative order, concurrent
+native callers, and conservation across admissions, moves and playback changes.
+The same actual AppState suite adds deterministic random user counts,
+seating changes, additions/removals/renames, returning singers, concurrent roster
+changes and admissions, empty/full rosters, duplicate/repeat rules, invalid
+targets and stale playback commands. `tests/native_host_business.test.mjs` checks
+the real persisted roster/queue and fresh incarnations across process restart.
+Every successful admission must remain in
+the active queue/current program or have an ended session-play ledger entry.
+Expected waiting IDs and ended IDs are accounted for from the submitted action,
+so an unexpected removal cannot pass merely by being recorded as ended.
+
+The shared AppState bounds the current program plus waiting queue to 10,000
+items. Both ordinary and priority admissions enforce this bound under the state
+lock, including when the current slot is empty. Desktop Host is exempt from
+Native Beta's separate 200-waiting-song HTTP limit. Rejected admissions do not
+evict an older song or write an unrestorable oversized backup.
+
+Replay the larger deterministic run (100 random sessions × 500 steps, plus eight
+concurrent sessions with eight callers × 96 steps each):
+
+```bash
+npm run test:playlist-stress -- --stress
+```
+
+`--seeds`, `--steps`, and `--concurrent-sessions` adjust this opt-in run; ordinary
+Rust test discovery keeps a smaller regression workload. The Node entry selects
+the current locked host-native Cargo test artifact; it needs no Python/FFI adapter.
+Successful pressure
+tests establish the checked invariants for those runs, not a diagnosis of a
+historical user report without its operation trace.
 
 These legacy routes remain unavailable (501 `native_unavailable`):
 

@@ -1,16 +1,17 @@
-# Android Host Beta · first acceptance
+# Android Host preview
 
-This follows the Android Alpha work on `codex/android-host-alpha`. The launcher
-name is **bilikara beta** and uses the desktop artwork. The test APK retains
+The launcher name is **bilikara beta** and uses the desktop artwork. The test APK retains
 `com.bilikara.app.alpha` and the existing local debug signer so it can replace
 Alpha without uninstalling or erasing login/settings. It is **not** a production
 signed release. The technical bootstrap names `android-alpha.html` and
 `android_alpha_status` remain compatible implementation identifiers.
 
-## Included in this acceptance round
+## Runtime and UI boundaries
 
-- One adaptive Android Host layout with Auto/Desktop/Phone and independent
-  system/landscape/portrait preferences. See [adaptive layout](android-layout.md).
+- One adaptive Android Host layout follows the WebView window width and system
+  auto-rotation, without manual layout/direction selectors. Player fullscreen
+  temporarily requests landscape and restores system orientation on exit.
+  See [adaptive layout](android-layout.md).
 - Compact landscape upcoming-song panel, with scrollable following songs.
 - Queue move requests accept the shared Host's `index` field. Cache usage counts
   actual private media bytes (including partial downloads); cached-song counts
@@ -46,15 +47,13 @@ signed release. The technical bootstrap names `android-alpha.html` and
 
 Room lifetimes follow the shared 1–24-hour UI (default 12) and the expiration
 returned by the deployed signaling Worker. This work does not deploy a Worker.
-The earlier [catalog pagination patch](worker-patches/20260912-browse-pagination.patch)
-still needs applying if the online catalog Worker has not yet been updated.
+The catalog Worker must support the documented cursor-pagination contract.
 
 ## Deferred by the user
 
 General external-link integration, developer mode and diagnostic ZIP packages.
-Independent Android audience output is now implemented; see the
-[external-display guide](android-external-display.md). System WiFi/HDMI mirroring
-remains the fallback. Neither real hardware display latency nor long-session
+Independent Android audience output depends on a device exposing a separate
+presentation display; system WiFi/HDMI mirroring is a different capability. Neither real hardware display latency nor long-session
 reliability is claimed by desktop browser or emulator tests.
 
 ## APK workflow and signing
@@ -85,7 +84,7 @@ to an older stable base is rejected by Android even if desktop offers that
 channel switch. Debug and release package IDs/signers differ: do not uninstall a
 test installation expecting its local data to transfer into a new release app.
 
-## First acceptance checklist
+## Device acceptance
 
 1. Install the test APK over Alpha, without uninstalling. Confirm icon/name and
    that login/settings survive. Continue an existing session once, then restart

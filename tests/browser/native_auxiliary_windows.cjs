@@ -92,7 +92,7 @@ const [binary, output, engine = "chromium"] = process.argv.slice(2);
       await page.waitForURL(url => url.pathname === "/" + document);
       if (pageName === "controller") {
         await page.waitForFunction(() => window.bridgeCalls.includes("mark_presentation_controller_ready"));
-        assert.equal(await page.title(), "Bilikara Stage");
+        assert.equal(await page.title(), "bilikara Stage");
         assert.equal(await page.locator("#controller-exit").isEnabled(), true);
         assert.equal(await page.locator("#controller-unavailable").isVisible(), false);
         await page.waitForFunction(() => document.querySelector("#controller-remote-qr-image").naturalWidth > 0);

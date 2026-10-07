@@ -460,7 +460,7 @@ pub(crate) fn fail_before_app(startup_log: Option<&DesktopStartupLog>, reason: &
         startup_failure_message(reason, startup_log.map(|log| log.path.as_path()))
     );
     let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-    let title: Vec<u16> = "Bilikara 启动失败 / Startup failure"
+    let title: Vec<u16> = "bilikara 启动失败 / Startup failure"
         .encode_utf16()
         .chain(Some(0))
         .collect();
@@ -480,7 +480,7 @@ pub(crate) fn fail_desktop_startup(
     startup_log: Option<&DesktopStartupLog>,
     reason: &str,
 ) {
-    eprintln!("Bilikara desktop startup failed: {reason}");
+    eprintln!("bilikara desktop startup failed: {reason}");
     if let Some(startup_log) = startup_log {
         startup_log.append("desktop_failure", format!("reason={reason}"));
     }
@@ -494,7 +494,7 @@ pub(crate) fn fail_desktop_startup(
                 reason,
                 startup_log.map(|log| log.path.as_path()),
             ))
-            .title("Bilikara 启动失败 / Startup failure")
+            .title("bilikara 启动失败 / Startup failure")
             .kind(MessageDialogKind::Error)
             .show(move |_| exit_handle.exit(1));
     }

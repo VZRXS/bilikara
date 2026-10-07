@@ -4,7 +4,7 @@ const path = require('node:path');
 
 // The entry is navigation; only the dialog's submission controls reflect
 // eligibility. Requests stay local to this fixture and never reach the cloud.
-module.exports = async function checkRemoteRatingDialog(page, item, notes) {
+module.exports = async function checkRatingDialog(page, item, notes, { role = 'remote' } = {}) {
  const requests=[];
  let release=null,hold=false,fail=false;
  await page.route('**/api/rating/submit',async route=>{
@@ -28,18 +28,23 @@ module.exports = async function checkRemoteRatingDialog(page, item, notes) {
   renderCurrentRatingButton(state.data.current_item);
  },{value,score});
  try {
-  await page.waitForFunction(()=>!remoteIdentityModalIsOpen());
-  await page.setViewportSize({width:390,height:844});
-  await page.evaluate(item=>{
+  if (role === 'remote') await page.waitForFunction(()=>!remoteIdentityModalIsOpen());
+  await page.setViewportSize(role === 'remote' ? {width:440,height:956} : {width:1920,height:1080});
+  await page.evaluate(({item,role})=>{
    fetchState=async()=>{};state.eventSource?.close();state.ratingOptOut=true;
    state.ratingSubmittedKeys.clear();state.ratingPendingKeys.clear();state.ratingQueuedKeys.clear();state.ratingSavedScores.clear();
    const current={...item,id:'rating-current',display_title:'Current song',requester_name:selectedRequesterName(),cache_status:'pending'};
    const previous={...item,id:'rating-previous',item_id:'rating-previous',bvid:'BV0000000001',threshold_reached:false};
    state.data={...state.data,song_ratings:[],current_item:current,session_played:[previous]};
-   renderCurrentItem(current);
-   if(!openPlaybackSheet())throw Error('Fixture playback sheet did not open');
+   if (role === 'remote') {
+    renderCurrentItem(current);
+    if(!openPlaybackSheet())throw Error('Fixture playback sheet did not open');
+   } else {
+    activateHostWorkspace('queue', {inputOrigin:'programmatic'});
+    renderQueueCurrent(current);
+   }
    renderCurrentRatingButton(current);
-  },item);
+  },{item,role});
   // Every backend status opens, including a song that can only be viewed.
   for(const [value,disabled] of [['',false],['waiting',false],['sending',true],['accepted',true],['failed',false]]) {
    await status(value);await entryReady();await button.click();await modal.waitFor();
@@ -47,11 +52,11 @@ module.exports = async function checkRemoteRatingDialog(page, item, notes) {
    if(value)assert.equal(await modal.locator('[data-rating-score="3"]').getAttribute('aria-pressed'),'true');
    if(['waiting','accepted'].includes(value)) {
     await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
-    await modal.screenshot({path:path.join(notes,`remote-rating-${value}-dialog.png`)});
+    await modal.screenshot({path:path.join(notes,`${role}-rating-${value}-dialog.png`)});
    }
    await close();assert.equal(requests.length,0,'Opening and closing never submits');
   }
-  await page.screenshot({path:path.join(notes,'remote-rating-entry.png')});
+  await page.screenshot({path:path.join(notes,`${role}-rating-entry.png`)});
   // Waiting scores reopen with their confirmed value and can be overwritten.
   await status('waiting');await button.click();
   await modal.locator('[data-rating-score="2"]').click();await submit.click();
@@ -62,6 +67,29 @@ module.exports = async function checkRemoteRatingDialog(page, item, notes) {
   await modal.locator('[data-rating-score="4"]').click();
   await status('waiting',2);
   assert.equal(await modal.locator('[data-rating-score="4"]').getAttribute('aria-pressed'),'true','SSE preserves an editable draft');
+  if (role === 'host') {
+   const original=await page.evaluate(()=>({users:state.data.session_users,entries:state.data.session_user_entries,
+    ratings:state.data.song_ratings,requester:selectedRequesterName()}));
+   await page.evaluate(()=>{
+    const selected=state.data.session_user_entries.find(user=>user.name===selectedRequesterName());
+    if(!selected?.id)throw Error('Fixture requester lacks a stable user ID');
+    state.data.session_user_entries=[{...selected,name:'Alice renamed'}];
+    state.data.session_users=['Alice renamed'];
+    renderRequesterSelect(state.data.session_users);renderCurrentRatingButton(state.data.current_item);
+   });
+   assert.equal(await modal.locator('[data-rating-score="4"]').getAttribute('aria-pressed'),'true','A stable user rename preserves their draft');
+   await page.evaluate(()=>{
+    state.data.session_user_entries=[{id:'rating-fixture-bob',name:'Bob'}];state.data.session_users=['Bob'];
+    state.data.song_ratings=[{play_id:'rating-current',session_user_id:'rating-fixture-bob',session_user_name:'Bob',status:'waiting',score:1}];
+    renderRequesterSelect(state.data.session_users);renderCurrentRatingButton(state.data.current_item);
+   });
+   assert.equal(await modal.locator('[data-rating-score="1"]').getAttribute('aria-pressed'),'true','Removing the selected user loads the replacement user’s own saved score');
+   await page.evaluate(original=>{
+    state.data.session_users=original.users;state.data.session_user_entries=original.entries;state.data.song_ratings=original.ratings;
+    renderRequesterSelect(original.users);elements.requesterSelect.value=original.requester;renderCurrentRatingButton(state.data.current_item);
+   },original);
+   await modal.locator('[data-rating-score="4"]').click();
+  }
   await status('sending',2);
   assert.equal(await modal.isVisible(),true,'A status update must not dismiss the dialog');
   assert.equal(await submit.isDisabled(),true);
@@ -95,7 +123,7 @@ module.exports = async function checkRemoteRatingDialog(page, item, notes) {
   await button.click();assert.equal(await submit.isDisabled(),true);await close();
   assert.equal(requests.length,2,'View-only states never submit');
  } catch(error) {
-  await page.screenshot({path:path.join(notes,'remote-rating-failure.png')});
+  await page.screenshot({path:path.join(notes,`${role}-rating-failure.png`)});
   throw error;
  } finally {
   release?.();await page.evaluate(()=>closeRatingPrompt({submit:false}));

@@ -63,12 +63,61 @@
   let dragStartY = 0;
   let suppressDragClick = false;
 
+  const dragHandleRestoreDelayMs = 5000;
+  let activeDragHandleId = "";
+  let dragHandleRestoreTimer = null;
+
+  function clearDragHandleRestoreTimer() {
+    if (dragHandleRestoreTimer !== null) {
+      window.clearTimeout(dragHandleRestoreTimer);
+      dragHandleRestoreTimer = null;
+    }
+  }
+
+  function syncQueueDragHandles() {
+    elements.queueList.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+      handle.classList.toggle("is-drag-ready", Boolean(activeDragHandleId)
+        && handle.closest(".queue-item")?.dataset.id === activeDragHandleId);
+    });
+  }
+
+  function restoreQueueDragHandle() {
+    clearDragHandleRestoreTimer();
+    const handle = elements.queueList.querySelector("[data-drag-handle].is-drag-ready");
+    if (handle?.getAttribute("aria-expanded") === "true") {
+      hideRemoteContextualInfo(handle.closest(".info-trigger-wrap"));
+    }
+    activeDragHandleId = "";
+    syncQueueDragHandles();
+  }
+
+  function scheduleDragHandleRestore() {
+    clearDragHandleRestoreTimer();
+    if (!activeDragHandleId || state.dragItemId) return;
+    dragHandleRestoreTimer = window.setTimeout(restoreQueueDragHandle, dragHandleRestoreDelayMs);
+  }
+
+  function activateQueueDragHandle(itemId) {
+    activeDragHandleId = itemId;
+    syncQueueDragHandles();
+    scheduleDragHandleRestore();
+  }
+
+  let renderedQueue = [];
+  let renderedQueueVersion = "";
+  let dragQueue = null;
+
   renderQueue = function renderQueueWithActions(playlist) {
     if (state.dragItemId) {
       syncDropIndicators();
       return;
     }
 
+    renderedQueue = playlist;
+    renderedQueueVersion = state.data?.queue_version || "";
+    if (activeDragHandleId && !playlist.some((item) => item.id === activeDragHandleId)) {
+      restoreQueueDragHandle();
+    }
     const signature = JSON.stringify({
       language: state.language,
       hasCurrentItem: Boolean(state.data?.current_item),
@@ -79,6 +128,7 @@
       elements.queueList.querySelectorAll("button[data-action]").forEach((button) => {
         syncQueueActionBusy(button);
       });
+      syncQueueDragHandles();
       return;
     }
     state.queueRenderSignature = signature;
@@ -143,6 +193,7 @@
       }
       elements.queueList.appendChild(node);
     });
+    syncQueueDragHandles();
   };
 
   function clearDropIndicators() {
@@ -238,8 +289,8 @@
     return Math.max(0, Math.min(targetIndex, playlist.length - 1));
   }
 
-  async function reorderQueue(itemId, index) {
-    applyStateSnapshot(await apiPost("/api/playlist/reorder", { item_id: itemId, index }), { forceRender: true });
+  async function reorderQueue(itemId, index, queueVersion) {
+    applyStateSnapshot(await apiPost("/api/playlist/reorder", { item_id: itemId, index, expected_queue_version: queueVersion }), { forceRender: true });
     setFormMessage(typeof t === "function" ? t("remote.queueOrderUpdated") : "remote.queueOrderUpdated");
     render();
   }
@@ -341,8 +392,12 @@
       return;
     }
 
-    event.preventDefault();
+    clearDragHandleRestoreTimer();
+    // Touch already has touch-action:none and selection/callout suppression.
+    // Cancelling its pointerdown also suppresses the tap's click on WebKit.
+    if (event.pointerType !== "touch") event.preventDefault();
     state.dragItemId = item.dataset.id || "";
+    dragQueue = { playlist: renderedQueue, version: renderedQueueVersion };
     state.dragTargetId = "";
     state.dragTargetAfter = false;
     state.dragPointerId = event.pointerId;
@@ -359,11 +414,13 @@
     }
 
     const draggedId = state.dragItemId;
-    const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+    const playlist = dragQueue?.playlist || [];
+    const queueVersion = dragQueue?.version || "";
     const sourceIndex = playlist.findIndex((item) => item.id === draggedId);
     const targetIndex = reorderTargetIndex(playlist, draggedId);
     suppressDragClick = state.dragMoved;
     clearDragState();
+    scheduleDragHandleRestore();
 
     if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
       render();
@@ -375,6 +432,7 @@
       openReorderConfirmSheet({
         itemId: draggedId,
         targetIndex,
+        queueVersion,
         title: draggedItem?.display_title || "",
       });
       render();
@@ -382,14 +440,24 @@
     }
 
     try {
-      await reorderQueue(draggedId, targetIndex);
+      await reorderQueue(draggedId, targetIndex, queueVersion);
     } catch (error) {
       setFormMessage(error.message, true);
     }
   }
 
-  elements.queueViewButton.addEventListener("click", clearDragState);
-  elements.historyViewButton.addEventListener("click", clearDragState);
+  const resetQueueDragFeedback = () => {
+    clearDragState();
+    restoreQueueDragHandle();
+  };
+  elements.queueViewButton.addEventListener("click", resetQueueDragFeedback);
+  elements.historyViewButton.addEventListener("click", resetQueueDragFeedback);
+
+  document.addEventListener("click", (event) => {
+    if (activeDragHandleId && !event.target.closest("[data-drag-handle]")) {
+      restoreQueueDragHandle();
+    }
+  });
 
   elements.queueList.addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
@@ -441,14 +509,28 @@
     beginDrag(handle, event);
   });
 
+  // Native text selection/callouts can take over a held touch before it moves.
+  // Limit suppression to the drag target; song text remains selectable.
+  for (const type of ["selectstart", "contextmenu"]) {
+    elements.queueList.addEventListener(type, (event) => {
+      if (event.target.closest("[data-drag-handle]")) {
+        event.preventDefault();
+      }
+    });
+  }
+
   // A tap reaches the shared click-to-open help handler. A completed drag must
   // not also open help from the synthetic click following pointerup.
   elements.queueList.addEventListener("click", (event) => {
-    if (event.detail !== 0 && suppressDragClick && event.target.closest("[data-drag-handle]")) {
+    const handle = event.target.closest("[data-drag-handle]");
+    if (!handle) return;
+    if (event.detail !== 0 && suppressDragClick) {
       suppressDragClick = false;
       event.preventDefault();
       event.stopPropagation();
+      return;
     }
+    activateQueueDragHandle(handle.closest(".queue-item")?.dataset.id || "");
   }, true);
 
   document.addEventListener("pointermove", (event) => {
@@ -462,6 +544,7 @@
         return;
       }
       state.dragMoved = true;
+      activateQueueDragHandle(state.dragItemId);
       closeRemoteContextualInfo();
       elements.queueList.classList.add("drag-active");
     }
@@ -477,6 +560,7 @@
     if (state.dragPointerId !== event.pointerId) return;
     suppressDragClick = true;
     clearDragState();
+    scheduleDragHandleRestore();
     render();
   });
 })();

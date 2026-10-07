@@ -21,11 +21,17 @@
     return String(value ?? "");
   }
 
+  function normalizeCacheStatus(value) {
+    const status = value === "queued" ? "pending" : value;
+    return ["pending", "downloading", "failed", "ready"].includes(status) ? status : "";
+  }
+
   /**
    * @typedef {Object} PresentationOverlayRow
    * @property {string} title
    * @property {string} requester
    * @property {string} duration
+   * @property {string} cacheStatus
    */
 
   /**
@@ -35,7 +41,7 @@
    * @property {string} currentItemIdentity
    * @property {string} title
    * @property {string} videoUrl
-   * @property {{requester: string, duration: string, detail: string}} displayMetadata
+   * @property {{requester: string, duration: string, detail: string, cacheStatus: string, cacheDetail: string, cacheProgress: number|null}} displayMetadata
    * @property {"light"|"dark"|"blue"} theme
    * @property {"zh"|"en"|"ja"} language
    * @property {Object|null} overlay
@@ -50,6 +56,7 @@
         title: text(row?.title),
         requester: text(row?.requester),
         duration: text(row?.duration),
+        cacheStatus: normalizeCacheStatus(row?.cacheStatus),
       }))
       : [];
     return {
@@ -61,6 +68,7 @@
       title: text(candidate.title),
       requester: text(candidate.requester),
       duration: text(candidate.duration),
+      cacheStatus: normalizeCacheStatus(candidate.cacheStatus),
       queueHeading: text(candidate.queueHeading),
       rows,
       emptyText: text(candidate.emptyText),
@@ -85,6 +93,11 @@
         requester: text(metadata.requester),
         duration: text(metadata.duration),
         detail: text(metadata.detail),
+        cacheStatus: normalizeCacheStatus(metadata.cacheStatus),
+        cacheDetail: text(metadata.cacheDetail),
+        cacheProgress: metadata.cacheProgress !== null && metadata.cacheProgress !== undefined
+          && Number.isFinite(Number(metadata.cacheProgress))
+          ? Math.max(0, Math.min(100, Number(metadata.cacheProgress))) : null,
       },
       theme: supportedThemes.has(scene.theme) ? scene.theme : "light",
       language: ["zh", "en", "ja"].includes(scene.language) ? scene.language : "zh",

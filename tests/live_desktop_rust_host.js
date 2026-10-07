@@ -8,10 +8,11 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const {webkit} = require("playwright");
 const evidence = path.resolve(process.argv[2]);
-const directory = path.join(evidence, "preview");
-const executable = path.resolve("rust-runtime/target/debug/bilikara-desktop-host");
+const directory = process.env.BILIKARA_TEST_BROWSER_DATA_DIR || path.join(evidence, "preview");
+assert.ok(path.isAbsolute(process.env.BILIKARA_TEST_NATIVE_HOST || ""), "declare the current Cargo-selected Host from run_desktop_rust_host.mjs");
+const executable = process.env.BILIKARA_TEST_NATIVE_HOST;
 const shutdownToken = "synthetic-desktop-shutdown";
-let server, browser, lines, page, remote;
+let server, browser, lines, page, remote, releaseAcks, releaseClaim;
 const errors = [];
 let stderr = "";
 async function launch() {
@@ -27,6 +28,9 @@ async function launch() {
   assert.equal((await fs.readFile(`/proc/${server.pid}/task/${server.pid}/children`,"utf8")).trim(), "");
   const maps = await fs.readFile(`/proc/${server.pid}/maps`,"utf8");
   assert.ok(!/libpython|libbilikara_runtime\.so/.test(maps));
+  // Test-owned configured sources; no unrelated background library refresh.
+  const uidsFile=path.join(directory,"gatcha_uids.json");
+  const uids=JSON.parse(await fs.readFile(uidsFile,"utf8"));uids.uids=[];uids.profiles={};await fs.writeFile(uidsFile,JSON.stringify(uids));
   return ready;
 }
 async function stop(ready) {
@@ -51,7 +55,7 @@ async function capture(name, target) {
 (async () => {
   await fs.mkdir(evidence,{recursive:true});
   let ready=await launch();
-  browser=await webkit.launch({headless:true,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
+  browser=await webkit.launch({headless:true,executablePath:process.env.BILIKARA_BROWSER_EXECUTABLE,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.toLowerCase().includes("proxy")))});
   let host=await browser.newContext({viewport:{width:1440,height:1000}});
   page=await host.newPage();
   page.on("pageerror",e=>errors.push(e.message));
@@ -63,7 +67,8 @@ async function capture(name, target) {
   assert.equal(await page.locator("html").getAttribute("data-host-platform"),"desktop");
   assert.equal(await page.evaluate(()=>Boolean(window.BilikaraAndroidHost || window.BilikaraAndroidExport || window.BilikaraAndroidPlatform || window.BilikaraAndroidPlayback)),false);
   assert.equal(await page.locator("#android-host-dock").isVisible(),false);
-  assert.equal(await page.evaluate(()=>BilikaraHostLayout.isPortrait()),false);
+  assert.equal(await page.locator("html").getAttribute("data-host-layout"),"landscape");
+  assert.equal(await page.locator("#work-rail-request").isVisible(),true);
   assert.equal((await okay("/api/state")).capabilities.native_android_beta,false);
   await page.locator("#work-rail-users").click();
   await page.locator("#session-user-input").fill("Desktop Fixture");
@@ -86,14 +91,14 @@ async function capture(name, target) {
   const defaultPolicy=(await okay('/api/state')).cache_policy;
   assert.equal(defaultPolicy.video_quality,'1080P 高帧率');assert.equal(defaultPolicy.audio_hires,true);
   // Native Host restores the existing sanitized package download. Connectivity
-  // probes go only to run_desktop_rust_host.py's non-forwarding TLS fixture.
+  // probes go only to run_desktop_rust_host.mjs's non-forwarding TLS fixture.
   assert.equal((await fetch(ready.baseUrl+'/api/diagnostics/package',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
   assert.equal((await host.request.post(ready.baseUrl+'/api/diagnostics/package',{headers:{Origin:'https://foreign.invalid'},data:{}})).status(),403);
   await page.locator('#work-rail-settings').click();
   const diagnosticDownload=page.waitForEvent('download');
   await page.locator('#diagnostic-package-button').click();
   const diagnostic=await diagnosticDownload;
-  assert.equal(diagnostic.suggestedFilename(),'bilikara-diagnostics.zip');
+  assert.match(diagnostic.suggestedFilename(),/^bilikara-diagnostics-\d{8}-\d{6}\.zip$/);
   await diagnostic.saveAs(path.join(evidence,'diagnostics.zip'));
   await page.waitForFunction(()=>!state.diagnosticsBusy);
   assert.equal(await page.locator('#diagnostic-package-button').getAttribute('aria-busy'),null);
@@ -121,17 +126,21 @@ async function capture(name, target) {
   await page.waitForFunction(()=>document.querySelector("video")?.paused===true);
   await remote.locator('[data-control-action="toggle-play"]').click();
   await page.waitForFunction(()=>document.querySelector("video")?.paused===false);
+  console.log("Remote pause and resume passed");
   const before=await page.evaluate(()=>document.querySelector("video").currentTime);
   await remote.locator('[data-control-action="seek-relative"][data-delta="15"]').click();
   await page.waitForFunction(v=>document.querySelector("video").currentTime>v+10,before);
+  console.log("Remote relative seek passed");
   const variantToggle=remote.locator('[data-action="toggle-audio-variants"]');
   // Short variant lists use the existing inline buttons; only overflow needs
   // the popover. In either layout, perform and verify the actual track change.
   if(await variantToggle.isVisible()) await variantToggle.click();
   else assert.match(await remote.locator("#audio-variant-bar").getAttribute("class"),/\bis-inline\b/);
   const variant=first.current_item.audio_variants[1].id;
-  await remote.locator(`[data-variant-id="${variant}"]`).click();
+  await remote.locator(`[data-variant-id="${variant}"]:visible`).click();
   await page.waitForFunction(id=>state.data.current_item.selected_audio_variant_id===id,variant);
+  await page.waitForFunction(()=>state.hostPlaybackSession?.readyCommitted);
+  console.log("Remote audio variant accepted");
   // Metadata network work must not own AppState while controls are in flight.
   const delayed=okay("/api/playlist/add",{url:"https://www.bilibili.com/video/BV1xx411c7mF",requester_name:"Desktop Fixture"});
   for(let n=0;n<100;n++) {if((await (await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/delayed")).json()).started)break;await new Promise(r=>setTimeout(r,30));}
@@ -142,31 +151,89 @@ async function capture(name, target) {
   const send=async(kind,body,lane="control")=>okay("/api/internet-remote/dispatch",{
     peer_id,lane,message:JSON.stringify({v:1,lane,epoch,seq:++seq,id:require("node:crypto").randomUUID(),kind,body})});
   assert.equal((await send("session.set_identity",{name:"Internet Fixture"})).accepted,true);
+  await page.waitForFunction(()=>!state.data.player_control_command);
+  // Hold the actual ownership request for a second track change. Both seeks
+  // below must remain unacknowledged while this replacement pair is binding.
+  const claimGate=new Promise(resolve=>{releaseClaim=resolve;});
+  await page.route("**/api/player/claim-program",async route=>{await claimGate;await route.continue();},{times:1});
+  const originalVariant=first.current_item.audio_variants[0].id;
+  await remote.locator(`[data-variant-id="${originalVariant}"]:visible`).click();
+  await page.waitForFunction(id=>state.data.current_item.selected_audio_variant_id===id
+    && state.hostPlaybackSession?.phase==="binding" && !state.hostPlaybackSession.readyCommitted,originalVariant);
   const targetState=await okay("/api/state");
   const target={item_id:targetState.current_item.id,playback_generation:targetState.playback_generation};
   // Real LAN HTTP and dedicated Internet protocol against the SAME Host.
   // Ordered delivery/ACK is consumed by the unmodified shared player.
-  let releaseAcks;
   const ackGate=new Promise(resolve=>{releaseAcks=resolve;});
-  await page.route("**/api/player/control-ack",async route=>{await ackGate;await route.continue();});
-  const position=await page.evaluate(()=>document.querySelector("video").currentTime);
+  const attemptedAcks=[];
+  await page.route("**/api/player/control-ack",async route=>{
+    attemptedAcks.push(route.request().postDataJSON().seq);await ackGate;await route.continue();
+  });
+  const position=await page.evaluate(()=>state.hostPlaybackSession.playbackRestore?.currentTime);
+  assert.ok(Number.isFinite(position) && position>before+10,"Track replacement must retain the prior seek position");
   const both=await Promise.all([
     remote.evaluate(async target=>{const r=await fetch("/api/player/control",{method:"POST",headers:{...clientHeaders(),"content-type":"application/json"},body:JSON.stringify({...target,action:"seek-relative",delta_seconds:7})});return r.ok;},target),
     send("playback.seek_relative",{...target,delta_seconds:11})]);
   assert.equal(both[0],true);assert.equal(both[1].accepted,true);
   const head=(await okay("/api/state")).player_control_command;
   assert.ok(head);
+  await page.waitForFunction(seq=>state.data.player_control_command?.seq===seq,head.seq);
+  assert.deepEqual(attemptedAcks,[],"An unready media pair must not acknowledge an unapplied seek");
+  assert.ok(await page.evaluate(seq=>state.lastAppliedPlayerControlSeq<seq,head.seq));
+  releaseClaim();
+  await page.waitForFunction(seq=>state.hostPlaybackSession?.readyCommitted
+    && state.lastAppliedPlayerControlSeq===seq,head.seq);
   // Bypass only the browser's ACK barrier, still using the real HTTP route.
   const wrongAck=await host.request.post(ready.baseUrl+"/api/player/control-ack",{data:{seq:head.seq+1}});
   assert.equal(wrongAck.status(),200); // Compatibility response; false ACK is a no-op.
   assert.equal((await okay("/api/state")).player_control_command.seq,head.seq,"Out-of-order ACK removed the FIFO head");
   releaseAcks();
-  await page.unroute("**/api/player/control-ack");
+  // Let intercepted ACK handlers finish before removing their route. Unrouting
+  // in flight can complete the same request before its queued continue().
+  await page.unrouteAll({behavior:"wait"});
   await page.waitForFunction(v=>document.querySelector("video").currentTime>=v+17.5,position);
   console.log("LAN + Internet protocol relative seeks and delayed metadata controls passed");
   const start=Date.now();await okay("/api/player/volume",{volume_percent:55});assert.ok(Date.now()-start<1500);
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/release");await delayed;
   await capture("desktop-playing.png",page);await capture("remote-375x812.png",remote);
+  // Fault-inject output capability loss, using the actual Host's claim/retire
+  // routes and real media reload. Replacing a graph must keep this program live.
+  const recoveredProgram=await okay("/api/state");
+  let recoveryRetirements=0;
+  const countRecoveryRetirements=request=>{
+    if(request.method()==="POST" && new URL(request.url()).pathname==="/api/player/retire-program")recoveryRetirements++;
+  };
+  page.on("request",countRecoveryRetirements);
+  for(const kind of ["media-clock","context-closed"]) {
+    await page.evaluate(async kind=>{
+      const session=state.hostPlaybackSession;
+      window.recoveryPair={session,video:session.video,audio:session.audio,time:session.video.currentTime};
+      if(kind==="context-closed") {
+        state.audioContext=new (window.AudioContext||window.webkitAudioContext)();
+        await state.audioContext.close();
+      }
+      recoverAudioPitchOutput(session.audio,kind);
+    },kind);
+    await page.waitForFunction(()=>{
+      const session=state.hostPlaybackSession;
+      return session && session!==recoveryPair.session && session.readyCommitted
+        && session.ownershipClaimed && session.video?.paused===false
+        && session.video.currentTime>recoveryPair.time;
+    },null,{timeout:20000});
+    assert.deepEqual(await page.evaluate(()=>({
+      oldDisconnected:!recoveryPair.video.isConnected&&!recoveryPair.audio.isConnected,
+      oldRetired:recoveryPair.session.phase==="retired",
+      sameGeneration:state.hostPlaybackSession.playbackGeneration===recoveryPair.session.playbackGeneration,
+      sameProgram:playbackProgramDescriptorsEqual(state.hostPlaybackSession.playbackProgram,recoveryPair.session.playbackProgram),
+    })),{oldDisconnected:true,oldRetired:true,sameGeneration:true,sameProgram:true});
+    if(kind==="context-closed")assert.equal(await page.evaluate(()=>state.audioContext),null);
+    const recovered=await okay("/api/state");
+    assert.equal(recovered.playback_generation,recoveredProgram.playback_generation);
+    assert.deepEqual(recovered.playback_program,recoveredProgram.playback_program);
+  }
+  page.off("request",countRecoveryRetirements);
+  assert.equal(recoveryRetirements,0,"Graph recovery must not retire the continuing native program");
+  console.log("Actual Host claim and media recovery preserved the current program for failed/closed output contexts");
   await remote.evaluate(()=>sendPlayerNext());
   await page.waitForFunction(id=>state.data.current_item?.id===id,second);
   await page.waitForFunction(()=>document.querySelector("video")?.currentTime>0.3,null,{timeout:25000});
@@ -236,6 +303,6 @@ async function capture(name, target) {
   pending.write(`POST /api/session-users/add HTTP/1.1\r\nHost: ${new URL(ready.baseUrl).host}\r\nCookie: bilikara_native=${auth.value}\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{`);
   await host.close();const stopping=Date.now();await stop(ready);assert.ok(Date.now()-stopping<5000);pending.destroy();
   assert.deepEqual(errors,[]);
-  await fs.writeFile(path.join(evidence,"browser-summary.json"),JSON.stringify({passed:true,entry:"bilikara-desktop-host",pythonBackend:false,desktop:[1440,1000],remote:[375,812],login:true,binding:["automatic","manual"],nativeCache:true,playback:true,seek:true,trackSwitch:true,next:true,staleNext:true,metadataConcurrency:true,exports:["csv","png","zip"],lanHttp:true,internetProtocolSimulation:true,realDataChannel:false,physicalCrossNetwork:false,restartRestore:true,inFlightLoginCancellation:true,fifoHeadAck:true,consoleErrors:errors},null,2));
+  await fs.writeFile(path.join(evidence,"browser-summary.json"),JSON.stringify({passed:true,entry:"bilikara-desktop-host",pythonBackend:false,desktop:[1440,1000],remote:[375,812],login:true,binding:["automatic","manual"],nativeCache:true,playback:true,seek:true,trackSwitch:true,next:true,staleNext:true,metadataConcurrency:true,exports:["csv","png","zip"],lanHttp:true,internetProtocolSimulation:true,realDataChannel:false,physicalCrossNetwork:false,restartRestore:true,inFlightLoginCancellation:true,fifoHeadAck:true,pitchOutputRecovery:true,consoleErrors:errors},null,2));
   console.log("Desktop Rust entry/browser core loop passed (synthetic offline fixtures).");
-})().catch(async e=>{console.error(e.message.replace(/https?:\/\/\S+/g,"[URL]"));if(page){console.error(await page.evaluate(()=>({video:(()=>{const v=document.querySelector("video");return v?{time:v.currentTime,ready:v.readyState,paused:v.paused,error:v.error?.message}:null})(),audio:(()=>{const v=document.querySelector("audio");return v?{time:v.currentTime,ready:v.readyState,paused:v.paused,error:v.error?.message}:null})(),session:state.hostPlaybackSession?{phase:state.hostPlaybackSession.phase,ready:state.hostPlaybackSession.readyCommitted,claim:state.hostPlaybackSession.ownershipClaimed,intent:state.hostPlaybackSession.logicalPlayIntent}:null,start:state.localPlaybackStartState,diagnostics:state.data?.diagnostics,message:state.data?.current_item?.cache_message,toast:document.querySelector("#app-toast")?.textContent})).catch(()=>({})));await capture("failure.png",page).catch(()=>{});}console.error(errors,stderr);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}});
+})().catch(async e=>{console.error((e.stack || e.message).replace(/https?:\/\/\S+/g,"[URL]"));if(page){console.error(await page.evaluate(()=>({video:(()=>{const v=document.querySelector("video");return v?{time:v.currentTime,ready:v.readyState,paused:v.paused,error:v.error?.message}:null})(),audio:(()=>{const v=document.querySelector("audio");return v?{time:v.currentTime,ready:v.readyState,paused:v.paused,error:v.error?.message}:null})(),session:state.hostPlaybackSession?{phase:state.hostPlaybackSession.phase,ready:state.hostPlaybackSession.readyCommitted,claim:state.hostPlaybackSession.ownershipClaimed,intent:state.hostPlaybackSession.logicalPlayIntent}:null,start:state.localPlaybackStartState,diagnostics:state.data?.diagnostics,message:state.data?.current_item?.cache_message,toast:document.querySelector("#app-toast")?.textContent})).catch(()=>({})));await capture("failure.png",page).catch(()=>{});}console.error(errors,stderr);process.exitCode=1;}).finally(async()=>{releaseClaim?.();releaseAcks?.();if(page&&!page.isClosed())await page.unrouteAll({behavior:"wait"});if(browser)await browser.close();if(server?.exitCode===null){server.kill("SIGTERM");await once(server,"exit");}});

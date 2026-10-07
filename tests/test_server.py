@@ -1819,7 +1819,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
                 active_duplicate_for_item=lambda _item: None,
             ),
             add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
-            snapshot=lambda: {"playlist": []},
+            snapshot=lambda: {"playlist": [], "session_generation": 1, "session_user_entries": [{"name": "VZRXS", "id": "a" * 64}]},
         )
 
         with patch("bilikara.server.CONTEXT", context), patch(
@@ -1840,6 +1840,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
             {
                 "position": "tail",
                 "requester_name": "VZRXS",
+                "requester_user_id": "a" * 64,
                 "allow_repeat": False,
             },
         )
@@ -1856,7 +1857,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
                 }
             ]
         )
-        self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
+        self.assertEqual(writes, [({"ok": True, "data": context.snapshot()}, None)])
 
     def test_duplicate_add_is_decided_atomically_by_rust_appstate(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -1904,6 +1905,7 @@ class PlaylistAddRequestTest(unittest.TestCase):
         context = SimpleNamespace(
             has_session_users=lambda: True,
             add_item=reject_add,
+            snapshot=lambda: {"session_generation": 1, "session_user_entries": [{"name": "VZRXS", "id": "a" * 64}]},
         )
 
         with patch("bilikara.server.CONTEXT", context), patch(
@@ -1927,6 +1929,58 @@ class PlaylistAddRequestTest(unittest.TestCase):
         self.assertIs(raised.exception.item, item)
         self.assertIsNone(raised.exception.session_entry)
         self.assertEqual(raised.exception.active_item.id, "active")
+
+    def test_successful_add_survives_indexing_error_and_unwritable_stderr(self):
+        item = SimpleNamespace(
+            owner_mid=33091201,
+            bvid="BV1JgojY8EMV",
+            title="Song title",
+            display_title="Song title",
+            resolved_url="https://www.bilibili.com/video/BV1JgojY8EMV",
+            original_url="https://www.bilibili.com/video/BV1JgojY8EMV",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/33091201",
+            cover_url="",
+        )
+        failures = [
+            OSError(22, "Invalid argument"),
+            UnicodeEncodeError("ascii", "凛夜", 0, 2, "ordinal not in range"),
+            ValueError("I/O operation on closed file"),
+        ]
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                added = []
+                context = Mock()
+                context.has_session_users.return_value = True
+                context.add_item.side_effect = lambda value, **_kwargs: added.append(value.bvid)
+                context.snapshot.side_effect = lambda: {"playlist": list(added)}
+                handler = BilikaraHandler.__new__(BilikaraHandler)
+                handler.path = "/api/playlist/add"
+                handler.headers = {}
+                handler._read_json_body = lambda: {
+                    "url": item.original_url,
+                    "position": "tail",
+                    "requester_name": "Test",
+                }
+                writes = []
+                handler._write_json = lambda payload, status=None: writes.append((payload, status))
+                console = Mock()
+                console.write.side_effect = failure
+                with (
+                    patch("bilikara.server.CONTEXT", context),
+                    patch("bilikara.server.fetch_video_item", return_value=item),
+                    patch(
+                        "bilikara.server.append_catalog_entries_in_background",
+                        side_effect=RuntimeError("append scheduling unavailable"),
+                    ),
+                    patch("sys.stderr", console),
+                ):
+                    handler.do_POST()
+
+                self.assertEqual(added, [item.bvid])
+                context.add_item.assert_called_once()
+                console.write.assert_called_once()
+                self.assertEqual(writes, [({"ok": True, "data": {"playlist": added}}, None)])
 
     def test_add_indexing_payload_falls_back_to_display_title_and_original_url(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -4009,6 +4063,46 @@ class PlayerAudioVariantRouteTest(unittest.TestCase):
 
         self.assertEqual(calls, [])
         self.assertEqual(writes[0][1], server_module.HTTPStatus.BAD_REQUEST)
+
+
+class PlaylistQueueConflictRouteTest(unittest.TestCase):
+    def test_stale_drag_and_departed_target_return_conflict_without_success_snapshot(self):
+        from bilikara.store import PlaylistStore
+        from tests.test_app_state_store import item
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PlaylistStore(root / "state.json", root / "backup.json", root / "sessions")
+            try:
+                store.add_session_user("A")
+                for name in ["current", "a", "b"]:
+                    store.add_item(item(name), requester_name="A")
+                version = store.snapshot()["queue_version"]
+                store.move_to_next("b")
+                context = SimpleNamespace(touch_client=lambda *args, **kwargs: None,
+                    move_item_to_index=store.move_item_to_index, move_to_next=store.move_to_next,
+                    snapshot=store.snapshot)
+                for route, body, code in [
+                    ("/api/playlist/reorder", dict(item_id="a", index=0, expected_queue_version=version), "queue_changed"),
+                    ("/api/playlist/move-next", dict(item_id="missing"), "queue_item_missing"),
+                    ("/api/playlist/move-next", dict(item_id="current"), "queue_item_missing"),
+                ]:
+                    with self.subTest(route=route, code=code):
+                        before = store.snapshot()
+                        writes = []
+                        handler = BilikaraHandler.__new__(BilikaraHandler)
+                        handler.path, handler.headers = route, {}
+                        handler._read_json_body = lambda: body
+                        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+                        with patch("bilikara.server.CONTEXT", context):
+                            handler.do_POST()
+                        self.assertEqual(len(writes), 1)
+                        self.assertFalse(writes[0][0]["ok"])
+                        self.assertEqual(writes[0][0]["code"], code)
+                        self.assertEqual(writes[0][1], server_module.HTTPStatus.CONFLICT)
+                        self.assertEqual(store.snapshot(), before)
+            finally:
+                store.shutdown()
 
 
 class PlaylistResortRouteTest(unittest.TestCase):

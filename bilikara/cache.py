@@ -974,23 +974,6 @@ class CacheManager:
         return self.media_capabilities_snapshot()
 
     @staticmethod
-    def _py_quality_from_choice_index(index: object) -> str | None:
-        try:
-            normalized_index = int(index)
-        except (TypeError, ValueError):
-            return None
-        if 0 <= normalized_index < len(VIDEO_QUALITY_CHOICES):
-            return VIDEO_QUALITY_CHOICES[normalized_index]
-        return None
-
-    @staticmethod
-    def _py_optional_video_quality(video_quality: object) -> str | None:
-        value = str(video_quality or "").strip()
-        if value in VIDEO_QUALITY_CHOICES:
-            return value
-        return None
-
-    @staticmethod
     def _native_quality_policy(
         video_quality: object,
         quality_cap: object = "",
@@ -1246,13 +1229,6 @@ class CacheManager:
             value = CACHE_LIMIT_CHOICES[0]
         bounded = min(max(value, CACHE_LIMIT_CHOICES[0]), CACHE_LIMIT_CHOICES[-1])
         return bounded
-
-    @staticmethod
-    def _py_normalize_video_quality(video_quality: object) -> str:
-        value = str(video_quality or "").strip()
-        if value in VIDEO_QUALITY_CHOICES:
-            return value
-        return DEFAULT_VIDEO_QUALITY
 
     @staticmethod
     def _normalize_video_quality(
@@ -3188,25 +3164,6 @@ class CacheManager:
         )
 
     @staticmethod
-    def _py_ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
-        quality = CacheManager._py_optional_video_quality(
-            quality_cap
-        ) or CacheManager._py_normalize_video_quality(video_quality)
-        if "360" in quality:
-            return 360
-        if "480" in quality:
-            return 480
-        if "720" in quality:
-            return 720
-        if "1080" in quality:
-            return 1080
-        if "4K" in quality:
-            return 2160
-        if "8K" in quality:
-            return 4320
-        return 1080
-
-    @staticmethod
     def _ytdlp_max_height(
         video_quality: object,
         quality_cap: object = "",
@@ -3395,62 +3352,9 @@ class CacheManager:
             return 0
 
     @staticmethod
-    def _py_dash_max_quality_id(video_quality: str) -> int:
-        quality_id_map = {
-            "360P 流畅": 16,
-            "480P 清晰": 32,
-            "720P 高清": 64,
-            "720P 60帧": 74,
-            "1080P 高清": 80,
-            "1080P 高码率": 112,
-            "1080P 高帧率": 116,
-            "4K 超清": 120,
-            "HDR 真彩": 125,
-            "杜比视界": 126,
-            "8K 超高清": 127,
-        }
-        return quality_id_map.get(video_quality, 80)
-
-    @staticmethod
     def _dash_max_quality_id(video_quality: str) -> int:
         response = CacheManager._native_quality_policy(video_quality)
         return int(response["dash_max_quality_id"])
-
-    @staticmethod
-    def _py_select_dash_video_stream(
-        video_streams: list[dict],
-        *,
-        max_quality_id: int,
-        codec_filter: str | None = None,
-        avc_quality_cap: str = "",
-    ) -> dict | None:
-        max_avc_quality_id = (
-            CacheManager._py_dash_max_quality_id(avc_quality_cap)
-            if avc_quality_cap
-            else 0
-        )
-        candidates = []
-        for stream in video_streams:
-            quality_id = stream.get("quality_id", 0)
-            if quality_id > max_quality_id:
-                continue
-            codec_name = stream.get("codec_name", "")
-            if codec_filter and codec_name != codec_filter:
-                continue
-            if codec_filter == "avc" and max_avc_quality_id and quality_id > max_avc_quality_id:
-                continue
-            candidates.append(stream)
-        if not candidates:
-            for stream in video_streams:
-                quality_id = stream.get("quality_id", 0)
-                if quality_id <= max_quality_id:
-                    candidates.append(stream)
-            if not candidates:
-                candidates = list(video_streams)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda s: (-s.get("quality_id", 0), -s.get("bandwidth", 0)))
-        return candidates[0]
 
     @staticmethod
     def _select_dash_video_stream(
@@ -3503,28 +3407,6 @@ class CacheManager:
         )
 
     @staticmethod
-    def _py_select_dash_audio_stream(
-        audio_streams: list[dict], *, audio_hires: bool = True
-    ) -> dict | None:
-        if not audio_streams:
-            return None
-        candidates = list(audio_streams)
-        quality_order = {
-            30250: 0,   # Dolby Atmos
-            30251: 1,   # Hi-Res FLAC
-            30280: 2,   # High 192K
-            30232: 3,   # Mid 132K
-            30216: 4,   # Low 64K
-        }
-        if not audio_hires:
-            high_quality_ids = {30250, 30251}
-            candidates = [s for s in candidates if s.get("quality_id") not in high_quality_ids]
-            if not candidates:
-                candidates = list(audio_streams)
-        candidates.sort(key=lambda s: quality_order.get(s.get("quality_id", 0), 99))
-        return candidates[0]
-
-    @staticmethod
     def _select_dash_audio_stream(
         audio_streams: list[dict],
         *,
@@ -3561,21 +3443,6 @@ class CacheManager:
             ),
             decode=decode_native_audio,
         )
-
-    @staticmethod
-    def _py_select_preferred_dash_audio(
-        best_audio: list[dict],
-        flac_audio: dict | None,
-        dolby_audio: dict | None,
-        *,
-        audio_hires: bool,
-    ) -> dict | None:
-        preferred_audio = best_audio[0] if best_audio else None
-        if flac_audio and audio_hires:
-            preferred_audio = flac_audio
-        if dolby_audio and audio_hires:
-            preferred_audio = dolby_audio
-        return preferred_audio
 
     @staticmethod
     def _select_preferred_dash_audio(
@@ -3863,34 +3730,6 @@ class CacheManager:
 
 
     @staticmethod
-    def _py_dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
-        if stream_kind == "video":
-            streams = dash_streams.get("video") or []
-            urls = []
-            for stream in streams:
-                url = str(stream.get("url") or "").strip()
-                if url:
-                    urls.append(url)
-                for backup in stream.get("backup_urls") or []:
-                    backup_url = str(backup).strip()
-                    if backup_url:
-                        urls.append(backup_url)
-            return urls
-        if stream_kind == "audio":
-            streams = dash_streams.get("audio") or []
-            urls = []
-            for stream in streams:
-                url = str(stream.get("url") or "").strip()
-                if url:
-                    urls.append(url)
-                for backup in stream.get("backup_urls") or []:
-                    backup_url = str(backup).strip()
-                    if backup_url:
-                        urls.append(backup_url)
-            return urls
-        return []
-
-    @staticmethod
     def _dash_stream_urls(
         dash_streams: dict,
         stream_kind: str,
@@ -3931,12 +3770,6 @@ class CacheManager:
                 candidate["url"] for candidate in response["candidates"]
             ],
         )
-
-    @staticmethod
-    def _py_preferred_audio_urls(preferred_audio: dict) -> list[str]:
-        urls = [preferred_audio["url"]]
-        urls.extend(preferred_audio.get("backup_urls") or [])
-        return urls
 
     @staticmethod
     def _preferred_audio_urls(
@@ -4245,15 +4078,6 @@ class CacheManager:
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
-
-    @staticmethod
-    def _py_video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
-        normalized_quality = CacheManager._py_normalize_video_quality(video_quality)
-        start_index = VIDEO_QUALITY_CHOICES.index(normalized_quality)
-        cap_quality = CacheManager._py_optional_video_quality(quality_cap)
-        if cap_quality:
-            start_index = max(start_index, VIDEO_QUALITY_CHOICES.index(cap_quality))
-        return ",".join(VIDEO_QUALITY_CHOICES[start_index:])
 
     @staticmethod
     def _video_quality_priority(

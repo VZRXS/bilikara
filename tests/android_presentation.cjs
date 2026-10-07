@@ -93,6 +93,8 @@ async function stageTests() {
   });
   vm.runInContext(fs.readFileSync("static/incoming-request.js", "utf8"), context);
   window.BilikaraIncomingRequest = context.BilikaraIncomingRequest;
+  vm.runInContext(fs.readFileSync("static/presentation-feedback.js", "utf8"), context);
+  window.BilikaraPresentationFeedback = context.BilikaraPresentationFeedback;
   vm.runInContext(fs.readFileSync("static/fullscreen-controls.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("static/controller.js", "utf8"), context);
   await settle();

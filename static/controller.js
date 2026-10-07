@@ -65,6 +65,9 @@
   const requestNotice = window.BilikaraIncomingRequest.create(
     document.getElementById("controller-request-toast"), t,
   );
+  const actionFeedback = window.BilikaraPresentationFeedback.create(
+    document.getElementById("controller-feedback"), t,
+  );
 
   function t(key) {
     return String(state.translations[key] || key);
@@ -300,6 +303,7 @@
 
   function failClosed(message = "", key = "") {
     requestNotice.hide();
+    actionFeedback.hide();
     state.video?.pause();
     state.failedClosed = true;
     state.session = null;
@@ -433,8 +437,10 @@
 
   function preserveOverlayAndReplace(...nodes) {
     const overlay = elements.frame.querySelector(".player-delay-overlay");
+    const download = elements.frame.querySelector(".presentation-download-status");
     elements.frame.replaceChildren(...nodes);
     if (overlay) elements.frame.appendChild(overlay);
+    if (download) elements.frame.appendChild(download);
   }
 
   function showEmpty(key) {
@@ -465,6 +471,7 @@
     renderer.renderScene(elements.frame, state.scene, {
       compact: false,
       manageVisibility: true,
+      showDownloadProgress: true,
       now: Date.now(),
     });
   }
@@ -581,7 +588,7 @@
   function mountScene(scene) {
     retireVideo();
     document.documentElement.dataset.theme = scene.theme;
-    document.title = scene.title ? `${scene.title} · Bilikara Stage` : "Bilikara Stage";
+    document.title = scene.title ? `${scene.title} · bilikara Stage` : "bilikara Stage";
     if (!scene.videoUrl) {
       showEmpty("controller.noSong");
       renderOverlay();
@@ -630,6 +637,7 @@
     state.scene = nextScene;
     state.clock = nextClock;
     requestNotice.show(candidate.payload?.incomingRequest);
+    actionFeedback.show(candidate.payload?.actionFeedback);
     setError("");
     if (shouldMount) {
       mountScene(nextScene);

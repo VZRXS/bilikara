@@ -1,17 +1,21 @@
-"""Native package provisioning, relocation and architecture contracts."""
+"""Retained libav manifest and source-mode routing compatibility contracts."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
-import build_bundle
 from bilikara import rust_runtime
 from bilikara.ffmpeg_vendor import MANIFEST, runtime_files
-from scripts import libav_bundle
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class LibavBundleTests(unittest.TestCase):
@@ -27,13 +31,12 @@ class LibavBundleTests(unittest.TestCase):
                          patch("bilikara.config.INTERNAL_VENDOR_DIR", vendor / "absent"), \
                          patch.dict(os.environ, {"BILIKARA_MEDIA_BACKEND": "default"}), \
                          patch.object(rust_runtime, "_call_media_api", return_value={"configured": True}) as api:
-                        self.assertEqual(libav_bundle.native_target(), f"{arch}-{suffix}")
                         self.assertEqual(rust_runtime._configure_media_routing(), (True, vendor.resolve(), ""))
                         api.assert_called_once_with("bilikara_runtime_media_startup", {
-                            "mode": "default", "companion": str(vendor.resolve() / libav_bundle.COMPANIONS[system])})
+                            "mode": "default", "companion": str(vendor.resolve() / {"Windows": "bilikara_media_libav.dll", "Darwin": "libbilikara_media_libav.dylib", "Linux": "libbilikara_media_libav.so"}[system])})
                         # Absence of the library must reach Rust negotiation,
                         # rather than disguising a broken package as unprovisioned.
-                        self.assertFalse((vendor / libav_bundle.COMPANIONS[system]).exists())
+                        self.assertFalse((vendor / {"Windows": "bilikara_media_libav.dll", "Darwin": "libbilikara_media_libav.dylib", "Linux": "libbilikara_media_libav.so"}[system]).exists())
 
     def test_posix_manifest_validates_complete_flat_closure_and_rejects_escape(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -55,20 +58,6 @@ class LibavBundleTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "dependency is missing"):
                     runtime_files(vendor)
 
-    def test_prefix_rejects_cross_architecture_even_when_all_files_exist(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            prefix = Path(temporary)
-            bindir = prefix / "bin"
-            bindir.mkdir()
-            for name in ("ffmpeg", "ffprobe", "libavcodec.so.63", "libbilikara_media_libav.so"):
-                (bindir / name).write_bytes(b"native")
-            (bindir / MANIFEST).write_text(json.dumps(dict(schema_version=1, version="9.0.1",
-                target="aarch64-unknown-linux-gnu", runtime_files=["ffmpeg", "ffprobe", "libavcodec.so.63"])))
-            with patch.dict(os.environ, {"BILIKARA_LIBAV_PREFIX": str(prefix)}), \
-                 patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="x86_64"), \
-                 self.assertRaisesRegex(RuntimeError, "does not match"):
-                libav_bundle.package_prefix()
-
     def test_packaged_cli_uses_its_origin_without_developer_loader_override(self):
         with tempfile.TemporaryDirectory() as temporary:
             vendor = Path(temporary)
@@ -78,66 +67,130 @@ class LibavBundleTests(unittest.TestCase):
                 (vendor / MANIFEST).write_text('{}')
                 self.assertEqual(rust_runtime.media_compatibility_env(env), env)
 
-    def test_macos_stage_keeps_manifest_in_resources_with_a_relative_vendor_link(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            prefix, app = root / "prefix", root / "bilikara.app"
-            for name in ("bin", "driver", "records", "licenses", "source"):
-                (prefix / name).mkdir(parents=True)
-            names = ["ffmpeg", "ffprobe", "libavcodec.63.dylib"]
-            companion = "libbilikara_media_libav.dylib"
-            test_companion = "libbilikara_media_libav_test.dylib"
-            for name in [*names, companion, test_companion]:
-                (prefix / "bin" / name).write_bytes(b"native")
-            data = dict(schema_version=1, version="9.0.1", target="x86_64-apple-darwin",
-                        runtime_files=names,
-                        binaries={name: {} for name in [*names, companion, test_companion]})
-            (prefix / "bin" / MANIFEST).write_text(json.dumps(data))
-            (prefix / "build-info.json").write_text('{}')
-            (app / "Contents/Frameworks/rust").mkdir(parents=True)
-            vendor = app / "Contents/Frameworks/vendor"
-            resources = app / "Contents/Resources/vendor"
-            vendor.mkdir()
-            resources.mkdir(parents=True)
-            (resources / "aria2-macos.json").write_text('{}')
-            (resources / "ffmpeg").write_bytes(b"old data copy")
-            (vendor / "ffmpeg").symlink_to("../../Resources/vendor/ffmpeg")
-            with patch("platform.system", return_value="Darwin"):
-                libav_bundle.stage(prefix, app)
-                # A second staging pass must preserve the resource and link.
-                libav_bundle.stage(prefix, app)
-            self.assertFalse((vendor / "ffmpeg").is_symlink())
-            self.assertEqual((vendor / "ffmpeg").read_bytes(), b"native")
-            self.assertTrue((vendor / MANIFEST).is_symlink())
-            self.assertFalse(Path(os.readlink(vendor / MANIFEST)).is_absolute())
-            self.assertEqual((vendor / MANIFEST).resolve(), (resources / MANIFEST).resolve())
-            self.assertEqual([p.name for p in runtime_files(vendor)], names)
-            self.assertNotIn("binaries", json.loads((resources / MANIFEST).read_text()))
-            self.assertNotIn("drivers", json.loads((resources / MANIFEST).read_text()))
-            self.assertTrue((vendor / companion).is_file())
-            self.assertFalse((vendor / test_companion).exists())
-            self.assertFalse((app / "Contents/Resources/libav-diagnostics").exists())
-            self.assertEqual((resources / "aria2-macos.json").read_text(), '{}')
 
-    def test_nested_signing_defers_outer_executable_until_bundle_seal(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            app = Path(temporary) / "bilikara.app"
-            main = app / "Contents/MacOS/bilikara"
-            helper = app / "Contents/Resources/helper/native-helper"
-            library = app / "Contents/Frameworks/vendor/libavcodec.63.dylib"
-            for path in (main, helper, library):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(bytes.fromhex("cffaedfe") + b"synthetic Mach-O")
-            with patch.object(build_bundle, "_sign_path") as sign:
-                build_bundle._sign_nested_macho_objects(app)
-            self.assertCountEqual([call.args[0] for call in sign.call_args_list], [helper, library])
 
-    def test_macho_system_boundary_rejects_external_ffmpeg(self):
-        with patch("platform.system", return_value="Darwin"):
-            for path in ("/usr/lib/libSystem.B.dylib", "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"):
-                self.assertTrue(libav_bundle.system_import(path))
-            for path in ("/opt/homebrew/lib/libavformat.dylib", "@rpath/libavcodec.63.dylib", "@loader_path/libavutil.61.dylib"):
-                self.assertFalse(libav_bundle.system_import(path))
+class SourceLibavToolsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.vendor = self.root / "bin"
+        self.vendor.mkdir()
+        self.names = ["ffmpeg.exe", "ffprobe.exe", "avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swresample-7.dll", "vcruntime140.dll"]
+        for name in self.names + ["bilikara_media_libav.dll"]:
+            (self.vendor / name).write_bytes(b"selected")
+        self.manifest = {"schema_version": 1, "version": "9.0.1", "target": "x86_64-pc-windows-msvc",
+                         "runtime_files": self.names}
+        self.write_manifest()
+        for name in ("source/ffmpeg-9.0.1.tar.xz", "licenses/COPYING.LGPLv2.1", "build-info.json"):
+            path = self.root / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("test fixture")
+
+    def write_manifest(self):
+        (self.vendor / MANIFEST).write_text(json.dumps(self.manifest), encoding="utf-8")
+
+    def test_manifest_rejects_escape_wrong_target_and_missing_dependencies(self):
+        for change in ({"runtime_files": [*self.names, "../outside.dll"]}, {"target": "i686-pc-windows-msvc"}, {"version": "8.1.2"}, {"runtime_files": [*self.names, "missing.dll"]}):
+            with self.subTest(change=change):
+                old = self.manifest.copy()
+                self.manifest.update(change)
+                self.write_manifest()
+                with self.assertRaises(RuntimeError):
+                    runtime_files(self.vendor)
+                self.manifest = old
+
+    def test_restore_copies_shared_closure_and_rejects_system_probe(self):
+        from bilikara.cache import CacheManager
+        manager = object.__new__(CacheManager)
+        manager.ffmpeg_prepare_lock = threading.Lock()
+        manager.lock = threading.Lock()
+        destination = self.root / "tools/bbdown"
+        with ExitStack() as stack:
+            # Replace the cache module's os binding, not global os.name/Path.
+            from types import SimpleNamespace
+            stack.enter_context(patch("bilikara.cache.os", SimpleNamespace(name="nt")))
+            for key, value in {"VENDOR_DIR": self.vendor, "INTERNAL_VENDOR_DIR": self.root / "absent",
+                               "FFMPEG_TOOLS_DIR": destination, "FFMPEG_RUNTIME_PATH": destination / "ffmpeg.exe",
+                               "FFPROBE_RUNTIME_PATH": destination / "ffprobe.exe", "FFMPEG_PATH_OVERRIDE": "/unrelated/ffmpeg"}.items():
+                stack.enter_context(patch("bilikara.cache." + key, value))
+            stack.enter_context(patch.object(manager, "_read_ffmpeg_version", return_value="9.0.1"))
+            stack.enter_context(patch("bilikara.cache.shutil.which", side_effect=AssertionError("system fallback")))
+            self.assertEqual(manager._ensure_ffmpeg(), destination / "ffmpeg.exe")
+            for name in self.names:
+                self.assertEqual((destination / name).read_bytes(), b"selected")
+            with patch("bilikara.cache.shutil.copy2", side_effect=AssertionError("rewriting an in-use group")):
+                manager._ensure_ffmpeg()
+            (destination / "avutil-61.dll").write_bytes(b"oldbuild")
+            self.manifest["build_run"] = "next-package-build"
+            self.write_manifest()
+            manager._ensure_ffmpeg()
+            self.assertEqual((destination / "avutil-61.dll").read_bytes(), b"selected")
+            with patch.object(CacheManager, "_is_usable_ffprobe", return_value=False):
+                self.assertIsNone(manager._ffprobe_path_for_ffmpeg(destination / "ffmpeg.exe"))
+            (self.vendor / "avcodec-63.dll").unlink()
+            with self.assertRaises(RuntimeError):
+                manager._ensure_ffmpeg()
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required for installed MSVC license collection")
+    def test_msvc_license_collection_selects_product_and_requires_records(self):
+        script = (ROOT / "media-libav/prepare-windows.ps1").read_text(encoding="utf-8")
+        start = script.index("$instances = @(")
+        end = script.index("\n@(\n    'BILIKARA_FFMPEG_SOURCE_VERSION", start)
+        collection = script[start:end]
+        self.assertTrue(collection.strip())
+        # PowerShell expands the Windows TEMP short name in $PSScriptRoot.
+        installation = (self.root / "Visual Studio selected").resolve()
+        redist = installation / "Licenses/1033/Redist.txt"
+        redist.parent.mkdir(parents=True)
+        redist.write_bytes(b"installed redistribution list")
+        catalog_path = self.root / "Microsoft/VisualStudio/Packages/_Instances/selected/catalog.json"
+        catalog_path.parent.mkdir(parents=True)
+        product = "Microsoft.VisualStudio.Product.Enterprise"
+        license_url = "https://go.microsoft.com/fwlink/?LinkId=2327713"
+        selected = {"id": product, "localizedResources": [{"language": "en-us", "license": license_url}]}
+        catalog = {"packages": [{"id": "unrelated", "localizedResources": []}, selected]}
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        instances = [
+            {"installationPath": str(self.root / "other"), "instanceId": "other", "productId": "unrelated"},
+            {"installationPath": str(installation), "instanceId": "selected", "productId": product,
+             "installationVersion": "18.9.1"},
+        ]
+        (self.root / "instances.json").write_text(json.dumps(instances), encoding="utf-8")
+        (self.root / "vswhere.ps1").write_text(
+            "Get-Content (Join-Path $PSScriptRoot 'instances.json') -Raw\n$global:LASTEXITCODE = 0\n", encoding="utf-8")
+        (self.root / "records").mkdir()
+        check = self.root / "check.ps1"
+        check.write_text("""$ErrorActionPreference = 'Stop'
+$prefix = $PSScriptRoot
+$env:ProgramData = $PSScriptRoot
+$env:VSINSTALLDIR = (Join-Path $PSScriptRoot 'Visual Studio selected') + [IO.Path]::DirectorySeparatorChar
+$vswhere = Join-Path $PSScriptRoot 'vswhere.ps1'
+function Invoke-WebRequest($Uri, $OutFile) {
+    if ($Uri -ne 'https://go.microsoft.com/fwlink/?LinkId=2327713') { throw 'Wrong product terms' }
+    [IO.File]::WriteAllText($OutFile, 'selected product terms')
+}
+""" + collection, encoding="utf-8")
+        def run():
+            return subprocess.run([shutil.which("pwsh"), "-NoProfile", "-File", str(check)],
+                                  capture_output=True, text=True, encoding="utf-8", timeout=30)
+        result = run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "licenses/MSVC-Product-License.html").read_text(), "selected product terms")
+        self.assertEqual((self.root / "licenses/MSVC-Redist.txt").read_bytes(), redist.read_bytes())
+        record = json.loads((self.root / "records/msvc-license-source.json").read_text(encoding="utf-8-sig"))
+        self.assertEqual(record, {"product_id": product, "installation_version": "18.9.1", "license_url": license_url})
+        selected["localizedResources"] = []
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        result = run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("product license URL unavailable", result.stderr)
+        selected["localizedResources"] = [{"language": "en-us", "license": license_url}]
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        redist.unlink()
+        result = run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("redistribution list unavailable", result.stderr)
 
 
 if __name__ == "__main__":

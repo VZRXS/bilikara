@@ -5,8 +5,8 @@ controls, song cards, dialogs and translations. Both consume the authoritative
 Rust Host state. Remote remains a controller with its own page and permissions;
 the audience page remains a presentation surface.
 
-The behavior baseline is the shipped preview.1 Python desktop Host plus later
-user-approved changes. Android reuses those shared components; improvements
+The behavior baseline is the shipped preview.2 native desktop Host, preserving
+approved Preview 1 behavior and subsequent changes. Android reuses those shared components; improvements
 from Android may supplement the desktop when they preserve its existing flows.
 Viewport width, input method and native capabilities are separate concerns:
 a compact desktop must not inherit Android-only action restrictions. The compact
@@ -25,21 +25,36 @@ service failures before retaining a successful submission. The native backend
 validates identity and eligible plays independently of these presentation gates.
 `host-layout.js` adapts the shared controls to a phone navigation dock or the
 existing desktop workspace rail. Preview 2 uses responsive layout without an
-Auto/Desktop/Phone selector: Phone applies below 700 CSS pixels, independently
-of keyboard height or physical orientation. The desktop shell retains its
-minimum window size. Earlier manual layout preferences remain stored but do
-not override this responsive behavior. Android's orientation control remains
-a separate device-local preference.
+Auto/Desktop/Phone selector: On Android, Phone applies below 700 CSS pixels, independently of keyboard height
+or physical orientation. Desktop keeps its workspace rail and compact tool sheets
+at narrow widths; it does not adopt phone navigation. The desktop shell retains
+its minimum window size. Earlier manual layout preferences remain stored but do
+not override this responsive behavior. Android follows the system's
+auto-rotation setting; player fullscreen temporarily requests landscape and
+restores system orientation on exit. Neither Host exposes a manual direction
+selector. See [Android layout](android-layout.md) for the native limitations.
 
 Layout changes move existing non-media controls, retaining their drafts,
 selection and applicable focus/scroll state. They do not reparent the player,
 recreate its media elements or create another Signalsmith graph. The existing
 `android-*` DOM hooks remain stable while the layout implementation is shared.
 
+Desktop workspace and scroll ownership remain explicit:
+
+| Surface | Placement and scroll owner |
+| --- | --- |
+| Queue and History | Direct destinations on an independent fixed right-side tool rail. Queue's Now Playing card owns the current-song actions; the waiting queue and history list own their scrolling. |
+| Request workspaces | Use the same width at a fixed viewport. Search, discovery and source detail keep one scroll owner for the active list, without scrolling their controls away. |
+| Player Stage | Uses width-and-height measured Stage modes. Song and playback controls fit the available frame; they do not change the workspace width or replace media nodes. |
+| Global toolbar | Keeps one-line icon-plus-label controls. Anchored menus remain viewport-clamped and retain their nodes through exit. |
+| Window frame | Uses platform-specific integrated window chrome. Native fullscreen hides the toolbar, tool rail and workspace at every desktop width and restores their existing nodes on exit. |
+
 Common components have one maintained structure, action definition and base
 style, rather than a shared initial render followed by a separate phone render:
 
-- `app.js` owns the session-user badges and their reorder/remove controls,
+- `session-user-editor.js` owns shared stable-ID roster editing, selection, rename,
+  ordered batch dragging and deletion. `app.js` connects it to authoritative
+  snapshots and HTTP actions,
   including pending state, translations and retry feedback. Existing badge and
   button nodes survive reordering and responsive changes. Both layouts expose
   the same keyboard-accessible actions; pointer layouts also retain dragging.
@@ -59,6 +74,9 @@ style, rather than a shared initial render followed by a separate phone render:
 
 Platform adapters stay narrow:
 
+- Android links the shared Rust application services in process, with no Python
+  backend, sidecar or media-CLI requirement. Pure domain logic stays independent
+  of Tauri, FFI transport and platform adapters.
 - Desktop Tauri owns window preferences, native dialogs, exports, validated
   external links and update activation. Shell commands verify the main window
   and its native Host origin; a frontend capability flag grants no permission.

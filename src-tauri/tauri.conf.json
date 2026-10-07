@@ -4,7 +4,10 @@
   "version": "0.8.0",
   "identifier": "com.bilikara.app",
   "build": {
-    "beforeDevCommand": "python build_bundle.py --dev",
+    "beforeDevCommand": {
+      "script": "cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-desktop",
+      "wait": true
+    },
     "beforeBuildCommand": "",
     "frontendDist": "../static"
   },
@@ -18,6 +21,7 @@
         "fullscreen": false,
         "height": 700,
         "minWidth": 700,
+        "minHeight": 600,
         "resizable": true,
         "title": "bilikara",
         "width": 1024,

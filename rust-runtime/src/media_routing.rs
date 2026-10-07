@@ -29,6 +29,11 @@ pub(crate) struct Configuration {
 }
 static CONFIGURATION: OnceLock<Configuration> = OnceLock::new();
 
+#[cfg(feature = "native-host")]
+pub(crate) fn loudness_companion() -> Option<&'static Path> {
+    capability(CONFIGURATION.get()?).ok()
+}
+
 pub(crate) fn configure(config: Configuration) -> Result<bool, RouteError> {
     if config.companion.as_ref().is_some_and(|p| !p.is_absolute()) {
         return Err(error("invalid_request"));

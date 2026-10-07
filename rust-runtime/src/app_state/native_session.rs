@@ -85,20 +85,40 @@ impl std::fmt::Debug for NativeSession {
 }
 
 impl NativeSession {
-    pub(super) fn reconcile_identities(&mut self, users: &[String], generation: u64) {
-        let mut revoked = false;
+    pub(super) fn reconcile_identities(
+        &mut self,
+        before: &HashMap<String, String>,
+        after: &HashMap<String, String>,
+        generation: u64,
+    ) {
+        let mut changed = false;
         for device in self.devices.values_mut() {
-            if !device.name.is_empty()
-                && (device.generation != generation || !users.contains(&device.name))
-            {
-                device.name.clear();
-                device.generation = 0;
-                revoked = true;
+            if device.name.is_empty() {
+                continue;
+            }
+            let next = (device.generation == generation)
+                .then(|| before.get(&device.name))
+                .flatten()
+                .and_then(|id| {
+                    after
+                        .iter()
+                        .find(|(_, candidate)| *candidate == id)
+                        .map(|(name, _)| name.clone())
+                });
+            match next {
+                Some(name) if name != device.name => {
+                    device.name = name;
+                    changed = true;
+                }
+                Some(_) => {}
+                None => {
+                    device.name.clear();
+                    device.generation = 0;
+                    changed = true;
+                }
             }
         }
-        if revoked {
-            // SSE can coalesce a removal and re-addition of the same name. The
-            // opaque identity marker still makes Remote recheck registration.
+        if changed {
             self.identity_revision = self.identity_revision.saturating_add(1);
         }
     }
@@ -316,7 +336,7 @@ impl AppState {
             })
             .unwrap_or("");
         Ok(
-            json!({"registered":!name.is_empty(),"name":name,"session_id":self.native_session.identity_marker(snapshot.session_generation)}),
+            json!({"registered":!name.is_empty(),"name":name,"user_id":self.data.as_ref().and_then(|data| data.session_user_ids.get(name)),"session_id":self.native_session.identity_marker(snapshot.session_generation)}),
         )
     }
 
@@ -344,6 +364,23 @@ impl AppState {
             .unwrap_or_default();
         if rename && current.is_empty() {
             return Err(ApiError::new(403, "identity_required", "请先登记点歌人"));
+        }
+        if rename
+            && (body["expected_name"]
+                .as_str()
+                .is_some_and(|expected| expected != current)
+                || body["user_id"].as_str().is_some_and(|id| {
+                    !snapshot
+                        .session_user_entries
+                        .iter()
+                        .any(|user| user.id == id && user.name == current)
+                }))
+        {
+            return Err(ApiError::new(
+                409,
+                "session_users_changed",
+                "用户名已更新，请重新打开修改",
+            ));
         }
         if !rename
             && snapshot.session_users.contains(&name)
@@ -543,19 +580,6 @@ impl AppState {
                 _ => {}
             }
         }
-        let renamed = match &command {
-            AppStateRequest::RenameSessionUser {
-                current_name,
-                new_name,
-                ..
-            } => Some((current_name.clone(), new_name.clone())),
-            AppStateRequest::RegisterRemoteUser {
-                current_name: Some(current),
-                name,
-                ..
-            } => Some((current.clone(), name.clone())),
-            _ => None,
-        };
         let reset_runtime = matches!(&command, AppStateRequest::ResetRuntime { .. });
         let response = self.execute(command);
         if let Some(error) = response.error() {
@@ -570,9 +594,6 @@ impl AppState {
             let mut failure = ApiError::new(status, &error.kind, &error.message);
             failure.extra = error.details.clone().unwrap_or_else(|| json!({}));
             return Err(failure);
-        }
-        if let Some((old, new)) = renamed {
-            self.native().ratings.rename(&old, &new);
         }
         if reset_runtime {
             self.native_session.library_queue.clear();
@@ -643,6 +664,12 @@ impl AppState {
         }
         let mut value = serde_json::to_value(&snapshot)
             .map_err(|_| ApiError::invalid("无法序列化 Host 状态"))?;
+        value["automatic_volume"]["host_controls"] = json!(host);
+        if !host && let Some(v) = value["automatic_volume"].as_object_mut() {
+            v.remove("context");
+            v.remove("can_reference");
+            v.remove("can_resume");
+        }
         let session = &self.native_session;
         if host {
             value["startup_warning"] = json!(session.startup_warning);
@@ -1028,6 +1055,13 @@ impl AppState {
             "error_code",
             "error_message",
             "play_rejection_name",
+            "codec",
+            "sample_rate",
+            "channels",
+            "duration_seconds",
+            "elapsed_seconds",
+            "processing_ratio",
+            "reused",
         ];
         let mut safe = json!({"at":now});
         for key in fields {

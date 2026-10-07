@@ -20,7 +20,7 @@ FLAC-in-MP4、raw FLAC、其他 codec/container、加密和动态 decoder config
 ```bash
 M5_PREFIX="$PWD/.tmp/m1-libav-9/ffmpeg-prefix"
 M5_OUT=/tmp/bilikara-m5
-python media-libav/build.py --prefix "$M5_PREFIX" --out "$M5_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M5_PREFIX" --out "$M5_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 rust-runtime/target/debug/examples/libav_metadata compare \
   "$M5_OUT/companion/libbilikara_media_libav.so" "$M5_PREFIX" \
@@ -60,7 +60,9 @@ codec、尺寸、sample rate、channel layout。9.0.1 的 fast-start helper 未�
 read AVIO error 也在该 read handle 的 close callback 中保留。
 Rust 在发布前复用 S3 `read_box_header` 做最多 4096 个顶层 box 的检查，
 确认普通 leading-moov 输出，并用 M1/M3 复核单轨、codec、可读 EOF、包数、payload
-总字节数及准确重标后的 PTS/DTS bounds。没有新通用 MP4 validator 或 full decode。
+总字节数及 PTS/DTS 起止边界：按各自实际 time base 比较，每个边界允许最多
+200ms 偏差（含边界），未知时间仍拒绝。该容差不是完整性证明；包数、payload
+总字节数、完整解码配置及 clean EOF 的检查仍保留，没有 full decode。
 源文件缺 `mdat` 仍是 `InvalidMedia`，即使旧 probe/scan 能成功。
 
 最后一次 cancellation 检查后，以 `fs::hard_link(staging, destination)` 做同文件系统
@@ -90,6 +92,10 @@ layout/configuration checks 和输出大小；不携带内部路径。
 PTS < DTS 或超出本 profile 支持的 mux timing 范围，返回 `UnsupportedContainerLayout`。
 不将未知值补零，不使用 `genpts`，不独立归零每个 timestamp。输出固定
 `avoid_negative_ts=disabled`、`use_editlist=1`、`movflags=+faststart`，关闭自动 BSF。
+AVC 视频另启用 `negative_cts_offsets`，避免重排帧与正起始时间组合导致
+封装后的 PTS/DTS 被 edit list 移到零。重读后的时间戳边界允许上述 200ms 容差；
+正起始重排帧的回归仍逐项断言时间戳完全不变，不靠容差掩盖原来的 21ms 偏移。
+AAC、FLAC 的封装选项不变。该选项只改变 MP4 的时间表表示，不重编码。
 读取直接延续 find-stream-info 的缓冲前缀，无 seek/flush/reopen，也不保留整份输入。
 `av_interleaved_write_frame` 在 9.0.1 中即使失败也消费/清空 packet；所有退出路径释放
 末包和 contexts。取消在读包、写包前后及发布前观察；不声称 native trailer 每段都能立即中断。
@@ -123,8 +129,7 @@ HE-AAC、不调整时间、不容忍 padding 偏差。报告单独列出该 repr
 ## 有限回归
 
 ```bash
-python media-libav/test_comparison.py \
-  --driver "$PWD/rust-runtime/target/debug/examples/libav_metadata" \
+npm run test:media -- \
   --companion "$M5_OUT/companion/libbilikara_media_libav.so" \
   --prefix "$M5_PREFIX" --fixtures "$PWD/.tmp/m1-libav-9/fixtures" \
   --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \

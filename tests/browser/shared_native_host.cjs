@@ -1,24 +1,25 @@
 "use strict";
 // Real native desktop and Android-host HTTP/AppState with the non-forwarding
-// metadata/media/login fixture in run_desktop_rust_host.py. OS bridges are
+// metadata/media/login fixture in run_desktop_rust_host.mjs. OS bridges are
 // fixtures; this is browser evidence, not Android device or OS update evidence.
 const assert=require("node:assert/strict"),fs=require("node:fs/promises"),path=require("node:path"),os=require("node:os");
 const {spawn}=require("node:child_process"),{once}=require("node:events"),{createInterface}=require("node:readline");
-const {chromium,firefox}=require("playwright");
+const {chromium,firefox,webkit}=require("playwright");
 // Use a codec-capable installed browser; neither path changes the served CSP
 // or mocks Signalsmith. Active DSP can be required with BILIKARA_TEST_ACTIVE_PITCH.
-const browserName=process.env.BILIKARA_TEST_BROWSER || "chromium";
-assert.ok(["chromium","firefox"].includes(browserName));
+const browserName=process.env.BILIKARA_TEST_BROWSER || "webkit";
+assert.ok(["chromium","firefox","webkit"].includes(browserName));
 const evidence=path.resolve(process.argv[2]);
 const token="shared-ui-private-fixture";
 (async()=>{
  await fs.mkdir(evidence,{recursive:true});
- const browser=await (browserName==="firefox"?firefox:chromium).launch({headless:true,env:Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.toLowerCase().includes("proxy"))),...(process.env.BILIKARA_BROWSER_EXECUTABLE?{executablePath:process.env.BILIKARA_BROWSER_EXECUTABLE}:{}),...(browserName==="firefox"?{firefoxUserPrefs:{"browser.chrome.site_icons":false,"browser.chrome.favicons":false}}:{args:["--autoplay-policy=no-user-gesture-required","--disable-background-networking"]})});
+ const browser=await ({chromium,firefox,webkit}[browserName]).launch({headless:true,env:Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.toLowerCase().includes("proxy"))),...(process.env.BILIKARA_BROWSER_EXECUTABLE?{executablePath:process.env.BILIKARA_BROWSER_EXECUTABLE}:{}),...(browserName==="firefox"?{firefoxUserPrefs:{"browser.chrome.site_icons":false,"browser.chrome.favicons":false}}:browserName==="chromium"?{args:["--autoplay-policy=no-user-gesture-required","--disable-background-networking"]}:{})});
  const summaries=[];
  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),"shared-host-ui-"));
  try {for(const platform of ["desktop","android"]) {
   const home=path.join(temporary,platform+"-data");
-  const exe=path.resolve(platform==="desktop"?"rust-runtime/target/debug/bilikara-desktop-host":"rust-runtime/target/debug/examples/native_host_alpha");
+  const exe=platform==="desktop"?process.env.BILIKARA_TEST_NATIVE_HOST:process.env.BILIKARA_TEST_NATIVE_ALPHA;
+  assert.ok(path.isAbsolute(exe||""),"current Cargo-selected native Host artifact is required");
   let child,lines,page,ready,stderr="";
   const launch=async()=>{
    const args=platform==="desktop"?["--data-dir",home,"--static-dir",path.resolve("static")]:[home,path.resolve("static")];
@@ -54,7 +55,7 @@ const token="shared-ui-private-fixture";
     throw Error("Unsupported native bridge fixture");
    }}};
   },platform);
-  const errors=[],consoleErrors=[],httpErrors=[],counts={};
+  const errors=[],consoleErrors=[],browserWarnings=[],httpErrors=[],counts={};
   context.on("request",r=>{if(r.method()==="POST") {const key=new URL(r.url()).pathname;counts[key]=(counts[key]||0)+1;}});
   await context.route("**/*",route=>{
    const url=new URL(route.request().url());
@@ -64,14 +65,20 @@ const token="shared-ui-private-fixture";
    return url.hostname==="127.0.0.1"?route.continue():route.abort();
   });
   const open=async()=>{
-   page=await context.newPage();page.on("pageerror",e=>errors.push(e.message));page.on("console",m=>{if(["error","warning"].includes(m.type()))consoleErrors.push(m.text());});
+   page=await context.newPage();page.on("pageerror",e=>errors.push(e.message));page.on("console",m=>{if(m.text()==='Viewport argument key "interactive-widget" not recognized and ignored.')browserWarnings.push(m.text());else if(["error","warning"].includes(m.type()))consoleErrors.push(m.text());});
    page.on("response",async r=>{if(r.status()>=400){let code;try{code=(await r.json()).code;}catch{}httpErrors.push({path:new URL(r.url()).pathname,status:r.status(),code});}});
-   await page.goto(ready.url);await page.waitForFunction(()=>typeof state!=="undefined" && state.hasValidStateResponse && window.BilikaraHostLayout);
+   await page.goto(ready.url);await page.waitForFunction(platform=>typeof state!=="undefined" && state.hasValidStateResponse && (platform==="desktop"?document.documentElement.dataset.hostLayout==="landscape":Boolean(window.BilikaraHostLayout)),platform);
    assert.equal(await page.title(),"bilikara host");
   };
   const go=async name=>{
-   const phone=await page.evaluate(()=>BilikaraHostLayout.isPortrait());
-   if(phone){await page.locator(`[data-android-page="${name==="settings"?"my":name}"]`).click();if(name==="settings")await page.locator("#android-open-settings").click();}
+   const tray=page.locator('#stage-controls-toggle');
+   if(await tray.isVisible() && await tray.getAttribute('aria-expanded')==='true')await page.locator('#stage-controls-close').click();
+   const phone=platform==="android" && await page.evaluate(()=>BilikaraHostLayout.isPortrait());
+   if(phone){
+    if(name==='settings' && await page.locator('#host-workspace-settings').isVisible())return;
+    await page.locator(`[data-android-page="${name==="settings"?"my":name}"]`).click();
+    if(name==="settings")await page.locator("#android-open-settings").click();
+   }
    else {
     if(await page.locator("#cache-panel").isVisible())await page.locator("#cache-settings-toggle").click();
     const panel=page.locator(`#host-workspace-${name}`);
@@ -106,9 +113,10 @@ const token="shared-ui-private-fixture";
    const componentViews=[];
    await page.locator('#session-user-input').fill('preserved user draft');
    await page.locator('#session-user-input').evaluate(e=>{e.focus();e.setSelectionRange(2,8);});
-   for(const [width,height] of [[1280,900],[800,900],[390,850],[390,320],[1280,900]]) {
+   for(const [requestedWidth,height] of [[1280,900],[800,900],[390,850],[390,320],[1280,900]]) {
+    const width=platform==="desktop"?Math.max(700,requestedWidth):requestedWidth;
     await page.setViewportSize({width,height});
-    await page.waitForFunction(width=>BilikaraHostLayout.isPortrait()===(width<700),width);
+    await page.waitForFunction(({platform,width})=>platform==="android"?BilikaraHostLayout.isPortrait()===(width<700):document.documentElement.dataset.hostLayout==="landscape",{platform,width});
     await sharedUser.waitFor({state:'visible'});
     assert.equal(await page.locator('#session-user-input').inputValue(),'preserved user draft');
     assert.deepEqual(await page.locator('#session-user-input').evaluate(e=>[e.selectionStart,e.selectionEnd,document.activeElement===e]),[2,8,true]);
@@ -121,55 +129,85 @@ const token="shared-ui-private-fixture";
       background:style.backgroundColor,color:style.color,overflow:document.documentElement.scrollWidth>innerWidth+1};
     });
     assert.equal(view.same,true,'Responsive layout must not reconstruct user controls or cache fields');
-    assert.equal(view.toggle,'BUTTON');assert.equal(view.overflow,false);
+    assert.equal(view.toggle,'SPAN');assert.equal(view.overflow,false);
+    assert.equal(await sharedUser.locator('.session-user-name').getAttribute('role'),'button');
+    assert.equal(await sharedUser.locator('.session-user-name').getAttribute('tabindex'),'0');
     assert.deepEqual(view.actions,[['up','上移'],['down','下移'],['remove','删除']]);
     componentViews.push({width,height,...view});
     if(height===320) {
      const neighbor=page.locator('.session-user-badge[data-name="Layout Two"]');
      const neighborHeight=(await neighbor.boundingBox()).height;
+     const coarse=await page.evaluate(()=>state.sessionUserEditor.coarse);
+     if(!coarse)await page.locator('.session-user-mode-button[data-mode="rename"]').click();
      await sharedUser.locator('.session-user-name').click({timeout:5000});
-     assert.equal(await sharedUser.locator('.session-user-name').getAttribute('aria-expanded'),'true');
+     if(coarse)assert.equal(await sharedUser.locator('.session-user-name').getAttribute('aria-expanded'),'true');
+     else await page.locator('.session-user-rename-panel').waitFor({state:'visible'});
      assert.ok(Math.abs((await neighbor.boundingBox()).height-neighborHeight)<1,'Opening one user must not stretch neighboring badges');
      await screenshot('short-viewport-user-actions');
-     await sharedUser.locator('.session-user-name').click();
+     if(coarse)await sharedUser.locator('.session-user-name').click();
+     else {
+      await page.locator('.session-user-rename-panel .banner-close').click();
+      await page.locator('.session-user-mode-button[data-mode="rename"]').click();
+     }
      await page.locator('#session-user-input').evaluate(e=>{e.focus();e.setSelectionRange(2,8);});
     }
     await screenshot('shared-users-'+width+'x'+height);
    }
    await page.locator('#session-user-input').clear();
-   await sharedUser.locator('.session-user-name').click();
+   const coarse=await page.evaluate(()=>state.sessionUserEditor.coarse);
+   if(coarse)await sharedUser.locator('.session-user-name').click();
+   else assert.equal(await sharedUser.getAttribute('draggable'),'true','fine pointers use the accepted drag control');
    const down=sharedUser.locator('[data-user-action="down"]');
+   const move=async action=>{
+    if(coarse)await sharedUser.locator(`[data-user-action="${action}"]`).click();
+    else await sharedUser.dragTo(page.locator(`.session-user-badge[data-name="${action==='down'?'Layout Three':'Layout Two'}"]`),{targetPosition:{x:8,y:18}});
+   };
    let resumeReorder;
    const reorderGate=new Promise(resolve=>{resumeReorder=resolve;});
-   await page.route('**/api/session-users/reorder',async route=>{await reorderGate;await route.continue();},{times:1});
-   const reorderBefore=counts['/api/session-users/reorder']||0;
-   await down.click();await page.keyboard.press('Enter');
-   assert.equal(await down.getAttribute('aria-busy'),'true');
-   assert.equal(counts['/api/session-users/reorder']-reorderBefore,1);
-   await page.setViewportSize({width:390,height:850});await go('users');
+   await page.route('**/api/session-users/edit',async route=>{await reorderGate;await route.continue();},{times:1});
+   const reorderBefore=counts['/api/session-users/edit']||0;
+   await move('down');await page.keyboard.press('Enter');
+   assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),'true');
+   assert.equal(counts['/api/session-users/edit']-reorderBefore,1);
+   await page.setViewportSize({width:platform==='desktop'?700:390,height:850});await go('users');
    assert.equal(await down.isDisabled(),true);
    assert.equal(await page.evaluate(()=>sharedComponents.actions===document.querySelector('.session-user-badge[data-name="Shared Fixture"] .android-user-actions')),true);
    resumeReorder();
-   await page.waitForFunction(()=>!state.sessionUserActionPending&&state.data.session_users[1]==='Shared Fixture');
-   assert.equal(await down.getAttribute('aria-busy'),null);
+   await page.waitForFunction(()=>!state.sessionUserEditor.busy&&state.data.session_users[1]==='Shared Fixture');
+   assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),null);
    // A service-error response is a local browser transport fixture; retry then
    // uses the real native route. No production endpoint is contacted.
-   await page.route('**/api/session-users/reorder',route=>route.fulfill({json:{ok:false,error:'Fixture reorder retry'}}),{times:1});
-   const up=sharedUser.locator('[data-user-action="up"]');await up.click();
-   await page.waitForFunction(()=>!state.sessionUserActionPending);
+   await page.route('**/api/session-users/edit',route=>route.fulfill({json:{ok:false,error:'Fixture reorder retry'}}),{times:1});
+   const up=sharedUser.locator('[data-user-action="up"]');await move('up');
+   await page.waitForFunction(()=>!state.sessionUserEditor.busy);
    await page.locator('.app-toast.is-error:not(.hidden)').filter({hasText:'Fixture reorder retry'}).waitFor({state:'visible'});
-   assert.equal(await up.isDisabled(),false);assert.equal(await up.getAttribute('aria-busy'),null);
+   assert.equal(await up.isDisabled(),false);assert.equal(await page.locator('.session-user-tools').getAttribute('aria-busy'),null);
    assert.equal(await page.evaluate(()=>state.data.session_users[1]),'Shared Fixture');
-   await up.click();await page.waitForFunction(()=>!state.sessionUserActionPending&&state.data.session_users[0]==='Shared Fixture');
-   assert.equal(counts['/api/session-users/reorder']-reorderBefore,3);
+   await move('up');await page.waitForFunction(()=>!state.sessionUserEditor.busy&&state.data.session_users[0]==='Shared Fixture');
+   assert.equal(counts['/api/session-users/edit']-reorderBefore,3);
    await page.setViewportSize(platform==='desktop'?{width:1440,height:1000}:{width:412,height:850});
    await go('users');
    // Common rail definitions feed compact labels/icons without duplicate IDs.
-   assert.equal(await page.evaluate(()=>[...document.querySelectorAll('[data-shared-workspace]')].every(link=>{
+   const compactShared=await page.evaluate(()=>{
+    const geometry=icon=>{
+     const copy=icon.cloneNode(true);
+     for(const [index,definition] of [...copy.querySelectorAll('[id]')].entries()) {
+      const original=definition.id;definition.id=`shared-definition-${index}`;
+      for(const reference of copy.querySelectorAll('[mask]'))if(reference.getAttribute('mask')===`url(#${original})`)reference.setAttribute('mask',`url(#${definition.id})`);
+     }
+     return copy.innerHTML;
+    };
+    return [...document.querySelectorAll('[data-shared-workspace]')].every(link=>{
     const source=document.querySelector(`[data-host-workspace="${link.dataset.sharedWorkspace}"]`);
     return link.textContent.trim()===source.querySelector('.work-rail-label').textContent.trim()
-     &&(!link.hasAttribute('data-workspace-icon')||link.querySelector('svg').innerHTML===source.querySelector('svg').innerHTML);
-   })),true);
+     &&(!link.hasAttribute('data-workspace-icon')||geometry(link.querySelector('svg'))===geometry(source.querySelector('svg')));
+   });});
+   if(platform==='android') assert.equal(compactShared,true,'Android compact actions reuse the shared rail labels and icons');
+   else {
+    assert.equal(await page.locator('#android-host-dock').isVisible(),false);
+    assert.deepEqual(await page.locator('.work-rail-label').allTextContents(),['队列','历史','点歌','试试运气','本场用户','设置']);
+    assert.equal(await page.locator('.work-rail-icon .work-rail-icon-fill').count(),6);
+   }
    assert.equal(await page.evaluate(()=>{const ids=[...document.querySelectorAll('[id]')].map(e=>e.id);return new Set(ids).size===ids.length;}),true);
    if(platform==="android")await go("my");else await page.locator("#cache-settings-toggle").click();
    // Wide desktop may start its existing QR flow on popover open. Phone My
@@ -193,26 +231,33 @@ const token="shared-ui-private-fixture";
    await page.waitForFunction(()=>Array.from(document.querySelectorAll("video,audio")).every(m=>m.readyState>=2),null,{timeout:20000});
    if(await page.locator(".split-playback-start-button").isVisible())await page.locator(".split-playback-start-button").click();
    await page.waitForFunction(()=>document.querySelector("video")?.currentTime>0.3,null,{timeout:20000});
+   await page.waitForFunction(()=>state.hostPlaybackSession?.readyCommitted && state.hostPlaybackSession.playbackGeneration===state.data.playback_generation);
    const tray = page.locator("#stage-controls-toggle");
    if(await tray.isVisible() && await tray.getAttribute("aria-expanded")!=="true")await tray.click();
-   await page.locator("#key-shift-input").fill("1");await page.locator("#key-shift-input").dispatchEvent("change");
+   const keyShiftResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/player/key-shift' && response.request().method()==='POST');
+   assert.equal(await page.evaluate(()=>state.data.player_settings.key_shift),0);
+   await page.locator('#key-shift-inc-button').click(); // real activation permits Web Audio
+   assert.equal((await keyShiftResponse).status(),200);
+   await page.waitForFunction(()=>state.data.player_settings.key_shift===1 && document.querySelector('#key-shift-inc-button').getAttribute('aria-busy')!=='true' && state.hostPlaybackSession?.readyCommitted);
    await page.waitForFunction(()=>state.hostPlaybackSession?.audio?.bilikaraPitch && state.audioContext);
    if(process.env.BILIKARA_TEST_ACTIVE_PITCH === "1") {
     await page.waitForFunction(()=>state.hostPlaybackSession.audio.bilikaraPitch.phase==="active" && state.hostPlaybackSession.audio.bilikaraPitch.applied===1,null,{timeout:20000});
    }
-   // Real worklet loading is not stubbed. Some Linux Chromium installations
-   // leave addModule pending; report that phase separately from active DSP.
+   // Real worklet loading is not stubbed. Without strict mode, report the
+   // observed phase separately from completed active DSP acceptance.
 
-   await page.evaluate(()=>{const video=document.querySelector("video"),audio=document.querySelector("audio");window.sharedOwnership={video,audio,videoParent:video.parentElement,audioParent:audio.parentElement,videoSrc:video.currentSrc,audioSrc:audio.currentSrc,startTime:video.currentTime,session:state.hostPlaybackSession,context:state.audioContext,pitch:state.hostPlaybackSession.audio.bilikaraPitch,input:document.querySelector("#url-input")};});
+   await page.evaluate(()=>{const video=document.querySelector("video"),audio=document.querySelector("audio");window.sharedOwnership={video,audio,videoParent:video.parentElement,audioParent:audio.parentElement,videoSrc:video.currentSrc,audioSrc:audio.currentSrc,startTime:video.currentTime,session:state.hostPlaybackSession,generation:state.data.playback_generation,program:JSON.stringify(state.data.playback_program),context:state.audioContext,pitch:state.hostPlaybackSession.audio.bilikaraPitch,input:document.querySelector("#url-input")};});
    const ownership=async()=>{
     const snapshot=await page.evaluate(()=>({video:sharedOwnership.video===document.querySelector("video"),audio:sharedOwnership.audio===document.querySelector("audio"),session:sharedOwnership.session===state.hostPlaybackSession,context:sharedOwnership.context===state.audioContext,pitch:sharedOwnership.pitch===state.hostPlaybackSession.audio.bilikaraPitch,input:sharedOwnership.input===document.querySelector("#url-input"),paused:document.querySelector("video").paused}));
     assert.deepEqual(snapshot,{video:true,audio:true,session:true,context:true,pitch:true,input:true,paused:false});
     assert.equal(await page.evaluate(()=>sharedOwnership.videoParent===sharedOwnership.video.parentElement&&sharedOwnership.audioParent===sharedOwnership.audio.parentElement&&sharedOwnership.videoSrc===sharedOwnership.video.currentSrc&&sharedOwnership.audioSrc===sharedOwnership.audio.currentSrc),true,'Layout must preserve the connected media parents and sources');
    };
+   await ownership();
    await go("request");await page.locator('[data-request-view="search"]').click();
    await page.locator("#lark-search-query").fill("Desktop fixture");await page.locator("#lark-search-button").click();
    await page.waitForFunction(()=>document.querySelector("#lark-search-results .search-result-item"));
    await screenshot("search");
+   await ownership();
    if(await page.locator('[data-request-back]:visible').count())await page.locator('[data-request-back]:visible').click();
    else await page.locator('[data-request-view="quick"]').click();
    await page.locator("#url-input").fill("preserved shared draft");
@@ -230,11 +275,12 @@ const token="shared-ui-private-fixture";
    assert.equal(await page.locator('[data-android-layout-mode]').count(),0);
    for(const width of [412,1440,412,1440]) {
     await page.setViewportSize({width,height:1000});
-    await page.waitForFunction(w=>BilikaraHostLayout.isPortrait()===(w<700),width);await ownership();
-    assert.equal(await page.locator('html').getAttribute('data-host-layout-mode'),'auto');
+    await page.waitForFunction(({platform,width})=>platform==="android"?BilikaraHostLayout.isPortrait()===(width<700):document.documentElement.dataset.hostLayout==="landscape",{platform,width});await ownership();
+    assert.equal(await page.locator('html').getAttribute('data-host-layout-mode'),platform==="android"?'auto':null);
     await go("settings");
    }
-   assert.equal(await page.locator("#android-orientation-settings").isVisible(),platform==="android");
+   assert.equal(await page.locator('[data-android-orientation-mode]').count(),0,
+    'Neither native desktop nor phone settings expose a manual direction selector');
    // Existing common settings action, exactly once after repeated reparenting.
    const languageBefore=counts["/api/ui-language"]||0;
    await page.locator('[data-language="en"]').click();await page.waitForFunction(()=>state.language==="en");
@@ -332,11 +378,12 @@ const token="shared-ui-private-fixture";
    assert.equal(await page.evaluate(()=>state.data.player_settings.volume_percent),savedVolume);
    assert.equal(counts["/api/session/startup-choice"]-before,4);
    assert.deepEqual(errors,[]);assert.deepEqual(consoleErrors,[]);
-   summaries.push({platform,passed:true,counts,consoleErrors,osBridge:"fixture",renderedLayouts:true,componentViews,sharedUserActions:true,sharedNavigation:true,persistentMedia:true,pitchOwnerPreserved:true,pitchPhase,persistentSession:true,countdownPauseResume:true,closeStartsNew:true,timeoutAndRetry:true});
-  } catch(error){if(page){await screenshot("failed").catch(()=>{});console.error(JSON.stringify(await page.evaluate(()=>({phase:state.hostPlaybackSession?.phase,start:state.localPlaybackStartState,media:Array.from(document.querySelectorAll("video,audio")).map(m=>({type:m.tagName,time:m.currentTime,ready:m.readyState,paused:m.paused,error:m.error?.code}))})).catch(()=>({}))),JSON.stringify({platform,errors,consoleErrors,httpErrors}));}throw error;}
+   summaries.push({platform,passed:true,counts,consoleErrors,browserWarnings,osBridge:"fixture",renderedLayouts:true,componentViews,sharedUserActions:true,sharedNavigation:true,persistentMedia:true,pitchOwnerPreserved:true,pitchPhase,persistentSession:true,countdownPauseResume:true,closeStartsNew:true,timeoutAndRetry:true});
+   await fs.writeFile(path.join(evidence,platform+'-completed.json'),JSON.stringify(summaries.at(-1),null,2));
+  } catch(error){if(page){await screenshot("failed").catch(()=>{});console.error(JSON.stringify(await page.evaluate(()=>({phase:state.hostPlaybackSession?.phase,start:state.localPlaybackStartState,bootstrap:state.hostPlaybackBootstrapRestartPending,pageHidden:state.pageHidePlaybackRestartRequired,generation:state.data.playback_generation,program:JSON.stringify(state.data.playback_program),current:state.data.current_item&&{id:state.data.current_item.id,status:state.data.current_item.cache_status,artifact:state.data.current_item.artifact_set_id,url:state.data.current_item.video_media_url},savedMedia:window.sharedOwnership&&{time:sharedOwnership.video.currentTime,duration:sharedOwnership.video.duration,error:sharedOwnership.video.error?.code,connected:sharedOwnership.video.isConnected,generation:sharedOwnership.generation,program:sharedOwnership.program},media:Array.from(document.querySelectorAll("video,audio")).map(m=>({type:m.tagName,time:m.currentTime,duration:m.duration,ready:m.readyState,paused:m.paused,error:m.error?.code}))})).catch(()=>({}))),JSON.stringify({platform,errors,consoleErrors,httpErrors,counts}));}throw error;}
   finally {await context.close();if(child?.exitCode===null)await stop();}
  }} finally {await browser.close();await fs.rm(temporary,{recursive:true,force:true});}
- assert.deepEqual(summaries[0].componentViews,summaries[1].componentViews,'At the same widths native desktop and Android profiles use the same user component structure and base colors');
+ assert.deepEqual(summaries[0].componentViews.filter(view=>view.width>=800),summaries[1].componentViews.filter(view=>view.width>=800),'At the same desktop widths native desktop and Android profiles reuse user component structure and base colors');
  await fs.writeFile(path.join(evidence,"shared-ui-summary.json"),JSON.stringify(summaries,null,2));
  console.log("PASS shared desktop/Android native Host UI, layout, media ownership, login, requests, settings, updates and persisted session");
 })().catch(error=>{console.error(error);process.exitCode=1;});

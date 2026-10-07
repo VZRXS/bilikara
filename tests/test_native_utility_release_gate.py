@@ -59,7 +59,7 @@ class FakeFunction:
 
 
 class NativeUtilityReleaseGateTest(unittest.TestCase):
-    def test_compiled_backend_is_fully_compatible_and_executes_every_domain(self):
+    def test_compiled_backend_is_fully_compatible_and_executes_live_source_domains(self):
         status = rust_backend.backend_status()
         library_path = Path(str(status["path"]))
         if not library_path.is_file():
@@ -198,23 +198,6 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertTrue(completed)
         self.assertEqual(quality["effective_max_height"], 720)
         self.assertEqual(quality["dash_max_quality_id"], 116)
-        completed, av_delay = rust_backend.try_apply_av_delay_action(
-            {
-                "schema_version": 1,
-                "state": {
-                    "global_delay_ms": 100,
-                    "local_delay_ms": 25,
-                    "locked": False,
-                },
-                "action": {"type": "toggle_lock"},
-            }
-        )
-        self.assertTrue(completed)
-        self.assertEqual(av_delay["global_delay_ms"], 125)
-        self.assertEqual(av_delay["local_delay_ms"], 0)
-        self.assertEqual(av_delay["effective_delay_ms"], 125)
-        self.assertTrue(av_delay["locked"])
-
         completed, video = rust_backend.try_select_video_stream(
             {
                 "schema_version": 1,
@@ -292,64 +275,18 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertEqual(cache_plan["pending_order"], ["first", "active"])
         self.assertEqual(cache_plan["preempt_ids"], ["active"])
 
-        completed, playlist_plan = rust_backend.try_plan_playlist_order(
-            {
-                "schema_version": 1,
-                "operation": "rebuild",
-                "session_users": ["A", "B"],
-                "current_requester": "A",
-                "items": [
-                    {
-                        "original_index": 0,
-                        "item_id": "a",
-                        "requester_name": "A",
-                        "slot_type": "cycle",
-                    },
-                    {
-                        "original_index": 1,
-                        "item_id": "b",
-                        "requester_name": "B",
-                        "slot_type": "cycle",
-                    },
-                ],
-                "candidate": None,
-            }
-        )
-        self.assertTrue(completed)
-        self.assertEqual(playlist_plan["ordered_ids"], ["b", "a"])
-
-        completed, duplicate = rust_backend.try_decide_playlist_duplicate(
-            {
-                "schema_version": 1,
-                "candidate": {
-                    "bvid": "BVCase",
-                    "aid": 1,
-                    "video_page": 2,
-                    "selected_audio_pages": [2, 1, 2],
-                },
-                "current_item": None,
-                "queued_items": [],
-                "history_entries": [
-                    {"original_index": 4, "key": "BVCase:p2:a2-1-2"}
-                ],
-            }
-        )
-        self.assertTrue(completed)
-        self.assertEqual(duplicate["identity_key"], "BVCase:p2:a2-1-2")
-        self.assertEqual(duplicate["history_duplicate_index"], 4)
-
-    def test_phase1_capability_documentation_matches_backend_symbols(self):
+    def test_source_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)
         self.assertTrue(EXPECTED_PHASE1_CAPABILITIES.issubset(rust_backend._SYMBOLS))
 
         inventory_path = (
             Path(__file__).resolve().parent.parent
             / "docs"
-            / "history" / "rust-native-utility-inventory.md"
+            / "source-compatibility.md"
         )
         inventory = inventory_path.read_text(encoding="utf-8")
         capability_section = inventory.split(
-            "### Python capabilities and fallback conventions", 1
+            "## 保留的纯工具能力", 1
         )[1]
         documented_block = capability_section.split("```text", 1)[1].split("```", 1)[0]
         documented = {

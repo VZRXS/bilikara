@@ -136,5 +136,6 @@ Worker deletions/reset capture affected term IDs before removing links, then
 atomically clean only those orphan terms/aliases with the primary mutation.
 Actual links, not potentially stale `video_count`, decide whether a shared
 term survives. Unrelated historical orphan terms are not swept by user actions.
-The Worker diff, offline measurements and deployment caveats are recorded in
-[`review-quota-20260929.md`](review-quota-20260929.md).
+Worker implementation and deployment belong to its separate project.
+A local fixture is not a production deployment or a live quota measurement;
+verify the deployed Worker supports these APIs before using developer review.

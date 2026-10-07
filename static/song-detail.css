@@ -204,6 +204,36 @@
   font-size: 14px;
 }
 
+.owner-badge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.owner-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding-block: 0.12em;
+  padding-inline: 0.12em 0.14em;
+  border: 1.3px solid currentColor;
+  border-radius: 0.22em;
+  font-size: 0.8em;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: normal;
+}
+
+.owner-badge-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .song-detail-owner-avatar {
   flex: 0 0 auto;
   width: 32px;

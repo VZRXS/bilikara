@@ -69,7 +69,7 @@ pub(super) fn route(
     match path {
         "/api/internet-remote/qr" => {
             let value = text(body, "url")?;
-            if value.len() > 2048
+            if value.chars().count() > 2048
                 || !value.starts_with("https://rtc.kevinx96.icu/remote.html#")
                 || value.chars().any(char::is_control)
             {
@@ -528,7 +528,11 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
     }
     let Some(object) = value.as_object() else {
         return if let Some(items) = value.as_array() {
-            json!({"items":items.iter().take(100).map(|v| project_public_data(v, depth + 1)).collect::<Vec<_>>()})
+            let mut result = json!({"items":items.iter().take(100).map(|v| project_public_data(v, depth + 1)).collect::<Vec<_>>()});
+            if items.len() > 100 {
+                result["public_list_limits"] = json!({"items":{"total":items.len(),"shown":100}});
+            }
+            result
         } else {
             json!({})
         };
@@ -659,6 +663,23 @@ fn project_public_data(value: &Value, depth: u8) -> Value {
                     })
                     .collect::<Vec<_>>()
             );
+            if values.len() > limit {
+                if !result["public_list_limits"].is_object() {
+                    result["public_list_limits"] = json!({});
+                }
+                result["public_list_limits"][key] = json!({"total":values.len(),"shown":limit});
+                if key == "items"
+                    && value["has_more"].is_boolean()
+                    && let Some(offset) = value["offset"].as_u64()
+                    && offset
+                        .checked_add(values.len() as u64)
+                        .is_some_and(|next| Some(next) == value["next_offset"].as_u64())
+                {
+                    result["next_offset"] = json!(offset + limit as u64);
+                    result["has_more"] = json!(true);
+                    result["public_list_limits"][key]["paged"] = json!(true);
+                }
+            }
         }
     }
     if let Some(cache) = object.get("cache").filter(|v| v.is_object()) {
@@ -745,6 +766,66 @@ mod tests {
         assert_eq!(played[1]["threshold_reached"], false);
         assert_eq!(state["song_ratings"], json!([]));
         assert!(!state["session_played"].to_string().contains("private"));
+    }
+
+    #[test]
+    fn public_list_caps_report_independent_totals_without_exposing_private_fields() {
+        for (key, limit) in [
+            ("items", 100),
+            ("owners", 256),
+            ("folders", 256),
+            ("uid_options", 256),
+            ("favlist_folder_options", 256),
+            ("tags", 500),
+            ("tag45s", 256),
+            ("excluded_uids", 256),
+            ("excluded_favlist_folders", 256),
+            ("selected_folder_ids", 256),
+            ("uids", 256),
+        ] {
+            for count in [limit - 1, limit, limit + 3] {
+                let rows = (0..count)
+                    .map(|i| json!({"id":i.to_string(),"cookie":"private-secret"}))
+                    .collect::<Vec<_>>();
+                let input = json!({key:rows,"cookie":"private-secret","public_list_limits":{"injected":true}});
+                let projected = public_data(&input);
+                assert_eq!(projected[key].as_array().unwrap().len(), count.min(limit));
+                assert_eq!(input[key].as_array().unwrap().len(), count);
+                assert!(!projected.to_string().contains("private-secret"));
+                assert!(projected["public_list_limits"]["injected"].is_null());
+                if count > limit {
+                    assert_eq!(
+                        projected["public_list_limits"][key],
+                        json!({"total":count,"shown":limit})
+                    );
+                } else {
+                    assert!(projected.get("public_list_limits").is_none());
+                }
+            }
+        }
+        let rows = vec![json!({"id":"one"}); 103];
+        let projected = public_data(&json!(rows));
+        assert_eq!(projected["items"].as_array().unwrap().len(), 100);
+        assert_eq!(
+            projected["public_list_limits"]["items"],
+            json!({"total":103,"shown":100})
+        );
+        let nested = public_data(&json!({"cache":{"uids":vec!["42";259]}}));
+        assert_eq!(
+            nested["cache"]["public_list_limits"]["uids"],
+            json!({"total":259,"shown":256})
+        );
+        let input = json!({"items":vec![json!({"id":"entry"});103],
+            "offset":41,"next_offset":144,"has_more":false,"matched_count":144});
+        let page = public_data(&input);
+        assert_eq!(page["next_offset"], 141);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["matched_count"], 144);
+        assert_eq!(
+            page["public_list_limits"]["items"],
+            json!({"total":103,"shown":100,"paged":true})
+        );
+        assert_eq!(input["items"].as_array().unwrap().len(), 103);
     }
 
     #[test]

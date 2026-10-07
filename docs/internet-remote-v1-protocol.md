@@ -82,6 +82,16 @@ management operations explicitly enumerated in the Rust module.
 The controller allowlist is intentionally explicit. Adding a new capability
 does not grant it automatically. Gatcha management uses dedicated typed
 messages and retained Host I/O; it is not access to the Python route table.
+`session.set_identity` registers or claims a display name. Hosts advertising
+`session_user_edit_version: 1` also support `session.rename` with `name`,
+`user_id` and `expected_name`, and `session.resume` with `user_id`. Renaming
+uses the same serialized Rust command as Host/local Remote edits and updates
+all connected bindings, without rewriting existing request/history labels.
+The sanitized state carries ordered `session_user_entries` and a roster
+version. Renames preserve the user ID; removal and same-name registration do
+not reuse it. Metadata fetches retain the admitted ID/name/session generation.
+An older Host remains usable for registration, but the new Remote disables
+rename rather than emulating it with registration.
 Maintenance operations such as application updates, diagnostics, downloader
 configuration, arbitrary URL fetch/open, and raw HTTP requests are not
 protocol kinds.
@@ -167,7 +177,7 @@ catalog/Gatcha I/O results and does not independently recompute AppState.
 `internet-remote-worker/` is a standalone signaling Worker. One opaque room is
 one SQLite-backed Durable Object with one Host and at most ten Remote signaling
 sockets. It stores only SHA-256 token hashes plus Worker-generated creation and
-expiry times. It has no Bilikara D1 binding and never receives search, queue,
+expiry times. It has no bilikara D1 binding and never receives search, queue,
 playback, media, or room-password data. WebSockets use the Hibernation API, and
 Worker Rate Limit bindings cover room creation and per-room socket admission.
 Current Hosts request an integer lifetime from one through twenty-four hours;
@@ -183,7 +193,7 @@ per minute across the room. Unauthenticated or incomplete peers are evicted
 after 20 seconds.
 
 This is an online password gate, not a PAKE. A leaked QR link alone does not
-authorize Bilikara commands, but it can consume signaling attempts; the Host can
+authorize bilikara commands, but it can consume signaling attempts; the Host can
 invalidate it immediately by rebuilding the room. A public room directory is
 intentionally excluded until a PAKE or equivalent low-entropy password protocol
 is available.
@@ -191,14 +201,55 @@ is available.
 After both ordered reliable DataChannels open, signaling detaches on the Remote
 while the Host signaling socket stays hibernatable so additional Remotes and
 network recovery can join. Control and bulk traffic use separate channels.
+Initial offer/answer SDP includes the candidates gathered within the existing
+eight-second bound, preserving released-client negotiation. Later candidates
+use the Worker's existing `candidate` signal; receivers queue them until the
+remote description is applied and discard retired-peer callbacks. Each peer
+accepts at most 128 such candidates, with a 4 KiB candidate-string bound.
+The current ICE configuration uses Cloudflare STUN without a TURN relay. Room
+creation and successful signaling therefore do not guarantee connectivity
+through every NAT or UDP-blocking firewall; local browser tests do not qualify
+those networks. See [the WebRTC TURN explanation](https://webrtc.org/getting-started/turn-server).
 Search and state payloads use bulk; playback controls use control. Logical
-messages are capped at 512 KiB and split into 12 KiB frames. The Host serializes
+messages are capped at 512 KiB (UTF-8 serialized envelope included) and split
+into 12 KiB frames. Chunk sizing accounts for JSON-escaped quotes/backslashes;
+the bounded chunk count covers that worst case without raising the logical
+message limit. Incomplete transfers share a 4 MiB budget and an
+eight-transfer limit. Requests retain the existing 16 KiB envelope limit and
+are checked on the Remote before sending. Before queueing frames, the Host may
+shorten the public queue/history prefixes or a known read-result page to fit.
+`public_list_limits` reports each limited array's original `total` and `shown`
+count; the Remote displays a localized notice without repeating it on progress
+updates. Host/LAN data, stable IDs, queue versions and visible queue indices stay
+unchanged. Dense offset pages set `next_offset` to the first omitted row and
+keep `has_more` true, preserving `matched_count`; `paged: true` distinguishes
+these recoverable pages from partial directories. Sparse/opaque continuations
+cannot be invented from row counts and remain subject to refusal. Existing
+public directory count limits also report their totals. Incomplete editable
+source/favorites selections fail with `internet_remote_source_list_incomplete`
+instead of becoming a draft that could discard hidden selections.
+
+Mandatory playback/identity data remains complete. If the resulting message
+still cannot fit, the Host sends a small, recoverable
+`internet_remote_message_too_large` reply without sending any payload frames.
+An unusable state keeps the last usable snapshot and blocks subsequent public
+mutations until a usable state fits; it does not close the connection.
+If a mutation already committed before its
+reply size was known, the rejection carries `completed: true`: the toast says
+to confirm the result on Host/LAN Remote rather than submit again. The Host serializes
 outbound frames per lane, coalesces superseded state updates, and waits for the
 DataChannel buffer to drain. Each peer also has bounded pending work and
 per-minute message/request/search/add admission limits before an external Host
 request can occur. Bilibili-backed Gatcha operations have a separate room-wide
 ten-minute budget, while control and bulk messages retain independent ordered
 queues so a long browse operation cannot block playback heartbeats.
+
+The DataChannel transfer limit is separate from the signaling Worker's 32 KiB
+signal limit. Queue, search and playback messages travel directly between Host
+and Remote; they are not relayed through that Worker. Chunking bounds individual
+frames and buffering, but does not reduce the total transferred bytes. Worker
+resource controls belong at room creation, connection and signaling admission;
+reducing the peer transfer limit is not a Worker traffic budget.
 
 Cover images are restricted to HTTPS Bilibili CDN URLs and rendered with
 `referrerpolicy="no-referrer"`. Authentication relies on WebRTC's encrypted
@@ -207,11 +258,13 @@ Safari-specific SDP fingerprint extraction.
 
 ## Recovery
 
-The Remote keeps a random endpoint ID and its non-secret display name in browser
-storage. Passwords are never persisted. On a connectivity transition it opens
+The Remote keeps a random endpoint ID, its non-secret display name and a
+room-scoped stable user ID in browser storage. Passwords are never persisted. On a connectivity transition it opens
 a new signaling socket,
 replaces the previous peer connection, creates a new epoch, authenticates again,
-and resends its session identity. Rust resets that peer's replay window when the
+and resumes its user ID after reading the Host's capability/state. This follows
+a renamed user and never recreates a deleted user; legacy Hosts retain their
+name-based registration path. Rust resets that peer's replay window when the
 new epoch opens. Old connection callbacks are identity-checked so they cannot
 close or mutate the replacement peer.
 

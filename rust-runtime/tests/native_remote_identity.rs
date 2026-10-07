@@ -114,7 +114,7 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn lan_identity_removal_and_rename_require_fresh_registration_not_name_reuse() {
+fn lan_identity_rename_follows_the_singer_and_removal_requires_fresh_registration() {
     let f = Fixture::start();
     let host = &f.host_cookie;
     assert_eq!(f.get("/api/state", "").status(), 403);
@@ -205,10 +205,12 @@ fn lan_identity_removal_and_rename_require_fresh_registration_not_name_reuse() {
         json!({"name":"Carla"}),
     );
     assert_eq!(renamed["name"], "Carla");
-    assert_eq!(f.identity(&second)["registered"], false);
+    assert_eq!(f.identity(&second)["registered"], true);
+    assert_eq!(f.identity(&second)["name"], "Carla");
+    assert_eq!(f.identity(&second)["user_id"], renamed["user_id"]);
     f.ok("/api/session-users/add", host, json!({"name":"Alice"}));
-    assert_eq!(f.identity(&second)["registered"], false);
-    // A revoked browser can explicitly register another singer without a ban,
+    assert_eq!(f.identity(&second)["name"], "Carla");
+    // A registered browser can explicitly register another singer without a ban,
     // and refreshing the page preserves that newly registered identity.
     f.ok(
         "/api/remote-identity/register",

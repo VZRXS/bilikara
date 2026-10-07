@@ -73,7 +73,7 @@ const commandsByRole = {
     };
     const outputGenerationIsCurrent = generation => generation === shell.session.generation
       && shell.session.mode === "localDualScreen" && ["activating", "active"].includes(shell.session.phase);
-    const audience = await browser.newContext({ viewport: { width: 1280, height: 720 }, locale: "zh-CN" });
+    const audience = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: "zh-CN" });
     const hostContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "zh-CN" });
     const install = async context => {
       await context.exposeBinding("__shellInvoke", async ({ page }, name, args) => {
@@ -319,6 +319,38 @@ const commandsByRole = {
     await controller.waitForTimeout(300);
     await controller.screenshot({ path: path.join(evidence, `${engine}-relayed-local-entry.png`) });
 
+    // Real acknowledged settings cross the same isolated, role-scoped relay.
+    // The output remains a passive annotation and never acquires playback ownership.
+    await controller.mouse.move(20, 300);
+    await controller.evaluate(() => {
+      window.feedbackMedia = document.createElement('video');
+      document.querySelector('#controller-stage-frame').append(window.feedbackMedia);
+    });
+    await host.evaluate(() => setLocalPlayerVolumeAndMuted(.8, false));
+    await controller.waitForFunction(() => document.querySelector('#controller-feedback.is-visible .presentation-feedback-value')?.textContent === '80%');
+    assert.equal(await controller.locator('#controller-feedback').evaluate(node => getComputedStyle(node).pointerEvents), 'none');
+    assert.equal(await controller.locator('#controller-feedback button,#controller-feedback input').count(), 0);
+    assert.equal(await controller.locator('#controller-feedback').evaluate(node => node.parentElement.classList.contains('presentation-output-shell')), true);
+    await controller.screenshot({ path: path.join(evidence, `${engine}-volume-feedback.png`) });
+    await host.evaluate(() => dispatchAvDelayAction({ type: 'adjust', delta_ms: 150 }));
+    await controller.waitForFunction(() => document.querySelector('#controller-feedback [data-feedback-category=delay].is-visible .presentation-feedback-value')?.textContent === '+150ms');
+    assert.equal(await controller.locator('#controller-feedback [data-feedback-category=delay] .presentation-feedback-label').textContent(), '音画延迟');
+    assert.ok(await controller.locator('#controller-feedback .presentation-feedback-card.is-visible').count() <= 2);
+    assert.ok((await controller.locator('#controller-feedback .presentation-feedback-card.is-visible')
+      .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).boxShadow))).every(shadow => shadow === 'none'),
+    'Relayed passive cards must not cast a shadow onto their neighbors');
+    const feedbackExpires = await host.evaluate(() => state.presentationActionFeedback.expiresAt);
+    for (let replay = 0; replay < 3; replay++) await host.evaluate(() => publishPresentationOutputState());
+    assert.equal(await controller.evaluate(() => window.feedbackMedia.isConnected), true);
+    assert.equal(await host.evaluate(() => state.presentationSession.playbackAuthority), 'host');
+    assert.equal(await host.evaluate(() => state.presentationActionFeedback.expiresAt), feedbackExpires);
+    await controller.waitForFunction(() => document.querySelector('#controller-feedback').classList.contains('hidden'), null, { timeout: 4000 });
+    assert.ok(Date.now() >= feedbackExpires, 'Feedback cannot vanish before the acknowledged notice expires');
+    await controller.reload();
+    await controller.waitForFunction(() => document.querySelector('#controller-remote-qr-image').naturalWidth > 0);
+    assert.equal(await controller.locator('#controller-feedback').isVisible(), false, 'Reload must not restart an expired notice');
+    console.log(`PASS: ${engine} passive feedback follows real acknowledged settings without replay or media remount`);
+
     // Queue additions reach an isolated audience through the same native relay.
     await host.evaluate(() => {
       const next = structuredClone(state.data);
@@ -333,6 +365,147 @@ const commandsByRole = {
     await host.evaluate(() => publishPresentationOutputState());
     await controller.waitForTimeout(200);
     assert.equal(await controller.locator("#controller-request-toast").isVisible(), false);
+
+    // Progress uses the existing role-scoped relay, including isolated reloads.
+    // These are display fixtures, not evidence of a real media download.
+    const savedCurrent = await host.evaluate(() => structuredClone(state.data.current_item));
+    await host.evaluate(() => {
+      state.data.current_item = { id: "audience-cache", display_title: "正在准备的歌曲", cache_status: "downloading",
+        cache_message: "视频下载中", cache_download_current_bytes: 20, cache_download_total_bytes: 100 };
+      publishPresentationOutputState();
+    });
+    const download = controller.locator(".presentation-download-status");
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status progress")?.value === 20);
+    assert.equal(await download.isVisible(), true);
+    assert.deepEqual(await controller.locator('#controller-stage-frame').evaluate(frame => ({
+      cacheAttribute: frame.hasAttribute('data-cache-state'), stroke: getComputedStyle(frame, '::after').borderTopStyle,
+    })), { cacheAttribute: false, stroke: 'none' }, 'Download state must not frame the audience canvas');
+    assert.equal(await download.locator("[data-download-title]").innerText(), "正在准备的歌曲");
+    await controller.evaluate(() => {
+      window.savedDownloadPanel = document.querySelector(".presentation-download-status");
+      window.savedDownloadMedia = document.createElement("video");
+      document.querySelector("#controller-stage-frame").appendChild(window.savedDownloadMedia);
+    });
+    const progressRevision = await host.evaluate(() => currentPresentationScene().revision);
+    await host.evaluate(() => { state.data.current_item.cache_download_current_bytes = 40; publishPresentationOutputState(); });
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status progress")?.value === 40);
+    assert.deepEqual(await controller.evaluate(() => ({
+      panel: window.savedDownloadPanel === document.querySelector(".presentation-download-status"),
+      media: window.savedDownloadMedia.isConnected,
+    })), { panel: true, media: true }, "Progress must not remount existing media");
+    assert.equal(await host.evaluate(() => currentPresentationScene().revision), progressRevision);
+    await controller.mouse.move(20, 300);
+    await controller.waitForFunction(() => getComputedStyle(document.querySelector(".presentation-output-remote-popover")).visibility === "hidden");
+    await controller.screenshot({ path: path.join(evidence, `${engine}-audience-download-progress.png`) });
+    await host.evaluate(() => {
+      state.data.current_item.cache_download_total_bytes = 0;
+      state.data.current_item.cache_download_current_bytes = 0;
+      state.data.current_item.cache_message = "<unsafe>正在连接</unsafe>";
+      publishPresentationOutputState();
+    });
+    await controller.waitForFunction(() => {
+      const panel = document.querySelector(".presentation-download-status");
+      return panel && !panel.querySelector("progress").hasAttribute("value") && panel.textContent.includes("<unsafe>");
+    });
+    assert.equal(await download.locator("unsafe").count(), 0, "Details are plain text");
+    await controller.reload();
+    await controller.waitForFunction(() => document.querySelector(".presentation-download-status")?.textContent.includes("<unsafe>"));
+    assert.equal(await download.isVisible(), true, "Reloaded audience receives the current progress");
+    for (const status of ["pending", "failed", "ready"]) {
+      await host.evaluate(status => {
+        state.data.current_item.cache_status = status;
+        state.data.current_item.cache_message = status;
+        publishPresentationOutputState();
+      }, status);
+      await controller.waitForFunction(status => {
+        const panel = document.querySelector(".presentation-download-status");
+        return panel && (status === "ready" ? panel.hidden : !panel.hidden && panel.textContent.includes(status));
+      }, status);
+      assert.equal(await download.isVisible(), status !== "ready", status);
+      assert.equal(await download.locator("progress").isVisible(), false, status);
+      assert.deepEqual(await controller.locator('#controller-stage-frame').evaluate(frame => ({
+        cacheAttribute: frame.hasAttribute('data-cache-state'), stroke: getComputedStyle(frame, '::after').borderTopStyle,
+      })), { cacheAttribute: false, stroke: 'none' });
+    }
+    await host.evaluate(current => { state.data.current_item = current; publishPresentationOutputState(); }, savedCurrent);
+    await download.waitFor({ state: "hidden" });
+    console.log("audience download progress: PASS");
+
+    // Transition cache badges belong to individual songs, across the isolated relay.
+    // Frozen transition labels/order must still see cache status in fresh snapshots.
+    const savedPlaylist = await host.evaluate(() => structuredClone(state.data.playlist));
+    await host.evaluate(() => {
+      state.data.playlist = [
+        { id: 'transition-pending', item_incarnation_id: 'pending-incarnation', display_title: '等待缓存的歌曲', cache_status: 'queued', requester_name: 'Alice', selected_durations: [180] },
+        { id: 'transition-failed', item_incarnation_id: 'failed-incarnation', display_title: '缓存失败的歌曲', cache_status: 'failed', requester_name: 'Bob', selected_durations: [150] },
+        { id: 'transition-ready', item_incarnation_id: 'ready-incarnation', display_title: '已缓存的歌曲', cache_status: 'ready', requester_name: 'Carol', selected_durations: [120] },
+      ];
+      state.localAdvanceOverlayPrimaryItem = structuredClone(state.data.playlist[0]);
+      state.localAdvanceOverlayFollowItems = structuredClone(state.data.playlist.slice(1));
+      state.localAdvanceDelayDeadline = Date.now() + 60000;
+      state.localAdvanceOverlayDurationMs = 60000;
+      publishPresentationOutputState();
+    });
+    await controller.waitForFunction(() => document.querySelector('.player-delay-now-row')?.dataset.cacheState === 'pending'
+      && document.querySelector('.player-delay-list-row')?.dataset.cacheState === 'failed');
+    await controller.evaluate(() => Promise.allSettled(document.getAnimations()
+      .filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished)));
+    const cardBadges = await controller.evaluate(() => {
+      const frame = document.querySelector('#controller-stage-frame');
+      const cards = [...frame.querySelectorAll('.player-delay-now-row, .player-delay-list-row')];
+      window.savedTransitionCards = cards;
+      window.savedTransitionBounds = cards.map(card => { const rect = card.getBoundingClientRect(); return [rect.width, rect.height]; });
+      window.savedTransitionMedia = document.createElement('video'); frame.appendChild(window.savedTransitionMedia);
+      const colors = {};
+      for (const token of ['red', 'green', 'muted']) {
+        const probe = document.createElement('span'); probe.style.color = `var(--${token})`; frame.appendChild(probe);
+        colors[token] = getComputedStyle(probe).color; probe.remove();
+      }
+      return { frameBorder: getComputedStyle(frame, '::after').borderTopStyle,
+        colors, badges: cards.map(card => { const badge = card.querySelector('.queue-order'); return {
+          state: badge.dataset.cacheState, border: getComputedStyle(card, '::after').borderTopStyle,
+          color: getComputedStyle(badge).color,
+          cross: getComputedStyle(badge.querySelector('.queue-badge-error')).display,
+          play: card.querySelector('.queue-badge-play')?.querySelector('path').getAttribute('d'),
+        }; }) };
+    });
+    assert.equal(cardBadges.frameBorder, 'none');
+    assert.deepEqual(cardBadges.badges.map(({ state, border }) => ({ state, border })), [
+      { state: 'pending', border: 'none' }, { state: 'failed', border: 'none' }, { state: 'ready', border: 'none' },
+    ]);
+    assert.deepEqual(cardBadges.badges.map(({ color }) => color),
+      [cardBadges.colors.muted, cardBadges.colors.red, cardBadges.colors.green]);
+    assert.deepEqual(cardBadges.badges.map(({ cross }) => cross), ['none', 'block', 'none']);
+    assert.equal(cardBadges.badges[0].play, 'M8 5v14l11-7z');
+    assert.equal(await controller.locator('body').evaluate(node => node.classList.contains('is-presentation-control-host')), false);
+    assert.equal(await controller.locator('.player-delay-countdown').isVisible(), true);
+    assert.equal(await controller.locator('.player-delay-section-title').isVisible(), true);
+    assert.equal(await controller.locator('.player-delay-play-icon .queue-badge-label').isVisible(), false,
+      'The audience transition primary retains a play glyph rather than console numbering');
+    await controller.screenshot({ path: path.join(evidence, `${engine}-audience-song-cache-states.png`) });
+    await host.evaluate(() => {
+      state.data.playlist = state.data.playlist.map((item, index) => ({ ...item, cache_status: index === 0 ? 'downloading' : 'ready' }));
+      publishPresentationOutputState();
+    });
+    await controller.waitForFunction(() => document.querySelector('.player-delay-now-row')?.dataset.cacheState === 'downloading'
+      && document.querySelector('.player-delay-list-row')?.dataset.cacheState === 'ready');
+    assert.deepEqual(await controller.evaluate(() => {
+      const cards = [...document.querySelectorAll('.player-delay-now-row, .player-delay-list-row')];
+      return { rows: cards.every((card, index) => card === window.savedTransitionCards[index]),
+        bounds: cards.map(card => { const rect = card.getBoundingClientRect(); return [rect.width, rect.height]; }),
+        savedBounds: window.savedTransitionBounds, media: window.savedTransitionMedia.isConnected };
+    }).then(({ bounds, savedBounds, ...retained }) => ({ ...retained, geometry: JSON.stringify(bounds) === JSON.stringify(savedBounds) })),
+    { rows: true, media: true, geometry: true }, 'Cache-only updates preserve cards, geometry and media');
+    await host.evaluate(playlist => {
+      state.localAdvanceDelayDeadline = 0;
+      state.localAdvanceOverlayDurationMs = 0;
+      state.localAdvanceOverlayPrimaryItem = null;
+      state.localAdvanceOverlayFollowItems = null;
+      state.data.playlist = playlist;
+      publishPresentationOutputState();
+    }, savedPlaylist);
+    await controller.locator('.player-delay-overlay').waitFor({ state: 'hidden' });
+    console.log('audience song cache cards: PASS');
 
     // Theme, language and the public room each follow the idle Host through the relay.
     await host.evaluate(() => applyTheme("dark"));

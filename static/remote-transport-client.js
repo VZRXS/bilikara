@@ -8,6 +8,7 @@
   const internetMode = Boolean(roomId || joinToken);
   const lowLevel = global.BilikaraInternetTransport;
   const identityStorageKey = "bilikara.internetRemote.identity.v1";
+  const identityUserStorageKey = `${identityStorageKey}.${roomId}.userId`;
   const endpointStorageKey = "bilikara.internetRemote.endpoint.v1";
   const heartbeatIntervalMs = 2_000;
   const heartbeatTimeoutMs = 8_000;
@@ -41,15 +42,18 @@
   const state = {
     socket: null,
     peer: null,
+    ice: null,
     control: null,
     bulk: null,
     decoders: null,
     epoch: "",
     sequences: { control: 0, bulk: 0 },
     pending: new Map(),
+    limitedNotices: new Map(),
     revisionMutationTail: Promise.resolve(),
     remoteState: null,
     identity: localStorage.getItem(identityStorageKey) || "",
+    identityUserId: localStorage.getItem(identityUserStorageKey) || "",
     password: "",
     authorized: false,
     reconnectAttempts: 0,
@@ -114,6 +118,54 @@
     return translated && translated !== key ? translated : fallback;
   }
 
+  function operationFailure(code, { completed = false, limitBytes = lowLevel.maxMessageBytes } = {}) {
+    const key = code === "internet_remote_unavailable" ? "internetRemote.operationUnavailable"
+      : code === "internet_remote_source_list_incomplete"
+        ? completed ? "internetRemote.sourceResultIncomplete" : "internetRemote.sourceListIncomplete"
+      : completed ? "internetRemote.resultTooLarge" : "internetRemote.messageTooLarge";
+    const fallback = code === "internet_remote_unavailable" ? "公网版不支持此功能，请在 Host 或本地 Remote 操作。"
+      : code === "internet_remote_source_list_incomplete"
+        ? completed ? "操作已执行，但公网版无法完整显示来源配置。请在 Host 或本地 Remote 确认，不要重复提交。"
+          : "来源目录过长，公网版无法完整编辑。请在 Host 或本地 Remote 操作。"
+      : completed ? "操作已执行，但返回数据超过公网版 {limit}KiB 上限。请在 Host 或本地 Remote 确认结果，不要重复提交。"
+        : "公网版不支持传输超过 {limit}KiB 的数据，请在 Host 或本地 Remote 操作。";
+    return translatedCopy(key, fallback).replaceAll("{limit}", String(limitBytes / 1024));
+  }
+
+  function notifyOperation(message, isError = true) {
+    global.dispatchEvent(new CustomEvent("remote-operation-message", {
+      detail: { message, isError },
+    }));
+  }
+
+  function notifyListLimits(data, scope, context = "") {
+    const labels = {playlist:["internetRemote.queueList", "待播列表"], history:["internetRemote.historyList", "播放历史"],
+      items:["internetRemote.resultsList", "浏览结果"]};
+    const known = new Set([...Object.keys(labels), "owners", "folders", "uid_options", "favlist_folder_options",
+      "tags", "tag45s", "excluded_uids", "excluded_favlist_folders", "selected_folder_ids", "uids"]);
+    const rows = Object.entries(data?.public_list_limits || {}).filter(([key, value]) => known.has(key)
+      && Number.isSafeInteger(value?.total) && Number.isSafeInteger(value?.shown)
+      && value.shown >= 0 && value.shown < value.total && Array.isArray(data[key])
+      && data[key].length === value.shown);
+    const signature = rows.map(([key]) => key).sort().join(",");
+    // Counts/progress change often; notify once for the same incomplete view.
+    // Read scopes are bounded by RPC kind, and offsets do not create new toasts.
+    const previous = state.limitedNotices.get(scope);
+    if (!signature) { state.limitedNotices.delete(scope); return; }
+    if (previous?.signature === signature && previous.context === context) return;
+    state.limitedNotices.set(scope, {signature,context});
+    const page = rows.length === 1 && rows[0][0] === "items" && rows[0][1].paged === true;
+    const key = page ? "internetRemote.pageLimited" : "internetRemote.listsLimited";
+    const fallback = page ? "本页内容较多，公网版显示 {shown}/{total} 条，可继续翻页。"
+      : "公网长列表仅显示部分内容（{lists}）。完整列表请在 Host 或本地 Remote 查看。";
+    const lists = rows.map(([name, value]) => {
+      const [label, text] = labels[name] || ["internetRemote.sourceList", "来源目录"];
+      return `${translatedCopy(label, text)} ${value.shown}/${value.total}`;
+    }).join("、");
+    notifyOperation(translatedCopy(key, fallback).replaceAll("{lists}", lists)
+      .replaceAll("{shown}", String(rows[0][1].shown)).replaceAll("{total}", String(rows[0][1].total)), false);
+  }
+
   function renderConnectionCopy() {
     const raw = state.connectionMessage;
     const key = Object.hasOwn(connectionMessageKeys, raw) ? connectionMessageKeys[raw] : null;
@@ -174,6 +226,7 @@
         setConnectionStatus("请输入用户名和 4–32 位房间密码。", true);
         return;
       }
+      if (identity !== state.identity) { state.identityUserId = ""; localStorage.removeItem(identityUserStorageKey); }
       state.identity = identity;
       state.password = password;
       localStorage.setItem(identityStorageKey, identity);
@@ -200,9 +253,11 @@
     stopHeartbeat();
     state.authorized = false;
     global.dispatchEvent(new Event("remote-invitation-changed"));
-    if (wasAuthorized) {
+    // A first join can fail while fetching an oversized initial snapshot. Keep
+    // its unresolved page-startup waiter across retries; retire only fulfilled
+    // readiness so ordinary reconnects can wait for their replacement peer.
+    if (wasAuthorized && !state.readyResolve) {
       state.readyPromise = null;
-      state.readyResolve = null;
     }
     if (wasAuthorized) {
       for (const listener of [...listeners]) listener({ type: "error" });
@@ -211,6 +266,7 @@
     state.bulk?.close();
     state.peer?.close();
     state.peer = null;
+    state.ice = null;
     state.control = null;
     state.bulk = null;
     state.epoch = lowLevel.randomBase64Url(16);
@@ -243,11 +299,18 @@
     setConnectionStatus(state.reconnectAttempts ? "正在重新连接…" : "正在连接…");
     const socket = new WebSocket(signalingUrl(), ["bilikara-v1", `remote.${joinToken}.${peerId}`]);
     state.socket = socket;
-    socket.addEventListener("open", () => setConnectionStatus("等待 Host…"));
+    socket.addEventListener("open", () => {
+      if (state.socket === socket) setConnectionStatus("等待 Host…");
+    });
     socket.addEventListener("message", (event) => {
+      if (state.socket !== socket) return;
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "offer" && message.from) acceptOffer(message.payload).catch(fail);
+      else if (message.type === "candidate" && message.from && state.ice) {
+        const ice = state.ice;
+        ice.addCandidate(message.payload).catch((error) => { if (state.ice === ice) fail(error); });
+      }
       else if (message.type === "host.leave" && !state.authorized) setConnectionStatus("Host 不在线。", true);
     });
     socket.addEventListener("close", () => {
@@ -255,13 +318,21 @@
       state.socket = null;
       if (!state.authorized && state.password) scheduleReconnect();
     });
-    socket.addEventListener("error", () => setConnectionStatus("信令暂时不可用。", true));
+    socket.addEventListener("error", () => {
+      if (state.socket === socket) setConnectionStatus("信令暂时不可用。", true);
+    });
   }
 
   async function acceptOffer(description) {
     resetPeer();
     const peer = new RTCPeerConnection(lowLevel.iceConfiguration);
     state.peer = peer;
+    const ice = lowLevel.createIceCandidateExchange(peer, {
+      isCurrent: () => state.peer === peer,
+      sendCandidate: (candidate) => { if (!state.authorized) sendSignal("candidate", candidate); },
+      onError: fail,
+    });
+    state.ice = ice;
     peer.addEventListener("datachannel", (event) => wireChannel(event.channel));
     peer.addEventListener("connectionstatechange", () => {
       if (state.peer !== peer) return;
@@ -275,10 +346,14 @@
         state.disconnectedTimer = setTimeout(scheduleReconnect, 5_000);
       }
     });
-    await peer.setRemoteDescription(description);
+    await ice.setRemoteDescription(description);
+    if (state.peer !== peer) return;
     await peer.setLocalDescription(await peer.createAnswer());
     await lowLevel.waitForIceGathering(peer);
-    if (state.peer === peer) sendSignal("answer", peer.localDescription);
+    if (state.peer === peer) {
+      sendSignal("answer", peer.localDescription);
+      ice.descriptionSent();
+    }
   }
 
   function wireChannel(channel) {
@@ -333,9 +408,15 @@
       state.authorized = true;
       global.dispatchEvent(new Event("remote-invitation-changed"));
       state.reconnectAttempts = 0;
-      request("session.set_identity", { name: state.identity }).then((response) => {
-        const next = response?.data?.state;
-        if (next) publishState(next);
+      (async () => {
+        const resumeUserId = state.identityUserId;
+        const initial = await request("state.get", {}, "bulk");
+        if (initial?.data) publishState(initial.data.state || initial.data);
+        const response = await request(state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? "session.resume" : "session.set_identity",
+          state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? { user_id: resumeUserId } : { name: state.identity });
+        state.identity = String(response.data?.name || state.identity);
+        if (response?.data?.state) publishState(response.data.state);
+        rememberIdentity();
         state.overlay.classList.add("hidden");
         document.documentElement.dataset.remoteTransport = "internet";
         state.connectButton.disabled = false;
@@ -343,7 +424,8 @@
         state.connectionMessage = "";
         renderConnectionCopy();
         state.readyResolve?.();
-      }).catch(fail);
+        state.readyResolve = null;
+      })().catch(fail);
       startHeartbeat();
       setTimeout(() => state.socket?.close(1000, "WebRTC connected"), 1_000);
       return;
@@ -354,20 +436,35 @@
     }
     if (message.type === "response") {
       if (!state.authorized) return;
+      const sizeError = ["internet_remote_message_too_large", "internet_remote_source_list_incomplete"].includes(message.code);
+      const errorMessage = sizeError ? operationFailure(message.code, {
+        completed: message.completed === true,
+        limitBytes: lowLevel.maxMessageBytes,
+      }) : String(message.error || message.message || message.code || "Host 拒绝了请求");
+      if (sizeError) notifyOperation(errorMessage);
       const pending = state.pending.get(message.request_id);
       if (pending) {
         state.pending.delete(message.request_id);
         clearTimeout(pending.timeout);
         if (message.accepted === false) {
-          const error = new Error(String(message.error || message.message || message.code || "Host 拒绝了请求"));
+          const error = new Error(errorMessage);
           error.code = String(message.code || "internet_remote_request_rejected");
+          if (sizeError) error.completed = message.completed === true;
           if (message.binding) error.payload = { binding: message.binding };
           pending.reject(error);
         } else {
+          // Record limits after snapshot-order validation. The HTTP/auth owner
+          // still publishes to UI listeners, without an extra paint per reply.
+          if (message.data?.state) publishState(message.data.state, false);
+          else if (Array.isArray(message.data?.playlist)) publishState(message.data, false);
+          else {
+            notifyListLimits(message.data, pending.kind, pending.listContext);
+            if (message.data?.cache) notifyListLimits(message.data.cache, `${pending.kind}.cache`, pending.listContext);
+          }
           pending.resolve(message);
         }
       }
-      if (message.stale && message.data) publishState(message.data);
+      if (message.stale && message.data) publishState(message.data.state || message.data);
     }
   }
 
@@ -429,12 +526,19 @@
       kind,
       body,
     };
+    try { lowLevel.checkMessageSize(envelope, lowLevel.maxRequestBytes); }
+    catch (error) {
+      error.message = operationFailure(error.code, { limitBytes: error.limitBytes });
+      notifyOperation(error.message);
+      return Promise.reject(error);
+    }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         state.pending.delete(id);
         reject(new Error("Host 响应超时"));
       }, timeoutMs);
-      state.pending.set(id, { resolve, reject, timeout });
+      const {offset, ...listContext} = body || {};
+      state.pending.set(id, { resolve, reject, timeout, kind, listContext: JSON.stringify(listContext) });
       try {
         lowLevel.send(state[lane], { type: "request", lane, envelope });
       } catch (error) {
@@ -540,6 +644,7 @@
       schema_version: 1,
       state_epoch: typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "",
       state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
+      queue_version: String(remoteState.queue_version || ""),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
       playback_mode: remoteState.playback_mode || "local",
@@ -552,11 +657,16 @@
       current_item: current,
       playlist: (remoteState.playlist || []).map(localItem).filter(Boolean),
       history: (remoteState.history || []).map(localHistoryItem).filter(Boolean),
+      public_list_limits: remoteState.public_list_limits || {},
       session_history: [],
       session_played: (remoteState.session_played || []).map(localHistoryItem).filter(Boolean),
       song_ratings: remoteState.song_ratings || [],
       session_users: Array.isArray(remoteState.session_users) ? remoteState.session_users : [],
-      remote_session_id: `internet-${roomId}`,
+      session_user_entries: remoteState.session_user_entries || [],
+      session_user_edit_version: Number(remoteState.session_user_edit_version || 0),
+      session_users_version: String(remoteState.session_users_version || ""),
+      remote_session_id: identitySessionId(),
+      automatic_volume: remoteState.automatic_volume || null,
       player_settings: {
         av_offset_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
         av_delay: {
@@ -583,7 +693,19 @@
     };
   }
 
-  function publishState(next) {
+  function identitySessionId() {
+    return `internet-${roomId}-${state.remoteState?.state_epoch || ""}-${state.remoteState?.session_generation || 0}`;
+  }
+
+  function rememberIdentity() {
+    const user = state.remoteState?.session_user_entries?.find(user => user.name === state.identity);
+    if (user) state.identityUserId = user.id;
+    localStorage.setItem(identityStorageKey, state.identity);
+    if (state.identityUserId) localStorage.setItem(identityUserStorageKey, state.identityUserId);
+    else localStorage.removeItem(identityUserStorageKey);
+  }
+
+  function publishState(next, notifyListeners = true) {
     if (!state.authorized || !next || typeof next !== "object") return;
     const nextEpoch = typeof next.state_epoch === "string" ? next.state_epoch : "";
     const currentEpoch = state.remoteState?.state_epoch || "";
@@ -604,32 +726,79 @@
       state.retiredStateEpochs ||= new Set();
       if (currentEpoch) state.retiredStateEpochs.add(currentEpoch);
       state.remoteState = null;
+      state.limitedNotices.clear();
     }
+    notifyListLimits(next, "state");
     state.remoteState = {
       ...state.remoteState,
       ...next,
+      public_list_limits: next.public_list_limits || {},
       gatcha: next.gatcha || state.remoteState?.gatcha,
       gatcha_pool_config: next.gatcha_pool_config || state.remoteState?.gatcha_pool_config,
     };
+    if (state.identityUserId && state.remoteState.session_user_edit_version >= 1) {
+      const user = state.remoteState.session_user_entries?.find(user => user.id === state.identityUserId);
+      if (user) state.identity = user.name;
+      else {
+        state.identity = ""; state.identityUserId = "";
+        localStorage.removeItem(identityUserStorageKey);
+      }
+      localStorage.setItem(identityStorageKey, state.identity);
+    }
+    if (!notifyListeners) return;
     const data = JSON.stringify(localState(state.remoteState));
     for (const listener of listeners) listener({ type: "state", data });
   }
 
+  // Public transport sends a validated catalog identity; Rust remains the
+  // authority for source admission. Shared fixtures cover both input parsers.
+  function youtubeVideoId(text) {
+    const links = /(?:[a-z][a-z0-9+.-]*:\/\/|(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be|youtube-nocookie\.com)\/)[A-Za-z0-9:/?&=#.%_+~@!$*\\-]+/giu;
+    let selected = null;
+    let invalidYoutube = false;
+    for (const candidate of text.matchAll(links)) {
+      if (candidate.index && /[a-z0-9_\-.@/=?&#%]/iu.test(text[candidate.index - 1])) continue;
+      const link = candidate[0].replace(/[.,!;)\]}>"']+$/u, "").split(/[<>"']/u)[0];
+      const schemeEnd = link.indexOf("://");
+      const scheme = schemeEnd < 0 ? "https" : link.slice(0, schemeEnd).toLowerCase();
+      const rest = schemeEnd < 0 ? link : link.slice(schemeEnd + 3);
+      const slash = rest.indexOf("/");
+      const authority = slash < 0 ? rest : rest.slice(0, slash);
+      const tail = slash < 0 ? "" : rest.slice(slash + 1).split("#")[0];
+      const host = authority.split("@").at(-1).split(":")[0].toLowerCase();
+      if (!["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com"].includes(host)) continue;
+      const queryStart = tail.indexOf("?");
+      const path = queryStart < 0 ? tail : tail.slice(0, queryStart);
+      const query = queryStart < 0 ? "" : tail.slice(queryStart + 1);
+      let id = null;
+      if (["http", "https"].includes(scheme) && authority.toLowerCase() === host && !link.includes("\\")) {
+        if (["youtu.be", "www.youtu.be"].includes(host)) id = path;
+        else if (path === "watch" && !host.endsWith("youtube-nocookie.com")) {
+          const ids = query.split("&").filter(pair => pair.startsWith("v=")).map(pair => pair.slice(2));
+          if (ids.length === 1) [id] = ids;
+        } else {
+          const parts = path.split("/");
+          if (parts.length === 2 && ["shorts", "live", "embed", "v"].includes(parts[0])
+              && (!host.endsWith("youtube-nocookie.com") || parts[0] === "embed")) id = parts[1];
+        }
+      }
+      if (!id || !/^[A-Za-z0-9_-]{11}$/u.test(id)) { invalidYoutube = true; continue; }
+      if (selected && selected !== id) throw new Error("Multiple YouTube videos found; paste one video link");
+      selected = id;
+    }
+    if (!selected && invalidYoutube) throw new Error("Invalid YouTube video link");
+    return selected;
+  }
+
   function catalogId(value, selectedPage) {
     const text = String(value || "").trim();
-    let url;
-    try { url = new URL(text); } catch { /* Existing BV/AV inputs are not URLs. */ }
-    if (url && ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(url.hostname)) {
-      const ids = url.searchParams.getAll("v");
-      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.port
-          || url.hostname === "youtu.be" || url.pathname !== "/watch" || ids.length !== 1
-          || !/^[A-Za-z0-9_-]{11}$/u.test(ids[0]) || (selectedPage && Number(selectedPage) !== 1)) {
-        throw new Error("YouTube: only watch?v= links are supported");
-      }
-      return `youtube:${ids[0]}`;
+    const youtubeId = youtubeVideoId(text);
+    if (youtubeId) {
+      if (selectedPage && Number(selectedPage) !== 1) throw new Error("Invalid YouTube video link");
+      return `youtube:${youtubeId}`;
     }
     const match = text.match(/(BV[0-9A-Za-z]{10})/u);
-    if (!match) throw new Error("请输入 BV 号、Bilibili 视频链接或 YouTube watch 链接");
+    if (!match) throw new Error("请输入 BV 号、Bilibili 视频链接或 YouTube 链接");
     let page = Number(selectedPage || 0);
     if (!page) {
       try { page = Number(new URL(text).searchParams.get("p") || 1); } catch { page = 1; }
@@ -667,7 +836,7 @@
     try {
       let response;
       if (method === "GET" && url.pathname === "/api/remote-identity") {
-        return jsonResponse({ ok: true, data: { registered: state.authorized, name: state.identity, session_id: `internet-${roomId}` } });
+        return jsonResponse({ ok: true, data: { registered: state.authorized && Boolean(state.identity), name: state.identity, user_id: state.identityUserId, session_id: identitySessionId() } });
       }
       if (method === "GET" && url.pathname === "/api/state") {
         response = await request("state.get", { since_revision: null }, "bulk");
@@ -735,14 +904,24 @@
       }
       if (method === "POST" && ["/api/remote-identity/register", "/api/remote-identity/rename"].includes(url.pathname)) {
         const requestedName = String(body.name || "").trim();
-        if (requestedName === state.identity) {
-          return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+        const rename = url.pathname.endsWith("/rename");
+        if (rename && !(state.remoteState?.session_user_edit_version >= 1)) {
+          return jsonResponse({ ok: false, code: "session_user_edit_unavailable", error: "此 Host 尚不支持保留点歌记录的改名，请先更新 Host。" }, 409);
         }
-        response = await request("session.set_identity", { name: requestedName });
-        state.identity = String(response.data?.name || body.name || "").trim();
-        localStorage.setItem(identityStorageKey, state.identity);
+        response = await request(rename ? "session.rename" : "session.set_identity", rename ? {
+          name: requestedName, user_id: body.user_id || state.identityUserId,
+          expected_name: body.expected_name || state.identity,
+        } : { name: requestedName });
         if (response.data?.state) publishState(response.data.state);
-        return jsonResponse({ ok: true, data: { registered: true, name: state.identity, session_id: `internet-${roomId}` } });
+        // The state response may have lost to a newer broadcast. Resolve the
+        // ID in the latest accepted roster rather than restoring an old name.
+        const userId = rename ? body.user_id || state.identityUserId : "";
+        const user = state.remoteState?.session_user_entries?.find(user => userId ? user.id === userId : user.name === String(response.data?.name || requestedName));
+        state.identity = user?.name || String(response.data?.name || requestedName).trim();
+        state.identityUserId = user?.id || userId;
+        if (state.remoteState?.session_user_edit_version >= 1 && !user) { state.identity = ""; state.identityUserId = ""; }
+        rememberIdentity();
+        return jsonResponse({ ok: true, data: { registered: Boolean(state.identity), name: state.identity, user_id: state.identityUserId, session_id: identitySessionId() } });
       }
       if (method === "POST" && url.pathname === "/api/gatcha/pool-config") {
         response = await request("gatcha.pool_config_set", {
@@ -787,7 +966,7 @@
           expected_revision: expectedRevision(),
         }, "control", playlistAddRequestTimeoutMs);
       } else if (method === "POST" && url.pathname === "/api/playlist/reorder") {
-        response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_revision: expectedRevision() });
+        response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_queue_version: body.expected_queue_version, expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/playlist/resort") {
         response = await request("playlist.resort", { expected_revision: expectedRevision() });
       } else if (method === "POST" && ["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now"].includes(url.pathname)) {
@@ -849,15 +1028,20 @@
       } else if (method === "POST" && ["/api/rating/log", "/api/client/disconnect"].includes(url.pathname)) {
         return jsonResponse({ ok: true, data: {} });
       } else {
-        return jsonResponse({ ok: false, code: "internet_remote_unavailable", error: "此功能暂不通过公网 Remote 开放" }, 501);
+        const error = operationFailure("internet_remote_unavailable");
+        notifyOperation(error);
+        return jsonResponse({ ok: false, code: "internet_remote_unavailable", error }, 501);
       }
       const next = response?.data?.state || response?.data;
       if (next?.revision !== undefined) publishState(next);
       return jsonResponse({ ok: true, stale: Boolean(response?.stale), data: localState(next) });
     } catch (error) {
       const code = String(error?.code || "internet_remote_request_failed");
-      const status = code === "internet_remote_rate_limited" ? 429 : 502;
+      const status = code === "internet_remote_rate_limited" ? 429
+        : code === "internet_remote_message_too_large" ? 413
+          : code === "internet_remote_source_list_incomplete" ? 409 : 502;
       const failure = { ok: false, code, error: String(error?.message || error || "请求失败") };
+      if (error?.completed === true) failure.completed = true;
       if (code === "manual_binding_required" && error?.payload?.binding) {
         failure.binding = error.payload.binding;
       }
@@ -923,8 +1107,7 @@
     if (state.authorized) {
       state.authorized = false;
       global.dispatchEvent(new Event("remote-invitation-changed"));
-      state.readyPromise = null;
-      state.readyResolve = null;
+      if (!state.readyResolve) state.readyPromise = null;
     }
     if (wasAuthorized) {
       for (const listener of [...listeners]) listener({ type: "error" });

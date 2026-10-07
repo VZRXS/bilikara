@@ -69,10 +69,18 @@ impl Installation {
             ));
         }
         validate_package_contents(&root, platform, arch, None, true)?;
-        // Refuse paths whose CMD expansion could change a generated command.
-        if platform == "windows" {
-            cmd_path(&root)?;
+        // The installed updater performs the replacement. An installation
+        // without one (for example an earlier package) updates manually.
+        let updater = updater_path(&root, platform)
+            .canonicalize()
+            .map_err(|_| error("manual_update", "This installation has no updater"))?;
+        if !updater.starts_with(&root) {
+            return Err(error(
+                "invalid_launcher",
+                "Updater escapes the installation",
+            ));
         }
+        binary_arch(&updater, platform, arch)?;
         Ok(Self {
             root,
             platform: platform.into(),
@@ -100,6 +108,11 @@ impl Installation {
             data
         }
     }
+}
+
+/// The updater ships beside the backend in every package built from now on.
+fn updater_path(root: &Path, platform: &str) -> PathBuf {
+    backend_path(root, platform).with_file_name(super::apply::updater_name(platform))
 }
 
 fn backend_path(root: &Path, platform: &str) -> PathBuf {
@@ -602,6 +615,7 @@ pub fn prepare(
     installation: &Installation,
     archive: &Path,
     workspace: &Path,
+    data: &Path,
     version: &str,
     mut active: impl FnMut() -> bool,
 ) -> Result<Prepared, UpdateInstallerError> {
@@ -655,28 +669,55 @@ pub fn prepare(
         return Err(error("cancelled", "Update cancelled"));
     }
     verify_signature(&payload, &installation.platform)?;
-    let script = workspace.join(if installation.platform == "windows" {
-        "apply.cmd"
-    } else {
-        "apply.sh"
-    });
-    let content = if installation.platform == "windows" {
-        native_windows_script(&payload, installation, workspace)?
-    } else {
-        native_macos_script(&payload, installation, workspace)
-    };
-    write_text(&script, &content)?;
-    Ok(Prepared {
-        command: if installation.platform == "windows" {
-            vec![
-                "cmd".into(),
-                "/c".into(),
-                script.to_string_lossy().into_owned(),
-            ]
+    // Run a copy of the installed updater from the workspace: the original
+    // lives in the installation it is about to move aside.
+    let updater = workspace.join(super::apply::updater_name(&installation.platform));
+    fs::copy(
+        updater_path(&installation.root, &installation.platform),
+        &updater,
+    )
+    .map_err(io_error("updater_missing"))?;
+    let plan = super::apply::Plan {
+        schema_version: 1,
+        platform: installation.platform.clone(),
+        operation: workspace
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| error("unsafe_install_path", "Missing staging identity"))?
+            .to_owned(),
+        source: payload,
+        destination: installation.root.clone(),
+        workspace: workspace.to_owned(),
+        reports: reports(data),
+        // Portable Windows data lives inside the installation it replaces.
+        preserve: if installation.platform == "windows" {
+            ["runtime", "data", "updates"].map(String::from).to_vec()
         } else {
-            vec!["/bin/sh".into(), script.to_string_lossy().into_owned()]
+            Vec::new()
         },
+        wait_pids: installation.wait_pids.clone(),
+    };
+    let plan_path = workspace.join(super::apply::PLAN_FILE);
+    plan.validate(&plan_path)
+        .map_err(|cause| error("invalid_update_plan", cause.to_string()))?;
+    write_text(
+        &plan_path,
+        &serde_json::to_string_pretty(&plan)
+            .map_err(|cause| error("invalid_update_plan", cause.to_string()))?,
+    )?;
+    Ok(Prepared {
+        command: vec![
+            updater.to_string_lossy().into_owned(),
+            "--plan".into(),
+            plan_path.to_string_lossy().into_owned(),
+        ],
     })
+}
+
+/// Helper logs and the last result, kept under the application data root so the
+/// next Host start can report the outcome. Not part of any installed package.
+pub fn reports(data: &Path) -> PathBuf {
+    data.join("update-logs")
 }
 
 fn verify_signature(payload: &Path, platform: &str) -> Result<(), UpdateInstallerError> {
@@ -723,54 +764,35 @@ fn verify_signature(payload: &Path, platform: &str) -> Result<(), UpdateInstalle
     }
 }
 
-fn cmd_path(path: &Path) -> Result<String, UpdateInstallerError> {
-    let text = path.to_string_lossy();
-    if text.contains(['%', '!', '"', '\r', '\n']) {
-        return Err(error(
+/// Win32 form of a trusted path for the generated CMD helper. `canonicalize`
+/// yields verbatim `\\?\C:\...` paths on Windows; CMD cannot use them as a
+/// current directory and never resolves `..` inside them. Network and device
+/// roots, and text CMD would expand, are refused rather than rewritten.
+// Only the retained CMD helper launch (published-era clients) uses this.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn cmd_path(path: &Path) -> Result<String, UpdateInstallerError> {
+    let unsafe_path = || {
+        error(
             "unsafe_install_path",
             "Installation path cannot be safely represented by CMD",
-        ));
+        )
+    };
+    let text = path.to_str().ok_or_else(unsafe_path)?;
+    let text = match text.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.len() >= 3
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && &rest.as_bytes()[1..3] == br":\" =>
+        {
+            rest
+        }
+        Some(_) => return Err(unsafe_path()),
+        None => text,
+    };
+    if text.starts_with(r"\\") || text.contains(['%', '!', '"', '\r', '\n']) {
+        return Err(unsafe_path());
     }
-    Ok(text.into_owned())
-}
-
-fn native_windows_script(
-    payload: &Path,
-    installation: &Installation,
-    workspace: &Path,
-) -> Result<String, UpdateInstallerError> {
-    let src = cmd_path(payload)?;
-    let dst = cmd_path(&installation.root)?;
-    let work = cmd_path(workspace)?;
-    let suffix = workspace.file_name().unwrap().to_string_lossy();
-    let pids = installation
-        .wait_pids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    // Copy to a sibling on the same volume before moving the old installation.
-    // Never mirror-delete a live installation or kill a PID. Keep old data and
-    // the recoverable backup until the new version is confirmed by the user.
-    Ok(format!(
-        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"SRC={src}\"\r\nset \"DST={dst}\"\r\nset \"NEW={dst}.incoming-{suffix}\"\r\nset \"OLD={dst}.previous-{suffix}\"\r\nif exist \"%NEW%\" exit /b 1\r\nif exist \"%OLD%\" exit /b 1\r\ncd /d \"%DST%\\..\"\r\nif errorlevel 1 exit /b 1\r\nfor %%I in ({pids}) do (call :waitpid %%I & if errorlevel 1 exit /b 1)\r\nrobocopy \"%SRC%\" \"%NEW%\" /E >nul\r\nif errorlevel 8 goto failed\r\nfor %%D in (runtime data updates) do if exist \"%DST%\\%%D\" (robocopy \"%DST%\\%%D\" \"%NEW%\\%%D\" /E >nul & if errorlevel 8 goto failed)\r\nmove \"%DST%\" \"%OLD%\" >nul\r\nif errorlevel 1 goto failed\r\nmove \"%NEW%\" \"%DST%\" >nul\r\nif errorlevel 1 goto restore\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\nrmdir /s /q \"{work}\"\r\nexit /b 0\r\n:restore\r\nmove \"%OLD%\" \"%DST%\" >nul\r\nstart \"\" \"%DST%\\bilikara-desktop.exe\"\r\n:failed\r\nrmdir /s /q \"%NEW%\"\r\nexit /b 1\r\n:waitpid\r\nset /a WAIT=0\r\n:wait\r\nset /a WAIT+=1\r\nif %WAIT% GEQ 90 exit /b 1\r\nfor /f \"tokens=2\" %%P in ('tasklist /FI \"PID eq %~1\" /NH 2^>nul') do if \"%%P\"==\"%~1\" (timeout /t 1 /nobreak >nul & goto wait)\r\nexit /b 0\r\n"
-    ))
-}
-
-fn native_macos_script(payload: &Path, installation: &Installation, workspace: &Path) -> String {
-    let suffix = workspace.file_name().unwrap().to_string_lossy();
-    let pids = installation
-        .wait_pids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "#!/bin/sh\nset -eu\nSRC={}\nDST={}\nNEW=\"${{DST}}.incoming-{suffix}\"\nOLD=\"${{DST}}.previous-{suffix}\"\n[ ! -e \"$NEW\" ] && [ ! -e \"$OLD\" ] || exit 1\nfor pid in {pids}; do\n n=0\n while kill -0 \"$pid\" 2>/dev/null; do\n  n=$((n+1)); [ \"$n\" -lt 90 ] || exit 1\n  /bin/sleep 1\n done\ndone\n/usr/bin/ditto \"$SRC\" \"$NEW\" || {{ /bin/rm -rf \"$NEW\"; exit 1; }}\n/bin/mv \"$DST\" \"$OLD\" || {{ /bin/rm -rf \"$NEW\"; exit 1; }}\nif /bin/mv \"$NEW\" \"$DST\"; then\n /usr/bin/open \"$DST\"\n /bin/rm -rf {}\nelse\n /bin/mv \"$OLD\" \"$DST\"\n /usr/bin/open \"$DST\"\n exit 1\nfi\n",
-        shell_quote(payload),
-        shell_quote(&installation.root),
-        shell_quote(workspace)
-    )
+    Ok(text.to_owned())
 }
 
 #[cfg(test)]
@@ -807,6 +829,7 @@ pub(crate) mod tests {
         for (name, data) in [
             ("bilikara-desktop.exe", pe.as_slice()),
             ("bilikara-desktop-host.exe", pe.as_slice()),
+            ("bilikara-updater.exe", pe.as_slice()),
             ("native-desktop.json", manifest.as_bytes()),
             ("APP_VERSION", version.as_bytes()),
             ("vendor/ffmpeg-runtime.json", media.as_bytes()),
@@ -943,11 +966,28 @@ pub(crate) mod tests {
         let workspace = data.join("update-fixture");
         fs::create_dir(&workspace).unwrap();
         assert_eq!(
-            prepare(&installation, &archive, &workspace, "0.8.1", || true)
+            prepare(&installation, &archive, &workspace, &root, "0.8.1", || true)
                 .unwrap_err()
                 .kind,
             "unsafe_install_path"
         );
+        // The installed updater does the replacement; without it, manual only.
+        let updater = package.join("_internal/bilikara-updater.exe");
+        let kept = fs::read(&updater).unwrap();
+        fs::remove_file(&updater).unwrap();
+        assert_eq!(
+            Installation::from_launcher(
+                &backend_path(&package, "windows"),
+                &package.join("bilikara-desktop.exe"),
+                std::process::id() + 1,
+                "windows",
+                "x64",
+            )
+            .unwrap_err()
+            .kind,
+            "manual_update"
+        );
+        fs::write(&updater, kept).unwrap();
         fs::write(package.join("_internal/python311.dll"), b"retired runtime").unwrap();
         assert!(
             Installation::from_launcher(
@@ -964,12 +1004,12 @@ pub(crate) mod tests {
     #[test]
     fn native_preparation_preserves_old_install_and_legacy_launcher_contract() {
         let root = root();
-        let installed = root.join("installed");
-        fs::create_dir(&installed).unwrap();
-        fs::write(installed.join("user-record"), b"unchanged").unwrap();
         let archive = root.join("native.zip");
         fs::write(&archive, windows_package("0.8.0-preview.2", "x64")).unwrap();
-        let workspace = root.join("operation");
+        extract(&archive, &root.join("current"), &mut || true).unwrap();
+        let installed = root.join("current/bilikara");
+        fs::write(installed.join("user-record"), b"unchanged").unwrap();
+        let workspace = root.join("update-operation");
         fs::create_dir(&workspace).unwrap();
         let installation = Installation {
             root: installed.clone(),
@@ -981,17 +1021,38 @@ pub(crate) mod tests {
             &installation,
             &archive,
             &workspace,
+            &root,
             "v0.8.0-preview.2",
             || true,
         )
         .unwrap();
-        let script = fs::read_to_string(&prepared.command[2]).unwrap();
-        assert!(script.contains("111 222"));
-        assert!(script.contains("bilikara-desktop.exe"));
-        assert!(!script.contains("taskkill"));
-        assert!(!script.contains("/MIR"));
-        assert!(script.contains(".previous-operation"));
-        assert!(script.contains(":restore"));
+        // A copy of the installed updater runs from the workspace with a plan.
+        let updater = workspace.join("bilikara-updater.exe");
+        let plan_path = workspace.join(super::super::apply::PLAN_FILE);
+        assert_eq!(
+            prepared.command,
+            [
+                updater.to_string_lossy().into_owned(),
+                "--plan".to_owned(),
+                plan_path.to_string_lossy().into_owned()
+            ]
+        );
+        assert_eq!(
+            fs::read(&updater).unwrap(),
+            fs::read(installed.join("_internal/bilikara-updater.exe")).unwrap()
+        );
+        let plan: super::super::apply::Plan =
+            serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+        plan.validate(&plan_path).unwrap();
+        assert_eq!(plan.operation, "update-operation");
+        assert_eq!(plan.destination, installed);
+        assert_eq!(plan.workspace, workspace);
+        assert!(plan.source.starts_with(workspace.join("extracted")));
+        assert!(plan.source.join("bilikara-desktop.exe").is_file());
+        assert_eq!(plan.reports, reports(&root));
+        assert_eq!(plan.preserve, ["runtime", "data", "updates"]);
+        assert_eq!(plan.wait_pids, [111, 222]);
+        // Preparation never touches the running installation.
         assert_eq!(
             fs::read(installed.join("user-record")).unwrap(),
             b"unchanged"
@@ -1147,20 +1208,33 @@ pub(crate) mod tests {
                 .is_symlink()
         );
         assert_ne!(fs::read(&old_link).unwrap(), b"fixture");
-        let installation = Installation {
-            root: root.join("installed.app"),
-            platform: "macos".into(),
-            arch: "arm64".into(),
-            wait_pids: vec![111, 222],
-        };
-        let script = native_macos_script(
-            &dest.join("Bilikara-Desktop.app"),
-            &installation,
-            &root.join("job"),
-        );
-        assert!(script.contains("for pid in 111 222"));
-        assert!(script.contains("/usr/bin/ditto"));
-        assert!(!script.contains("kill -9"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn helper_paths_use_win32_drive_form_and_refuse_network_roots() {
+        // Windows canonical installation roots are verbatim paths.
+        assert_eq!(
+            cmd_path(Path::new(r"\\?\D:\软件\bilikara")).unwrap(),
+            r"D:\软件\bilikara"
+        );
+        assert_eq!(
+            cmd_path(Path::new(r"D:\Apps (x86)\bilikara & co")).unwrap(),
+            r"D:\Apps (x86)\bilikara & co"
+        );
+        for refused in [
+            r"\\?\UNC\server\share\bilikara",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\bilikara",
+            r"\\?\D:",
+            r"\\server\share\bilikara",
+            r"D:\100%\bilikara",
+            r"D:\bang!\bilikara",
+        ] {
+            assert_eq!(
+                cmd_path(Path::new(refused)).unwrap_err().kind,
+                "unsafe_install_path",
+                "{refused}"
+            );
+        }
     }
 }

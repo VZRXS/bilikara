@@ -101,6 +101,9 @@ pub(super) fn dispatch(
     if admin::handles(path) {
         return admin::route(context, identity, path, &body);
     }
+    if path == "/api/player/automatic-volume" {
+        return with_app(|app| app.native_automatic_volume(identity, &body));
+    }
     if path == "/api/session/startup-choice" {
         return with_app(|app| {
             app.native_authorize(identity, true)?;
@@ -207,8 +210,9 @@ pub(super) fn dispatch(
     }
     if path == "/api/playlist/add" {
         let url = text(&body, "url")?;
-        let (cookie, session_generation) = with_app(|app| {
-            app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
+        let (cookie, session_generation, requester, requester_user_id) = with_app(|app| {
+            let requester =
+                app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
             let snapshot = app.native_core_snapshot()?;
             if snapshot.session_users.is_empty() {
                 return Err(ApiError::invalid("请先添加本场 KTV 用户"));
@@ -216,7 +220,24 @@ pub(super) fn dispatch(
             if !context.desktop {
                 queue_space(snapshot.playlist.len())?;
             }
-            Ok((app.native().cookie.clone(), snapshot.session_generation))
+            let requester = if requester.is_empty() {
+                snapshot.session_users[0].clone()
+            } else {
+                requester
+            };
+            let user = snapshot
+                .session_user_entries
+                .iter()
+                .find(|user| user.name == requester)
+                .ok_or_else(|| {
+                    ApiError::new(409, "session_user_not_found", "点歌人已移除，请重新选择")
+                })?;
+            Ok((
+                app.native().cookie.clone(),
+                snapshot.session_generation,
+                requester,
+                user.id.clone(),
+            ))
         })?;
         let request=serde_json::from_value::<NativeVideoRequest>(json!({"url":url,"selected_video_page":body.get("selected_video_page"),"selected_audio_pages":body.get("selected_audio_pages")})).map_err(|_|ApiError::invalid("分 P 选择格式无效"))?;
         let item = fetch_native_video(&request, &cookie).map_err(|error| {
@@ -229,8 +250,14 @@ pub(super) fn dispatch(
             if context.stop.load(Ordering::Acquire) {
                 return Err(ApiError::new(503, "stopped", "Host 已停止"));
             }
-            let requester =
-                app.native_requester(identity, body["requester_name"].as_str().unwrap_or(""))?;
+            // Reauthorize the device, retaining the request-time label/ID.
+            // A renamed identity is still this singer; a removed one is not.
+            if !host {
+                let current_identity = app.native_identity(identity)?;
+                if current_identity["user_id"] != requester_user_id {
+                    return Err(ApiError::new(409, "identity_required", "请重新登记点歌人"));
+                }
+            }
             let snapshot = app.native_core_snapshot()?;
             if snapshot.session_generation != session_generation {
                 return Err(ApiError::new(
@@ -246,14 +273,15 @@ pub(super) fn dispatch(
             }
             let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
             let result = app.native_execute(AppStateRequest::AddItem {
+                requester_user_id: Some(requester_user_id),
+
                 schema_version: 1,
                 item: item.clone(),
-                position: if body["position"] == "next" {
-                    "next"
-                } else {
-                    "tail"
-                }
-                .into(),
+                position: body["position"]
+                    .as_str()
+                    .filter(|position| !position.is_empty())
+                    .unwrap_or("tail")
+                    .into(),
                 requester_name: requester,
                 reset_av_delay,
                 allow_repeat: body["allow_repeat"].as_bool().unwrap_or(false),
@@ -355,6 +383,11 @@ pub(super) fn dispatch(
                 command["command"] = json!("remove_session_user");
                 command["name"] = json!(text(&body, "name")?);
             }
+            "/api/session-users/edit" => {
+                command["command"] = json!("edit_session_users");
+                command["expected_version"] = json!(text(&body, "expected_version")?);
+                command["edit"] = body["edit"].clone();
+            }
             "/api/session-users/reorder" => {
                 command["command"] = json!("move_session_user_to_index");
                 command["name"] = body["name"].clone();
@@ -372,6 +405,7 @@ pub(super) fn dispatch(
             }
             "/api/playlist/reorder" => {
                 command["command"] = json!("move_item_to_index");
+                command["expected_queue_version"] = body["expected_queue_version"].clone();
                 command["item_id"] = json!(text(&body, "item_id")?);
                 command["target_index"] =
                     body.get("index").unwrap_or(&body["target_index"]).clone();
@@ -433,20 +467,22 @@ pub(super) fn dispatch(
                     .unwrap_or(json!(settings.is_muted))
                     .as_bool()
                     .ok_or_else(|| ApiError::invalid("静音状态无效"))?;
-                app.native_execute(AppStateRequest::SetVolume {
-                    schema_version: 1,
-                    volume_percent: volume,
-                    expected_item_incarnation_id: body
-                        .get("expected_item_incarnation_id")
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_owned)
-                                .ok_or_else(|| ApiError::invalid("歌曲标识无效"))
-                        })
-                        .transpose()?,
-                    now,
-                })?;
+                if body.get("volume_percent").is_some() {
+                    app.native_execute(AppStateRequest::SetVolume {
+                        schema_version: 1,
+                        volume_percent: volume,
+                        expected_item_incarnation_id: body
+                            .get("expected_item_incarnation_id")
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .ok_or_else(|| ApiError::invalid("歌曲标识无效"))
+                            })
+                            .transpose()?,
+                        now,
+                    })?;
+                }
                 app.native_execute(AppStateRequest::SetMuted {
                     schema_version: 1,
                     is_muted: muted,

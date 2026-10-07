@@ -322,6 +322,8 @@ fn ready(app: &mut AppState) -> (AppSnapshot, Value) {
 fn ready_at(app: &mut AppState, cache_root: Option<&Path>) -> (AppSnapshot, Value) {
     let item:PlaylistItem=serde_json::from_value(json!({"id":"first","original_url":"https://www.bilibili.com/video/BV1z84y1p7oS","resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1","bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[120],"available_parts":["P1"]})).unwrap();
     app.native_execute(AppStateRequest::AddItem {
+        requester_user_id: None,
+
         schema_version: 1,
         item,
         position: "tail".into(),
@@ -616,7 +618,10 @@ fn remote_registration_claim_and_rename_share_the_session_name_policy() {
         .unwrap();
     assert_eq!(renamed["name"], "New Name");
     assert_eq!(app.native_requester(&remote, "").unwrap(), "New Name");
-    assert_eq!(app.native_identity(&claimant).unwrap()["registered"], false);
+    let other_device = app.native_identity(&claimant).unwrap();
+    assert_eq!(other_device["registered"], true);
+    assert_eq!(other_device["name"], "New Name");
+    assert_eq!(other_device["user_id"], renamed["user_id"]);
 }
 
 #[test]
@@ -1069,6 +1074,8 @@ fn desktop_next_consumes_reset_preference_without_resetting_global_delay() {
         second.cache_status = "pending".into();
         second.cache_progress = 0.0;
         app.native_execute(AppStateRequest::AddItem {
+            requester_user_id: None,
+
             schema_version: 1,
             item: second,
             position: "tail".into(),

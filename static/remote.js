@@ -629,6 +629,10 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
+  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
+  if (raw === "Invalid YouTube video link") return t("request.youtubeInvalid");
+  if (raw === "Multiple YouTube videos found; paste one video link") return t("request.youtubeMultiple");
   const bbdownMessage = localizedBBDownLoginMessage(raw);
   if (bbdownMessage && bbdownMessage !== raw) {
     return bbdownMessage;
@@ -1633,6 +1637,10 @@ window.addEventListener("remote-connection-message", (event) => {
   setAppMessage(event.detail?.message, event.detail?.isError);
 });
 
+window.addEventListener("remote-operation-message", (event) => {
+  setAppMessage(event.detail?.message, event.detail?.isError);
+});
+
 function setFormMessage(message, isError = false) {
   setAppMessage(message, isError);
 }
@@ -1823,6 +1831,7 @@ function normalizedRemoteIdentity(payload) {
   return {
     registered: Boolean(payload?.registered),
     name: String(payload?.name || "").trim(),
+    userId: String(payload?.user_id || ""),
     sessionId: String(payload?.session_id || "").trim(),
   };
 }
@@ -1831,13 +1840,15 @@ function renderRemoteIdentity() {
   const identity = state.remoteIdentity;
   const registered = Boolean(identity.registered && identity.name);
   const renameMode = registered && state.remoteIdentityModalMode === "rename";
-  const modalOpen = (!registered && window.BilikaraRemoteTransport?.mode !== "internet") || renameMode;
+  const modalOpen = (!registered && (window.BilikaraRemoteTransport?.mode !== "internet" || state.data?.session_user_edit_version >= 1)) || renameMode;
 
   if (elements.remoteIdentityName) {
     elements.remoteIdentityName.textContent = registered ? identity.name : "—";
   }
   if (elements.remoteIdentityRename) {
-    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving;
+    const unavailable = window.BilikaraRemoteTransport?.mode === "internet" && !(state.data?.session_user_edit_version >= 1);
+    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving || unavailable;
+    elements.remoteIdentityRename.title = unavailable ? t("remoteIdentity.upgradeRequired") : t("remoteIdentity.rename");
   }
   const identityModal = elements.remoteIdentityModal;
   if (identityModal && modalOpen) {
@@ -1882,7 +1893,8 @@ function renderRemoteIdentity() {
           : "remoteIdentity.registerSubmit",
     );
     elements.remoteIdentitySubmit.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
-    elements.remoteIdentitySubmit.toggleAttribute("aria-busy", state.remoteIdentitySaving);
+    if (state.remoteIdentitySaving) elements.remoteIdentitySubmit.setAttribute("aria-busy", "true");
+    else elements.remoteIdentitySubmit.removeAttribute("aria-busy");
   }
   if (elements.remoteIdentityInput) {
     elements.remoteIdentityInput.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
@@ -1956,6 +1968,7 @@ function openRemoteIdentityRename() {
   if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
     return;
   }
+  state.remoteIdentityRenameTarget = { ...state.remoteIdentity };
   state.remoteIdentityModalMode = "rename";
   state.remoteIdentityError = "";
   if (elements.remoteIdentityInput) {
@@ -1967,12 +1980,21 @@ function openRemoteIdentityRename() {
 }
 
 function closeRemoteIdentityRename() {
-  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving || state.remoteIdentityModalMode !== "rename") {
     return;
   }
   state.remoteIdentityModalMode = "register";
   state.remoteIdentityError = "";
   renderRemoteIdentity();
+  const modal = elements.remoteIdentityModal;
+  const animations = modal?.querySelector(".remote-identity-card")?.getAnimations() || [];
+  Promise.allSettled(animations.map((animation) => animation.finished)).then(() => {
+    if (modal?.classList.contains("hidden") && state.remoteIdentity.registered
+      && state.remoteIdentityModalMode !== "rename" && !anotherRemoteModalIsOpen()
+      && (document.activeElement === document.body || modal.contains(document.activeElement))) {
+      elements.remoteIdentityRename?.focus({ preventScroll: true });
+    }
+  });
 }
 
 async function submitRemoteIdentity(event) {
@@ -1981,8 +2003,8 @@ async function submitRemoteIdentity(event) {
     return;
   }
   const name = String(elements.remoteIdentityInput?.value || "").trim();
-  if (!name) {
-    state.remoteIdentityError = t("remoteIdentity.required");
+  if (!name || Array.from(name).length > 24) {
+    state.remoteIdentityError = t(name ? "session.nameLength" : "remoteIdentity.required");
     renderRemoteIdentity();
     return;
   }
@@ -1993,7 +2015,8 @@ async function submitRemoteIdentity(event) {
   try {
     const identity = await apiPost(
       renameMode ? "/api/remote-identity/rename" : "/api/remote-identity/register",
-      { name },
+      renameMode ? { name, user_id: state.remoteIdentityRenameTarget?.userId || state.remoteIdentity.userId,
+        expected_name: state.remoteIdentityRenameTarget?.name || state.remoteIdentity.name } : { name },
     );
     applyRemoteIdentity(identity);
     if (elements.remoteIdentityInput) {
@@ -2025,6 +2048,8 @@ async function submitRemoteIdentity(event) {
     state.remoteIdentitySaving = false;
     state.remoteIdentityError = error?.message || t("error.requestFailed");
     renderRemoteIdentity();
+  } finally {
+    if (!state.remoteIdentitySaving) syncRemoteIdentityWithSnapshot(state.data);
   }
 }
 
@@ -2044,6 +2069,7 @@ function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
+  const sessionUserId = ratingSubmissionUserId(item);
   if (!bvid) {
     return null;
   }
@@ -2093,7 +2119,7 @@ function submitSongRating(item, score, trigger = null) {
         state.ratingSavedScores.set(submissionKey, payload.score);
         const entry = (state.data?.song_ratings || []).find(entry => (
           entry.play_id === playId
-          && String(entry.session_user_name || "").toLowerCase() === sessionUserName.toLowerCase()
+          && (entry.session_user_id ? entry.session_user_id === sessionUserId : entry.session_user_name === sessionUserName)
         ));
         if (entry) entry.score = payload.score;
       }
@@ -2200,6 +2226,8 @@ function setPlaybackDockMarqueeText(container, textNode, value) {
     return;
   }
   const text = String(value || "");
+  if (textNode.textContent === text) return;
+  globalThis.BilikaraTextMarquee?.reset(container, textNode);
   if (textNode.textContent !== text) {
     textNode.textContent = text;
   }
@@ -2229,7 +2257,9 @@ function syncPlaybackDockMarquees() {
       container.style.setProperty("--playback-dock-marquee-offset", `${-distance}px`);
       container.style.setProperty("--playback-dock-marquee-duration", `${durationSeconds}s`);
       container.classList.add("is-scrolling");
+      globalThis.BilikaraTextMarquee?.configure(container, textNode, availableWidth, naturalWidth);
     } else {
+      globalThis.BilikaraTextMarquee?.reset(container, textNode);
       container.style.removeProperty("--playback-dock-marquee-offset");
       container.style.removeProperty("--playback-dock-marquee-duration");
     }
@@ -2279,19 +2309,28 @@ function ratingSubmissionPlayId(item) {
   return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
+function ratingSubmissionUserId(item) {
+  return state.data?.session_user_entries?.find(user => user.name === ratingSubmissionUserName(item))?.id || "";
+}
+
+function ratingBelongsToUser(entry, item) {
+  const id = ratingSubmissionUserId(item);
+  return id && entry.session_user_id ? entry.session_user_id === id
+    : String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase();
+}
+
 function ratingSubmissionKey(item) {
   const playId = ratingSubmissionPlayId(item);
   if (!playId) {
     return "";
   }
-  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserId(item) || ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
 function serverRatingStatus(item) {
   const playId = ratingSubmissionPlayId(item);
-  const user = ratingSubmissionUserName(item).toLowerCase();
   const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
-    && String(entry.session_user_name || "").toLowerCase() === user);
+    && ratingBelongsToUser(entry, item));
   const key = ratingSubmissionKey(item);
   if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
   if (entry) return entry.status;
@@ -2312,7 +2351,7 @@ function savedSongRatingScore(item) {
   if (!item) return 5;
   const entry = (state.data?.song_ratings || []).find(entry => (
     entry.play_id === ratingSubmissionPlayId(item)
-    && String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase()
+    && ratingBelongsToUser(entry, item)
   ));
   const score = Number(entry?.score ?? state.ratingSavedScores.get(ratingSubmissionKey(item)) ?? 5);
   return Math.max(1, Math.min(5, Math.trunc(score) || 5));
@@ -2468,7 +2507,7 @@ function renderRatingPromptContent() {
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
-  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName, state.followBrowseData?.owners);
   copy.append(owner);
   if (url) {
     const link = document.createElement("a");
@@ -2874,16 +2913,19 @@ function setHistoryExportMessage(message, isError = false) {
 function openHistoryExportDialog() {
   const dialog = elements.historyExportDialog;
   if (!dialog || dialog.open) return;
+  if (window.BilikaraRemoteTransport?.mode === "internet") {
+    setHistoryExportMessage(t("history.exportLanOnly"), true);
+    return;
+  }
   retireTransientPlaybackModalForModal();
   setRemoteMenuOpen(false);
-  const unavailable = window.BilikaraRemoteTransport?.mode === "internet";
-  elements.historyExportRow.hidden = unavailable;
-  elements.historyExportStatus.textContent = unavailable ? t("history.exportLanOnly") : "";
+  elements.historyExportRow.hidden = false;
+  elements.historyExportStatus.textContent = "";
   historyExportRestoreFocus = true;
   dialog.showModal();
   lockPlaybackSheetDocumentScroll();
   elements.historyExportClose.focus({ preventScroll: true });
-  if (!unavailable) void loadHistoryExportSessions();
+  void loadHistoryExportSessions();
 }
 
 let historyExportSessionsRequest = 0;
@@ -3333,6 +3375,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  globalThis.BilikaraVolumeControl?.refreshAutomatic(elements.remoteVolumeSlider);
   if (epochTransition === "restart" || previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     clearRemoteVolumeCommitTimer();
     state.remoteVolumeSaveSeq += 1;
@@ -5744,6 +5787,7 @@ function clearPlaybackMetadataPopoverPosition() {
     popover.style.removeProperty(property);
   }
   delete popover.dataset.tooltipDirection;
+  elements.playbackMetadataPopoverText?.style.removeProperty("max-height");
 }
 
 function closePlaybackMetadataPopover({ restoreFocus = false } = {}) {
@@ -5751,17 +5795,24 @@ function closePlaybackMetadataPopover({ restoreFocus = false } = {}) {
   const anchor = state.playbackMetadataPopoverAnchor;
   const wasOpen = Boolean(state.playbackMetadataPopoverField);
   state.playbackMetadataPopoverField = "";
-  state.playbackMetadataPopoverAnchor = null;
   elements.playbackMetadataFields.forEach((wrapper) => {
     if (wrapper.classList.contains("is-disclosable")) {
       wrapper.setAttribute("aria-expanded", "false");
     }
   });
   if (popover) {
+    popover.classList.add("is-closing");
     popover.classList.remove("is-visible");
-    popover.hidden = true;
     popover.setAttribute("aria-hidden", "true");
-    clearPlaybackMetadataPopoverPosition();
+    const closing = popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
+    Promise.allSettled((popover.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+      if (popover.__bilikaraCloseSequence !== closing || state.playbackMetadataPopoverField) return;
+      if (typeof popover.hidePopover === "function" && popover.matches(":popover-open")) popover.hidePopover();
+      popover.hidden = true;
+      popover.classList.remove("is-closing");
+      state.playbackMetadataPopoverAnchor = null;
+      clearPlaybackMetadataPopoverPosition();
+    });
   }
   if (
     restoreFocus
@@ -5777,7 +5828,7 @@ function positionPlaybackMetadataPopover() {
   const popover = elements.playbackMetadataPopover;
   const anchor = state.playbackMetadataPopoverAnchor;
   const panel = elements.playbackSheetPanel;
-  if (!popover || popover.hidden || !anchor || !panel) {
+  if (!popover || popover.hidden || !state.playbackMetadataPopoverField || !anchor || !panel) {
     return false;
   }
 
@@ -5804,6 +5855,10 @@ function positionPlaybackMetadataPopover() {
   popover.style.right = "auto";
   popover.style.top = "0px";
   popover.style.bottom = "auto";
+  const style = getComputedStyle(popover);
+  const verticalInset = playbackCssPixels(style.paddingTop) + playbackCssPixels(style.paddingBottom)
+    + playbackCssPixels(style.borderTopWidth) + playbackCssPixels(style.borderBottomWidth);
+  elements.playbackMetadataPopoverText.style.maxHeight = `${Math.max(0, heightLimit - verticalInset)}px`;
 
   const width = Math.min(popover.offsetWidth, widthLimit);
   const height = Math.min(popover.offsetHeight, heightLimit);
@@ -5825,8 +5880,8 @@ function positionPlaybackMetadataPopover() {
     : anchorRect.bottom + gap;
   const top = Math.max(boundaryTop, Math.min(preferredTop, boundaryBottom - height));
   const arrowCenter = Math.max(10, Math.min(width - 10, anchorCenter - left));
-  const offsetLeft = panelRect.left + panel.clientLeft;
-  const offsetTop = panelRect.top + panel.clientTop;
+  const offsetLeft = popover.hasAttribute("popover") ? 0 : panelRect.left + panel.clientLeft;
+  const offsetTop = popover.hasAttribute("popover") ? 0 : panelRect.top + panel.clientTop;
 
   popover.dataset.tooltipDirection = direction;
   popover.style.left = String(Math.round(left - offsetLeft)) + "px";
@@ -5858,11 +5913,21 @@ function openPlaybackMetadataPopover(wrapper) {
   state.playbackMetadataPopoverField = field;
   state.playbackMetadataPopoverAnchor = wrapper;
   elements.playbackMetadataPopoverText.textContent = fullText;
+  const popover = elements.playbackMetadataPopover;
+  popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
+  // Keep a hidden painted frame for both top-layer and older WebView paths.
+  popover.classList.add("is-closing");
   elements.playbackMetadataPopover.hidden = false;
   elements.playbackMetadataPopover.setAttribute("aria-hidden", "false");
-  elements.playbackMetadataPopover.classList.add("is-visible");
+  if (typeof popover.showPopover === "function") {
+    popover.setAttribute("popover", "manual");
+    if (!popover.matches(":popover-open")) popover.showPopover();
+  }
+  getComputedStyle(popover).opacity;
   wrapper.setAttribute("aria-expanded", "true");
   positionPlaybackMetadataPopover();
+  popover.classList.remove("is-closing");
+  popover.classList.add("is-visible");
   return true;
 }
 
@@ -5931,6 +5996,9 @@ function applyPlaybackMetadataAllocation(entry, naturalLines, visibleLines) {
     const distance = Math.max(0, element.scrollWidth - wrapper.clientWidth);
     wrapper.style.setProperty("--playback-marquee-distance", `${distance}px`);
     wrapper.style.setProperty("--playback-marquee-duration", `${Math.max(10, distance / 24 + 4)}s`);
+    globalThis.BilikaraTextMarquee?.configure(wrapper, element, wrapper.clientWidth, element.scrollWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(wrapper, element);
   }
   wrapper.dataset.naturalLines = String(naturalLines);
   wrapper.dataset.visibleLines = String(truncated ? lines : naturalLines);
@@ -7330,7 +7398,7 @@ async function submitPoolConfigSheet() {
 }
 
 function openReorderConfirmSheet(intent) {
-  if (!intent?.itemId || !Number.isInteger(intent.targetIndex) || !elements.reorderConfirmSheet) {
+  if (state.reorderConfirmSaving || !intent?.itemId || !Number.isInteger(intent.targetIndex) || !elements.reorderConfirmSheet) {
     return;
   }
 
@@ -7340,6 +7408,7 @@ function openReorderConfirmSheet(intent) {
   state.reorderConfirmIntent = {
     itemId: intent.itemId,
     targetIndex: intent.targetIndex,
+    queueVersion: intent.queueVersion,
     title,
   };
   state.reorderConfirmSaving = false;
@@ -7364,7 +7433,6 @@ function openReorderConfirmSheet(intent) {
 function closeReorderConfirmSheet() {
   state.reorderConfirmSheetOpen = false;
   state.reorderConfirmIntent = null;
-  state.reorderConfirmSaving = false;
   elements.reorderConfirmSheet?.classList.remove("is-open");
   elements.reorderConfirmSheet?.setAttribute("aria-hidden", "true");
   window.setTimeout(() => {
@@ -7375,7 +7443,7 @@ function closeReorderConfirmSheet() {
     if (elements.reorderConfirmSheetText) {
       elements.reorderConfirmSheetText.textContent = "";
     }
-    if (elements.reorderConfirmSheetConfirm) {
+    if (elements.reorderConfirmSheetConfirm && !state.reorderConfirmSaving) {
       elements.reorderConfirmSheetConfirm.disabled = false;
       elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderConfirm");
     }
@@ -7391,6 +7459,7 @@ async function confirmReorderConfirmSheet() {
   state.reorderConfirmSaving = true;
   if (elements.reorderConfirmSheetConfirm) {
     elements.reorderConfirmSheetConfirm.disabled = true;
+    elements.reorderConfirmSheetConfirm.setAttribute("aria-busy", "true");
     elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderMoving");
   }
 
@@ -7398,17 +7467,20 @@ async function confirmReorderConfirmSheet() {
     applyStateSnapshot(await apiPost("/api/playlist/reorder", {
       item_id: intent.itemId,
       index: intent.targetIndex,
+      expected_queue_version: intent.queueVersion,
     }));
     closeReorderConfirmSheet();
     setFormMessage(t("remote.queueOrderUpdated"));
     render();
   } catch (error) {
+    setFormMessage(error.message, true);
+  } finally {
     state.reorderConfirmSaving = false;
     if (elements.reorderConfirmSheetConfirm) {
+      elements.reorderConfirmSheetConfirm.removeAttribute("aria-busy");
       elements.reorderConfirmSheetConfirm.disabled = false;
       elements.reorderConfirmSheetConfirm.textContent = t("remote.queueOrderConfirm");
     }
-    setFormMessage(error.message, true);
   }
 }
 async function confirmGatchaFavlistSheet() {
@@ -7942,11 +8014,18 @@ function renderPlayerControls(currentItem, playbackMode) {
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
+  const displayCount = (key, shown) => {
+    const limit = state.data?.public_list_limits?.[key];
+    return Number.isSafeInteger(limit?.total) && limit.total > shown && limit.shown === shown
+      ? `${shown}/${limit.total}` : shown;
+  };
+  const playlistCount = displayCount("playlist", playlist.length);
+  const historyCount = displayCount("history", history.length);
   const signature = JSON.stringify({
     language: state.language,
     view: state.listView,
-    playlistLength: playlist.length,
-    historyLength: history.length,
+    playlistLength: playlistCount,
+    historyLength: historyCount,
   });
   if (signature === state.listHeaderRenderSignature) {
     return;
@@ -7958,7 +8037,7 @@ function renderListHeader(playlist, history) {
   setTextContent(
     elements.listCount,
     isHistoryView ? "history.count" : "list.count",
-    { count: isHistoryView ? history.length : playlist.length },
+    { count: isHistoryView ? historyCount : playlistCount },
   );
 
   elements.queueViewButton.classList.toggle("active", !isHistoryView);
@@ -9401,7 +9480,9 @@ function mountRemoteContextualTooltip(wrap) {
   const tooltip = remoteContextualTooltipForWrap(wrap);
   if (!tooltip) return null;
   tooltip.__bilikaraCloseSequence = (tooltip.__bilikaraCloseSequence || 0) + 1;
-  tooltip.classList.remove("is-closing");
+  // Keep the hidden entry frame laid out even without the Popover API.
+  // Otherwise display:none skips the shared opacity/slide transition.
+  tooltip.classList.add("is-closing");
   const playbackPanel = wrap?.closest?.(".playback-sheet-panel");
   if (playbackPanel && tooltip.parentElement !== playbackPanel) {
     playbackPanel.append(tooltip);
@@ -9413,6 +9494,7 @@ function mountRemoteContextualTooltip(wrap) {
   }
   // Establish the hidden frame before toggling visibility, as on Host.
   getComputedStyle(tooltip).opacity;
+  tooltip.classList.remove("is-closing");
   tooltip.classList.add("is-visible");
   return tooltip;
 }
@@ -9563,7 +9645,7 @@ function showRemoteContextualInfoTransient(wrap, source) {
 }
 
 // Remote help opens by tap/click or keyboard focus, never by hover.
-document.querySelectorAll(".remote-contextual-info-region").forEach((region) => {
+function bindRemoteContextualInfo(region) {
   const wrap = region.querySelector(".info-trigger-wrap");
   region.addEventListener("focusin", (event) => {
     if (!event.target.closest(".remote-info-button")) {
@@ -9581,7 +9663,8 @@ document.querySelectorAll(".remote-contextual-info-region").forEach((region) => 
       }
     }, 0);
   });
-});
+}
+document.querySelectorAll(".remote-contextual-info-region").forEach(bindRemoteContextualInfo);
 
 elements.playbackSheetSummaryCopy?.addEventListener("click", (event) => {
   const wrapper = event.target.closest("[data-playback-metadata-field].is-disclosable");
@@ -9727,6 +9810,9 @@ globalThis.BilikaraVolumeControl?.bind({
   value: elements.remoteVolumeValue,
   t,
   getValue: () => currentRemoteVolumePercent(),
+  getAutomatic: () => state.data?.automatic_volume,
+  bindInfo: (region) => bindRemoteContextualInfo(region),
+  closeInfo: () => closeRemoteContextualInfo(),
   onInput: (percent) => setRemoteVolumeSettings({
     volumePercent: percent,
     isMuted: currentRemoteMuted(),
@@ -9739,7 +9825,6 @@ globalThis.BilikaraVolumeControl?.bind({
 
 elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
   await setRemoteVolumeSettings({
-    volumePercent: currentRemoteVolumePercent(state.data?.player_settings),
     isMuted: !currentRemoteMuted(state.data?.player_settings),
   });
 });
@@ -10077,6 +10162,29 @@ elements.playerControlPanel.addEventListener("input", (event) => {
   paintPlaybackSheetSeekPreview(Number(seek.value || 0));
 });
 
+elements.playbackSheetSeek?.addEventListener("pointerdown", () => {
+  elements.playbackSheetSeek.classList.add("is-engaged");
+});
+elements.playbackSheetSeek?.addEventListener("keydown", event => {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+    elements.playbackSheetSeek.classList.add("is-engaged");
+  }
+});
+elements.playbackSheet?.addEventListener("pointerdown", event => {
+  if (event.target !== elements.playbackSheetSeek) elements.playbackSheetSeek?.classList.remove("is-engaged");
+});
+for (const name of ["pointercancel", "blur"]) {
+  elements.playbackSheetSeek?.addEventListener(name, () => {
+    if (name === "pointercancel" || !state.playerControlPendingAction) {
+      elements.playbackSheetSeek.classList.remove("is-engaged");
+    }
+    if (!state.playbackSheetSeekScrubbing) return;
+    state.playbackSheetSeekScrubbing = false;
+    paintPlaybackClockSurfaces();
+    schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
+  });
+}
+
 elements.playerControlPanel.addEventListener("change", async (event) => {
   const seek = event.target.closest('input[data-control-action="seek-absolute"]');
   if (!seek || seek.disabled || state.playerControlPendingAction) {
@@ -10089,6 +10197,11 @@ elements.playerControlPanel.addEventListener("change", async (event) => {
   } finally {
     paintCurrentPlaybackClock();
     schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
+    // Disabling while the command is pending drops native range focus. Restore
+    // it only if the user is still working here, not after another interaction.
+    if (state.playbackSheetOpen && seek.classList.contains("is-engaged") && !seek.disabled) {
+      seek.focus({ preventScroll: true });
+    }
   }
 });
 
@@ -10200,6 +10313,16 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (remoteIdentityModalIsOpen()) {
+    if (event.key === "Tab") {
+      trapFocusWithin(elements.remoteIdentityModal, event, elements.remoteIdentityInput);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeRemoteIdentityRename();
+    }
+    return;
+  }
   if (elements.historyExportDialog?.open) {
     if (event.key === "Tab") {
       trapFocusWithin(elements.historyExportDialog, event, elements.historyExportClose);
@@ -10423,6 +10546,7 @@ function openPlaybackSheet() {
 }
 
 function closePlaybackSheet({ immediate = false, restoreFocus = true } = {}) {
+  elements.playbackSheetSeek?.classList.remove("is-engaged");
   if (!elements.playbackSheet) {
     return;
   }

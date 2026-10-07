@@ -18,7 +18,7 @@
 
 线上入口：`https://download.kevinx96.icu/bilikara/announcements/index.json`。
 
-在 `announcements/index.json` 编辑真实公告，格式参考 `announcements/example.json`。**示例不是实际服务异常，不要直接发布示例文件。** 当前 index 包含 v0.8.0-preview.2 重发公告（说明此前双屏会话鉴权及二维码同步问题的修复），并保留用户授权的公告板限时测试：2026-09-27 15:23:56 至当日 24:00（日本时间 UTC+9），不代表服务异常。过期后客户端不再显示，可按需从发布清单归档，但不要复用该 ID。
+在 `announcements/index.json` 编辑真实公告，格式参考 `announcements/example.json`。**示例不是实际服务异常，不要直接发布示例文件。** 历史发布清单保留既有 ID；过期限时通知由客户端隐藏。新版本草稿放在发布文档中，确认发布前不写入线上 index。
 
 字段为 `schema_version: 1`、`announcements` 数组、不可复用的 `id`、`kind`、`published_at`、`platforms`、`title`、`body_markdown`。后两项为 zh/en/ja 字典，至少一种语言。优先当前语言，缺失时按 en → zh → ja 回退。
 
@@ -41,7 +41,7 @@ GitHub 的手动工作流需要先进入仓库默认分支；仅推送到 `dev` 
 wrangler r2 object put bilikara-releases/bilikara/announcements/index.json --remote --file announcements/index.json --content-type 'application/json; charset=utf-8' --cache-control 'public, max-age=300, must-revalidate'
 ```
 
-2026-09-27 已完成首次发布及下述精确路径 Cache Rule，实测公网响应从 MISS 转为 HIT；部署与本机环境验证详见 [验证记录](announcements-validation.md)。以后沿用规则，不要重复创建。
+既有部署沿用精确路径 Cache Rule；修改文案与本地校验不等于上传或公网生效，不要为每次更新重复创建规则。
 
 首次上线前确认 download.kevinx96.icu 已绑定这个 R2 bucket，为**精确路径** `/bilikara/announcements/index.json` 设置 Cache Rule：Eligible for cache，尊重 `Cache-Control: public, max-age=300, must-revalidate`（或固定 Edge TTL 300 秒）。JSON 默认不一定进入 CDN 缓存。不要使用开发用途的 r2.dev 或依赖目录列表。本功能不自动改 Cloudflare 账号配置，不新增 Worker 路由或 D1 表。
 
@@ -64,7 +64,7 @@ cargo test --manifest-path rust/Cargo.toml --locked announcement_policy
 cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host announcements
 node --check static/announcements.js
 node tests/announcements_browser.cjs
-python -m unittest discover -s tests -p test_copy_i18n.py -v
+node --test tests/copy_i18n_contract.test.mjs
 ```
 
 浏览器检查需要 Playwright/Chromium。测试使用离线样例和回环 HTTP，不发布测试通知、不请求线上公告或数据库。Android 返回键和包版本来源仍需 APK 实机验收。

@@ -1,0 +1,42 @@
+var SignalsmithStretch = (() => {
+/* next original fragment */
+getBinaryPromise(binaryFile).then(binary=>WebAssembly.instantiate(binary,imports))
+/* next original fragment */
+let pendingMessages = [];
+/* next original fragment */
+this.port.onmessage = event => pendingMessages.push(event);
+/* next original fragment */
+Module().then(wasmModule => {
+/* next original fragment */
+let data = event.data;
+					let messageId
+/* next original fragment */
+pendingMessages = null;
+			});
+/* next original fragment */
+process(inputList, outputList, parameters) {
+/* next original fragment */
+
+				configure();
+/* next original fragment */
+options.numberOfOutputs ? options.outputChannelCount[0] : 2
+/* next original fragment */
+async function(audioContext, options)
+/* next original fragment */
+// messages with Promise responses
+/* next original fragment */
+let requestMap = {};
+/* next original fragment */
+return new Promise(resolve => {
+				requestMap[id] = resolve;
+/* next original fragment */
+let id = data[0], value = data[1];
+/* next original fragment */
+requestMap[id](value);
+/* next original fragment */
+return new Promise(resolve => {
+			requestMap['ready'] = remoteMethodKeys => {
+/* next original fragment */
+resolve(audioNode);
+			}
+		});

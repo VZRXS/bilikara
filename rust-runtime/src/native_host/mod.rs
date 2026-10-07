@@ -2,11 +2,13 @@
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
 mod announcements;
 mod api;
+mod automatic_volume;
 mod cache;
 mod catalog;
 mod catalog_append;
 pub mod desktop;
 mod desktop_import;
+mod desktop_import_tool;
 #[cfg(windows)]
 pub(crate) mod desktop_process;
 mod diagnostics;
@@ -216,6 +218,10 @@ impl HostContext {
 impl Drop for NativeHost {
     fn drop(&mut self) {
         self.context.stop.store(true, Ordering::Release);
+        let _ = with_app(|app| {
+            app.notify_analysis(true);
+            Ok(())
+        });
         // Listener, async requests/SSE/media, and blocking HTTP work retire first.
         if let Some(server) = self.server.take() {
             let _ = server.join();
@@ -363,6 +369,14 @@ fn start(
     let recovered_library = library::initialize(&directory)?;
     library::migrate_pool(&directory)?;
     library::publish_favorites_timestamp(&directory);
+    // File I/O stays outside AppState: a previous helper's kept outcome.
+    let last_install = desktop
+        .then(|| {
+            let workspaces = desktop::installation()
+                .map(|installation| installation.update_workspace_parent(&directory).to_owned());
+            updates::take_last_result(&directory, workspaces.as_deref())
+        })
+        .flatten();
     with_app(|app| {
         app.native_core_snapshot()?;
         if !app.native().host_token.is_empty() {
@@ -378,7 +392,7 @@ fn start(
         if desktop {
             // One authority for the check-only update loop: the same state the
             // status route and the SSE projection read.
-            session.updates = updates::UpdateState::desktop(desktop::update_facts());
+            session.updates = updates::UpdateState::desktop(desktop::update_facts(), last_install);
         }
         session.bbdown_available = bbdown.is_some();
         session.aria2_available = aria2.is_some();
@@ -486,6 +500,8 @@ fn start(
     };
     library::start_coordinator(context.clone())?;
     cache::start_pump(context.clone())?;
+    automatic_volume::configure_capability();
+    automatic_volume::start(context.clone())?;
     network::start_monitor(&context)?;
     ratings::start_pump(context.clone())?;
     if let Err(error) = owner_enrichment::start(context.clone()) {
@@ -721,6 +737,10 @@ async fn handle_inner(
             return Ok(json_response(200, json!({"ok":true,"data":result})));
         }
         context.stop.store(true, Ordering::Release);
+        let _ = with_app(|app| {
+            app.notify_analysis(true);
+            Ok(())
+        });
         return Ok(json_response(200, json!({"ok":true})));
     }
     let host = with_app(|app| app.native_authorize(&identity, false))?;

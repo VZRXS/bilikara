@@ -409,10 +409,14 @@ mod tests {
                 page(1, 2, 300 + difference, "off"),
             ]))
             .unwrap();
-            let AudioBindingResult::Decided(value) = result else {
-                panic!("two pages must produce a decision");
-            };
-            assert_eq!(value.mode, expected_mode);
+            assert_eq!(
+                result,
+                decision(
+                    expected_mode,
+                    if difference <= 3 { vec![0, 1] } else { vec![] },
+                    None
+                )
+            );
         }
     }
 

@@ -4,6 +4,56 @@ use super::*;
 use std::ffi::OsString;
 use std::process::Command;
 
+/// Recognize only the HTTP status in .NET's failure diagnostic. Raw download
+/// output can contain credentials or signed URLs and must never leave this parser.
+#[derive(Default)]
+struct HttpFailure {
+    pending: Vec<u8>,
+    truncated: bool,
+    status: Option<u16>,
+}
+impl HttpFailure {
+    fn consume(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if matches!(byte, b'\r' | b'\n') {
+                self.line();
+                self.pending.clear();
+                self.truncated = false;
+            } else if self.pending.len() < 1024 {
+                self.pending.push(byte);
+            } else {
+                self.truncated = true;
+            }
+        }
+    }
+    fn line(&mut self) {
+        if self.truncated || self.status.is_some() {
+            return;
+        }
+        let line = self.pending.trim_ascii();
+        for marker in [
+            b"net_http_message_not_success_statuscode_reason,".as_slice(),
+            b"Response status code does not indicate success:".as_slice(),
+        ] {
+            let Some(value) = line.strip_prefix(marker) else {
+                continue;
+            };
+            let value = value.trim_ascii_start();
+            if value.len() >= 4
+                && value[..3].iter().all(u8::is_ascii_digit)
+                && matches!(value[3], b',' | b' ' | b'(')
+            {
+                let status = u16::from(value[0] - b'0') * 100
+                    + u16::from(value[1] - b'0') * 10
+                    + u16::from(value[2] - b'0');
+                if (400..600).contains(&status) {
+                    self.status = Some(status);
+                }
+            }
+        }
+    }
+}
+
 fn supervise(
     command: Command,
     cancel: &AtomicBool,
@@ -11,15 +61,31 @@ fn supervise(
     capture: bool,
     progress: impl FnMut(),
 ) -> Result<Vec<u8>, CacheRuntimeError> {
-    super::child::supervise(
+    let output = Mutex::new([HttpFailure::default(), HttpFailure::default()]);
+    let result = super::child::supervise(
         command,
         cancel,
         timeout,
         capture,
         progress,
-        &|_, _| {},
+        &|stderr, bytes| {
+            output.lock().unwrap_or_else(|p| p.into_inner())[usize::from(stderr)].consume(bytes)
+        },
         "BBDown",
-    )
+    );
+    let mut output = output.into_inner().unwrap_or_else(|p| p.into_inner());
+    for stream in &mut output {
+        stream.line();
+    }
+    result.map_err(|mut error| {
+        if error.kind == "tool_exit"
+            && let Some(status) = output[0].status.or(output[1].status)
+        {
+            error.message = format!("BBDown source request rejected (HTTP {status}); check login and source access, then retry");
+            error.status_code = Some(status);
+        }
+        error
+    })
 }
 
 // BBDown writes independent track/segment files. Report observed media bytes
@@ -682,5 +748,95 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind, "unavailable");
         assert!(Executable::check(PathBuf::from("/bin/true")).is_none());
+    }
+
+    #[test]
+    fn http_failures_are_bounded_split_safe_and_do_not_expose_tool_output() {
+        for line in [
+            b"net_http_message_not_success_statuscode_reason, 412, Precondition Failed\r\n"
+                .as_slice(),
+            b"Response status code does not indicate success: 412 (Precondition Failed).\n"
+                .as_slice(),
+        ] {
+            for split in 0..=line.len() {
+                let mut parser = HttpFailure::default();
+                parser.consume(&line[..split]);
+                parser.consume(&line[split..]);
+                parser.line();
+                assert_eq!(parser.status, Some(412));
+            }
+        }
+        for line in [
+            "https://private.invalid/?token=secret&status=412",
+            "Cookie: SESSDATA=secret; status=412",
+            "net_http_message_not_success_statuscode_reason, 4120, fake",
+            "net_http_message_not_success_statuscode_reason, 200, OK",
+            "Response status code does not indicate success: 412secret",
+        ] {
+            let mut parser = HttpFailure::default();
+            parser.consume(line.as_bytes());
+            parser.line();
+            assert_eq!(parser.status, None);
+        }
+        let mut parser = HttpFailure::default();
+        parser.consume(b"net_http_message_not_success_statuscode_reason, 412, ");
+        parser.consume(&vec![b'x'; 16_384]);
+        assert_eq!(parser.pending.len(), 1024);
+        parser.consume(b"\nResponse status code does not indicate success: 403 (Forbidden).");
+        parser.line();
+        assert_eq!(parser.status, Some(403));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_child_reports_only_http_status_and_preserves_cancellation() {
+        for stderr in [false, true] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", if stderr {
+                "printf 'credential-secret\\nResponse status code does not indicate success: 412 (Precondition Failed).' >&2; exit 1"
+            } else {
+                "printf 'credential-secret\\nnet_http_message_not_success_statuscode_reason, 412, Precondition Failed\\n'; exit 1"
+            }]);
+            let error = supervise(
+                command,
+                &AtomicBool::new(false),
+                Duration::from_secs(2),
+                false,
+                || {},
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, "tool_exit");
+            assert_eq!(error.status_code, Some(412));
+            assert_eq!(
+                error.message,
+                "BBDown source request rejected (HTTP 412); check login and source access, then retry"
+            );
+            assert!(!error.message.contains("credential-secret"));
+        }
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'net_http_message_not_success_statuscode_reason, 412, Precondition Failed\\n'; sleep 30"]);
+        let error = supervise(
+            command,
+            &AtomicBool::new(false),
+            Duration::from_millis(300),
+            false,
+            || {},
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, "tool_timeout");
+        assert_eq!(error.status_code, None);
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'net_http_message_not_success_statuscode_reason, 412, Precondition Failed\\n'; sleep 30"]);
+        let cancel = AtomicBool::new(false);
+        let start = Instant::now();
+        let error = supervise(command, &cancel, Duration::from_secs(2), false, || {
+            if start.elapsed() >= Duration::from_millis(200) {
+                cancel.store(true, Ordering::Release);
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, "cancelled");
+        assert_eq!(error.status_code, None);
     }
 }

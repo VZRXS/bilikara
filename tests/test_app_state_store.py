@@ -11,7 +11,6 @@ from bilikara.models import PlaylistItem
 from bilikara.store import (
     PlaylistStore,
     PlaylistStoreCommandError,
-    _py_apply_av_delay_action,
 )
 
 
@@ -780,23 +779,23 @@ class RustAppStateStoreTest(unittest.TestCase):
 
     def test_av_delay_read_only_snapshots_are_backend_free_and_exact(self):
         states = (
-            (0, 0, False),
-            (5000, 0, True),
-            (-5000, 0, True),
-            (125, -25, True),
-            (0, 125, False),
-            (0, -125, False),
-            (4999, 1, True),
-            (-4999, -1, True),
+            (0, 0, False, 0, False, False),
+            (5000, 0, True, 5000, False, True),
+            (-5000, 0, True, -5000, False, True),
+            (125, -25, True, 100, True, True),
+            (0, 125, False, 125, True, True),
+            (0, -125, False, -125, True, True),
+            (4999, 1, True, 5000, True, True),
+            (-4999, -1, True, -5000, True, True),
         )
         store = self.store()
         with patch(
-            "bilikara.rust_backend.try_apply_av_delay_action",
+            "bilikara.rust_backend._call_json_capability",
             side_effect=AssertionError(
                 "read-only snapshot must not invoke the legacy adapter"
             ),
         ):
-            for global_delay, local_delay, locked in states:
+            for global_delay, local_delay, locked, effective, has_local, enabled in states:
                 with self.subTest(
                     global_delay=global_delay,
                     local_delay=local_delay,
@@ -807,31 +806,33 @@ class RustAppStateStoreTest(unittest.TestCase):
                         store.apply_av_delay_action(
                             {"type": "adjust", "delta_ms": local_delay}
                         )
-                    expected = _py_apply_av_delay_action(
-                        {
-                            "global_delay_ms": global_delay,
-                            "local_delay_ms": local_delay,
-                            "locked": locked,
-                        },
-                        {"type": "snapshot"},
-                    )
+                    expected = {
+                        "schema_version": 1,
+                        "global_delay_ms": global_delay,
+                        "local_delay_ms": local_delay,
+                        "locked": locked,
+                        "effective_delay_ms": effective,
+                        "has_local_adjustment": has_local,
+                        "lock_button_enabled": enabled,
+                    }
                     actual = store.snapshot()["player_settings"]["av_delay"]
                     self.assertEqual(actual, expected)
 
     def test_av_delay_snapshot_and_mutation_are_owned_by_app_state(self):
         store = self.store()
-        expected = _py_apply_av_delay_action(
-            {
-                "global_delay_ms": 0,
-                "local_delay_ms": 0,
-                "locked": False,
-            },
-            {"type": "adjust", "delta_ms": 125},
-        )
+        expected = {
+            "schema_version": 1,
+            "global_delay_ms": 0,
+            "local_delay_ms": 125,
+            "effective_delay_ms": 125,
+            "locked": False,
+            "has_local_adjustment": True,
+            "lock_button_enabled": True,
+        }
         before_revision = store.revision
 
         with patch(
-            "bilikara.rust_backend.try_apply_av_delay_action",
+            "bilikara.rust_backend._call_json_capability",
             side_effect=AssertionError("AppState must not call the legacy adapter"),
         ):
             result = store.apply_av_delay_action(
@@ -846,7 +847,7 @@ class RustAppStateStoreTest(unittest.TestCase):
     def test_playlist_ordering_remains_internal_to_app_state(self):
         store = self.store()
         with patch(
-            "bilikara.rust_backend.try_plan_playlist_order",
+            "bilikara.rust_backend._call_json_capability",
             side_effect=AssertionError("legacy planner adapter must not run"),
         ) as planner:
             store.add_session_user("A")

@@ -393,7 +393,7 @@ fn schema_version() -> u32 {
 }
 
 fn default_user_agent() -> String {
-    "Mozilla/5.0 Bilikara Rust Runtime".to_owned()
+    "Mozilla/5.0 bilikara Rust Runtime".to_owned()
 }
 
 fn default_referer() -> String {
@@ -2241,7 +2241,9 @@ where
         job.selected_audio_variant_id.clone()
     } else {
         audio_variants
-            .first()
+            .iter()
+            .find(|variant| variant.page == job.video_page)
+            .or_else(|| audio_variants.first())
             .map(|variant| variant.id.clone())
             .unwrap_or_default()
     };
@@ -3186,49 +3188,82 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
             .join(&reservation.item_incarnation_id)
             .join(&reservation.artifact_set_id);
         fs::create_dir_all(&staging).expect("staging directory");
-        [
-            (ExpectedMediaKind::Video, "video-p1.mp4", 0_usize),
-            (ExpectedMediaKind::Audio, "audio-p1.m4a", 1_usize),
-        ]
-        .into_iter()
-        .map(|(kind, final_name, order)| {
-            let track_dir = staging.join(format!("track-{order}"));
-            fs::create_dir(&track_dir).expect("track directory");
-            let temporary_path = track_dir.join(final_name);
-            fs::write(&temporary_path, format!("fixture-{final_name}")).expect("track fixture");
-            let file_bytes = temporary_path.metadata().expect("metadata").len();
-            TrackResult {
-                spec: TrackSpec {
-                    key: final_name.to_owned(),
-                    label: if kind == ExpectedMediaKind::Video {
-                        "video".to_owned()
-                    } else {
-                        "audio".to_owned()
-                    },
-                    order,
-                    page: job.pages[0].clone(),
-                    kind,
-                },
-                probe: TrackValidation::Normalized(MediaProbe {
-                    path: temporary_path.clone(),
-                    kind,
-                    codec: if kind == ExpectedMediaKind::Video {
-                        "h264".to_owned()
-                    } else {
-                        "aac".to_owned()
-                    },
-                    duration_seconds: 1.0,
-                    sample_count: 1,
-                    sample_bytes: file_bytes,
-                    file_bytes,
-                    fragmented: false,
-                    fast_start: true,
-                }),
-                temporary_path,
-                final_name: final_name.to_owned(),
+        track_specs(job)
+            .expect("publication track specs")
+            .into_iter()
+            .map(|spec| {
+                let kind = spec.kind;
+                let final_name = if kind == ExpectedMediaKind::Video {
+                    format!("video-p{}.mp4", spec.page.page)
+                } else {
+                    format!("audio-p{}.m4a", spec.page.page)
+                };
+                let track_dir = staging.join(format!("track-{}", spec.order));
+                fs::create_dir(&track_dir).expect("track directory");
+                let temporary_path = track_dir.join(&final_name);
+                fs::write(&temporary_path, format!("fixture-{final_name}")).expect("track fixture");
+                let file_bytes = temporary_path.metadata().expect("metadata").len();
+                TrackResult {
+                    spec,
+                    probe: TrackValidation::Normalized(MediaProbe {
+                        path: temporary_path.clone(),
+                        kind,
+                        codec: if kind == ExpectedMediaKind::Video {
+                            "h264".to_owned()
+                        } else {
+                            "aac".to_owned()
+                        },
+                        duration_seconds: 1.0,
+                        sample_count: 1,
+                        sample_bytes: file_bytes,
+                        file_bytes,
+                        fragmented: false,
+                        fast_start: true,
+                    }),
+                    temporary_path,
+                    final_name,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn publication_uses_bound_video_audio_without_overriding_explicit_selection() {
+        for (selection, video_page, expected) in [
+            ("", 2, "p2_on_vocal"),
+            ("stale-selection", 2, "p2_on_vocal"),
+            ("p1_off_vocal", 2, "p1_off_vocal"),
+            ("", 3, "p1_off_vocal"),
+        ] {
+            let root = publication_root("bound-audio-selection");
+            let mut job = job(&root);
+            job.video_page = video_page;
+            job.pages[0].label = "Off Vocal".to_owned();
+            job.pages.push(CachePageSpec {
+                page: 2,
+                cid: 3,
+                duration_seconds: Some(180.0),
+                label: "On Vocal".to_owned(),
+            });
+            job.selected_audio_variant_id = selection.to_owned();
+            if video_page == 3 {
+                job.video_only_page = Some(CachePageSpec {
+                    page: 3,
+                    cid: 4,
+                    duration_seconds: Some(180.0),
+                    label: "video only".to_owned(),
+                });
             }
-        })
-        .collect()
+            let reservation = reservation(300);
+            let tracks = publication_tracks(&job, &reservation);
+            let result = publish_tracks_with_authorizer(&job, &reservation, tracks, |_, _| Ok(()))
+                .expect("complete set publication");
+            assert_eq!(result.selected_audio_variant_id, expected);
+            assert_eq!(result.audio_variants.len(), 2);
+            assert_eq!(result.audio_variants[0].page, 1);
+            assert_eq!(result.audio_variants[1].page, 2);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

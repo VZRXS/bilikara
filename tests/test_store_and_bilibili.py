@@ -5,7 +5,6 @@ import json
 import sys
 import threading
 import unittest
-from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -393,9 +392,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.current_item.requester_name, "A")
 
     def test_playlist_projection_is_a_defensive_copy(self):
-        _, counts, _ = self.store._requester_cycle_state_unlocked()
-        self.assertIsInstance(counts, defaultdict)
-        self.assertEqual(dict(counts), {})
+        self.assertEqual(self.store.playlist, [])
         self.add_item("current", requester_name="A")
         self.add_item("queued", requester_name="B")
         projected = self.store.playlist
@@ -896,11 +893,8 @@ class PlaylistStoreTest(unittest.TestCase):
 
     def test_playlist_order_and_duplicate_are_internal_app_state_decisions(self):
         with patch(
-            "bilikara.rust_backend.try_plan_playlist_order",
+            "bilikara.rust_backend._call_json_capability",
             side_effect=AssertionError("legacy playlist adapter must not run"),
-        ), patch(
-            "bilikara.rust_backend.try_decide_playlist_duplicate",
-            side_effect=AssertionError("legacy duplicate adapter must not run"),
         ):
             self.add_item("a1", requester_name="A", song_key="song-a")
             self.add_item("a2", requester_name="A", song_key="song-b")
@@ -1134,10 +1128,12 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.session_users[:3], ["A", "C", "B"])
         self.assertEqual([item.id for item in self.store.playlist], ["c1", "b1", "a2"])
 
-    def test_rename_session_user_updates_current_queue_and_session_records(self):
+    def test_rename_session_user_preserves_request_records_and_changes_future_requests(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")
         self.advance_to_next()
+        before = self.store.snapshot()
+        original_id = next(user["id"] for user in before["session_user_entries"] if user["name"] == "A")
 
         renamed = self.store.rename_session_user("A", "Singer A")
 
@@ -1151,8 +1147,14 @@ class PlaylistStoreTest(unittest.TestCase):
             *(entry.requester_name for entry in self.store.session_history),
             *(entry.requester_name for entry in self.store.session_played),
         ]
-        self.assertNotIn("A", requesters)
-        self.assertIn("Singer A", requesters)
+        self.assertIn("A", requesters)
+        self.assertNotIn("Singer A", requesters)
+        after = self.store.snapshot()
+        for key in ("current_item", "playlist", "history", "session_history", "session_played"):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual(next(user["id"] for user in after["session_user_entries"] if user["name"] == "Singer A"), original_id)
+        self.add_item("a-new", requester_name="Singer A")
+        self.assertEqual(next(item.requester_name for item in self.store.playlist if item.id == "a-new"), "Singer A")
 
     def test_play_now_rebuilds_cycle_queue_for_new_current_requester(self):
         self.add_item("a1", requester_name="A")
@@ -1328,28 +1330,6 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(annotated[1]["owner_avatar_url"], "kevin.jpg")
         self.assertNotIn("owner_avatar_url", annotated[2])
 
-    def test_local_search_returns_cached_owner_avatar_without_browse_request(self):
-        profile = {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"}
-        entry = {
-            "mid": "3145040",
-            "bvid": "BV1tPC2BEEjq",
-            "title": "agony karaoke",
-            "url": "https://www.bilibili.com/video/BV1tPC2BEEjq",
-            "owner_name": "VZRXS",
-        }
-        with (
-            patch.object(bilibili_module, "_local_gatcha_candidates", return_value=[entry]),
-            patch.object(bilibili_module, "_local_gatcha_favlist_candidates", return_value=[]),
-            patch.object(
-                bilibili_module,
-                "_cached_gatcha_profile_indexes",
-                return_value=({"671767": profile}, {"vzrxs": profile}),
-            ),
-        ):
-            results = bilibili_module._py_search_gatcha_cache("agony")
-
-        self.assertEqual(results[0]["owner_avatar_url"], "vzrxs.jpg")
-
     def test_clean_display_title_removes_brackets_and_part_suffix(self):
         cleaned = clean_display_title(
             title="\u3010pure k | nico karaoke | troupe\u3011Song Name",
@@ -1437,18 +1417,6 @@ class BilibiliParserTest(unittest.TestCase):
                 "SESSDATA=synthetic-session; bili_jct=synthetic-csrf",
             )
 
-    def test_gatcha_missing_cookie_message_when_cache_empty(self):
-        with (
-            patch.object(bilibili_module, "_local_gatcha_candidates_by_uid", return_value={}),
-            patch.object(bilibili_module, "_local_gatcha_favlist_candidates", return_value=[]),
-            patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
-        ):
-            with self.assertRaisesRegex(
-                bilibili_module.BilibiliError,
-                bilibili_module.MISSING_BILIBILI_COOKIE_MESSAGE,
-            ):
-                bilibili_module._py_fetch_gatcha_candidate()
-
     def test_gatcha_uid_snapshot_creates_default_uid_file(self):
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
@@ -1470,56 +1438,6 @@ class BilibiliParserTest(unittest.TestCase):
 
         with self.assertRaisesRegex(bilibili_module.BilibiliError, "不要输入 BV/av 视频号"):
             bilibili_module._normalize_gatcha_uid("https://www.bilibili.com/video/BV1xx411c7mD")
-
-    def test_preview_gatcha_uid_fetches_owner_and_cache_mode(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            uid_file.write_text(json.dumps({"uids": ["42"]}), encoding="utf-8")
-            cache_file.write_text(
-                json.dumps(
-                    {
-                        "uids": {
-                            "42": [
-                                {
-                                    "mid": "42",
-                                    "bvid": "BVOLD",
-                                    "title": "old karaoke",
-                                    "url": "https://www.bilibili.com/video/BVOLD",
-                                }
-                            ]
-                        },
-                        "updated_at": 1,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(
-                    bilibili_module,
-                    "_request_gatcha_uid_profile",
-                    return_value={
-                        "uid": "42",
-                        "name": "example-up",
-                        "space_url": "https://space.bilibili.com/42",
-                        "avatar_url": "https://example.com/avatar.jpg",
-                    },
-                ),
-            ):
-                preview = bilibili_module._py_preview_gatcha_uid("https://space.bilibili.com/42")
-
-            self.assertEqual(preview["uid"], "42")
-            self.assertEqual(preview["name"], "example-up")
-            self.assertEqual(preview["avatar_url"], "https://example.com/avatar.jpg")
-            self.assertTrue(preview["already_followed"])
-            self.assertEqual(preview["cache_mode"], "incremental")
-            self.assertEqual(preview["cache_mode_label"], "最新")
 
     def test_gatcha_entry_extracts_cover_played_count_and_duration(self):
         payload = {
@@ -1575,102 +1493,6 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(merged[0]["cover_url"], "https://example.com/cover.jpg")
         self.assertEqual(merged[0]["played_count"], "695")
         self.assertEqual(merged[0]["preserved_1"], "201")
-
-    def test_refresh_gatcha_cache_incremental_for_existing_and_full_for_missing_uid(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            uid_file.write_text(json.dumps({"uids": ["1", "2"]}), encoding="utf-8")
-            cache_file.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "uids": {
-                            "1": [
-                                {
-                                    "mid": "1",
-                                    "bvid": "BVOLD",
-                                    "title": "old karaoke",
-                                    "url": "https://www.bilibili.com/video/BVOLD",
-                                }
-                            ]
-                        },
-                        "profiles": {
-                            "1": {
-                                "uid": "1",
-                                "name": "up-1",
-                                "space_url": "https://space.bilibili.com/1",
-                            }
-                        },
-                        "updated_at": 1,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            calls: list[tuple[str, object, bool]] = []
-
-            def fake_fetch(mid, *, on_progress=None, max_pages=None):
-                calls.append((mid, max_pages, on_progress is not None))
-                if mid == "1":
-                    return [
-                        {
-                            "mid": "1",
-                            "bvid": "BVNEW",
-                            "title": "new karaoke",
-                            "url": "https://www.bilibili.com/video/BVNEW",
-                        },
-                        {
-                            "mid": "1",
-                            "bvid": "BVOLD",
-                            "title": "old karaoke",
-                            "url": "https://www.bilibili.com/video/BVOLD",
-                        },
-                    ]
-                entries = [
-                    {
-                        "mid": "2",
-                        "bvid": "BV2A",
-                        "title": "first karaoke",
-                        "url": "https://www.bilibili.com/video/BV2A",
-                    },
-                    {
-                        "mid": "2",
-                        "bvid": "BV2B",
-                        "title": "second karaoke",
-                        "url": "https://www.bilibili.com/video/BV2B",
-                    },
-                ]
-                if on_progress is not None:
-                    on_progress(entries[:1])
-                return entries
-
-            def fake_profile(mid):
-                return {
-                    "uid": mid,
-                    "name": f"up-{mid}",
-                    "space_url": f"https://space.bilibili.com/{mid}",
-                }
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(bilibili_module, "_request_gatcha_uid_profile", side_effect=fake_profile),
-                patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
-            ):
-                bilibili_module._py_refresh_gatcha_cache()
-
-            self.assertEqual(calls, [("1", 1, False), ("2", None, True)])
-            uid_payload = json.loads(uid_file.read_text(encoding="utf-8"))
-            self.assertEqual(uid_payload["profiles"]["1"]["name"], "up-1")
-            self.assertEqual(uid_payload["profiles"]["2"]["name"], "up-2")
-            cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            self.assertEqual(cache_payload["profiles"]["1"]["name"], "up-1")
-            self.assertEqual(cache_payload["profiles"]["2"]["name"], "up-2")
-            self.assertEqual([entry["bvid"] for entry in cache_payload["uids"]["1"]], ["BVNEW", "BVOLD"])
-            self.assertEqual([entry["bvid"] for entry in cache_payload["uids"]["2"]], ["BV2A", "BV2B"])
 
     def test_gatcha_uid_refresh_preserves_concurrent_uid_entries(self):
         with TemporaryDirectory() as temp_dir:
@@ -1749,70 +1571,6 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual([entry["bvid"] for entry in cache_payload["uids"]["1"]], ["BVNEW", "BVOLD"])
             self.assertEqual(cache_payload["uids"]["42"][0]["bvid"], "BVADDED42")
             self.assertEqual(cache_payload["profiles"]["42"]["name"], "added-up")
-
-    def test_refresh_gatcha_cache_clears_legacy_cache_without_profiles(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            uid_file.write_text(json.dumps({"uids": ["1"]}), encoding="utf-8")
-            cache_file.write_text(
-                json.dumps(
-                    {
-                        "uids": {
-                            "1": [
-                                {
-                                    "mid": "1",
-                                    "bvid": "BVOLD",
-                                    "title": "old karaoke",
-                                    "url": "https://www.bilibili.com/video/BVOLD",
-                                }
-                            ]
-                        },
-                        "updated_at": 1,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            calls: list[tuple[str, object, bool]] = []
-
-            def fake_fetch(mid, *, on_progress=None, max_pages=None):
-                calls.append((mid, max_pages, on_progress is not None))
-                entries = [
-                    {
-                        "mid": mid,
-                        "bvid": "BVFULL",
-                        "title": "full karaoke",
-                        "url": "https://www.bilibili.com/video/BVFULL",
-                    }
-                ]
-                if on_progress is not None:
-                    on_progress(entries)
-                return entries
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(
-                    bilibili_module,
-                    "_request_gatcha_uid_profile",
-                    return_value={
-                        "uid": "1",
-                        "name": "up-1",
-                        "space_url": "https://space.bilibili.com/1",
-                    },
-                ),
-                patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
-            ):
-                bilibili_module._py_refresh_gatcha_cache()
-
-            self.assertEqual(calls, [("1", None, True)])
-            cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            self.assertEqual(cache_payload["schema_version"], 3)
-            self.assertEqual(cache_payload["profiles"]["1"]["name"], "up-1")
-            self.assertEqual([entry["bvid"] for entry in cache_payload["uids"]["1"]], ["BVFULL"])
 
     def test_rebuild_gatcha_files_for_latest_schema_uses_temp_and_replaces_files(self):
         with ConfiguredRefreshFixture(legacy=True) as fixture:
@@ -1910,54 +1668,6 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual(favlist_temp["items"][0]["bvid"], "BVFAVTEMP")
             self.assertEqual(favlist_temp["items"][0]["cover_url"], "https://example.com/fav-cover.jpg")
 
-    def test_add_gatcha_uid_persists_uid_and_refreshes_added_uid(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            uid_file.write_text(json.dumps({"uids": ["1"]}), encoding="utf-8")
-            calls: list[str] = []
-
-            def fake_fetch(mid, *, on_progress=None, max_pages=None):
-                calls.append(mid)
-                entries = [
-                    {
-                        "mid": mid,
-                        "bvid": "BVADDED42",
-                        "title": "added test karaoke",
-                        "url": "https://www.bilibili.com/video/BVADDED42",
-                    }
-                ]
-                if on_progress is not None:
-                    on_progress(entries)
-                return entries
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(
-                    bilibili_module,
-                    "_request_gatcha_uid_profile",
-                    return_value={
-                        "uid": "42",
-                        "name": "example-up",
-                        "space_url": "https://space.bilibili.com/42",
-                    },
-                ),
-                patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
-            ):
-                result = bilibili_module._py_add_gatcha_uid("https://space.bilibili.com/42")
-
-            self.assertTrue(result["added"])
-            self.assertEqual(result["uid"], "42")
-            self.assertIn("42", calls)
-            self.assertEqual(calls.count("42"), 1)
-            self.assertEqual(json.loads(uid_file.read_text(encoding="utf-8"))["uids"], ["1", "42"])
-            cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            self.assertEqual(cache_payload["uids"]["42"][0]["bvid"], "BVADDED42")
-
     def test_add_gatcha_uid_rejects_while_global_gatcha_task_is_running(self):
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
@@ -1986,53 +1696,6 @@ class BilibiliParserTest(unittest.TestCase):
 
             self.assertEqual(json.loads(uid_file.read_text(encoding="utf-8"))["uids"], ["1"])
 
-    def test_refresh_gatcha_favlist_filters_folder_titles_and_persists_items(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            favlist_file = data_dir / "gatcha_favlist.json"
-            folders = [
-                {"id": 100, "fid": 10, "title": "🎤 卡拉收藏", "attr": 0, "media_count": 2},
-                {"id": 200, "fid": 20, "title": "普通收藏", "attr": 0, "media_count": 1},
-                {"id": 300, "fid": 30, "title": "K歌私密", "attr": 1, "media_count": 1},
-            ]
-            fetched_folder_ids: list[int] = []
-
-            def fake_fetch(uid, folder):
-                fetched_folder_ids.append(int(folder["id"]))
-                return [
-                    {
-                        "mid": "9",
-                        "bvid": "BVFAV1",
-                        "title": "any title is accepted inside matched folders",
-                        "url": "https://www.bilibili.com/video/BVFAV1",
-                    },
-                    {
-                        "mid": "9",
-                        "bvid": "BVFAV1",
-                        "title": "duplicate",
-                        "url": "https://www.bilibili.com/video/BVFAV1",
-                    },
-                ]
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_LOCK", threading.Lock()),
-                patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
-                patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
-            ):
-                result = bilibili_module._py_refresh_gatcha_favlist("https://space.bilibili.com/42")
-
-            self.assertEqual(result["uid"], "42")
-            self.assertEqual(result["folder_count"], 3)
-            self.assertEqual(result["matched_folder_count"], 1)
-            self.assertEqual(result["item_count"], 1)
-            self.assertEqual(fetched_folder_ids, [100])
-            payload = json.loads(favlist_file.read_text(encoding="utf-8"))
-            self.assertEqual(payload["uid"], "42")
-            self.assertEqual(payload["folders"][0]["title"], "🎤 卡拉收藏")
-            self.assertEqual(payload["items"][0]["bvid"], "BVFAV1")
-
     def test_gatcha_favlist_extracts_cover_played_count_and_duration(self):
         folder = {"id": 100, "title": "K songs"}
         entries = bilibili_module._extract_gatcha_favlist_entries(
@@ -2053,59 +1716,6 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(entries[0]["cover_url"], "https://example.com/fav-cover.jpg")
         self.assertEqual(entries[0]["played_count"], "42")
         self.assertEqual(entries[0]["preserved_1"], "3661")
-
-    def test_preview_gatcha_favlist_marks_keyword_matches_as_selected(self):
-        folders = [
-            {"id": 100, "fid": 10, "title": "K songs", "attr": 0, "media_count": 2},
-            {"id": 200, "fid": 20, "title": "normal fav", "attr": 0, "media_count": 1},
-            {"id": 300, "fid": 30, "title": "private k", "attr": 1, "media_count": 1},
-        ]
-        with patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders):
-            result = bilibili_module._py_preview_gatcha_favlist("https://space.bilibili.com/42")
-
-        self.assertEqual(result["uid"], "42")
-        self.assertEqual(result["folder_count"], 3)
-        self.assertEqual(result["public_folder_count"], 2)
-        self.assertEqual([folder["id"] for folder in result["folders"]], ["100", "200"])
-        self.assertEqual(result["selected_folder_ids"], ["100"])
-        self.assertTrue(result["folders"][0]["selected"])
-        self.assertFalse(result["folders"][1]["selected"])
-
-    def test_refresh_gatcha_favlist_uses_explicit_folder_selection(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            favlist_file = data_dir / "gatcha_favlist.json"
-            folders = [
-                {"id": 100, "fid": 10, "title": "K songs", "attr": 0, "media_count": 1},
-                {"id": 200, "fid": 20, "title": "normal fav", "attr": 0, "media_count": 1},
-            ]
-            fetched_folder_ids: list[int] = []
-
-            def fake_fetch(uid, folder):
-                fetched_folder_ids.append(int(folder["id"]))
-                return [
-                    {
-                        "mid": "9",
-                        "bvid": f"BVFAV{folder['id']}",
-                        "title": "selected fav item",
-                        "url": f"https://www.bilibili.com/video/BVFAV{folder['id']}",
-                    }
-                ]
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_LOCK", threading.Lock()),
-                patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
-                patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
-            ):
-                result = bilibili_module._py_refresh_gatcha_favlist("42", ["200"])
-
-            self.assertEqual(result["matched_folder_count"], 1)
-            self.assertEqual(fetched_folder_ids, [200])
-            payload = json.loads(favlist_file.read_text(encoding="utf-8"))
-            self.assertEqual([folder["id"] for folder in payload["folders"]], ["200"])
-            self.assertEqual(payload["items"][0]["bvid"], "BVFAV200")
 
     def test_gatcha_favlist_joins_search_and_draw_but_not_follow_browse(self):
         with TemporaryDirectory() as temp_dir:
@@ -2198,98 +1808,6 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(seen_pages, [1, 2])
         self.assertEqual(len(entries), 40)
 
-    def test_gatcha_draw_skips_expired_video_titles(self):
-        with (
-            patch.object(
-                bilibili_module,
-                "_local_gatcha_candidates_by_uid",
-                return_value={
-                    "1": [
-                        {
-                            "mid": "1",
-                            "bvid": "BVDEAD",
-                            "title": "已失效视频",
-                            "url": "https://www.bilibili.com/video/BVDEAD",
-                        },
-                        {
-                            "mid": "1",
-                            "bvid": "BVALIVE",
-                            "title": "alive karaoke",
-                            "url": "https://www.bilibili.com/video/BVALIVE",
-                        },
-                    ]
-                },
-            ),
-            patch.object(
-                bilibili_module,
-                "_local_gatcha_favlist_candidates",
-                return_value=[
-                    {
-                        "mid": "2",
-                        "bvid": "BVFAVDEAD",
-                        "title": "已失效视频",
-                        "url": "https://www.bilibili.com/video/BVFAVDEAD",
-                    }
-                ],
-            ),
-            patch.object(bilibili_module.random, "random", return_value=0.9),
-        ):
-            candidate = bilibili_module._py_fetch_gatcha_candidate()
-
-        self.assertEqual(candidate["bvid"], "BVALIVE")
-
-    def test_refresh_gatcha_cache_incrementally_refreshes_existing_favlist(self):
-        with TemporaryDirectory() as temp_dir:
-            data_dir = Path(temp_dir)
-            uid_file = data_dir / "gatcha_uids.json"
-            cache_file = data_dir / "gatcha_cache.json"
-            favlist_file = data_dir / "gatcha_favlist.json"
-            uid_file.write_text(json.dumps({"uids": []}), encoding="utf-8")
-            favlist_file.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "uid": "42",
-                        "folders": [{"id": "100", "title": "卡拉", "media_count": 2}],
-                        "items": [
-                            {
-                                "mid": "9",
-                                "bvid": "BVOLD",
-                                "title": "old",
-                                "url": "https://www.bilibili.com/video/BVOLD",
-                            }
-                        ],
-                        "updated_at": 1,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            def fake_fav_page(media_id, page_number, page_size=20):
-                return {
-                    "code": 0,
-                    "data": {
-                        "info": {"media_count": 2},
-                        "medias": [
-                            {"bvid": "BVNEW", "title": "new", "upper": {"mid": "10", "name": "new-up"}},
-                            {"bvid": "BVOLD", "title": "old", "upper": {"mid": "9", "name": "old-up"}},
-                        ],
-                    },
-                }
-
-            with (
-                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
-                patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
-                patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
-                patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-                patch.object(bilibili_module, "_request_gatcha_favlist_page", side_effect=fake_fav_page),
-            ):
-                bilibili_module._py_refresh_gatcha_cache()
-
-            payload = json.loads(favlist_file.read_text(encoding="utf-8"))
-            self.assertEqual([entry["bvid"] for entry in payload["items"]], ["BVNEW", "BVOLD"])
-
     def test_startup_gatcha_refresh_can_bypass_global_refresh_lock(self):
         with ConfiguredRefreshFixture() as fixture:
             self.assertTrue(bilibili_module.rust_runtime.try_begin_gatcha_refresh(busy_message="test busy"))
@@ -2322,29 +1840,6 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertIn("synthetic UID failure", snapshot["last_result"]["errors"][0]["error"])
             self.assertEqual(fixture.provider.posts, [])
 
-
-    def test_refresh_gatcha_cache_reports_partial_uid_failures(self):
-        cache_payload = {"uids": {}, "profiles": {}}
-
-        def fake_refresh_uid(payload, mid):
-            if mid == "1":
-                raise RuntimeError("uid failed")
-            payload["uids"][mid] = [{"bvid": "BVUSER", "title": "user"}]
-            return {"uid": mid, "mode": "full", "added_count": 1, "total_count": 1}
-
-        with (
-            patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
-            patch.object(bilibili_module, "_load_gatcha_uid_payload", return_value={"uids": ["1", "2"], "profiles": {}}),
-            patch.object(bilibili_module, "_load_gatcha_cache", return_value=cache_payload),
-            patch.object(bilibili_module, "_resolve_gatcha_uid_profile", return_value=None),
-            patch.object(bilibili_module, "_refresh_gatcha_uid_cache", side_effect=fake_refresh_uid),
-            patch.object(bilibili_module, "_refresh_existing_gatcha_favlist_cache", return_value=None),
-        ):
-            result = bilibili_module._py_refresh_gatcha_cache()
-
-        summary = result["refresh_summary"]
-        self.assertEqual([item["uid"] for item in summary["uids"]], ["2"])
-        self.assertEqual(summary["errors"], [{"uid": "1", "error": "uid failed"}])
 
     def test_startup_gatcha_refresh_does_not_upload_when_no_uid_added_entries(self):
         with ConfiguredRefreshFixture() as fixture:
@@ -2627,21 +2122,6 @@ class BilibiliParserTest(unittest.TestCase):
                 "decide_audio_binding",
                 wraps=bilibili_module.decide_audio_binding,
             ) as decide,
-            patch.object(
-                bilibili_module,
-                "_is_auto_dual_audio_pair",
-                side_effect=AssertionError("legacy pair helper called from fetch_video_item"),
-            ),
-            patch.object(
-                bilibili_module,
-                "_auto_dual_audio_video_page",
-                side_effect=AssertionError("legacy video helper called from fetch_video_item"),
-            ),
-            patch.object(
-                bilibili_module,
-                "_requires_manual_binding",
-                side_effect=AssertionError("legacy manual helper called from fetch_video_item"),
-            ),
         ):
             item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
 
@@ -2650,11 +2130,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.video_page, 1)
 
     @video_fixture
-    def test_fetch_video_item_native_binding_matches_frozen_reference(self, mock_request_json):
-        if not bilibili_module.rust_backend._CAPABILITIES.get(
-            "decide_audio_binding", False
-        ):
-            self.skipTest("Rust audio-binding capability is unavailable")
+    def test_fetch_video_item_binding_is_owned_by_shared_native_service(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
             "data": {
@@ -2670,40 +2146,18 @@ class BilibiliParserTest(unittest.TestCase):
             },
         }
 
-        reference_pages = [
-            bilibili_module.VideoPage(
-                page=1, cid=456, duration=300, part="plain"
-            ),
-            bilibili_module.VideoPage(
-                page=2, cid=789, duration=301, part="off vocal"
-            ),
-        ]
-        reference = bilibili_module._py_decide_audio_binding(reference_pages)
-        self.assertIsNotNone(reference)
-
         with patch.object(
             bilibili_module.rust_backend,
-            "strict_equivalence_enabled",
-            return_value=False,
+            "_call_json_capability",
+            side_effect=AssertionError("separate Python Core binding bridge was called"),
         ), patch.object(
             bilibili_module,
-            "_py_decide_audio_binding",
-            side_effect=AssertionError("Python fallback was called"),
+            "decide_audio_binding",
+            side_effect=AssertionError("Python binding adapter was called"),
         ):
-            native_item = fetch_video_item(
-                "https://www.bilibili.com/video/BV1xx411c7mD"
-            )
-
-        expected_pages = [
-            reference_pages[index].page for index in reference.selected_indices
-        ]
-        expected_video_page = (
-            1
-            if reference.automatic_video_index is None
-            else reference_pages[reference.automatic_video_index].page
-        )
-        self.assertEqual(native_item.selected_pages, expected_pages)
-        self.assertEqual(native_item.video_page, expected_video_page)
+            native_item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
+        self.assertEqual(native_item.selected_pages, [1, 2])
+        self.assertEqual(native_item.video_page, 1)
 
     def test_fetch_gatcha_videos_for_uid_retries_once_on_412(self):
         if not hasattr(bilibili_module, "_fetch_gatcha_videos_for_uid"):

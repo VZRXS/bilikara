@@ -54,7 +54,46 @@ pub(crate) struct NativeHostStorage {
     // Keep the stable lock file open for the lifetime of this state authority.
     // Never unlink it: replacing a lock inode could admit a second writer.
     lock: File,
+    // Present only after this directory has used the explicit import tool.
+    // A shared lifetime lock excludes a concurrent offline directory switch.
+    _import_lock: Option<File>,
     last_state: Option<AppStateSeed>,
+}
+
+pub(crate) fn import_guard_path(directory: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let parent = directory
+        .parent()
+        .ok_or("Import destination has no parent")?;
+    let name = directory
+        .file_name()
+        .ok_or("Import destination needs a directory name")?;
+    let mut leaf = std::ffi::OsString::from(".");
+    leaf.push(name);
+    leaf.push(format!(".bilikara-import.{suffix}"));
+    Ok(parent.join(leaf))
+}
+
+fn import_lock(directory: &Path) -> Result<Option<File>, NativeStorageError> {
+    let invalid = |message| NativeStorageError::new("desktop_import_pending", message);
+    let pending =
+        import_guard_path(directory, "json").map_err(|_| invalid("Invalid import guard path"))?;
+    if fs::symlink_metadata(&pending).is_ok() {
+        return Err(invalid(
+            "Unfinished data import; run the desktop import tool to recover",
+        ));
+    }
+    let path =
+        import_guard_path(directory, "lock").map_err(|_| invalid("Invalid import lock path"))?;
+    check_regular_or_missing(&path)?;
+    match private_options().read(true).open(path) {
+        Ok(file) => {
+            fs2::FileExt::try_lock_shared(&file)
+                .map_err(|_| invalid("The desktop import tool owns this data directory"))?;
+            Ok(Some(file))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(NativeStorageError::io("Open import lock", e)),
+    }
 }
 
 fn private_options() -> OpenOptions {
@@ -85,12 +124,33 @@ impl NativeHostStorage {
     pub(crate) fn open(
         directory: &Path,
     ) -> Result<(Self, Option<AppStateSeed>), NativeStorageError> {
+        Self::open_inner(directory, false)
+    }
+
+    /// Only the offline installer, already holding the parent exclusive import
+    /// lock, may validate a checkpoint while its recovery guard is present.
+    #[cfg(feature = "native-host")]
+    pub(crate) fn open_for_import(
+        directory: &Path,
+    ) -> Result<(Self, Option<AppStateSeed>), NativeStorageError> {
+        Self::open_inner(directory, true)
+    }
+
+    fn open_inner(
+        directory: &Path,
+        offline_import: bool,
+    ) -> Result<(Self, Option<AppStateSeed>), NativeStorageError> {
         if !directory.is_absolute() {
             return Err(NativeStorageError::new(
                 "native_storage_path",
                 "Native storage requires an absolute app-private directory",
             ));
         }
+        let import_lock = if offline_import {
+            None
+        } else {
+            import_lock(directory)?
+        };
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -124,9 +184,21 @@ impl NativeHostStorage {
                 NativeStorageError::io("Lock storage directory", error)
             }
         })?;
+        if !offline_import
+            && fs::symlink_metadata(import_guard_path(&directory, "json").map_err(|_| {
+                NativeStorageError::new("native_storage_path", "Invalid import guard path")
+            })?)
+            .is_ok()
+        {
+            return Err(NativeStorageError::new(
+                "desktop_import_pending",
+                "Unfinished data import; run the desktop import tool to recover",
+            ));
+        }
         let storage = Self {
             directory,
             lock,
+            _import_lock: import_lock,
             last_state: None,
         };
         let state = storage.load()?;
@@ -473,7 +545,7 @@ impl NativeHostStorage {
     }
 }
 
-fn sync_directory(directory: &Path) -> Result<(), NativeStorageError> {
+pub(crate) fn sync_directory(directory: &Path) -> Result<(), NativeStorageError> {
     #[cfg(unix)]
     File::open(directory)
         .and_then(|file| file.sync_all())
@@ -491,6 +563,9 @@ impl Drop for NativeHostStorage {
         // Unlock first: that clears the lock on the shared description itself, so
         // the directory is free the moment this authority goes away.
         let _ = fs2::FileExt::unlock(&self.lock);
+        if let Some(lock) = &self._import_lock {
+            let _ = fs2::FileExt::unlock(lock);
+        }
     }
 }
 

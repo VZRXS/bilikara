@@ -1,0 +1,282 @@
+[
+  {
+    "input": "https://www.youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtube.com/watch?feature=shared&v=YE7VzlLtp-4&list=RDxx&t=30s",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "http://m.youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://music.youtube.com/watch?v=YE7VzlLtp-4&si=abcdef",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4?si=abc&t=30",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://www.youtu.be/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "youtu.be/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "www.youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "m.youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtube.com/shorts/YE7VzlLtp-4?feature=share",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://www.youtube.com/live/YE7VzlLtp-4?si=foo",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtube.com/embed/YE7VzlLtp-4?start=3",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://www.youtube-nocookie.com/embed/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "youtube-nocookie.com/embed/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtube.com/v/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "HTTPS://WWW.YOUTUBE.COM/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4#t=1m",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "分享歌曲《测试曲》 https://youtu.be/YE7VzlLtp-4?si=abc 来一起唱吧！",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "看这个：https://youtube.com/shorts/YE7VzlLtp-4。",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "🎤 おすすめ https://www.youtube.com/watch?v=YE7VzlLtp-4\n#カラオケ",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "Watch this (https://youtu.be/YE7VzlLtp-4).",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "「https://www.youtube.com/watch?v=YE7VzlLtp-4」",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "链接：youtu.be/YE7VzlLtp-4，很好听",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "分享https://youtu.be/YE7VzlLtp-4给你",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "\"https://youtu.be/YE7VzlLtp-4\"",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://example.com/something https://youtu.be/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtube.com/playlist?list=abc https://youtu.be/YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4\nhttps://youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": "YE7VzlLtp-4",
+    "error": false
+  },
+  {
+    "input": "https://www.youtube.com/watch?v=YE7VzlLtp-4&v=abcdefghijk",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/playlist?list=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/@karaoke",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/watch?v=bad",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4/extra",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/live",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/embed/bad",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://user@www.youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com:81/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "ftp://youtube.com/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/watch?v=YE7VzlLtp-4\\x",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4suffix",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://www.youtube-nocookie.com/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/watch?v=%59E7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/watch?%76=YE7VzlLtp-4",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4\nhttps://youtu.be/abcdefghijk",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "https://youtu.be/YE7VzlLtp-4,https://youtu.be/abcdefghijk",
+    "video_id": null,
+    "error": true
+  },
+  {
+    "input": "BV1xx411c7mD",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "av123",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "https://www.bilibili.com/video/BV1xx411c7mD",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "https://youtube.com.evil.invalid/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "https://evil.invalid/youtu.be/YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "https://evil.invalid/?url=https://youtu.be/YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "fooyoutu.be/YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "user@youtu.be/YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "notyoutube.com/watch?v=YE7VzlLtp-4",
+    "video_id": null,
+    "error": false
+  },
+  {
+    "input": "",
+    "video_id": null,
+    "error": false
+  }
+]

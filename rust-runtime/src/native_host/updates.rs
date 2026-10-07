@@ -9,6 +9,7 @@ use bilikara_rust::{
     UpdateAssetCandidate, UpdateAssetSelection, UpdateAssetTarget, decide_release_update,
     select_update_asset,
 };
+pub(crate) use desktop_install::take_last_result;
 use std::io::Read;
 
 const GITHUB: &str = "https://api.github.com/repos/VZRXS/bilikara/releases?per_page=30";
@@ -100,9 +101,14 @@ impl UpdateState {
     }
     /// The desktop Host starts in an idle state carrying its trusted
     /// facts, so the first UI render is already coherent.
-    pub(crate) fn desktop(facts: DesktopUpdateFacts) -> Self {
+    /// A kept helper outcome is reported once, in the first idle status.
+    pub(crate) fn desktop(facts: DesktopUpdateFacts, last_install: Option<Value>) -> Self {
+        let mut status = desktop_idle(&facts);
+        if let Some(last_install) = last_install {
+            status["last_install"] = last_install;
+        }
         Self {
-            status: desktop_idle(&facts),
+            status,
             package: None,
             operation: 0,
             desktop: Some(facts),
@@ -1287,6 +1293,13 @@ mod tests {
         let installed = directory.join("installed");
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("old-record"), b"preserved").unwrap();
+        // The installed updater is copied into the workspace and started.
+        std::fs::create_dir_all(installed.join("_internal")).unwrap();
+        std::fs::write(
+            installed.join("_internal/bilikara-updater.exe"),
+            b"installed updater",
+        )
+        .unwrap();
         *desktop::INSTALLATION_OVERRIDE.lock().unwrap() =
             Some(crate::update_installer::native::Installation {
                 root: installed.clone(),
@@ -1305,12 +1318,17 @@ mod tests {
         );
         let host = super::super::start(
             &directory,
-            Arc::new(|_| None),
+            Arc::new(|path| {
+                matches!(path, "remote.html" | "controller.html").then(|| super::super::Asset {
+                    bytes: b"<html>update identity fixture</html>".to_vec(),
+                    mime: "text/html".into(),
+                })
+            }),
             true,
             Some("private-shell-fixture".into()),
         )
         .unwrap();
-        set_facts("0.8.0-preview.2", "windows", "x64");
+        set_facts("0.8.0-preview.3", "windows", "x64");
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(15))
@@ -1330,6 +1348,46 @@ mod tests {
             .unwrap()
             .to_owned();
         let base = format!("http://127.0.0.1:{}", host.local_port());
+        // Remote and audience/controller WebViews have valid identities, but
+        // none carries the main shell's private installation capability.
+        for entry in [
+            format!("{base}/remote"),
+            format!(
+                "{}?page=controller&presentationGeneration=42",
+                host.bootstrap_url()
+            ),
+        ] {
+            let response = client
+                .get(entry)
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "document")
+                .send()
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let identity = response.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned();
+            for (route, body) in [
+                ("install", json!({"include_preview": false})),
+                ("activate", json!({"operation": 1})),
+                ("cancel", json!({})),
+            ] {
+                assert_eq!(
+                    client
+                        .post(format!("{base}/api/app/update/{route}"))
+                        .header("cookie", &identity)
+                        .json(&body)
+                        .send()
+                        .unwrap()
+                        .status(),
+                    403
+                );
+            }
+        }
         let post = |path: &str, body: Value| -> (u16, Value) {
             let mut request = client
                 .post(format!("{base}{path}"))
@@ -1367,6 +1425,12 @@ mod tests {
                     if value["app_update"]["state"] == wanted {
                         return value["app_update"].clone();
                     }
+                    // Never wait forever for a state an operation has left.
+                    assert!(
+                        wanted == "failed" || value["app_update"]["state"] != "failed",
+                        "update failed while waiting for {wanted}: {}",
+                        value["app_update"]
+                    );
                 }
             }
             panic!("SSE stopped before {wanted}")
@@ -1540,12 +1604,47 @@ mod tests {
         post("/api/app/update/check", json!({"include_preview":false}));
         post("/api/app/update/install", json!({"include_preview":false}));
         let ready = wait("prepared");
+        // The installed fixture is not an executable. Exercise the real
+        // launcher failure: no committed response, no stuck restart state,
+        // no loss of the existing installation, and a fresh check can retry.
+        let failed = client
+            .post(format!("{base}/api/app/update/activate"))
+            .header("x-bilikara-shutdown-token", "private-shell-fixture")
+            .json(&json!({"operation":ready["operation"]}))
+            .send()
+            .unwrap();
+        assert!(!failed.status().is_success());
+        let failed = state();
+        assert_eq!(failed["state"], "failed");
+        assert_eq!(failed["update_installable"], false);
+        assert_eq!(failed["requires_recheck"], true);
+        assert_eq!(failed["message"], failed["error"]);
+        assert!(failed["error"].as_str().unwrap().contains("应用继续运行"));
+        assert_eq!(
+            std::fs::read(installed.join("old-record")).unwrap(),
+            b"preserved"
+        );
+        while completed_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+            != ready["operation"].as_u64().unwrap()
+        {}
+        assert_eq!(
+            post("/api/app/update/check", json!({"include_preview":false})).0,
+            200
+        );
+        assert_eq!(
+            post("/api/app/update/install", json!({"include_preview":false})).0,
+            200
+        );
+        let ready = wait("prepared");
         *desktop_install::LAUNCH_INTENTS.lock().unwrap() = Some(Vec::new());
-        for _ in 0..2 {
+        for body in [
+            json!({"operation":ready["operation"],"command":["untrusted"],"install_root":"/other","plan_path":"/other/plan.json"}),
+            json!({"operation":ready["operation"]}),
+        ] {
             let result = client
                 .post(format!("{base}/api/app/update/activate"))
                 .header("x-bilikara-shutdown-token", "private-shell-fixture")
-                .json(&json!({"operation":ready["operation"]}))
+                .json(&body)
                 .send()
                 .unwrap();
             assert_eq!(result.status(), 200);
@@ -1556,11 +1655,24 @@ mod tests {
             .take()
             .unwrap();
         assert_eq!(intents.len(), 1);
-        assert!(
-            std::fs::read_to_string(&intents[0][2])
-                .unwrap()
-                .contains("bilikara-desktop.exe")
+        let workspace = Path::new(&intents[0][2]).parent().unwrap();
+        assert_eq!(
+            intents[0],
+            [
+                workspace.join("bilikara-updater.exe").to_string_lossy(),
+                "--plan".into(),
+                workspace.join("plan.json").to_string_lossy(),
+            ]
         );
+        assert_eq!(
+            std::fs::read(workspace.join("bilikara-updater.exe")).unwrap(),
+            b"installed updater"
+        );
+        let plan: crate::update_installer::apply::Plan =
+            serde_json::from_slice(&std::fs::read(&intents[0][2]).unwrap()).unwrap();
+        assert_eq!(plan.destination, installed);
+        assert_eq!(plan.wait_pids, [111, 222]);
+        assert!(plan.source.join("bilikara-desktop.exe").is_file());
         assert_eq!(state()["state"], "restarting");
         assert_eq!(state()["cancellable"], false);
         assert_eq!(post("/api/app/update/cancel", json!({})).0, 409);
@@ -1570,11 +1682,14 @@ mod tests {
         // The simulated helper now owns this directory; remove it explicitly.
         std::fs::remove_dir_all(Path::new(&intents[0][2]).parent().unwrap()).unwrap();
         with_app(|app| {
-            app.native().updates = UpdateState::desktop(DesktopUpdateFacts {
-                version: "0.8.0-preview.2".into(),
-                platform: "windows".into(),
-                arch: "x64".into(),
-            });
+            app.native().updates = UpdateState::desktop(
+                DesktopUpdateFacts {
+                    version: "0.8.0-preview.2".into(),
+                    platform: "windows".into(),
+                    arch: "x64".into(),
+                },
+                None,
+            );
             Ok(())
         })
         .unwrap();
@@ -1627,6 +1742,178 @@ mod tests {
     fn release(tag: &str) -> Value {
         json!({"tag_name":tag,"draft":false,"prerelease":tag.contains("preview"),"html_url":format!("https://github.com/VZRXS/bilikara/releases/tag/{tag}"),"assets":[{"name":format!("bilikara-{tag}-android-arm64.apk"),"digest":format!("sha256:{}","a".repeat(64)),"size":1234,"browser_download_url":"https://evil.test/x.apk"}]})
     }
+    #[test]
+    fn kept_helper_result_is_reported_once_in_the_first_desktop_status() {
+        let data = std::env::temp_dir().join(format!("update-result-{}", token().unwrap()));
+        let reports = crate::update_installer::native::reports(&data);
+        std::fs::create_dir_all(&reports).unwrap();
+        let facts = DesktopUpdateFacts {
+            version: "0.8.0-preview.0".into(),
+            platform: "windows".into(),
+            arch: "x64".into(),
+        };
+        // CMD writes CRLF; the macOS shell helper writes LF.
+        for (text, result) in [
+            ("operation=update-a1\r\nresult=failed\r\n", "failed"),
+            ("operation=update-a1\nresult=installed\n", "installed"),
+        ] {
+            std::fs::write(reports.join("last-result.txt"), text).unwrap();
+            std::fs::write(reports.join("update-a1.log"), "[t] failed").unwrap();
+            let last = take_last_result(&data, None).unwrap();
+            assert_eq!(last["operation"], "update-a1");
+            assert_eq!(last["result"], result);
+            assert_eq!(
+                last["log"],
+                reports.join("update-a1.log").to_string_lossy().as_ref()
+            );
+            // Consumed: the next Host start reports nothing.
+            assert!(take_last_result(&data, None).is_none());
+            assert!(reports.join("update-a1.log").is_file());
+            let state = UpdateState::desktop(facts.clone(), Some(last.clone()));
+            assert_eq!(state.snapshot()["last_install"], last);
+            assert_eq!(state.snapshot()["state"], "idle");
+        }
+        for malformed in [
+            "operation=../escape\nresult=failed\n",
+            "operation=update-a1\nresult=unknown\n",
+            "result=failed\n",
+        ] {
+            std::fs::write(reports.join("last-result.txt"), malformed).unwrap();
+            assert!(take_last_result(&data, None).is_none(), "{malformed}");
+        }
+        assert!(UpdateState::desktop(facts, None).snapshot()["last_install"].is_null());
+        // A directory name or a file called plan.json is not ownership proof.
+        // Old helpers without a workspace lease are conservatively retained.
+        let parent = data.join("workspaces");
+        for (name, plan) in [("update-a1", true), ("update-a2", false)] {
+            std::fs::create_dir_all(parent.join(name)).unwrap();
+            if plan {
+                std::fs::write(parent.join(name).join("plan.json"), "{}").unwrap();
+            }
+        }
+        for operation in ["update-a1", "update-a2"] {
+            std::fs::write(
+                reports.join("last-result.txt"),
+                format!("operation={operation}\nresult=failed\n"),
+            )
+            .unwrap();
+            take_last_result(&data, Some(&parent)).unwrap();
+        }
+        assert!(parent.join("update-a1").exists());
+        assert!(parent.join("update-a2").exists());
+        // The notice shows the ordinary Windows form of a canonical path.
+        for (canonical, shown) in [
+            (
+                r"\\?\C:\bilikara 安装\runtime\data\update-logs\u.log",
+                r"C:\bilikara 安装\runtime\data\update-logs\u.log",
+            ),
+            (r"\\?\UNC\server\share\u.log", r"\\server\share\u.log"),
+            (
+                "/Users/a/Library/Application Support/bilikara/data/update-logs/u.log",
+                "/Users/a/Library/Application Support/bilikara/data/update-logs/u.log",
+            ),
+        ] {
+            assert_eq!(desktop_install::display_path(canonical), shown);
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn result_cleanup_waits_for_the_updater_and_preserves_unrelated_workspaces() {
+        use crate::update_installer::apply::Plan;
+        let data = std::env::temp_dir().join(format!("update-cleanup-{}", token().unwrap()));
+        let parent = data.join("workspaces");
+        let workspace = parent.join("update-running");
+        let reports = crate::update_installer::native::reports(&data);
+        let plan = Plan {
+            schema_version: 1,
+            platform: "windows".into(),
+            operation: "update-running".into(),
+            source: workspace.join("extracted/package"),
+            destination: data.join("installed"),
+            workspace: workspace.clone(),
+            reports: reports.clone(),
+            preserve: vec!["runtime".into()],
+            wait_pids: vec![std::process::id()],
+        };
+        for path in [&plan.source, &plan.destination, &reports] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(
+            workspace.join("plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+        let lease = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create_new(true)
+            .open(workspace.join("updater.lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&lease).unwrap();
+        let busy =
+            crate::update_installer::apply::cleanup_workspace(&workspace, &reports).unwrap_err();
+        assert_eq!(
+            busy.raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        std::fs::write(
+            reports.join("last-result.txt"),
+            "operation=update-running\nresult=installed\nrelaunch=failed\n",
+        )
+        .unwrap();
+        std::fs::write(reports.join("update-running.log"), "kept restart error").unwrap();
+        let last = take_last_result(&data, Some(&parent)).unwrap();
+        assert_eq!(last["result"], "installed");
+        assert!(
+            workspace.join("plan.json").is_file(),
+            "must not clean a running updater"
+        );
+        assert_eq!(last["relaunch_failed"], true);
+        assert!(take_last_result(&data, Some(&parent)).is_none());
+        // The next Host can report immediately, but cleanup must wait until
+        // the updater has finished writing its log and released its lease.
+        drop(lease);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while workspace.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!workspace.exists());
+        assert_eq!(
+            std::fs::read_to_string(reports.join("update-running.log")).unwrap(),
+            "kept restart error"
+        );
+        // Valid-looking plans with a different report owner, missing leases,
+        // or an unrestored installation must not authorize deletion either.
+        for kind in ["unrelated", "legacy", "recovery"] {
+            let workspace = parent.join(format!("update-{kind}"));
+            let mut other = plan.clone();
+            other.operation = format!("update-{kind}");
+            other.workspace = workspace.clone();
+            other.source = workspace.join("extracted/package");
+            if kind == "unrelated" {
+                other.reports = data.join("someone-else");
+            }
+            if kind == "recovery" {
+                other.destination = data.join("missing-installation");
+            }
+            std::fs::create_dir_all(&other.source).unwrap();
+            std::fs::write(
+                workspace.join("plan.json"),
+                serde_json::to_vec(&other).unwrap(),
+            )
+            .unwrap();
+            if kind != "legacy" {
+                std::fs::write(workspace.join("updater.lock"), "").unwrap();
+            }
+            assert!(
+                crate::update_installer::apply::cleanup_workspace(&workspace, &reports).is_err()
+            );
+            assert!(workspace.join("plan.json").is_file());
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[test]
     fn android_update_requires_apk_hash_and_uses_shared_channel_decision() {
         let releases = json!([release("v0.8.1"), release("v0.9.0-preview.1")]);

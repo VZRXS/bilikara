@@ -4,7 +4,7 @@ use super::*;
 use crate::{AppStateRequest, AppStateSeed, execute_app_state, initialize_native_host};
 use std::io::Write;
 #[path = "desktop_paths.rs"]
-mod paths;
+pub(super) mod paths;
 
 #[cfg(unix)]
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -29,6 +29,11 @@ pub(super) fn unavailable() -> ApiError {
 pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("--data-dir must be an absolute native data directory".into());
+    }
+    if std::fs::symlink_metadata(crate::native_host_storage::import_guard_path(path, "json")?)
+        .is_ok()
+    {
+        return Err("Unfinished data import; run the desktop import tool to recover".into());
     }
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
@@ -210,7 +215,7 @@ pub(super) fn installation() -> Option<crate::update_installer::native::Installa
     INSTALLATION.get().cloned().flatten()
 }
 
-const PLATFORM: &str = if cfg!(target_os = "windows") {
+pub(super) const PLATFORM: &str = if cfg!(target_os = "windows") {
     "windows"
 } else if cfg!(target_os = "macos") {
     "macos"
@@ -288,6 +293,12 @@ pub(super) fn update_facts() -> updates::DesktopUpdateFacts {
 }
 
 pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
+    let arguments: Vec<_> = arguments.collect();
+    // The explicit import tool is offline. It needs neither a parent process,
+    // packaged media libraries, a listener nor application initialization.
+    if super::desktop_import_tool::run(&arguments)? {
+        return Ok(());
+    }
     #[cfg(windows)]
     let desktop_parent = super::desktop_process::Parent::open()?;
     #[cfg(unix)]
@@ -306,7 +317,7 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let desktop_parent = std::env::var("BILIKARA_DESKTOP_PID")
         .ok()
         .and_then(|s| s.parse::<u32>().ok());
-    let mut args = arguments;
+    let mut args = arguments.into_iter();
     let mut directory = None;
     let mut assets = None;
     let mut port = None;

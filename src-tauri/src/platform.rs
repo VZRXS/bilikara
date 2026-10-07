@@ -82,6 +82,94 @@ pub(crate) fn sync_windows_main_window_frame(window: &tauri::Window) -> Result<(
     Ok(())
 }
 
+pub(crate) fn open_existing_directory(path: &Path) -> Result<(), String> {
+    validate_existing_directory(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::{
+            Win32::{
+                System::Com::{
+                    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
+                    CoUninitialize,
+                },
+                UI::Shell::ShellExecuteW,
+            },
+            w,
+        };
+        let directory: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        if directory[..directory.len() - 1].contains(&0) {
+            return Err("文件夹路径无效。".into());
+        }
+        // The import workflow runs on a worker thread. Initialize the apartment
+        // for shell extensions here, and balance even an already-initialized STA.
+        if unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        } < 0
+        {
+            return Err("无法初始化系统文件管理器。".into());
+        }
+        struct Apartment;
+        impl Drop for Apartment {
+            fn drop(&mut self) {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+        let _apartment = Apartment;
+        // Native directory opening, never a shell command or executable path.
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                w!("explore"),
+                directory.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result as isize <= 32 {
+            return Err("系统文件管理器无法打开文件夹。".into());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let mut child = directory_open_command(path)
+            .spawn()
+            .map_err(|_| "系统文件管理器无法打开文件夹。")?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    Ok(())
+}
+
+fn validate_existing_directory(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("文件夹不存在或不可访问。".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn directory_open_command(path: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(if cfg!(target_os = "macos") {
+        "/usr/bin/open"
+    } else {
+        "/usr/bin/xdg-open"
+    });
+    command
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command
+}
+
 pub(crate) fn is_macos_app_bundle_executable(path: &Path) -> bool {
     let Some(mac_os_dir) = path.parent() else {
         return false;
@@ -202,6 +290,55 @@ pub(crate) fn open_external_web_url(
 
 #[cfg(test)]
 mod web_url_tests {
+    #[test]
+    fn directory_opening_requires_a_real_absolute_folder_and_keeps_native_arguments() {
+        use super::*;
+        let root = std::env::temp_dir().join(format!(
+            "bilikara folder 中文 & (backup) {} {}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("not-a-folder.exe");
+        std::fs::write(&file, b"never execute").unwrap();
+        assert!(validate_existing_directory(&root).is_ok());
+        for invalid in [
+            file,
+            root.join("missing"),
+            std::path::PathBuf::from("relative-directory"),
+        ] {
+            assert!(open_existing_directory(&invalid).is_err());
+        }
+        #[cfg(not(windows))]
+        {
+            let command = directory_open_command(&root);
+            assert_eq!(
+                command.get_program(),
+                if cfg!(target_os = "macos") {
+                    "/usr/bin/open"
+                } else {
+                    "/usr/bin/xdg-open"
+                }
+            );
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                vec![root.as_os_str()]
+            );
+            // POSIX may contain quotes/backslashes; they remain literal argv bytes.
+            let special = root.join("quote' back\\slash $(literal)");
+            assert_eq!(
+                directory_open_command(&special)
+                    .get_args()
+                    .collect::<Vec<_>>(),
+                vec![special.as_os_str()]
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_web_links_with_no_embedded_credentials() {
         for url in [

@@ -1,24 +1,19 @@
 # libav media integration
 
-## Current M6 behavior
+Current native prerequisites and cache use the independent Rust `xtask` through
+the platform recipes; see [rebuild commands](REBUILD.md) and
+[current desktop builds](../docs/native-desktop.md). The replaced Python companion
+builder, comparison runner and fixture generator are retired. Node comparison
+uses the actual Rust driver and explicit same-build FFmpeg/ffprobe test oracles;
+ordinary product prefixes disable programs. Current native packages use
+`xtask verify-native-desktop` and contain neither a PyInstaller backend nor
+FFmpeg/ffprobe programs or private media test executables. The former frozen-package
+smoke engines and their Windows wrapper are retired. Source media-CLI routing,
+manifest validation and tool restoration remain supported separately; see
+[Source compatibility](../docs/source-compatibility.md).
 
-Supported provisioned packages now use libav first in normal Host/CacheRuntime
-operations: metadata, complete selected-track packet traversal, the accepted
-H.264/AAC MP4 copy/fast-start profile, and FLAC-in-MP4 to native FLAC. The one
-startup rollback is `BILIKARA_MEDIA_BACKEND=legacy`; unset or `default` selects
-libav first where provisioned. No smoke flag activates ordinary media routing.
-Unprovisioned targets retain their existing routes. Rust owns capability and
-error decisions; only explicit eligible Unsupported/Unavailable failures can
-use one operation-specific compatibility implementation. Profile timing/config
-limits that the retained writer cannot satisfy stay errors.
-
-The accepted Linux source-build prefix remains a local integration fixture, not
-a deployable package path. Windows x64 uses the actual packaged Python backend
-and restricted loader; Actions execution after push and manual playback remain
-pending separately from code review. See [M6 Windows integration](WINDOWS_PREVIEW.md).
-CLI remains packaged, with its own DownKyi timestamp and BBDown workflows.
-M7 CLI removal, other platforms/formats, full decode certification and historical
-Hi-Res acceptance are outside this closeout.
+The M1–M5 developer procedures below retain their original operation boundaries.
+They do not describe the current application layout or release acceptance.
 
 ## Historical M1–M5 developer entries
 
@@ -58,8 +53,8 @@ shared-library build is installed in the separate prefix below. The previous
 ```bash
 M1_OUT="$PWD/.tmp/m1-libav-9"
 M1_PREFIX="$M1_OUT/ffmpeg-prefix"
-python media-libav/build.py --prefix "$M1_PREFIX" --out "$M1_OUT/companion" --test
-python media-libav/generate_fixtures.py --prefix "$M1_PREFIX" \
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M1_PREFIX" --out "$M1_OUT/companion" --test
+node media-libav/generate_fixtures.mjs --prefix "$M1_PREFIX" \
   --h264-source /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_video.mp4 \
   --out "$M1_OUT/fixtures"
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
@@ -67,7 +62,7 @@ cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metad
   "$M1_OUT/companion/libbilikara_media_libav.so" "$M1_OUT/fixtures/av.mp4"
 ```
 
-`build.py` uses only the explicit prefix, no pkg-config. It builds one C shared
+`xtask libav-companion` uses only the explicit prefix, no pkg-config. It builds one C shared
 companion with a private shim, outside every Cargo build graph. No new Cargo
 dependency or lockfile entry is needed: the Linux loader uses existing `libc`.
 The fixture generator creates a small PCM WAV, uses the same-build CLI for
@@ -229,7 +224,7 @@ Sanitizer reproduction (GCC ASan/UBSan, Linux; test binary path is printed by
 `cargo test --no-run --manifest-path rust-runtime/Cargo.toml --locked --lib`):
 
 ```bash
-python media-libav/build.py --prefix "$M1_PREFIX" --out "$M1_OUT/asan" --sanitize --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M1_PREFIX" --out "$M1_OUT/asan" --sanitize --test
 # Substitute the lib test executable printed by Cargo for M1_TEST_BINARY.
 LD_PRELOAD=/usr/lib/gcc/x86_64-linux-gnu/11/libasan.so \
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
@@ -248,93 +243,3 @@ The ABI authority for this slice is the **installed 9.0.1 headers**, especially
 `libavformat/avformat.h`, `libavformat/avio.h`, `libavcodec/codec_par.h`,
 `libavutil/error.h`, plus same-source `libavformat/file.c` (`fd_open`),
 `demux.c`, `mov.c` and `options_table.h`. Online docs are not an ABI pin.
-
-## Local review evidence (2026-09-08)
-
-Baseline: `work/v0.8.0`, accepted S3 HEAD `0dfec42`, following S2 `62ffc4c`
-and S1 `7049e67`. Local history is three commits ahead of the recorded origin
-branch. No fetch, checkout or history operation was performed. The pre-existing
-untracked `S1_NATIVE_RECACHE_REVISION4.patch` and
-`S1_NATIVE_RECACHE_REVISION5.patch` were preserved. No accepted implementation
-file was edited except the additive module declaration in `lib.rs`.
-
-Complete M1 file list (one modified, ten new):
-
-- Modified: `rust-runtime/src/lib.rs`.
-- New: `rust-runtime/src/experimental_libav/mod.rs`,
-  `rust-runtime/src/experimental_libav/wire.rs`,
-  `rust-runtime/src/experimental_libav/tests.rs`,
-  `rust-runtime/examples/libav_metadata.rs`.
-- New: `media-libav/probe.h`, `media-libav/probe.c`, `media-libav/build.py`,
-  `media-libav/generate_fixtures.py`, `media-libav/test_shim.c`,
-  `media-libav/README.md`.
-
-Architecture: Rust runtime adapter owns explicit loading, request validation,
-cancellation and project result conversion; C owns libav execution/resources.
-Python additions are developer build/fixture orchestration only, with no
-application business rules, endpoints, fallbacks or mutable state authority.
-
-The following gate is rerun for the 9.0.1 upgrade; the earlier 8.1.2 gate remains
-preserved separately. Commands and results (all exit 0):
-
-| Working directory | Exact commands | Result |
-| --- | --- | --- |
-| `rust/` | `cargo fmt --check`; `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`; `cargo build --release --locked` | PASS; 216 unit tests, 0 doc tests |
-| `rust-runtime/` | `cargo fmt --check`; `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`; `cargo build --release --locked` | PASS; 141 unit tests, 5 optional tests ignored here, 0 doc tests |
-| `src-tauri/` | `cargo fmt --check`; `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`; `cargo build --release --locked` | PASS; 76 tests |
-| Root | `BILIKARA_REQUIRE_RUST_LIB=1 python -m unittest discover -s tests -v` | PASS; 1509 discovered, 1501 passed, 8 skipped below |
-| Root | `python -m compileall -q bilikara`; `python -m py_compile start_bilikara.py build_bundle.py` | PASS |
-| Root | `npm ci`; `npm run build` | PASS; local Linux build/bundles only |
-| Root | `git diff --check`; `python -m py_compile media-libav/build.py media-libav/generate_fixtures.py` | PASS |
-
-The explicit commands above additionally passed: companion build/C assertions
-(4 groups), fixture generation, Rust example, live suite (5 passed, **0
-ignored**, plus 1 default-isolation child test), ASan/LSan/UBSan build/C
-assertions and repeated-call Rust test (1 passed). The same live test selected
-with an absent artifact produced exactly 1 failure and 0 ignored tests, as
-required. Runtime gate includes the accepted S2 collision, S3 missing-mdat,
-taxonomy and retry/fallback tests; Python gate includes S3 native retry and
-FFI error propagation tests. No earlier review's PASS substitutes for these
-executions. The 9.0.1 upgrade changes only the selected version checks and this
-document: `media-libav/build.py`, `media-libav/probe.c`,
-`rust-runtime/src/experimental_libav/mod.rs`,
-`rust-runtime/src/experimental_libav/tests.rs`, and `media-libav/README.md`.
-Project ABI v1, metadata/error semantics and all existing assertions remain;
-test build-version fixtures are updated to the selected version. The previous
-8.1.2 companion explicitly reports `Unavailable` through the new runtime entry.
-
-Exact inherited Python skips:
-
-| Test | Technical reason reported by existing test |
-| --- | --- |
-| `test_internet_remote_deployment.InternetRemoteDeploymentTest.test_sync_copies_current_remote_html_dependencies` | PowerShell is required to execute the actual asset sync |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_backend_ready_handshake_and_graceful_shutdown` | Backend executable absent at `dist/bilikara.app/Contents/MacOS/bilikara` |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_packaged_bbdown_restores_offline_vendor_to_clean_runtime` | Requires macOS |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_packaged_ffmpeg_and_runtime_copy_execute` | Requires macOS |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_packaged_https_uses_macos_system_trust` | Requires macOS |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_packaged_macos_aria2_prepares_on_demand_with_minimal_path` | Full aria2c download reserved for package validation gate |
-| `test_macos_backend_smoke.MacOSBackendSmokeTest.test_packaged_native_runtime_loads_from_bundle` | Requires macOS |
-| `test_macos_tauri_smoke.MacOSTauriSmokeTest.test_tauri_resolves_backend_and_completes_ready_handshake` | Requires macOS |
-
-No M1 Linux acceptance check remains incomplete. Windows/macOS companion
-loading/packaging and real-device playback were not run (outside M1 scope).
-No authenticated Hi-Res sample, full decode/scan or damaged-tail guarantee is
-claimed. The existing `.app` bundle-identifier warning remains unrelated.
-
-Local command records and raw outputs are in `.tmp/m1-libav-9/`:
-`gate-*.json` / `gate-*.log`, `live-tests.log`, `asan-build.log`,
-`asan-live.log`, `required-artifact-negative.log`, and `demo.json`.
-`companion-{readelf,ldd}.txt`, `runtime-{readelf,ldd}.txt`,
-`header-dependencies.txt` (52 libav headers, all in the selected prefix), and
-`ffmpeg-info.json`, `signature.log`, `configure.log`, `ffmpeg-build.log` and
-`ffmpeg-install.log` record actual dependency/header/build origins.
-`av.mp4.strace` and `network.m3u8.strace` show only the driver exec, with no network
-or ffprobe subprocess. Build-time/test reference ffprobe calls are separate.
-
-Review the working tree or `.tmp/m1-libav-9/M1_LIBAV_PROBE.patch`, which includes
-all eleven M1 files and excludes the two S1 patches. For untracked source files,
-ordinary `git diff` alone is insufficient; use this patch or open the new files.
-`.tmp/m1-libav-9/FFMPEG9_UPGRADE.patch` isolates the five-file upgrade from the
-preserved 8.1.2 M1 implementation; `.tmp/m1-libav-9/before-upgrade/` contains its
-original eleven-file boundary. Old M0 artifacts and evidence were not overwritten.
-Commit: none. Push: No. No PR, tag, published release, remote workflow or deploy.

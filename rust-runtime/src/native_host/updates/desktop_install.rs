@@ -110,6 +110,90 @@ fn candidates(package: &Value) -> Vec<crate::DownloadCandidate> {
         .collect()
 }
 
+/// A path as users know it: canonical Windows roots are verbatim `\\?\C:\...`.
+pub(crate) fn display_path(path: &str) -> String {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_owned(),
+        Some(rest) => rest
+            .strip_prefix(r"UNC\")
+            .map_or_else(|| path.to_owned(), |share| format!(r"\\{share}")),
+        None => path.to_owned(),
+    }
+}
+
+/// Consume the outcome a previous helper kept under the data root, once, at
+/// desktop Host start. Its log stays for diagnosis; malformed markers are
+/// ignored rather than reported as an update result. Cleanup waits for the
+/// updater's workspace lease; publishing a result does not mean it has exited.
+pub(crate) fn take_last_result(
+    data: &std::path::Path,
+    workspaces: Option<&std::path::Path>,
+) -> Option<Value> {
+    let reports = crate::update_installer::native::reports(data);
+    let marker = reports.join("last-result.txt");
+    let mut text = String::new();
+    std::fs::File::open(&marker)
+        .ok()?
+        .take(512)
+        .read_to_string(&mut text)
+        .ok()?;
+    let _ = std::fs::remove_file(&marker);
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|line| line.trim_end_matches('\r').strip_prefix(key))
+            .map(str::to_owned)
+    };
+    let (operation, result) = (field("operation=")?, field("result=")?);
+    if operation.is_empty()
+        || operation.len() > 96
+        || !operation
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+        || !matches!(result.as_str(), "installed" | "failed" | "owners_running")
+    {
+        return None;
+    }
+    if let Some(workspace) = workspaces.map(|parent| parent.join(&operation))
+        && operation.starts_with("update-")
+        && workspace
+            .join(crate::update_installer::apply::PLAN_FILE)
+            .is_file()
+    {
+        let cleanup_reports = reports.clone();
+        let _ = std::thread::Builder::new()
+            .name("update-cleanup".into())
+            .spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    match crate::update_installer::apply::cleanup_workspace(
+                        &workspace,
+                        &cleanup_reports,
+                    ) {
+                        Err(error)
+                            if (error.kind() == std::io::ErrorKind::WouldBlock
+                                || error.raw_os_error()
+                                    == fs2::lock_contended_error().raw_os_error())
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        _ => break,
+                    }
+                }
+            });
+    }
+    let log = reports.join(format!("{operation}.log"));
+    let mut result = json!({
+        "operation": operation,
+        "result": result,
+        "log": log.is_file().then(|| display_path(&log.to_string_lossy())),
+    });
+    if field("relaunch=").as_deref() == Some("failed") {
+        result["relaunch_failed"] = json!(true);
+    }
+    Some(result)
+}
+
 fn current(context: &HostContext, operation: u64, phase: &AtomicU8) -> bool {
     if context.stop.load(Ordering::Acquire) || phase.load(Ordering::Acquire) >= ACTIVATING {
         return false;
@@ -302,6 +386,7 @@ fn run(
             &installation,
             &archive,
             &workspace,
+            &context.directory,
             package["tag"].as_str().unwrap_or_default(),
             || current(&context, operation, &phase),
         )
@@ -442,7 +527,7 @@ pub(super) fn activate(context: &HostContext, operation: u64) -> Result<(), ApiE
         job.phase.store(ACTIVATING, Ordering::Release);
         update.status["state"] = json!("restarting");
         update.status["cancellable"] = json!(false);
-        update.status["message"] = json!("更新替换已提交，正在关闭并重新启动应用");
+        update.status["message"] = json!("正在等待独立更新程序就绪");
         session.revision += 1;
         Ok(Some((prepared, job.phase.clone())))
     })?;
@@ -450,21 +535,29 @@ pub(super) fn activate(context: &HostContext, operation: u64) -> Result<(), ApiE
         return Ok(());
     };
     let result = launch(prepared.command);
-    phase.store(
-        if result.is_ok() { COMMITTED } else { CANCELLED },
-        Ordering::Release,
-    );
-    if result.is_err() {
+    if let Err(error) = result {
+        let message = format!(
+            "无法启动独立更新程序，应用继续运行，原安装未修改：{}",
+            error.message
+        );
         let _ = with_app(|app| {
             let session = app.native();
             if session.updates.operation == operation {
                 session.updates.status["state"] = json!("failed");
-                session.updates.status["error"] = json!("无法启动更新 helper，原安装未修改");
+                session.updates.status["error"] = json!(message);
+                session.updates.status["message"] = json!(message);
+                session.updates.status["update_installable"] = json!(false);
+                session.updates.status["requires_recheck"] = json!(true);
+                session.updates.status["updated_at"] = json!(now());
+                session.updates.install = None;
+                session.updates.package = None;
                 session.revision += 1;
             }
             Ok(())
         });
-        return Err(failure("无法启动更新 helper，原安装未修改"));
+        phase.store(CANCELLED, Ordering::Release);
+        return Err(failure(message));
     }
+    phase.store(COMMITTED, Ordering::Release);
     Ok(())
 }

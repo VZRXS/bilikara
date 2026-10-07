@@ -23,7 +23,7 @@ The copied frontend assets are a one-way mirror, not an independent fork.
 `sync_internet_remote_assets.ps1` overwrites its allowlisted destination files.
 A manual edit to those files in the Worker repository will therefore be replaced
 on the next successful sync, including a deployment triggered by a Worker push.
-Make shared UI fixes in the configured Bilikara source branch and commit/push
+Make shared UI fixes in the configured bilikara source branch and commit/push
 them there. Uncommitted local changes are never read by Actions. Worker-only
 code and configuration outside the copied assets remain owned by the Worker
 repository.
@@ -47,7 +47,7 @@ credential rather than a maintainer's general-purpose credential. See the
 If the target variable is absent, validation still runs and deployment is
 disabled. If the variable is present but the token is missing or invalid, the
 dispatch job fails visibly. Fork PRs remain validation-only regardless of the
-target repository's configuration. No Cloudflare secret is needed in Bilikara.
+target repository's configuration. No Cloudflare secret is needed in bilikara.
 
 ## Private deployment repository configuration
 

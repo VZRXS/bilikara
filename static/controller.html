@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bilikara Stage</title>
+  <title>bilikara Stage</title>
   <link rel="icon" href="/pic/icon.png">
   <link rel="stylesheet" href="/controller.css">
   <link rel="stylesheet" href="/remote-access.css">
@@ -18,6 +18,7 @@
       </div>
     </div>
     <div class="fullscreen-request-toast hidden" id="controller-request-toast" aria-live="polite"></div>
+    <div class="presentation-feedback hidden" id="controller-feedback" role="status" aria-live="polite"></div>
     <div class="presentation-output-control" id="controller-output-control">
       <button type="button" class="presentation-output-exit" id="controller-exit" disabled
         aria-label="手机点歌 / 退出全屏" data-i18n-aria-label="player.fullscreenRemoteExit">
@@ -115,6 +116,7 @@
   <script src="/presentation-sync.js"></script>
   <script src="/android-presentation.js"></script>
   <script src="/incoming-request.js"></script>
+  <script src="/presentation-feedback.js"></script>
   <script src="/fullscreen-controls.js"></script>
   <script src="/controller.js"></script>
 </body>

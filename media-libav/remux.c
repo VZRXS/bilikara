@@ -190,7 +190,12 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (flac) {
         if ((ret = av_dict_set(&options, "write_header", "1", 0)) < 0) goto write_error;
     } else {
-        if ((ret = av_dict_set(&options, "movflags", "+faststart", 0)) < 0 ||
+        /* With reordered AVC and a positive presentation start, unsigned
+         * CTTS/edit-list synthesis can shift the reopened PTS/DTS to zero.
+         * Signed composition offsets preserve the packet timeline instead.
+         * The Rust reopen check still requires exact input/output bounds. */
+        const char *flags = q->media_type == 1 ? "+faststart+negative_cts_offsets" : "+faststart";
+        if ((ret = av_dict_set(&options, "movflags", flags, 0)) < 0 ||
             (ret = av_dict_set(&options, "use_editlist", "1", 0)) < 0) goto write_error;
     }
     ret = avformat_write_header(out, &options);
@@ -334,7 +339,7 @@ static void remux_packets(AVFormatContext *s, Call *call, const BmRemuxRequest *
     if (fd < 0) { r->status = BM_IO; goto done; }
     BmRequest check = {fd, q->input.cancelled, q->input.opaque};
     BmResult *metadata = NULL;
-    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par, 0);
+    r->status = inspect(&check, &metadata, NULL, NULL, NULL, NULL, par, 0, NULL, NULL);
     if (!r->status) r->status = metadata ? metadata->status : BM_BACKEND_FAILURE;
     bm_release(metadata);
     if (close(fd) < 0 && !r->status) r->status = BM_IO;
@@ -379,7 +384,7 @@ static uint32_t copy_profile(const BmRemuxRequest *q, BmRemuxResult **out, int f
     if (!r) return BM_BACKEND_FAILURE;
     *out = r;
     BmResult *metadata = NULL;
-    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL, flac);
+    uint32_t status = inspect(&q->input, &metadata, NULL, NULL, q, r, NULL, flac, NULL, NULL);
     bm_release(metadata);
     if (status) r->status = status;
     return BM_OK;

@@ -51,6 +51,9 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Install locked Node dependencies
+        run: npm ci
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -60,7 +63,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ffmpeg
 
       - name: Reset incomplete Rust toolchain on macOS
         if: runner.os == 'macOS'
@@ -82,10 +85,26 @@ jobs:
             ./rust -> target
             ./rust-runtime -> target
             ./src-tauri -> target
+            ./xtask -> target
           # Retain our crates as well as dependencies; Cargo still validates them.
           cache-workspace-crates: true
           # Separate feature sets; rotate once because exact hits are immutable.
           shared-key: ci-test-workspace-v1
+
+      - name: Desktop construction tool checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path xtask/Cargo.toml --check
+          cargo clippy --manifest-path xtask/Cargo.toml --all-targets --locked --target host-tuple -- -D warnings
+          cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple
+          cargo build --manifest-path xtask/Cargo.toml --locked --target host-tuple
+          npm run test:desktop-build
+          npm run test:libav-wrapper
+          npm run test:media-entry
+          npm run test:native-host-entry
+          npm run test:native-media-entry
+          npm run test:auxiliary
 
       - name: Rust Checks and Build
         shell: bash
@@ -108,10 +127,24 @@ jobs:
           cargo build --release --locked
           cd ..
 
+      - name: Verify offline desktop data import
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked --target host-tuple --lib native_host::desktop_import
+          npm run test:native-import
+
+      - name: Verify frontend and native shell test tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Actual locked manifest checks run after the native Cargo graphs exist.
+          npm run test:frontend
+          npm run test:native-smoke
+
       - name: Compile Python files
         run: |
           python -m compileall -q bilikara
-          python -m py_compile start_bilikara.py build_bundle.py
 
       - name: Test release mirror verification
         run: node --test tests/release_mirror.test.mjs
@@ -122,7 +155,9 @@ jobs:
       - name: Resolve Linux media test cache identity
         if: runner.os == 'Linux'
         id: test-libav-key
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        env:
+          BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
 
       - name: Cache verified Linux media test libraries
         if: runner.os == 'Linux'
@@ -142,24 +177,53 @@ jobs:
           # This suite loads only the companion. Release drivers/test binaries
           # and packaging records are built by the desktop bundle jobs.
           bash media-libav/build-posix-libraries.sh
-          python media-libav/build.py --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
           echo "BILIKARA_TEST_LIBAV_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so" >> "$GITHUB_ENV"
 
-      - name: Run unit tests
-        # Independent QR decoding belongs to tests, not packaged runtime imports.
-        # The bundle job continues to install only requirements-packaging.txt.
+      - name: Verify real libav prerequisite contracts
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          python -m pip install -r requirements-test-qr.txt
+          set -euo pipefail
+          npm run test:libav-prerequisites
+
+      - name: Run unit tests
+        run: |
           python -m unittest discover -s tests -v
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
           BILIKARA_RUST_STRICT_EQUIVALENCE: "1"
 
-      - name: Verify native desktop source workflows
-        if: runner.os == 'Linux'
+      - name: Verify native desktop business workflows
+        shell: bash
         run: |
-          cargo build --manifest-path rust-runtime/Cargo.toml --features native-host --bin bilikara-desktop-host --locked
-          BILIKARA_TEST_NATIVE_PACKAGE="$GITHUB_WORKSPACE/rust-runtime/target/debug/bilikara-desktop-host" python -m unittest tests.test_native_desktop_sources tests.test_native_source_queue -v
+          set -euo pipefail
+          # Node selects the actual current locked host-native Cargo artifact.
+          # Linux media/cookie tests require the prefix exported above.
+          npm run test:playlist-entry
+          npm run test:native-transport-entry
+          npm run test:native-host
+          npm run test:native-http
+          npm run test:native-catalog
+          npm run test:catalog-maintenance
+          npm run test:native-qr
+          npm run test:native-images
+          npm run test:native-login
+          npm run test:remote-load
+
+      - name: Verify rendered native ratings and media workflows
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Test-only pinned browser, after the native compiler graphs/prefix.
+          # FFmpeg above generates only synthetic test media; not bundled.
+          npm exec -- playwright install --with-deps chromium webkit
+          npm run test:native-users
+          npm run test:native-ratings
+          npm run test:host-experience
+          npm run test:native-transport
+          npm run test:native-media
 
   bundle:
     name: Bundle (${{ matrix.label }})
@@ -179,13 +243,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements*.txt
 
       - name: Resolve bundle archive name
         id: bundle-name
@@ -223,19 +280,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew list gnupg >/dev/null 2>&1 || brew install gnupg
 
-      - name: Prepare pinned BBDown vendor
-        shell: bash
-        run: |
-          bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
-          python scripts/prepare_bbdown_vendor.py "$bbdown_dir"
-          printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
-          cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
-
-      - name: Install packaging dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-packaging.txt
-
       - name: Reset incomplete Rust toolchain on macOS
         if: runner.os == 'macOS'
         run: |
@@ -256,6 +300,7 @@ jobs:
           workspaces: |
             ./rust-runtime -> target
             ./src-tauri -> target
+            ./xtask -> target
           cache-workspace-crates: true
           shared-key: ci-desktop-bundle-workspace-v1
 
@@ -264,10 +309,29 @@ jobs:
         shell: pwsh
         run: ./scripts/setup_msvc.ps1 -Arch '${{ matrix.arch }}'
 
+      - name: Prepare pinned BBDown vendor
+        shell: bash
+        run: |
+          bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown "$bbdown_dir" --platform '${{ matrix.slug }}' --arch '${{ matrix.arch }}'
+          printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
+          cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
+
+      - name: Verify prepared BBDown discovery from native environment
+        shell: bash
+        env:
+          BILIKARA_TEST_BBDOWN_DIR: ${{ runner.temp }}/bilikara-bbdown-vendor
+        run: cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple prepared_bbdown_is_discoverable_from_native_environment -- --ignored
+
       - name: Resolve libav cache identity
         id: libav-cache-key
         shell: bash
-        run: python scripts/libav_cache.py key >> "$GITHUB_OUTPUT"
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
+
+      - name: Verify native MSVC companion path handling
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple windows_msvc_companion_paths_compile_generated_header -- --ignored
 
       - name: Restore verified libav libraries
         id: libav-cache
@@ -302,6 +366,18 @@ jobs:
         if: runner.os == 'macOS'
         run: bash media-libav/build-posix.sh
 
+      - name: Verify native AVC timestamp preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) companion="$BILIKARA_LIBAV_PREFIX/bin/bilikara_media_libav.dll" ;;
+            macOS) companion="$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.dylib" ;;
+            *) exit 1 ;;
+          esac
+          companion="$(node -e 'process.stdout.write(require("node:fs").realpathSync.native(process.argv[1]))' "$companion")"
+          BILIKARA_LIBAV_COMPANION="$companion" cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start -- --exact --ignored
+
       - name: Save verified libav libraries
         if: steps.libav-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -309,8 +385,8 @@ jobs:
           path: ${{ env.BILIKARA_LIBAV_CACHE }}
           key: ${{ steps.libav-cache-key.outputs.key }}
 
-      - name: Build app bundle
-        run: python build_bundle.py
+      - name: Build release backend from prepared dependencies
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- build-backend
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
 
@@ -319,7 +395,7 @@ jobs:
         shell: pwsh
         run: |
           $files = Get-ChildItem -Path dist/bilikara -Recurse -File
-          foreach ($library in @('bilikara-desktop-host.exe', 'native-desktop.json')) {
+          foreach ($library in @('bilikara-desktop-host.exe', 'bilikara-updater.exe', 'native-desktop.json')) {
             if (-not ($files | Where-Object Name -eq $library)) {
               throw "Packaged Rust library was not found: $library"
             }
@@ -343,6 +419,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           test -x dist/bilikara.app/Contents/MacOS/bilikara-desktop-host
+          test -x dist/bilikara.app/Contents/MacOS/bilikara-updater
           test -f dist/bilikara.app/Contents/Resources/native-desktop.json
           # Native code lives in Frameworks; the runtime resource path is a relative symlink.
           bbdown_vendor="dist/bilikara.app/Contents/Resources/vendor/BBDown"
@@ -369,19 +446,9 @@ jobs:
           npm exec -- tauri icon static/pic/icon.png
           npm exec -- tauri build --bundles app -- --locked
 
-      - name: Inject Tauri into Windows Bundle
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
-
-
-      - name: Inject Tauri into macOS Bundle
-        if: runner.os == 'macOS'
-        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/bilikara-desktop.app
-
-      - name: Embed signed backend in macOS Desktop bundle
-        if: runner.os == 'macOS'
-        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/bilikara-desktop.app
+      - name: Assemble release desktop using the compiled Tauri output
+        # Cargo metadata locates the existing release output. No shell rebuild.
+        run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- assemble-desktop
 
       - name: Stage and verify macOS bundles
         if: runner.os == 'macOS'
@@ -392,13 +459,16 @@ jobs:
           test ! -e dist_release/bilikara.app
           test -s dist_release/license/LICENSE
           cp README-macOS.txt dist_release/README-macOS.txt
+          cp 'dist/导入旧数据.command' 'dist_release/导入旧数据.command'
+          test -x 'dist_release/导入旧数据.command'
           test -s dist_release/README-macOS.txt
-          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("bilikara-desktop.app", "bilikara-backend.app", "license/", "隐私与安全性", "仍要打开"))'
+          node scripts/check_macos_bundle_readme.mjs dist_release/README-macOS.txt
 
           echo "=== Verifying staged bilikara-desktop.app ==="
           test -x dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
           embedded_backend="dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$embedded_backend/Contents/MacOS/bilikara-desktop-host"
+          test -x "$embedded_backend/Contents/MacOS/bilikara-updater"
           plutil -lint dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$embedded_backend"
@@ -413,8 +483,8 @@ jobs:
           echo "=== Locked aria2c metadata-only checks ==="
           aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
           test -f "$aria2_metadata"
-          expected_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
-          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64; print("locked aria2c metadata: arch={} sha256={}".format(data["arch"], data["sha256"]))' "$aria2_metadata" "$expected_arch"
+          expected_arch="$(node -p 'process.arch')"
+          node scripts/tool_asset_metadata.mjs check "$aria2_metadata" "$expected_arch"
           unexpected_aria2="$(find dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
           if [ -n "$unexpected_aria2" ]; then
             echo "Unexpected bundled aria2c executable candidate(s):" >&2
@@ -435,13 +505,14 @@ jobs:
           $extracted = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空'
           Expand-Archive -Path $env:BUNDLE_ARCHIVE -DestinationPath $extracted
           $package = Join-Path $extracted 'bilikara'
-          foreach ($required in @('_internal/bilikara-desktop-host.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll', '_internal/native-desktop.json', 'license/LICENSE')) {
+          foreach ($required in @('_internal/bilikara-desktop-host.exe', '_internal/bilikara-updater.exe', 'bilikara-desktop.exe', '_internal/vendor/bilikara_media_libav.dll', '_internal/native-desktop.json', 'license/LICENSE')) {
             if (-not (Test-Path (Join-Path $package $required))) {
               throw "Extracted bundle is missing $required"
             }
           }
           $entries = @(Get-ChildItem -LiteralPath $package | ForEach-Object { $_.Name } | Sort-Object)
-          if (($entries -join ',') -ne '_internal,bilikara-desktop.exe,license') {
+          $expectedEntries = @('_internal', 'bilikara-desktop.exe', 'license', '导入旧数据.cmd')
+          if ($entries.Count -ne $expectedEntries.Count -or @($expectedEntries | Where-Object { $_ -notin $entries }).Count -ne 0) {
             throw "Unexpected outer package entries: $entries"
           }
           foreach ($buildOnly in @('_internal/preview', '_internal/libav-smoke.ps1', '_internal/libav-smoke-result.json', '_internal/vendor/bilikara_media_libav_test.dll')) {
@@ -458,6 +529,8 @@ jobs:
           mkdir -p test_extract
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
           test -s test_extract/dist_release/README-macOS.txt
+          test -x 'test_extract/dist_release/导入旧数据.command'
+          cmp 'dist/导入旧数据.command' 'test_extract/dist_release/导入旧数据.command'
           test ! -e test_extract/dist_release/bilikara.app
           test -L test_extract/dist_release/license
           test "$(readlink test_extract/dist_release/license)" = bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/Resources/license
@@ -470,6 +543,7 @@ jobs:
           test -x test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara
           extracted_embedded_backend="test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app"
           test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-desktop-host"
+          test -x "$extracted_embedded_backend/Contents/MacOS/bilikara-updater"
           plutil -lint test_extract/dist_release/bilikara-desktop.app/Contents/Info.plist
           plutil -lint "$extracted_embedded_backend/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$extracted_embedded_backend"
@@ -479,7 +553,7 @@ jobs:
 
           extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
           test -f "$extracted_aria2_metadata"
-          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$extracted_aria2_metadata" "$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
+          node scripts/tool_asset_metadata.mjs check "$extracted_aria2_metadata" "$(node -p 'process.arch')"
           unexpected_aria2="$(find test_extract/dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
           if [ -n "$unexpected_aria2" ]; then
             echo "Unexpected archived aria2c executable candidate(s):" >&2
@@ -493,12 +567,19 @@ jobs:
         shell: pwsh
         run: |
           $backend = Join-Path $env:RUNNER_TEMP 'Bilikara preview 空/bilikara/_internal/bilikara-desktop-host.exe'
-          python scripts/check_native_desktop_bundle.py "$backend"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop "$backend"
+          if ($LASTEXITCODE -ne 0) { throw "Extracted native desktop verification failed" }
+          $env:BILIKARA_TEST_NATIVE_PACKAGE = $backend
+          cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Extracted installed-entry regressions failed" }
 
       - name: Verify extracted native desktop and no-media-CLI layout on macOS
         if: runner.os == 'macOS'
         run: |
-          python scripts/check_native_desktop_bundle.py test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host
+          backend="$GITHUB_WORKSPACE/test_extract/dist_release/bilikara-desktop.app/Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop "$backend"
+          BILIKARA_TEST_NATIVE_PACKAGE="$backend" cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture
+          BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$GITHUB_WORKSPACE/test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara" node --test tests/macos_tauri_smoke.test.mjs
 
       - name: Upload native bundle
         uses: actions/upload-artifact@v7

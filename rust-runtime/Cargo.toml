@@ -19,6 +19,9 @@ required-features = ["native-host"]
 name = "bilikara-desktop-host"
 required-features = ["native-host"]
 
+[[bin]]
+name = "bilikara-updater"
+
 [features]
 native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "qrcode/svg", "dep:time"]
 
@@ -32,6 +35,7 @@ bilikara_rust = { path = "../rust" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cosmic-text = { version = "0.17", default-features = false, features = ["std", "swash", "fontconfig"] }
 csv = "1.4"
+ebur128 = { version = "=0.1.10", default-features = false }
 fs2 = "0.4"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
@@ -59,3 +63,4 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Network
 
 [dev-dependencies]
 claxon = "0.4"
+quircs = "=0.10.3"

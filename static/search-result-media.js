@@ -1,3 +1,36 @@
+/* Existing measurement owners choose the motion; this helper adds only the
+   identical, accessibility-hidden second copy needed for a continuous loop. */
+globalThis.BilikaraTextMarquee = {
+  reset(container, track) {
+    container?.classList.remove("is-text-marquee-loop");
+    track?.classList.remove("text-marquee-loop-track");
+    container?.querySelector(":scope > .text-marquee-copy")?.remove();
+  },
+  configure(container, track, availableWidth, naturalWidth) {
+    if (!container || !track) return;
+    if (availableWidth <= 0 || naturalWidth - availableWidth <= availableWidth) {
+      this.reset(container, track);
+      return;
+    }
+    const gap = Math.max(32, Math.round(availableWidth / 4));
+    container.classList.add("is-text-marquee-loop");
+    track.classList.add("text-marquee-loop-track");
+    container.style.setProperty("--text-marquee-copy-left", `${naturalWidth + gap}px`);
+    container.style.setProperty("--text-marquee-loop-distance", `${naturalWidth + gap}px`);
+    container.style.setProperty("--text-marquee-loop-duration", `${Math.max(6, (naturalWidth + gap) / 28)}s`);
+    let copy = container.querySelector(":scope > .text-marquee-copy");
+    if (!copy) {
+      copy = track.cloneNode(false);
+      copy.removeAttribute("id");
+      copy.removeAttribute("data-i18n");
+      copy.setAttribute("aria-hidden", "true");
+      copy.classList.add("text-marquee-copy");
+      container.append(copy);
+    }
+    if (copy.textContent !== track.textContent) copy.textContent = track.textContent;
+  },
+};
+
 /* Keep cover metadata readable as Host/Remote card widths change. */
 (function () {
   "use strict";
@@ -137,15 +170,16 @@
       measure.font = font;
       if ("letterSpacing" in measure) measure.letterSpacing = style.letterSpacing === "normal" ? "0px" : style.letterSpacing;
       const [first, rest] = splitTitle(entry.text, width);
-      changes.push({title, entry, signature, first, rest,
+      changes.push({title, entry, signature, first, rest, remainderWidth,
         distance: Math.max(0, Math.ceil(measure.measureText(rest).width - remainderWidth))});
     }
     pending.clear();
-    for (const {title, entry, signature, first, rest, distance} of changes) {
+    for (const {title, entry, signature, first, rest, distance, remainderWidth} of changes) {
       entry.signature = signature;
       if (entry.first.textContent !== first) entry.first.textContent = first;
       if (entry.track.textContent !== rest) entry.track.textContent = rest;
       toggle(title, "is-card-title-overflowing", distance > 1);
+      BilikaraTextMarquee.configure(entry.second, entry.track, remainderWidth, remainderWidth + distance);
       for (const [key, value] of [
         ["--request-card-title-distance", `${distance}px`],
         ["--request-card-title-duration", `${Math.max(8, distance / 24 + 4)}s`],
@@ -165,9 +199,12 @@
     }
   }) : null;
   function add(title) {
-    const existing = titles.get(title), text = title.textContent;
-    if (existing && text === existing.text && existing.first.parentElement === title
-      && existing.second.parentElement === title && existing.track.parentElement === existing.second) return;
+    const existing = titles.get(title);
+    const intact = existing && existing.first.parentElement === title
+      && existing.second.parentElement === title && existing.track.parentElement === existing.second;
+    // Ignore the hidden loop copy when observing our own title measurement.
+    const text = intact ? existing.first.textContent + existing.track.textContent : title.textContent;
+    if (intact && text === existing.text) return;
     const first = document.createElement("span"), second = document.createElement("span");
     const track = document.createElement("span");
     first.className = "request-card-title-line";

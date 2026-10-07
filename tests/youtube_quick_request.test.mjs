@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 
 const source = readFileSync(new URL("../static/remote-transport-client.js", import.meta.url), "utf8");
 const context = vm.createContext({ URL });
-for (const [name, next] of [["itemUrl", "localItem"], ["localItem", "localHistoryItem"], ["localHistoryItem", "localState"], ["catalogId", "publicSearchItem"]]) {
+for (const [name, next] of [["itemUrl", "localItem"], ["localItem", "localHistoryItem"], ["localHistoryItem", "localState"], ["youtubeVideoId", "publicSearchItem"]]) {
   vm.runInContext(source.slice(source.indexOf(`  function ${name}(`), source.indexOf(`  function ${next}(`)), context);
 }
 
@@ -22,12 +22,27 @@ test("the two embedded EJS assets match the pinned upstream release", () => {
   }
 });
 
-test("public Remote sends one source-scoped watch identity and strips playlist parameters", () => {
+test("public Remote sends one source-scoped video identity and strips playlist parameters", () => {
   assert.equal(context.catalogId("https://www.youtube.com/watch?v=YE7VzlLtp-4&list=RDxyz&radio=1&t=3"), "youtube:YE7VzlLtp-4");
   assert.equal(context.catalogId("https://m.youtube.com/watch?v=YE7VzlLtp-4"), "youtube:YE7VzlLtp-4");
   assert.equal(context.catalogId("BV1ab411c7mD", 2), "BV1ab411c7mD_p2");
-  for (const url of ["https://youtu.be/YE7VzlLtp-4", "https://www.youtube.com/playlist?list=RDx", "https://www.youtube.com/shorts/YE7VzlLtp-4", "https://u@www.youtube.com/watch?v=YE7VzlLtp-4", "https://www.youtube.com/watch?v=YE7VzlLtp-4&v=abcdefghijk"]) {
-    assert.throws(() => context.catalogId(url));
+  for (const input of ["https://youtu.be/YE7VzlLtp-4", "https://www.youtube.com/shorts/YE7VzlLtp-4", "分享视频\nhttps://youtu.be/YE7VzlLtp-4?si=abc"]) {
+    assert.equal(context.catalogId(input), "youtube:YE7VzlLtp-4");
+  }
+  for (const url of ["https://www.youtube.com/playlist?list=RDx", "https://u@www.youtube.com/watch?v=YE7VzlLtp-4", "https://www.youtube.com/watch?v=YE7VzlLtp-4&v=abcdefghijk"]) {
+    assert.throws(() => context.catalogId(url), /YouTube/);
+  }
+});
+
+test("public Remote input parsing matches the shared Rust fixtures", () => {
+  const cases = JSON.parse(readFileSync(new URL("fixtures/youtube_inputs.json", import.meta.url), "utf8"));
+  for (const row of cases) {
+    if (row.error) assert.throws(() => context.youtubeVideoId(row.input), /YouTube/, row.input);
+    else assert.equal(context.youtubeVideoId(row.input), row.video_id, row.input);
+    if (row.video_id) {
+      assert.equal(context.catalogId(row.input), `youtube:${row.video_id}`, row.input);
+      assert.throws(() => context.catalogId(row.input, 2), /YouTube/);
+    }
   }
 });
 

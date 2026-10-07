@@ -1,3 +1,4 @@
+import base64
 import ctypes
 import ipaddress
 import json
@@ -78,6 +79,38 @@ class FakeAppStateLibrary:
 
 
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_source_networking_delegates_to_current_rust_and_fails_closed(self):
+        from bilikara import networking
+        with patch.object(rust_runtime, "detect_lan_ipv4_addresses", return_value=["192.168.1.50"]) as detect:
+            self.assertEqual(networking.detect_lan_ipv4_addresses(platform_name="DaRwIn"), ["192.168.1.50"])
+        detect.assert_called_once_with(platform_name="darwin")
+        with patch.object(rust_runtime, "_runtime_lib", None):
+            with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                networking.detect_lan_ipv4_addresses(platform_name="linux")
+
+    def test_source_monthly_transport_uses_selected_runtime_data_and_native_result(self):
+        from bilikara import config, shared_catalog
+        result = {"success": True, "job": "monthly-d1-refresh", "instance_id": "local-monthly-42",
+                  "status": "running", "execution": "local"}
+        library = FakeServiceLibrary({"schema_version": 1, "status": "completed", "result": result})
+        with patch.object(rust_runtime, "_runtime_lib", library), patch.object(config, "DATA_DIR", Path("runtime 中文/data")):
+            self.assertEqual(rust_runtime.start_monthly_refresh_in_background("worker-secret", requested_by="VZRXS"), result)
+        self.assertEqual(library.request, {"service": "catalog_refresh", "request": {
+            "options": {"uid_source": str(Path("runtime 中文/data/gatcha_uids.json")),
+                        "api_url": shared_catalog._CLOUDFLARE_API_URL, "cookie": config.COOKIE,
+                        "cookie_path": str(config.BB_DOWN_DIR / "BBDown.data"), "version": config.APP_VERSION},
+            "secret": "worker-secret", "requested_by": "VZRXS"}})
+
+    def test_source_monthly_transport_fails_closed_without_rust_or_on_malformed_result(self):
+        with patch.object(rust_runtime, "_runtime_lib", None):
+            with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                rust_runtime.start_monthly_refresh_in_background("secret")
+        for result in [{}, {"success": True, "job": "monthly-d1-refresh"},
+                       {"success": False, "job": "monthly-d1-refresh", "error": 1}]:
+            with self.subTest(result=result), patch.object(rust_runtime, "_call_runtime_service", return_value=result):
+                with self.assertRaises(rust_runtime.RustRuntimeServiceError):
+                    rust_runtime.start_monthly_refresh_in_background("secret")
+
     def test_public_dash_adapter_forwards_credentials_options_and_representation(self):
         from bilikara import bilibili
         result = {
@@ -1041,3 +1074,65 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
         manager._download_page_stream.assert_not_called()
         self.assertTrue(result["native_tracks_prevalidated"])
         self.assertEqual(len(result["validation_metadata"]), 2)
+
+
+# Only live Python source-adapter failure guards remain here. The actual image,
+# QR, encoding and HTTP contracts execute in native_images / Node suites.
+class SourceImageAdapterGuardTest(unittest.TestCase):
+    def source_qr_status(self, payload):
+        from types import SimpleNamespace
+        from bilikara import server
+        handler = server.BilikaraHandler.__new__(server.BilikaraHandler)
+        handler.path = "/api/internet-remote/qr"
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("127.0.0.1", 6764))
+        handler._read_json_body = lambda: {"url": payload}
+        writes = []
+        handler._write_json = lambda body, status=200: writes.append((status, body))
+        with patch.object(server, "CONTEXT", SimpleNamespace(touch_client=Mock())):
+            handler.do_POST()
+        self.assertEqual(len(writes), 1)
+        return writes[0][0]
+
+    def test_native_unavailable_and_failed_never_fall_back(self):
+        # Python qrcode cannot be imported even if installed in a developer env.
+        with patch.dict("sys.modules", {"qrcode": None}):
+            with patch.object(rust_runtime, "_runtime_lib", None):
+                with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                    rust_runtime.generate_qr_image("https://passport.bilibili.com/synthetic-login?token=SYNTHETIC-ONLY", border=4)
+                self.assertEqual(self.source_qr_status("https://rtc.kevinx96.icu/remote.html#synthetic"), 500)
+            with patch.object(rust_runtime, "_call_runtime_service", side_effect=rust_runtime.RustRuntimeServiceError(
+                "encoding_failed", "QR image encoding failed", response={}
+            )):
+                with self.assertRaises(rust_runtime.RustRuntimeServiceError):
+                    rust_runtime.generate_qr_image("https://passport.bilibili.com/synthetic-login?token=SYNTHETIC-ONLY", border=4)
+                self.assertEqual(self.source_qr_status("https://rtc.kevinx96.icu/remote.html#synthetic"), 500)
+
+    def test_malformed_native_images_are_rejected_before_consumption(self):
+        for encoded in [None, "", "not base64", base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()]:
+            with patch.object(rust_runtime, "_call_runtime_service", return_value={"png_base64": encoded}):
+                with self.assertRaises(rust_runtime.RustRuntimeServiceError) as caught:
+                    rust_runtime.generate_qr_image("https://passport.bilibili.com/synthetic-login?token=SYNTHETIC-ONLY", border=4)
+                self.assertEqual(caught.exception.kind, "invalid_response")
+
+    def test_malformed_login_response_is_rejected_by_live_source_adapter(self):
+        for command, result in (
+            ("start", {}), ("start", {"generation": True}),
+            ("read_cookie", []), ("read_cookie", {"cookie": None}),
+            ("take_success", {"notify": "true"}),
+            ("run", {"diagnostics": [{"cookie": "synthetic-private"}]}),
+            ("download_access", {}), ("download_access", {"message": False}),
+            ("download_access", {"message": []}),
+        ):
+            with self.subTest(command=command), patch.object(rust_runtime, "_call_runtime_service", return_value=result):
+                with self.assertRaises(rust_runtime.RustStatusServiceError):
+                    rust_runtime.desktop_login(command, generation=1)
+
+    def test_invalid_export_artifact_is_rejected_by_live_source_adapter(self):
+        from bilikara import playlist_export
+        for artifact in [{}, {"data_base64": "@@", "mime_type": "image/png", "filename": "bad.png", "missing_glyphs": []},
+                         {"data_base64": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode(), "mime_type": "image/png", "filename": "bilikara-playlist.png", "missing_glyphs": []}]:
+            with patch.object(rust_runtime, "_call_runtime_service", return_value=artifact):
+                with self.assertRaises(rust_runtime.RustRuntimeServiceError):
+                    playlist_export.playlist_image_export([])

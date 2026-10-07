@@ -14,7 +14,7 @@ From the repository root, reuse the accepted prefix and fixtures:
 M3_PREFIX=/sunhonglin/bilikara/.tmp/m1-libav-9/ffmpeg-prefix
 M3_FIXTURES=/sunhonglin/bilikara/.tmp/m1-libav-9/fixtures
 M3_OUT=/tmp/bilikara-m3
-python media-libav/build.py --prefix "$M3_PREFIX" --out "$M3_OUT/companion" --test
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M3_PREFIX" --out "$M3_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata -- \
   compare "$M3_OUT/companion/libbilikara_media_libav.so" "$M3_PREFIX" \
@@ -91,8 +91,7 @@ needs a fixture explanation, not a null muxer in the companion or a tolerance.
 The live suite extends M2, including its privacy and retained S3 rejection tests:
 
 ```bash
-python media-libav/test_comparison.py \
-  --driver /sunhonglin/bilikara/rust-runtime/target/debug/examples/libav_metadata \
+npm run test:media -- \
   --companion "$M3_OUT/companion/libbilikara_media_libav.so" \
   --prefix "$M3_PREFIX" --fixtures "$M3_FIXTURES" \
   --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \

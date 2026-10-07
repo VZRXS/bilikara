@@ -53,6 +53,24 @@ def preferred_audio_request(candidates=None, **changes):
 
 
 class QualityStreamBackendValidationTest(unittest.TestCase):
+    def test_source_quality_and_stream_wrappers_fail_closed_without_references(self):
+        video = [{"quality_id": 80, "bandwidth": 1, "codec_name": "avc"}]
+        audio = [{"quality_id": 30280, "bandwidth": 1}]
+        with ExitStack() as stack:
+            references = [stack.enter_context(patch.object(rust_backend, name, side_effect=AssertionError("unexpected reference/fallback execution"))) for name in ("python_fallback", "_strict_equivalence_result")]
+            for name in ("try_decide_quality_policy", "try_select_video_stream", "try_select_audio_stream", "try_select_preferred_audio_source"):
+                stack.enter_context(patch.object(rust_backend, name, return_value=(False, None)))
+            for call in (
+                lambda: CacheManager._normalize_video_quality(" 720P 高清 "),
+                lambda: CacheManager._select_dash_video_stream(video, max_quality_id=80),
+                lambda: CacheManager._select_dash_audio_stream(audio, audio_hires=True),
+                lambda: CacheManager._select_preferred_dash_audio(audio, None, None, audio_hires=False),
+            ):
+                with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                    call()
+            for reference in references:
+                reference.assert_not_called()
+
     def _mock_response(self, capability, symbol, response):
         class Library:
             pass
@@ -281,8 +299,8 @@ class QualityStreamBackendValidationTest(unittest.TestCase):
                 ), patch.object(
                     rust_backend, "_read_rust_string", return_value=response_json
                 ), patch.object(
-                    CacheManager,
-                    "_py_select_preferred_dash_audio",
+                    rust_backend,
+                    "python_fallback",
                     side_effect=AssertionError("frozen Python reference was invoked"),
                 ) as reference, self.assertRaises(
                     rust_backend.PlaybackCapabilityError

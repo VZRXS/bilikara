@@ -34,9 +34,51 @@
   }
 
   function setText(node, value) {
-    if (node) {
+    if (node && node.textContent !== String(value ?? "")) {
       node.textContent = String(value ?? "");
     }
+  }
+
+  function createBadge(className, play = false) {
+    const badge = createElement("span", `${className} queue-order`);
+    badge.setAttribute("aria-hidden", "true");
+    const label = createElement("span", "queue-badge-label");
+    label.hidden = play;
+    badge.appendChild(label);
+    if (play) {
+      const icon = document.createElementNS(svgNamespace, "svg");
+      icon.setAttribute("class", "queue-badge-play");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("fill", "currentColor");
+      const path = document.createElementNS(svgNamespace, "path");
+      path.setAttribute("d", "M8 5v14l11-7z");
+      icon.appendChild(path);
+      badge.appendChild(icon);
+    }
+    const error = document.createElementNS(svgNamespace, "svg");
+    error.setAttribute("class", "queue-badge-error");
+    error.setAttribute("viewBox", "0 0 24 24");
+    error.setAttribute("fill", "none");
+    error.setAttribute("stroke", "currentColor");
+    error.setAttribute("stroke-width", "2");
+    error.setAttribute("stroke-linecap", "round");
+    error.setAttribute("stroke-linejoin", "round");
+    const cross = document.createElementNS(svgNamespace, "path");
+    cross.setAttribute("d", "M18 6L6 18M6 6l12 12");
+    error.appendChild(cross);
+    badge.appendChild(error);
+    return badge;
+  }
+
+  function setCacheState(node, status) {
+    if (!node) {
+      return;
+    }
+    const normalized = status === "queued" ? "pending" : status;
+    const cacheState = ["pending", "downloading", "failed", "ready"].includes(normalized) ? normalized : "";
+    if (node.dataset.cacheState !== cacheState) node.dataset.cacheState = cacheState;
+    const badge = node.querySelector(".queue-order");
+    if (badge && badge.dataset.cacheState !== cacheState) badge.dataset.cacheState = cacheState;
   }
 
   function ensureOverlay(root) {
@@ -70,9 +112,7 @@
     head.append(heading, countdown);
 
     const nowRow = createElement("div", "player-delay-now-row");
-    const playIcon = createElement("span", "player-delay-play-icon");
-    playIcon.setAttribute("aria-hidden", "true");
-    playIcon.textContent = "▶";
+    const playIcon = createBadge("player-delay-play-icon", true);
     nowRow.append(
       playIcon,
       createDataElement("p", "player-delay-song-title", "delay-next-title"),
@@ -93,10 +133,9 @@
     return overlay;
   }
 
-  function createQueueRow(row, index) {
+  function createQueueRow(row) {
     const item = createElement("div", "player-delay-list-row");
-    const indexNode = createElement("span", "player-delay-list-index");
-    indexNode.textContent = String(index);
+    const indexNode = createBadge("player-delay-list-index");
     const title = createElement("p", "player-delay-song-title");
     title.textContent = String(row?.title ?? "");
     const requester = createElement("p", "player-delay-requester");
@@ -124,7 +163,20 @@
     setText(overlay.querySelector("[data-delay-next-title]"), model?.title);
     setText(overlay.querySelector("[data-delay-next-requester]"), model?.requester);
     setText(overlay.querySelector("[data-delay-next-duration]"), model?.duration);
-    setText(overlay.querySelector("[data-delay-queue-heading]"), model?.queueHeading);
+    setCacheState(overlay.querySelector(".player-delay-now-row"), model?.cacheStatus);
+    const primaryBadge = overlay.querySelector(".player-delay-play-icon");
+    if (primaryBadge) {
+      const numbered = options.primaryIndex !== undefined;
+      primaryBadge.classList.toggle("is-empty", numbered && options.primaryIndex === null);
+      primaryBadge.querySelector(".queue-badge-label").hidden = !numbered;
+      setText(primaryBadge.querySelector(".queue-badge-label"), numbered ? options.primaryIndex : "");
+      const playIcon = primaryBadge.querySelector(".queue-badge-play");
+      if (numbered) playIcon.setAttribute("hidden", "");
+      else playIcon.removeAttribute("hidden");
+    }
+    const queueHeading = overlay.querySelector("[data-delay-queue-heading]");
+    setText(queueHeading, model?.queueHeading);
+    if (queueHeading) queueHeading.hidden = !model?.queueHeading;
     setText(overlay.querySelector("[data-delay-total]"), model?.totalText);
     overlay.style.setProperty("--delay-ring-offset", String(119.38 * (1 - progress)));
     overlay.classList.toggle("is-compact", Boolean(options.compact));
@@ -137,12 +189,12 @@
     if (list) {
       const rows = Array.isArray(model?.rows) ? model.rows.slice(0, 5) : [];
       const rowsSignature = JSON.stringify({
-        rows,
+        rows: rows.map((row) => ({ title: row?.title, requester: row?.requester, duration: row?.duration })),
         emptyText: String(model?.emptyText || ""),
         remainingText: String(model?.remainingText || ""),
       });
       if (list.dataset.presentationRows !== rowsSignature) {
-        const nodes = rows.map((row, index) => createQueueRow(row, index + 1));
+        const nodes = rows.map((row) => createQueueRow(row));
         if (!nodes.length && model?.emptyText) {
           const empty = createElement("div", "player-delay-list-more");
           empty.textContent = String(model.emptyText);
@@ -156,6 +208,12 @@
         list.replaceChildren(...nodes);
         list.dataset.presentationRows = rowsSignature;
       }
+      // Cache-only paints retain the existing row nodes and geometry.
+      rows.forEach((row, index) => {
+        const node = list.children[index];
+        setCacheState(node, row?.cacheStatus);
+        setText(node.querySelector(".queue-badge-label"), index + (options.primaryIndex ? options.primaryIndex + 1 : 1));
+      });
     }
 
     if (options.manageVisibility !== false) {
@@ -176,7 +234,44 @@
     root.dataset.presentationTitle = String(scene.title || "");
     const overlay = ensureOverlay(root);
     renderOverlay(overlay, scene.overlay || { visible: false }, options);
+    if (options.showDownloadProgress) renderDownloadProgress(root, scene);
     return overlay;
+  }
+
+  function renderDownloadProgress(root, scene) {
+    let panel = root.querySelector(".presentation-download-status");
+    if (!panel) {
+      panel = createElement("section", "presentation-download-status");
+      panel.setAttribute("role", "status");
+      panel.setAttribute("aria-live", "polite");
+      panel.append(
+        createDataElement("p", "presentation-download-title", "download-title"),
+        createDataElement("p", "presentation-download-detail", "download-detail"),
+        createElement("progress"),
+      );
+      root.appendChild(panel);
+    }
+    const metadata = scene.displayMetadata || {};
+    const hidden = !scene.currentItemIdentity || !metadata.cacheDetail
+      || !["pending", "downloading", "failed"].includes(metadata.cacheStatus);
+    if (panel.hidden !== hidden) panel.hidden = hidden;
+    for (const [selector, value] of [["[data-download-title]", scene.title],
+      ["[data-download-detail]", metadata.cacheDetail]]) {
+      const node = panel.querySelector(selector);
+      if (node.textContent !== value) setText(node, value);
+    }
+    const progress = panel.querySelector("progress");
+    if (progress.max !== 100) progress.max = 100;
+    const hideProgress = metadata.cacheStatus !== "downloading";
+    if (progress.hidden !== hideProgress) progress.hidden = hideProgress;
+    if (metadata.cacheProgress === null || metadata.cacheProgress === undefined) {
+      if (progress.hasAttribute("value")) progress.removeAttribute("value");
+    } else if (!progress.hasAttribute("value") || progress.value !== metadata.cacheProgress) {
+      progress.value = metadata.cacheProgress;
+    }
+    if (progress.getAttribute("aria-label") !== metadata.cacheDetail) {
+      progress.setAttribute("aria-label", metadata.cacheDetail);
+    }
   }
 
   return {

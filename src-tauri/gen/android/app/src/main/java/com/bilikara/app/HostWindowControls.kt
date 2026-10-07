@@ -108,7 +108,10 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
       }
       reply.postMessage(result.toString())
     }
-    activity.requestedOrientation = requestedDirection(snapshot().getString("orientation"))
+    // Ordinary windows follow the device's system auto-rotation setting, even
+    // after upgrading from a build with a saved manual direction. Fullscreen
+    // remains a temporary landscape request and restores this system mode.
+    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     installed = true
     return true
   }

@@ -22,6 +22,7 @@ $files = @(
     "internet-remote-transport.js",
     "qrcode-generator.js",
     "part-selector.js",
+    "request-input.js",
     "qrcode-generator.LICENSE",
     "remote-access.css",
     "remote-queue.css",

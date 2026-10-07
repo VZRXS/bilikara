@@ -10,9 +10,18 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[cfg(any(windows, test))]
+#[path = "windows_display.rs"]
+mod windows_display;
+
+#[cfg(windows)]
+pub(crate) fn install_display_change_handler(window: &tauri::WebviewWindow) -> Result<(), String> {
+    windows_display::install(window)
+}
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const GEOMETRY_SCHEMA_VERSION: u8 = 1;
-const GEOMETRY_FILENAME: &str = "main-window-geometry-v1.json";
+pub(crate) const GEOMETRY_FILENAME: &str = "main-window-geometry-v1.json";
 const MAX_GEOMETRY_FILE_BYTES: u64 = 16 * 1024;
 
 // The current Host keeps its two-column layout at 1120 logical pixels. The adaptive
@@ -24,6 +33,7 @@ const FIRST_LAUNCH_MIN_WIDTH: f64 = 1120.0;
 const FIRST_LAUNCH_MIN_HEIGHT: f64 = 680.0;
 const FIRST_LAUNCH_MAX_WIDTH: f64 = 1680.0;
 const FIRST_LAUNCH_MAX_HEIGHT: f64 = 1050.0;
+const HOST_MIN_INNER_HEIGHT: f64 = 600.0;
 const SAVED_MIN_WIDTH: f64 = 640.0;
 const SAVED_MIN_HEIGHT: f64 = 480.0;
 const SAVED_MAX_WIDTH: f64 = 3200.0;
@@ -107,6 +117,7 @@ struct ResolvedMainWindowGeometry {
     offset_y: f64,
     inner_width: f64,
     inner_height: f64,
+    minimum_inner_height: f64,
     physical_x: i32,
     physical_y: i32,
     physical_inner_width: u32,
@@ -129,6 +140,7 @@ struct MainWindowGeometryState {
     native_directory: Option<PathBuf>,
     cached: Mutex<Option<StoredMainWindowGeometry>>,
     restoring: AtomicBool,
+    minimum_height_bits: AtomicU64,
     #[cfg(target_os = "windows")]
     fullscreen: Mutex<crate::windows_fullscreen::FullscreenState>,
 }
@@ -191,6 +203,7 @@ impl MainWindowGeometryState {
             native_directory: None,
             cached: Mutex::new(cached),
             restoring: AtomicBool::new(false),
+            minimum_height_bits: AtomicU64::new(0),
             #[cfg(target_os = "windows")]
             fullscreen: Mutex::new(crate::windows_fullscreen::FullscreenState::default()),
         }
@@ -423,6 +436,14 @@ fn clamp_or_center_saved_offset(
     )
 }
 
+fn minimum_host_height(monitor: &MonitorWorkArea, frame: LogicalFrameSize) -> f64 {
+    let available = (f64::from(monitor.height) / monitor.scale_factor
+        - frame.height
+        - 2.0 * WORK_AREA_EDGE_MARGIN)
+        .max(1.0);
+    HOST_MIN_INNER_HEIGHT.min(available)
+}
+
 fn resolved_geometry(
     monitor_index: usize,
     monitor: &MonitorWorkArea,
@@ -435,7 +456,10 @@ fn resolved_geometry(
     let available_inner_height =
         (work_height - frame.height - (2.0 * WORK_AREA_EDGE_MARGIN)).max(1.0);
     let inner_width = requested.inner_width.min(available_inner_width).max(1.0);
-    let inner_height = requested.inner_height.min(available_inner_height).max(1.0);
+    let minimum_inner_height = minimum_host_height(monitor, frame);
+    let inner_height = requested
+        .inner_height
+        .clamp(minimum_inner_height, available_inner_height);
     let outer_width = inner_width + frame.width;
     let outer_height = inner_height + frame.height;
     let (offset_x, offset_y) = requested
@@ -469,6 +493,7 @@ fn resolved_geometry(
         offset_y,
         inner_width,
         inner_height,
+        minimum_inner_height,
         physical_x,
         physical_y,
         physical_inner_width,
@@ -637,6 +662,42 @@ fn load_geometry(path: &Path) -> Result<Option<StoredMainWindowGeometry>, String
 }
 
 fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> std::io::Result<()> {
+    write_geometry(path, geometry, true)
+}
+
+// Optional old shell preferences use the same strict, bounded reader and writer
+// as ordinary restoration, without replacing any current preference file.
+pub(crate) fn import_window_geometry(source: &Path, destination: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    match fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_file() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        _ => return Err("旧版窗口配置不是可读取的普通文件。".into()),
+    }
+    let geometry = load_geometry(source)?
+        .filter(stored_geometry_is_valid)
+        .ok_or("旧版窗口配置无效，已跳过。")?;
+    match write_geometry(destination, &geometry, false) {
+        Ok(()) => Ok(true),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && fs::symlink_metadata(destination).is_ok() =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn write_geometry(
+    path: &Path,
+    geometry: &StoredMainWindowGeometry,
+    replace: bool,
+) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -658,7 +719,7 @@ fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> st
             .open(&temporary)?;
         file.write_all(&encoded)?;
         file.sync_all()?;
-        replace_geometry_file(&temporary, path)
+        replace_geometry_file(&temporary, path, replace)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -667,12 +728,17 @@ fn atomic_write_geometry(path: &Path, geometry: &StoredMainWindowGeometry) -> st
 }
 
 #[cfg(not(windows))]
-fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
+fn replace_geometry_file(source: &Path, destination: &Path, replace: bool) -> std::io::Result<()> {
+    if replace {
+        fs::rename(source, destination)
+    } else {
+        fs::hard_link(source, destination)?;
+        fs::remove_file(source)
+    }
 }
 
 #[cfg(windows)]
-fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn replace_geometry_file(source: &Path, destination: &Path, replace: bool) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -689,7 +755,12 @@ fn replace_geometry_file(source: &Path, destination: &Path) -> std::io::Result<(
         MoveFileExW(
             source.as_ptr(),
             destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            MOVEFILE_WRITE_THROUGH
+                | if replace {
+                    MOVEFILE_REPLACE_EXISTING
+                } else {
+                    0
+                },
         )
     };
     if moved == 0 {
@@ -706,7 +777,10 @@ fn geometry_diagnostic(stage: &str, status: &str) {
     );
 }
 
-pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::WebviewWindow) {
+pub(crate) fn initialize_main_window_geometry(
+    app: &impl tauri::Manager<tauri::Wry>,
+    window: &tauri::WebviewWindow,
+) {
     if window.label() != MAIN_WINDOW_LABEL {
         geometry_diagnostic("initialize", "ignored_non_main");
         return;
@@ -798,6 +872,27 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
         return;
     };
 
+    // Old saved heights remain readable, but restore at the current Host floor.
+    // A short/high-DPI work area takes precedence over that logical floor.
+    let minimum_width = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW_LABEL)
+        .and_then(|config| config.min_width)
+        .unwrap_or(700.0);
+    let minimum_result = window.set_min_size(Some(tauri::LogicalSize::new(
+        minimum_width,
+        resolved.minimum_inner_height,
+    )));
+    if minimum_result.is_ok()
+        && let Some(state) = app.try_state::<MainWindowGeometryState>()
+    {
+        state
+            .minimum_height_bits
+            .store(resolved.minimum_inner_height.to_bits(), Ordering::Release);
+    }
     let size_result = window.set_size(tauri::PhysicalSize::new(
         resolved.physical_inner_width,
         resolved.physical_inner_height,
@@ -814,13 +909,66 @@ pub(crate) fn initialize_main_window_geometry(app: &tauri::App, window: &tauri::
     if let Some(state) = app.try_state::<MainWindowGeometryState>() {
         state.restoring.store(false, Ordering::Release);
     }
-    if size_result.is_err() || position_result.is_err() || maximize_result.is_err() {
+    if minimum_result.is_err()
+        || size_result.is_err()
+        || position_result.is_err()
+        || maximize_result.is_err()
+    {
         geometry_diagnostic("apply", "error_ignored");
     } else if resolved.used_saved_geometry {
         geometry_diagnostic("apply", "restored");
     } else {
         geometry_diagnostic("apply", "adaptive_default");
     }
+}
+
+fn refresh_main_window_minimum_height(window: &tauri::Window) {
+    let Some(state) = window.try_state::<MainWindowGeometryState>() else {
+        return;
+    };
+    if state.restoring.load(Ordering::Acquire) || window.is_fullscreen().unwrap_or(true) {
+        return;
+    }
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let monitor = monitor_work_area(&monitor);
+    if !monitor_is_valid(&monitor) {
+        return;
+    }
+    let (Ok(inner), Ok(outer)) = (window.inner_size(), window.outer_size()) else {
+        return;
+    };
+    let frame = logical_frame_size(inner, outer, monitor.scale_factor);
+    let height = minimum_host_height(&monitor, frame);
+    if set_main_window_minimum_height(window, &state, height).is_err() {
+        geometry_diagnostic("minimum_height", "error_ignored");
+    }
+}
+
+fn set_main_window_minimum_height(
+    window: &tauri::Window,
+    state: &MainWindowGeometryState,
+    height: f64,
+) -> tauri::Result<()> {
+    // Moving within one monitor must not produce repeated native size changes.
+    if state.minimum_height_bits.load(Ordering::Acquire) == height.to_bits() {
+        return Ok(());
+    }
+    let width = window
+        .app_handle()
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW_LABEL)
+        .and_then(|config| config.min_width)
+        .unwrap_or(700.0);
+    window.set_min_size(Some(tauri::LogicalSize::new(width, height)))?;
+    state
+        .minimum_height_bits
+        .store(height.to_bits(), Ordering::Release);
+    Ok(())
 }
 
 fn captured_normal_geometry(window: &tauri::Window) -> Option<StoredMainWindowGeometry> {
@@ -1001,7 +1149,7 @@ pub(crate) async fn restart_application(
         // Locked Tauri 2.11.2 sets restart_on_exit, requests its restart
         // exit code, then runs App::run exit callbacks and Tauri cleanup
         // before the core relaunch. Its request-exit failure path performs
-        // the same cleanup/core relaunch directly. Bilikara cleanup has
+        // the same cleanup/core relaunch directly. bilikara cleanup has
         // completed above in either case.
         app.request_restart();
     })
@@ -1026,23 +1174,31 @@ pub(crate) async fn apply_desktop_update(
             return Err("application shutdown is already in progress".into());
         }
     }
-    if let Err(error) = prepare_application_restart_on_main_thread(&app, &window).await {
-        lifecycle.release_restart_after_preparation_failure();
-        return Err(error);
-    }
     let owned = backend.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         backend_process::activate_update(&owned, operation)
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+    .and_then(|result| result);
     if let Err(error) = result {
         lifecycle.release_restart_after_preparation_failure();
         return Err(error);
     }
+    // Do not close the audience/controller or mark presentation as shutting
+    // down until the updater is ready. A failed launch leaves playback usable.
+    if prepare_application_restart_on_main_thread(&app, &window)
+        .await
+        .is_err()
+    {
+        // The updater has accepted ownership. Even if the main-thread queue
+        // is closing, finish Host shutdown and exit instead of reopening an
+        // update action whose replacement is already committed.
+        append_desktop_diagnostic("desktop_update", "stage=main_thread_cleanup status=failed");
+    }
     let owned = backend.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // The generated helper waits for both owned PIDs. It never kills them.
+        // The external updater waits for both owned PIDs. It never kills them.
         // Do not ask Tauri to restart the old executable before replacement.
         backend_process::shutdown(&owned);
         app.exit(0);
@@ -1181,6 +1337,12 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
             tauri::WindowEvent::Moved(_)
             | tauri::WindowEvent::Resized(_)
             | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                ) {
+                    refresh_main_window_minimum_height(window);
+                }
                 #[cfg(target_os = "windows")]
                 if matches!(event, tauri::WindowEvent::Resized(_))
                     && !window
@@ -1228,7 +1390,7 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                             let dialog = closing
                                 .dialog()
                                 .message(message)
-                                .title("Bilikara")
+                                .title("bilikara")
                                 .kind(MessageDialogKind::Warning)
                                 .buttons(MessageDialogButtons::OkCancelCustom(
                                     confirm.into(),
@@ -1320,12 +1482,12 @@ mod tests {
         }
     }
 
-    const FRAMELESS: LogicalFrameSize = LogicalFrameSize {
+    pub(super) const FRAMELESS: LogicalFrameSize = LogicalFrameSize {
         width: 0.0,
         height: 0.0,
     };
 
-    fn monitor(
+    pub(super) fn monitor(
         name: &str,
         x: i32,
         y: i32,
@@ -1343,7 +1505,7 @@ mod tests {
         }
     }
 
-    fn saved_geometry(
+    pub(super) fn saved_geometry(
         monitor: &MonitorWorkArea,
         offset_x: f64,
         offset_y: f64,
@@ -1490,6 +1652,52 @@ mod tests {
     }
 
     #[test]
+    fn short_saved_host_heights_restore_at_the_logical_floor_without_discarding_preferences() {
+        let work_area = monitor("desktop", 0, 0, 1920, 1040, 1.0);
+        let mut saved = saved_geometry(&work_area, 100.0, 80.0, 1000.0, 480.0, true);
+        saved.layout = HostLayout::Desktop;
+        let decision = resolved(std::slice::from_ref(&work_area), 0, 0, Some(&saved));
+        assert!(decision.used_saved_geometry);
+        assert!(decision.maximized);
+        assert_eq!(decision.inner_width, 1000.0);
+        assert_eq!(decision.inner_height, 600.0);
+        assert_eq!(decision.minimum_inner_height, 600.0);
+        assert_eq!(decision.offset_x, 100.0);
+        assert_eq!(decision.offset_y, 80.0);
+        assert_fully_inside(decision, &work_area);
+    }
+
+    #[test]
+    fn host_height_floor_yields_to_short_and_high_dpi_work_areas() {
+        for (height, scale) in [(560, 1.0), (1040, 2.0)] {
+            let work_area = monitor("small", 0, 0, 1920, height, scale);
+            let frame = LogicalFrameSize {
+                width: 16.0,
+                height: 40.0,
+            };
+            let saved = saved_geometry(&work_area, 20.0, 20.0, 800.0, 700.0, false);
+            let decision = resolve_main_window_geometry(
+                std::slice::from_ref(&work_area),
+                0,
+                0,
+                frame,
+                Some(&saved),
+            )
+            .expect("short work area is supported");
+            let available = f64::from(height) / scale - 40.0 - 24.0;
+            assert_eq!(decision.inner_height, available);
+            assert_eq!(decision.minimum_inner_height, available);
+            assert!(decision.minimum_inner_height < 600.0);
+            assert!(
+                f64::from(decision.physical_y)
+                    + f64::from(decision.physical_inner_height)
+                    + 40.0 * scale
+                    <= f64::from(height)
+            );
+        }
+    }
+
+    #[test]
     fn saved_negative_coordinate_secondary_monitor_restores_in_place() {
         let primary = monitor("primary", 0, 0, 1920, 1040, 1.0);
         let secondary = monitor("left", -2560, -120, 2560, 1400, 1.0);
@@ -1619,6 +1827,89 @@ mod tests {
             "bilikara-window-geometry-{test_name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn legacy_window_geometry_import_validates_and_keeps_source_and_current_preferences() {
+        let root = temporary_test_directory("legacy import 中文 &");
+        let source = root
+            .join("Roaming/com.bilikara.app")
+            .join(GEOMETRY_FILENAME);
+        let destination = root.join("runtime").join(GEOMETRY_FILENAME);
+        assert!(!import_window_geometry(&source, &destination).unwrap());
+        assert!(
+            !root.exists(),
+            "missing old preferences must not create files"
+        );
+        let original = br#"{"schema_version":1,"normal":{"offset_x":12.0,"offset_y":12.0,"width":1396.0,"height":880.5,"monitor":{"name":"\\\\.\\DISPLAY1","x":0,"y":0,"width":2880,"height":1824,"scale_factor":2.0}},"maximized":false}"#;
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, original).unwrap();
+        assert!(import_window_geometry(&source, &destination).unwrap());
+        let geometry = load_geometry(&destination).unwrap().unwrap();
+        assert_eq!(geometry.normal.offset_x, 12.0);
+        assert_eq!(geometry.normal.width, 1396.0);
+        assert_eq!(geometry.normal.height, 880.5);
+        assert_eq!(geometry.normal.monitor.scale_factor, 2.0);
+        assert_eq!(geometry.layout, HostLayout::Auto);
+        assert!(!geometry.maximized);
+        assert_eq!(fs::read(&source).unwrap(), original);
+
+        // Both the early existence check and atomic publication protect a
+        // previously saved current file, including one needing manual recovery.
+        fs::write(&destination, b"existing current preferences").unwrap();
+        assert!(!import_window_geometry(&source, &destination).unwrap());
+        let error = write_geometry(&destination, &geometry, false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"existing current preferences"
+        );
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(destination.parent().unwrap()).unwrap().count(),
+            1
+        );
+        fs::remove_file(&destination).unwrap();
+
+        let invalid = [
+            b"{broken JSON".to_vec(),
+            String::from_utf8(original.to_vec())
+                .unwrap()
+                .replace("\"schema_version\":1", "\"schema_version\":2")
+                .into_bytes(),
+            String::from_utf8(original.to_vec())
+                .unwrap()
+                .replace("1396.0", "1.0")
+                .into_bytes(),
+            vec![b' '; MAX_GEOMETRY_FILE_BYTES as usize + 1],
+        ];
+        for bytes in invalid {
+            fs::write(&source, &bytes).unwrap();
+            assert!(import_window_geometry(&source, &destination).is_err());
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert!(!destination.exists());
+            assert_eq!(
+                fs::read_dir(destination.parent().unwrap()).unwrap().count(),
+                0
+            );
+        }
+        fs::remove_file(&source).unwrap();
+        fs::create_dir(&source).unwrap();
+        assert!(import_window_geometry(&source, &destination).is_err());
+        fs::remove_dir(&source).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&destination, &source).unwrap();
+            assert!(import_window_geometry(&source, &destination).is_err());
+            fs::remove_file(&source).unwrap();
+        }
+        fs::write(&source, original).unwrap();
+        let blocked_parent = root.join("blocked");
+        fs::write(&blocked_parent, b"unrelated file").unwrap();
+        assert!(import_window_geometry(&source, &blocked_parent.join(GEOMETRY_FILENAME)).is_err());
+        assert_eq!(fs::read(&blocked_parent).unwrap(), b"unrelated file");
+        assert_eq!(fs::read(&source).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

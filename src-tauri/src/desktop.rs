@@ -6,7 +6,16 @@ use crate::{
 use std::path::PathBuf;
 use tauri::Manager;
 
+// Embed the shared assets/configuration once for both ordinary and tool modes.
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 pub(crate) fn run() {
+    if std::env::args().skip(1).any(|arg| arg == "--import-legacy") {
+        crate::desktop_import::run(context());
+        return;
+    }
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -25,7 +34,7 @@ pub(crate) fn run() {
     desktop_diagnostics::install_desktop_panic_hook(startup_log.as_ref());
     desktop_diagnostics::install_runtime_desktop_diagnostics(startup_log.as_ref());
 
-    let context = tauri::generate_context!();
+    let context = context();
     #[cfg(windows)]
     let context = {
         let mut context = context;
@@ -89,7 +98,7 @@ pub(crate) fn run() {
                     application.append(&tauri::menu::MenuItem::with_id(
                         app,
                         "bilikara-quit",
-                        "Quit Bilikara",
+                        "Quit bilikara",
                         true,
                         Some("CmdOrCtrl+Q"),
                     )?)?;
@@ -111,6 +120,9 @@ pub(crate) fn run() {
                 );
                 return Ok(());
             };
+            // Windows imports the old portable window preferences in the data
+            // gate; restore them before Host launch, while main is still hidden.
+            #[cfg(not(windows))]
             window_lifecycle::initialize_main_window_geometry(app, &window);
             #[cfg(target_os = "linux")]
             if let Err(error) = platform::configure_linux_main_window(&window) {
@@ -123,7 +135,11 @@ pub(crate) fn run() {
                 }
                 eprintln!("Windows native rounded corners unavailable: {error}");
             }
-            backend_process::launch(app, window, startup_log);
+            #[cfg(windows)]
+            if let Err(error) = window_lifecycle::install_display_change_handler(&window) {
+                eprintln!("Windows display-change recovery unavailable: {error}");
+            }
+            crate::desktop_import::gate_startup(app, window, startup_log);
             Ok(())
         })
         .on_window_event(window_lifecycle::handle_window_event)

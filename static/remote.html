@@ -236,7 +236,7 @@
               id="url-input"
               name="url"
               type="text"
-              placeholder="Bilibili 链接 / BV / av / YouTube watch 链接"
+              placeholder="Bilibili 链接 / BV / av / YouTube 链接"
               data-i18n-placeholder="request.urlPlaceholder"
               autocomplete="off"
             />
@@ -727,9 +727,12 @@
           <div class="queue-badge-column info-trigger-wrap">
             <button type="button" class="queue-drag-handle remote-info-button" data-drag-handle aria-expanded="false" aria-label="拖动排序" data-i18n-aria-label="remote.dragSort">
               <span class="queue-order" aria-hidden="true"></span>
+              <svg class="queue-drag-grip" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M3 5h14M3 10h14M3 15h14"/>
+              </svg>
             </button>
             <span class="queue-state"></span>
-            <span class="remote-tooltip-bubble" role="tooltip" data-i18n="remote.dragSortHint">按住序号上下拖动可调整顺序</span>
+            <span class="remote-tooltip-bubble" role="tooltip" data-i18n="remote.dragSortHint">按住拖柄上下拖动可调整顺序</span>
           </div>
           <div class="queue-main">
             <h3 class="queue-title"></h3>
@@ -1087,7 +1090,7 @@
         <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
         <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用须填写用户名，登记后本设备将始终使用该身份点歌。</p>
         <form id="remote-identity-form" class="remote-identity-form">
-          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" aria-label="用户名" data-i18n-aria-label="remoteIdentity.inputLabel" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="输入用户名" />
+          <input id="remote-identity-input" name="remote_identity" type="text"  required autocomplete="nickname" aria-label="用户名" data-i18n-aria-label="remoteIdentity.inputLabel" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="输入用户名" />
           <div class="remote-identity-actions">
             <button type="button" id="remote-identity-cancel" class="ghost-button hidden" data-i18n="common.cancel">取消</button>
             <button type="submit" id="remote-identity-submit" class="primary-button" data-i18n="remoteIdentity.registerSubmit">添加并开始使用</button>
@@ -1107,6 +1110,7 @@
     <script src="/browse-search.js" defer></script>
     <script src="/volume-control.js" defer></script>
     <script src="/part-selector.js" defer></script>
+    <script src="/request-input.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

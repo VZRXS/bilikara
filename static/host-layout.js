@@ -59,7 +59,7 @@
   for (const button of workspaceButtons) {
     if (!defaultWorkspaces.has(button.dataset.compactPage)) defaultWorkspaces.set(button.dataset.compactPage, button.dataset.hostWorkspace);
   }
-  for (const link of document.querySelectorAll("[data-shared-workspace]")) {
+  for (const [index, link] of Array.from(document.querySelectorAll("[data-shared-workspace]")).entries()) {
     const source = workspaceButton(link.dataset.sharedWorkspace);
     const label = source.querySelector(".work-rail-label").cloneNode(true);
     label.removeAttribute("class");
@@ -67,6 +67,17 @@
     if (link.hasAttribute("data-workspace-icon")) {
       const icon = source.querySelector(".work-rail-icon").cloneNode(true);
       icon.removeAttribute("class");
+      // Each SVG mask belongs to its copy; duplicate document IDs can bind
+      // the compact icon to a hidden desktop definition.
+      for (const definition of icon.querySelectorAll("[id]")) {
+        const original = definition.id;
+        definition.id = `compact-workspace-${index}-${original}`;
+        for (const reference of icon.querySelectorAll("[mask]")) {
+          if (reference.getAttribute("mask") === `url(#${original})`) {
+            reference.setAttribute("mask", `url(#${definition.id})`);
+          }
+        }
+      }
       link.prepend(icon);
     }
     link.setAttribute("aria-controls", source.getAttribute("aria-controls"));
@@ -75,10 +86,8 @@
   let portrait = false;
   let preferences = {layout: "auto", orientation: "system"};
   let preferencesReady = false;
-  let preferenceBusy = false;
   let preferenceError = false;
   const layoutApi = window.BilikaraHostWindowPreferences;
-  const orientationSwitch = byId("android-orientation-switch");
   let page = "playback";
   let settings = false;
   let queueView = "queue";
@@ -250,6 +259,11 @@
         displaySection.prepend(displaySettings);
       }
       requestTabs.append(sharedRequestTabs);
+      // Desktop anchoring writes inline coordinates. Release them before the
+      // same panel returns to normal flow inside the phone's My page.
+      for (const property of ["position", "left", "right", "top"]) {
+        elements.cachePanel.style.removeProperty(property);
+      }
       byId("android-settings-slot").append(cacheSettings);
       byId("android-account-slot").append(account);
       account.prepend(accountStatus);
@@ -286,53 +300,13 @@
     schedulePersistentStageMeasurement();
   }
 
-  function syncWindowPreferences() {
-    for (const [group, attribute, value] of [
-      [orientationSwitch, "androidOrientationMode", preferences.orientation],
-    ]) {
-      for (const button of group.querySelectorAll("button")) {
-        const selected = button.dataset[attribute] === value;
-        button.classList.toggle("active", selected);
-        button.setAttribute("aria-pressed", String(selected));
-        button.disabled = !preferencesReady || preferenceBusy;
-      }
-    }
-  }
-
-  async function changeWindowPreference(event) {
-    const group = orientationSwitch;
-    const button = event.target.closest("button");
-    if (!button || !group.contains(button) || button.disabled || preferenceBusy) return;
-    const mode = button.dataset.androidOrientationMode;
-    if (mode === preferences.orientation) return;
-    preferenceBusy = true;
-    button.setAttribute("aria-busy", "true");
-    syncWindowPreferences();
-    try {
-      preferences = {...await layoutApi.client.saveOrientation(mode), layout: "auto"};
-      preferenceError = false;
-      updateOrientation();
-    } catch {
-      preferenceError = true;
-      setAppMessage(t("mobile.windowPreferenceFailed"), true);
-    } finally {
-      preferenceBusy = false;
-      button.removeAttribute("aria-busy");
-      syncWindowPreferences();
-    }
-  }
-
-  byId("android-orientation-settings").hidden = !layoutApi?.orientation;
-  orientationSwitch.addEventListener("click", changeWindowPreference);
-  syncWindowPreferences();
   if (layoutApi?.client) {
-    layoutApi.client.load().then(saved => {
-      // Preview 2 exposes responsive layout only. Retain saved platform data,
-      // but do not let an earlier hidden manual selection pin the interface.
-      preferences = {...saved, layout: "auto"};
+    layoutApi.client.load().then(() => {
+      // Normal windows follow system rotation and available width. Former
+      // manual preferences must not pin the shared responsive interface.
+      preferences = {layout: "auto", orientation: "system"};
       preferencesReady = true;
       updateOrientation();
-      syncWindowPreferences();
     }).catch(() => {
       preferenceError = true;
       setAppMessage(t("mobile.windowPreferenceFailed"), true);

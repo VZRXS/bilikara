@@ -641,6 +641,7 @@
               aria-hidden="true"></div>
           </div>
           <div class="fullscreen-request-toast hidden" id="fullscreen-request-toast" aria-live="polite"></div>
+          <div class="presentation-feedback hidden" id="presentation-feedback" role="status" aria-live="polite"></div>
           <div class="audio-variant-anchor" id="audio-variant-anchor" hidden>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <button type="button" class="audio-variant-toggle hidden" id="audio-variant-toggle"
@@ -848,15 +849,6 @@
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
               </div>
               <div class="settings-section-card">
-                <div class="cache-panel-row settings-control-row android-window-preferences" id="android-orientation-settings" hidden>
-                  <p class="cache-panel-label" id="android-orientation-label" data-i18n="mobile.orientation">屏幕方向</p>
-                  <div class="mode-switch" id="android-orientation-switch" role="group" aria-labelledby="android-orientation-label">
-                    <button type="button" class="mode-button" data-android-orientation-mode="system" data-i18n="mobile.orientationSystem" disabled>跟随系统</button>
-                    <button type="button" class="mode-button" data-android-orientation-mode="landscape" data-i18n="mobile.orientationLandscape" disabled>横屏</button>
-                    <button type="button" class="mode-button" data-android-orientation-mode="portrait" data-i18n="mobile.orientationPortrait" disabled>竖屏</button>
-                  </div>
-                  <p class="cache-panel-hint" data-i18n="mobile.orientationHint">方向与布局独立；部分平板或分屏模式可能忽略方向请求。全屏播放退出后恢复此设置。</p>
-                </div>
                 <div class="cache-panel-row settings-control-row">
                   <div>
                     <p class="cache-panel-label" data-i18n="top.language">语言</p>
@@ -925,7 +917,7 @@
                       title="检查 bilikara 新版本" data-i18n-title="service.checkUpdateTitle">
                       <span data-i18n="service.checkUpdate">检查更新</span>
                     </button>
-                    <button type="button" id="update-cancel-button" class="toolbar-button" data-i18n="common.cancel" hidden>取消</button>
+                    <button type="button" id="update-cancel-button" class="toolbar-button settings-tool-button" data-i18n="common.cancel" hidden>取消</button>
                     </div>
                   </div>
                 </div>
@@ -1066,7 +1058,7 @@
                 <select id="requester-select" name="requester_name"></select>
                 <button type="button" id="requester-empty-button" class="secondary requester-empty-button" hidden
                   data-i18n="session.openUsers" aria-hidden="true" inert>先添加本场用户</button>
-                <input id="url-input" name="url" type="text" placeholder="Bilibili 链接 / BV / av / YouTube watch 链接"
+                <input id="url-input" name="url" type="text" placeholder="Bilibili 链接 / BV / av / YouTube 链接"
                   data-i18n-placeholder="request.urlPlaceholder" autocomplete="off" />
                 <button type="submit" data-i18n="request.submit">点歌</button>
                 <button type="button" id="queue-next-button" class="secondary"
@@ -1291,20 +1283,12 @@
           </div>
 
           <form id="session-user-form" class="session-user-form">
-            <input id="session-user-input" name="session_user" type="text" maxlength="24" placeholder="输入用户名"
+            <input id="session-user-input" name="session_user" type="text" placeholder="输入用户名"
               data-i18n-placeholder="session.namePlaceholder" autocomplete="off" />
             <button type="submit" data-i18n="session.addUser">添加用户</button>
           </form>
-          <p class="help-text message-surface message-info" data-i18n="session.help">点歌会按这里的顺序轮转插入，可以拖拽调整顺序，拖到右下角删除。</p>
           <div class="session-user-stage" id="session-user-stage">
             <div id="session-user-list" class="session-user-list"></div>
-            <div id="session-user-trash" class="session-user-trash">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round">
-                <path
-                  d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-              </svg>
-            </div>
           </div>
         </section>
 
@@ -1911,6 +1895,7 @@
   </div>
 
   <script src="/part-selector.js" defer></script>
+  <script src="/request-input.js" defer></script>
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
@@ -1927,8 +1912,10 @@
   <script src="/host-language.js" defer></script>
   <script src="/volume-control.js" defer></script>
   <script src="/incoming-request.js"></script>
+  <script src="/presentation-feedback.js"></script>
   <script src="/fullscreen-controls.js"></script>
   <script src="/queue-defer.js" defer></script>
+  <script src="/session-user-editor.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>

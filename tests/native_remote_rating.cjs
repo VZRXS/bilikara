@@ -13,6 +13,7 @@ const vm = require('node:vm');
     clientHeaders:h=>h, t:k=>k, setAppMessage:()=>errors++,renderCurrentRatingButton(){},
     fetch:(_url,options)=>{payload=JSON.parse(options.body);calls++; return new Promise(r=>{resolve=r;});}};
   vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function ratingSubmissionUserId('),source.indexOf('function ratingSubmissionKey(')),context);
   vm.runInContext(source.slice(source.indexOf('function serverRatingStatus('),source.indexOf('function normalizeRatingPromptItem(')),context);
   vm.runInContext(fn,context);
   const tick = () => new Promise(r=>setImmediate(r));
@@ -38,7 +39,7 @@ const vm = require('node:vm');
   resolve({ok:true,json:async()=>({ok:true,data:{success:true,queued:true}})});await tick();
   assert.equal(state.ratingSubmittedKeys.size,0,'Deferred confirmation is not a submitted rating');
   assert.equal(state.ratingQueuedKeys.size,1);
-  if(file.endsWith('remote.js')) {
+  {
     assert.equal(context.savedSongRatingScore(item),3);
     assert.equal(context.submitSongRating(item,2,button),true,'Waiting score can be replaced');
     assert.equal(context.submitSongRating(item,1,button),false,'Replacement still guards in-flight requests');
@@ -46,7 +47,7 @@ const vm = require('node:vm');
     assert.equal(context.savedSongRatingScore(item),2);
     state.data.song_ratings=[{play_id:'played',session_user_name:'Alice',status:'sending',score:2}];
     assert.equal(context.submitSongRating(item,5,button),false,'Sending score cannot be replaced');
-  } else assert.equal(context.submitSongRating(item,5,button),false);
+  }
   state.data.song_ratings=[{play_id:'played',session_user_name:'Alice',status:'failed'}];
   assert.equal(context.serverRatingStatus(item),'failed');
   assert.equal(state.ratingQueuedKeys.size,0,'Server failure releases deferred dedup for explicit retry');
@@ -70,6 +71,22 @@ const vm = require('node:vm');
     context.flushPendingAutoRating('played',{item});assert.equal(calls,before+1);
     resolve({ok:true,json:async()=>({ok:true,data:{success:true}})});await tick();
     assert.equal(state.ratingSubmittedKeys.size,1);
+  }
+  if(file.endsWith('app.js')) {
+    state.ratingSubmittedKeys.clear();state.ratingQueuedKeys.clear();
+    state.data.song_ratings=[
+      {play_id:'played',session_user_name:'Alice',status:'waiting',score:2},
+      {play_id:'played',session_user_name:'Bob',status:'waiting',score:1}
+    ];
+    let requester='Alice';
+    context.ratingSubmissionUserName=()=>requester;
+    context.ratingSubmissionKey=()=>requester.toLowerCase()+'::played';
+    assert.equal(context.submitSongRating(item,5,button),true);
+    requester='Bob';
+    resolve({ok:true,json:async()=>({ok:true,data:{success:true,queued:true}})});await tick();
+    assert.equal(state.data.song_ratings[1].score,1,'Late completion cannot overwrite a different user’s rating projection');
+    assert.equal(state.data.song_ratings[0].score,5,'Completion updates the original user’s saved projection');
+    assert.equal(state.ratingSavedScores.get('alice::played'),5);
   }
   console.log(file + ' rating retries and busy/dedup guards: PASS');
  }

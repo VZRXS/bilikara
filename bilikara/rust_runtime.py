@@ -430,6 +430,30 @@ def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
     return _call_runtime_service("cache_runtime", request)
 
 
+def start_monthly_refresh_in_background(secret: str, *, requested_by: str = "") -> dict[str, Any]:
+    """Source Host transport; Rust owns execution and the duplicate-run guard."""
+    from . import config, shared_catalog
+
+    result = _call_runtime_service("catalog_refresh", {
+        "options": {
+            "uid_source": str(config.DATA_DIR / "gatcha_uids.json"),
+            "api_url": shared_catalog._CLOUDFLARE_API_URL,
+            "cookie": config.COOKIE,
+            "cookie_path": str(config.BB_DOWN_DIR / "BBDown.data"),
+            "version": config.APP_VERSION,
+        },
+        "secret": str(secret or ""),
+        "requested_by": str(requested_by or ""),
+    })
+    if (type(result.get("success")) is not bool or result.get("job") != "monthly-d1-refresh"
+            or (result["success"] and (result.get("execution") != "local"
+                or result.get("status") != "running"
+                or not isinstance(result.get("instance_id"), str)))
+            or (not result["success"] and not isinstance(result.get("error"), str))):
+        raise RustRuntimeServiceError("invalid_response", "Invalid monthly maintenance response", response={})
+    return result
+
+
 def configure_bbdown(*, owner: str, prepared_path: Path | None) -> dict[str, Any]:
     """Transport a trusted Host preparation result, never public request fields."""
     result = _call_runtime_service("native_cache", {
@@ -659,7 +683,7 @@ def fetch_bilibili_dash_playurl(
             "cid": int(cid),
             "avid": int(avid),
             "cookie": str(cookie or "").strip(),
-            "user_agent": str(user_agent or "").strip() or "Mozilla/5.0 Bilikara Rust Runtime",
+            "user_agent": str(user_agent or "").strip() or "Mozilla/5.0 bilikara Rust Runtime",
             "referer": str(referer or "").strip() or "https://www.bilibili.com/",
             "qn": int(qn),
             "fnval": int(fnval),
@@ -719,7 +743,7 @@ def resolve_bilibili_redirect(
             "schema_version": 1,
             "url": str(url).strip(),
             "cookie": str(cookie).strip(),
-            "user_agent": str(user_agent).strip() or "Mozilla/5.0 Bilikara Rust Runtime",
+            "user_agent": str(user_agent).strip() or "Mozilla/5.0 bilikara Rust Runtime",
             "referer": str(referer).strip() or "https://www.bilibili.com/",
             "timeout_ms": max(100, int(timeout_ms)),
         },

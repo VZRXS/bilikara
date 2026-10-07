@@ -6,14 +6,24 @@
 | --- | --- |
 | Rust toolchain used by CI and release builds | `1.97.0` stable, pinned in `rust-toolchain.toml` |
 | Rust edition (`rust/`) | 2024 |
+| Rust edition (`rust-runtime/`) | 2024 |
 | Rust edition (`src-tauri/`) | 2024 |
 | Native utility crate MSRV | 1.85 |
+| Runtime crate MSRV | 1.88 |
 | Tauri crate MSRV | 1.88 |
 | Effective whole-project Rust MSRV | 1.88 |
 | Tauri application generation | v2 |
 | Resolved `@tauri-apps/cli` | 2.11.2 |
 | Resolved top-level `tauri` crate | 2.11.2 |
-| Native C ABI generation | 1 |
+| Legacy Python compatibility C ABI generation | 1 |
+
+v0.8.0-preview.2 is released. Its production desktop runtime is the native Rust
+HTTP/SSE Host with Rust AppState, supervised by the Tauri shell. Native products
+link the Rust crates directly and contain no Python runtime, PyInstaller payload
+or Python FFI dynamic libraries. Python remains Source transport/compatibility,
+tests and independent publication or third-party tooling. Native construction
+and package verification use the independent Rust xtask. Keep the legacy C ABI and its tests
+while they have consumers; it is not a production desktop packaging requirement.
 
 Rust 1.97.0 is the current tested compiler baseline because it is an exact,
 recent stable release that supports edition 2024 and has passed the native
@@ -31,22 +41,22 @@ the higher compiler.
 
 ## Stable Rust and toolchain changes
 
-Both Rust projects use the root `rust-toolchain.toml`. Nightly, beta, unstable
+All three Rust projects use the root `rust-toolchain.toml`. Nightly, beta, unstable
 features, and unreviewed dependency Git revisions are outside the supported
 release baseline.
 
 Advance the pinned compiler only when at least one of these applies:
 
-- a major Bilikara release is being prepared;
+- a major bilikara release is being prepared;
 - a scheduled dependency-maintenance review is in progress;
 - a dependency requires a newer stable compiler;
 - a relevant compiler bug or security fix is needed;
 - the existing baseline is no longer reasonably current.
 
-A toolchain change is a dedicated, reviewed change. It must run both locked
-Rust suites, Python tests, the direct-native release gate, and the Tauri bundle
-build before becoming the baseline. Do not set the MSRV equal to the selected
-compiler merely to make the two numbers match.
+A toolchain change is a dedicated, reviewed change. It must run all three locked
+Rust suites, Python tests, the native Host and compatibility ABI gates, and the
+Tauri bundle build before becoming the baseline. Do not set the MSRV equal to
+the selected compiler merely to make the two numbers match.
 
 ## Tauri v2 compatibility
 
@@ -80,6 +90,7 @@ The following lockfiles are committed release inputs:
 
 ```text
 rust/Cargo.lock
+rust-runtime/Cargo.lock
 src-tauri/Cargo.lock
 package-lock.json
 ```
@@ -112,9 +123,9 @@ To promote a new Rust or Tauri baseline:
 1. use a dedicated branch and commit;
 2. update the toolchain, manifests, and affected lockfiles coherently;
 3. inspect the resolved top-level and internal Tauri v2 graph;
-4. run locked native and Tauri formatting, Clippy, tests, and release builds;
-5. run Python compilation and integration tests;
-6. run the direct native ABI/capability gate;
+4. run locked domain, runtime and Tauri formatting, Clippy, tests, and release builds;
+5. run Python tooling/compatibility compilation and integration tests;
+6. run native Host tests and the retained direct native ABI/capability gate;
 7. run `npm ci` and the locked Tauri bundle build;
 8. validate and report every supported target independently.
 
@@ -145,13 +156,21 @@ from one operating system or architecture never proves another target passed.
 For every published target, CI must:
 
 - use the repository's pinned Rust toolchain;
-- use both committed Cargo lockfiles and `package-lock.json`;
-- build the target's native `bilikara_rust` dynamic library before Python
-  packaging;
-- run the direct native release gate without a skip;
-- set `BILIKARA_REQUIRE_RUST_LIB=1` for the PyInstaller bundle;
-- include the correct `.dll` or `.dylib` in that bundle;
-- complete the locked Tauri v2 build for that architecture.
+- use the application Cargo lockfiles, `xtask/Cargo.lock` and `package-lock.json`;
+- build `bilikara-desktop-host` with `native-host` and the native updater for
+  the target, then complete the locked Tauri v2 build for that architecture;
+- use the independent Rust xtask construction/preparation entries without
+  importing legacy `bilikara` application modules; retain libav provenance/dependency
+  validation, pinned BBDown metadata
+  checks and the established bundle layout;
+- verify the extracted native product with
+  `xtask verify-native-desktop`, including bootstrap, HTTP/SSE,
+  shutdown/reopen and absence of Python/PyInstaller/FFI payloads.
+
+The test matrix separately builds the Rust `cdylib` compatibility targets and
+runs the direct native ABI/capability gate plus Python integration tests with
+`BILIKARA_REQUIRE_RUST_LIB=1`. These remain test/source-workflow requirements;
+they do not turn those dynamic libraries into desktop product payloads.
 
 Signing, notarization, installation, launch smoke tests, and runtime tests are
 reported separately. Cross-platform compatibility must only be claimed for

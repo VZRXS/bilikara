@@ -427,6 +427,115 @@ mod tests {
     }
 
     #[test]
+    fn supplied_literal_url_matrix_preserves_primary_and_first_mirror() {
+        for primary in ["", "primary", " primary "] {
+            for (name, quoted) in [
+                ("tool", "tool"),
+                ("歌曲", "%E6%AD%8C%E6%9B%B2"),
+                ("already%20encoded", "already%2520encoded"),
+            ] {
+                for bases in [vec![], vec![""], vec!["mirror"], vec!["mirror", "mirror"]] {
+                    let input = ToolDownloadPlanRequest {
+                        tool: ToolKind::YtDlp,
+                        asset: ToolAssetInput::Supplied {
+                            name: name.to_owned(),
+                            primary_url: primary.to_owned(),
+                        },
+                        fallback_bases: bases
+                            .iter()
+                            .enumerate()
+                            .map(|(i, base)| fallback(i, base))
+                            .collect(),
+                    };
+                    let mut expected = Vec::new();
+                    if !primary.is_empty() {
+                        expected.push(PlannedToolCandidate {
+                            source: ToolCandidateSource::SuppliedPrimary,
+                            fallback_index: None,
+                            url: primary.to_owned(),
+                        });
+                    }
+                    if bases.first() == Some(&"mirror") {
+                        expected.push(PlannedToolCandidate {
+                            source: ToolCandidateSource::ConfiguredFallback,
+                            fallback_index: Some(0),
+                            url: format!("mirror/{quoted}"),
+                        });
+                    }
+                    assert_eq!(
+                        plan_tool_download_candidates(&input).unwrap().candidates,
+                        expected
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn retained_source_tool_target_mappings_have_independent_names() {
+        for (tool, platform, architecture, name) in [
+            (
+                ToolKind::Bbdown,
+                "windows",
+                "x86",
+                "BBDown_1.6.3_20240814_win-x64.zip",
+            ),
+            (
+                ToolKind::Bbdown,
+                "darwin",
+                "arm64",
+                "BBDown_1.6.3_20240814_osx-arm64.zip",
+            ),
+            (
+                ToolKind::Bbdown,
+                "linux",
+                "x64",
+                "BBDown_1.6.3_20240814_linux-x64.zip",
+            ),
+            (ToolKind::YtDlp, "windows", "arm64", "yt-dlp_arm64.exe"),
+            (ToolKind::YtDlp, "other", "mips", "yt-dlp"),
+            (
+                ToolKind::Aria2c,
+                "windows",
+                "x86",
+                "aria2-1.37.0-win-32bit-build1.zip",
+            ),
+        ] {
+            let plan = plan_tool_download_candidates(&ToolDownloadPlanRequest {
+                tool,
+                asset: ToolAssetInput::DefaultForTarget(ToolTarget {
+                    platform: platform.to_owned(),
+                    architecture: architecture.to_owned(),
+                }),
+                fallback_bases: vec![fallback(2, "https://mirror")],
+            })
+            .unwrap();
+            assert_eq!(plan.asset_name, name);
+            assert_eq!(
+                plan.candidates.last().unwrap(),
+                &PlannedToolCandidate {
+                    source: ToolCandidateSource::ConfiguredFallback,
+                    fallback_index: Some(2),
+                    url: format!("https://mirror/{name}"),
+                }
+            );
+        }
+        for (tool, platform) in [(ToolKind::Bbdown, "freebsd"), (ToolKind::Aria2c, "linux")] {
+            assert_eq!(
+                plan_tool_download_candidates(&ToolDownloadPlanRequest {
+                    tool,
+                    asset: ToolAssetInput::DefaultForTarget(ToolTarget {
+                        platform: platform.to_owned(),
+                        architecture: "x64".to_owned(),
+                    }),
+                    fallback_bases: vec![fallback(0, "https://mirror")],
+                }),
+                Err(ToolDownloadPlanError::UnsupportedTarget)
+            );
+        }
+    }
+
+    #[test]
     fn empty_supplied_plan_is_valid_but_invalid_and_unsupported_requests_fail() {
         let empty = ToolDownloadPlanRequest {
             tool: ToolKind::Bbdown,

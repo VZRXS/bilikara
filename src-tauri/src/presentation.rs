@@ -1654,7 +1654,7 @@ fn display_identifier_url(
 ) -> Result<tauri::Url, String> {
     let mut url = host.url().map_err(|error| error.to_string())?;
     if crate::backend_process::parsed_http_origin(url.as_str()).is_none() {
-        return Err("the Host is not using the local Bilikara origin".to_string());
+        return Err("the Host is not using the local bilikara origin".to_string());
     }
     url.set_path("/display-identifier.html");
     url.set_query(None);
@@ -1794,7 +1794,7 @@ fn create_display_identifier_window(
                 let _ = window.set_ignore_cursor_events(true);
             }
         })
-        .title(format!("Bilikara Display {number}"))
+        .title(format!("bilikara Display {number}"))
         .visible(false)
         .decorations(false)
         .resizable(false)
@@ -2138,7 +2138,7 @@ fn restore_host_window(
 fn controller_url(host: &tauri::WebviewWindow, generation: u64) -> Result<tauri::Url, String> {
     let mut url = host.url().map_err(|error| error.to_string())?;
     if crate::backend_process::parsed_http_origin(url.as_str()).is_none() {
-        return Err("the Host is not using the local Bilikara origin".to_string());
+        return Err("the Host is not using the local bilikara origin".to_string());
     }
     url.set_path("/controller.html");
     url.set_query(Some(&format!("presentationGeneration={generation}")));
@@ -2173,7 +2173,7 @@ fn create_controller_window(
                 allowed_origin.as_str(),
             )
         })
-        .title("Bilikara Stage")
+        .title("bilikara Stage")
         .visible(false)
         .decorations(false)
         .resizable(false)

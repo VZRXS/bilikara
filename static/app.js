@@ -118,8 +118,6 @@ const state = {
   listHeaderRenderSignature: "",
   requesterSelectRenderSignature: "",
   sessionUsersRenderSignature: "",
-  sessionUserActionsName: "",
-  sessionUserActionPending: null,
   remoteAccessRenderSignature: "",
   remoteAccessFailure: null,
   remoteAccessRequestSequence: 0,
@@ -403,6 +401,7 @@ const state = {
   startupUpdateCheckScheduled: false,
   updateCheckRequestInFlight: false,
   manualUpdateCheck: null,
+  reportedLastInstall: "",
   updateManualVisibleChannel: "",
   updatePreviewEnabled: false,
   ratingPromptElement: null,
@@ -412,11 +411,14 @@ const state = {
   ratingPromptItemId: "",
   ratingPromptBvid: "",
   ratingPromptScore: 5,
+  ratingPromptScoreDirty: false,
+  ratingPromptSubmissionKey: "",
   ratingPromptSubmitted: false,
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingPendingKeys: new Set(),
   ratingQueuedKeys: new Set(),
+  ratingSavedScores: new Map(),
   ratingOptOut: false,
   appToastTimer: null,
   presentationSession: {
@@ -606,6 +608,7 @@ const elements = {
   stageControlTray: document.getElementById("stage-control-tray"),
   stageExtendedControls: document.getElementById("stage-extended-controls"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
+  presentationFeedback: document.getElementById("presentation-feedback"),
   audioVariantAnchor: document.getElementById("audio-variant-anchor"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   audioVariantToggle: document.getElementById("audio-variant-toggle"),
@@ -977,6 +980,57 @@ function maybeShowIncomingRequestToast(previousData, nextData) {
   };
   if (isAudiencePlayerSurface()) fullscreenRequestNotice().show(state.presentationIncomingRequest);
   publishPresentationOutputState();
+}
+
+function renderPresentationFeedback() {
+  const feedback = window.BilikaraPresentationFeedback;
+  if (!feedback || !elements.presentationFeedback) return;
+  const next = feedback.snapshot(state.data);
+  const previous = state.presentationFeedbackSnapshot;
+  const changes = feedback.changes(previous, next);
+  state.presentationFeedbackSnapshot = next;
+  const dualScreen = state.presentationSession?.mode === "localDualScreen"
+    && ["activating", "active"].includes(state.presentationSession.phase);
+  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (previous && (previous.session !== next.session || previous.item !== next.item)) {
+    state.presentationFeedbackView.hide();
+    state.presentationActionFeedback = null;
+  }
+  if (!isAudiencePlayerSurface() && !dualScreen) {
+    state.presentationFeedbackView.hide();
+    state.presentationActionFeedback = null;
+    return;
+  }
+  if (!changes.length) {
+    if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
+    return;
+  }
+  showPresentationOperationFeedback(changes);
+}
+
+function showPresentationOperationFeedback(changes) {
+  const feedback = window.BilikaraPresentationFeedback;
+  const dualScreen = state.presentationSession?.mode === "localDualScreen"
+    && ["activating", "active"].includes(state.presentationSession.phase);
+  if (!feedback || !elements.presentationFeedback || (!isAudiencePlayerSurface() && !dualScreen)) return;
+  const notices = (Array.isArray(changes) ? changes : [changes]).map(change => ({
+    ...change,
+    key: `${state.presentationOutputSenderId}:${state.presentationFeedbackSequence = (state.presentationFeedbackSequence || 0) + 1}`,
+    expiresAt: Date.now() + feedback.durationMs,
+  }));
+  state.presentationActionFeedback = feedback.recent(state.presentationActionFeedback, notices);
+  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
+  publishPresentationOutputState();
+}
+
+function confirmPresentationPlaybackFeedback(session) {
+  if (session.presentationFeedbackPlayPending
+    && isCurrentHostPlaybackSession(session, session.video, session.audio)
+    && hostPlaybackSessionObservedPlaying(session, session.video, session.audio)) {
+    session.presentationFeedbackPlayPending = false;
+    showPresentationOperationFeedback({ kind: "play", value: "" });
+  }
 }
 
 function requesterBadgeText(requesterName) {
@@ -1590,6 +1644,20 @@ function presentationRendererApi() {
   return window.BilikaraPresentationRenderer || null;
 }
 
+function presentationCacheStatusForItem(item) {
+  if (!item) {
+    return "";
+  }
+  // Transition labels/order stay fixed, but cache state follows fresh snapshots
+  // of the same song incarnation rather than the currently playing song.
+  const identity = String(item.item_incarnation_id || item.id || "");
+  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const latest = [state.data?.current_item, ...playlist].find((candidate) => (
+    identity && String(candidate?.item_incarnation_id || candidate?.id || "") === identity
+  ));
+  return String((latest || item).cache_status || "");
+}
+
 function presentationOverlayModel() {
   const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
   const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
@@ -1611,11 +1679,13 @@ function presentationOverlayModel() {
     title: delayOverlayTitleForItem(primaryItem, t("player.prepareNext")),
     requester: primaryItem?.requester_name || "—",
     duration: formatDurationSeconds(durationSecondsForItem(primaryItem)),
+    cacheStatus: presentationCacheStatusForItem(primaryItem),
     queueHeading: t("player.followingQueue"),
     rows: visibleRows.map((item) => ({
       title: delayOverlayTitleForItem(item),
       requester: item?.requester_name || "—",
       duration: formatDurationSeconds(durationSecondsForItem(item)),
+      cacheStatus: presentationCacheStatusForItem(item),
     })),
     emptyText: visibleRows.length ? "" : t("player.followingQueueEmpty"),
     remainingText: remainingCount > 0 ? t("player.remainingQueue", { count: remainingCount }) : "",
@@ -1649,6 +1719,9 @@ function currentPresentationScene() {
       requester: String(currentItem?.requester_name || ""),
       duration: formatDurationSeconds(durationSecondsForItem(currentItem)),
       detail: String(currentItem?.owner_name || ""),
+      cacheStatus: String(currentItem?.cache_status || ""),
+      cacheDetail: hostCacheDetailTextForItem(currentItem),
+      cacheProgress: cacheProgressPercentForItem(currentItem),
     },
     theme: state.theme,
     language: state.language,
@@ -1755,6 +1828,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     clock,
     language: state.language,
     incomingRequest: state.presentationIncomingRequest || null,
+    actionFeedback: state.presentationActionFeedback || null,
     remoteAccess: remoteAccessForPresentation(),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
@@ -2916,6 +2990,7 @@ function presentationHostAnnouncementSnapshot() {
     title: delayOverlayTitleForItem(item),
     requester: String(item?.requester_name || ""),
     durationSeconds: durationSecondsForItem(item),
+    cacheStatus: presentationCacheStatusForItem(item),
   }));
   const snapshotKey = JSON.stringify({
     presentationGeneration: Number(state.presentationSession?.generation || 0),
@@ -2938,7 +3013,7 @@ function presentationHostAnnouncementSnapshot() {
   state.presentationHostAnnouncementKey = snapshotKey;
   state.presentationHostAnnouncementModel = {
     visible: true,
-    heading: t("player.upNext"),
+    heading: t("player.followingQueue"),
     countdownLabel: "",
     deadline: 0,
     durationMs: 1000,
@@ -2947,11 +3022,13 @@ function presentationHostAnnouncementSnapshot() {
     duration: primaryItem
       ? formatDurationSeconds(durationSecondsForItem(primaryItem))
       : "—",
-    queueHeading: t("player.followingQueue"),
+    cacheStatus: presentationCacheStatusForItem(primaryItem),
+    queueHeading: "",
     rows: followItems.map((item) => ({
       title: delayOverlayTitleForItem(item),
       requester: item?.requester_name || "—",
       duration: formatDurationSeconds(durationSecondsForItem(item)),
+      cacheStatus: presentationCacheStatusForItem(item),
     })),
     emptyText: "",
     remainingText: "",
@@ -2973,6 +3050,7 @@ function renderPresentationHostAnnouncement() {
   renderer.renderOverlay(overlay, presentationHostAnnouncementSnapshot(), {
     manageVisibility: true,
     now: 0,
+    primaryIndex: state.data?.playlist?.length ? 1 : null,
   });
   return overlay;
 }
@@ -4205,12 +4283,16 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
     // Resizing while editing must not hide/inert the active form. Keep the
     // shared tool drawer open for that focus owner; idle layouts still fold.
     state.hostWorkspaceOverlayOpen = typeof document !== "undefined"
-      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement));
+      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement)
+        || state.sessionUserEditor?.editor?.node.contains(document.activeElement));
   } else if (!narrowToolSheet) {
     state.hostWorkspaceOverlayOpen = false;
   }
   state.hostNarrowToolSheetActive = narrowToolSheet;
   const narrowToolSheetClosed = narrowToolSheet && !state.hostWorkspaceOverlayOpen;
+  if (activeWorkspace !== "users" || narrowToolSheetClosed) {
+    state.sessionUserEditor?.closeEditor({ restoreFocus: false });
+  }
   const workspaceTransition = state.hostWorkspaceTransition?.to === activeWorkspace
     ? state.hostWorkspaceTransition
     : null;
@@ -4341,6 +4423,13 @@ function currentHostWorkspaceVisualSource(fallbackWorkspace) {
     .map((panel) => ({
       workspace: normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, ""),
       ...hostWorkspaceContentVisual(panel),
+      geometry: (() => {
+        const box = panel.getBoundingClientRect();
+        const region = elements.hostWorkspaceRegion.getBoundingClientRect();
+        return { display: getComputedStyle(panel).display, width: box.width, height: box.height,
+          left: box.left - region.left - elements.hostWorkspaceRegion.clientLeft,
+          top: box.top - region.top - elements.hostWorkspaceRegion.clientTop };
+      })(),
     }))
     .filter((candidate) => candidate.workspace);
   candidates.sort((left, right) => right.opacity - left.opacity);
@@ -4352,11 +4441,23 @@ function currentHostWorkspaceVisualSource(fallbackWorkspace) {
 
 function applyHostWorkspaceTransitionVisual(panel, transition, role) {
   panel.style?.removeProperty?.("--host-tool-start-opacity");
+  for (const key of ["display", "width", "height", "left", "top"]) {
+    panel.style?.removeProperty?.(`--host-tool-exit-${key}`);
+  }
   if (!transition || !role) {
     return;
   }
   if (role === "out") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.outgoingOpacity ?? 1));
+    const geometry = transition.outgoingGeometry;
+    if (geometry) {
+      // Leaving content keeps its grid/flex layout and border-box size. Only
+      // opacity changes; switching the next workspace must not reflow it.
+      for (const key of ["display", "width", "height", "left", "top"]) {
+        const value = key === "top" ? geometry.top + elements.hostWorkspaceRegion.scrollTop : geometry[key];
+        panel.style.setProperty(`--host-tool-exit-${key}`, key === "display" ? value : `${value}px`);
+      }
+    }
   } else if (role === "resume") {
     panel.style?.setProperty?.("--host-tool-start-opacity", String(transition.incomingOpacity ?? 0));
   }
@@ -4409,6 +4510,7 @@ function beginHostWorkspaceTransition(fromWorkspace, toWorkspace) {
     direction: toIndex > fromIndex ? "forward" : "backward",
     resume,
     outgoingOpacity: visualSource.opacity,
+    outgoingGeometry: visualSource.geometry,
     incomingOpacity: resume ? visualSource.opacity : 0,
     token: Number(state.hostWorkspaceTransition?.token || 0) + 1,
   };
@@ -4648,6 +4750,11 @@ function restoreHostWorkspaceScrollPosition(workspace = state.activeHostWorkspac
     Number(state.hostWorkspaceScrollPositions?.[normalized] || 0),
   );
   elements.hostWorkspaceRegion.scrollTop = scrollTop;
+  const transition = state.hostWorkspaceTransition;
+  if (transition?.outgoingGeometry) {
+    const panel = [...elements.hostWorkspacePanels].find(node => node.dataset.hostWorkspacePanel === transition.from);
+    panel?.style.setProperty("--host-tool-exit-top", `${transition.outgoingGeometry.top + elements.hostWorkspaceRegion.scrollTop}px`);
+  }
 }
 
 function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
@@ -5112,6 +5219,7 @@ function measurePersistentStage() {
     return "compact";
   }
   if (globalThis.BilikaraHostLayout?.isPortrait()) {
+    globalThis.BilikaraTextMarquee?.reset(elements.currentTitle, elements.currentTitleText);
     const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
     elements.appShell.dataset.stageMode = "portrait";
     elements.appShell.dataset.stageControlsLayout = "inline";
@@ -5203,6 +5311,9 @@ function measurePersistentStage() {
           : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
   const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
+  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
+  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
+    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
   const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
   const titleAvailableWidth = titleNode?.clientWidth || 0;
   const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
@@ -5211,7 +5322,7 @@ function measurePersistentStage() {
   let titleNaturalWrappedHeight = titleLineHeight;
   if (!narrowShell && titleOverflowsSingleLine && titleNode && titleTextNode) {
     titleNode.classList.add("is-measuring-two-line");
-    titleNaturalWrappedHeight = titleTextNode.scrollHeight;
+    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
     titleNode.classList.remove("is-measuring-two-line");
   }
   const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
@@ -5242,6 +5353,9 @@ function measurePersistentStage() {
     titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
     titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
     titleNode.classList.add("is-scrolling");
+    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
   }
   if (titleCanUseTwoLines) {
     headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
@@ -5543,6 +5657,10 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
+  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
+  if (raw === "Invalid YouTube video link") return t("request.youtubeInvalid");
+  if (raw === "Multiple YouTube videos found; paste one video link") return t("request.youtubeMultiple");
   const bbdownMessage = localizedBBDownLoginMessage(raw);
   if (bbdownMessage && bbdownMessage !== raw) {
     return bbdownMessage;
@@ -5648,11 +5766,12 @@ function submitSongRating(item, score, trigger = null) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
+  const sessionUserId = ratingSubmissionUserId(item);
   if (!bvid) {
     return null;
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
-  if (submissionKey && (hasSubmittedSongRating(item) || isSongRatingQueued(item) || state.ratingPendingKeys.has(submissionKey))) {
+  if (submissionKey && (hasSubmittedSongRating(item) || serverRatingStatus(item) === "sending" || state.ratingPendingKeys.has(submissionKey))) {
     return false;
   }
   if (submissionKey) {
@@ -5684,6 +5803,11 @@ function submitSongRating(item, score, trigger = null) {
     if (submissionKey) {
       if (result?.data?.queued) state.ratingQueuedKeys.add(submissionKey);
       else state.ratingSubmittedKeys.add(submissionKey);
+      state.ratingSavedScores.set(submissionKey, payload.score);
+      const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
+        && (sessionUserId && entry.session_user_id ? entry.session_user_id === sessionUserId
+          : String(entry.session_user_name || "").toLowerCase() === sessionUserName.toLowerCase()));
+      if (entry && entry.status === "waiting") entry.score = payload.score;
     }
   }).catch((error) => {
     if (submissionKey) {
@@ -5756,38 +5880,40 @@ function ratingSubmissionPlayId(item) {
   return String(item?.play_id || item?.id || item?.item_id || state.ratingPromptItemId || bvid).trim();
 }
 
+function ratingSubmissionUserId(item) {
+  return state.data?.session_user_entries?.find(user => user.name === ratingSubmissionUserName(item))?.id || "";
+}
+
+function ratingBelongsToUser(entry, item) {
+  const id = ratingSubmissionUserId(item);
+  return id && entry.session_user_id ? entry.session_user_id === id
+    : String(entry.session_user_name || "").toLowerCase() === ratingSubmissionUserName(item).toLowerCase();
+}
+
 function ratingSubmissionKey(item) {
   const playId = ratingSubmissionPlayId(item);
   if (!playId) {
     return "";
   }
-  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+  return `${state.data?.session_generation ?? state.remoteIdentity?.session_id ?? ""}::${ratingSubmissionUserId(item) || ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
 }
 
 function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
   if (!button) return;
-  const items = ratingPromptItemsForItem(current);
-  const candidates = [items.current, items.previous].filter(Boolean);
-  const enabled = Boolean(selectedRequesterName()) && candidates.some(item => isItemRateable(item));
-  const pending = !enabled && candidates.some(item => state.ratingPendingKeys.has(ratingSubmissionKey(item)));
-  const queued = candidates.some(isSongRatingQueued);
-  const submitted = !enabled && !pending && !queued && candidates.some(hasSubmittedSongRating);
-  if (button.disabled !== !enabled) button.disabled = !enabled;
-  const label = queued ? t("rating.queued") : submitted ? t("rating.rated") : t("rating.rate");
-  const title = queued ? t("rating.queuedTitle") : submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
+  button.disabled = false;
+  const label = t("rating.rate");
+  const title = t("rating.rateTitle");
   if (button.textContent !== label) button.textContent = label;
   if (button.title !== title) button.title = title;
-  if (pending && button.getAttribute("aria-busy") !== "true") button.setAttribute("aria-busy", "true");
-  else if (!pending && button.hasAttribute("aria-busy")) button.removeAttribute("aria-busy");
+  button.removeAttribute("aria-busy");
   refreshOpenRatingPrompt(current);
 }
 
 function serverRatingStatus(item) {
   const playId = ratingSubmissionPlayId(item);
-  const user = ratingSubmissionUserName(item).toLowerCase();
   const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === playId
-    && String(entry.session_user_name || "").toLowerCase() === user);
+    && ratingBelongsToUser(entry, item));
   const key = ratingSubmissionKey(item);
   if (entry && !["waiting", "sending"].includes(entry.status)) state.ratingQueuedKeys.delete(key);
   if (entry) return entry.status;
@@ -5802,6 +5928,14 @@ function isSongRatingQueued(item) {
 function hasSubmittedSongRating(item) {
   const key = ratingSubmissionKey(item);
   return serverRatingStatus(item) === "accepted" || Boolean(key && state.ratingSubmittedKeys.has(key));
+}
+
+function savedSongRatingScore(item) {
+  if (!item) return 5;
+  const entry = (state.data?.song_ratings || []).find(entry => entry.play_id === ratingSubmissionPlayId(item)
+    && ratingBelongsToUser(entry, item));
+  const score = Number(entry?.score ?? state.ratingSavedScores.get(ratingSubmissionKey(item)) ?? 5);
+  return Math.max(1, Math.min(5, Math.trunc(score) || 5));
 }
 
 function normalizeRatingPromptItem(item) {
@@ -5840,34 +5974,38 @@ function ratingPromptItemsForItem(item) {
 }
 
 function isItemRateable(item, isCurrent = false) {
-  if (!item?.bvid || state.data?.capabilities?.song_rating === false) return false;
+  if (!item?.bvid || !selectedRequesterName() || state.data?.capabilities?.song_rating === false) return false;
   const playId = ratingSubmissionPlayId(item);
   const played = (state.data?.session_played || []).find(entry => String(entry.item_id || entry.id || "") === playId);
   // Current-song confirmation may be held by the Host until its accepted
   // playback observation reaches 50%; a skipped, ineligible song cannot be rated.
-  return (playId === ratingSubmissionPlayId(state.data?.current_item) || Boolean(played?.threshold_reached))
+  return (Boolean(state.data?.current_item && playId === ratingSubmissionPlayId(state.data.current_item)) || Boolean(played?.threshold_reached))
     && !hasSubmittedSongRating(item)
-    && !isSongRatingQueued(item)
+    && serverRatingStatus(item) !== "sending"
     && !state.ratingPendingKeys.has(ratingSubmissionKey(item));
 }
 
 function refreshOpenRatingPrompt(current) {
   if (!state.ratingPromptElement) return;
   const items = ratingPromptItemsForItem(current);
-  const selectedId = ratingSubmissionPlayId(activeRatingPromptItem());
+  const selectedItem = activeRatingPromptItem();
+  const selectedId = selectedItem ? ratingSubmissionPlayId(selectedItem) : "";
   const tab = ["current", "previous"].find(key => items[key]
-    && ratingSubmissionPlayId(items[key]) === selectedId && isItemRateable(items[key], key === "current"));
-  if (!tab) { closeRatingPrompt({ submit: false }); return; }
-  const currentRateable = isItemRateable(items.current, true);
-  const previousRateable = isItemRateable(items.previous, false);
-  const changed = state.ratingPromptActiveTab !== tab
-    || state.ratingPromptCurrentRateable !== currentRateable
-    || state.ratingPromptPreviousRateable !== previousRateable;
+    && ratingSubmissionPlayId(items[key]) === selectedId) || (items.current ? "current" : "previous");
+  const changed = (items[tab] ? ratingSubmissionPlayId(items[tab]) : "") !== selectedId;
   state.ratingPromptItems = items;
   state.ratingPromptActiveTab = tab;
-  state.ratingPromptCurrentRateable = currentRateable;
-  state.ratingPromptPreviousRateable = previousRateable;
+  state.ratingPromptItem = items[tab];
+  state.ratingPromptItemId = String(items[tab]?.id || "");
+  const submissionKey = items[tab] ? ratingSubmissionKey(items[tab]) : "";
+  if (changed || submissionKey !== state.ratingPromptSubmissionKey) state.ratingPromptScoreDirty = false;
+  state.ratingPromptSubmissionKey = submissionKey;
+  if (!state.ratingPromptScoreDirty || !isItemRateable(items[tab])) {
+    state.ratingPromptScore = savedSongRatingScore(items[tab]);
+    state.ratingPromptScoreDirty = false;
+  }
   if (changed) renderRatingPromptContent();
+  else syncRatingPromptControls();
 }
 
 function activeRatingPromptItem() {
@@ -5890,18 +6028,36 @@ function renderRatingStars() {
   });
 }
 
+function syncRatingPromptControls() {
+  const root = state.ratingPromptElement;
+  if (!root) return;
+  const item = activeRatingPromptItem();
+  const rateable = isItemRateable(item);
+  root.querySelectorAll("[data-rating-tab]").forEach(button => {
+    button.disabled = !state.ratingPromptItems?.[button.dataset.ratingTab]?.bvid;
+    button.classList.toggle("active", button.dataset.ratingTab === state.ratingPromptActiveTab);
+    button.setAttribute("aria-selected", String(button.dataset.ratingTab === state.ratingPromptActiveTab));
+  });
+  const submit = root.querySelector("[data-rating-submit]");
+  submit.disabled = !rateable;
+  if (state.ratingPendingKeys.has(ratingSubmissionKey(item))) submit.setAttribute("aria-busy", "true");
+  else submit.removeAttribute("aria-busy");
+  root.querySelectorAll("[data-rating-score]").forEach(button => { button.disabled = !rateable; });
+  renderRatingStars();
+}
+
 function renderRatingPromptContent() {
   const root = state.ratingPromptElement;
   if (!root) {
     return;
   }
-  const activeItem = activeRatingPromptItem();
+  const activeItem = activeRatingPromptItem() || {};
   state.ratingPromptItem = activeItem;
   state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
 
   root.querySelectorAll("[data-rating-tab]").forEach((button) => {
     const tab = button.dataset.ratingTab;
-    button.disabled = !isItemRateable(state.ratingPromptItems?.[tab], tab === "current");
+    button.disabled = !state.ratingPromptItems?.[tab]?.bvid;
     button.classList.toggle("active", tab === state.ratingPromptActiveTab);
     button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
   });
@@ -5940,7 +6096,7 @@ function renderRatingPromptContent() {
   title.textContent = t("rating.title");
   const owner = document.createElement("p");
   owner.className = "rating-owner";
-  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName);
+  window.BilikaraSongDetail.renderOwnerLabel(owner, activeItem, ownerName, state.followBrowseData?.owners);
   copy.append(owner);
   if (url) {
     const link = document.createElement("a");
@@ -5965,16 +6121,18 @@ function renderRatingPromptContent() {
     addUpButton.dataset.i18n = ownerUid ? "rating.addUp" : "rating.missingUid";
     addUpButton.textContent = t(addUpButton.dataset.i18n);
   }
-  renderRatingStars();
+  syncRatingPromptControls();
 }
 
 function setRatingPromptActiveTab(tab) {
-  if (!state.ratingPromptElement || !isItemRateable(state.ratingPromptItems?.[tab], tab === "current")) {
+  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]?.bvid) {
     return;
   }
   state.ratingPromptActiveTab = tab;
   state.ratingPromptItemId = ratingSubmissionPlayId(state.ratingPromptItems[tab]);
-  state.ratingPromptScore = 5;
+  state.ratingPromptScore = savedSongRatingScore(state.ratingPromptItems[tab]);
+  state.ratingPromptScoreDirty = false;
+  state.ratingPromptSubmissionKey = ratingSubmissionKey(state.ratingPromptItems[tab]);
   renderRatingPromptContent();
 }
 
@@ -6001,6 +6159,7 @@ function closeRatingPrompt({ submit = false, trigger = null } = {}) {
   state.ratingPromptActiveTab = "current";
   state.ratingPromptItemId = "";
   state.ratingPromptBvid = "";
+  state.ratingPromptSubmissionKey = "";
   const opener = state.ratingPromptOpener;
   state.ratingPromptOpener = null;
 
@@ -6017,7 +6176,6 @@ function setRatingOptOut(enabled) {
 }
 
 function openRatingPrompt(item, { manual = false } = {}) {
-  if (state.data?.capabilities?.song_rating === false) return;
   const playId = String(item?.id || "").trim();
   if (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId))) {
     return;
@@ -6028,18 +6186,20 @@ function openRatingPrompt(item, { manual = false } = {}) {
   const promptItems = ratingPromptItemsForItem(item);
   const currentRateable = isItemRateable(promptItems.current, true);
   const previousRateable = isItemRateable(promptItems.previous, false);
-  if (!selectedRequesterName() || (!currentRateable && !previousRateable)) return;
+  if (!manual && (!currentRateable && !previousRateable)) return;
   closeRatingPrompt({ submit: false });
-  const tab = currentRateable ? "current" : "previous";
-  const activeItem = promptItems[tab];
+  const tab = manual
+    ? (promptItems.current ? "current" : "previous")
+    : (currentRateable || !promptItems.previous ? "current" : "previous");
+  const activeItem = promptItems[tab] || {};
   state.ratingPromptItemId = ratingSubmissionPlayId(activeItem);
   state.ratingPromptItems = promptItems;
   state.ratingPromptActiveTab = tab;
   state.ratingPromptItem = activeItem;
   state.ratingPromptBvid = activeItem.bvid;
-  state.ratingPromptCurrentRateable = currentRateable;
-  state.ratingPromptPreviousRateable = previousRateable;
-  state.ratingPromptScore = 5;
+  state.ratingPromptScore = savedSongRatingScore(activeItem);
+  state.ratingPromptScoreDirty = false;
+  state.ratingPromptSubmissionKey = ratingSubmissionKey(activeItem);
   state.ratingPromptSubmitted = false;
   state.ratingPromptOpener = document.activeElement;
 
@@ -9696,6 +9856,7 @@ function render() {
   if (!data) {
     return;
   }
+  if (window.BilikaraPresentationFeedback) renderPresentationFeedback();
 
   const currentItem = data.current_item;
   const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");
@@ -9747,13 +9908,15 @@ function render() {
 
 function renderRequesterSelect(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify(users);
+  const entries = state.data?.session_user_entries || [];
+  const signature = JSON.stringify([users, entries]);
   if (signature === state.requesterSelectRenderSignature) {
     return;
   }
   state.requesterSelectRenderSignature = signature;
 
-  const previousValue = selectedRequesterName();
+  const previousId = elements.requesterSelect.selectedOptions?.[0]?.dataset.userId;
+  const previousValue = entries.find(user => user.id === previousId)?.name || selectedRequesterName();
   elements.requesterSelect.innerHTML = "";
 
   const placeholder = document.createElement("option");
@@ -9764,6 +9927,7 @@ function renderRequesterSelect(sessionUsers) {
   users.forEach((userName) => {
     const option = document.createElement("option");
     option.value = userName;
+    option.dataset.userId = entries.find(user => user.name === userName)?.id || "";
     option.textContent = userName;
     elements.requesterSelect.appendChild(option);
   });
@@ -9792,108 +9956,24 @@ function renderRequesterSelect(sessionUsers) {
   }
 }
 
-const SESSION_USER_ACTIONS = [
-  {id: "up", label: "common.moveUp", glyph: "↑"},
-  {id: "down", label: "common.moveDown", glyph: "↓"},
-  {id: "remove", label: "common.delete"},
-];
-
-function renderSessionUsers(sessionUsers) {
-  const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify(users);
-  if (signature === state.sessionUsersRenderSignature) {
-    syncSessionUserControls();
-    return;
-  }
-  state.sessionUsersRenderSignature = signature;
-
-  elements.sessionUserList.classList.toggle("is-empty", !users.length);
-
-  if (!users.length) {
-    elements.sessionUserList.innerHTML = `<div class="request-session-user-notice session-user-empty" role="status">${htmlT("session.empty")}</div>`;
-    return;
-  }
-
-  const focused = elements.sessionUserList.contains(document.activeElement) ? document.activeElement : null;
-  const badges = new Map(Array.from(elements.sessionUserList.querySelectorAll(".session-user-badge"), item => [item.dataset.name, item]));
-  for (const child of Array.from(elements.sessionUserList.children)) {
-    if (!users.includes(child.dataset.name)) child.remove();
-  }
-  users.forEach((userName, index) => {
-    let item = badges.get(userName);
-    if (!item) {
-      item = document.createElement("div");
-      item.className = "session-user-badge";
-      item.dataset.name = userName;
-      item.innerHTML = `
-        <span class="session-user-order-number"></span>
-        <span class="session-user-name android-user-toggle" role="button" tabindex="0" aria-expanded="false">${escapeHtml(userName)}</span>
-        <div class="android-user-actions" hidden>${SESSION_USER_ACTIONS.map(action => `
-          <button type="button" data-user-action="${action.id}" aria-label="${escapeHtml(t(action.label))}">${action.glyph || htmlT(action.label)}</button>
-        `).join("")}</div>
-      `;
-    }
-    item.dataset.index = index;
-    item.querySelector(".session-user-order-number").textContent = String(index + 1);
-    elements.sessionUserList.appendChild(item);
-  });
-  syncSessionUserControls();
-  if (focused?.isConnected && !focused.disabled) focused.focus({preventScroll: true});
-}
-
 function syncSessionUserControls() {
-  const users = state.data?.session_users || [];
-  if (!users.includes(state.sessionUserActionsName)) state.sessionUserActionsName = "";
-  const touch = Boolean(window.matchMedia?.("(pointer: coarse)").matches
-    && !window.matchMedia?.("(any-pointer: fine)").matches);
-  document.documentElement.dataset.hostTouchUsers = String(touch);
-  const help = document.querySelector('[data-i18n="session.help"], [data-i18n="mobile.sessionHelp"]');
-  if (help) {
-    help.dataset.i18n = touch ? "mobile.sessionHelp" : "session.help";
-    help.textContent = t(help.dataset.i18n);
-  }
-  for (const badge of elements.sessionUserList.querySelectorAll(".session-user-badge")) {
-    const pending = state.sessionUserActionPending;
-    const open = badge.dataset.name === state.sessionUserActionsName;
-    badge.draggable = !touch && !pending;
-    badge.classList.toggle("is-actions-open", open);
-    badge.querySelector(".android-user-toggle").setAttribute("aria-expanded", String(open));
-    badge.querySelector(".android-user-actions").hidden = !open;
-    for (const button of badge.querySelectorAll("[data-user-action]")) {
-      const action = button.dataset.userAction;
-      const definition = SESSION_USER_ACTIONS.find(entry => entry.id === action);
-      const active = pending?.name === badge.dataset.name && pending.action === action;
-      const index = Number(badge.dataset.index);
-      button.disabled = Boolean(pending) || (action === "up" && index === 0)
-        || (action === "down" && index === users.length - 1);
-      if (active) button.setAttribute("aria-busy", "true");
-      else button.removeAttribute("aria-busy");
-      button.textContent = active ? t("remoteIdentity.saving") : definition.glyph || t(definition.label);
-      button.setAttribute("aria-label", t(definition.label));
-    }
-  }
+  state.sessionUserEditor?.sync();
 }
 
-async function handleSessionUserAction(event) {
-  const badge = event.target.closest(".session-user-badge");
-  if (!badge || state.sessionUserActionPending) return;
-  const button = event.target.closest("[data-user-action]");
-  if (!button) {
-    state.sessionUserActionsName = state.sessionUserActionsName === badge.dataset.name ? "" : badge.dataset.name;
-    syncSessionUserControls();
-    return;
+function renderSessionUsers() {
+  if (!state.sessionUserEditor) {
+    state.sessionUserEditor = new window.BilikaraSessionUserEditor({
+      stage: document.getElementById("session-user-stage"),
+      list: elements.sessionUserList,
+      t, post: async (url, payload) => {
+        await apiPostStateSnapshot(url, payload);
+        render();
+      }, message: setAppMessage,
+      bindHelp: info => bindHostContextualInfo(info, { actionHelp: false }),
+    });
+    elements.sessionUserTrash = state.sessionUserEditor.trash;
   }
-  if (button.disabled) return;
-  const action = button.dataset.userAction;
-  state.sessionUserActionPending = {name: badge.dataset.name, action};
-  syncSessionUserControls();
-  try {
-    if (action === "remove") await removeSessionUser(badge.dataset.name);
-    else await moveSessionUser(badge.dataset.name, Number(badge.dataset.index) + (action === "up" ? -1 : 1));
-  } finally {
-    state.sessionUserActionPending = null;
-    syncSessionUserControls();
-  }
+  state.sessionUserEditor.render(state.data);
 }
 
 function syncHostAccountPresentation() {
@@ -9988,7 +10068,7 @@ let cacheAdvancedInfoHoverTimer = null;
 let cacheAdvancedInfoLeaveTimer = null;
 
 function positionContextualTooltip(info) {
-  const button = info?.querySelector?.(".cache-advanced-info-button");
+  const button = info?.querySelector?.(".cache-advanced-info-button, [data-contextual-info-anchor]");
   const tooltip = info?.querySelector?.(".cache-advanced-tooltip");
   if (!button || !tooltip || !info.classList.contains("is-visible")) {
     return false;
@@ -10010,11 +10090,11 @@ function positionContextualTooltip(info) {
   const buttonRect = button.getBoundingClientRect();
   tooltip.style.width = "max-content";
   tooltip.style.maxWidth = `${Math.round(Math.min(320, Math.max(0, boundaryRight - boundaryLeft)))}px`;
-  const width = tooltip.getBoundingClientRect().width;
+  const width = tooltip.offsetWidth;
   tooltip.style.left = "0px";
   tooltip.style.top = "0px";
   tooltip.style.bottom = "auto";
-  const height = tooltip.getBoundingClientRect().height;
+  const height = tooltip.offsetHeight;
   const buttonCenter = buttonRect.left + (buttonRect.width / 2);
   const preferredLeft = buttonCenter - (width / 2);
   const left = Math.max(
@@ -10035,14 +10115,19 @@ function positionContextualTooltip(info) {
   tooltip.dataset.tooltipDirection = direction;
   tooltip.style.left = `${Math.round(left)}px`;
   tooltip.style.top = `${Math.round(clampedTop)}px`;
-  const positionedRect = tooltip.getBoundingClientRect();
-  const leftCorrection = left - positionedRect.left;
-  const topCorrection = clampedTop - positionedRect.top;
-  if (Math.abs(leftCorrection) > 0.5) {
-    tooltip.style.left = `${Math.round(left + leftCorrection)}px`;
-  }
-  if (Math.abs(topCorrection) > 0.5) {
-    tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
+  // Top-layer coordinates are viewport coordinates. The bubble's 3px entry
+  // translation belongs to motion, not to its settled anchor position.
+  if (!tooltip.hasAttribute("popover")) {
+    const positionedRect = tooltip.getBoundingClientRect();
+    const transform = new DOMMatrixReadOnly(getComputedStyle(tooltip).transform);
+    const leftCorrection = left - (positionedRect.left - transform.m41);
+    const topCorrection = clampedTop - (positionedRect.top - transform.m42);
+    if (Math.abs(leftCorrection) > 0.5) {
+      tooltip.style.left = `${Math.round(left + leftCorrection)}px`;
+    }
+    if (Math.abs(topCorrection) > 0.5) {
+      tooltip.style.top = `${Math.round(clampedTop + topCorrection)}px`;
+    }
   }
   tooltip.style.setProperty("--contextual-tooltip-arrow-left", `${arrowCenter - 6}px`);
   return true;
@@ -10774,8 +10859,26 @@ function maybeReportManualUpdateCheckOutcome(update) {
   }
 }
 
+// A previous helper's kept outcome arrives once, in the Host's first status.
+function maybeReportLastInstall(update) {
+  const last = update?.last_install;
+  if (!last?.operation || state.reportedLastInstall === last.operation) return;
+  state.reportedLastInstall = last.operation;
+  const log = String(last.log || "");
+  if (last.relaunch_failed === true) {
+    const key = last.result === "installed" ? "service.updateLastInstalledRestartFailed" : "service.updateLastFailedRestartFailed";
+    setAppMessage(t(key, { log, version: String(update.current_version || "") }), true);
+  } else if (last.result === "installed") {
+    setAppMessage(t("service.updateLastInstalled", { version: String(update.current_version || "") }));
+  } else {
+    const key = last.result === "owners_running" ? "service.updateLastOwnersRunning" : "service.updateLastFailed";
+    setAppMessage(t(key, { log }), true);
+  }
+}
+
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
+  maybeReportLastInstall(update);
   if (update.state === "prepared") {
     globalThis.BilikaraHostUpdates?.applyPrepared?.(update).catch((error) => setAppMessage(error.message, true));
   }
@@ -12019,6 +12122,7 @@ function takeLocalPlayerSeekCompletion(session) {
   }
   const completion = session.seekSettleCallback;
   session.seekSettleCallback = null;
+  session.presentationFeedbackSeekTarget = null;
   session.seekSettling = false;
   session.seekResumeAfterSettle = false;
   session.seekSettleStartedAt = 0;
@@ -12664,6 +12768,8 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   session.seekSettleStartedAt = Date.now();
   session.seekResumePending = resumeAfterSeek;
   session.seekUpdatesLogicalIntent = options.updateIntent !== false;
+  session.presentationFeedbackSeekTarget = session.seekUpdatesLogicalIntent && Number.isFinite(options.targetTime)
+    ? options.targetTime : null;
   if (session.seekUpdatesLogicalIntent) {
     session.logicalPlayIntent = resumeAfterSeek;
     state.localShouldBePlaying = resumeAfterSeek;
@@ -12727,6 +12833,7 @@ function settleSplitPlayerSeek(video, audio, force = false) {
   }
   const resumeAfterSettle = session.seekResumeAfterSettle;
   const updateIntent = session.seekUpdatesLogicalIntent;
+  const feedbackTarget = session.presentationFeedbackSeekTarget;
   const onSettled = takeLocalPlayerSeekCompletion(session);
 
   if (
@@ -12752,6 +12859,9 @@ function settleSplitPlayerSeek(video, audio, force = false) {
 
   if (typeof onSettled === "function") {
     onSettled(true);
+  }
+  if (Number.isFinite(feedbackTarget)) {
+    showPresentationOperationFeedback({ kind: "seek", value: feedbackTarget === 0 ? "0:00" : formatDurationSeconds(feedbackTarget) });
   }
   return true;
 }
@@ -13238,6 +13348,7 @@ function requestSplitPlaybackStart(
   }
 
   state.hostPlaybackSession.logicalPlayIntent = true;
+  if (userGesture) state.hostPlaybackSession.presentationFeedbackPlayPending = true;
   state.localShouldBePlaying = true;
   if (state.localPlaybackStartState === "starting" && !userGesture) {
     syncTauriMediaSessionState(video, { forcePosition: true });
@@ -13310,8 +13421,10 @@ function setSplitPlaybackIntent(
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
+  const changedIntent = session.logicalPlayIntent !== nextIntent;
   session.logicalPlayIntent = nextIntent;
   if (!nextIntent) {
+    session.presentationFeedbackPlayPending = false;
     audio.bilikaraPitch?.reset();
     clearAndroidAudioClockRecovery(session);
   }
@@ -13352,6 +13465,7 @@ function setSplitPlaybackIntent(
   }
 
   state.localShouldBePlaying = nextIntent;
+  if (changedIntent) session.presentationFeedbackPlayPending = nextIntent;
   if (source) {
     reportSplitStartupDiagnostic(itemId, video, audio, source);
   }
@@ -13369,6 +13483,7 @@ function setSplitPlaybackIntent(
     setHostPlaybackSessionPhase(session, "paused");
     clearSplitPlaybackStartupWatchdog(session);
     syncTauriMediaSessionState(video, { forcePosition: true });
+    if (changedIntent) showPresentationOperationFeedback({ kind: "pause", value: "" });
     return true;
   }
 
@@ -14402,6 +14517,7 @@ function renderVolumeControls(playbackMode) {
   }
 
   const isLocalMode = playbackMode === "local";
+  globalThis.BilikaraVolumeControl?.refreshAutomatic(elements.volumeSlider);
   const volumePercent = Math.round(state.localPlayerVolume * 100);
   const label = volumePercentText();
   const muteLabel = state.localPlayerMuted ? t("player.unmute") : t("player.mute");
@@ -14479,9 +14595,10 @@ async function setLocalPlayerKeyShift(keyShift) {
     // Once this write is acknowledged, newer Remote volume/mute settings
     // must no longer be hidden by the optimistic-update suppression window.
     state.playerSettingsEchoSuppressUntil = 0;
-    if (accepted) {
+  if (accepted) {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
+    if (accepted) renderPresentationFeedback();
     renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
   } catch (error) {
     // Ignore or handle errors gracefully
@@ -14638,7 +14755,12 @@ function recoverAudioPitchOutput(audio, kind) {
     // A captured element cannot regain native output by disconnecting its source.
     // Use the existing session restore path when its context/clock is unusable.
     if (state.audioContext?.state === "closed") state.audioContext = null;
-    retireHostPlaybackSession(session, { preserveAdvanceDelayOverlay: true });
+    // Replace only the unusable media graph. Retiring its still-current native
+    // program would prevent the same owner from claiming the replacement pair.
+    retireHostPlaybackSession(session, {
+      preserveAdvanceDelayOverlay: true,
+      releaseProgramOwnership: false,
+    });
     renderPlayer(item, frontendPlaybackMode(state.data?.playback_mode));
   });
 }
@@ -14699,7 +14821,7 @@ function persistLocalVolumePreferences() {
 async function setLocalPlayerVolumeAndMuted(
   nextVolume,
   nextMuted,
-  { reportError = true } = {},
+  { reportError = true, volumeIntent = true } = {},
 ) {
   const normalizedVolume = Math.max(0, Math.min(5, Number(nextVolume || 0)));
   const normalizedMuted = Boolean(nextMuted);
@@ -14713,7 +14835,7 @@ async function setLocalPlayerVolumeAndMuted(
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
     const nextData = await apiPost("/api/player/volume", {
-      volume_percent: Math.round(normalizedVolume * 100),
+      ...(volumeIntent ? { volume_percent: Math.round(normalizedVolume * 100) } : {}),
       is_muted: state.localPlayerMuted,
       expected_item_incarnation_id: state.data?.current_item?.item_incarnation_id || "",
     });
@@ -14755,7 +14877,7 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
 
 async function toggleLocalPlayerMute() {
   try {
-    await setLocalPlayerVolumeAndMuted(state.localPlayerVolume, !state.localPlayerMuted);
+    await setLocalPlayerVolumeAndMuted(state.localPlayerVolume, !state.localPlayerMuted, { volumeIntent: false });
   } catch {
     // The shared setter already restored the previous state and reported the error.
   }
@@ -15161,7 +15283,7 @@ function isCurrentHostPlaybackSession(session, video, audio) {
 
 function retireHostPlaybackSession(
   session,
-  { preserveAdvanceDelayOverlay = false } = {},
+  { preserveAdvanceDelayOverlay = false, releaseProgramOwnership = true } = {},
 ) {
   if (
     !session
@@ -15222,7 +15344,7 @@ function retireHostPlaybackSession(
   if (state.hostPlaybackSession === session) {
     state.hostPlaybackSession = null;
   }
-  acknowledgeRetiredHostPlaybackSession(session);
+  if (releaseProgramOwnership) acknowledgeRetiredHostPlaybackSession(session);
   return true;
 }
 
@@ -15779,6 +15901,7 @@ function renderPlayer(currentItem, playbackMode) {
     state.localVideoPlaybackBlocked = false;
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
+      confirmPresentationPlaybackFeedback(session);
     }
     if (!synchronizeStartupPlayer()) {
       syncSplitPlayer(
@@ -15818,7 +15941,18 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "volumechange", () => {
+    const previousVolume = state.localPlayerVolume;
+    const previousMuted = state.localPlayerMuted;
     syncSplitPlayerVolumeFromVideo(video, audio);
+    const nextVolume = state.localPlayerVolume;
+    const nextMuted = state.localPlayerMuted;
+    const volumeChanged = Math.abs(nextVolume - previousVolume) > 0.001;
+    if (!volumeChanged && nextMuted === previousMuted) return;
+    // Only actual native-control changes reach the authoritative manual path.
+    // Programmatic applications already match bilikaraVolume/local intent.
+    state.localPlayerVolume = previousVolume;
+    state.localPlayerMuted = previousMuted;
+    void setLocalPlayerVolumeAndMuted(nextVolume, nextMuted, { volumeIntent: volumeChanged }).catch(() => {});
   });
 
   ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
@@ -15872,6 +16006,7 @@ function renderPlayer(currentItem, playbackMode) {
     state.localAudioPlaybackBlocked = false;
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
+      confirmPresentationPlaybackFeedback(session);
     }
   });
 
@@ -16029,7 +16164,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
               ? Math.min(nextTime, duration)
               : nextTime;
             if (audio) {
-              beginSplitPlayerSeek(video, audio, {
+              const started = beginSplitPlayerSeek(video, audio, {
                 resumeAfterSeek,
                 targetTime: clampedNextTime,
                 diagnosticAction: "manual-video-seek",
@@ -16039,6 +16174,10 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
                   }
                 },
               });
+              // A replacement pair may still be binding after an audio-track
+              // change. Leave this command at the native FIFO head until the
+              // pair can seek; an ACK here would discard an unapplied action.
+              if (started === false) return;
             } else {
               const session = state.hostPlaybackSession;
               if (session) {
@@ -16209,6 +16348,7 @@ function reportPlayerStatusHeartbeat(itemId, video, session) {
 }
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
+  state.renderedQueue = { playlist, version: state.data?.queue_version || "" };
   if (!playlist.length) {
     const signature = `${state.data?.current_item ? "empty-with-current" : "empty"}|${state.language}`;
     if (signature === state.playlistEmptyRenderSignature) {
@@ -18711,8 +18851,11 @@ async function checkAppUpdate(event) {
     type: "install-app-update",
     includePreview: Boolean(update.include_preview),
     releaseUrl: update.release_url,
+    // Host status messages are not translated; the prompt uses the UI language.
     message: t("service.installUpdatePrompt", {
-      message: update?.message || t("service.updateFoundPrompt"),
+      message: t(globalThis.BilikaraHostUpdates?.manualRelease
+        ? "service.desktopUpdateFound"
+        : "service.updateFoundPrompt"),
     }),
     primaryLabel: t("service.update"),
     ...point,
@@ -18724,43 +18867,29 @@ async function checkAppUpdate(event) {
 
 
 async function addSessionUser() {
-  const name = String(elements.sessionUserInput.value || "").trim();
-  if (!name) {
-    setAppMessage(t("session.nameRequired"), true);
+  const button = elements.sessionUserForm.querySelector('[type="submit"]');
+  if (button.disabled) return;
+  const draft = elements.sessionUserInput.value;
+  const name = String(draft || "").trim();
+  if (!name || Array.from(name).length > 24) {
+    setAppMessage(t(name ? "session.nameLength" : "session.nameRequired"), true);
     return;
   }
+  button.disabled = true; button.setAttribute("aria-busy", "true");
+  const originalText = button.textContent;
+  button.textContent = t("remoteIdentity.saving");
   try {
     await apiPostStateSnapshot("/api/session-users/add", { name });
-    elements.sessionUserInput.value = "";
+    if (elements.sessionUserInput.value === draft) elements.sessionUserInput.value = "";
     setAppMessage(t("session.added", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    button.disabled = false; button.removeAttribute("aria-busy"); button.textContent = originalText;
   }
 }
 
-async function moveSessionUser(name, index) {
-  try {
-    await apiPostStateSnapshot("/api/session-users/reorder", { name, index });
-    setAppMessage(t("session.orderUpdated"));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
-}
-
-async function removeSessionUser(name) {
-  try {
-    await apiPostStateSnapshot("/api/session-users/remove", { name });
-    if (elements.requesterSelect.value === name) {
-      elements.requesterSelect.value = "";
-    }
-    setAppMessage(t("session.removed", { name }));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
-}
 
 async function advanceLocalPlayerNow({
   showTransition = true,
@@ -18890,11 +19019,13 @@ async function requestNextTrack(expectedPlaybackGeneration = null) {
     session?.video,
     session?.audio,
   ) ? session : null;
-  return handleLocalPlaybackEnded(
+  const advanced = await handleLocalPlaybackEnded(
     "manual-next",
     capturedSession,
     expectedPlaybackGeneration,
   );
+  if (advanced) showPresentationOperationFeedback({ kind: "next", value: "" });
+  return advanced;
 }
 
 async function handleLocalPlaybackEnded(
@@ -18926,8 +19057,8 @@ async function handleLocalPlaybackEnded(
   });
 }
 
-async function reorderPlaylist(itemId, index) {
-  const accepted = await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index });
+async function reorderPlaylist(itemId, index, queueVersion) {
+  const accepted = await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index, expected_queue_version: queueVersion });
   render();
   return accepted;
 }
@@ -19723,260 +19854,6 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
   await addSessionUser();
 });
 
-let draggedSessionUser = null;
-let sessionUserDragImage = null;
-
-function removeSessionUserDragImage() {
-  sessionUserDragImage?.remove();
-  sessionUserDragImage = null;
-}
-
-function createSessionUserDragImage(badge) {
-  removeSessionUserDragImage();
-  const dragImage = badge.cloneNode(true);
-  dragImage.className = "session-user-drag-image";
-  dragImage.removeAttribute("draggable");
-  dragImage.removeAttribute("data-index");
-  dragImage.removeAttribute("data-name");
-  dragImage.setAttribute("aria-hidden", "true");
-  document.body.appendChild(dragImage);
-  sessionUserDragImage = dragImage;
-  return dragImage;
-}
-
-function clearSessionUserDropIndicators() {
-  elements.sessionUserList
-    ?.querySelectorAll(".session-user-badge")
-    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
-}
-
-async function removeDraggedSessionUser() {
-  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
-    return;
-  }
-  const name = draggedSessionUser.dataset.name;
-  draggedSessionUser.dataset.deleted = "true";
-  draggedSessionUser.style.display = "none";
-  await removeSessionUser(name);
-}
-
-function finishSessionUserDragUi() {
-  draggedSessionUser?.classList.remove("dragging");
-  elements.sessionUsersPanel?.classList.remove("is-dragging");
-  elements.sessionUserTrash?.classList.remove("drag-over");
-  clearSessionUserDropIndicators();
-  removeSessionUserDragImage();
-}
-
-// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
-document.addEventListener("dragenter", (e) => {
-  if (draggedSessionUser) {
-    e.preventDefault();
-  }
-});
-
-// 2. Prevent default on document dragover to permit drop anywhere.
-document.addEventListener("dragover", (e) => {
-  if (!draggedSessionUser) {
-    return;
-  }
-  e.preventDefault();
-  if (e.dataTransfer) {
-    e.dataTransfer.dropEffect = "move";
-  }
-  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
-  const target = e.target instanceof Element ? e.target : null;
-  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-    clearSessionUserDropIndicators();
-  }
-});
-
-document.addEventListener("drop", (e) => {
-  if (draggedSessionUser) {
-    e.preventDefault();
-  }
-});
-
-// 3. Handle drag start for badge items.
-elements.sessionUserList.addEventListener("click", handleSessionUserAction);
-elements.sessionUserList.addEventListener("keydown", event => {
-  if (event.target.matches('.android-user-toggle') && ['Enter', ' '].includes(event.key)) {
-    event.preventDefault();
-    handleSessionUserAction(event);
-  }
-});
-elements.sessionUserList.addEventListener("contextmenu", event => {
-  if (document.documentElement.dataset.hostTouchUsers === "true") event.preventDefault();
-});
-document.addEventListener("click", event => {
-  if (event.target.closest("#session-user-list") || state.sessionUserActionPending || !state.sessionUserActionsName) return;
-  state.sessionUserActionsName = "";
-  syncSessionUserControls();
-});
-for (const query of ["(pointer: coarse)", "(any-pointer: fine)"]) {
-  window.matchMedia?.(query)?.addEventListener?.("change", syncSessionUserControls);
-}
-elements.sessionUserList.addEventListener("dragstart", (e) => {
-  const badge = e.target.closest(".session-user-badge");
-  if (!badge || !badge.draggable) { e.preventDefault(); return; }
-  draggedSessionUser = badge;
-  e.dataTransfer.effectAllowed = "move";
-  e.dataTransfer.setData("text/plain", badge.dataset.name);
-  if (typeof e.dataTransfer.setDragImage === "function") {
-    const rect = badge.getBoundingClientRect();
-    const dragImage = createSessionUserDragImage(badge);
-    const dragImageRect = dragImage.getBoundingClientRect();
-    e.dataTransfer.setDragImage(
-      dragImage,
-      Math.min(Math.max(0, dragImageRect.width - 1), Math.max(0, e.clientX - rect.left)),
-      Math.min(Math.max(0, dragImageRect.height - 1), Math.max(0, e.clientY - rect.top)),
-    );
-  }
-  setTimeout(() => {
-    badge.classList.add("dragging");
-    elements.sessionUsersPanel?.classList.add("is-dragging");
-  }, 0);
-});
-
-// 4. Handle dragover for reordering.
-elements.sessionUserList.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  if (!draggedSessionUser) return;
-  e.dataTransfer.dropEffect = "move";
-
-  const allElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
-  const draggableElements = allElements.filter(el => el !== draggedSessionUser);
-  allElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
-
-  if (allElements.length === 0) {
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-    return;
-  }
-
-  let closestElement = null;
-  let minDistance = Infinity;
-
-  for (const child of allElements) {
-    const box = child.getBoundingClientRect();
-    const centerX = box.left + box.width / 2;
-    const centerY = box.top + box.height / 2;
-    const distance = (e.clientX - centerX) ** 2 + (e.clientY - centerY) ** 2;
-    if (distance < minDistance) {
-      minDistance = distance;
-      closestElement = child;
-    }
-  }
-
-  if (closestElement) {
-    const box = closestElement.getBoundingClientRect();
-    const isAfter = e.clientX >= box.left + box.width / 2;
-
-    if (closestElement === draggedSessionUser) {
-      if (isAfter) {
-        const next = draggedSessionUser.nextElementSibling;
-        if (next && next.classList.contains("session-user-badge")) {
-          state.sessionUserDragTarget = next;
-          state.sessionUserDragAfter = false;
-          next.classList.add("drop-before");
-        } else {
-          state.sessionUserDragTarget = null;
-          state.sessionUserDragAfter = true;
-          draggedSessionUser.classList.add("drop-after");
-        }
-      } else {
-        state.sessionUserDragTarget = draggedSessionUser;
-        state.sessionUserDragAfter = false;
-        const prev = draggedSessionUser.previousElementSibling;
-        if (prev && prev.classList.contains("session-user-badge")) {
-          prev.classList.add("drop-after");
-        } else {
-          draggedSessionUser.classList.add("drop-before");
-        }
-      }
-    } else {
-      if (isAfter) {
-        if (closestElement.nextElementSibling === draggedSessionUser) {
-          state.sessionUserDragTarget = draggedSessionUser;
-          state.sessionUserDragAfter = false;
-          closestElement.classList.add("drop-after");
-        } else {
-          const idx = draggableElements.indexOf(closestElement);
-          if (idx !== -1 && idx < draggableElements.length - 1) {
-            state.sessionUserDragTarget = draggableElements[idx + 1];
-            state.sessionUserDragAfter = false;
-            draggableElements[idx + 1].classList.add("drop-before");
-          } else {
-            state.sessionUserDragTarget = null;
-            state.sessionUserDragAfter = true;
-            closestElement.classList.add("drop-after");
-          }
-        }
-      } else {
-        state.sessionUserDragTarget = closestElement;
-        state.sessionUserDragAfter = false;
-        closestElement.classList.add("drop-before");
-      }
-    }
-  }
-});
-
-// 5. Handle drag end.
-document.addEventListener("dragend", async (e) => {
-  if (draggedSessionUser) {
-    finishSessionUserDragUi();
-
-    if (!draggedSessionUser.dataset.deleted) {
-      if (state.sessionUserDragTarget) {
-        elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
-      } else if (state.sessionUserDragAfter) {
-        elements.sessionUserList.appendChild(draggedSessionUser);
-      }
-
-      const name = draggedSessionUser.dataset.name;
-      const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
-      const newIndex = newElements.indexOf(draggedSessionUser);
-      const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
-
-      if (newIndex !== -1 && newIndex !== oldIndex) {
-        await moveSessionUser(name, newIndex);
-      }
-    }
-    draggedSessionUser = null;
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-  }
-});
-
-// 6. Handle trash can events natively.
-if (elements.sessionUserTrash) {
-  elements.sessionUserTrash.addEventListener("dragenter", (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    elements.sessionUserTrash.classList.add("drag-over");
-    clearSessionUserDropIndicators();
-  });
-
-  elements.sessionUserTrash.addEventListener("dragleave", (e) => {
-    elements.sessionUserTrash.classList.remove("drag-over");
-  });
-
-  elements.sessionUserTrash.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    elements.sessionUserTrash.classList.add("drag-over");
-    clearSessionUserDropIndicators();
-  });
-
-  elements.sessionUserTrash.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    finishSessionUserDragUi();
-    await removeDraggedSessionUser();
-  });
-}
-
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
@@ -20097,10 +19974,10 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
   syncCachePanelVisibility({ reopen: state.cacheSettingsOpen });
 });
 
-document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
-  const info = region.querySelector(".cache-advanced-info");
+function bindHostContextualInfo(region, { actionHelp = true } = {}) {
+  const info = region.matches(".cache-advanced-info") ? region : region.querySelector(".cache-advanced-info");
   const hoverTarget = region.closest("#remote-mini-popover") ? info : region;
-  region.addEventListener("click", (event) => {
+  if (actionHelp) region.addEventListener("click", (event) => {
     const button = event.target.closest(".cache-advanced-info-button");
     if (!button) {
       return;
@@ -20149,11 +20026,12 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
       ) {
         info?.classList.remove("is-visible");
         info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+        resetContextualTooltipPosition(info);
       }
     }, cacheAdvancedInfoLeaveDelayMs);
   });
   region.addEventListener("focusin", (event) => {
-    if (!event.target.closest(".cache-advanced-info-button")) {
+    if (actionHelp && !event.target.closest(".cache-advanced-info-button")) {
       return;
     }
     showCacheAdvancedInfoTransient(info, "keyboard");
@@ -20167,10 +20045,12 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
       ) {
         info?.classList.remove("is-visible");
         info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+        resetContextualTooltipPosition(info);
       }
     }, 0);
   });
-});
+}
+document.querySelectorAll(".cache-contextual-info-region").forEach(region => bindHostContextualInfo(region));
 
 elements.hostWorkspaceButtons?.forEach((button) => {
   button.addEventListener("click", () => {
@@ -20467,6 +20347,15 @@ globalThis.BilikaraVolumeControl?.bind({
   value: elements.volumeValue,
   t,
   getValue: () => Math.round(state.localPlayerVolume * 100),
+  getAutomatic: () => state.data?.automatic_volume,
+  bindInfo: (region) => bindHostContextualInfo(region),
+  closeInfo: () => closeCacheAdvancedInfo(),
+  onAutomatic: async (payload) => {
+    const next = await apiPost('/api/player/automatic-volume', payload);
+    acceptHostStateSnapshot(next);
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    render();
+  },
   onInput: (percent) => setLocalPlayerVolume(percent / 100),
   onCommit: (percent) => setLocalPlayerVolumeAndMuted(percent / 100, percent > 0 ? false : state.localPlayerMuted),
 });
@@ -20924,6 +20813,7 @@ elements.playlist.addEventListener("click", async (event) => {
     closeOpenMenus({ restoreFocus: false });
     openConfirm({
       type: "reorder-item",
+      queueVersion: state.renderedQueue?.version,
       itemId,
       targetIndex,
       focusItemId: itemId,
@@ -21297,7 +21187,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "reorder-item" && intent.itemId && Number.isInteger(intent.targetIndex)) {
-      const accepted = await reorderPlaylist(intent.itemId, intent.targetIndex);
+      const accepted = await reorderPlaylist(intent.itemId, intent.targetIndex, intent.queueVersion);
       closeConfirm();
       if (intent.focusItemId) {
         focusPlaylistItemMenuTrigger(intent.focusItemId);
@@ -21504,6 +21394,8 @@ function handleFullscreenChange() {
   if (!isFullscreen) {
     setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();
+    state.presentationFeedbackView?.hide();
+    state.presentationActionFeedback = null;
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
     } else {
@@ -21551,6 +21443,7 @@ elements.playlist.addEventListener("dragstart", (event) => {
   }
 
   state.dragItemId = item.dataset.id || "";
+  state.dragQueue = state.renderedQueue;
   state.dragTargetId = "";
   state.dragTargetAfter = false;
 
@@ -21613,7 +21506,8 @@ elements.playlist.addEventListener("drop", async (event) => {
   event.preventDefault();
 
   const draggedId = state.dragItemId;
-  const playlist = state.data.playlist;
+  const playlist = state.dragQueue?.playlist || [];
+  const queueVersion = state.dragQueue?.version || "";
   const sourceIndex = playlist.findIndex((item) => item.id === draggedId);
   if (sourceIndex === -1 || !state.dragTargetId) {
     clearDragState();
@@ -21642,6 +21536,7 @@ elements.playlist.addEventListener("drop", async (event) => {
   const point = anchorPointForEvent(event, elements.playlist);
   openConfirm({
     type: "reorder-item",
+    queueVersion,
     itemId: draggedId,
     targetIndex,
     x: point.x,
@@ -21670,7 +21565,9 @@ document.addEventListener("click", async (event) => {
   }
   const scoreButton = event.target.closest("[data-rating-score]");
   if (scoreButton) {
+    if (scoreButton.disabled || !isItemRateable(activeRatingPromptItem())) return;
     state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    state.ratingPromptScoreDirty = true;
     renderRatingStars();
     return;
   }
@@ -21699,6 +21596,7 @@ document.addEventListener("click", async (event) => {
   }
   const submitButton = event.target.closest("[data-rating-submit]");
   if (submitButton) {
+    if (submitButton.disabled || !isItemRateable(activeRatingPromptItem())) return;
     closeRatingPrompt({ submit: true, trigger: submitButton });
     return;
   }

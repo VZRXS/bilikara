@@ -1750,6 +1750,7 @@ h1 {
   -webkit-appearance: none;
   background: var(--accent);
   box-shadow: var(--playback-thumb-shadow);
+  opacity: 0;
 }
 
 .player-progress-range::-moz-range-track {
@@ -1781,7 +1782,11 @@ h1 {
   -webkit-appearance: none;
   background: var(--accent);
   box-shadow: var(--playback-thumb-shadow);
+  opacity: 0;
 }
+
+.player-progress-range:is(:focus, :active, .is-engaged):not(:disabled)::-webkit-slider-thumb { opacity: 1; }
+.player-progress-range:is(:focus, :active, .is-engaged):not(:disabled)::-moz-range-thumb { opacity: 1; }
 
 .player-progress-range:focus-visible {
   outline: 2px solid var(--accent);
@@ -2708,37 +2713,6 @@ select:disabled {
 
 
 .search-result-owner {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.owner-badge-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4em;
-  max-width: 100%;
-  vertical-align: middle;
-}
-
-.owner-badge {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  padding-block: 0;
-  padding-inline: 0.12em 0.14em;
-  border: 1.3px solid currentColor;
-  border-radius: 0.22em;
-  font-size: 0.8em;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: normal;
-  transform: translateY(0);
-}
-
-.owner-badge-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4629,7 +4603,7 @@ body.remote-identity-modal-open {
 .playback-metadata-popover {
   z-index: 45;
   max-height: min(224px, calc(100dvh - 32px));
-  overflow: auto;
+  overflow: visible;
   text-align: left;
   user-select: text;
   -webkit-user-select: text;
@@ -4641,6 +4615,9 @@ body.remote-identity-modal-open {
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .playback-sheet-playback-group {
@@ -4700,16 +4677,13 @@ body.remote-identity-modal-open {
 
 .playback-metadata-field[data-playback-metadata-field="owner"] .current-owner-line {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   height: 20px;
   line-height: 20px;
 }
 
-.playback-metadata-field[data-playback-metadata-field="owner"] .owner-badge {
-  margin-top: 0.2em;
-}
-
 .playback-metadata-field[data-playback-metadata-field="owner"] .owner-badge-name {
+  align-self: flex-start;
   overflow: visible;
   text-overflow: clip;
   white-space: normal;

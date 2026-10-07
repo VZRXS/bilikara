@@ -7,7 +7,7 @@ pub const MAX_CONTROL_MESSAGE_BYTES: usize = 16 * 1024;
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_SEARCH_RESULTS: u16 = 80;
 pub const MAX_BROWSE_RESULTS: u16 = 100;
-pub const MAX_REMOTE_STATE_ITEMS: usize = 1_000;
+pub const MAX_REMOTE_STATE_ITEMS: usize = 10_000;
 
 const MAX_EPOCH_BYTES: usize = 22;
 const MAX_CATALOG_ID_BYTES: usize = 128;
@@ -100,6 +100,8 @@ pub enum RemoteOperation {
     PlayerSetAudioVariant,
     PlayerSetAvDelay,
     SessionSetIdentity,
+    SessionRename,
+    SessionResume,
     RatingSubmit,
     CacheRetry,
 }
@@ -135,7 +137,9 @@ impl RemoteOperation {
             | Self::PlayerSetKeyShift
             | Self::PlayerSetAudioVariant
             | Self::PlayerSetAvDelay => RemoteCapability::PlayerSettingsWrite,
-            Self::SessionSetIdentity => RemoteCapability::SessionIdentityWrite,
+            Self::SessionSetIdentity | Self::SessionRename | Self::SessionResume => {
+                RemoteCapability::SessionIdentityWrite
+            }
             Self::RatingSubmit => RemoteCapability::RatingWrite,
             Self::CacheRetry => RemoteCapability::CacheRetry,
             Self::GatchaPoolConfigSet
@@ -290,6 +294,8 @@ pub enum RemoteRequestV1 {
     PlaylistMove {
         item_id: String,
         target_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.resort")]
@@ -356,6 +362,14 @@ pub enum RemoteRequestV1 {
     PlayerAvDelayAction(RemoteAvDelayActionV1),
     #[serde(rename = "session.set_identity")]
     SessionSetIdentity { name: String },
+    #[serde(rename = "session.rename")]
+    SessionRename {
+        name: String,
+        user_id: String,
+        expected_name: String,
+    },
+    #[serde(rename = "session.resume")]
+    SessionResume { user_id: String },
     #[serde(rename = "rating.submit")]
     RatingSubmit { play_id: String, score: u8 },
     #[serde(rename = "cache.retry")]
@@ -407,6 +421,8 @@ impl RemoteRequestV1 {
             Self::PlayerSetAvDelay { .. } => RemoteOperation::PlayerSetAvDelay,
             Self::PlayerAvDelayAction(_) => RemoteOperation::PlayerSetAvDelay,
             Self::SessionSetIdentity { .. } => RemoteOperation::SessionSetIdentity,
+            Self::SessionRename { .. } => RemoteOperation::SessionRename,
+            Self::SessionResume { .. } => RemoteOperation::SessionResume,
             Self::RatingSubmit { .. } => RemoteOperation::RatingSubmit,
             Self::CacheRetry { .. } => RemoteOperation::CacheRetry,
         }
@@ -595,6 +611,8 @@ struct IncarnationMutationBody {
 struct MoveItemBody {
     item_id: String,
     target_index: u32,
+    #[serde(default)]
+    expected_queue_version: Option<String>,
     expected_revision: u64,
 }
 
@@ -904,10 +922,14 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         RemoteRequestV1::PlaylistMove {
             item_id,
             target_index,
+            expected_queue_version,
             expected_revision,
         } => {
             valid_item(item_id)
                 && (*target_index as usize) < MAX_REMOTE_STATE_ITEMS
+                && expected_queue_version.as_ref().is_none_or(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
                 && valid_expected(*expected_revision)
         }
         RemoteRequestV1::PlaylistResort { expected_revision } => valid_expected(*expected_revision),
@@ -976,6 +998,23 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
             }
             _ => true,
         },
+        RemoteRequestV1::SessionResume { user_id } => {
+            user_id.len() == 64 && user_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
+        RemoteRequestV1::SessionRename {
+            name,
+            user_id,
+            expected_name,
+        } => {
+            valid_text(name, MAX_SESSION_NAME_BYTES, MAX_SESSION_NAME_CHARS)
+                && valid_text(
+                    expected_name,
+                    MAX_SESSION_NAME_BYTES,
+                    MAX_SESSION_NAME_CHARS,
+                )
+                && user_id.len() == 64
+                && user_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
         RemoteRequestV1::SessionSetIdentity { name } => {
             valid_text(name, MAX_SESSION_NAME_BYTES, MAX_SESSION_NAME_CHARS)
         }
@@ -1184,6 +1223,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             RemoteRequestV1::PlaylistMove {
                 item_id: body.item_id,
                 target_index: body.target_index,
+                expected_queue_version: body.expected_queue_version,
                 expected_revision: body.expected_revision,
             }
         }
@@ -1270,6 +1310,32 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
         "session.set_identity" => {
             let body: IdentityBody = body(value)?;
             RemoteRequestV1::SessionSetIdentity { name: body.name }
+        }
+        "session.resume" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ResumeBody {
+                user_id: String,
+            }
+            let body: ResumeBody = body(value)?;
+            RemoteRequestV1::SessionResume {
+                user_id: body.user_id,
+            }
+        }
+        "session.rename" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct RenameBody {
+                name: String,
+                user_id: String,
+                expected_name: String,
+            }
+            let body: RenameBody = body(value)?;
+            RemoteRequestV1::SessionRename {
+                name: body.name,
+                user_id: body.user_id,
+                expected_name: body.expected_name,
+            }
         }
         "rating.submit" => {
             let body: RatingBody = body(value)?;
@@ -1438,6 +1504,15 @@ pub struct RemotePlayerSettingsV1 {
     pub key_shift: i8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAutomaticVolumeV1 {
+    pub enabled: bool,
+    pub calibrated: bool,
+    pub scanner_available: bool,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemotePlaybackStatusV1 {
@@ -1448,8 +1523,19 @@ pub struct RemotePlaybackStatusV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RemoteSessionUserV1 {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_volume: Option<RemoteAutomaticVolumeV1>,
     pub v: u16,
+    #[serde(default)]
+    pub queue_version: String,
     pub revision: u64,
     pub session_generation: u64,
     pub playback_generation: u64,
@@ -1458,6 +1544,12 @@ pub struct RemoteStateV1 {
     pub playlist: Vec<RemotePlaylistItemV1>,
     pub history: Vec<RemoteHistoryEntryV1>,
     pub session_users: Vec<String>,
+    #[serde(default)]
+    pub session_user_entries: Vec<RemoteSessionUserV1>,
+    #[serde(default)]
+    pub session_users_version: String,
+    #[serde(default)]
+    pub session_user_edit_version: u32,
     pub player_settings: RemotePlayerSettingsV1,
     pub player_status: Option<RemotePlaybackStatusV1>,
 }
@@ -2254,6 +2346,8 @@ mod tests {
     #[test]
     fn remote_state_shape_has_no_local_paths_urls_or_maintenance_state() {
         let state = RemoteStateV1 {
+            automatic_volume: None,
+            queue_version: "version".to_owned(),
             v: INTERNET_REMOTE_PROTOCOL_VERSION,
             revision: 4,
             session_generation: 2,
@@ -2291,6 +2385,9 @@ mod tests {
             }),
             playlist: vec![],
             history: vec![],
+            session_user_entries: vec![],
+            session_users_version: String::new(),
+            session_user_edit_version: 0,
             session_users: vec!["Guest".into()],
             player_settings: RemotePlayerSettingsV1 {
                 effective_av_delay_ms: 0,
