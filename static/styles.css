@@ -5996,6 +5996,11 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   cursor: none !important;
 }
 
+.player-panel:is(:fullscreen, :-webkit-full-screen, .is-tauri-fullscreen).is-player-cursor-hidden,
+.player-panel:is(:fullscreen, :-webkit-full-screen, .is-tauri-fullscreen).is-player-cursor-hidden * {
+  cursor: none !important;
+}
+
 .audio-variant-button:hover,
 .audio-variant-button.active:hover {
   transform: none;

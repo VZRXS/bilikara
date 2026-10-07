@@ -186,6 +186,7 @@ const state = {
   playerFullscreenLastPointerType: "",
   playerFullscreenTransitioning: false,
   playerFullscreenRevision: 0,
+  playerFullscreenInteraction: null,
   presentationSettingsOpen: false,
   presentationDisplayRefreshTimer: null,
   presentationDisplayRefreshPending: false,
@@ -1945,6 +1946,7 @@ function applyPresentationCompositionDom(generation, composition) {
     && state.presentationSession.mode === "localDualScreen"
     && ["activating", "active"].includes(state.presentationSession.phase);
   state.presentationAppliedComposition = active ? "stageOnly" : "combined";
+  state.playerFullscreenInteraction?.sync();
   state.presentationCompositionGeneration = generation;
   document.body?.classList.toggle("is-presentation-control-host", active);
   document.body?.classList.remove("is-presentation-stage-only");
@@ -3496,6 +3498,7 @@ async function togglePlayerFullscreen() {
     setAppMessage(t("player.fullscreenFailed"), true);
   } finally {
     state.playerFullscreenTransitioning = false;
+    state.playerFullscreenInteraction?.sync();
     renderPlayerFullscreenButton();
   }
 }
@@ -3580,16 +3583,23 @@ function scheduleMountedPlayerControlsHide() {
       return;
     }
     state.localPlayerControlsHideTimer = null;
+    if (state.playerFullscreenInteraction?.holdingPointer()) {
+      scheduleMountedPlayerControlsHide();
+      return;
+    }
     hidePlayerControls(video);
   }, playerControlsAutoHideMs);
   state.localPlayerControlsHideTimer = hideTimer;
 }
 
-function revealMountedPlayerControlsForUserInteraction() {
-  if (presentationCompositionActive() || isPlayerPanelFullscreen() || state.playerFullscreenTransitioning) {
+function revealMountedPlayerControlsForUserInteraction(event) {
+  if (presentationCompositionActive() || state.playerFullscreenTransitioning) {
     hideMountedPlayerControls();
     return;
   }
+  // Incidental focus/hover is not permission to show controls, but must not
+  // dismiss controls already revealed by the preceding pointerdown either.
+  if (isPlayerPanelFullscreen() && !state.playerFullscreenInteraction?.allowsReveal(event)) return;
   const video = mountedLocalVideoElement();
   if (!video) {
     return;
@@ -15981,15 +15991,16 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
-    addMountedPlayerListener(video, eventName, () => {
-      revealMountedPlayerControlsForUserInteraction();
+    addMountedPlayerListener(video, eventName, (event) => {
+      revealMountedPlayerControlsForUserInteraction(event);
     }, { passive: true });
   });
 
   addMountedPlayerListener(video, "pointerleave", (event) => {
     // Touch pointers leave at finger-up (and when entering a UA seek control),
     // unlike a desktop hover. Removing controls here cancels native scrubbing.
-    if (isAndroidNativePlaybackRuntime() && event.pointerType === "touch") return;
+    if (event.pointerType === "touch" && (isAndroidNativePlaybackRuntime() || isPlayerPanelFullscreen())) return;
+    if (state.playerFullscreenInteraction?.holdingPointer()) return;
     hideMountedPlayerControls();
   });
 
@@ -20465,6 +20476,12 @@ const fullscreenControlHover = window.BilikaraFullscreenControls.bind(elements.p
   onEnter: syncPlayerFullscreenExpandedWidth,
 });
 
+state.playerFullscreenInteraction = window.BilikaraFullscreenControls.bindPlayer(elements.playerPanel, {
+  active: () => isPlayerPanelFullscreen() && !presentationCompositionActive(),
+  transitioning: () => state.playerFullscreenTransitioning,
+  revealControls: revealMountedPlayerControlsForUserInteraction,
+});
+
 elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
   state.playerFullscreenLastPointerType = String(event.pointerType || "");
 });
@@ -20504,7 +20521,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     // playback toggle while the user is trying to grab the seekbar. Leave
     // default actions intact so native play/seek controls still work.
     clearPlayerFrameClickTimer();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   const { video, audio } = activeLocalPlayerElements();
@@ -20513,7 +20530,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     if (video && audio) {
       requestSplitPlaybackStartFromUserGesture(video, audio, "tauri-video-click-start-intent");
     }
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   if (
@@ -20522,7 +20539,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     && requestSplitPlaybackStartFromUserGesture(video, audio, "host-video-click-start-intent")
   ) {
     clearPlayerFrameClickTimer();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   queuePlayerFrameSingleClick();
@@ -20537,7 +20554,7 @@ elements.playerFrame?.addEventListener("dblclick", (event) => {
     event.preventDefault();
     clearPlayerFrameClickTimer();
     toggleMountedLocalPlayback();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   handlePlayerFrameDoubleClick().catch(() => {});
@@ -21416,6 +21433,7 @@ function handleFullscreenChange() {
   const isFullscreen = isPlayerPanelFullscreen();
   fullscreenControlHover.reset();
   hideMountedPlayerControls();
+  state.playerFullscreenInteraction?.sync();
   if (!isFullscreen) {
     setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();

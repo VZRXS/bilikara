@@ -23,6 +23,7 @@ import './internet_remote_frontend_contract.test.mjs';
 import './internet_remote_ice.test.mjs';
 import './list_flip_frontend_contract.test.mjs';
 import './player_fullscreen_frontend_contract.test.mjs';
+import './fullscreen_player_interaction.test.mjs';
 import './player_health_contract.test.mjs';
 import './player_control_consumption.test.mjs';
 import './presentation_host_frontend_contract.test.mjs';
