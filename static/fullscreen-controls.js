@@ -25,12 +25,15 @@
     return { reset };
   }
   // Single-screen playback starts without UA controls. Fullscreen/resizes may
-  // retarget hover or restore focus without physical input, so remember screen
-  // coordinates (not window-relative client coordinates) across the transition.
+  // retarget hover or restore focus without physical input. Native fullscreen
+  // also changes the window origin, so a stationary cursor can be re-reported
+  // with shifted screen coordinates and movement. After each transition, only
+  // re-anchor until the layout settles; then require a few pixels of travel.
+  const SETTLE_MS = 600, MOVE_THRESHOLD_PX = 4;
   function bindPlayer(panel, { active, transitioning, revealControls }) {
     const doc = panel.ownerDocument;
     let point = null, movedEvent = null, keyboardIntent = false;
-    let cursorTimer = null, focused = true;
+    let cursorTimer = null, focused = true, settleTimer = null;
     const pointers = new Set();
     const enabled = () => active() && !transitioning();
     const clearTimer = () => {
@@ -54,22 +57,32 @@
       movedEvent = null;
       keyboardIntent = false;
       pointers.clear();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      const timer = window.setTimeout(() => {
+        if (settleTimer === timer) settleTimer = null;
+      }, SETTLE_MS);
+      settleTimer = timer;
       revealCursor();
     }
     function rememberPoint(event) {
       const next = { x: event.screenX, y: event.screenY };
-      const moved = point
-        ? next.x !== point.x || next.y !== point.y
-        : Boolean(event.movementX || event.movementY);
+      if (!point || settleTimer !== null) {
+        point = next;
+        return false;
+      }
+      // Accumulate from the anchor so slow deliberate motion still counts,
+      // while sub-threshold DPI rounding never does.
+      if (Math.abs(next.x - point.x) + Math.abs(next.y - point.y) < MOVE_THRESHOLD_PX) return false;
       point = next;
-      return moved;
+      return true;
     }
     doc.addEventListener("pointermove", event => {
       // UA seekbars can consume pointerdown. Their retargeted move still tells
       // us a button is held, and lostpointercapture releases native scrubbing.
       if (enabled() && event.buttons && panel.contains(event.target)) pointers.add(event.pointerId);
       else if (event.buttons === 0) pointers.delete(event.pointerId);
-      const moved = rememberPoint(event);
+      // A held button is deliberate input (UA seekbar drags may hide pointerdown).
+      const moved = rememberPoint(event) || Boolean(event.buttons);
       movedEvent = enabled() && moved ? event : null;
       if (movedEvent) {
         keyboardIntent = false;

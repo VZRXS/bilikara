@@ -124,6 +124,8 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
   await page.setViewportSize({width:700,height:600});
   await page.evaluate(() => { nativeMode=true; });
   await page.locator('#enter').click(); assert.equal(await controls(),false);
+  // Moves inside the post-transition settle window only re-anchor the pointer.
+  await page.waitForTimeout(650);
   await page.mouse.move(350,300); await page.waitForFunction(() => video.controls);
   await page.keyboard.press('Escape'); await page.waitForFunction(() => !isPlayerPanelFullscreen());
   assert.notEqual(await cursor(),'none');

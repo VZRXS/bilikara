@@ -79,6 +79,7 @@ for (const mode of ['native', 'browser']) test(`${mode} fullscreen starts quiet 
   f.enter(); assert.equal(f.video.controls, false, 'entry never shows controls');
   f.fire('pointerenter'); f.fire('focus'); f.fire('pointermove');
   assert.equal(f.video.controls, false, 'entry focus/retargeted stationary movement must stay quiet');
+  f.tick(601);
   f.fire('pointermove', { screenX: 70, movementX: 20 });
   assert.equal(f.video.controls, true, 'a real move must reveal the fullscreen seekbar');
   f.tick(5001); assert.equal(f.video.controls, false, 'ordinary auto-hide remains');
@@ -88,6 +89,26 @@ for (const mode of ['native', 'browser']) test(`${mode} fullscreen starts quiet 
   f.tick(6000); assert.equal(f.video.controls, true, 'do not remove native controls while scrubbing');
   f.fire('pointerup', { screenX: 70 }); f.tick(5001); assert.equal(f.video.controls, false);
   f.exit(); f.fire('pointerenter'); assert.equal(f.video.controls, true);
+});
+
+test('native window origin shifts during entry are not mistaken for pointer movement', () => {
+  // A stationary cursor over the fullscreen button: Windows native fullscreen
+  // moves the client origin, so WebView2 re-reports it with shifted screen
+  // coordinates and nonzero movement, possibly again after the resize event.
+  const f = fixture();
+  f.fire('pointerdown', { target: f.panel, screenX: 600, screenY: 40 });
+  f.fire('pointerup', { target: f.panel, screenX: 600, screenY: 40 });
+  f.enter();
+  f.fire('pointermove', { screenX: 608, screenY: 48, movementX: 8, movementY: 8 });
+  f.tick(300);
+  f.window.dispatch({ type: 'resize' });
+  f.fire('pointermove', { screenX: 600, screenY: 40, movementX: -8, movementY: -8 });
+  f.tick(601);
+  assert.equal(f.video.controls, false, 'layout/origin re-reports after entry must stay quiet');
+  f.fire('pointermove', { screenX: 601, screenY: 41, movementX: 1, movementY: 1 });
+  assert.equal(f.video.controls, false, 'sub-threshold DPI rounding is not deliberate movement');
+  f.fire('pointermove', { screenX: 603, screenY: 42, movementX: 2, movementY: 1 });
+  assert.equal(f.video.controls, true, 'slow deliberate motion accumulates from the settled anchor');
 });
 
 test('single-screen cursor idles, wakes, and cannot leak into an exited or replaced fullscreen', () => {
