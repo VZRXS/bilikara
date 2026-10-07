@@ -126,6 +126,8 @@ impl Default for BilibiliLoginState {
 #[derive(Debug, Default)]
 pub struct RuntimeStatusService {
     gacha_task: GachaTaskState,
+    configured_task: Option<GachaTaskState>,
+    source_task: Option<GachaTaskState>,
     gacha_refresh_lease: bool,
     gacha_source_removal_lease: bool,
     gacha_busy_message: String,
@@ -135,6 +137,9 @@ pub struct RuntimeStatusService {
     bilibili_success: Option<u64>,
     refresh_generation: u64,
     configured_refresh: Option<crate::gatcha_refresh::RefreshTicket>,
+    source_refresh: Option<crate::gatcha_refresh::RefreshTicket>,
+    source_exclusive: bool,
+    shared_sources: Option<std::sync::Arc<crate::gatcha_refresh::SourceTasks>>,
 }
 
 impl RuntimeStatusService {
@@ -154,6 +159,12 @@ impl RuntimeStatusService {
         if let Some((_, control)) = &self.configured_refresh {
             control.stop();
         }
+        if let Some((_, control)) = &self.source_refresh {
+            control.stop();
+        }
+        // An admitted task for the new credential must not reuse a completion
+        // cached by the previous account, even while its cancelled lane drains.
+        self.shared_sources = None;
     }
 
     pub(crate) fn begin_configured_refresh(
@@ -163,7 +174,8 @@ impl RuntimeStatusService {
     ) -> Option<crate::gatcha_refresh::RefreshTicket> {
         if self.configured_refresh.is_some()
             || self.gacha_source_removal_lease
-            || (global_lock && self.gacha_refresh_lease)
+            || self.source_exclusive
+            || (global_lock && (self.gacha_refresh_lease || self.source_refresh.is_some()))
         {
             return None;
         }
@@ -175,10 +187,70 @@ impl RuntimeStatusService {
             self.refresh_generation,
             std::sync::Arc::new(crate::gatcha_refresh::RefreshControl::default()),
         );
+        self.attach_source_round(&ticket);
         self.configured_refresh = Some(ticket.clone());
         self.set_gacha_busy_message(DEFAULT_GACHA_BUSY_MESSAGE.into());
         self.set_gacha_task(task);
+        self.configured_task = Some(self.gacha_task.clone());
         Some(ticket)
+    }
+
+    fn attach_source_round(&mut self, ticket: &crate::gatcha_refresh::RefreshTicket) {
+        let sources = self
+            .shared_sources
+            .get_or_insert_with(Default::default)
+            .clone();
+        ticket.1.share_sources(sources);
+    }
+
+    #[cfg(feature = "native-host")]
+    pub(crate) fn begin_source_refresh(
+        &mut self,
+        task: GachaTaskUpdate,
+        exclusive: bool,
+    ) -> Option<crate::gatcha_refresh::RefreshTicket> {
+        if self.source_refresh.is_some()
+            || self.gacha_refresh_lease
+            || (exclusive && self.configured_refresh.is_some())
+        {
+            return None;
+        }
+        self.refresh_generation = self.refresh_generation.wrapping_add(1).max(1);
+        let ticket = (
+            self.refresh_generation,
+            std::sync::Arc::new(crate::gatcha_refresh::RefreshControl::default()),
+        );
+        self.attach_source_round(&ticket);
+        self.source_refresh = Some(ticket.clone());
+        self.source_exclusive = exclusive;
+        self.set_gacha_task(task);
+        self.source_task = Some(self.gacha_task.clone());
+        Some(ticket)
+    }
+
+    #[cfg(feature = "native-host")]
+    pub(crate) fn owns_source_refresh(
+        &self,
+        ticket: &crate::gatcha_refresh::RefreshTicket,
+    ) -> bool {
+        self.source_refresh.as_ref().is_some_and(|current| {
+            current.0 == ticket.0 && std::sync::Arc::ptr_eq(&current.1, &ticket.1)
+        })
+    }
+
+    #[cfg(feature = "native-host")]
+    pub(crate) fn finish_source_refresh(&mut self, generation: u64, task: GachaTaskUpdate) -> bool {
+        if self.source_refresh.as_ref().map(|ticket| ticket.0) != Some(generation) {
+            return false;
+        }
+        self.source_refresh = None;
+        self.source_task = None;
+        self.source_exclusive = false;
+        if self.configured_refresh.is_none() {
+            self.shared_sources = None;
+        }
+        self.set_gacha_task(task);
+        true
     }
 
     pub(crate) fn configured_refresh_progress(&mut self, generation: u64, mut progress: Value) {
@@ -199,6 +271,7 @@ impl RuntimeStatusService {
                 result: Some(serde_json::json!({"rebuild":progress})),
                 blocking: false,
             });
+            self.configured_task = Some(self.gacha_task.clone());
         }
     }
 
@@ -212,6 +285,10 @@ impl RuntimeStatusService {
             return false;
         }
         self.configured_refresh = None;
+        self.configured_task = None;
+        if self.source_refresh.is_none() {
+            self.shared_sources = None;
+        }
         if global_lock {
             self.release_gacha_refresh();
         }
@@ -220,22 +297,32 @@ impl RuntimeStatusService {
     }
 
     pub fn gacha_snapshot(&self) -> GachaTaskSnapshot {
-        let background_busy = self.gacha_task.status == GachaTaskStatus::Running;
-        let busy = self.gacha_refresh_lease || (background_busy && self.gacha_task.blocking);
+        // Keep the configured batch's progress visible while a foreground
+        // source completes. Neither lane may announce that the other is idle.
+        let task = self
+            .configured_task
+            .as_ref()
+            .or(self.source_task.as_ref())
+            .unwrap_or(&self.gacha_task);
+        let background_busy = self.configured_refresh.is_some()
+            || self.source_refresh.is_some()
+            || task.status == GachaTaskStatus::Running;
+        let blocking = task.blocking || self.source_task.as_ref().is_some_and(|task| task.blocking);
+        let busy = self.gacha_refresh_lease || (background_busy && blocking);
         GachaTaskSnapshot {
             busy,
             background_busy,
-            blocking: self.gacha_task.blocking,
+            blocking,
             message: if busy {
                 self.effective_gacha_busy_message().to_string()
             } else {
                 String::new()
             },
-            last_status: self.gacha_task.status,
-            last_message: self.gacha_task.message.clone(),
-            last_error: self.gacha_task.error.clone(),
-            last_updated_at: self.gacha_task.updated_at,
-            last_result: self.gacha_task.result.clone(),
+            last_status: task.status,
+            last_message: task.message.clone(),
+            last_error: task.error.clone(),
+            last_updated_at: task.updated_at,
+            last_result: task.result.clone(),
         }
     }
 
@@ -245,10 +332,12 @@ impl RuntimeStatusService {
         task: Option<GachaTaskUpdate>,
     ) -> bool {
         if self.gacha_refresh_lease
-            || self
-                .configured_refresh
-                .as_ref()
-                .is_some_and(|_| self.gacha_task.blocking)
+            || self.source_refresh.is_some()
+            || self.configured_refresh.as_ref().is_some_and(|_| {
+                self.configured_task
+                    .as_ref()
+                    .is_some_and(|task| task.blocking)
+            })
         {
             return false;
         }
@@ -296,6 +385,13 @@ impl RuntimeStatusService {
         if let Some((_, control)) = self.configured_refresh.take() {
             control.stop();
         }
+        if let Some((_, control)) = self.source_refresh.take() {
+            control.stop();
+        }
+        self.configured_task = None;
+        self.source_task = None;
+        self.source_exclusive = false;
+        self.shared_sources = None;
         self.gacha_task = GachaTaskState::default();
         self.gacha_refresh_lease = false;
         self.gacha_source_removal_lease = false;
@@ -430,6 +526,9 @@ impl RuntimeStatusService {
 impl Drop for RuntimeStatusService {
     fn drop(&mut self) {
         if let Some((_, control)) = &self.configured_refresh {
+            control.stop();
+        }
+        if let Some((_, control)) = &self.source_refresh {
             control.stop();
         }
     }

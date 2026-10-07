@@ -1,5 +1,5 @@
-//! Bounded manual additions owned by AppState; one existing library lease runs
-//! each job. Previews remain read-only and never hold the long-running lease.
+//! Bounded manual additions owned by AppState. One foreground job can overlap
+//! a nonblocking startup refresh; source single-flight is shared by both lanes.
 use super::*;
 use crate::app_state::native_session::text;
 use std::collections::{BTreeMap, VecDeque};
@@ -183,29 +183,21 @@ pub(super) fn run_next(context: &HostContext) -> bool {
         let Some(job) = session.library_queue.pending.front().cloned() else {
             return Ok(None);
         };
-        if session.library_refresh_active || session.login.gacha_snapshot().busy {
+        if session.library_source_active
+            || (session.library_refresh_active && !session.library_refresh_parallel)
+        {
             return Ok(None);
         }
         // Missing credentials produce a terminal failure, not an immortal queue.
-        TaskLease::reserve_for(session, true, true, false)?;
+        let mut lease = TaskLease::start(session, true, "queued_source", false, true)?;
+        lease.stop = Some(context.stop.clone());
         session.library_queue.pending.pop_front();
         session.library_queue.active = Some(job.clone());
         session
             .library_queue
             .failed
             .retain(|v| !v.same_source(&job));
-        Ok(Some((
-            job,
-            session.cookie.clone(),
-            TaskLease {
-                complete: false,
-                automatic: true,
-                trigger: "queued_source",
-                started: Instant::now(),
-                ticket: None,
-                stop: Some(context.stop.clone()),
-            },
-        )))
+        Ok(Some((job, session.cookie.clone(), lease)))
     });
     let Ok(Some((job, cookie, lease))) = work else {
         return false;
@@ -216,15 +208,38 @@ pub(super) fn run_next(context: &HostContext) -> bool {
         "/api/gatcha/uids/add"
     };
     let body = json!({"uid":job.uid,"folder_ids":job.folder_ids});
-    let result =
-        network_operation(path, &body, &cookie).and_then(|op| execute(&context.directory, op));
+    let control = lease.control(context);
+    let mut result = network_operation(path, &body, &cookie).and_then(|operation| {
+        crate::gatcha_repository::execute_gatcha_controlled(
+            &GatchaRepositoryRequest {
+                schema_version: 1,
+                paths: paths(&context.directory),
+                default_uids: default_uids(),
+                operation,
+            },
+            &control,
+        )
+        .map_err(|e| ApiError::new(400, &e.kind, e.message))
+    });
     let failed = result.is_err() || result.as_ref().is_ok_and(partial_refresh);
-    publish_favorites_timestamp(&context.directory);
-    let _ = lease.finish(&result);
-    if let Ok(mut value) = result {
-        catalog_append::source_result(&mut value);
+    if let Ok(value) = &mut result {
+        let _ = control.commit(|| {
+            catalog_append::source_result(value);
+            Ok(())
+        });
+    }
+    if control.check().is_ok() {
+        publish_favorites_timestamp(&context.directory);
     }
     let _ = with_app(|app| {
+        // Retire queue state before releasing the lease. A credential change
+        // must not reinsert an old failure after clearing the queue.
+        if lease.stopped()
+            || !lease.owns(app.native(), lease.ticket.as_ref().expect("source ticket"))
+        {
+            return Ok(());
+        }
+        let cancelled = control.check().is_err();
         let queue = &mut app.native().library_queue;
         queue.active = None;
         if job.folder_ids.is_some() {
@@ -232,7 +247,7 @@ pub(super) fn run_next(context: &HostContext) -> bool {
         } else {
             queue.completed_uids += 1;
         }
-        if failed {
+        if failed && !cancelled {
             queue.failed.push_back(job);
             while queue.failed.len() > 100 {
                 queue.failed.pop_front();
@@ -241,6 +256,7 @@ pub(super) fn run_next(context: &HostContext) -> bool {
         app.native().revision += 1;
         Ok(())
     });
+    let _ = lease.finish(&result);
     true
 }
 

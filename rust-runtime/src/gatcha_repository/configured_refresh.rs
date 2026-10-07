@@ -1,5 +1,5 @@
-//! Task-only repository entry. The legacy schema trigger is explicit; native
-//! Hosts never opt into rebuilding or indexing an old desktop library.
+//! Task-only repository entry. Legacy schema maintenance is explicit and stays
+//! exclusive; ordinary current-schema pulls can share per-source work.
 use super::*;
 use crate::gatcha_refresh::{RebuildPaths, RefreshRequest};
 
@@ -42,7 +42,7 @@ pub(crate) fn execute_configured_refresh(
     }
 }
 
-fn rebuild_needed(paths: &GatchaPaths, temp: &RebuildPaths) -> bool {
+pub(crate) fn rebuild_needed(paths: &GatchaPaths, temp: &RebuildPaths) -> bool {
     [
         &temp.uid_temp,
         &temp.cache_temp,
