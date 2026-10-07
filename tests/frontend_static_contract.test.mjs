@@ -10,6 +10,16 @@ const includes = (source, values) => { for (const value of values) assert.ok(sou
 const excludes = (source, values) => { for (const value of values) assert.ok(!source.includes(value), value); };
 const between = (source, from, to) => { const start = source.indexOf(from); assert.ok(start >= 0); const end = source.indexOf(to, start); assert.ok(end > start); return source.slice(start, end); };
 
+test('Windows display recovery is installed independently of web controls before startup', () => {
+  const desktop = read('src-tauri/src/desktop.rs');
+  const setup = between(desktop, '.setup(move |app| {', '.on_window_event');
+  assert.ok(setup.indexOf('install_display_change_handler(&window)') >= 0);
+  assert.ok(setup.indexOf('install_display_change_handler(&window)') < setup.indexOf('desktop_import::gate_startup'));
+  const native = read('src-tauri/src/windows_display.rs');
+  includes(native, ['WM_DISPLAYCHANGE', 'WM_SETTINGCHANGE', 'PostMessageW', 'WM_NCDESTROY', 'RemoveWindowSubclass', 'is_fullscreen()', 'state.restoring', 'SetWindowPlacement']);
+  excludes(native, ['setInterval', 'window.unmaximize(', 'window.show(', 'window.set_focus(']);
+});
+
 test('shared category declarations and full-field tags retain Host/Remote parity', () => {
   const other = read('static/remote.js');
   function definitions(text, name) { const block = text.match(new RegExp(`const ${name} = \\[(.*?)\\n\\];`, 's')); assert.ok(block); return Object.fromEntries([...block[1].matchAll(/\{\s*key:\s*"([^"]+)",\s*tags:\s*\[(.*?)\]\s*\}/gs)].map(([, key, tags]) => [key, [...tags.matchAll(/"([^"]+)"/g)].map(v => v[1])])); }
