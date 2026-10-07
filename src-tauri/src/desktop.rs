@@ -135,6 +135,10 @@ pub(crate) fn run() {
                 }
                 eprintln!("Windows native rounded corners unavailable: {error}");
             }
+            #[cfg(windows)]
+            if let Err(error) = window_lifecycle::install_display_change_handler(&window) {
+                eprintln!("Windows display-change recovery unavailable: {error}");
+            }
             crate::desktop_import::gate_startup(app, window, startup_log);
             Ok(())
         })

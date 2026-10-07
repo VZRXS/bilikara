@@ -10,6 +10,15 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[cfg(any(windows, test))]
+#[path = "windows_display.rs"]
+mod windows_display;
+
+#[cfg(windows)]
+pub(crate) fn install_display_change_handler(window: &tauri::WebviewWindow) -> Result<(), String> {
+    windows_display::install(window)
+}
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const GEOMETRY_SCHEMA_VERSION: u8 = 1;
 pub(crate) const GEOMETRY_FILENAME: &str = "main-window-geometry-v1.json";
@@ -932,9 +941,19 @@ fn refresh_main_window_minimum_height(window: &tauri::Window) {
     };
     let frame = logical_frame_size(inner, outer, monitor.scale_factor);
     let height = minimum_host_height(&monitor, frame);
+    if set_main_window_minimum_height(window, &state, height).is_err() {
+        geometry_diagnostic("minimum_height", "error_ignored");
+    }
+}
+
+fn set_main_window_minimum_height(
+    window: &tauri::Window,
+    state: &MainWindowGeometryState,
+    height: f64,
+) -> tauri::Result<()> {
     // Moving within one monitor must not produce repeated native size changes.
     if state.minimum_height_bits.load(Ordering::Acquire) == height.to_bits() {
-        return;
+        return Ok(());
     }
     let width = window
         .app_handle()
@@ -945,16 +964,11 @@ fn refresh_main_window_minimum_height(window: &tauri::Window) {
         .find(|config| config.label == MAIN_WINDOW_LABEL)
         .and_then(|config| config.min_width)
         .unwrap_or(700.0);
-    if window
-        .set_min_size(Some(tauri::LogicalSize::new(width, height)))
-        .is_ok()
-    {
-        state
-            .minimum_height_bits
-            .store(height.to_bits(), Ordering::Release);
-    } else {
-        geometry_diagnostic("minimum_height", "error_ignored");
-    }
+    window.set_min_size(Some(tauri::LogicalSize::new(width, height)))?;
+    state
+        .minimum_height_bits
+        .store(height.to_bits(), Ordering::Release);
+    Ok(())
 }
 
 fn captured_normal_geometry(window: &tauri::Window) -> Option<StoredMainWindowGeometry> {
@@ -1468,12 +1482,12 @@ mod tests {
         }
     }
 
-    const FRAMELESS: LogicalFrameSize = LogicalFrameSize {
+    pub(super) const FRAMELESS: LogicalFrameSize = LogicalFrameSize {
         width: 0.0,
         height: 0.0,
     };
 
-    fn monitor(
+    pub(super) fn monitor(
         name: &str,
         x: i32,
         y: i32,
@@ -1491,7 +1505,7 @@ mod tests {
         }
     }
 
-    fn saved_geometry(
+    pub(super) fn saved_geometry(
         monitor: &MonitorWorkArea,
         offset_x: f64,
         offset_y: f64,

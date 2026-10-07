@@ -442,6 +442,11 @@ archive. macOS retains the system user-data directory outside the signed app.
 The ordinary Host window has a 700 × 600 logical-pixel minimum. Shorter saved
 heights restore at the current minimum without discarding other preferences;
 the height floor yields to a smaller monitor work area after frame/DPI conversion.
+On Windows, display/work-area changes also recheck the main window's live placement.
+Switching from extended displays to mirroring or a single display returns an
+inaccessible window to an available work area. Reachable windows stay in place;
+minimized/maximized state is retained. Fullscreen defers normal-window recovery
+until exit, without changing playback or audience-window ownership.
 Fullscreen and audience screens use their existing display geometry. Passive
 right-center feedback briefly shows acknowledged playback, seeking, volume/mute,
 effective audio/video delay, delay locking and pitch changes, using the existing
